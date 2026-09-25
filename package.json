@@ -2,6 +2,7 @@
   "name": "my-signet",
   "private": true,
   "version": "0.13.1",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
