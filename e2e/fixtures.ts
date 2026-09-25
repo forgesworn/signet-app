@@ -18,6 +18,16 @@ async function enterPin(page: Page, pin: string) {
  * confirm → `Continue` → wait for Home. Both `createIdentityAndUnlock` and
  * `restoreIdentityAndUnlock` land here once the display name is set.
  */
+/**
+ * Wait until the unlocked identity's private keys are decrypted. The app sets
+ * the unlock key first and decrypts the stored identity afterwards (PBKDF2 per
+ * secret), and Home renders from the public record in between — so a visible
+ * Home is not a signal that key material is usable yet.
+ */
+export async function waitForDecryptedIdentity(page: Page) {
+  await page.waitForFunction(() => (window as any).__TEST__?.isIdentityDecrypted?.() === true, undefined, { timeout: 60_000 });
+}
+
 async function completeSetupAuth(page: Page, pin: string) {
   // SetupAuth: intro screen
   await page.getByRole('button', { name: 'Set up now' }).click();
@@ -61,6 +71,7 @@ export async function createIdentityAndUnlock(
 
   // Should be on Home now (PBKDF2 operations can take 10-30s)
   await page.getByText(name).waitFor({ state: 'visible', timeout: 60_000 });
+  await waitForDecryptedIdentity(page);
 }
 
 /**
@@ -93,6 +104,7 @@ export async function restoreIdentityAndUnlock(
   await page.getByRole('button', { name: 'Restore MySignet' }).click();
 
   await completeSetupAuth(page, pin);
+  await waitForDecryptedIdentity(page);
 }
 
 /**

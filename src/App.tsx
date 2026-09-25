@@ -3550,6 +3550,10 @@ export function App() {
         setShowAuthPrompt(true);
       },
       isLocked: () => encryptionKeyRef.current === null,
+      // True once the unlocked identity's key material is decrypted. Unlocking
+      // sets the key first and decrypts the stored record afterwards, so for a
+      // moment the public (still-encrypted) record is what the pages hold.
+      isIdentityDecrypted: () => encryptionKeyRef.current !== null && identityRef.current?.encrypted === false,
       getActivePubkey: () => identityRef.current ? getActivePubkey(identityRef.current) : null,
       addCredential: (cred: Parameters<typeof addCredentialRef.current>[0]) => addCredentialRef.current(cred),
       injectGetVerifiedSaved: (eventJsons: string[]) => getVerifiedSavedInjectorRef.current?.(eventJsons),
