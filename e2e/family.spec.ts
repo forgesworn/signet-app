@@ -12,7 +12,13 @@ async function addTestMember(page: Page, name = 'Bob Test') {
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByPlaceholder("What should we call them?").fill(name);
   await page.getByRole('button', { name: 'Add contact' }).click();
-  await expect(page.getByRole('heading', { name: `${name} added` })).toBeVisible({ timeout: 60_000 });
+  try {
+    await expect(page.getByRole('heading', { name: `${name} added` })).toBeVisible({ timeout: 40_000 });
+  } catch (error) {
+    // Leave room inside the test timeout to say what the page shows instead.
+    const shown = await page.locator('body').innerText().catch(() => '<unreadable>');
+    throw new Error(`"${name} added" never appeared; page shows: ${shown.replace(/\s+/g, ' ').slice(0, 600)}`, { cause: error });
+  }
   await page.getByRole('button', { name: 'Done' }).click();
 }
 
