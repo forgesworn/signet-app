@@ -20,6 +20,9 @@ interface Props {
 
 type Step = 'choose' | 'scan' | 'show-qr' | 'enter-id' | 'preview' | 'success';
 
+const HEX_PRIVATE_KEY = /^[0-9a-f]{64}$/i;
+export const KEYS_UNLOCKING_COPY = 'Your keys are still unlocking. Try again in a moment.';
+
 export function AddMember({ identity, onAddMember, onDone, wordCount, onNostrConnect, signingMode }: Props) {
   const { hasPermission, error: cameraError, requestPermission } = useCamera();
   const [step, setStep] = useState<Step>('choose');
@@ -127,8 +130,17 @@ export function AddMember({ identity, onAddMember, onDone, wordCount, onNostrCon
     setStep('preview');
   };
 
+  // Unlock sets the encryption key before the stored identity is decrypted,
+  // so for a moment after unlock `privateKey` still holds ciphertext. ECDH on
+  // that throws a cryptic hex error — wait for a real 32-byte key instead.
+  const keyReady = HEX_PRIVATE_KEY.test(getActivePrivateKey(identity));
+
   const handleConfirm = async () => {
     if (confirming) return;
+    if (!keyReady) {
+      setError(KEYS_UNLOCKING_COPY);
+      return;
+    }
     setConfirming(true);
     try {
       const myPrivKey = getActivePrivateKey(identity);
@@ -387,8 +399,8 @@ export function AddMember({ identity, onAddMember, onDone, wordCount, onNostrCon
         )}
         {error && <div style={{ color: 'var(--danger)', marginBottom: 12, fontSize: '0.9rem' }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-primary" onClick={handleConfirm} disabled={confirming} style={{ flex: 1 }}>
-            Add contact
+          <button className="btn btn-primary" onClick={handleConfirm} disabled={confirming || !keyReady} style={{ flex: 1 }}>
+            {keyReady ? 'Add contact' : 'Unlocking…'}
           </button>
           <button className="btn btn-secondary" onClick={() => { setStep('choose'); setError(''); }} style={{ flex: 1 }}>
             Cancel
