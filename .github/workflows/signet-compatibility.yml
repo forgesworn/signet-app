@@ -61,14 +61,26 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Authenticate git for private @forgesworn deps
+      - name: Route @forgesworn git deps over HTTPS
         env:
           FORGESWORN_READ_PAT: ${{ secrets.FORGESWORN_READ_PAT }}
         run: |
-          AUTH="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
-          git config --global url."$AUTH".insteadOf "https://github.com/"
-          git config --global --add url."$AUTH".insteadOf "ssh://git@github.com/"
-          git config --global --add url."$AUTH".insteadOf "git@github.com:"
+          # The @forgesworn deps are public now. npm normalises
+          # git+https://github.com/ URLs to ssh://git@github.com/, which needs an
+          # SSH key the runner doesn't have, so rewrite every github.com form to
+          # plain HTTPS. If FORGESWORN_READ_PAT is set (only needed should a
+          # private dep ever return), inject it; otherwise fetch anonymously.
+          if [ -n "$FORGESWORN_READ_PAT" ]; then
+            BASE="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
+          else
+            BASE="https://github.com/"
+          fi
+          # --add appends; without it each call overwrites the previous rule.
+          git config --global url."$BASE".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$BASE".insteadOf "git@github.com:"
+          if [ -n "$FORGESWORN_READ_PAT" ]; then
+            git config --global --add url."$BASE".insteadOf "https://github.com/"
+          fi
 
       - name: Build Signet Login candidate package
         if: ${{ inputs.signet_login_candidate == 'true' }}

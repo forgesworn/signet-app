@@ -42,26 +42,36 @@ jobs:
           node-version: 24
           cache: npm
 
-      # The @forgesworn/kenspeckle + tessera-kit deps are private git deps. npm
+      # The @forgesworn/kenspeckle + tessera-kit + signet-contacts deps are git deps. npm
       # normalizes git+https://github.com/ URLs to ssh://git@github.com/ (and
       # kenspeckle's nested tessera dep too), so we rewrite ALL three github.com
-      # URL forms to inject a read-only PAT over HTTPS — otherwise npm's
+      # URL forms to HTTPS (with an optional read-only PAT) — otherwise npm's
       # normalized ssh:// form needs an SSH key the runner doesn't have.
-      # Requires repo secret FORGESWORN_READ_PAT (fine-grained, read on
+      # FORGESWORN_READ_PAT is optional now that these repos are public (read on
       # forgesworn/kenspeckle + forgesworn/tessera-kit).
-      - name: Authenticate git for private @forgesworn deps
+      - name: Route @forgesworn git deps over HTTPS
         # Pass the PAT via env (not inline ${{ }} interpolation into the script)
         # so the secret never lands in the rendered command line / shell trace
         # (security audit 2026-06-15).
         env:
           FORGESWORN_READ_PAT: ${{ secrets.FORGESWORN_READ_PAT }}
         run: |
-          AUTH="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
-          # --add appends; without it each call overwrites, leaving only the last
-          # rule (which wouldn't match npm's normalized ssh:// form).
-          git config --global url."$AUTH".insteadOf "https://github.com/"
-          git config --global --add url."$AUTH".insteadOf "ssh://git@github.com/"
-          git config --global --add url."$AUTH".insteadOf "git@github.com:"
+          # The @forgesworn deps are public now. npm normalises
+          # git+https://github.com/ URLs to ssh://git@github.com/, which needs an
+          # SSH key the runner doesn't have, so rewrite every github.com form to
+          # plain HTTPS. If FORGESWORN_READ_PAT is set (only needed should a
+          # private dep ever return), inject it; otherwise fetch anonymously.
+          if [ -n "$FORGESWORN_READ_PAT" ]; then
+            BASE="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
+          else
+            BASE="https://github.com/"
+          fi
+          # --add appends; without it each call overwrites the previous rule.
+          git config --global url."$BASE".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$BASE".insteadOf "git@github.com:"
+          if [ -n "$FORGESWORN_READ_PAT" ]; then
+            git config --global --add url."$BASE".insteadOf "https://github.com/"
+          fi
 
       - name: Install dependencies
         run: npm ci --install-links=false
