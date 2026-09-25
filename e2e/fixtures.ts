@@ -25,7 +25,12 @@ async function enterPin(page: Page, pin: string) {
  * Home is not a signal that key material is usable yet.
  */
 export async function waitForDecryptedIdentity(page: Page) {
-  await page.waitForFunction(() => (window as any).__TEST__?.isIdentityDecrypted?.() === true, undefined, { timeout: 60_000 });
+  // The harness is DEV-only: a production build (the post-deploy smoke) has no
+  // __TEST__, so there is nothing to wait on there.
+  await page.waitForFunction(() => {
+    const harness = (window as any).__TEST__;
+    return !harness?.isIdentityDecrypted || harness.isIdentityDecrypted() === true;
+  }, undefined, { timeout: 60_000 });
 }
 
 async function completeSetupAuth(page: Page, pin: string) {
