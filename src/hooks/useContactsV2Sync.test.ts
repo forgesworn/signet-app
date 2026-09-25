@@ -853,7 +853,9 @@ describe('useContactsV2Sync — publish', () => {
       maxOutboxOps: 0,
     });
     await waitFor(() => expect(result.current.backupState).toBe('ok'));
-    expect(mockOutbox).toHaveBeenCalledTimes(1);
+    // The state clears on the fetch; the outbox publish follows on its own
+    // timer, so wait for it rather than asserting in the same tick.
+    await waitFor(() => expect(mockOutbox).toHaveBeenCalledTimes(1));
     expect(mockOutbox.mock.calls[0][0].ops).toEqual([mine]);
   });
 
