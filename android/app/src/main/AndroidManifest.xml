@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="signet-grant" />
+            </intent-filter>
+            <!-- Verified Android App Links (the OS checks
+                 /.well-known/assetlinks.json against the signing cert, so these
+                 open THIS app exclusively with no chooser — a custom scheme can't
+                 do that):
+                   /pair  — companion pairing (scheme + QR forms kept for compat)
+                   /      — Sign in with Signet from a consumer app: the
+                            signet-login SDK opens https://mysignet.app/?auth=1&…
+                            (exact path "/"; a URL with no trailing slash has an
+                            empty path and stays in the browser). Only the root
+                            is claimed, not the host: /about, /get etc. must keep
+                            opening the website — the APK is a bundled snapshot
+                            with no routes for them. Claiming the root also
+                            captures the web page's other `?verify=` /
+                            `?action=add-dependant` / `?nostrconnect=` query
+                            carriers — those route natively too (as
+                            `root-carrier`), through the same consumer callbacks
+                            the web mount effects use, since they'd otherwise be
+                            inert against the APK's `https://localhost/` WebView
+                            location.
+                 Routing: src/lib/native-url.ts → App.tsx handleNativeUrl. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="mysignet.app" android:pathPrefix="/pair" />
+                <data android:scheme="https" android:host="mysignet.app" android:path="/" />
+            </intent-filter>
+        </activity>
+
+        <!-- NIP-55: other apps on this phone (Amethyst, KithMoot, anything
+             Amber-shaped) ask for a public key, a signature or NIP-44 through
+             `nostrsigner:` intents and, once allowed always, through the
+             content provider below without a screen. The activity has no UI
+             of its own; the decision is made in the app. -->
+        <activity
+            android:name=".Nip55SignerActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/AppTheme.Nip55Handoff">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nostrsigner" />
+            </intent-filter>
+        </activity>
+        <provider
+            android:name=".Nip55SignerProvider"
+            android:authorities="app.mysignet.GET_PUBLIC_KEY;app.mysignet.SIGN_EVENT;app.mysignet.NIP44_ENCRYPT;app.mysignet.NIP44_DECRYPT;app.mysignet.PING"
+            android:exported="true" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+
+        <service
+            android:name=".BunkerForegroundService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="NIP-46 remote-signing bunker keeps serving family signing requests while the screen is off"
+            />
+        </service>
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+</manifest>

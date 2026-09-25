@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>What is MySignet?</title>
+  <meta name="description" content="MySignet is client-side identity for the Signet protocol. Prove who you are once, then sign in anywhere without passwords, emails or accounts. Built for families." />
+  <meta name="theme-color" content="#FAF7ED" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#081B2D" media="(prefers-color-scheme: dark)" />
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    :root {
+      --bg: #FAF7ED; --card: #FFFFFF; --text: #0E2A47; --muted: #596979;
+      --accent: #0E2A47; --accent-ink: #FAF7ED; --border: rgba(14, 42, 71, 0.14);
+      --font-display: Georgia, 'Times New Roman', serif;
+      --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #081B2D; --card: #102F4D; --text: #FAF7ED; --muted: #A7B0B8;
+        --accent: #C9A962; --accent-ink: #0E2A47; --border: rgba(250, 247, 237, 0.14);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.55; -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 620px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+    header img { width: 44px; height: 44px; }
+    header h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.5rem; margin: 0; letter-spacing: 0; }
+    .lede { color: var(--muted); font-size: 1.05rem; margin: 4px 0 28px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px; margin-bottom: 18px; }
+    .cta { text-align: center; }
+    .btn {
+      display: inline-block; background: var(--accent); color: var(--accent-ink);
+      font-weight: 650; font-size: 1.05rem; text-decoration: none;
+      padding: 14px 28px; border-radius: 12px; margin: 6px 6px 4px;
+    }
+    .btn.ghost { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
+    .btn:active { transform: translateY(1px); }
+    h2 { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; margin: 0 0 10px; }
+    p { margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+    .note { color: var(--muted); font-size: 0.92rem; }
+    ul { margin: 0; padding-left: 20px; }
+    ul li { margin: 8px 0; }
+    strong.k { color: var(--text); }
+    .foot { color: var(--muted); font-size: 0.85rem; margin-top: 34px; border-top: 1px solid var(--border); padding-top: 18px; }
+    a { color: var(--accent); }
+    a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/favicon.svg" alt="MySignet" />
+      <h1>What is MySignet?</h1>
+    </header>
+    <p class="lede">Manage your identities and sign in to compatible apps.
+      Recognisable npubs, control over signing and clear app permissions.</p>
+
+    <div class="card">
+      <h2>Choose where your key lives</h2>
+      <p>Keep signing keys encrypted on this device, or use a connected browser extension or remote signer.
+        MySignet shows each identity's <strong class="k">public address (npub)</strong> so you can recognise
+        which account will sign.</p>
+      <p>When a site shows <strong class="k">Sign in with Signet</strong>, you approve the request and you're in.
+        Sites and relays can still see public keys and connection metadata. Separate personas help keep
+        different uses of your identity apart.</p>
+    </div>
+
+    <div class="card">
+      <h2>Built for families</h2>
+      <p>Guardians can manage a child's identity and control which requests need approval.
+        Access and activity visibility depend on the family's settings.</p>
+      <p>Change permissions as the child's needs grow. Review connected apps and signing permissions together.</p>
+    </div>
+
+    <div class="card">
+      <h2>Trust that adds up</h2>
+      <p>MySignet is built on <strong class="k">Signet</strong>, an open protocol for identity verification.
+        You start self-declared, gain standing as people vouch for you, and can be verified by licensed
+        professionals such as solicitors and notaries rather than by any central authority.</p>
+      <p>Age proofs can confirm an age threshold <strong class="k">without sharing your birth date</strong>.
+        Documents saved in MySignet are encrypted locally; public identifiers and some record metadata
+        remain readable. What a verifier or app learns depends on the proof and information you share.</p>
+    </div>
+
+    <div class="card">
+      <h2>What to expect</h2>
+      <ul>
+        <li><strong class="k">Configured services.</strong> Signet connects to relays and optional media services.
+          Encryption does not hide every public event field or network connection.</li>
+        <li><strong class="k">Nostr identities.</strong> Use npubs across compatible apps. Keep your recovery words
+          and separate backups for imported accounts.</li>
+        <li><strong class="k">Android and web.</strong> Camera and biometric features depend on your device
+          and browser's support.</li>
+      </ul>
+    </div>
+
+    <div class="card cta">
+      <a class="btn" href="https://mysignet.app">Open the web app</a>
+      <a class="btn ghost" href="/get">Get the Android app</a>
+      <p class="note">Also on <a href="https://zapstore.dev/apps/naddr1qqxxzurs9ekhjumfvahx2aqprpmhxue69uhhyetvv9uju7npwpehgmmjv5hxgetkqgsd5x03e56tajjyhe6d5jesdkw3mkrtvdpua72vugkyn3h4nqtwt0grqsqqqlst4uwpfh" rel="noopener">Zapstore</a>,
+        the Nostr-native app store.</p>
+    </div>
+
+    <p class="foot">MySignet is the user-facing app for the Signet protocol.
+      Questions? <a href="https://mysignet.app">mysignet.app</a></p>
+  </div>
+</body>
+</html>

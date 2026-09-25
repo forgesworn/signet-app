@@ -1,0 +1,180 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  # Publishing a release must republish /get/ with the new APK assets — a
+  # release created after the last main deployment otherwise leaves
+  # mysignet.app/get/ serving the previous APK until the next push.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Least privilege — this job only reads the repo and deploys over SSH; it never
+# writes back to GitHub. Pin the default GITHUB_TOKEN to read-only (security
+# audit 2026-06-15).
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # persist-credentials: false — otherwise checkout injects the workflow
+      # GITHUB_TOKEN as an http.https://github.com/.extraheader, which overrides
+      # the FORGESWORN_READ_PAT we embed in the clone URL and 404s on the
+      # private @forgesworn deps (GITHUB_TOKEN can't see other repos).
+      # Actions pinned to commit SHA (not floating tags) for supply-chain
+      # integrity (security audit 2026-06-15).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: forgesworn/canary-kit
+          path: canary-kit
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # The @forgesworn/kenspeckle + tessera-kit deps are private git deps. npm
+      # normalizes git+https://github.com/ URLs to ssh://git@github.com/ (and
+      # kenspeckle's nested tessera dep too), so we rewrite ALL three github.com
+      # URL forms to inject a read-only PAT over HTTPS — otherwise npm's
+      # normalized ssh:// form needs an SSH key the runner doesn't have.
+      # Requires repo secret FORGESWORN_READ_PAT (fine-grained, read on
+      # forgesworn/kenspeckle + forgesworn/tessera-kit).
+      - name: Authenticate git for private @forgesworn deps
+        # Pass the PAT via env (not inline ${{ }} interpolation into the script)
+        # so the secret never lands in the rendered command line / shell trace
+        # (security audit 2026-06-15).
+        env:
+          FORGESWORN_READ_PAT: ${{ secrets.FORGESWORN_READ_PAT }}
+        run: |
+          AUTH="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
+          # --add appends; without it each call overwrites, leaving only the last
+          # rule (which wouldn't match npm's normalized ssh:// form).
+          git config --global url."$AUTH".insteadOf "https://github.com/"
+          git config --global --add url."$AUTH".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$AUTH".insteadOf "git@github.com:"
+
+      - name: Install dependencies
+        run: npm ci --install-links=false
+
+      - name: Install Canary dependencies
+        working-directory: canary-kit
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Check Signet conformance
+        run: npm run check:signet-conformance
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Browser regression tests
+        run: npx playwright test --project=mobile-chromium --workers=3 --reporter=line e2e/auth.spec.ts e2e/verification.spec.ts e2e/approve-connect.spec.ts e2e/identity-management.spec.ts e2e/identity-recovery.spec.ts
+
+      - name: Mobile WebKit QR/paste regression
+        run: npm run test:e2e:webkit
+
+      - name: Contact npub entry regression
+        run: npx playwright test --project=mobile-chromium --workers=1 --reporter=line e2e/family.spec.ts --grep 'add member via npub|invalid public address'
+
+      - name: External signer reconnect regression
+        run: npx playwright test --project=mobile-chromium --workers=1 --reporter=line e2e/external-signer-reconnect.spec.ts
+
+      - name: Cross-app Canary NostrConnect regression
+        env:
+          CANARY_REPO_PATH: ${{ github.workspace }}/canary-kit
+        run: npm run test:e2e:cross-app
+
+      - name: Build
+        run: npm run build
+
+      # GitHub release assets aren't served from mysignet.app directly.
+      # mysignet.app/get is the public download surface: pull the latest
+      # release's APKs (stable signet-app.apk + versioned) into dist/get/ so
+      # the rsync below serves them. A brand-new repo has no releases yet —
+      # that's tolerated (the /get page just ships without APK assets, with a
+      # notice below) rather than failing the whole deploy; a release that
+      # DOES exist but whose download genuinely fails still fails loud.
+      # The manifest (signet-app.json — versionName/versionCode/sha256/cert/url,
+      # written by scripts/release.sh) is what the APK reads to answer "am I on
+      # the latest version?" (src/lib/app-update.ts). A release without one
+      # (pre-0.12 history) just leaves the app saying "couldn't check", so its
+      # absence is tolerated; a missing APK on an EXISTING release is not.
+      - name: Bundle release APKs + manifest into dist/get
+        id: bundle_release_assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 2>/dev/null)" ]; then
+            echo "::notice::no GitHub release exists yet for $GITHUB_REPOSITORY — skipping APK/manifest publication to /get"
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+          else
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern '*.apk' --dir dist/get
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern 'signet-app.json' --dir dist/get \
+              || echo "::warning::latest release has no signet-app.json manifest — the APK update check will report 'couldn't check'"
+            echo "has_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Keep the "Current build" link (the versioned APK Obtainium watches) in
+      # step with whatever was just downloaded, so a release never leaves the
+      # page advertising an older build. Rewrites only the versioned name; the
+      # stable signet-app.apk download button is left untouched. Skipped
+      # entirely when there's no release yet (previous step); fails loud if a
+      # release exists but no versioned APK came down with it.
+      - name: Point "Current build" at the newest release APK
+        if: steps.bundle_release_assets.outputs.has_release == 'true'
+        run: |
+          latest=$(ls dist/get/signet-app-v*.apk 2>/dev/null | xargs -n1 basename | sort -V | tail -1)
+          if [ -z "$latest" ]; then
+            echo "::error::no versioned signet-app-v*.apk in dist/get — cannot set the Current build link"
+            exit 1
+          fi
+          sed -i -E "s#signet-app-v[0-9]+\.[0-9]+\.[0-9]+\.apk#${latest}#g" dist/get/index.html
+          echo "Current build link → ${latest}"
+
+      # Target host is not hardcoded here — it's the repo secret DEPLOY_HOST
+      # (hostname or IP of the production deploy target), and its SSH host
+      # keys are the repo secret DEPLOY_KNOWN_HOSTS (an `ssh-keyscan`-style
+      # known_hosts block, pinned once by the infra owner against their own
+      # trust record). Both are secrets rather than variables so neither is
+      # printed in the public Actions log. Never ssh-keyscan per run: TOFU
+      # could redirect the rsync, and a failed scan aborts the step under
+      # `set -e` with no diagnostic at all.
+      - name: Deploy to Hetzner
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$HETZNER_SSH_KEY" ]; then
+            echo "::error::HETZNER_SSH_KEY is not set — cannot deploy"
+            exit 1
+          fi
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::DEPLOY_HOST / DEPLOY_KNOWN_HOSTS repo secrets are not set — cannot deploy"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "$HETZNER_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            dist/ "deploy@${DEPLOY_HOST}:/opt/signet-app/"
+
+      - name: Production cross-app Canary NostrConnect smoke
+        run: npm run test:e2e:cross-app:live

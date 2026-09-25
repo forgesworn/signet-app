@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cross-device sign-in — Signet Test Harness</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Cross-device sign-in</h1>
+      <p class="tagline">The relay path — the one Fathom and Skative use. Keep this page open; the answer arrives over the relay, not in the URL.</p>
+    </header>
+
+    <section class="config">
+      <label for="target">Target Signet</label>
+      <input type="text" id="target" />
+      <label for="relay" style="margin-top:0.75rem">Relay</label>
+      <input type="text" id="relay" />
+      <div class="config-hint">
+        This page mints a session key, subscribes to the relay for gift wraps addressed to it,
+        then hands Signet a sign-in URL naming that relay and session. Signet publishes its
+        answer there. If nothing arrives, the fault is the publish or the relay, not the signature.
+      </div>
+    </section>
+
+    <div id="hero" class="callback-hero"></div>
+
+    <div class="actions">
+      <button id="start">Start a cross-device sign-in</button>
+      <button id="open" class="secondary" style="display:none">Open in My Signet →</button>
+      <button id="recheck" class="secondary" style="display:none">Check the relay again</button>
+      <button class="secondary" onclick="window.location.href='/'">← Dashboard</button>
+    </div>
+
+    <h2 class="section-label">Progress</h2>
+    <table class="params-table" id="progress">
+      <tr><td colspan="2" class="empty">Not started.</td></tr>
+    </table>
+
+    <h2 class="section-label">Verification</h2>
+    <table class="params-table" id="checks">
+      <tr><td colspan="2" class="empty">Nothing received yet.</td></tr>
+    </table>
+
+    <div id="link-box" class="launch-context" style="display:none"></div>
+  </div>
+
+  <script type="module">
+    import { newSession, sessionFromSecret, listen, fetchAll, verifyWrappedResponse } from './vendor/signet-relay.js';
+
+    const ATTEMPT_KEY = 'signet-test-relay-attempt';
+    const ATTEMPT_MAX_AGE_MS = 15 * 60 * 1000;
+
+    const DEFAULT_TARGET = 'https://mysignet.app';
+    const DEFAULT_RELAY = 'wss://relay.trotters.cc';
+
+    const targetInput = document.getElementById('target');
+    targetInput.value = localStorage.getItem('signet-test-target') || DEFAULT_TARGET;
+    targetInput.addEventListener('change', () => {
+      localStorage.setItem('signet-test-target', targetInput.value.trim() || DEFAULT_TARGET);
+    });
+
+    const relayInput = document.getElementById('relay');
+    relayInput.value = localStorage.getItem('signet-test-relay') || DEFAULT_RELAY;
+    relayInput.addEventListener('change', () => {
+      localStorage.setItem('signet-test-relay', relayInput.value.trim() || DEFAULT_RELAY);
+    });
+
+    const hero = document.getElementById('hero');
+    const progress = document.getElementById('progress');
+    const checksTable = document.getElementById('checks');
+    const linkBox = document.getElementById('link-box');
+    const startBtn = document.getElementById('start');
+    const openBtn = document.getElementById('open');
+    const recheckBtn = document.getElementById('recheck');
+
+    let stop = null;
+    let attempt = null;
+    let settled = false;
+
+    hero.innerHTML = '<h2>Ready</h2><p>Press start. Nothing is sent until you do.</p>';
+
+    function step(label, detail, status = 'info') {
+      if (progress.querySelector('.empty')) progress.innerHTML = '';
+      const row = document.createElement('tr');
+      const th = document.createElement('th');
+      th.textContent = new Date().toLocaleTimeString();
+      const td = document.createElement('td');
+      td.className = 'check-' + status;
+      td.textContent = `${label}${detail ? ' — ' + detail : ''}`;
+      row.append(th, td);
+      progress.appendChild(row);
+    }
+
+    function freshChallenge() {
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    startBtn.addEventListener('click', () => {
+      if (stop) stop();
+      settled = false;
+      progress.innerHTML = '';
+      checksTable.innerHTML = '<tr><td colspan="2" class="empty">Nothing received yet.</td></tr>';
+
+      const target = (targetInput.value.trim() || DEFAULT_TARGET).replace(/\/$/, '');
+      const relayUrl = relayInput.value.trim() || DEFAULT_RELAY;
+      const session = newSession();
+      const challenge = freshChallenge();
+      const origin = window.location.origin;
+
+      const params = new URLSearchParams({
+        auth: '1',
+        challenge,
+        origin,
+        callback: origin + '/callback.html',
+        name: 'Signet Test Harness',
+        t: String(Math.floor(Date.now() / 1000)),
+        relay: relayUrl,
+        sessionPubkey: session.publicKey,
+      });
+      const url = `${target}/?${params.toString()}`;
+      attempt = { session, challenge, origin, relayUrl, target, url, startedAt: new Date().toISOString(), startedAtMs: Date.now() };
+
+      hero.className = 'callback-hero';
+      hero.innerHTML = '<h2>Listening…</h2><p>Approve in My Signet, then come back to this page. It picks up where it left off, even if the browser put it to sleep.</p>';
+      step('Session key minted', session.publicKey.slice(0, 16) + '…');
+      step('Connecting to relay', relayUrl);
+
+      // Survive the tab being discarded while the signer app is in front:
+      // without the session key the answer cannot be decrypted at all.
+      try {
+        localStorage.setItem(ATTEMPT_KEY, JSON.stringify({
+          secretKeyHex: session.secretKeyHex,
+          challenge, origin, relayUrl, target, url,
+          startedAt: attempt.startedAt,
+          startedAtMs: Date.now(),
+        }));
+      } catch { /* private mode — the in-memory attempt still works */ }
+
+      subscribe(session, relayUrl, challenge, origin);
+      armTimeout();
+      openBtn.style.display = '';
+      openBtn.onclick = () => window.open(url, '_blank', 'noopener');
+      recheckBtn.style.display = '';
+      linkBox.style.display = '';
+      linkBox.innerHTML = `<strong>Sign-in URL</strong> (open it on this phone, or on another device):<br><code>${escapeHtml(url)}</code>`;
+    });
+
+    /** (Re)open the relay subscription for the attempt in flight. */
+    function subscribe(session, relayUrl, challenge, origin) {
+      if (stop) { stop(); stop = null; }
+      const since = Math.floor((attempt?.startedAtMs ?? Date.now()) / 1000) - 120;
+      stop = listen(relayUrl, session, {
+        onStatus: (state, detail) => {
+          step(state, detail, state === 'refused' || state === 'error' ? 'fail' : 'info');
+          if (state === 'refused' || state === 'error') {
+            settle({
+              verdict: 'failed',
+              headline: state === 'refused'
+                ? 'The relay refused the subscription — Signet never had a listener to answer'
+                : 'Could not reach the relay from this page',
+              checks: [{ name: 'relay subscription', status: 'fail', detail: detail || state }],
+            });
+          }
+        },
+        onEvent: (wrap) => {
+          step('Gift wrap received', 'kind 1059, unwrapping');
+          settle(verifyWrappedResponse(wrap, session, { challenge, origin }));
+        },
+      }, since);
+    }
+
+    /** Silence is itself a result — but only count it while this page is awake. */
+    let timeoutId = null;
+    function armTimeout() {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(async () => {
+        if (settled) return;
+        if (document.visibilityState !== 'visible') { armTimeout(); return; }
+        // Before calling it a failure, ask the relay for everything addressed
+        // to this session with no time window. A live subscription can miss an
+        // event — the phone closes the socket the moment you switch apps — and
+        // that must not be reported as "Signet never answered".
+        step('Nothing seen live', 'asking the relay for the whole session history');
+        const found = await fetchAll(attempt.relayUrl, attempt.session);
+        if (settled) return;
+        if (found.length > 0) {
+          step(`Found ${found.length} wrap(s) in relay history`, 'the live subscription had missed it');
+          for (const wrap of found) {
+            const result = verifyWrappedResponse(wrap, attempt.session, {
+              challenge: attempt.challenge, origin: attempt.origin,
+            });
+            if (result.verdict !== 'failed') {
+              result.checks = [
+                { name: 'delivery', status: 'info', detail: 'the response was on the relay but the live subscription missed it — the socket does not survive switching apps' },
+                ...(result.checks || []),
+              ];
+              settle(result);
+              return;
+            }
+          }
+        }
+        settle({
+          verdict: 'failed',
+          headline: 'Signet published nothing to this relay for this session',
+          checks: [{
+            name: 'response delivered',
+            status: 'fail',
+            detail: 'nothing addressed to this session exists on the relay at all, live or in history — the response was never published here',
+          }],
+        });
+      }, 120_000);
+    }
+
+    // Coming back from the signer app: the socket may have been frozen while
+    // this page was in the background, so re-subscribe. Gift wraps are stored
+    // events, so anything published meanwhile is replayed.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || settled || !attempt) return;
+      step('Back in the foreground', 're-checking the relay');
+      subscribe(attempt.session, attempt.relayUrl, attempt.challenge, attempt.origin);
+      armTimeout();
+    });
+
+    recheckBtn.addEventListener('click', () => {
+      if (!attempt) return;
+      settled = false;
+      step('Manual re-check', 'asking the relay again');
+      subscribe(attempt.session, attempt.relayUrl, attempt.challenge, attempt.origin);
+      armTimeout();
+    });
+
+    // A tab discarded mid-attempt comes back here: resume rather than restart,
+    // because the response can only be decrypted with the original session key.
+    (function resume() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(ATTEMPT_KEY) || 'null'); } catch { /* ignore */ }
+      if (!saved || !saved.secretKeyHex) return;
+      if (Date.now() - (saved.startedAtMs || 0) > ATTEMPT_MAX_AGE_MS) return;
+
+      const session = sessionFromSecret(saved.secretKeyHex);
+      attempt = { ...saved, session };
+      targetInput.value = saved.target || targetInput.value;
+      relayInput.value = saved.relayUrl || relayInput.value;
+      hero.className = 'callback-hero';
+      hero.innerHTML = '<h2>Resumed</h2><p>Picking up the attempt this browser started, and asking the relay for anything published since.</p>';
+      step('Resumed a previous attempt', new Date(saved.startedAtMs).toLocaleTimeString());
+      openBtn.style.display = '';
+      openBtn.onclick = () => window.open(saved.url, '_blank', 'noopener');
+      recheckBtn.style.display = '';
+      linkBox.style.display = '';
+      linkBox.innerHTML = `<strong>Sign-in URL</strong>:<br><code>${escapeHtml(saved.url)}</code>`;
+      subscribe(session, saved.relayUrl, saved.challenge, saved.origin);
+      armTimeout();
+    })();
+
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      if (stop) { stop(); stop = null; }
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+      try { localStorage.removeItem(ATTEMPT_KEY); } catch { /* ignore */ }
+
+      const HERO = {
+        signed: { cls: 'ok', title: 'Signed ✓' },
+        failed: { cls: 'err', title: 'Cross-device sign-in did NOT complete ✗' },
+        denied: { cls: 'err', title: 'Sign-in denied' },
+      };
+      const style = HERO[result.verdict] || HERO.failed;
+      hero.className = 'callback-hero ' + style.cls;
+      hero.innerHTML = `<h2>${escapeHtml(style.title)}</h2><p>${escapeHtml(result.headline)}</p>` +
+        (result.signerPubkey ? `<p>Key: <code>${escapeHtml(result.signerPubkey.slice(0, 16))}…</code></p>` : '');
+
+      checksTable.innerHTML = '';
+      const MARK = { pass: '✓', fail: '✗', skip: '–', info: 'ℹ' };
+      for (const c of result.checks || []) {
+        const row = document.createElement('tr');
+        const th = document.createElement('th');
+        th.textContent = c.name;
+        const td = document.createElement('td');
+        td.className = 'check-' + c.status;
+        td.textContent = `${MARK[c.status] || '·'} ${c.detail}`;
+        row.append(th, td);
+        checksTable.appendChild(row);
+      }
+      if (!checksTable.children.length) {
+        checksTable.innerHTML = '<tr><td colspan="2" class="empty">No checks ran.</td></tr>';
+      }
+
+      fetch('/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'relay',
+          verdict: result.verdict,
+          headline: result.headline,
+          checks: result.checks || [],
+          scenarioId: 'relay-basic',
+          scenarioTitle: 'Cross-device sign-in (relay mode)',
+          target: attempt?.target ?? null,
+          relayUrl: attempt?.relayUrl ?? null,
+          sessionPubkey: attempt?.session.publicKey ?? null,
+          challenge: attempt?.challenge ?? null,
+          outboundUrl: attempt?.url ?? null,
+          launchedAt: attempt?.startedAt ?? null,
+          displayName: result.response?.displayName ?? null,
+          signerPubkey: result.signerPubkey ?? null,
+          reportedAt: new Date().toISOString(),
+        }),
+      }).then((res) => {
+        step(res.ok ? 'Result written to results/log.jsonl' : `Harness server refused the result (HTTP ${res.status})`, '', res.ok ? 'pass' : 'fail');
+      }).catch(() => step('Could not reach the harness server to log this result', '', 'fail'));
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+  </script>
+</body>
+</html>

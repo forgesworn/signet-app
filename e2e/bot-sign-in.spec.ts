@@ -1,0 +1,44 @@
+import { test, expect } from '@playwright/test';
+import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import { unwrapEvent } from 'nostr-tools/nip59';
+import { clearDatabase, createIdentityAndUnlock, navigateViaHarness } from './fixtures';
+import { privateRelays } from './helpers/private-relays';
+
+test('bot camera requires consent and delivers only the selected bot proof', async ({ page, context }) => {
+  const relays = privateRelays(); await relays.install(context);
+  await clearDatabase(page); await createIdentityAndUnlock(page);
+  await navigateViaHarness(page, 'bots');
+  await page.getByLabel('Bot name').fill('Sign-in Helper');
+  await page.getByRole('button', { name: 'Create bot', exact: true }).click();
+  for (const digit of '123456') await page.getByRole('button', { name: digit, exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Sign-in Helper · Bot' })).toBeVisible();
+  await navigateViaHarness(page, 'home');
+  await expect(page.locator('.carousel-viewport')).toBeVisible();
+  await expect(page.locator('.nav-dots-v .nav-dot')).toHaveCount(3);
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('heading', { name: 'Sign-in Helper · Bot' })).toBeVisible();
+  await expect(page.locator('.nav-dots-v .nav-dot').nth(1)).toHaveClass(/active/);
+  const botKey = await page.locator('.card.section p').filter({ hasText: /^[0-9a-f]{64}$/ }).innerText();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator('.nav-dots-h .nav-dot').nth(4)).toHaveClass(/active/);
+  const recipient = new Uint8Array(32).fill(3);
+  const request = { type: 'signet-auth-request', requestId: 'ab'.repeat(16), challenge: 'bot-sign-in-test-challenge',
+    origin: 'https://consumer.test', relay: 'wss://relay.test', sessionPubkey: getPublicKey(recipient), timestamp: Math.floor(Date.now() / 1000) };
+  const input = page.getByLabel('Paste bot sign-in QR');
+  await input.fill(JSON.stringify({ ...request, type: 'signet-login-request' }));
+  await page.getByText('Review bot sign-in').click();
+  await expect(page.getByRole('alert')).toContainText('Credentials and app connections');
+  await input.fill(JSON.stringify(request)); await page.getByText('Review bot sign-in').click();
+  const wraps = () => [...relays.events.values()].filter(event => event.kind === 1059 && event.tags.some(t => t[0] === 'p' && t[1] === request.sessionPubkey));
+  expect(wraps()).toHaveLength(0);
+  await page.getByText('Decline', { exact: true }).click(); expect(wraps()).toHaveLength(0);
+  await input.fill(JSON.stringify(request)); await page.getByText('Review bot sign-in').click();
+  await page.getByText('Approve bot sign-in').click();
+  await expect(page.getByRole('status')).toHaveText('Bot sign-in delivered.', { timeout: 30_000 });
+  expect(wraps()).toHaveLength(1);
+  const rumor = unwrapEvent(wraps()[0] as Parameters<typeof unwrapEvent>[0], recipient);
+  expect(rumor.pubkey).toBe(botKey);
+  const response = JSON.parse(rumor.content);
+  expect(Object.keys(response).sort()).toEqual(['authEvent', 'requestId', 'type']);
+  expect(response.authEvent.pubkey).toBe(botKey); expect(verifyEvent(response.authEvent)).toBe(true);
+});

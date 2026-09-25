@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Signet Test Harness</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Signet Test Harness</h1>
+      <p class="tagline">Dev-only test consumer for Sign-in-with-Signet flows.</p>
+    </header>
+
+    <section class="config">
+      <label for="target">Target Signet</label>
+      <input type="text" id="target" />
+      <div class="config-hint">
+        Change to <code>http://localhost:5174</code> (or <code>https://localhost:5174</code>
+        if your dev server has mkcert certs) to test a local build instead of the live site.
+      </div>
+      <div class="config-hint">
+        Every result is checked cryptographically on the callback page and appended to
+        <code>test-consumer/results/log.jsonl</code>, so a failed sign-in can be read back
+        later instead of described from memory.
+      </div>
+      <div class="config-hint">
+        Testing on a phone? The sign-in contract only accepts an <code>https://</code> or
+        <code>localhost</code> consumer, so a plain <code>http://</code> LAN address is rejected
+        before Signet even asks. Serve this harness over https (see the README) and open its
+        LAN URL on the phone, accepting the certificate warning once.
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Cross-device (relay mode)</h2>
+      <div class="scenario">
+        <div class="scenario-info">
+          <div class="scenario-title">Cross-device sign-in</div>
+          <div class="scenario-desc">
+            The relay path used by the Android consumer apps: Signet gift-wraps its answer to a
+            session key and publishes it to a relay instead of redirecting. Runs on its own page,
+            because the listener has to stay open while you approve.
+          </div>
+        </div>
+        <button onclick="window.location.href='/relay.html'">Open →</button>
+      </div>
+    </section>
+
+    <div id="scenarios"></div>
+  </div>
+
+  <script src="./scenarios.js"></script>
+  <script>
+    const DEFAULT_TARGET = 'https://mysignet.app';
+
+    // Target Signet URL lives in localStorage so it survives reloads.
+    const targetInput = document.getElementById('target');
+    const stored = localStorage.getItem('signet-test-target');
+    targetInput.value = stored || DEFAULT_TARGET;
+    targetInput.addEventListener('change', () => {
+      localStorage.setItem('signet-test-target', targetInput.value.trim() || DEFAULT_TARGET);
+    });
+
+    // Group scenarios by section.
+    const bySection = new Map();
+    for (const s of window.SCENARIOS) {
+      if (!bySection.has(s.section)) bySection.set(s.section, []);
+      bySection.get(s.section).push(s);
+    }
+
+    // Render.
+    const root = document.getElementById('scenarios');
+    for (const [sectionName, scenarios] of bySection) {
+      const section = document.createElement('section');
+      section.className = 'section';
+      const h2 = document.createElement('h2');
+      h2.textContent = sectionName;
+      section.appendChild(h2);
+
+      for (const s of scenarios) {
+        const row = document.createElement('div');
+        row.className = 'scenario';
+
+        const info = document.createElement('div');
+        info.className = 'scenario-info';
+
+        const title = document.createElement('div');
+        title.className = 'scenario-title';
+        if (s.tag) {
+          const tag = document.createElement('span');
+          tag.className = 'scenario-tag ' + s.tag;
+          tag.textContent = s.tag;
+          title.appendChild(tag);
+        }
+        title.append(s.title);
+        info.appendChild(title);
+
+        const desc = document.createElement('div');
+        desc.className = 'scenario-desc';
+        desc.textContent = s.description;
+        info.appendChild(desc);
+
+        row.appendChild(info);
+
+        const btn = document.createElement('button');
+        btn.textContent = 'Run →';
+        btn.addEventListener('click', () => runScenario(s));
+        row.appendChild(btn);
+
+        section.appendChild(row);
+      }
+
+      root.appendChild(section);
+    }
+
+    function runScenario(scenario) {
+      const target = targetInput.value.trim() || DEFAULT_TARGET;
+      const ctx = window.makeContext(target);
+      const { url, launch } = scenario.build(ctx);
+
+      // Stash the launch context so callback.html can check what came back
+      // against what we asked for.
+      //
+      // sessionStorage is per-TAB, and on a phone the callback usually lands
+      // in a new tab (the signer app opens it), which is why the same-origin
+      // localStorage list exists too: keep the last few attempts so the
+      // callback can find the one that produced the signature no matter which
+      // tab it opens in. A stale entry cannot produce a false pass — the
+      // challenge is 32 random bytes, so only the real one rebuilds the id.
+      const record = {
+        scenarioId: scenario.id,
+        scenarioTitle: scenario.title,
+        launchedAt: new Date().toISOString(),
+        target,
+        url,
+        launch,
+      };
+      sessionStorage.setItem('signet-test-launch', JSON.stringify(record));
+      try {
+        const recent = JSON.parse(localStorage.getItem('signet-test-launches') || '[]');
+        const list = Array.isArray(recent) ? recent : [];
+        list.unshift(record);
+        localStorage.setItem('signet-test-launches', JSON.stringify(list.slice(0, 5)));
+      } catch {
+        localStorage.setItem('signet-test-launches', JSON.stringify([record]));
+      }
+
+      window.location.href = url;
+    }
+  </script>
+</body>
+</html>

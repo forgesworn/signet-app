@@ -1,0 +1,30 @@
+node_modules/
+dist/
+*.pem
+*.key
+*.p12
+*.pfx
+# Secrets / local env — never commit (security audit 2026-06-15)
+.env
+.env.*
+!.env.example
+credentials.json
+serviceAccountKey.json
+.DS_Store
+e2e/results/
+e2e/results-cross-app/
+e2e/results-*/
+playwright-report-cross-app/
+playwright-report/
+test-results/
+.worktrees/
+.playwright-mcp/
+.claude/
+
+.superpowers/
+
+# AI-assistant instruction files — internal only, never public (this repo
+# is the public tree; the private working copy keeps these untracked here).
+CLAUDE.md
+AGENTS.md
+cert

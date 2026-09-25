@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Signet — desktop centred-frame mockup</title>
+<style>
+  /* ── Carousel dark theme tokens (lifted from src/styles/global.css [data-theme=dark]) ── */
+  :root {
+    --bg-primary: #0F172A;
+    --bg-card: #1E293B;
+    --bg-card-alt: #263548;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --text-muted: #64748B;
+    --accent: #3B82F6;
+    --accent-hover: #2563EB;
+    --accent-light: #1E3A5F;
+    --success: #10B981;
+    --warning: #F59E0B;
+    --danger: #EF4444;
+    --border: #334155;
+    --radius: 16px;
+    --frame-w: 390px;
+    --frame-h: 800px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    /* Desktop "desk" surround — deliberately distinct from the app bg so the
+       centred phone frame reads as a device sitting on a desktop. */
+    background: radial-gradient(120% 120% at 50% 0%, #1b2540 0%, #0a0f1d 55%, #060912 100%);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+    overflow-x: hidden;
+  }
+
+  .desk-title {
+    position: fixed;
+    top: 18px; left: 0; right: 0;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  /* ── Stage: holds the frame + the four directional arrows around it ── */
+  .stage {
+    position: relative;
+    display: grid;
+    grid-template-columns: 88px var(--frame-w) 88px;
+    grid-template-rows: 72px var(--frame-h) 72px;
+    align-items: center;
+    justify-items: center;
+    gap: 10px;
+  }
+
+  /* ── The phone frame ── */
+  .frame {
+    grid-column: 2; grid-row: 2;
+    width: var(--frame-w);
+    height: var(--frame-h);
+    background: var(--bg-primary);
+    border-radius: 44px;
+    border: 1px solid rgba(255,255,255,0.07);
+    box-shadow:
+      0 0 0 11px #0c111d,
+      0 0 0 12px #1f2937,
+      0 40px 90px rgba(0,0,0,0.65);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  /* notch */
+  .frame::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 50%; transform: translateX(-50%);
+    width: 150px; height: 26px;
+    background: #0c111d;
+    border-radius: 0 0 18px 18px;
+    z-index: 30;
+  }
+
+  /* The single visible "page" lives here */
+  .viewport {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 38px 16px 16px;
+    overflow: hidden;
+  }
+  .page-anim { animation: pop 0.28s cubic-bezier(0.25,0.46,0.45,0.94); }
+  @keyframes pop {
+    from { opacity: 0; transform: scale(0.97); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  /* Bottom nav bar (mirrors the real TabBar — stays as-is on mobile) */
+  .tabbar {
+    height: 64px;
+    flex-shrink: 0;
+    background: #131c2e;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    padding: 0 8px 6px;
+    z-index: 20;
+  }
+  .tab {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    color: var(--text-muted);
+    font-size: 0.62rem; font-weight: 600;
+    flex: 1;
+  }
+  .tab .ico { font-size: 1.15rem; }
+  .tab.active { color: var(--accent); }
+
+  /* ── Directional arrows ── */
+  .arrow {
+    background: rgba(30,41,59,0.7);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    font-size: 1.7rem;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  }
+  .arrow:hover:not(:disabled) {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+    transform: scale(1.08);
+  }
+  .arrow:disabled {
+    opacity: 0.22;
+    cursor: not-allowed;
+  }
+  .arrow .lbl {
+    position: absolute;
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  #arrow-left  { grid-column: 1; grid-row: 2; }
+  #arrow-right { grid-column: 3; grid-row: 2; }
+  #arrow-up    { grid-column: 2; grid-row: 1; }
+  #arrow-down  { grid-column: 2; grid-row: 3; }
+  .arrow-wrap { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  #arrow-left  .lbl, #arrow-right .lbl { top: 72px; }
+  #arrow-up    .lbl { bottom: 72px; }
+  #arrow-down  .lbl { top: 72px; }
+
+  /* ── Position readouts ── */
+  .pos-h {
+    position: absolute;
+    bottom: 70px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 7px; z-index: 25;
+  }
+  .pos-v {
+    position: absolute;
+    right: 12px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 6px; z-index: 25;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); opacity: 0.35; transition: all 0.25s; }
+  .dot.active { opacity: 1; background: var(--accent); transform: scale(1.5); }
+  .dot.dep.active { background: var(--warning); }
+
+  /* ── Card styles (condensed from src/styles/carousel.css) ── */
+  .card { width: 100%; max-width: 340px; height: 100%; display: flex; flex-direction: column; }
+
+  .id-card {
+    border-radius: var(--radius); overflow: hidden; position: relative;
+    background: linear-gradient(160deg, #1a2744 0%, #0f1b30 40%, #162033 100%);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06) inset;
+    height: 100%;
+  }
+  .id-card.persona { background: linear-gradient(160deg, #2a1a44 0%, #1b0f30 40%, #221633 100%); }
+  .id-card.dep { background: linear-gradient(160deg, #3a2a0a 0%, #2a1c05 40%, #2e2208 100%); }
+  .card-band { height: 6px; background: linear-gradient(90deg, var(--success) 0%, #34D399 50%, var(--success) 100%); }
+  .card-band.t2 { background: linear-gradient(90deg, var(--accent) 0%, #818CF8 50%, var(--accent) 100%); }
+  .card-band.t1 { background: linear-gradient(90deg, #4B5563 0%, #6B7280 50%, #4B5563 100%); }
+  .card-inner { padding: 24px 26px; display: flex; flex-direction: column; flex: 1; justify-content: space-around; position: relative; z-index: 2; }
+  .card-brand { display: flex; align-items: center; gap: 6px; }
+  .brand-shield { opacity: 0.5; }
+  .brand-text { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.2em; color: var(--text-muted); font-weight: 700; }
+  .card-photo { width: 130px; height: 130px; border-radius: 26px; margin: 0 auto; background: rgba(255,255,255,0.05); border: 3px solid rgba(255,255,255,0.12); display: flex; align-items: center; justify-content: center; font-size: 2.6rem; font-weight: 800; color: rgba(255,255,255,0.6); }
+  .card-name { font-size: 1.9rem; font-weight: 800; text-align: center; }
+  .card-type { font-size: 0.78rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; text-align: center; margin-top: 4px; }
+  .card-tier-row { display: flex; justify-content: center; }
+  .tier-badge { padding: 7px 20px; border-radius: 10px; font-size: 0.85rem; font-weight: 800; }
+  .tier-3 { background: rgba(16,185,129,0.18); color: #34D399; border: 1px solid rgba(16,185,129,0.35); }
+  .tier-2 { background: rgba(59,130,246,0.18); color: #60A5FA; border: 1px solid rgba(59,130,246,0.35); }
+  .tier-1 { background: rgba(75,85,99,0.35); color: #D1D5DB; border: 1px solid rgba(75,85,99,0.6); }
+  .card-stats { display: flex; background: rgba(255,255,255,0.04); border-radius: 14px; overflow: hidden; }
+  .card-stat { flex: 1; text-align: center; padding: 14px 0; border-right: 1px solid rgba(255,255,255,0.06); }
+  .card-stat:last-child { border: none; }
+  .card-stat-value { font-size: 1.8rem; font-weight: 800; }
+  .card-stat-label { font-size: 0.62rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; margin-top: 4px; }
+  .card-npub { font-family: 'SF Mono', monospace; font-size: 0.72rem; color: rgba(255,255,255,0.4); letter-spacing: 0.1em; text-align: center; }
+
+  .qr-view { background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border); padding: 24px 20px; display: flex; flex-direction: column; align-items: center; justify-content: space-around; height: 100%; box-shadow: 0 16px 48px rgba(0,0,0,0.5); }
+  .mini-id { display: flex; align-items: center; gap: 10px; justify-content: center; }
+  .mini-id-photo { width: 52px; height: 52px; border-radius: 13px; background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; font-size: 1.3rem; font-weight: 700; }
+  .mini-id-name { font-size: 1.1rem; font-weight: 700; }
+  .qr-box { width: 220px; height: 220px; background: #fff; border-radius: 16px; padding: 12px; }
+  .qr-box svg { width: 100%; height: 100%; }
+  .qr-pills { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center; }
+  .qr-pill { font-size: 0.72rem; font-weight: 700; color: var(--text-secondary); background: var(--bg-card-alt); border: 2px solid var(--border); padding: 7px 13px; border-radius: 999px; }
+  .qr-pill.active { color: var(--accent); background: var(--accent-light); border-color: var(--accent); }
+  .qr-tier-line { font-size: 0.74rem; color: var(--text-muted); text-align: center; }
+
+  .settings-view { background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border); padding: 20px; display: flex; flex-direction: column; gap: 8px; height: 100%; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+  .settings-view h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 4px; }
+  .settings-label { font-size: 0.66rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 10px; }
+  .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; background: var(--bg-card-alt); border-radius: 10px; }
+  .sr-label { font-size: 0.86rem; }
+  .sr-value { font-size: 0.8rem; color: var(--text-muted); }
+
+  .camera-view { background: #0a0a0a; border-radius: var(--radius); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; height: 100%; position: relative; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+  .viewfinder { width: 200px; height: 200px; border: 2px solid rgba(255,255,255,0.3); border-radius: 12px; position: relative; }
+  .vf-corner { position: absolute; width: 30px; height: 30px; }
+  .vf-corner.tl { top:-1px; left:-1px; border-top: 3px solid var(--accent); border-left: 3px solid var(--accent); border-radius: 12px 0 0 0; }
+  .vf-corner.tr { top:-1px; right:-1px; border-top: 3px solid var(--accent); border-right: 3px solid var(--accent); border-radius: 0 12px 0 0; }
+  .vf-corner.bl { bottom:-1px; left:-1px; border-bottom: 3px solid var(--accent); border-left: 3px solid var(--accent); border-radius: 0 0 0 12px; }
+  .vf-corner.br { bottom:-1px; right:-1px; border-bottom: 3px solid var(--accent); border-right: 3px solid var(--accent); border-radius: 0 0 12px 0; }
+  .cam-text { color: rgba(255,255,255,0.6); font-size: 0.8rem; }
+  .cam-sub { color: rgba(255,255,255,0.35); font-size: 0.68rem; }
+
+  .add-view { background: var(--bg-card); border-radius: var(--radius); border: 1px dashed var(--border); padding: 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; height: 100%; }
+  .add-btn { width: 100%; padding: 16px; border-radius: 12px; background: var(--accent-light); border: 1px solid var(--accent); color: #93C5FD; font-weight: 700; font-size: 0.92rem; cursor: pointer; }
+  .add-hint { font-size: 0.78rem; color: var(--text-muted); text-align: center; }
+
+  .footer-note {
+    position: fixed; bottom: 14px; left: 0; right: 0;
+    text-align: center; color: var(--text-muted); font-size: 0.72rem; line-height: 1.6;
+    pointer-events: none;
+  }
+  .footer-note kbd { background: var(--bg-card-alt); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; font-size: 0.68rem; }
+</style>
+</head>
+<body>
+  <div class="desk-title">My Signet · desktop centred-frame concept</div>
+
+  <div class="stage">
+    <!-- UP -->
+    <div class="arrow-wrap" style="grid-column:2; grid-row:1;">
+      <button class="arrow" id="arrow-up" onclick="move(0,-1)" aria-label="Previous identity">▲<span class="lbl">prev identity</span></button>
+    </div>
+
+    <!-- LEFT -->
+    <div class="arrow-wrap" style="grid-column:1; grid-row:2;">
+      <button class="arrow" id="arrow-left" onclick="move(-1,0)" aria-label="Previous card">◀<span class="lbl">prev card</span></button>
+    </div>
+
+    <!-- FRAME -->
+    <div class="frame" style="grid-column:2; grid-row:2;">
+      <div class="viewport" id="viewport"></div>
+      <div class="pos-h" id="posH"></div>
+      <div class="pos-v" id="posV"></div>
+      <nav class="tabbar">
+        <div class="tab active"><span class="ico">🪪</span>Identity</div>
+        <div class="tab"><span class="ico">👨‍👩‍👧</span>Family</div>
+        <div class="tab"><span class="ico">📡</span>Bunker</div>
+        <div class="tab"><span class="ico">⚙️</span>Settings</div>
+      </nav>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="arrow-wrap" style="grid-column:3; grid-row:2;">
+      <button class="arrow" id="arrow-right" onclick="move(1,0)" aria-label="Next card">▶<span class="lbl">next card</span></button>
+    </div>
+
+    <!-- DOWN -->
+    <div class="arrow-wrap" style="grid-column:2; grid-row:3;">
+      <button class="arrow" id="arrow-down" onclick="move(0,1)" aria-label="Next identity">▼<span class="lbl">next identity</span></button>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    Click the arrows — or use the <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> keys.<br/>
+    Left/right cycle the four cards (wraps). Up/down step between identities (stops at the ends).
+  </div>
+
+<script>
+  // ── Model: rows = identities (vertical, clamped), cols = cards (horizontal, wraps) ──
+  const COLS = ['identity', 'qr', 'settings', 'camera']; // matches Carousel.tsx col 0..3
+  const ROWS = [
+    { kind: 'np',      name: 'Alex Doe',     type: 'Natural Person', tier: 3, initials: 'AD' },
+    { kind: 'persona', name: 'nightowl',     type: 'Persona · 18+',  tier: 2, initials: 'no' },
+    { kind: 'dep',     name: 'Robin',        type: 'Dependant',      tier: 1, initials: 'R'  },
+    { kind: 'add' },
+  ];
+
+  let col = 0, row = 0;
+
+  function move(dx, dy) {
+    if (dx) col = (col + dx + COLS.length) % COLS.length;      // wrap
+    if (dy) row = Math.max(0, Math.min(ROWS.length - 1, row + dy)); // clamp
+    render();
+  }
+
+  // ── Fake QR svg (purely decorative) ──
+  function qrSvg(seed) {
+    const n = 21; let cells = '';
+    let s = seed;
+    const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const finder = (x<7&&y<7)||(x>=n-7&&y<7)||(x<7&&y>=n-7);
+      if (finder ? ((x%6===0||y%6===0)||(x>1&&x<5&&y>1&&y<5&&x===y)) : rnd() > 0.55)
+        cells += `<rect x="${x}" y="${y}" width="1" height="1"/>`;
+    }
+    return `<svg viewBox="0 0 ${n} ${n}" fill="#000">${cells}</svg>`;
+  }
+
+  function tierClass(t) { return t === 3 ? 'tier-3' : t === 2 ? 'tier-2' : 'tier-1'; }
+  function bandClass(t) { return t === 3 ? '' : t === 2 ? 't2' : 't1'; }
+  function tierLabel(t) { return t === 3 ? 'Tier 3 · Verified' : t === 2 ? 'Tier 2 · Vouched' : 'Tier 1 · Self'; }
+
+  function cardHTML(r, c) {
+    if (r.kind === 'add') {
+      return `<div class="card add-view">
+        <div style="font-size:2.4rem;">＋</div>
+        <button class="add-btn">Add a persona</button>
+        <button class="add-btn">Add someone you look after</button>
+        <div class="add-hint">New identities appear as their own row above this one.</div>
+      </div>`;
+    }
+    const idCls = r.kind === 'persona' ? 'persona' : r.kind === 'dep' ? 'dep' : '';
+    switch (c) {
+      case 'identity':
+        return `<div class="card id-card ${idCls}">
+          <div class="card-band ${bandClass(r.tier)}"></div>
+          <div class="card-inner">
+            <div class="card-brand"><span class="brand-shield">🛡</span><span class="brand-text">My Signet</span></div>
+            <div class="card-photo">${r.initials}</div>
+            <div>
+              <div class="card-name">${r.name}</div>
+              <div class="card-type">${r.type}</div>
+            </div>
+            <div class="card-tier-row"><span class="tier-badge ${tierClass(r.tier)}">${tierLabel(r.tier)}</span></div>
+            <div class="card-stats">
+              <div class="card-stat"><div class="card-stat-value">${r.tier === 3 ? 7 : r.tier === 2 ? 3 : 0}</div><div class="card-stat-label">Vouches</div></div>
+              <div class="card-stat"><div class="card-stat-value">${r.tier * 30}</div><div class="card-stat-label">IQ score</div></div>
+            </div>
+            <div class="card-npub">npub1${r.initials.toLowerCase()}q…f3k0</div>
+          </div>
+        </div>`;
+      case 'qr':
+        return `<div class="card qr-view">
+          <div class="mini-id"><div class="mini-id-photo">${r.initials}</div><div class="mini-id-name">${r.name}</div></div>
+          <div class="qr-box">${qrSvg(r.name.length * 97 + 13)}</div>
+          <div class="qr-pills">
+            <span class="qr-pill active">Name</span>
+            <span class="qr-pill active">Tier</span>
+            <span class="qr-pill">Avatar</span>
+            <span class="qr-pill">Contact key</span>
+          </div>
+          <div class="qr-tier-line">Show this to verify ${r.name} in person</div>
+        </div>`;
+      case 'settings':
+        return `<div class="card settings-view">
+          <h2>${r.name}</h2>
+          <div class="settings-label">Profile</div>
+          <div class="settings-row"><span class="sr-label">Public Nostr profile</span><span class="sr-value">${r.tier===3?'Published':'Off'} ›</span></div>
+          <div class="settings-row"><span class="sr-label">Picture &amp; banner</span><span class="sr-value">Edit ›</span></div>
+          <div class="settings-label">This persona</div>
+          <div class="settings-row"><span class="sr-label">Switch primary key</span><span class="sr-value">›</span></div>
+          <div class="settings-row"><span class="sr-label">Show seed phrase</span><span class="sr-value">›</span></div>
+          <div class="settings-row"><span class="sr-label">Advanced ⚙</span><span class="sr-value">›</span></div>
+        </div>`;
+      case 'camera':
+        return `<div class="card camera-view">
+          <div class="viewfinder"><span class="vf-corner tl"></span><span class="vf-corner tr"></span><span class="vf-corner bl"></span><span class="vf-corner br"></span></div>
+          <div class="cam-text">Scan a Signet QR</div>
+          <div class="cam-sub">verify · sign in · add contact</div>
+        </div>`;
+    }
+  }
+
+  function render() {
+    const r = ROWS[row];
+    const c = COLS[col];
+    const vp = document.getElementById('viewport');
+    vp.innerHTML = `<div class="card-anim page-anim" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">${cardHTML(r, c)}</div>`;
+
+    // horizontal dots (cards)
+    document.getElementById('posH').innerHTML = COLS.map((_, i) =>
+      `<span class="dot ${i === col ? 'active' : ''}"></span>`).join('');
+    // vertical dots (identities)
+    document.getElementById('posV').innerHTML = ROWS.map((rr, i) =>
+      `<span class="dot ${rr.kind === 'dep' ? 'dep' : ''} ${i === row ? 'active' : ''}"></span>`).join('');
+
+    // clamp vertical arrows
+    document.getElementById('arrow-up').disabled = row === 0;
+    document.getElementById('arrow-down').disabled = row === ROWS.length - 1;
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft')  { move(-1, 0); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { move(1, 0);  e.preventDefault(); }
+    if (e.key === 'ArrowUp')    { move(0, -1); e.preventDefault(); }
+    if (e.key === 'ArrowDown')  { move(0, 1);  e.preventDefault(); }
+  });
+
+  render();
+</script>
+</body>
+</html>

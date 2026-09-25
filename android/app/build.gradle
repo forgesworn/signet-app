@@ -1,0 +1,106 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+// Release signing reads from a keystore.properties OUTSIDE the repo
+// (default ~/.android-keystores/signet-app-keystore.properties, override via
+// SIGNET_KEYSTORE_PROPERTIES). Absent file → release builds stay unsigned,
+// so CI and other machines can still assemble without the key.
+// Full instructions: android/RELEASE_SIGNING.md
+def keystorePropsFile = new File(
+    System.getenv('SIGNET_KEYSTORE_PROPERTIES')
+        ?: "${System.getProperty('user.home')}/.android-keystores/signet-app-keystore.properties"
+)
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+// The APK version comes from package.json — the ONE version source for the
+// app (Settings shows __APP_VERSION__ from the same file). versionCode is
+// major*10000 + minor*100 + patch, pinned by src/lib/app-version.test.ts;
+// keep the two in step. Pre-release suffixes are ignored for the code.
+def pkgJson = new groovy.json.JsonSlurper().parse(file("$rootDir/../package.json"))
+def pkgVersion = pkgJson.version as String
+def semverMatch = (pkgVersion =~ /^(\d+)\.(\d+)\.(\d+)/)
+if (!semverMatch.find()) {
+    throw new GradleException("package.json version is not semver: ${pkgVersion}")
+}
+def derivedVersionCode = semverMatch.group(1).toInteger() * 10000 +
+                         semverMatch.group(2).toInteger() * 100 +
+                         semverMatch.group(3).toInteger()
+
+android {
+    namespace = "app.mysignet"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "app.mysignet"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode derivedVersionCode
+        versionName pkgVersion
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile new File(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    testOptions {
+        // android.util.Log in the NIP-55 hand-off; the JVM tests do not need it to do anything.
+        unitTests.returnDefaultValues = true
+    }
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+
+    implementation "androidx.biometric:biometric:1.1.0"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

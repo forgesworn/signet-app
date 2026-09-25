@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Signet Callback — Test Harness</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Callback received</h1>
+      <p class="tagline">Whatever Signet bounced back lives here — and gets cryptographically checked.</p>
+    </header>
+
+    <div id="hero" class="callback-hero"></div>
+
+    <h2 class="section-label">Verification</h2>
+    <table class="params-table" id="checks">
+      <tr><td colspan="2" class="empty">Checking…</td></tr>
+    </table>
+
+    <div id="report-status" class="launch-context" style="display:none"></div>
+
+    <h2 class="section-label">Callback params</h2>
+    <table class="params-table" id="params"></table>
+
+    <div id="launch-context"></div>
+
+    <div class="actions">
+      <button onclick="window.location.href = '/'">← Back to dashboard</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { verifyCallback } from './vendor/signet-verify.js';
+
+    const params = new URLSearchParams(window.location.search);
+    const KNOWN = ['pubkey', 'npub', 'signature', 'eventId', 't', 'error', 'fromNP', 'warnings', 'display_name', 'bunker'];
+
+    // What we asked for, stashed by the dashboard before it redirected.
+    // This tab's own record first; then the last few attempts from
+    // localStorage, because on a phone the callback lands in a different tab
+    // than the one that launched it and sessionStorage does not cross tabs.
+    let launchMeta = null;
+    const records = [];
+    try {
+      const raw = sessionStorage.getItem('signet-test-launch');
+      if (raw) {
+        launchMeta = JSON.parse(raw);
+        if (launchMeta) records.push(launchMeta);
+      }
+    } catch { /* malformed — treat as absent */ }
+    try {
+      const recent = JSON.parse(localStorage.getItem('signet-test-launches') || '[]');
+      if (Array.isArray(recent)) {
+        for (const r of recent) {
+          if (r && !records.some((seen) => seen.url === r.url)) records.push(r);
+        }
+      }
+    } catch { /* malformed — treat as absent */ }
+
+    const result = verifyCallback(params, records.map((r) => r.launch).filter(Boolean));
+
+    // Report against the attempt that actually produced this signature, not
+    // simply the newest one this browser remembers.
+    if (result.matchedLaunch) {
+      const owner = records.find((r) => r.launch === result.matchedLaunch);
+      if (owner) launchMeta = owner;
+    }
+    if (!launchMeta && records.length > 0) launchMeta = records[0];
+
+    // ── Hero ────────────────────────────────────────────────────────────────
+    const hero = document.getElementById('hero');
+    const HERO = {
+      signed: { cls: 'ok', title: 'Signed ✓' },
+      failed: { cls: 'err', title: 'Sign-in did NOT verify ✗' },
+      denied: { cls: 'err', title: 'Sign-in denied' },
+      unverifiable: { cls: 'warn', title: 'Signature valid, binding unproven' },
+    };
+    const style = HERO[result.verdict] || HERO.failed;
+    hero.classList.add(style.cls);
+    const pubkey = params.get('pubkey');
+    hero.innerHTML = `
+      <h2>${escapeHtml(style.title)}</h2>
+      <p>${escapeHtml(result.headline)}</p>
+      ${pubkey ? `<p>Key: <code>${escapeHtml(pubkey.slice(0, 16))}…</code></p>` : ''}
+      ${params.get('fromNP') === 'true' ? '<p class="hero-note">⚠️ The user took the real-identity fallback despite the consumer hint.</p>' : ''}
+    `;
+
+    // ── Checks table ────────────────────────────────────────────────────────
+    const checksTable = document.getElementById('checks');
+    checksTable.innerHTML = '';
+    const MARK = { pass: '✓', fail: '✗', skip: '–', info: 'ℹ' };
+    for (const c of result.checks) {
+      const row = document.createElement('tr');
+      const th = document.createElement('th');
+      th.textContent = c.name;
+      const td = document.createElement('td');
+      td.className = 'check-' + c.status;
+      td.textContent = `${MARK[c.status] || '·'} ${c.detail}`;
+      row.append(th, td);
+      checksTable.appendChild(row);
+    }
+
+    // ── Params table ────────────────────────────────────────────────────────
+    const table = document.getElementById('params');
+    const allKeys = Array.from(new Set([...KNOWN, ...params.keys()]));
+    const anySet = allKeys.some((k) => params.get(k) !== null);
+    if (!anySet) {
+      table.innerHTML = '<tr><td colspan="2" class="empty">No params received.</td></tr>';
+    } else {
+      for (const key of allKeys) {
+        const val = params.get(key);
+        const row = document.createElement('tr');
+        const th = document.createElement('th');
+        th.textContent = key;
+        const td = document.createElement('td');
+        if (val === null) {
+          td.innerHTML = '<span class="empty">(not set)</span>';
+        } else if (key === 'warnings' && val) {
+          td.innerHTML = val.split(',').map((w) => `<code>${escapeHtml(w)}</code>`).join('<br>');
+        } else {
+          td.textContent = val;
+        }
+        row.append(th, td);
+        table.appendChild(row);
+      }
+    }
+
+    // ── Launch context ──────────────────────────────────────────────────────
+    if (launchMeta) {
+      document.getElementById('launch-context').innerHTML = `
+        <div class="launch-context">
+          <strong>Scenario:</strong> ${escapeHtml(launchMeta.scenarioTitle || launchMeta.scenarioId || '(unknown)')}<br>
+          <strong>Target Signet:</strong> ${escapeHtml(launchMeta.target || '')}<br>
+          <strong>Launched at:</strong> ${escapeHtml(launchMeta.launchedAt || '')}<br>
+          <strong>Outbound URL:</strong> <code>${escapeHtml(launchMeta.url || '')}</code>
+        </div>
+      `;
+    }
+
+    // ── Report the outcome to the harness server ────────────────────────────
+    // Written to results/log.jsonl so the result survives the browser and can
+    // be read by whoever is helping debug. Public values only: the challenge
+    // and pubkey are already public, and no private material ever reaches the
+    // consumer side of this flow.
+    const statusEl = document.getElementById('report-status');
+    const report = {
+      verdict: result.verdict,
+      headline: result.headline,
+      checks: result.checks,
+      scenarioId: launchMeta?.scenarioId ?? null,
+      scenarioTitle: launchMeta?.scenarioTitle ?? null,
+      target: launchMeta?.target ?? null,
+      launchedAt: launchMeta?.launchedAt ?? null,
+      outboundUrl: launchMeta?.url ?? null,
+      callbackParams: Object.fromEntries(params.entries()),
+      reportedAt: new Date().toISOString(),
+    };
+    fetch('/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(report),
+    }).then((res) => {
+      statusEl.style.display = '';
+      statusEl.textContent = res.ok
+        ? 'Result written to test-consumer/results/log.jsonl'
+        : `Harness server refused the result (HTTP ${res.status}) — it is still shown above.`;
+    }).catch(() => {
+      statusEl.style.display = '';
+      statusEl.textContent = 'Could not reach the harness server to log this result (serve.sh not running, or a static server without /report). The verdict above still stands.';
+    });
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+  </script>
+</body>
+</html>

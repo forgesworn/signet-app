@@ -1,0 +1,139 @@
+name: Signet Compatibility
+run-name: Signet compatibility ${{ inputs.signet_login_ref || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      signet_login_ref:
+        description: Signet Login ref or release tag requesting compatibility
+        required: false
+        type: string
+      signet_login_sha:
+        description: Signet Login commit SHA requesting compatibility
+        required: false
+        type: string
+      signet_login_candidate:
+        description: Build and install the Signet Login candidate package where the suite uses Canary
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      signet_login_package_version:
+        description: Signet Login candidate package version
+        required: false
+        type: string
+      request_id:
+        description: Compatibility request id
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: forgesworn/canary-kit
+          path: canary-kit
+          persist-credentials: false
+
+      - name: Check out Signet Login candidate
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: forgesworn/signet-login
+          ref: ${{ inputs.signet_login_sha || inputs.signet_login_ref || 'main' }}
+          path: signet-login-candidate
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Authenticate git for private @forgesworn deps
+        env:
+          FORGESWORN_READ_PAT: ${{ secrets.FORGESWORN_READ_PAT }}
+        run: |
+          AUTH="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
+          git config --global url."$AUTH".insteadOf "https://github.com/"
+          git config --global --add url."$AUTH".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$AUTH".insteadOf "git@github.com:"
+
+      - name: Build Signet Login candidate package
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        id: signet_login_candidate
+        working-directory: signet-login-candidate
+        run: |
+          npm ci
+          npm run build
+          mkdir -p "$RUNNER_TEMP/signet-login-candidate"
+          TARBALL="$(npm pack --pack-destination "$RUNNER_TEMP/signet-login-candidate" | tail -n 1)"
+          VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          if [ -n "${{ inputs.signet_login_package_version }}" ] && [ "$VERSION" != "${{ inputs.signet_login_package_version }}" ]; then
+            echo "Expected signet-login ${{ inputs.signet_login_package_version }}, built $VERSION"
+            exit 1
+          fi
+          echo "tarball=$RUNNER_TEMP/signet-login-candidate/$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci --install-links=false
+
+      - name: Install Canary dependencies
+        working-directory: canary-kit
+        run: npm ci
+
+      - name: Install Signet Login candidate in Canary
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        working-directory: canary-kit
+        run: npm install --no-save "${{ steps.signet_login_candidate.outputs.tarball }}"
+
+      - name: Check Canary Signet Login candidate
+        if: ${{ inputs.signet_login_candidate == 'true' }}
+        working-directory: canary-kit
+        env:
+          SIGNET_LOGIN_CANDIDATE_VERSION: ${{ steps.signet_login_candidate.outputs.version }}
+        run: npm run check:signet-login
+
+      - name: Check Signet conformance
+        run: npm run check:signet-conformance
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Browser regression tests
+        run: npx playwright test --project=mobile-chromium --workers=3 --reporter=line e2e/auth.spec.ts e2e/verification.spec.ts e2e/approve-connect.spec.ts e2e/identity-management.spec.ts e2e/identity-recovery.spec.ts
+
+      - name: Mobile WebKit QR/paste regression
+        run: npm run test:e2e:webkit
+
+      - name: Contact npub entry regression
+        run: npx playwright test --project=mobile-chromium --workers=1 --reporter=line e2e/family.spec.ts --grep 'add member via npub|invalid public address'
+
+      - name: External signer reconnect regression
+        run: npx playwright test --project=mobile-chromium --workers=1 --reporter=line e2e/external-signer-reconnect.spec.ts
+
+      - name: Cross-app Canary NostrConnect regression
+        env:
+          CANARY_REPO_PATH: ${{ github.workspace }}/canary-kit
+        run: npm run test:e2e:cross-app
+
+      - name: Build
+        run: npm run build

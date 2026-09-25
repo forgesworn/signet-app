@@ -1,0 +1,948 @@
+/* ═══════════════════════════════════════════════
+   Carousel — Card-Swipe Wallet UI
+   Always dark theme (premium wallet aesthetic)
+   ═══════════════════════════════════════════════ */
+
+/* z-index values align with src/lib/z-index.ts:
+   .nav-dots-h/v = Z.carouselDot (20)
+   .child-banner = Z.carouselBanner (30)
+   .approval-overlay = Z.carouselOverlay (40)
+   All subordinate to Z.header (50). */
+
+/* Viewport — covers full screen, clips card transitions */
+.carousel-viewport {
+  position: fixed;
+  inset: 0;
+  /* Sit ABOVE the fixed mobile bottom nav so cards aren't clipped by it
+     (resolves to 0 on desktop, where the nav is a side-rail). */
+  bottom: var(--app-bottom-bar);
+  overflow: hidden;
+  background: var(--bg-primary);
+  /* D7 — the viewport carries data-theme="dark" to force the wallet look, but
+     `color` is inherited from <body> (computed in the PAGE theme), so any text
+     that doesn't set its own colour rendered light-theme-dark on the dark
+     island ("Add", "Name this persona"). Re-resolve it inside the subtree. */
+  color: var(--text-primary);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Card screen — positioned absolutely, animated via transform */
+.carousel-screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  will-change: transform;
+}
+
+/* Subtle visual feedback when a long-press engages drag mode on a
+   button-dense column (e.g. the per-identity settings card). Tells the
+   user the swipe has taken over and they can start moving. */
+.carousel-screen-engaged {
+  transition: transform 120ms ease, filter 120ms ease;
+  transform: scale(0.98);
+  filter: brightness(0.95);
+}
+
+/* ─── Identity Card ─── */
+.id-card {
+  width: 100%;
+  max-width: 420px;
+  height: calc(var(--app-vh) - 40px - var(--app-bottom-bar));
+  max-height: 820px;
+  border-radius: var(--radius);
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg),
+              0 0 0 1px rgba(250, 247, 237, 0.06) inset;
+  position: relative;
+  background: linear-gradient(160deg, #163350 0%, #0c1f34 40%, #132a44 100%);
+}
+.id-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg,
+    rgba(201, 169, 98, 0.07) 0%, transparent 40%,
+    transparent 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.card-band {
+  height: 6px;
+  flex-shrink: 0;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%);
+}
+.card-band.tier-1-band { background: linear-gradient(90deg, #4B5563 0%, #6B7280 50%, #4B5563 100%); }
+.card-band.tier-2-band { background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%); }
+.card-band.tier-3-band { background: linear-gradient(90deg, var(--success) 0%, #34D399 50%, var(--success) 100%); }
+.card-band.tier-4-band { background: linear-gradient(90deg, var(--warning) 0%, #FBBF24 50%, var(--warning) 100%); }
+
+.signin-ack-chip {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  animation: signin-ack-fade 0.3s ease-out;
+  pointer-events: none;
+}
+.signin-ack-tick {
+  font-weight: 700;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+@keyframes signin-ack-fade {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.card-inner {
+  padding: 20px 28px 16px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  position: relative;
+  z-index: 2;
+  justify-content: space-around;
+}
+
+.card-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: -4px;
+}
+/* Emblem and wordmark are the official vectors (wordmark lifted verbatim
+   from the horizontal lockup), set apart and centred as the card's header. */
+
+.card-photo-wrap { display: flex; justify-content: center; }
+.card-photo {
+  width: 160px;
+  height: 160px;
+  border-radius: 28px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.card-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card-name-block { text-align: center; }
+/* Inline name editor — sits in the .card-name slot, so it inherits the
+   card's type scale (the component passes font-size/weight: inherit). */
+.card-name-input {
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+.card-name {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1.05;
+  margin-bottom: 5px;
+  color: var(--text-primary);
+}
+.card-type {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+.card-tier-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.carousel-tier-badge {
+  padding: 8px 22px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 800;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+.carousel-tier-1 { background: rgba(167, 176, 184, 0.2); color: var(--brand-mist); border: 1px solid rgba(167, 176, 184, 0.4); }
+.carousel-tier-2 { background: var(--brand-gold-light); color: var(--brand-gold-text); border: 1px solid rgba(201, 169, 98, 0.4); }
+.carousel-tier-3 { background: rgba(16, 185, 129, 0.18); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.35); }
+.carousel-tier-4 { background: rgba(245, 158, 11, 0.18); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.35); }
+
+.status-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.status-dot.verified {
+  background: var(--success);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+}
+
+.card-stats {
+  display: flex;
+  gap: 0;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.card-stat {
+  flex: 1;
+  text-align: center;
+  padding: 18px 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+.card-stat:last-child { border-right: none; }
+.card-stat-value {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1;
+  margin-bottom: 5px;
+  color: var(--text-primary);
+}
+.card-stat-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+/* Paired-child dormant/Heartwood notice at the foot of the card. */
+.card-dormant-notice {
+  text-align: center;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.card-npub {
+  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.card-footer { text-align: center; }
+.card-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.card-hint-child {
+  font-size: 0.82rem;
+  color: var(--warning);
+  font-weight: 700;
+}
+
+/* ─── Mini Identity Badge ─── */
+.mini-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+}
+.mini-id-photo {
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+}
+.mini-id-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mini-id-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+/* Light variant for QR view */
+.mini-id.light .mini-id-photo {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+.mini-id.light .mini-id-name { color: #0E2A47; }
+
+/* ─── QR Card ─── */
+.qr-view {
+  width: 100%;
+  max-width: 420px;
+  height: calc(var(--app-vh) - 40px - var(--app-bottom-bar));
+  max-height: 820px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-around;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border);
+}
+.qr-sharing {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  margin-top: 2px;
+  text-align: center;
+}
+.qr-box {
+  width: 260px;
+  height: 260px;
+  background: #FFFFFF;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+.qr-tier-line {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* QR include pills — front-page pill bar (what the QR carries).
+   .qr-includes is the row container; .qr-pill is the pressable affordance
+   (replaces the retired flip-to-back "Custom" face). */
+.qr-includes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  width: 100%;
+}
+
+.qr-pill {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-card-alt);
+  border: 2px solid var(--border);
+  padding: 8px 14px;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.qr-pill.active {
+  color: var(--accent);
+  background: var(--accent-light);
+  border-color: var(--accent);
+}
+.qr-pill.loading {
+  opacity: 0.7;
+  cursor: progress;
+}
+.qr-pill.locked {
+  cursor: default;
+  color: var(--text-muted);
+  background: var(--bg-card-alt);
+  border-style: dashed;
+}
+.qr-pill.mode {
+  color: var(--text-primary);
+}
+.qr-pill:disabled { opacity: 0.6; cursor: default; }
+
+/* Share pill + inline ✕ revocation grouped so they read as one control. */
+.qr-pill-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+.qr-pill-group.active .qr-pill {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.qr-pill-x {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--danger);
+  background: var(--accent-light);
+  border: 2px solid var(--accent);
+  border-left: none;
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.qr-pill-x:disabled { opacity: 0.6; cursor: default; }
+
+/* Inline share status / nudges under the pill row (relocated from back face). */
+.qr-share-note {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 340px;
+}
+.qr-share-note.danger { color: var(--danger); }
+.qr-share-note.warn { color: var(--warning, var(--danger)); }
+.qr-share-link {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.qr-share-link:disabled { opacity: 0.6; cursor: default; }
+
+/* ─── Camera Card ─── */
+.camera-view {
+  width: 100%;
+  max-width: 400px;
+  height: calc(var(--app-vh) - 80px - var(--app-bottom-bar));
+  max-height: 720px;
+  background: #0a0a0a;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+.viewfinder {
+  width: 220px;
+  height: 220px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 12px;
+  position: relative;
+}
+.vf-corner {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+}
+.vf-corner.tl { top: -1px; left: -1px; border-top: 3px solid var(--accent); border-left: 3px solid var(--accent); border-radius: 12px 0 0 0; }
+.vf-corner.tr { top: -1px; right: -1px; border-top: 3px solid var(--accent); border-right: 3px solid var(--accent); border-radius: 0 12px 0 0; }
+.vf-corner.bl { bottom: -1px; left: -1px; border-bottom: 3px solid var(--accent); border-left: 3px solid var(--accent); border-radius: 0 0 0 12px; }
+.vf-corner.br { bottom: -1px; right: -1px; border-bottom: 3px solid var(--accent); border-right: 3px solid var(--accent); border-radius: 0 0 12px 0; }
+.cam-text { color: rgba(255, 255, 255, 0.6); font-size: 0.82rem; }
+.cam-sub { color: rgba(255, 255, 255, 0.35); font-size: 0.7rem; }
+
+/* ─── Settings Card ─── */
+.settings-view {
+  width: 100%;
+  max-width: 400px;
+  height: calc(var(--app-vh) - 80px - var(--app-bottom-bar));
+  max-height: 720px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-shadow: var(--shadow-lg);
+  position: relative;
+}
+
+/* ─── Add Card ───
+ * Same viewport footprint as `.settings-view` (visual consistency with
+ * the rest of the carousel ring) but deliberately NOT named `settings-view`
+ * because that class is listed in the swipe gesture's INTERACTIVE_ZONE_SELECTOR
+ * (see src/hooks/useSwipeGesture.ts). With the centred Add buttons the
+ * card has huge blank regions — those need to act as immediate swipe
+ * targets instead of a 400ms long-press zone. Buttons inside still match
+ * the selector and retain the long-press-to-swipe escape hatch.
+ */
+.add-view {
+  width: 100%;
+  max-width: 400px;
+  height: calc(var(--app-vh) - 80px - var(--app-bottom-bar));
+  max-height: 720px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-lg);
+  position: relative;
+}
+/* Section header under the MiniIdBadge. Rendered only for the qualified
+   variants ("<Name>'s Settings" / "<Persona> Settings") — a bare "Settings"
+   duplicates the badge and is dropped in SettingsCard. */
+.settings-view h2,
+.settings-view-title {
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 4px 0 0;
+  color: var(--text-primary);
+}
+.settings-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 10px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 14px;
+  background: var(--bg-card-alt);
+  border-radius: 10px;
+  cursor: pointer;
+  border: none;
+  width: 100%;
+  text-align: left;
+}
+.settings-row .sr-label { font-size: 0.88rem; color: var(--text-primary); }
+.settings-row .sr-value { font-size: 0.82rem; color: var(--text-muted); }
+.settings-row .sr-chevron { color: var(--text-muted); }
+.settings-row.danger {
+  border: 1px solid var(--danger);
+  background: rgba(239, 68, 68, 0.08);
+}
+.settings-row.danger .sr-label { color: var(--danger); }
+
+.gear-fab {
+  position: sticky;
+  bottom: 0;
+  align-self: flex-end;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(201, 169, 98, 0.35);
+  flex-shrink: 0;
+  margin-top: auto;
+}
+
+/* ─── Navigation Dots ─── */
+.nav-dots-h {
+  position: fixed;
+  /* Lift the column indicator above the fixed mobile bottom nav (resolves to
+     just 10px on desktop, where --app-bottom-bar is 0). */
+  bottom: calc(var(--app-bottom-bar) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  z-index: 20;
+  pointer-events: none;
+}
+.nav-dots-v {
+  position: fixed;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  z-index: 20;
+  pointer-events: none;
+}
+.nav-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.35;
+  transition: all 0.25s;
+}
+.nav-dot.active {
+  opacity: 1;
+  background: var(--accent);
+  transform: scale(1.5);
+}
+.nav-dot.child-dot { background: var(--warning); }
+.nav-dot.child-dot.active { background: var(--warning); }
+
+/* ─── Child Banner ─── */
+.child-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: #451A03;
+  border-bottom: 2px solid var(--warning);
+  color: var(--warning);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.child-banner-exit {
+  background: #D97706;
+  color: white;
+  border: none;
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ─── Approval Overlay ─── */
+.approval-overlay {
+  position: fixed;
+  /* Sit ABOVE the fixed mobile bottom nav so the approve/deny buttons aren't
+     clipped by it (resolves to 0 on desktop, where the nav is a side-rail). */
+  bottom: var(--app-bottom-bar);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 16px 20px;
+  background: linear-gradient(
+    to top,
+    rgba(8, 27, 45, 0.95) 0%,
+    rgba(8, 27, 45, 0.85) 80%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+.approval-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--bg-card);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  padding: 18px 20px;
+  pointer-events: auto;
+  box-shadow: var(--shadow-lg);
+}
+.approval-card h3 {
+  margin-bottom: 6px;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+.approval-site {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-bottom: 14px;
+}
+.approval-site-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+.approval-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  background: var(--bg-card-alt);
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+.approval-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  font-weight: 600;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.approval-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.approval-avatar-initials {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: inherit;
+}
+.approval-identity-info {
+  flex: 1;
+  min-width: 0;
+}
+.approval-identity-name {
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-identity-type {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.approval-identity-npub {
+  font-size: 0.7rem;
+  font-family: monospace;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-shared {
+  padding: 10px 14px;
+  background: var(--bg-card-alt);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.approval-shared-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.approval-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.approval-actions button {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+  border: none;
+}
+.approval-btn-approve {
+  background: var(--success);
+  color: white;
+}
+.approval-btn-deny {
+  background: var(--bg-card-alt);
+  color: var(--text-primary);
+  border: 1px solid var(--border) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Inline kind-0 editor inside SettingsCard (D8)
+   The Profile group is a LIST: avatar row, name row and npub row are
+   `.row` primitives (label left, compact ghost right), and the kind-0
+   form fields stack below them on one 12px rhythm. Nothing in here is a
+   full-width centred ghost button.
+   ═══════════════════════════════════════════════════════════════ */
+.settings-form-group {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 14px 14px;
+  background: var(--bg-card-alt);
+  border-radius: 10px;
+}
+.slot-profile-fields {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* Form stack below the identity rows — one consistent gap for every field. */
+.slot-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px;
+  min-width: 0;
+}
+.slot-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.slot-field-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.slot-field-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.slot-field-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.slot-status-line {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+.slot-save-row {
+  display: flex;
+  gap: 8px;
+}
+.slot-save-row .btn { flex: 1; }
+
+/* Right-hand action cluster of a `.row` — the compact ghosts keep their
+   own width (`.btn-sm { width: auto }`) and never stretch. */
+.slot-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.slot-row-actions--end { justify-content: flex-end; }
+.slot-row-error {
+  font-size: 0.75rem;
+  color: var(--danger);
+}
+
+
+/* Collapsed name row: quiet label above the bold value on the left, Edit on
+   the right. Editing swaps to a stacked column (label / input / actions)
+   while keeping the same row padding + separator. */
+.slot-name-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slot-name-value--unset {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.slot-name-row--editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+/* ─── ImageRow (D8): thumbnail LEFT, controls right ─── */
+.slot-image-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.slot-image-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.slot-image-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+.slot-image-thumb--wide {
+  width: 96px;
+  height: 36px;
+  border-radius: 6px;
+}
+.slot-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.slot-image-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.slot-image-warning {
+  padding: 8px 10px;
+  background: var(--accent-light);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  color: var(--accent-text);
+  line-height: 1.4;
+}

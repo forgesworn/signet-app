@@ -1,0 +1,709 @@
+/* MySignet — Design System */
+
+/* Reset */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #FAF7ED;
+  --bg-secondary: #F2EEE1;
+  --bg-card: #FFFFFF;
+  --bg-card-alt: #EDE8DA;
+  --bg-input: #F5F1E6;
+  --text-primary: #0E2A47;
+  --text-secondary: #596979;
+  --text-muted: #6B7886;
+  --accent: #0E2A47;
+  --accent-hover: #173A5E;
+  --accent-light: #E4E9EF;
+  --accent-text: #0E2A47;
+  --on-accent: #FAF7ED;
+  --brand-navy: #0E2A47;
+  --brand-gold: #C9A962;
+  --brand-ivory: #FAF7ED;
+  --brand-mist: #A7B0B8;
+  --brand-gold-text: #8A6D2E;
+  --brand-gold-light: #F3EAD3;
+  --success: #059669;
+  --success-light: #D1FAE5;
+  --warning: #D97706;
+  --warning-light: #FEF3C7;
+  --danger: #DC2626;
+  --danger-light: #FEE2E2;
+  --border: rgba(14, 42, 71, 0.14);
+  --shadow: 0 1px 2px rgba(14, 42, 71, 0.06);
+  --shadow-lg: 0 4px 14px rgba(14, 42, 71, 0.08);
+  --scrim: rgba(8, 27, 45, 0.55);
+  --focus-ring: #0E2A47;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --guardian: #f59e0b;
+  --guardian-hover: #d97706;
+  --guardian-light: #fef3c7;
+  --guardian-text: #92400e;
+
+  /* Typography (D1) — @fontsource-variable faces imported in main.tsx.
+     Exact family names come from @fontsource-variable/inter and
+     @fontsource-variable/playfair-display's wght.css. */
+  --font-sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Playfair Display Variable', Georgia, 'Times New Roman', serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 200ms;
+
+  /* Spacing scale */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #081B2D;
+  --bg-secondary: #0C2338;
+  --bg-card: #102F4D;
+  --bg-card-alt: #173A5E;
+  --bg-input: #0C2338;
+  --text-primary: #FAF7ED;
+  --text-secondary: #A7B0B8;
+  --text-muted: #7D8A97;
+  --accent: #C9A962;
+  --accent-hover: #D6BA7A;
+  --accent-light: rgba(201, 169, 98, 0.16);
+  --accent-text: #E3CC94;
+  --on-accent: #0E2A47;
+  --brand-gold-text: #D9BF84;
+  --brand-gold-light: rgba(201, 169, 98, 0.14);
+  --success: #10B981;
+  --success-light: #064E3B;
+  --warning: #F59E0B;
+  --warning-light: #78350F;
+  --danger: #EF4444;
+  --danger-light: #7F1D1D;
+  --border: rgba(250, 247, 237, 0.14);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --focus-ring: #C9A962;
+  --guardian: #d97706;
+  --guardian-hover: #b45309;
+  --guardian-light: #451a03;
+  --guardian-text: #fbbf24;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-primary: #081B2D;
+    --bg-secondary: #0C2338;
+    --bg-card: #102F4D;
+    --bg-card-alt: #173A5E;
+    --bg-input: #0C2338;
+    --text-primary: #FAF7ED;
+    --text-secondary: #A7B0B8;
+    --text-muted: #7D8A97;
+    --accent: #C9A962;
+    --accent-hover: #D6BA7A;
+    --accent-light: rgba(201, 169, 98, 0.16);
+    --accent-text: #E3CC94;
+    --on-accent: #0E2A47;
+    --brand-gold-text: #D9BF84;
+    --brand-gold-light: rgba(201, 169, 98, 0.14);
+    --success: #10B981;
+    --success-light: #064E3B;
+    --warning: #F59E0B;
+    --warning-light: #78350F;
+    --danger: #EF4444;
+    --danger-light: #7F1D1D;
+    --border: rgba(250, 247, 237, 0.14);
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 4px 14px rgba(0, 0, 0, 0.35);
+    --scrim: rgba(0, 0, 0, 0.6);
+    --focus-ring: #C9A962;
+    --guardian: #d97706;
+    --guardian-hover: #b45309;
+    --guardian-light: #451a03;
+    --guardian-text: #fbbf24;
+  }
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 { font-family: var(--font-display); font-size: 1.6rem; font-weight: 600; letter-spacing: 0; }
+h2 { font-size: 1.2rem; font-weight: 650; letter-spacing: -0.01em; }
+h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Monospace utility — replaces the 16 inline `fontFamily: 'monospace'` sites. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+/* Inline icon utility — for an <Icon> sitting beside text in a line
+   (labels, inline warnings, empty-state notes). Keeps the glyph optically
+   centred on the text baseline instead of sitting high (default inline-svg
+   baseline alignment). */
+.icon-inline {
+  vertical-align: -3px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 200ms ease, transform 100ms ease;
+  width: 100%;
+}
+
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:disabled:active { transform: none; }
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Connection actions sit beside account details, so must not take the whole row. */
+.connections .btn { width: auto; }
+.connections-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.connections-details { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+
+/* PIN keypad keys — tuned for zero-latency feel on mobile.
+   `touch-action: manipulation` removes the residual ~50-300ms double-tap-zoom
+   wait that some mobile browsers impose even with `user-scalable=no`.
+   `-webkit-tap-highlight-color: transparent` suppresses the OS blue flash
+   so the :active scale is the sole visual cue, and arrives the instant the
+   touch lands rather than after React commits. */
+.signet-pinpad-key {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 60ms ease, background 120ms ease;
+}
+.signet-pinpad-key:active:not(:disabled) {
+  transform: scale(0.94);
+  background: var(--accent-light) !important;
+}
+.signet-pinpad-key:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+.btn-secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--bg-card-alt); }
+
+/* Selected state for a selectable card/tile (an option picker with its own
+   title/description, not a compact segmented control or a primary action
+   button) — light accent wash + accent border, never a full solid --accent
+   fill. In dark mode --accent is the brand gold, and a solid gold tile read
+   as too loud/alarm-like next to navy; --accent-light is the same token the
+   rest of the app already uses for a "selected, calm" surface. */
+.btn-tile-selected {
+  background: var(--accent-light);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+}
+.btn-tile-selected:hover:not(:disabled) { background: var(--accent-light); }
+
+.btn-danger {
+  background: var(--danger);
+  color: #FFFFFF;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--accent);
+  padding: 8px 16px;
+}
+
+.input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: border-color 200ms ease;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 100px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.badge-verified {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.badge-unverified {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.badge-child {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.trust-bar {
+  height: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.trust-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 500ms ease;
+}
+
+/* Breakpoint constant (documentation only — @media rules can't read CSS vars).
+   Keep in sync with DESKTOP_BREAKPOINT_PX in src/hooks/useViewportMode.ts */
+:root {
+  --breakpoint-desktop: 720px;
+  /* Vertical space the fixed mobile bottom nav (TabBar) occupies. Must match
+     BAR_HEIGHT (64) in src/lib/app-nav.ts. Zeroed on desktop (>=720px), where
+     the nav is a side-rail. Consumed by the carousel so cards sit ABOVE the bar. */
+  --app-bottom-bar: calc(64px + env(safe-area-inset-bottom));
+  /* Default viewport height for full-height surfaces. DesktopFrame overrides this
+     to 100% inside the frame; on mobile it stays 100dvh (byte-identical to before). */
+  --app-vh: 100dvh;
+}
+
+.page {
+  flex: 1;
+  padding: 16px 16px 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  max-width: 480px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (min-width: 720px) {
+  :root {
+    --app-bottom-bar: 0px; /* desktop nav is a side-rail, not a bottom bar */
+  }
+  .page {
+    max-width: none;
+  }
+}
+
+.mobile-only { display: initial; }
+.desktop-only { display: none; }
+@media (min-width: 720px) {
+  .mobile-only { display: none; }
+  .desktop-only { display: initial; }
+}
+
+.section { margin-bottom: 24px; }
+.section-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.signet-word {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 8px 16px;
+  background: var(--accent-light);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 200ms ease forwards;
+}
+
+@keyframes checkmark {
+  0% { transform: scale(0); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+.checkmark-anim {
+  animation: checkmark 300ms ease forwards;
+}
+
+/* Card variants */
+.card-flush { padding: 0; overflow: hidden; }
+.card-warning {
+  background: var(--warning-light);
+  border-color: var(--warning);
+}
+
+/* List item inside a flush card */
+.card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 14px 16px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+}
+.card-row:last-child { border-bottom: none; }
+
+/* Button sizes.
+   `.btn` stays full-width (the default for stacked primary/secondary actions),
+   but a *small* or *inline* button is a sibling of other content and must
+   shrink-wrap its label — without this every `btn btn-ghost btn-sm` stretches
+   across the row and crushes the label beside it (root cause R1). */
+.btn-sm, .btn-inline { width: auto; }
+.btn-sm { padding: 8px 16px; font-size: 0.875rem; }
+.btn-lg { padding: 16px; font-size: 1rem; }
+
+/* Compact ghost — the Set / Edit / Copy / Upload… affordance at the right of a row. */
+.btn-ghost.btn-sm {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  border-radius: 8px;
+}
+.btn-ghost.btn-sm:hover:not(:disabled) { background: var(--accent-light); }
+
+
+/* ═══════════════════════════════════════════════
+   D3 — List-row primitives
+   One shape shared by settings pages, the carousel settings card and any
+   label/value list. Labels sit LEFT, values RIGHT (`.row-meta`); a value is
+   never a full-width centred ghost button.
+   ═══════════════════════════════════════════════ */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.row:last-child { border-bottom: none; }
+
+/* Left-hand stack: label above an optional sub-line. */
+.row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.row-label { font-size: 0.9rem; color: var(--text-primary); }
+.row-sub { font-size: 0.78rem; color: var(--text-secondary); }
+.row-meta {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.row-chevron {
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* A button that looks exactly like a `.row`. `all: unset` strips the UA button
+   chrome (native grey box, centred label) — every `.row` property is then
+   re-declared here so `.row.row-button` resolves identically whichever class
+   the cascade picks last. */
+.row-button {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+}
+.row-button:last-child { border-bottom: none; }
+.row-button:hover .row-label,
+.row-button:hover > span:first-child { color: var(--accent); }
+.row-button:hover .row-chevron { color: var(--accent); }
+.row-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ─── D4 — form field labels ───
+   Sentence case, quiet. Section eyebrows (.section-title / .settings-label)
+   stay uppercase + muted; these sit directly above an input. */
+.field-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.field-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* ─── Small input — pairs with .btn-sm inside a row ─── */
+.input-sm {
+  padding: 8px 12px;
+  font-size: 0.9rem;
+}
+
+/* Layout utility used by ManageCarousel / Personas. */
+.block { display: block; }
+
+.badge-pending {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+/* ─── D5 — CopyRow ─── */
+.copy-row-value {
+  color: var(--text-secondary);
+  max-width: 100%;
+}
+.copy-row-value--truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+/* ─── D6 — Layout header ─── */
+.layout-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 0 12px;
+  position: sticky;
+  top: 0;
+}
+.layout-back {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-primary);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 150ms ease;
+}
+.layout-back:hover { background: var(--bg-card-alt); }
+.layout-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.layout-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── D9 — page identity strip ─── */
+.page-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 16px;
+}
+.page-identity-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-light);
+  color: var(--accent-text);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.page-identity-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.page-identity-name {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-identity-caption {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* ─── D11 — collapsed technical payloads ─── */
+.payload-details > summary {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.payload-details > summary::-webkit-details-marker { display: none; }
+.payload-details > summary::before {
+  content: '\25B8';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 150ms ease;
+}
+.payload-details[open] > summary::before { transform: rotate(90deg); }
+.payload-details pre {
+  margin-top: 8px;
+  padding: 10px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+/* ─── BrandMark — tone="auto" ───
+   Both the on-light and on-dark marks render; CSS shows only the right one
+   for the ancestor theme: an explicit html[data-theme] toggle, a forced-dark
+   subtree (the carousel / TabBar, which set data-theme="dark" on their own
+   root regardless of the app-level theme), or system dark preference when
+   the root hasn't gone explicitly light. */
+.brand-mark-auto { display: inline-flex; align-items: center; }
+.brand-mark-auto .brand-on-dark { display: none; }
+[data-theme="dark"] .brand-mark-auto .brand-on-light { display: none; }
+[data-theme="dark"] .brand-mark-auto .brand-on-dark { display: inline-block; }
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .brand-mark-auto .brand-on-light { display: none; }
+  html:not([data-theme="light"]) .brand-mark-auto .brand-on-dark { display: inline-block; }
+}
+
+/* ─── D12 — one shape for every empty state ─── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 32px 16px;
+}
+.empty-state-icon {
+  font-size: 2.2rem;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.empty-state-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+.empty-state-text {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  max-width: 34ch;
+  margin: 0;
+}
+.empty-state .btn {
+  margin-top: 8px;
+  max-width: 280px;
+}

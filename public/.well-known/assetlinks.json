@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.mysignet",
+      "sha256_cert_fingerprints": [
+        "7F:99:94:A0:CF:C6:05:7A:3D:98:AA:5E:44:C4:BD:DB:B0:53:CF:F3:C9:C3:11:FD:43:91:88:64:22:CA:37:30"
+      ]
+    }
+  }
+]

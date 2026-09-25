@@ -1,0 +1,33 @@
+# Zapstore publishing config, consumed by zsp (https://github.com/zapstore/zsp).
+# Releases publish from the locally built signed APK (release_source below)
+# rather than from GitHub releases, so signing stays on the release machine.
+#
+# Publish a new release (after building + GitHub-releasing the APK):
+#   SIGN_WITH=<nsec1... | bunker://...> zsp publish zapstore.yaml
+# Dry-run without a key (unsigned events to stdout):
+#   SIGN_WITH=<npub1...> zsp publish --offline zapstore.yaml
+name: My Signet
+release_source: ./android/app/build/outputs/apk/release/app-release.apk
+summary: Family identity and signing for the Signet protocol — your keys never leave your device
+description: |
+  My Signet is client-side identity for the Signet protocol: verify who you
+  are once, then sign in to sites and services without passwords, emails or
+  accounts. Everything lives encrypted on your device — there is no backend
+  and no key ever leaves the phone.
+
+  Built for families. Guardians create dependant identities for their kids,
+  pair the apps they use, and approve or deny signing requests as they
+  happen — with an audit trail both sides can see. Autonomy grows in stages
+  as the child does.
+
+  The Android app adds what the web app structurally can't: fingerprint
+  unlock backed by the hardware Keystore, an always-on NIP-46 bunker that
+  keeps serving signing requests with the screen off, and notifications when
+  a request needs your decision.
+
+  No Google Play services, no Firebase, no analytics. Built GrapheneOS-first.
+license: MIT
+website: https://mysignet.app
+tags: [nostr, identity, signer, nip46, family, security]
+icon: ./assets/icon-only.png
+supported_nips: ["44", "46"]

@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "referenceSigner": "my-signet",
+  "matrixDoc": "docs/signet-feature-matrix.md",
+  "features": [
+    {
+      "id": "nip07",
+      "label": "NIP-07 browser extension",
+      "requiredForMySignet": false,
+      "decision": "MySignet is the signer app, not a NIP-07 browser extension consumer.",
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "not-applicable",
+        "signetLite": "not-applicable"
+      },
+      "gates": [
+        { "type": "external", "repo": "signet-login", "command": "npm test" },
+        { "type": "external", "repo": "canary-kit", "command": "npm run check:signet-conformance" }
+      ]
+    },
+    {
+      "id": "amber",
+      "label": "Amber / NIP-55",
+      "requiredForMySignet": false,
+      "decision": "Amber is a separate Android signer. MySignet does not serve Amber handoffs.",
+      "projects": {
+        "signetLogin": "sdk-covered",
+        "canary": "sdk-covered",
+        "mySignet": "not-applicable",
+        "signetLite": "not-applicable"
+      },
+      "gates": [
+        { "type": "external", "repo": "signet-login", "command": "npm test" }
+      ]
+    },
+    {
+      "id": "signet-remote-qr",
+      "label": "Signet remote QR",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "not-applicable"
+      },
+      "gates": [
+        { "type": "file", "path": "e2e/auth.spec.ts" },
+        { "type": "file", "path": "e2e/verification.spec.ts" },
+        { "type": "npmScript", "name": "test:e2e:webkit" },
+        { "type": "workflow", "path": ".github/workflows/deploy.yml", "contains": "Mobile WebKit QR/paste regression" }
+      ]
+    },
+    {
+      "id": "nostrconnect",
+      "label": "NostrConnect",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "covered"
+      },
+      "gates": [
+        { "type": "file", "path": "e2e/approve-connect.spec.ts" },
+        { "type": "file", "path": "e2e/cross-app-nostrconnect.spec.ts" },
+        { "type": "file", "path": "src/lib/nip46.connect-response.test.ts" },
+        { "type": "npmScript", "name": "test:e2e:cross-app" },
+        { "type": "workflow", "path": ".github/workflows/deploy.yml", "contains": "Cross-app Canary NostrConnect regression" },
+        { "type": "external", "repo": "signet-lite", "command": "npm test" }
+      ]
+    },
+    {
+      "id": "bunker-restore",
+      "label": "bunker restore",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "covered"
+      },
+      "gates": [
+        { "type": "file", "path": "src/hooks/useBunkerServer.nostrconnect.test.tsx" },
+        { "type": "file", "path": "e2e/cross-app-nostrconnect.spec.ts" },
+        { "type": "npmScript", "name": "test:e2e:cross-app" },
+        { "type": "external", "repo": "signet-lite", "command": "npm run test:e2e" }
+      ]
+    },
+    {
+      "id": "nsec-fallback",
+      "label": "nsec fallback",
+      "requiredForMySignet": false,
+      "decision": "nsec fallback is an app-side signet-login escape hatch. MySignet manages identities through its own local key storage and recovery flows.",
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "not-applicable",
+        "signetLite": "not-applicable"
+      },
+      "gates": [
+        { "type": "external", "repo": "canary-kit", "command": "npm run test:e2e:protocol" }
+      ]
+    },
+    {
+      "id": "storage-session-restore",
+      "label": "storage/session restore",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "covered"
+      },
+      "gates": [
+        { "type": "file", "path": "src/lib/db.test.ts" },
+        { "type": "file", "path": "e2e/lock-unlock.spec.ts" },
+        { "type": "npmScript", "name": "test" },
+        { "type": "external", "repo": "signet-lite", "command": "npm run test:e2e" }
+      ]
+    },
+    {
+      "id": "logout-clear-state",
+      "label": "logout/clear state",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "not-applicable"
+      },
+      "gates": [
+        { "type": "file", "path": "e2e/auth.spec.ts" },
+        { "type": "file", "path": "src/lib/auth.test.ts" },
+        { "type": "npmScript", "name": "test" }
+      ]
+    },
+    {
+      "id": "nip44-present-missing",
+      "label": "NIP-44 present/missing behavior",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "covered"
+      },
+      "gates": [
+        { "type": "file", "path": "src/hooks/useBunkerServer.nostrconnect.test.tsx" },
+        { "type": "file", "path": "src/lib/nip46-server.test.ts" },
+        { "type": "npmScript", "name": "test" },
+        { "type": "external", "repo": "signet-lite", "command": "npm test" }
+      ]
+    },
+    {
+      "id": "timeout-abort-diagnostics",
+      "label": "timeout/abort/error diagnostics",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "gap"
+      },
+      "gates": [
+        { "type": "file", "path": "e2e/approve-connect.spec.ts" },
+        { "type": "file", "path": "e2e/harness-pages.spec.ts" },
+        { "type": "workflow", "path": ".github/workflows/deploy.yml", "contains": "Browser regression tests" }
+      ]
+    },
+    {
+      "id": "mobile-copy-paste-fallback",
+      "label": "mobile copy/paste fallback",
+      "requiredForMySignet": true,
+      "projects": {
+        "signetLogin": "covered",
+        "canary": "covered",
+        "mySignet": "covered",
+        "signetLite": "not-applicable"
+      },
+      "gates": [
+        { "type": "file", "path": "e2e/verification.spec.ts" },
+        { "type": "npmScript", "name": "test:e2e:webkit" },
+        { "type": "workflow", "path": ".github/workflows/deploy.yml", "contains": "Mobile WebKit QR/paste regression" },
+        { "type": "workflow", "path": ".github/workflows/physical-mobile-smoke.yml", "contains": "iPhone Safari QR scan" }
+      ]
+    }
+  ]
+}

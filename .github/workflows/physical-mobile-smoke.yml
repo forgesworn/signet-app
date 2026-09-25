@@ -1,0 +1,98 @@
+name: Physical Mobile Smoke
+run-name: Physical mobile smoke ${{ inputs.device }} ${{ inputs.mysignet_url }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: Physical device/browser used
+        required: true
+        type: choice
+        options:
+          - iPhone Safari
+          - Android Chrome
+      mysignet_url:
+        description: MySignet URL tested
+        required: true
+        default: https://mysignet.app
+        type: string
+      canary_url:
+        description: Canary URL tested
+        required: true
+        default: https://canary.trotters.cc
+        type: string
+      iphone_qr_scan:
+        description: iPhone Safari QR scan
+        required: true
+        type: choice
+        options:
+          - passed
+          - failed
+      copy_paste_fallback:
+        description: URI copy/paste fallback
+        required: true
+        type: choice
+        options:
+          - passed
+          - failed
+      nostrconnect_pair:
+        description: NostrConnect pair/approve completes once
+        required: true
+        type: choice
+        options:
+          - passed
+          - failed
+      nip44_restore_roundtrip:
+        description: Reload restore plus NIP-44 round-trip
+        required: true
+        type: choice
+        options:
+          - passed
+          - failed
+      notes:
+        description: Device/browser notes
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate physical smoke result
+        env:
+          DEVICE: ${{ inputs.device }}
+          MYSIGNET_URL: ${{ inputs.mysignet_url }}
+          CANARY_URL: ${{ inputs.canary_url }}
+          IPHONE_QR_SCAN: ${{ inputs.iphone_qr_scan }}
+          COPY_PASTE_FALLBACK: ${{ inputs.copy_paste_fallback }}
+          NOSTRCONNECT_PAIR: ${{ inputs.nostrconnect_pair }}
+          NIP44_RESTORE_ROUNDTRIP: ${{ inputs.nip44_restore_roundtrip }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          fail=0
+          [ "$IPHONE_QR_SCAN" = "passed" ] || fail=1
+          [ "$COPY_PASTE_FALLBACK" = "passed" ] || fail=1
+          [ "$NOSTRCONNECT_PAIR" = "passed" ] || fail=1
+          [ "$NIP44_RESTORE_ROUNDTRIP" = "passed" ] || fail=1
+
+          {
+            echo "## Physical mobile smoke"
+            echo ""
+            echo "- Device: $DEVICE"
+            echo "- MySignet: $MYSIGNET_URL"
+            echo "- Canary: $CANARY_URL"
+            echo "- iPhone Safari QR scan: $IPHONE_QR_SCAN"
+            echo "- Copy/paste fallback: $COPY_PASTE_FALLBACK"
+            echo "- NostrConnect pair: $NOSTRCONNECT_PAIR"
+            echo "- NIP-44 restore round-trip: $NIP44_RESTORE_ROUNDTRIP"
+            echo "- Notes: ${NOTES:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Physical mobile smoke did not pass every release-critical item."
+            exit 1
+          fi

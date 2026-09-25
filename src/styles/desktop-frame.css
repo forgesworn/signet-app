@@ -1,0 +1,103 @@
+/* Desktop phone-frame — hosts the whole app inside a centred device frame on a
+   "desk" backdrop when the window is wide (>=720px). The frame's transform makes
+   it the containing block for position:fixed descendants (carousel + bottom tab
+   bar), and it overrides --app-vh / --app-bottom-bar so window-relative sizing
+   resolves to the frame. On narrow windows everything is display:contents
+   (passthrough) so real mobile renders exactly as before, with NO var overrides. */
+
+/* ── Passthrough (narrow / mobile): wrappers vanish, no overrides leak ── */
+.desk--passthrough,
+.desk--passthrough .desk-stage,
+.desk--passthrough .desk-frame,
+.desk--passthrough .desk-frame-app {
+  display: contents;
+}
+
+/* ── Wide: real desk + centred frame ── */
+.desk--wide {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  /* Warm ivory/mist "desk" in light mode; deeper navy in dark (below). */
+  background: radial-gradient(120% 120% at 50% 0%, #F2EEE1 0%, #E4E9EF 55%, #D7DEE3 100%);
+  overflow: hidden;
+}
+
+html[data-theme="dark"] .desk--wide {
+  background: radial-gradient(120% 120% at 50% 0%, #14304d 0%, #081b2d 55%, #04101c 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .desk--wide {
+    background: radial-gradient(120% 120% at 50% 0%, #14304d 0%, #081b2d 55%, #04101c 100%);
+  }
+}
+
+.desk--wide .desk-stage {
+  display: grid;
+  grid-template-columns: 72px auto 72px;
+  grid-template-rows: 64px auto 64px;
+  align-items: center;
+  justify-items: center;
+  gap: 12px;
+}
+
+.desk--wide .desk-frame {
+  grid-column: 2;
+  grid-row: 2;
+  width: 390px;
+  height: min(800px, calc(100vh - 200px));
+  background: var(--bg-primary);
+  border-radius: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 0 0 11px #0c111d, 0 0 0 12px #1f2937, 0 40px 90px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+  /* Trap position:fixed descendants to the frame, and host mobile sizing. */
+  transform: translateZ(0);
+  --app-vh: 100%;
+  --app-bottom-bar: calc(64px + env(safe-area-inset-bottom));
+}
+
+.desk--wide .desk-frame-app {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ── Directional arrows in the desk margins ── */
+.desk--wide .desk-arrow {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+}
+.desk--wide .desk-arrow:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  transform: scale(1.08);
+}
+.desk--wide .desk-arrow:disabled {
+  opacity: 0.22;
+  cursor: not-allowed;
+}
+
+.desk--wide .desk-arrow-up    { grid-column: 2; grid-row: 1; }
+.desk--wide .desk-arrow-left  { grid-column: 1; grid-row: 2; }
+.desk--wide .desk-arrow-right { grid-column: 3; grid-row: 2; }
+.desk--wide .desk-arrow-down  { grid-column: 2; grid-row: 3; }
