@@ -1,9 +1,37 @@
 import { test, expect } from '@playwright/test';
-import { getPublicKey, nip19 } from 'nostr-tools';
+import { getPublicKey, nip19, nip44 } from 'nostr-tools';
 import { schnorr } from '@noble/curves/secp256k1.js';
-import { hexToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { zeroise } from 'signet-protocol';
+import { vaultIdentityFromMnemonic } from 'signet-protocol/experimental';
 import { restoreIdentityAndUnlock, unlockWithPin } from './fixtures';
 import { RoutedRelay } from './helpers/routed-relay';
+import { openVaultPayload } from '../src/lib/vault-envelope';
+
+// The BIP-39 payload of the fixture's test-vector recovery words.
+const TEST_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+
+/**
+ * Every plaintext sealed to the owner's `profiles` private-vault key. Once
+ * that vault is canonical the legacy `signet:personas` rail stops writing
+ * (`legacyVaultWriteAllowed`), so the persona backup lives here: the vault
+ * snapshot carries the personas wire (`profilesVaultAdapter`).
+ */
+async function profilesVaultPlaintexts(events: { kind: number; content: string }[]): Promise<string[]> {
+  const vault = vaultIdentityFromMnemonic(TEST_MNEMONIC, 'profiles', 0);
+  const secret = vault.privateKey.slice();
+  const vaultPubkey = bytesToHex(vault.publicKey);
+  zeroise(vault);
+  try {
+    const backend = { nip44Decrypt: async (sender: string, ciphertext: string) =>
+      nip44.decrypt(ciphertext, nip44.getConversationKey(secret, sender)) };
+    const opened = await Promise.all(events.filter(event => event.kind === 30078)
+      .map(event => openVaultPayload(event.content, backend, vaultPubkey, { legacyFallback: false })));
+    return opened.filter((plaintext): plaintext is string => plaintext !== null);
+  } finally {
+    secret.fill(0);
+  }
+}
 
 test('recovery words restore the same derived persona; imported keys need a separate backup', async ({ browser, page, context }) => {
   // Keep real timers and relay I/O. Bound non-cryptographic jitter near its
@@ -42,9 +70,11 @@ test('recovery words restore the same derived persona; imported keys need a sepa
   await expect(dialog).toBeHidden();
   await expect(page.getByTitle(nip19.npubEncode(getPublicKey(separateKey)))).toBeVisible();
   try {
-    await expect.poll(() => relay.storedEvents.filter(event => event.kind === 30078
-      && event.tags.some(tag => tag[0] === 'd' && tag[1] === 'signet:personas')).length,
-    { timeout: 45_000 }).toBeGreaterThan(0);
+    // The backup must carry the persona just added, not merely exist: the
+    // vault already published a snapshot at unlock, before the persona.
+    await expect.poll(async () => (await profilesVaultPlaintexts(relay.storedEvents))
+      .some(plaintext => plaintext.includes('Recoverable persona')),
+    { timeout: 45_000 }).toBe(true);
   } catch (error) {
     const state = await page.evaluate(() => ({
       visibility: document.visibilityState,
