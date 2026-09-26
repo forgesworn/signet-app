@@ -18,12 +18,13 @@ const CHECK: ContactsGrantCodeCheck = { grantId: INPUT.grantId, appName: 'Flock'
 
 function setup(over: Partial<React.ComponentProps<typeof ContactsGrantCode>> = {}) {
   const onMismatch = vi.fn();
+  const onMatch = vi.fn();
   const onRevoke = vi.fn(async () => {});
   const onDone = vi.fn();
   const { rerender } = render(
-    <ContactsGrantCode check={CHECK} onMismatch={onMismatch} onRevoke={onRevoke} onDone={onDone} {...over} />,
+    <ContactsGrantCode check={CHECK} onMismatch={onMismatch} onMatch={onMatch} onRevoke={onRevoke} onDone={onDone} {...over} />,
   );
-  return { onMismatch, onRevoke, onDone, rerender };
+  return { onMismatch, onMatch, onRevoke, onDone, rerender };
 }
 
 /** SDK B1/F1: My Signet must NEVER display its own code, in any form. */
@@ -137,6 +138,7 @@ describe('ContactsGrantCode', () => {
       <ContactsGrantCode
         check={{ ...CHECK, mismatches: 2 }}
         onMismatch={vi.fn()}
+        onMatch={vi.fn()}
         onRevoke={freshRevoke}
         onDone={onDone}
       />,
@@ -193,5 +195,16 @@ describe('ContactsGrantCode', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     expect(await screen.findByText(/could not disconnect/i)).toBeInTheDocument();
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('reports a match, and a remount with matched set shows the match again, never entry', async () => {
+    const first = setup();
+    await typeAndCheck(CODE);
+    expect(first.onMatch).toHaveBeenCalledTimes(1);
+    first.rerender(<></>);
+    setup({ check: { ...CHECK, mismatches: 1, matched: true } });
+    expect(await screen.findByText(/codes match/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/6-digit code/i)).not.toBeInTheDocument();
+    expectCodeNeverShown();
   });
 });

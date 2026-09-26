@@ -2655,6 +2655,11 @@ export function App() {
     setContactsGrantCodeCheck((prev) => (prev ? { ...prev, mismatches: prev.mismatches + 1 } : prev));
   }, []);
 
+  /** A match survives a remount too — see `ContactsGrantCodeCheck.matched`. */
+  const handleContactsGrantCodeMatch = useCallback(() => {
+    setContactsGrantCodeCheck((prev) => (prev ? { ...prev, matched: true } : prev));
+  }, []);
+
   /**
    * Finding 3: browser/hardware back goes through popstate (`setPage`
    * directly — see `useNavigation.ts`), which skips `handleContactsGrantCodeDone`
@@ -10399,6 +10404,7 @@ export function App() {
           <ContactsGrantCode
             check={contactsGrantCodeCheck}
             onMismatch={handleContactsGrantCodeMismatch}
+            onMatch={handleContactsGrantCodeMatch}
             onRevoke={revokeContactsGrantForCodeCheck}
             onDone={handleContactsGrantCodeDone}
           />

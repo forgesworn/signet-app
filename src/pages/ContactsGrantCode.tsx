@@ -40,6 +40,10 @@ export interface ContactsGrantCodeCheck {
    * 2 → the disconnect step, straight away, never back to entry.
    */
   mismatches: number;
+  /** Set once the typed code matched. Lives in App state for the same reason
+   *  as `mismatches`: a remount after an auto-lock must show the match again,
+   *  never "type it again" — a third entry there could revoke a good grant. */
+  matched?: boolean;
   /** The teardown-path copy from `handleApproveContactsGrantV2` (the ack
    *  landed but the first projection publish failed). Applied once THIS page
    *  finishes — by whichever exit — not on arrival; see App.tsx. */
@@ -52,6 +56,8 @@ interface Props {
    *  `check.mismatches` — this page's own state resets on remount, the
    *  caller's does not. */
   onMismatch: () => void;
+  /** Report the match so the caller can persist it on `check.matched`. */
+  onMatch: () => void;
   /** MUST throw on failure — this page has no other way to learn the revoke
    *  did not take. (`handleRevokeContactsGrantV2` itself never throws; its
    *  own failure signal is app-level state a caller here cannot read
@@ -70,13 +76,15 @@ type Phase =
   | { kind: 'not-showing' }
   | { kind: 'revoke-error'; error: string; retry: () => void };
 
-export function ContactsGrantCode({ check, onMismatch, onRevoke, onDone }: Props) {
+export function ContactsGrantCode({ check, onMismatch, onMatch, onRevoke, onDone }: Props) {
   // Seeded from `check.mismatches` (App state) rather than starting fresh —
   // a remount after an auto-lock must not hand back tries already used.
   // Mirrored locally only so a mismatch during THIS mount can move the
   // phase before the caller's next render arrives with the updated prop.
   const [mismatches, setMismatches] = useState(check.mismatches);
-  const [phase, setPhase] = useState<Phase>({ kind: 'entry', mismatched: check.mismatches >= 1 });
+  const [phase, setPhase] = useState<Phase>(
+    check.matched ? { kind: 'match' } : { kind: 'entry', mismatched: check.mismatches >= 1 },
+  );
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -120,6 +128,7 @@ export function ContactsGrantCode({ check, onMismatch, onRevoke, onDone }: Props
   function handleCheck() {
     if (busy) return;
     if (matchesPairingCode(check.input, typed)) {
+      onMatch();
       setPhase({ kind: 'match' });
       return;
     }
