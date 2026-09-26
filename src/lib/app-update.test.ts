@@ -1,4 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  isNativeApp: vi.fn(() => false),
+  httpGet: vi.fn(),
+}));
+vi.mock('./native', () => ({ isNativeApp: mocks.isNativeApp }));
+vi.mock('@capacitor/core', () => ({ CapacitorHttp: { get: mocks.httpGet } }));
+
 import {
   UPDATE_MANIFEST_URL,
   appUpdateState,
@@ -114,16 +122,57 @@ describe('fetchUpdateManifest', () => {
   const okResponse = (body: unknown, ok = true) =>
     ({ ok, json: async () => body }) as unknown as Response;
 
-  it('fetches the public manifest with cache disabled', async () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isNativeApp.mockReturnValue(false);
+  });
+
+  it('fetches the public manifest with cache disabled on the web', async () => {
     const fetcher = vi.fn(async () => okResponse(manifest(1200)));
     await expect(fetchUpdateManifest(fetcher as unknown as typeof fetch)).resolves.toEqual(manifest(1200));
     expect(fetcher).toHaveBeenCalledWith(UPDATE_MANIFEST_URL, { cache: 'no-store' });
+    expect(mocks.httpGet).not.toHaveBeenCalled();
   });
 
-  it('is null on a non-2xx, on bad JSON, on a bad shape, and on a thrown fetch', async () => {
+  it('is null on a non-2xx, on bad JSON, on a bad shape, and on a thrown fetch (web)', async () => {
     await expect(fetchUpdateManifest((async () => okResponse({}, false)) as unknown as typeof fetch)).resolves.toBeNull();
     await expect(fetchUpdateManifest((async () => ({ ok: true, json: async () => { throw new Error('bad'); } }) as unknown as Response) as unknown as typeof fetch)).resolves.toBeNull();
     await expect(fetchUpdateManifest((async () => okResponse({ versionName: 'x' })) as unknown as typeof fetch)).resolves.toBeNull();
     await expect(fetchUpdateManifest((async () => { throw new TypeError('offline'); }) as unknown as typeof fetch)).resolves.toBeNull();
+  });
+
+  describe('native (Capacitor) path', () => {
+    beforeEach(() => {
+      mocks.isNativeApp.mockReturnValue(true);
+    });
+
+    it('fetches via CapacitorHttp.get and never touches the web fetcher', async () => {
+      mocks.httpGet.mockResolvedValue({ status: 200, data: manifest(1200), headers: {}, url: UPDATE_MANIFEST_URL });
+      const fetcher = vi.fn();
+      await expect(fetchUpdateManifest(fetcher as unknown as typeof fetch)).resolves.toEqual(manifest(1200));
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(mocks.httpGet).toHaveBeenCalledWith(expect.objectContaining({ url: UPDATE_MANIFEST_URL }));
+    });
+
+    it('parses a stringified JSON body the same as an already-parsed object', async () => {
+      mocks.httpGet.mockResolvedValue({ status: 200, data: JSON.stringify(manifest(1200)), headers: {}, url: UPDATE_MANIFEST_URL });
+      await expect(fetchUpdateManifest()).resolves.toEqual(manifest(1200));
+    });
+
+    it('is null on a non-2xx status — never "behind", never a thrown response', async () => {
+      mocks.httpGet.mockResolvedValue({ status: 404, data: manifest(1200), headers: {}, url: UPDATE_MANIFEST_URL });
+      await expect(fetchUpdateManifest()).resolves.toBeNull();
+      mocks.httpGet.mockResolvedValue({ status: 500, data: '', headers: {}, url: UPDATE_MANIFEST_URL });
+      await expect(fetchUpdateManifest()).resolves.toBeNull();
+    });
+
+    it('is null on a bad shape, unparsable string body, or a thrown request', async () => {
+      mocks.httpGet.mockResolvedValue({ status: 200, data: { versionName: 'x' }, headers: {}, url: UPDATE_MANIFEST_URL });
+      await expect(fetchUpdateManifest()).resolves.toBeNull();
+      mocks.httpGet.mockResolvedValue({ status: 200, data: 'not json', headers: {}, url: UPDATE_MANIFEST_URL });
+      await expect(fetchUpdateManifest()).resolves.toBeNull();
+      mocks.httpGet.mockRejectedValue(new Error('native http failed'));
+      await expect(fetchUpdateManifest()).resolves.toBeNull();
+    });
   });
 });

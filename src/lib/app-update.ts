@@ -11,6 +11,18 @@
 //   - an unreadable self-report is NEVER "behind" (a fresh install was once
 //     reported out of date because a read failure was collapsed to "old");
 //   - an unreachable manifest is "could not check", never "behind".
+//
+// Inside the APK the manifest fetch must go over CapacitorHttp, not the
+// WebView's `fetch`: mysignet.app sends no Access-Control-Allow-Origin, and
+// the WebView's origin is `https://localhost`, so a plain `fetch` is CORS-
+// blocked before the request ever leaves the device. CapacitorHttp makes the
+// request from native code — no browser, no CORS — but only for this one
+// call: `CapacitorHttp` is imported directly here rather than enabled
+// globally in capacitor.config.ts, which would silently reroute every other
+// `fetch`/`XMLHttpRequest` in the app through native code too.
+
+import { CapacitorHttp } from '@capacitor/core';
+import { isNativeApp } from './native';
 
 /** Published by scripts/release.sh as a release asset; the deploy workflow
  *  copies it into dist/get/ beside the APKs. Absolute: the WebView origin is
@@ -128,8 +140,33 @@ export function appUpdateState(
     : { kind: 'current', installed };
 }
 
+/** How long to wait for the native request before giving up — matches the
+ *  outer 5s budget `useAppUpdate` allows for the whole check. */
+const NATIVE_REQUEST_TIMEOUT_MS = 5000;
+
+/** Native leg: CapacitorHttp does not throw on a non-2xx status, and its
+ *  `data` may already be a parsed object or may still be a JSON string
+ *  (platform-dependent) — both are normalised to the same shape the web
+ *  path produces before validation. */
+async function fetchUpdateManifestNative(): Promise<UpdateManifest | null> {
+  try {
+    const res = await CapacitorHttp.get({
+      url: UPDATE_MANIFEST_URL,
+      connectTimeout: NATIVE_REQUEST_TIMEOUT_MS,
+      readTimeout: NATIVE_REQUEST_TIMEOUT_MS,
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (res.status < 200 || res.status >= 300) return null;
+    const body = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+    return parseUpdateManifest(body);
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch + parse the manifest; null on ANY failure (fail-quiet). */
 export async function fetchUpdateManifest(fetcher: typeof fetch = fetch): Promise<UpdateManifest | null> {
+  if (isNativeApp()) return fetchUpdateManifestNative();
   try {
     const res = await fetcher(UPDATE_MANIFEST_URL, { cache: 'no-store' });
     if (!res.ok) return null;
