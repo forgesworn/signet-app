@@ -893,6 +893,13 @@ export function App() {
    * `target=_blank` workaround alone couldn't fix.
    */
   const [pendingConnectCallback, setPendingConnectCallback] = useState<string | null>(null);
+  /**
+   * True when the pending `?nostrconnect=` request arrived by Android App Link
+   * (another app launched us, e.g. an "Open My Signet" button). Once the user
+   * approves or denies, the APK steps back to that app, as the NIP-55 server
+   * does for intents. A pairing scanned or pasted inside Signet stays put.
+   */
+  const connectCameByIntentRef = useRef(false);
   /** Shown from the guardian banner when the guardian wants to hand the phone
    *  to a different dependant without exiting child-mode (spec §2). */
   const [showHandoffPicker, setShowHandoffPicker] = useState(false);
@@ -6006,6 +6013,7 @@ export function App() {
   const handleNostrConnect = useCallback((data: string): boolean => {
     const request = parseNostrConnectURI(data);
     if (!request) return false;
+    connectCameByIntentRef.current = false;
     setPendingConnectRequest(request);
     navigateReplace('approve-connect');
     return true;
@@ -6332,15 +6340,23 @@ export function App() {
       setTimeout(() => {
         // A newer request that arrived meanwhile is not this one's to clear.
         if (pendingConnectRequestRef.current !== connectRequest) return;
+        const cameByIntent = connectCameByIntentRef.current;
+        connectCameByIntentRef.current = false;
         setPendingConnectRequest(null);
         setPendingConnectSelection(null);
         setPendingConnectCallback(null);
+        alignCarouselToApprovedSelection(sel);
+        if (cameByIntent) {
+          // Another app opened us for this pairing: hand the screen back to it.
+          navigateReplace('home');
+          void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
+          return;
+        }
         if (callback) {
           // Bounce the user back to the companion app.
           window.location.href = buildCallbackRedirect(callback, 'approved');
           return;
         }
-        alignCarouselToApprovedSelection(sel);
         navigateReplace('home');
       }, 1500);
     } finally {
@@ -6396,9 +6412,16 @@ export function App() {
       }
     }
     const callback = pendingConnectCallback;
+    const cameByIntent = connectCameByIntentRef.current;
+    connectCameByIntentRef.current = false;
     setPendingConnectRequest(null);
     setPendingConnectSelection(null);
     setPendingConnectCallback(null);
+    if (cameByIntent) {
+      navigateReplace('home');
+      void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
+      return;
+    }
     if (callback) {
       // Deny path — also redirect back with a status indicator so the
       // companion app can show a "user cancelled" state.
@@ -7924,7 +7947,7 @@ export function App() {
    * directly, bypassing `window.location`. Returns whether it found and
    * consumed a nostrconnect request.
    */
-  const consumeNostrConnectUrl = useCallback((search: string): boolean => {
+  const consumeNostrConnectUrl = useCallback((search: string, cameByIntent = false): boolean => {
     const params = new URLSearchParams(search);
     const uri = params.get('nostrconnect');
     if (!uri) return false;
@@ -7941,6 +7964,7 @@ export function App() {
     // Clear the URL before routing so a page refresh doesn't re-trigger.
     window.history.replaceState({ page: 'home' }, '', window.location.pathname);
 
+    connectCameByIntentRef.current = cameByIntent;
     setPendingConnectRequest(request);
     setPendingConnectCallback(callback);
     navigateReplace('approve-connect');
@@ -8000,7 +8024,8 @@ export function App() {
         try { search = new URL(action.href).search; } catch { return; }
         if (consumeVerifyUrl(search)) return;
         if (consumeAddDependantUrl(search)) return;
-        consumeNostrConnectUrl(search);
+        // An App Link means another app launched us for this pairing.
+        consumeNostrConnectUrl(search, true);
         return;
       }
       case 'none':
