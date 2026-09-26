@@ -93,7 +93,10 @@
     <!-- The deploy workflow rewrites this to the newest versioned APK in the
          release (see .github/workflows/deploy.yml). Keep it a real, current
          filename so the page is correct even without the templating step. -->
-    <p class="note">Current build: <a href="/get/signet-app-v0.11.1.apk">signet-app-v0.11.1.apk</a></p>
+    <!-- The deploy workflow replaces everything between the CURRENT_BUILD
+         markers with a link to the newest release's versioned APK. With no
+         release, the placeholder text stays. -->
+    <p class="note">Current build: <!--CURRENT_BUILD-->not published yet<!--/CURRENT_BUILD--></p>
     <p class="note">Machine-readable: <a href="/get/signet-app.json">signet-app.json</a> (version, SHA-256, signing-cert digest — what the app itself checks against).</p>
 
     <h2>On iPhone or a computer?</h2>

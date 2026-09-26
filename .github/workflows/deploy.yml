@@ -141,10 +141,13 @@ jobs:
 
       # Keep the "Current build" link (the versioned APK Obtainium watches) in
       # step with whatever was just downloaded, so a release never leaves the
-      # page advertising an older build. Rewrites only the versioned name; the
-      # stable signet-app.apk download button is left untouched. Skipped
-      # entirely when there's no release yet (previous step); fails loud if a
-      # release exists but no versioned APK came down with it.
+      # page advertising an older build. The source page carries a placeholder
+      # between CURRENT_BUILD markers, never a hardcoded version, so a deploy
+      # with no release says "not published yet" rather than linking a file
+      # that isn't there. The stable signet-app.apk download button is left
+      # untouched. Skipped entirely when there's no release yet (previous
+      # step); fails loud if a release exists but no versioned APK came down
+      # with it, or if the markers are missing from the page.
       - name: Point "Current build" at the newest release APK
         if: steps.bundle_release_assets.outputs.has_release == 'true'
         run: |
@@ -153,7 +156,11 @@ jobs:
             echo "::error::no versioned signet-app-v*.apk in dist/get — cannot set the Current build link"
             exit 1
           fi
-          sed -i -E "s#signet-app-v[0-9]+\.[0-9]+\.[0-9]+\.apk#${latest}#g" dist/get/index.html
+          if ! grep -q '<!--CURRENT_BUILD-->.*<!--/CURRENT_BUILD-->' dist/get/index.html; then
+            echo "::error::CURRENT_BUILD markers missing from dist/get/index.html — cannot set the Current build link"
+            exit 1
+          fi
+          sed -i -E "s#<!--CURRENT_BUILD-->.*<!--/CURRENT_BUILD-->#<a href=\"/get/${latest}\">${latest}</a>#" dist/get/index.html
           echo "Current build link → ${latest}"
 
       # Target host is not hardcoded here — it's the repo secret DEPLOY_HOST
