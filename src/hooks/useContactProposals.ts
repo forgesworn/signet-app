@@ -251,7 +251,16 @@ export function useContactProposals({
         // real contact operations written and unremembered, so the next run
         // re-applied them.
         if (cancelled) break;
-        if (outcome.kind === 'rejected') { rejectedCount += 1; continue; }
+        // A `replay` outcome is excluded from `rejectedCount`: the SDK now
+        // resends a proposal still waiting in every batch until it is either
+        // accepted or the app gives up on it, so a repeated `operationId` is
+        // this device having already answered it, not the batch being
+        // refused. Every other `ProposalRejectReason` is a genuine refusal
+        // and still counts.
+        if (outcome.kind === 'rejected') {
+          if (outcome.reason !== 'replay') rejectedCount += 1;
+          continue;
+        }
 
         if (outcome.kind === 'rename-app-label') {
           const existingEntry = labels[outcome.scopedContactId];

@@ -216,8 +216,10 @@ import type { PairingRequest } from './lib/companion-pair';
 // adapter, the projection builders, the three grant hooks and the pure
 // directory composition the wiring below feeds them.
 import { ContactsGrantApprove } from './pages/ContactsGrantApprove';
+import { ContactsGrantCode } from './pages/ContactsGrantCode';
 import { ContactsGrantList } from './components/ContactsGrantList';
 import type { GrantChoice } from './pages/ContactsGrantApprove';
+import type { ContactsGrantCodeCheck } from './pages/ContactsGrantCode';
 import {
   buildPairingAckV2Content, newGrantId, newRailKeypair, parseContactsPairingRequestV2,
 } from './lib/companion-pair-v2';
@@ -245,7 +247,7 @@ import {
   CONTACTS_GRANT_DISCONNECT_FAILED_COPY, CONTACTS_GRANT_FORGET_FAILED_COPY,
   GRANTS_BACKUP_TOO_LARGE_COPY, GRANTS_SKIPPED_REMOTE_COPY, CONTACTS_GRANT_APPROVE_TITLE,
   CONTACTS_GRANT_CAPABILITIES_INVALID_COPY, CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
-  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL,
+  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE,
 } from './lib/contacts-v2-copy';
 import {
   saveContactGrantV2, getContactGrantV2, listContactGrantsV2, updateContactGrantV2,
@@ -816,6 +818,18 @@ export function App() {
    * parser's own `sanitizeWireText` has to be the only way a value reaches it.
    */
   const [pendingContactsGrantV2, setPendingContactsGrantV2] = useState<PairingRequestV2 | null>(null);
+  /**
+   * SDK B1/F1 pairing verification-code check. Set by
+   * `handleApproveContactsGrantV2` on EVERY path where the ack landed (the
+   * normal finish and the first-projection-failed teardown), holding the
+   * four values `pairingCode`/`matchesPairingCode` compare against and,
+   * where relevant, the teardown's own error copy — carried as
+   * `followUpError` rather than applied immediately, since it is applied
+   * only once the check page itself finishes (`handleContactsGrantCodeDone`).
+   * In memory only, never persisted; not tied to a lock-clearing effect
+   * because `pendingContactsGrantV2` above has none either.
+   */
+  const [contactsGrantCodeCheck, setContactsGrantCodeCheck] = useState<ContactsGrantCodeCheck | null>(null);
   /**
    * R-33: a v2 pairing request parsed by a MOUNT carrier (the `?pair=1` web
    * URL, or the native launch URL), held until `preferences` and the
@@ -2529,8 +2543,15 @@ export function App() {
       if (ackSent) {
         setPendingContactsGrantV2(null);
         bumpContactsGrantSet();
-        setContactsGrantActionError(CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY);
-        navigateReplace('companion-apps');
+        // B1/F1: the pairing code check comes first — the teardown's own
+        // error is carried as `followUpError` and applied only once that
+        // page finishes, not on arrival here.
+        setContactsGrantCodeCheck({
+          grantId, appName: req.appName,
+          input: { appPubkey: req.appPubkey, challenge: req.challenge, grantId, railPubkey: rail.publicKey },
+          followUpError: CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
+        });
+        navigateReplace('contacts-grant-code');
         return;
       }
       // I2: a cap reached in the race between the check above and the save is
@@ -2540,6 +2561,10 @@ export function App() {
     }
 
     // Phase 2 — the app is paired. From here nothing deletes the grant.
+    // B1/F1: any failure here is carried as `followUpError` rather than set
+    // on `contactsGrantActionError` directly — it is applied only once the
+    // pairing code check below finishes.
+    let followUpError: string | undefined;
     try {
       const ops = await listContactOperationsV2(choice.directoryId, encryptionKey);
       const effective = resolveEffectiveDirectory([...applyOperations(ops).values()], {
@@ -2569,17 +2594,22 @@ export function App() {
         ...(res.ok ? { lastProjectionHash: res.hash, lastProjectionAt: issuedAt } : {}),
         lastPublishState: res.state,
       }));
-      if (!res.ok) setContactsGrantActionError(CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY);
+      if (!res.ok) followUpError = CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY;
     } catch {
       // The grant stands. Say what did not happen rather than implying the
       // connection failed — the publisher retries on the next change, and the
       // connected-apps list carries `lastPublishState` besides.
-      setContactsGrantActionError(CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY);
+      followUpError = CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY;
     }
 
     setPendingContactsGrantV2(null);
     bumpContactsGrantSet();
-    navigateReplace('companion-apps');
+    setContactsGrantCodeCheck({
+      grantId, appName: req.appName,
+      input: { appPubkey: req.appPubkey, challenge: req.challenge, grantId, railPubkey: rail.publicKey },
+      ...(followUpError ? { followUpError } : {}),
+    });
+    navigateReplace('contacts-grant-code');
   }, [
     pendingContactsGrantV2, identity, encryptionKey, preferences, dependants,
     contactGrantDirectories, contactsGrantDirectoryOptions, navigateReplace, bumpContactsGrantSet,
@@ -2589,6 +2619,22 @@ export function App() {
     setPendingContactsGrantV2(null);
     navigateReplace('companion-apps');
   }, [navigateReplace]);
+
+  /**
+   * B1/F1: every way off the pairing-code check page — match+Done,
+   * second-mismatch-disconnected+Done, Keep it, a successful not-showing
+   * Disconnect, and Back/leave (wired the same as Keep it by the render
+   * below) — funnels through here. The teardown-path error the approval
+   * handler carried is applied now, not on arrival, because the page-leave
+   * effect above clears `contactsGrantActionError` on every page that is not
+   * `companion-apps`, which would have wiped it immediately had it been set
+   * before this navigation.
+   */
+  const handleContactsGrantCodeDone = useCallback(() => {
+    if (contactsGrantCodeCheck?.followUpError) setContactsGrantActionError(contactsGrantCodeCheck.followUpError);
+    setContactsGrantCodeCheck(null);
+    navigateReplace('companion-apps');
+  }, [contactsGrantCodeCheck, navigateReplace]);
 
   /**
    * Revoke a contacts v2 grant.
@@ -2652,6 +2698,24 @@ export function App() {
       setContactsGrantActionError(CONTACTS_GRANT_DISCONNECT_FAILED_COPY);
     }
   }, [encryptionKey, preferences, bumpContactsGrantSet, bumpContactsSafety, ownerInviteService]);
+
+  /**
+   * The pairing-code page's own revoke call. `handleRevokeContactsGrantV2`
+   * above never throws — every failure path there sets
+   * `contactsGrantActionError` (app state) and resolves normally, which
+   * suits the connected-apps list's fire-and-forget disconnect button but
+   * gives THIS caller no signal: a state update made inside the awaited call
+   * is not visible through this closure until the next render. Success is
+   * proven independently instead, by reading the row back and checking
+   * `revokedAt` — throwing here (rather than returning a boolean) is what
+   * lets the page's own retry-on-failure logic reuse the same shape as every
+   * other action on this screen.
+   */
+  const revokeContactsGrantForCodeCheck = useCallback(async (grantId: string): Promise<void> => {
+    await handleRevokeContactsGrantV2(grantId);
+    const row = encryptionKey ? await getContactGrantV2(grantId, encryptionKey).catch(() => undefined) : undefined;
+    if (!row?.revokedAt) throw new Error(CONTACTS_GRANT_DISCONNECT_FAILED_COPY);
+  }, [handleRevokeContactsGrantV2, encryptionKey]);
 
   /**
    * B/I7: tombstone every matching active grant, best-effort, inside one
@@ -10272,6 +10336,26 @@ export function App() {
           />
         </Layout>
         {/* See approve-auth: the re-unlock prompt must be mountable after an auto-lock. */}
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
+
+  // Pairing verification-code check (SDK B1/F1). Set only by
+  // `handleApproveContactsGrantV2` once the ack has landed — never on a
+  // paired-child install (R-8), matching the approve screen above.
+  // Back/leave is wired the same as "Keep it": the grant stands, nothing is
+  // revoked silently.
+  if (page === 'contacts-grant-code' && contactsGrantCodeCheck && identity && !isPairedChild) {
+    return (
+      <>
+        <Layout title={CONTACTS_GRANT_CODE_TITLE} showBack onBack={handleContactsGrantCodeDone}>
+          <ContactsGrantCode
+            check={contactsGrantCodeCheck}
+            onRevoke={revokeContactsGrantForCodeCheck}
+            onDone={handleContactsGrantCodeDone}
+          />
+        </Layout>
         {authOverlay}{nip55Overlay}
       </>
     );

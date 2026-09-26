@@ -540,6 +540,7 @@ describe('module source vocabulary check', () => {
       'ContactTierChip.tsx',
       'ContactsCard.tsx',
       'ContactsGrantApprove.tsx',
+      'ContactsGrantCode.tsx',
       'ContactsGrantList.tsx',
       'ContactsRolodex.tsx',
       'FamilyContacts.tsx',

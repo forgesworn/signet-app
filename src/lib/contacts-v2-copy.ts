@@ -528,3 +528,48 @@ export const CONTACTS_GRANT_DISMISS_LABEL = 'Dismiss';
  */
 export const CONTACTS_GRANT_WRONG_SCANNER_COPY =
   'That is an app pairing code. Scan it from the home screen to connect the app to your contacts.';
+
+// ---- Pairing verification-code check (SDK B1/F1, docs/WIRE.md §3) --------
+//
+// A NUMERIC 6-digit code, distinct from the QR "pairing code" above. My
+// Signet is the PRODUCER of this code and MUST NEVER show its own copy — it
+// asks the person to type the code the APP is showing. Copy here says "the
+// code" or "6-digit code", never "pairing code", so the two are not confused
+// in prose the same way they aren't confused in the wire spec.
+
+export const CONTACTS_GRANT_CODE_TITLE = 'Check the code';
+
+/** Split so the app name can be rendered in bold without baking markup into
+ *  a template string (spec: "Type the 6-digit code **<appName>** is showing."). */
+export const CONTACTS_GRANT_CODE_PROMPT_BEFORE_NAME = 'Type the 6-digit code ';
+export const CONTACTS_GRANT_CODE_PROMPT_AFTER_NAME = ' is showing.';
+
+export const CONTACTS_GRANT_CODE_INPUT_LABEL = '6-digit code';
+export const CONTACTS_GRANT_CODE_CHECK_LABEL = 'Check';
+export const CONTACTS_GRANT_CODE_DONE_LABEL = 'Done';
+export const CONTACTS_GRANT_CODE_KEEP_LABEL = 'Keep it';
+export const CONTACTS_GRANT_CODE_DISCONNECT_LABEL = 'Disconnect';
+export const CONTACTS_GRANT_CODE_TRY_AGAIN_LABEL = 'Try again';
+
+export function contactsGrantCodeMatchCopy(appName: string): string {
+  return `The codes match. ${safeName(appName)} is connected to your contacts.`;
+}
+
+export const CONTACTS_GRANT_CODE_MISMATCH_COPY =
+  "That code doesn't match. Check it and type it again.";
+
+/** Second mismatch: the grant is disconnected outright, not retried again —
+ *  either a mistyped code twice running, or an attacker who won the ack race,
+ *  and there is no third option that tells the two apart. */
+export function contactsGrantCodeDisconnectedCopy(appName: string): string {
+  return `The codes don't match, so we've disconnected ${safeName(appName)}. Someone else may have `
+    + 'answered its pairing request. Start pairing again from the app.';
+}
+
+export function contactsGrantCodeNotShowingLink(appName: string): string {
+  return `${safeName(appName)} isn't showing a code`;
+}
+
+export const CONTACTS_GRANT_CODE_NOT_SHOWING_COPY =
+  "Older versions of an app don't show a code, so this connection can't be checked. You can keep it "
+  + 'or disconnect it.';

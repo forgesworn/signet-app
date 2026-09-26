@@ -28,7 +28,7 @@
     "@fontsource-variable/playfair-display": "^5.3.0",
     "@forgesworn/kenspeckle": "^0.2.0",
     "@forgesworn/shamir-words": "^1.2.0-alpha.1",
-    "@forgesworn/signet-contacts": "git+https://github.com/forgesworn/signet-contacts.git#bc2cb1997205b516ff4f2c5c7a0cbc1fdc3c5879",
+    "@forgesworn/signet-contacts": "git+https://github.com/forgesworn/signet-contacts.git#fd321b3d53f009f5bec27de54bf34722683e7391",
     "@forgesworn/tessera-kit": "^0.2.1",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",

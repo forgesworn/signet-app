@@ -650,18 +650,44 @@ describe('useContactProposals', () => {
   it('does not rewrite the grant row when a batch produces no new state (M4)', async () => {
     // The batch's one proposal is already a replay (its operationId is
     // already in `seenOperationIds`), so nothing is applied — the row must
-    // not be rewritten with an identical snapshot.
+    // not be rewritten with an identical snapshot. A replay is no longer
+    // counted as `rejected` (spec: the SDK resends a still-waiting
+    // suggestion in every batch, so this is normal, not a refusal) — see the
+    // dedicated replay test below.
     await db.saveContactGrantV2(grant({ seenOperationIds: ['9'.repeat(32)] }), KEY);
     vi.spyOn(relayService, 'fetchEvents').mockResolvedValue([await eventFor([proposal()])]);
     const saveSpy = vi.spyOn(db, 'saveContactGrantV2');
     const updateSpy = vi.spyOn(db, 'updateContactGrantV2');
-    const { result, unmount } = renderHook(() => useContactProposals(options()));
-    await waitFor(() => expect(result.current.rejected).toBe(1));
+    const { unmount } = renderHook(() => useContactProposals(options()));
+    await new Promise((r) => setTimeout(r, 20));
     // Neither the retired whole-row overwrite nor the R-22 serialised updater
     // is reached: `appliedIds` is empty, so there is nothing to write at all.
     expect(saveSpy).not.toHaveBeenCalled();
     expect(updateSpy).not.toHaveBeenCalled();
     unmount();
+  });
+
+  it('does not count a replayed operationId as rejected, but still counts a genuine refusal (spec: resend-aware counter)', async () => {
+    // The SDK now resends a proposal the app is still waiting on in every
+    // batch it sends, so a repeated `operationId` this device has already
+    // seen is that resend, not a second refusal of the same proposal.
+    // Mixed in the same batch: a genuine `capability-missing` refusal must
+    // still be counted, so the fix is "exclude `replay` specifically", not
+    // "stop counting rejections".
+    await db.saveContactGrantV2(grant({
+      seenOperationIds: ['9'.repeat(32)],
+      capabilities: ['signet.contacts.propose:add-ken'],
+    }), KEY);
+    vi.spyOn(relayService, 'fetchEvents').mockResolvedValue([await eventFor([
+      proposal(), // replay — already in seenOperationIds
+      proposal({
+        operationId: '8'.repeat(32), action: 'rename-app-label',
+        value: { contactId: SCOPED, label: 'Coach', updatedAt: Date.now() },
+      }), // capability-missing — grant has no rename capability
+    ])]);
+    const { result } = renderHook(() => useContactProposals(options()));
+    await waitFor(() => expect(result.current.rejected).toBe(1));
+    expect(result.current.accepted).toBe(0);
   });
 
   it('writes through the serialised updater when the batch does change state (M4 write branch)', async () => {
