@@ -2549,6 +2549,7 @@ export function App() {
         setContactsGrantCodeCheck({
           grantId, appName: req.appName,
           input: { appPubkey: req.appPubkey, challenge: req.challenge, grantId, railPubkey: rail.publicKey },
+          mismatches: 0,
           followUpError: CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
         });
         navigateReplace('contacts-grant-code');
@@ -2607,6 +2608,7 @@ export function App() {
     setContactsGrantCodeCheck({
       grantId, appName: req.appName,
       input: { appPubkey: req.appPubkey, challenge: req.challenge, grantId, railPubkey: rail.publicKey },
+      mismatches: 0,
       ...(followUpError ? { followUpError } : {}),
     });
     navigateReplace('contacts-grant-code');
@@ -2621,6 +2623,18 @@ export function App() {
   }, [navigateReplace]);
 
   /**
+   * B1/F1: apply a finished pairing-code check's teardown error (if any) and
+   * clear the state. Shared by `handleContactsGrantCodeDone` (every in-page
+   * exit) and the popstate-recovery effect below (browser/hardware back,
+   * which skips the page entirely — see finding 3), so the error is applied
+   * exactly once no matter which path leaves the page.
+   */
+  const applyContactsGrantCodeExit = useCallback((check: ContactsGrantCodeCheck) => {
+    if (check.followUpError) setContactsGrantActionError(check.followUpError);
+    setContactsGrantCodeCheck(null);
+  }, []);
+
+  /**
    * B1/F1: every way off the pairing-code check page — match+Done,
    * second-mismatch-disconnected+Done, Keep it, a successful not-showing
    * Disconnect, and Back/leave (wired the same as Keep it by the render
@@ -2631,10 +2645,37 @@ export function App() {
    * before this navigation.
    */
   const handleContactsGrantCodeDone = useCallback(() => {
-    if (contactsGrantCodeCheck?.followUpError) setContactsGrantActionError(contactsGrantCodeCheck.followUpError);
-    setContactsGrantCodeCheck(null);
+    if (contactsGrantCodeCheck) applyContactsGrantCodeExit(contactsGrantCodeCheck);
     navigateReplace('companion-apps');
-  }, [contactsGrantCodeCheck, navigateReplace]);
+  }, [contactsGrantCodeCheck, applyContactsGrantCodeExit, navigateReplace]);
+
+  /** Finding 1: the mismatch count lives here, not in the page — a remount
+   *  after an auto-lock must not hand back tries already used. */
+  const handleContactsGrantCodeMismatch = useCallback(() => {
+    setContactsGrantCodeCheck((prev) => (prev ? { ...prev, mismatches: prev.mismatches + 1 } : prev));
+  }, []);
+
+  /**
+   * Finding 3: browser/hardware back goes through popstate (`setPage`
+   * directly — see `useNavigation.ts`), which skips `handleContactsGrantCodeDone`
+   * entirely: `followUpError` is lost, `contactsGrantCodeCheck` is left set,
+   * and Forward can re-enter the page (the render guard below only checks
+   * that the state is gone). This is the fallback: whenever `page` has moved
+   * off `'contacts-grant-code'` while the check is still set, it applies the
+   * teardown error and clears the state, sharing `applyContactsGrantCodeExit`
+   * with the in-page exit above so the error is applied exactly once.
+   *
+   * Guarded on `encryptionKey`: locking never itself changes `page` (nothing
+   * calls `setPage` on lock), so this stays inert while locked regardless —
+   * kept explicit anyway so a future change there can't silently wipe the
+   * mismatch count finding 1 relies on surviving a lock.
+   */
+  useEffect(() => {
+    if (page === 'contacts-grant-code') return;
+    if (!contactsGrantCodeCheck) return;
+    if (!encryptionKey) return;
+    applyContactsGrantCodeExit(contactsGrantCodeCheck);
+  }, [page, contactsGrantCodeCheck, encryptionKey, applyContactsGrantCodeExit]);
 
   /**
    * Revoke a contacts v2 grant.
@@ -10346,12 +10387,18 @@ export function App() {
   // paired-child install (R-8), matching the approve screen above.
   // Back/leave is wired the same as "Keep it": the grant stands, nothing is
   // revoked silently.
-  if (page === 'contacts-grant-code' && contactsGrantCodeCheck && identity && !isPairedChild) {
+  // Finding 2: gated on `encryptionKey` too — the disconnect action needs an
+  // unlocked app, so a locked app falls through to the normal unlock flow
+  // instead, and this render picks the page back up once unlocked (`page`
+  // is untouched by locking, and `contactsGrantCodeCheck`'s mismatch count
+  // is preserved by finding 1's fix regardless).
+  if (page === 'contacts-grant-code' && contactsGrantCodeCheck && identity && encryptionKey && !isPairedChild) {
     return (
       <>
         <Layout title={CONTACTS_GRANT_CODE_TITLE} showBack onBack={handleContactsGrantCodeDone}>
           <ContactsGrantCode
             check={contactsGrantCodeCheck}
+            onMismatch={handleContactsGrantCodeMismatch}
             onRevoke={revokeContactsGrantForCodeCheck}
             onDone={handleContactsGrantCodeDone}
           />

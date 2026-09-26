@@ -14,7 +14,7 @@
  * a second is treated as the attacker case, since there is no way to tell
  * the two apart from here.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { matchesPairingCode } from '@forgesworn/signet-contacts/wire';
 import type { PairingCodeInput } from '@forgesworn/signet-contacts/wire';
 import {
@@ -30,6 +30,16 @@ export interface ContactsGrantCodeCheck {
   grantId: string;
   appName: string;
   input: PairingCodeInput;
+  /**
+   * Mismatches so far for THIS check. Lives in App's `contactsGrantCodeCheck`
+   * state, not page state — an auto-lock unmounts and later remounts this
+   * page (`useIdentity` nulls `identity` on lock), and page-local state would
+   * reset to zero on that remount, handing the person extra tries. Reported
+   * back via `onMismatch` on every fresh mismatch so the count survives.
+   * The phase is derived from this count: 0 → entry, 1 → "type it again",
+   * 2 → the disconnect step, straight away, never back to entry.
+   */
+  mismatches: number;
   /** The teardown-path copy from `handleApproveContactsGrantV2` (the ack
    *  landed but the first projection publish failed). Applied once THIS page
    *  finishes — by whichever exit — not on arrival; see App.tsx. */
@@ -38,6 +48,10 @@ export interface ContactsGrantCodeCheck {
 
 interface Props {
   check: ContactsGrantCodeCheck;
+  /** Report a fresh mismatch so the caller can persist it on
+   *  `check.mismatches` — this page's own state resets on remount, the
+   *  caller's does not. */
+  onMismatch: () => void;
   /** MUST throw on failure — this page has no other way to learn the revoke
    *  did not take. (`handleRevokeContactsGrantV2` itself never throws; its
    *  own failure signal is app-level state a caller here cannot read
@@ -56,17 +70,27 @@ type Phase =
   | { kind: 'not-showing' }
   | { kind: 'revoke-error'; error: string; retry: () => void };
 
-export function ContactsGrantCode({ check, onRevoke, onDone }: Props) {
-  const [phase, setPhase] = useState<Phase>({ kind: 'entry', mismatched: false });
+export function ContactsGrantCode({ check, onMismatch, onRevoke, onDone }: Props) {
+  // Seeded from `check.mismatches` (App state) rather than starting fresh —
+  // a remount after an auto-lock must not hand back tries already used.
+  // Mirrored locally only so a mismatch during THIS mount can move the
+  // phase before the caller's next render arrives with the updated prop.
+  const [mismatches, setMismatches] = useState(check.mismatches);
+  const [phase, setPhase] = useState<Phase>({ kind: 'entry', mismatched: check.mismatches >= 1 });
   const [typed, setTyped] = useState('');
-  const [attempts, setAttempts] = useState(0);
   const [busy, setBusy] = useState(false);
+
+  // Finding 2: "Try again" must act on the CURRENT `onRevoke`, not the one
+  // closed over when an earlier (now-stale) render built the retry handler —
+  // dereferenced at call time inside `runRevoke`, never captured directly.
+  const onRevokeRef = useRef(onRevoke);
+  useEffect(() => { onRevokeRef.current = onRevoke; }, [onRevoke]);
 
   async function runRevoke(onSuccess: () => void) {
     if (busy) return;
     setBusy(true);
     try {
-      await onRevoke(check.grantId);
+      await onRevokeRef.current(check.grantId);
       onSuccess();
     } catch (e) {
       setPhase({
@@ -79,6 +103,20 @@ export function ContactsGrantCode({ check, onRevoke, onDone }: Props) {
     }
   }
 
+  // A count of 2 already on arrival (a remount after the counter survived a
+  // lock) goes straight to the disconnect step, retrying the revoke — never
+  // back to entry. Deliberately mount-only (empty deps): the in-mount path
+  // to 2 is handled directly by `handleCheck` below, and re-running this on
+  // every render would re-fire the revoke every time `busy` toggles.
+  const autoRevokeStarted = useRef(false);
+  useEffect(() => {
+    if (mismatches >= 2 && !autoRevokeStarted.current) {
+      autoRevokeStarted.current = true;
+      void runRevoke(() => setPhase({ kind: 'disconnected' }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handleCheck() {
     if (busy) return;
     if (matchesPairingCode(check.input, typed)) {
@@ -86,9 +124,10 @@ export function ContactsGrantCode({ check, onRevoke, onDone }: Props) {
       return;
     }
     setTyped('');
-    const nextAttempts = attempts + 1;
-    setAttempts(nextAttempts);
-    if (nextAttempts >= 2) {
+    onMismatch();
+    const next = mismatches + 1;
+    setMismatches(next);
+    if (next >= 2) {
       void runRevoke(() => setPhase({ kind: 'disconnected' }));
       return;
     }
