@@ -6,7 +6,10 @@ import { buildPairingUriV2, pairingCode, randomHex } from '@forgesworn/signet-co
 import type { Capability } from '@forgesworn/signet-contacts/wire';
 import { clearDatabase, createIdentityAndUnlock, unlockWithPin, lockApp, navigateViaHarness } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
-import { CONTACTS_GRANT_DISCONNECT_LABEL, CONTACTS_GRANT_FORGET_LABEL, contactsGrantReplacesCopy } from '../src/lib/contacts-v2-copy';
+import {
+  CONTACTS_GRANT_DISCONNECT_LABEL, CONTACTS_GRANT_FORGET_LABEL, CONTACTS_GRANT_CODE_KEEP_LABEL,
+  contactsGrantReplacesCopy, contactsGrantCodeNotShowingLink,
+} from '../src/lib/contacts-v2-copy';
 
 /**
  * Regression coverage for the App.tsx fix (2026-09-27) that keeps the
@@ -62,6 +65,99 @@ function findAcks(network: ReturnType<typeof privateRelays>, appPubkey: string) 
   return [...network.events.values()].filter(
     (e) => e.kind === 21237 && e.tags.some((t) => t[0] === 'p' && t[1] === appPubkey),
   );
+}
+
+/**
+ * Full pairing round trip for a FRESH app pairing — approve, decrypt the
+ * ack, compute the code, type it, and Done. Shared by the supersede tests
+ * below to establish the "earlier grant" each of them then leaves alone (or
+ * not) by how the SECOND approval's code-check page is exited.
+ */
+async function pairAndMatch(
+  page: Page,
+  network: ReturnType<typeof privateRelays>,
+  appSk: Uint8Array,
+  appPubkey: string,
+  appName: string,
+  relay: string,
+  challenge: string,
+): Promise<string> {
+  await page.goto(buildPairUrl(appPubkey, appName, challenge, relay));
+  await unlockWithPin(page);
+  await expect(page.getByText('is asking to use your contacts')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.locator('main').getByRole('heading', { name: 'Check the code' })).toBeVisible({ timeout: 20_000 });
+
+  const seenBefore = findAcks(network, appPubkey).length;
+  await expect.poll(() => findAcks(network, appPubkey).length, { timeout: 20_000 }).toBeGreaterThan(seenBefore - 1);
+  const ack = findAcks(network, appPubkey).at(-1)!;
+  const conversationKey = nip44.v2.utils.getConversationKey(appSk, ack.pubkey);
+  const ackJson = JSON.parse(nip44.v2.decrypt(ack.content, conversationKey)) as {
+    grantId: string; railPubkey: string; challenge: string;
+  };
+  expect(ackJson.challenge).toBe(challenge);
+  const code = pairingCode({
+    appPubkey, challenge, grantId: ackJson.grantId, railPubkey: ackJson.railPubkey,
+  });
+
+  await page.getByLabel('6-digit code').fill(code);
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText(/The codes match\./)).toBeVisible({ timeout: 10_000 });
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  return ackJson.grantId;
+}
+
+/** A 6-digit string guaranteed to differ from `code` — used to force a
+ *  mismatch on the code-check page without any chance of an accidental
+ *  real match. */
+function wrongCodeFor(code: string): string {
+  return code === '000000' ? '111111' : '000000';
+}
+
+/**
+ * Re-approve `appPubkey` on the same (owner) directory and land on "Check
+ * the code", WITHOUT ever entering the matching code — optionally typing a
+ * guaranteed-wrong code once first, then leaving via the "isn't showing a
+ * code" → "Keep it" path (`onDone` with no match, so
+ * `handleContactsGrantCodeMatch`/`supersedeGrantsAfterCodeCheck` never runs).
+ */
+async function reapproveAndKeepWithoutMatching(
+  page: Page,
+  network: ReturnType<typeof privateRelays>,
+  appSk: Uint8Array,
+  appPubkey: string,
+  appName: string,
+  relay: string,
+  challenge: string,
+  mismatchFirst: boolean,
+): Promise<void> {
+  const seenBefore = findAcks(network, appPubkey).length;
+  await page.goto(buildPairUrl(appPubkey, appName, challenge, relay));
+  await unlockWithPin(page);
+  await expect(page.getByText('is asking to use your contacts')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(contactsGrantReplacesCopy(appName))).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.locator('main').getByRole('heading', { name: 'Check the code' })).toBeVisible({ timeout: 20_000 });
+
+  if (mismatchFirst) {
+    await expect.poll(() => findAcks(network, appPubkey).length, { timeout: 20_000 }).toBeGreaterThan(seenBefore);
+    const ack = findAcks(network, appPubkey).at(-1)!;
+    const conversationKey = nip44.v2.utils.getConversationKey(appSk, ack.pubkey);
+    const ackJson = JSON.parse(nip44.v2.decrypt(ack.content, conversationKey)) as {
+      grantId: string; railPubkey: string; challenge: string;
+    };
+    const realCode = pairingCode({
+      appPubkey, challenge, grantId: ackJson.grantId, railPubkey: ackJson.railPubkey,
+    });
+    await page.getByLabel('6-digit code').fill(wrongCodeFor(realCode));
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByText("That code doesn't match. Check it and type it again.")).toBeVisible({ timeout: 10_000 });
+  }
+
+  // "Older versions of an app don't show a code" → Keep it, without ever
+  // typing a code that matches.
+  await page.getByRole('button', { name: contactsGrantCodeNotShowingLink(appName) }).click();
+  await page.getByRole('button', { name: CONTACTS_GRANT_CODE_KEEP_LABEL, exact: true }).click();
 }
 
 test.describe('contacts-v2 grant pairing survives a visibility-hidden lock', () => {
@@ -263,5 +359,126 @@ test.describe('contacts-v2 grant pairing survives a visibility-hidden lock', () 
       { timeout: 20_000 },
     ).toBeGreaterThan(0);
     await expect(page.getByRole('button', { name: CONTACTS_GRANT_DISCONNECT_LABEL })).toHaveCount(1);
+  });
+
+  test('re-approving the same app leaves BOTH grants active when the code check is left via Keep it without ever matching', async ({ page, context }) => {
+    test.setTimeout(90_000);
+    const network = privateRelays();
+    await network.install(context);
+
+    await clearDatabase(page);
+    await createIdentityAndUnlock(page);
+    await page.waitForTimeout(1_000);
+
+    const appSk = hexToBytes('44'.repeat(32));
+    const appPubkey = getPublicKey(appSk);
+    const appName = 'Keep It App';
+    const relay = 'wss://pair4.test';
+
+    await pairAndMatch(page, network, appSk, appPubkey, appName, relay, randomHex(16));
+
+    // Re-approve the SAME app on the SAME directory, but leave the code
+    // check via "Keep it" — never a match, so `supersedeGrantsAfterCodeCheck`
+    // (which only ever runs from `handleContactsGrantCodeMatch`) never fires.
+    await reapproveAndKeepWithoutMatching(page, network, appSk, appPubkey, appName, relay, randomHex(16), false);
+
+    // Give any (wrongly) fire-and-forget supersede a moment to finish before
+    // asserting its ABSENCE — the revoke this proves never happened is async,
+    // so a check made too early would pass by accident rather than by proof.
+    await page.waitForTimeout(3_000);
+
+    // Both the original grant and this one are still active — no supersede
+    // happened without a code match.
+    await navigateViaHarness(page, 'companion-apps');
+    await expect(page.getByText(appName).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('button', { name: CONTACTS_GRANT_DISCONNECT_LABEL })).toHaveCount(2);
+    await expect(page.getByRole('button', { name: CONTACTS_GRANT_FORGET_LABEL })).toHaveCount(0);
+  });
+
+  test('re-approving the same app leaves BOTH grants active after one wrong code, when the code check is then left via Keep it', async ({ page, context }) => {
+    test.setTimeout(90_000);
+    const network = privateRelays();
+    await network.install(context);
+
+    await clearDatabase(page);
+    await createIdentityAndUnlock(page);
+    await page.waitForTimeout(1_000);
+
+    const appSk = hexToBytes('55'.repeat(32));
+    const appPubkey = getPublicKey(appSk);
+    const appName = 'Wrong Code App';
+    const relay = 'wss://pair5.test';
+
+    await pairAndMatch(page, network, appSk, appPubkey, appName, relay, randomHex(16));
+
+    // Re-approve the SAME app, type ONE wrong code (a mismatch, not a
+    // match — the disconnect-on-second-mismatch path never triggers), then
+    // leave via "Keep it" without ever entering the real code.
+    await reapproveAndKeepWithoutMatching(page, network, appSk, appPubkey, appName, relay, randomHex(16), true);
+
+    // Same settle wait as the sibling case above.
+    await page.waitForTimeout(3_000);
+
+    // A wrong code (which is not a match) must not have superseded anything
+    // either — both grants are still active.
+    await navigateViaHarness(page, 'companion-apps');
+    await expect(page.getByText(appName).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('button', { name: CONTACTS_GRANT_DISCONNECT_LABEL })).toHaveCount(2);
+    await expect(page.getByRole('button', { name: CONTACTS_GRANT_FORGET_LABEL })).toHaveCount(0);
+  });
+
+  test('the 30s hide-grace on contacts-grant pages runs from the moment of hiding, surviving a dependency change (page moving to the code screen) while still hidden', async ({ page, context }) => {
+    test.setTimeout(90_000);
+    const network = privateRelays();
+    await network.install(context);
+
+    await clearDatabase(page);
+    await createIdentityAndUnlock(page);
+    await page.waitForTimeout(1_000);
+
+    const appSk = hexToBytes('66'.repeat(32));
+    const appPubkey = getPublicKey(appSk);
+    const challenge = randomHex(16);
+    const appName = 'Grace Timing App';
+    const relay = 'wss://pair6.test';
+
+    await page.goto(buildPairUrl(appPubkey, appName, challenge, relay));
+    await unlockWithPin(page);
+    await expect(page.getByText('is asking to use your contacts')).toBeVisible({ timeout: 15_000 });
+
+    // Hide NOW, on the approve page — `hiddenAtRef` is stamped at this
+    // moment (App.tsx's grace effect).
+    const hiddenAt = Date.now();
+    await hidePage(page);
+
+    // ~5s later, while STILL hidden, approve — `handleApproveContactsGrantV2`
+    // moves `page` from 'contacts-grant-approve' to 'contacts-grant-code',
+    // a dependency change in the grace effect's own deps array
+    // (`[encryptionKey, resetInactivityTimer, pendingVerifyRequest,
+    // pendingAuthRequest, page]`) that re-runs it while hidden. Playwright's
+    // click still reaches the DOM even though the page's own JS believes
+    // `document.hidden` is true — only the JS-visible API is spoofed, the
+    // browser tab itself is not actually backgrounded.
+    await page.waitForTimeout(5_000);
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(page.locator('main').getByRole('heading', { name: 'Check the code' })).toBeVisible({ timeout: 20_000 });
+
+    // Wait out the REST of the original 30s window measured from `hiddenAt`
+    // (not from the approve click at ~5s), plus a margin, then show.
+    const elapsed = Date.now() - hiddenAt;
+    await page.waitForTimeout(Math.max(0, 32_000 - elapsed));
+    await showPage(page);
+
+    // Had the grace instead restarted at the dependency change (~5s in), the
+    // lock would fire at ~35s and the device would still be unlocked here at
+    // ~32s. It must already be locked — proving the window ran from the
+    // ORIGINAL hide, not from the later re-render.
+    await Promise.race([
+      page.getByRole('button', { name: 'Use PIN instead' }).waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {}),
+      page.getByRole('button', { name: '1', exact: true }).waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {}),
+    ]);
+    const pinSwitch = page.getByRole('button', { name: 'Use PIN instead' });
+    if (await pinSwitch.isVisible().catch(() => false)) await pinSwitch.click();
+    await expect(page.getByRole('button', { name: '1', exact: true })).toBeVisible({ timeout: 10_000 });
   });
 });
