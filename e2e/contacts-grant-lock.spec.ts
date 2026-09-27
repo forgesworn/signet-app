@@ -4,8 +4,9 @@ import { nip44 } from 'nostr-tools';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { buildPairingUriV2, pairingCode, randomHex } from '@forgesworn/signet-contacts/wire';
 import type { Capability } from '@forgesworn/signet-contacts/wire';
-import { clearDatabase, createIdentityAndUnlock, unlockWithPin, lockApp } from './fixtures';
+import { clearDatabase, createIdentityAndUnlock, unlockWithPin, lockApp, navigateViaHarness } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
+import { CONTACTS_GRANT_DISCONNECT_LABEL, CONTACTS_GRANT_FORGET_LABEL, contactsGrantReplacesCopy } from '../src/lib/contacts-v2-copy';
 
 /**
  * Regression coverage for the App.tsx fix (2026-09-27) that keeps the
@@ -51,6 +52,14 @@ async function showPage(page: Page) {
 /** Find the kind-21237 pairing ack Signet published, addressed to `appPubkey`. */
 function findAck(network: ReturnType<typeof privateRelays>, appPubkey: string) {
   return [...network.events.values()].find(
+    (e) => e.kind === 21237 && e.tags.some((t) => t[0] === 'p' && t[1] === appPubkey),
+  );
+}
+
+/** Every kind-21237 pairing ack addressed to `appPubkey` — used when the same
+ *  app is approved more than once and there is more than one to tell apart. */
+function findAcks(network: ReturnType<typeof privateRelays>, appPubkey: string) {
+  return [...network.events.values()].filter(
     (e) => e.kind === 21237 && e.tags.some((t) => t[0] === 'p' && t[1] === appPubkey),
   );
 }
@@ -174,5 +183,85 @@ test.describe('contacts-v2 grant pairing survives a visibility-hidden lock', () 
     await expect(page.getByText('This device is not ready to connect an app to your contacts yet.')).toHaveCount(0);
     await expect(page.locator('main').getByRole('heading', { name: 'Check the code' })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => !!findAck(network, appPubkey), { timeout: 20_000 }).toBe(true);
+  });
+
+  test('re-approving the same app on the same directory supersedes the earlier grant', async ({ page, context }) => {
+    test.setTimeout(90_000);
+    const network = privateRelays();
+    await network.install(context);
+
+    await clearDatabase(page);
+    await createIdentityAndUnlock(page);
+    await page.waitForTimeout(1_000);
+
+    const appSk = hexToBytes('33'.repeat(32));
+    const appPubkey = getPublicKey(appSk);
+    const appName = 'Repeat App';
+    const relay = 'wss://pair3.test';
+
+    async function approveAndCheck(challenge: string) {
+      await page.goto(buildPairUrl(appPubkey, appName, challenge, relay));
+      await unlockWithPin(page);
+      await expect(page.getByText('is asking to use your contacts')).toBeVisible({ timeout: 15_000 });
+      await page.getByRole('button', { name: 'Approve', exact: true }).click();
+      await expect(page.locator('main').getByRole('heading', { name: 'Check the code' })).toBeVisible({ timeout: 20_000 });
+
+      const seenBefore = findAcks(network, appPubkey).length;
+      await expect.poll(() => findAcks(network, appPubkey).length, { timeout: 20_000 }).toBeGreaterThan(seenBefore - 1);
+      const ack = findAcks(network, appPubkey).at(-1)!;
+      const conversationKey = nip44.v2.utils.getConversationKey(appSk, ack.pubkey);
+      const ackJson = JSON.parse(nip44.v2.decrypt(ack.content, conversationKey)) as {
+        grantId: string; railPubkey: string; challenge: string;
+      };
+      expect(ackJson.challenge).toBe(challenge);
+      const code = pairingCode({
+        appPubkey, challenge, grantId: ackJson.grantId, railPubkey: ackJson.railPubkey,
+      });
+
+      await page.getByLabel('6-digit code').fill(code);
+      await page.getByRole('button', { name: 'Check', exact: true }).click();
+      await expect(page.getByText(/The codes match\./)).toBeVisible({ timeout: 10_000 });
+      await page.getByRole('button', { name: 'Done', exact: true }).click();
+      return ackJson.grantId;
+    }
+
+    const firstGrantId = await approveAndCheck(randomHex(16));
+    expect(firstGrantId).toBeTruthy();
+
+    // Re-approve the SAME app on the SAME (owner) directory. The approve
+    // screen must say up front that this replaces the earlier connection.
+    await page.goto(buildPairUrl(appPubkey, appName, randomHex(16), relay));
+    await unlockWithPin(page);
+    await expect(page.getByText('is asking to use your contacts')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(contactsGrantReplacesCopy(appName))).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(page.locator('main').getByRole('heading', { name: 'Check the code' })).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => findAcks(network, appPubkey).length, { timeout: 20_000 }).toBeGreaterThan(1);
+    const secondAck = findAcks(network, appPubkey).at(-1)!;
+    const conversationKey2 = nip44.v2.utils.getConversationKey(appSk, secondAck.pubkey);
+    const secondAckJson = JSON.parse(nip44.v2.decrypt(secondAck.content, conversationKey2)) as {
+      grantId: string; railPubkey: string; challenge: string;
+    };
+    const secondCode = pairingCode({
+      appPubkey, challenge: secondAckJson.challenge, grantId: secondAckJson.grantId, railPubkey: secondAckJson.railPubkey,
+    });
+    expect(secondAckJson.grantId).not.toBe(firstGrantId);
+
+    await page.getByLabel('6-digit code').fill(secondCode);
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByText(/The codes match\./)).toBeVisible({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+
+    // Once the exit-time supersede has run, Companion apps shows exactly one
+    // ACTIVE (Disconnect-able) row for this app, and the earlier grant is the
+    // ended row (Forget-able) — never two live rows for the same app.
+    await navigateViaHarness(page, 'companion-apps');
+    await expect(page.getByText(appName).first()).toBeVisible({ timeout: 20_000 });
+    await expect.poll(
+      () => page.getByRole('button', { name: CONTACTS_GRANT_FORGET_LABEL }).count(),
+      { timeout: 20_000 },
+    ).toBeGreaterThan(0);
+    await expect(page.getByRole('button', { name: CONTACTS_GRANT_DISCONNECT_LABEL })).toHaveCount(1);
   });
 });

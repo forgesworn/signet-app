@@ -239,6 +239,7 @@ import { useContactGrantsRail, type ContactGrantsRailBackupState } from './hooks
 import { applyOperations } from './lib/contacts-v2-reducer';
 import { resolveEffectiveDirectory } from './lib/contacts-v2-effective';
 import { isValidRelayUrl } from './lib/relay-url';
+import { supersededGrantIds } from './lib/contacts-grant-supersede';
 import { CONTACT_GRANT_V2_CAP } from './types';
 import type { AppGrantV2 } from './types';
 import {
@@ -247,7 +248,7 @@ import {
   CONTACTS_GRANT_DISCONNECT_FAILED_COPY, CONTACTS_GRANT_FORGET_FAILED_COPY,
   GRANTS_BACKUP_TOO_LARGE_COPY, GRANTS_SKIPPED_REMOTE_COPY, CONTACTS_GRANT_APPROVE_TITLE,
   CONTACTS_GRANT_CAPABILITIES_INVALID_COPY, CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
-  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
+  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_APPROVE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
 } from './lib/contacts-v2-copy';
 import {
   saveContactGrantV2, getContactGrantV2, listContactGrantsV2, updateContactGrantV2,
@@ -2434,6 +2435,110 @@ export function App() {
   }, [bumpContactsGrantRows]);
 
   /**
+   * Revoke a contacts v2 grant.
+   *
+   * B-Critical (whole-branch review B), resolved by R-31: the tombstone is
+   * built from the GRANT ROW ALONE — grant id, capabilities, rail key, relay.
+   * It used to re-derive the directory's owner persona from live roster state,
+   * which returns null in at least three reachable states (the dependant has
+   * since been removed, `dependants` has not finished loading, the record has
+   * no persona slot) — and the handler then took a bare `return` AFTER the row
+   * was already stamped `revokedAt`, so the owner was told the app was
+   * disconnected while no tombstone was ever published. R-31 took `ownerPubkey`
+   * off the wire entirely, so there is nothing left to re-derive and no path
+   * out of this handler between "revoked locally" and "tombstone attempted".
+   *
+   * The LOCAL record is stamped first and the tombstone published second: the
+   * local row is the authority for "stop publishing", so a relay that cannot
+   * be reached must never leave the grant live. The publish is awaited inside
+   * its own guard for the same reason — the grant is already revoked by then,
+   * and the consumer's own staleness window bounds how long it keeps trusting
+   * what it already holds, which is exactly what the approval screen says out
+   * loud. The registry rail republishes on its own, because `revokedAt` makes
+   * the merged registry strictly richer (R-25).
+   *
+   * NOTE: this is declared ABOVE `handleApproveContactsGrantV2` (rather than
+   * in call order) so `supersedeGrantsAfterCodeCheck` below, and
+   * `applyContactsGrantCodeExit` further down, can list it as a `useCallback`
+   * dependency without a temporal-dead-zone error — a `const` referenced in a
+   * hook's dependency array must already be initialised by the time that
+   * render reaches it.
+   */
+  const handleRevokeContactsGrantV2 = useCallback(async (grantId: string, opts?: { keepError?: boolean }) => {
+    if (!encryptionKey) return;
+    // A supersede runs just after the code page applied its own follow-up
+    // error; clearing here would wipe that before the owner ever saw it.
+    if (!opts?.keepError) setContactsGrantActionError(null);
+    try {
+      const nowS = Math.floor(Date.now() / 1000);
+      let didRevoke = false;
+      const revoked = await updateContactGrantV2(grantId, encryptionKey, (current) => {
+        if (current.revokedAt) return null;
+        didRevoke = true;
+        // `updatedAt` IS bumped here: a revocation is the most user-meaningful
+        // edit a grant ever gets, and it has to win the rail's last-writer race.
+        return { ...current, revokedAt: nowS, updatedAt: Date.now() };
+      });
+      if (!revoked || !didRevoke) return;
+      await ownerInviteService.disableAppInvites(grantId, nowS).catch(() => {});
+      bumpContactsGrantSet();
+      bumpContactsSafety(`revoke:${grantId}`);
+
+      const relays = resolveSyncRelays(preferences, DEFAULT_RELAY_URL);
+      const targets = contactsGrantPublishTargets(revoked, relays.write);
+      try {
+        await publishProjectionForGrant(
+          revoked,
+          buildRevocationProjection(
+            grantId,
+            revoked.capabilities,
+            nextProjectionStamp(grantId, await liveProjectionStampFloor(revoked, targets)),
+            tombstoneDeviceId(revoked, preferences.contactsDeviceId),
+          ),
+          targets,
+        );
+      } catch {
+        // Guarded: the grant is already revoked locally, and a failed
+        // tombstone must never read as a failed revocation.
+      }
+    } catch {
+      setContactsGrantActionError(CONTACTS_GRANT_DISCONNECT_FAILED_COPY);
+    }
+  }, [encryptionKey, preferences, bumpContactsGrantSet, bumpContactsSafety, ownerInviteService]);
+
+  /**
+   * Supersede: disconnect every grant a just-confirmed pairing-code check
+   * replaced (`ContactsGrantCodeCheck.supersedes`, set by
+   * `handleApproveContactsGrantV2` from `supersededGrantIds`). Fire-and-forget
+   * — called from `applyContactsGrantCodeExit`, which is not itself async and
+   * must not throw out of an effect (the popstate-recovery effect calls it
+   * directly).
+   *
+   * The NEW grant is read back first, and superseding proceeds only if it
+   * still exists and is not revoked. A failed reconnect (a code mismatch that
+   * reached the disconnect step, or a "not showing a code" disconnect) revokes
+   * the NEW grant via `revokeContactsGrantForCodeCheck` before this ever runs,
+   * so reading it back as revoked here is what makes the old grant survive a
+   * failed reconnect rather than being torn down for a replacement that never
+   * took.
+   */
+  const supersedeGrantsAfterCodeCheck = useCallback(async (check: ContactsGrantCodeCheck) => {
+    if (!check.supersedes || check.supersedes.length === 0) return;
+    if (!encryptionKey) return;
+    try {
+      const row = await getContactGrantV2(check.grantId, encryptionKey);
+      if (!row || row.revokedAt) return;
+      for (const id of check.supersedes) {
+        await handleRevokeContactsGrantV2(id, { keepError: true });
+      }
+    } catch {
+      // Best-effort: a failed supersede leaves the superseded grant live
+      // (safe — it is simply not disconnected), and the owner can disconnect
+      // it manually from Companion apps.
+    }
+  }, [encryptionKey, handleRevokeContactsGrantV2]);
+
+  /**
    * Approve a contacts v2 grant: mint a grant id and a FRESH RANDOM rail
    * keypair, persist the encrypted grant, ack the app over its rendezvous
    * relay from an ephemeral key, and publish the first projection immediately
@@ -2474,8 +2579,16 @@ export function App() {
 
     // R-13: the cap counts ACTIVE grants, and it is checked BEFORE anything is
     // minted so the refusal is a plain sentence rather than a failed save.
+    //
+    // Supersede: an active grant already held by this SAME app on this SAME
+    // directory is not a second connection — it is replaced once the new
+    // grant's pairing code is confirmed (see `applyContactsGrantCodeExit`),
+    // never revoked here. So it must not count against the cap either, or
+    // reconnecting an app already at the cap would be refused for a slot the
+    // reconnect itself is about to free.
     const active = (await listContactGrantsV2(encryptionKey)).filter((g) => !g.revokedAt);
-    if (active.length >= CONTACT_GRANT_V2_CAP) throw new Error(CONTACTS_GRANT_AT_CAP_COPY);
+    const supersedes = supersededGrantIds(active, req.appPubkey, choice.directoryId);
+    if (active.length - supersedes.length >= CONTACT_GRANT_V2_CAP) throw new Error(CONTACTS_GRANT_AT_CAP_COPY);
 
     const relays = resolveSyncRelays(preferences, DEFAULT_RELAY_URL);
     const grantId = newGrantId();
@@ -2558,6 +2671,7 @@ export function App() {
           input: { appPubkey: req.appPubkey, challenge: req.challenge, grantId, railPubkey: rail.publicKey },
           mismatches: 0,
           followUpError: CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
+          ...(supersedes.length ? { supersedes } : {}),
         });
         navigateReplace('contacts-grant-code');
         return;
@@ -2617,6 +2731,7 @@ export function App() {
       input: { appPubkey: req.appPubkey, challenge: req.challenge, grantId, railPubkey: rail.publicKey },
       mismatches: 0,
       ...(followUpError ? { followUpError } : {}),
+      ...(supersedes.length ? { supersedes } : {}),
     });
     navigateReplace('contacts-grant-code');
   }, [
@@ -2635,11 +2750,16 @@ export function App() {
    * exit) and the popstate-recovery effect below (browser/hardware back,
    * which skips the page entirely — see finding 3), so the error is applied
    * exactly once no matter which path leaves the page.
+   *
+   * Also fires the same-app/same-directory supersede (fire-and-forget —
+   * `supersedeGrantsAfterCodeCheck` never throws) exactly once, for the same
+   * reason: every way off this page funnels through here.
    */
   const applyContactsGrantCodeExit = useCallback((check: ContactsGrantCodeCheck) => {
     if (check.followUpError) setContactsGrantActionError(check.followUpError);
     setContactsGrantCodeCheck(null);
-  }, []);
+    void supersedeGrantsAfterCodeCheck(check);
+  }, [supersedeGrantsAfterCodeCheck]);
 
   /**
    * B1/F1: every way off the pairing-code check page — match+Done,
@@ -2688,69 +2808,6 @@ export function App() {
     if (!encryptionKey) return;
     applyContactsGrantCodeExit(contactsGrantCodeCheck);
   }, [page, contactsGrantCodeCheck, encryptionKey, applyContactsGrantCodeExit]);
-
-  /**
-   * Revoke a contacts v2 grant.
-   *
-   * B-Critical (whole-branch review B), resolved by R-31: the tombstone is
-   * built from the GRANT ROW ALONE — grant id, capabilities, rail key, relay.
-   * It used to re-derive the directory's owner persona from live roster state,
-   * which returns null in at least three reachable states (the dependant has
-   * since been removed, `dependants` has not finished loading, the record has
-   * no persona slot) — and the handler then took a bare `return` AFTER the row
-   * was already stamped `revokedAt`, so the owner was told the app was
-   * disconnected while no tombstone was ever published. R-31 took `ownerPubkey`
-   * off the wire entirely, so there is nothing left to re-derive and no path
-   * out of this handler between "revoked locally" and "tombstone attempted".
-   *
-   * The LOCAL record is stamped first and the tombstone published second: the
-   * local row is the authority for "stop publishing", so a relay that cannot
-   * be reached must never leave the grant live. The publish is awaited inside
-   * its own guard for the same reason — the grant is already revoked by then,
-   * and the consumer's own staleness window bounds how long it keeps trusting
-   * what it already holds, which is exactly what the approval screen says out
-   * loud. The registry rail republishes on its own, because `revokedAt` makes
-   * the merged registry strictly richer (R-25).
-   */
-  const handleRevokeContactsGrantV2 = useCallback(async (grantId: string) => {
-    if (!encryptionKey) return;
-    setContactsGrantActionError(null);
-    try {
-      const nowS = Math.floor(Date.now() / 1000);
-      let didRevoke = false;
-      const revoked = await updateContactGrantV2(grantId, encryptionKey, (current) => {
-        if (current.revokedAt) return null;
-        didRevoke = true;
-        // `updatedAt` IS bumped here: a revocation is the most user-meaningful
-        // edit a grant ever gets, and it has to win the rail's last-writer race.
-        return { ...current, revokedAt: nowS, updatedAt: Date.now() };
-      });
-      if (!revoked || !didRevoke) return;
-      await ownerInviteService.disableAppInvites(grantId, nowS).catch(() => {});
-      bumpContactsGrantSet();
-      bumpContactsSafety(`revoke:${grantId}`);
-
-      const relays = resolveSyncRelays(preferences, DEFAULT_RELAY_URL);
-      const targets = contactsGrantPublishTargets(revoked, relays.write);
-      try {
-        await publishProjectionForGrant(
-          revoked,
-          buildRevocationProjection(
-            grantId,
-            revoked.capabilities,
-            nextProjectionStamp(grantId, await liveProjectionStampFloor(revoked, targets)),
-            tombstoneDeviceId(revoked, preferences.contactsDeviceId),
-          ),
-          targets,
-        );
-      } catch {
-        // Guarded: the grant is already revoked locally, and a failed
-        // tombstone must never read as a failed revocation.
-      }
-    } catch {
-      setContactsGrantActionError(CONTACTS_GRANT_DISCONNECT_FAILED_COPY);
-    }
-  }, [encryptionKey, preferences, bumpContactsGrantSet, bumpContactsSafety, ownerInviteService]);
 
   /**
    * The pairing-code page's own revoke call. `handleRevokeContactsGrantV2`
@@ -2918,6 +2975,23 @@ export function App() {
       .catch(() => { /* keep what is on screen */ });
     return () => { cancelled = true; };
   }, [contactsV2GrantSurfaceEnabled, encryptionKey, contactsGrantRowsVersion]);
+
+  /**
+   * The approve screen's own "this replaces an earlier connection" notice
+   * (`contactsGrantReplacesCopy`): every directoryId where the REQUESTING app
+   * already holds an active grant. Uses the same `supersededGrantIds` rule
+   * the approval handler applies for real, so the notice and the outcome
+   * never disagree.
+   */
+  const contactsGrantReplacesDirectoryIds = useMemo(() => {
+    if (!pendingContactsGrantV2) return [];
+    const appPubkey = pendingContactsGrantV2.appPubkey;
+    const ids = new Set<string>();
+    for (const d of contactsGrantDirectoryOptions) {
+      if (supersededGrantIds(contactsGrantRows, appPubkey, d.directoryId).length > 0) ids.add(d.directoryId);
+    }
+    return [...ids];
+  }, [pendingContactsGrantV2, contactsGrantDirectoryOptions, contactsGrantRows]);
 
   /**
    * M4: a failed disconnect/forget is about the page the owner was on. Leaving
@@ -4324,6 +4398,12 @@ export function App() {
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
+    // A dependency change while hidden (the approve handler moving to the
+    // code page, an inbound auth request) re-runs this effect, and the
+    // cleanup below has just cancelled the grace timer. No visibilitychange
+    // will come to re-arm it, so decide again now, or the key would sit in
+    // memory until the inactivity timer instead of the grace window.
+    if (document.visibilityState === 'hidden') handleVisibility();
 
     return () => {
       events.forEach(ev => window.removeEventListener(ev, handler));
@@ -4464,11 +4544,13 @@ export function App() {
     const signingPages: Page[] = ['venue-entry', 'photo-capture', 'approve-auth', 'approve-verification', 'approve-connect', 'approve-add-dependant', 'approve-companion-grant', 'vouch-someone', 'add-dependant', 'import-dependant', 'roster', 'manage-carousel', 'migrate-heartwood', 'contacts-grant-approve', 'contacts-grant-code'];
     if (signingPages.includes(page) && !encryptionKey) {
       requestAuth().then(key => {
-        // The code check is kept on cancel: leaving the page would let the
+        // Both grant pages stay put on cancel and offer Unlock again: the
+        // approve page so the owner need not restart the pairing from the
+        // app, the code page because the check must survive. Leaving the code page would let the
         // exit effect below clear it on the next unlock, and the grant is
         // already live, so it would stay live unchecked. The page's locked
         // state offers Unlock again instead.
-        if (!key && page !== 'contacts-grant-code') navigateReplace('home'); // user cancelled or auth not set up — go back
+        if (!key && page !== 'contacts-grant-code' && page !== 'contacts-grant-approve') navigateReplace('home'); // user cancelled or auth not set up — go back
       });
     }
   }, [page, encryptionKey, requestAuth]);
@@ -10403,6 +10485,19 @@ export function App() {
   // Approve a contacts v2 grant (Phase E). `pendingContactsGrantV2` is only
   // ever set from the SDK parser — the QR route and the `?pair=1` carrier —
   // and never on a paired-child install (R-8).
+  // Locked (a cancelled PIN prompt, or an arrival the prompt has not reached
+  // yet): Approve would only throw "not ready", so offer Unlock instead.
+  if (page === 'contacts-grant-approve' && pendingContactsGrantV2 && identity && !encryptionKey && !isPairedChild) {
+    return (
+      <>
+        <Layout title={CONTACTS_GRANT_APPROVE_TITLE} showBack onBack={handleDenyContactsGrantV2}>
+          <p>{CONTACTS_GRANT_APPROVE_LOCKED_COPY}</p>
+          <button className="btn btn-primary" onClick={() => { void requestAuth(); }}>{CONTACTS_GRANT_CODE_UNLOCK_LABEL}</button>
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
   if (page === 'contacts-grant-approve' && pendingContactsGrantV2 && identity && !isPairedChild) {
     return (
       <>
@@ -10410,6 +10505,7 @@ export function App() {
           <ContactsGrantApprove
             request={pendingContactsGrantV2}
             directories={contactsGrantDirectoryOptions}
+            replacesDirectoryIds={contactsGrantReplacesDirectoryIds}
             onApprove={handleApproveContactsGrantV2}
             onDeny={handleDenyContactsGrantV2}
           />

@@ -48,6 +48,15 @@ export interface ContactsGrantCodeCheck {
    *  landed but the first projection publish failed). Applied once THIS page
    *  finishes — by whichever exit — not on arrival; see App.tsx. */
   followUpError?: string;
+  /**
+   * Grant ids this new grant supersedes — an earlier ACTIVE grant for the
+   * same app on the same directory (`supersededGrantIds`). Disconnected once
+   * this page finishes, and only if THIS grant is still active by then: a
+   * failed reconnect (mismatch or "not showing a code" → Disconnect) leaves
+   * the old grant alone, since the new one never took its place. See
+   * `applyContactsGrantCodeExit` in App.tsx.
+   */
+  supersedes?: string[];
 }
 
 interface Props {

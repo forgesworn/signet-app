@@ -24,7 +24,7 @@ function setup(over: Partial<React.ComponentProps<typeof ContactsGrantApprove>> 
   const onDeny = vi.fn();
   render(
     <ContactsGrantApprove
-      request={REQUEST} directories={DIRECTORIES}
+      request={REQUEST} directories={DIRECTORIES} replacesDirectoryIds={[]}
       onApprove={onApprove} onDeny={onDeny} {...over}
     />,
   );
@@ -237,4 +237,28 @@ it('disables approval when switching an invite-only grant to a dependant', async
   expect(onApprove).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('radio', { name: 'You' }));
   expect(approve).toBeEnabled();
+});
+
+describe('replaces notice (same app, same directory already active)', () => {
+  it('shows the replaces notice when the selected directory is already granted to this app', () => {
+    setup({ replacesDirectoryIds: ['owner'] });
+    expect(screen.getByText(/replaces Flock's earlier connection/)).toBeInTheDocument();
+  });
+
+  it('hides the notice when the selected directory is not in replacesDirectoryIds', () => {
+    setup({ replacesDirectoryIds: [`dependant:${'b'.repeat(64)}`] });
+    expect(screen.queryByText(/replaces Flock's earlier connection/)).not.toBeInTheDocument();
+  });
+
+  it('hides the notice entirely when replacesDirectoryIds is empty', () => {
+    setup({ replacesDirectoryIds: [] });
+    expect(screen.queryByText(/replaces Flock's earlier connection/)).not.toBeInTheDocument();
+  });
+
+  it('follows the selected directory: notice appears after switching to the replaced one', async () => {
+    setup({ replacesDirectoryIds: [`dependant:${'b'.repeat(64)}`] });
+    expect(screen.queryByText(/replaces Flock's earlier connection/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: 'Robin' }));
+    expect(screen.getByText(/replaces Flock's earlier connection/)).toBeInTheDocument();
+  });
 });

@@ -479,6 +479,14 @@ export function contactsGrantDisconnectConfirm(appName: string): string {
   return `Disconnect ${safeName(appName)}? Future updates stop straight away. What it has already downloaded cannot be taken back.`;
 }
 
+/** Shown on the approve screen when the selected directory already has an
+ *  active grant for this same app — approving mints a fresh grant and the
+ *  earlier one is disconnected once the new grant's pairing code is
+ *  confirmed, not before (the old grant must survive a failed reconnect). */
+export function contactsGrantReplacesCopy(appName: string): string {
+  return `This replaces ${safeName(appName)}'s earlier connection to these contacts. The earlier one is disconnected once you finish checking the code.`;
+}
+
 /**
  * R-13: the cap counts ACTIVE grants, so the remedy really is "disconnect one",
  * not "wait" — and a revoked row sitting in the list is not what is in the way.
@@ -579,6 +587,8 @@ export const CONTACTS_GRANT_CODE_TRY_AGAIN_LABEL = 'Try again';
 export const CONTACTS_GRANT_CODE_LOCKED_COPY =
   'Unlock to finish checking the code. Nothing has been lost.';
 export const CONTACTS_GRANT_CODE_UNLOCK_LABEL = 'Unlock';
+export const CONTACTS_GRANT_APPROVE_LOCKED_COPY =
+  'Unlock to finish connecting this app to your contacts.';
 
 export function contactsGrantCodeMatchCopy(appName: string): string {
   return `The codes match. ${safeName(appName)} is connected to your contacts.`;

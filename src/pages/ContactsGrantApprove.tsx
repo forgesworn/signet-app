@@ -21,6 +21,7 @@ import type { Capability, PairingRequestV2 } from '@forgesworn/signet-contacts/w
 import { STALENESS_CHOICES } from '../types';
 import {
   CONTACTS_GRANT_CAPABILITY_COPY, CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY, CONTACTS_GRANT_FRESHNESS_LABEL, CONTACTS_GRANT_HONESTY,
+  contactsGrantReplacesCopy,
 } from '../lib/contacts-v2-copy';
 // M8: ONE definition of the picker option, beside the function that builds it.
 import type { GrantDirectoryOption } from '../lib/contacts-grant-directories';
@@ -37,6 +38,10 @@ interface Props {
   request: PairingRequestV2;
   /** Owner directory first, then each managed dependant. */
   directories: GrantDirectoryOption[];
+  /** directoryIds where this same app (`request.appPubkey`) already holds an
+   *  active grant — approving on one of these supersedes it (see
+   *  `contactsGrantReplacesCopy`, `supersededGrantIds`). Defaults to none. */
+  replacesDirectoryIds?: string[];
   onApprove: (choice: GrantChoice) => Promise<void>;
   onDeny: () => void;
 }
@@ -53,7 +58,7 @@ const optionKey = (d: GrantDirectoryOption) => `${d.directoryId}/${d.ownerIdenti
 
 const PRE_TICKED: Capability = 'signet.contacts.read:directory';
 
-export function ContactsGrantApprove({ request, directories, onApprove, onDeny }: Props) {
+export function ContactsGrantApprove({ request, directories, replacesDirectoryIds = [], onApprove, onDeny }: Props) {
   const dependants = useMemo(() => directories.filter((d) => d.directoryId !== 'owner'), [directories]);
   const owner = directories.find((d) => d.directoryId === 'owner');
 
@@ -88,6 +93,8 @@ export function ContactsGrantApprove({ request, directories, onApprove, onDeny }
   const [error, setError] = useState<string | null>(null);
 
   const wantsDependantWithNone = request.directory === 'dependant' && dependants.length === 0;
+  const selectedDirectory = directories.find((d) => optionKey(d) === directoryId);
+  const replacesSelected = !!selectedDirectory && replacesDirectoryIds.includes(selectedDirectory.directoryId);
 
   function toggle(cap: Capability, checked: boolean) {
     // Functional update: two quick taps on different boxes both have to land,
@@ -210,6 +217,12 @@ export function ContactsGrantApprove({ request, directories, onApprove, onDeny }
           >
             <p style={{ fontSize: '0.85rem', color: 'var(--danger)', marginBottom: 0 }}>{error}</p>
           </div>
+        )}
+
+        {replacesSelected && (
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>
+            {contactsGrantReplacesCopy(request.appName)}
+          </p>
         )}
 
         <button className="btn btn-primary" onClick={approve} disabled={busy || !capabilities.some(availableCapability)}>
