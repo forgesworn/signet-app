@@ -50,11 +50,10 @@ export interface ContactsGrantCodeCheck {
   followUpError?: string;
   /**
    * Grant ids this new grant supersedes — an earlier ACTIVE grant for the
-   * same app on the same directory (`supersededGrantIds`). Disconnected once
-   * this page finishes, and only if THIS grant is still active by then: a
-   * failed reconnect (mismatch or "not showing a code" → Disconnect) leaves
-   * the old grant alone, since the new one never took its place. See
-   * `applyContactsGrantCodeExit` in App.tsx.
+   * same app on the same directory and owner identity (`supersededGrantIds`).
+   * Disconnected ONLY when the codes match: Keep it, Back or a mismatch leave
+   * the old grant alone, since none of them proves the app holds the new
+   * pairing. See `handleContactsGrantCodeMatch` in App.tsx.
    */
   supersedes?: string[];
 }

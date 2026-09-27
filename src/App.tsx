@@ -2578,7 +2578,7 @@ export function App() {
     //
     // Supersede: an active grant already held by this SAME app on this SAME
     // directory is not a second connection — it is replaced once the new
-    // grant's pairing code is confirmed (see `applyContactsGrantCodeExit`),
+    // grant's pairing code MATCHES (see `handleContactsGrantCodeMatch`),
     // never revoked here. So it must not count against the cap either, or
     // reconnecting an app already at the cap would be refused for a slot the
     // reconnect itself is about to free.
