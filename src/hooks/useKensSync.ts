@@ -39,6 +39,7 @@ import {
 } from '../lib/ken-sync';
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
 import { identityKeypairs } from '../lib/contacts-sync';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
 
@@ -99,7 +100,7 @@ export function useKensSync({ identity, npBackend, relayUrl, encryptionKey, kens
   // (a relay can't serve us a strictly-older version than we've already applied).
   const lastRemoteCreatedAtRef = useRef<number>(0);
   // Debounce handle.
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishTimerRef = useRef<PendingPublish | null>(null);
   // M7 (2026-07-02 audit): gate the publish effect on the fetch-and-merge
   // effect below having resolved at least once for the current tuple —
   // see useContactsSync for the full rationale (fresh-device data-loss race).
@@ -166,8 +167,8 @@ export function useKensSync({ identity, npBackend, relayUrl, encryptionKey, kens
 
     let cancelled = false;
     const publishingBackend = guardedSigningBackend(npBackend, () => !cancelled);
-    if (publishTimerRef.current) clearTimeout(publishTimerRef.current);
-    publishTimerRef.current = setTimeout(async () => {
+    if (publishTimerRef.current) publishTimerRef.current.cancel();
+    publishTimerRef.current = schedulePublish(async () => {
       publishTimerRef.current = null;
       try {
       // Read the authoritative set from IDB (may differ from the scoped
@@ -188,7 +189,7 @@ export function useKensSync({ identity, npBackend, relayUrl, encryptionKey, kens
     return () => {
       cancelled = true;
       if (publishTimerRef.current) {
-        clearTimeout(publishTimerRef.current);
+        publishTimerRef.current.cancel();
         publishTimerRef.current = null;
       }
     };

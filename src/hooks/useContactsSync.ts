@@ -45,6 +45,7 @@ import {
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
 import { resolveHookRelays } from '../lib/sync-relays';
 import { getSyncSeen, setSyncSeen, classifyFetchOutcome, type SyncRemoteState } from '../lib/sync-seen';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
 
@@ -114,7 +115,7 @@ export function useContactsSync({ identity, npBackend, relays, relayUrl, encrypt
   // we've already applied).
   const lastRemoteCreatedAtRef = useRef<number>(0);
   // Debounce handle.
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishTimerRef = useRef<PendingPublish | null>(null);
   // M7 (2026-07-02 audit): the publish effect must not fire until the
   // fetch-and-merge effect below has resolved at least once for the
   // current (identity, backend, relayUrl, encryptionKey) tuple. Without
@@ -233,8 +234,8 @@ export function useContactsSync({ identity, npBackend, relays, relayUrl, encrypt
 
     let cancelled = false;
     const publishingBackend = guardedSigningBackend(npBackend, () => !cancelled);
-    if (publishTimerRef.current) clearTimeout(publishTimerRef.current);
-    publishTimerRef.current = setTimeout(async () => {
+    if (publishTimerRef.current) publishTimerRef.current.cancel();
+    publishTimerRef.current = schedulePublish(async () => {
       publishTimerRef.current = null;
       try {
       // Read the authoritative set from IDB (may differ from the
@@ -255,7 +256,7 @@ export function useContactsSync({ identity, npBackend, relays, relayUrl, encrypt
     return () => {
       cancelled = true;
       if (publishTimerRef.current) {
-        clearTimeout(publishTimerRef.current);
+        publishTimerRef.current.cancel();
         publishTimerRef.current = null;
       }
     };

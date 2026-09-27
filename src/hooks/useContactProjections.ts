@@ -58,6 +58,7 @@ import { LocalSigningBackend } from '../lib/signing-backend';
 import { fetchNewestFromRelays, publishToRelays } from '../lib/sync-relays';
 import { computePublishDelayMs } from '../lib/personas-sync';
 import { isValidRelayUrl } from '../lib/relay-url';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 /** R-14: App composes these from the landed `familyDirectoryRefs` +
  *  `scopeEffectiveContext`. Nothing here builds a directory list of its own. */
@@ -361,7 +362,7 @@ export function keepaliveDelayForRun(
 export function useContactProjections({
   enabled, encryptionKey, relays, directories, deviceId, changeToken, safetyToken,
 }: UseContactProjectionsOptions) {
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef = useRef<PendingPublish | null>(null);
   /** R-29: the per-grant keepalive timer — see `KEEPALIVE_*` above. */
   const keepaliveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
@@ -628,8 +629,8 @@ export function useContactProjections({
 
     runRef.current = run;
 
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => { timerRef.current = null; void run(); },
+    if (timerRef.current) timerRef.current.cancel();
+    timerRef.current = schedulePublish(async () => { timerRef.current = null; await run(); },
       immediate ? 0 : computePublishDelayMs());
 
     return () => {
@@ -639,7 +640,7 @@ export function useContactProjections({
       // redundant with the next invocation's own bump at the top — harmless,
       // `isStale()` only ever tests inequality.
       genRef.current += 1;
-      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      if (timerRef.current) { timerRef.current.cancel(); timerRef.current = null; }
       if (keepaliveRef.current) { clearTimeout(keepaliveRef.current); keepaliveRef.current = null; }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

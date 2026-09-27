@@ -39,6 +39,7 @@ import {
 } from '../lib/personas-sync';
 import { getSyncSeen, setSyncSeen, classifyFetchOutcome, type SyncRemoteState } from '../lib/sync-seen';
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 /** Timeout for the best-effort `heartwood_list_identities` reconcile round-trip. */
 const HEARTWOOD_LIST_TIMEOUT_MS = 6000;
@@ -104,7 +105,7 @@ export function usePersonasSync({ publishEnabled = true,
   const lastPublishedHashRef = useRef<string>('');
   const lastPublishedAtRef = useRef<number>(0);
   const lastRemoteCreatedAtRef = useRef<number>(0);
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishTimerRef = useRef<PendingPublish | null>(null);
   // Ref-latched so the fetch effect doesn't need `applyRemotePersonas`
   // itself in its dependency array — callers (App.tsx) typically pass a
   // fresh `useCallback` each render whose identity is stable in practice
@@ -405,8 +406,8 @@ export function usePersonasSync({ publishEnabled = true,
 
     let cancelled = false;
     const publishingBackend = guardedSigningBackend(npBackend, () => !cancelled);
-    if (publishTimerRef.current) clearTimeout(publishTimerRef.current);
-    publishTimerRef.current = setTimeout(async () => {
+    if (publishTimerRef.current) publishTimerRef.current.cancel();
+    publishTimerRef.current = schedulePublish(async () => {
       publishTimerRef.current = null;
       try {
         const hash = JSON.stringify(toWire(identity));
@@ -426,7 +427,7 @@ export function usePersonasSync({ publishEnabled = true,
     return () => {
       cancelled = true;
       if (publishTimerRef.current) {
-        clearTimeout(publishTimerRef.current);
+        publishTimerRef.current.cancel();
         publishTimerRef.current = null;
       }
     };

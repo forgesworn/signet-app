@@ -25,6 +25,7 @@ import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import type { HeartwoodRequestFn } from '../lib/heartwood-dependant-create';
 import { deriveProfessionalPersona } from '../lib/professional/pro-persona';
 import { usePersonasSync } from './usePersonasSync';
+import { flushPendingPublishes, resetPendingPublishesForTests } from '../lib/pending-publish';
 
 const mockFetch = vi.mocked(fetchPersonasSync);
 const mockPublish = vi.mocked(publishPersonasSync);
@@ -73,6 +74,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  resetPendingPublishesForTests();
   vi.useRealTimers();
 });
 
@@ -427,6 +429,32 @@ describe('usePersonasSync — debounced publish-on-change', () => {
       await vi.advanceTimersByTimeAsync(6100);
     });
     expect(mockPublish).not.toHaveBeenCalled();
+  });
+});
+
+describe('usePersonasSync — flush before lock', () => {
+  it('flushPendingPublishes publishes a local change without waiting out the jitter', async () => {
+    mockFetch.mockResolvedValue(null);
+
+    vi.useFakeTimers();
+    const { rerender } = renderSync({ identity });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6001);
+    });
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+
+    // A local change arms a fresh 6 s timer; do NOT advance past it.
+    rerender({ identity: { ...identity, extraPersonas: [makeExtra()] } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await flushPendingPublishes();
+    });
+    expect(mockPublish).toHaveBeenCalledTimes(2);
   });
 });
 

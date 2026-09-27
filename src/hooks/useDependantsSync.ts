@@ -35,6 +35,7 @@ import {
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
 import { resolveHookRelays } from '../lib/sync-relays';
 import { getSyncSeen, setSyncSeen, classifyFetchOutcome, type SyncRemoteState } from '../lib/sync-seen';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
 
@@ -96,7 +97,7 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
   const hydratedAuthorRef = useRef<string | null>(null);
   const lastPublishedHashRef = useRef<string>('');
   const lastRemoteCreatedAtRef = useRef<number>(0);
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishTimerRef = useRef<PendingPublish | null>(null);
   // M7 (2026-07-02 audit): gate the publish effect on the fetch-and-merge
   // effect below having resolved at least once for the current tuple —
   // see useContactsSync for the full rationale (fresh-device data-loss race).
@@ -209,8 +210,8 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
 
     let cancelled = false;
     const publishingBackend = guardedSigningBackend(npBackend, () => !cancelled);
-    if (publishTimerRef.current) clearTimeout(publishTimerRef.current);
-    publishTimerRef.current = setTimeout(async () => {
+    if (publishTimerRef.current) publishTimerRef.current.cancel();
+    publishTimerRef.current = schedulePublish(async () => {
       publishTimerRef.current = null;
       try {
         const hash = hashDependants(dependants);
@@ -227,7 +228,7 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
     return () => {
       cancelled = true;
       if (publishTimerRef.current) {
-        clearTimeout(publishTimerRef.current);
+        publishTimerRef.current.cancel();
         publishTimerRef.current = null;
       }
     };

@@ -20,6 +20,7 @@ import { useEffect, useRef } from 'react';
 import type { DependantIdentity } from '../types';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { publishDependantStatus } from '../lib/dependant-status-sync';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
 
@@ -50,12 +51,12 @@ function publishHashFor(dep: DependantIdentity, guardianName: string | undefined
 export function useDependantStatusPublisher({ dependants, relayUrl, encryptionKey, guardianName }: Options) {
   // Per-dependant hashes of the last-published state. Keyed by dependant id.
   const lastPublishedRef = useRef<Map<string, string>>(new Map());
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef = useRef<PendingPublish | null>(null);
 
   useEffect(() => {
     if (!relayUrl || !encryptionKey) return;
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(async () => {
+    if (timerRef.current) timerRef.current.cancel();
+    timerRef.current = schedulePublish(async () => {
       timerRef.current = null;
       for (const dep of dependants) {
         const endpoint = dep.bunkerEndpoint;
@@ -90,7 +91,7 @@ export function useDependantStatusPublisher({ dependants, relayUrl, encryptionKe
 
     return () => {
       if (timerRef.current) {
-        clearTimeout(timerRef.current);
+        timerRef.current.cancel();
         timerRef.current = null;
       }
     };

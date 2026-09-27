@@ -46,6 +46,7 @@ import { computePublishDelayMs } from '../lib/personas-sync';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import type { SyncRemoteState } from '../lib/sync-seen';
 import type { AppGrantV2 } from '../types';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 /** Mirrors `useContactsV2Sync`'s `ContactsV2BackupState`, narrowed to the
  *  two outcomes this rail's byte-fitting can actually produce: there is no
@@ -205,7 +206,7 @@ export function useContactGrantsRail({
   // dropped silently.
   const inFlightRef = useRef(false);
   const pendingRef = useRef(false);
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishTimerRef = useRef<PendingPublish | null>(null);
   const lastPublishedHashRef = useRef<string>('');
   // Set at the end of every fetch attempt. False for `'unreachable'` and for
   // the "an event exists but could not be opened" combination
@@ -415,7 +416,7 @@ export function useContactGrantsRail({
     // The timer handle THIS effect instance scheduled — tracked locally so
     // cleanup and the collision re-arm below only ever clear/replace a
     // timer this closure actually owns.
-    let myTimerHandle: ReturnType<typeof setTimeout> | null = null;
+    let myTimerHandle: PendingPublish | null = null;
     // Item 10: set by this effect's own cleanup. The `pendingRef` re-arm in
     // `finally` below can run AFTER the cleanup has already executed (the
     // cycle it belongs to was still awaiting a relay call when a dependency
@@ -426,7 +427,7 @@ export function useContactGrantsRail({
     let disposed = false;
     const schedule = (ms: number) => {
       if (disposed) return;
-      myTimerHandle = setTimeout(runCycle, ms);
+      myTimerHandle = schedulePublish(runCycle, ms);
       publishTimerRef.current = myTimerHandle;
     };
     const stillCurrent = () => mountedRef.current && publishIdentityRef.current === generationAtSchedule;
@@ -510,7 +511,7 @@ export function useContactGrantsRail({
     return () => {
       disposed = true;
       if (myTimerHandle !== null) {
-        clearTimeout(myTimerHandle);
+        myTimerHandle.cancel();
         if (publishTimerRef.current === myTimerHandle) publishTimerRef.current = null;
         myTimerHandle = null;
       }

@@ -23,6 +23,7 @@ import { LocalSigningBackend } from '../lib/signing-backend';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import type { AppGrantV2 } from '../types';
 import { useContactGrantsRail } from './useContactGrantsRail';
+import { flushPendingPublishes, hasPendingPublishes, resetPendingPublishesForTests } from '../lib/pending-publish';
 
 const mockFetch = vi.mocked(fetchGrantsV2);
 const mockPublish = vi.mocked(publishGrantsV2);
@@ -65,6 +66,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  resetPendingPublishesForTests();
   vi.restoreAllMocks();
 });
 
@@ -315,6 +317,20 @@ describe('useContactGrantsRail — publish', () => {
     expect(Number.isInteger(now)).toBe(true);
     expect(now).toBeLessThan(1e11);
     expect(Math.abs(now - Math.floor(Date.now() / 1000))).toBeLessThan(120);
+  });
+});
+
+describe('useContactGrantsRail — flush before lock', () => {
+  it('flushPendingPublishes publishes an armed registry without waiting out the delay', async () => {
+    await db.saveContactGrantV2(grant(), KEY);
+
+    renderRail({ publishDelayMs: 60_000 });
+    await waitFor(() => expect(hasPendingPublishes()).toBe(true));
+    expect(mockPublish).not.toHaveBeenCalled();
+
+    await flushPendingPublishes();
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+    expect(mockPublish.mock.calls[0][0].grants.map((g) => g.grantId)).toEqual(['f'.repeat(32)]);
   });
 });
 

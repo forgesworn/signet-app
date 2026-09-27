@@ -21,6 +21,7 @@ import { createNewIdentity } from '../lib/signet';
 import type { DependantIdentity, SignetIdentity } from '../types';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import { useDependantsSync } from './useDependantsSync';
+import { flushPendingPublishes, resetPendingPublishesForTests } from '../lib/pending-publish';
 
 const mockFetch = vi.mocked(fetchDependantsSync);
 const mockPublish = vi.mocked(publishDependantsSync);
@@ -71,6 +72,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  resetPendingPublishesForTests();
   vi.useRealTimers();
 });
 
@@ -118,5 +120,31 @@ describe('useDependantsSync — debounced publish (I2)', () => {
       await vi.advanceTimersByTimeAsync(1100);
     });
     expect(mockPublish).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('useDependantsSync — flush before lock', () => {
+  it('flushPendingPublishes publishes a pending change before the debounce fires', async () => {
+    mockFetch.mockResolvedValue(null);
+    const dep = makeDependant(identity.naturalPerson.publicKey);
+
+    vi.useFakeTimers();
+    renderHook(() => useDependantsSync({
+      identity,
+      npBackend: backend,
+      relayUrl: RELAY_URL,
+      encryptionKey: KEY,
+      guardianMnemonic: identity.mnemonic,
+      dependants: [dep],
+    }));
+
+    await flushHydration();
+    // Hydrated, timer armed, debounce (1 s) not yet elapsed.
+    expect(mockPublish).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await flushPendingPublishes();
+    });
+    expect(mockPublish).toHaveBeenCalledTimes(1);
   });
 });

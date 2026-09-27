@@ -28,6 +28,7 @@ import { createNewIdentity } from '../lib/signet';
 import type { ContactOperation, SignetIdentity } from '../types';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import { useContactsV2Sync } from './useContactsV2Sync';
+import { flushPendingPublishes, hasPendingPublishes, resetPendingPublishesForTests } from '../lib/pending-publish';
 
 const mockFetch = vi.mocked(fetchContactsV2Sync);
 const mockOutbox = vi.mocked(publishContactsV2Outbox);
@@ -108,6 +109,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  resetPendingPublishesForTests();
   vi.useRealTimers();
 });
 
@@ -376,6 +378,23 @@ function renderPublishSync(initial: PublishSyncProps = {}) {
 }
 
 describe('useContactsV2Sync — publish', () => {
+  it('flushPendingPublishes publishes a local operation without waiting out the delay', async () => {
+    const carried = op();
+    const mine = op({ logicalClock: 5 });
+    await saveContactOperationV2(carried, KEY);
+    await saveContactOperationV2(mine, KEY);
+    mockFetch.mockResolvedValue(PRESENT([carried], [carried.operationId]));
+
+    const { result } = renderPublishSync({ publishDelayMs: 60_000 });
+    await waitFor(() => expect(result.current.remoteState).toBe('present'));
+    await waitFor(() => expect(hasPendingPublishes()).toBe(true));
+    expect(mockOutbox).not.toHaveBeenCalled();
+
+    await flushPendingPublishes();
+    expect(mockOutbox).toHaveBeenCalledTimes(1);
+    expect(mockOutbox.mock.calls[0][0].ops).toEqual([mine]);
+  });
+
   it('publishes only what the checkpoint does not already carry, as an outbox', async () => {
     const carried = op();
     const mine = op({ logicalClock: 5 });

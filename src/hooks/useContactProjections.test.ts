@@ -11,6 +11,7 @@ import { parseProjection, projectionTag, scopedContactId } from '@forgesworn/sig
 import { openVaultPayload } from '../lib/vault-envelope';
 import * as db from '../lib/db';
 import * as syncRelays from '../lib/sync-relays';
+import { flushPendingPublishes, resetPendingPublishesForTests } from '../lib/pending-publish';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import type { AppGrantV2, ContactOperation } from '../types';
 import type { NostrEvent } from 'signet-protocol';
@@ -119,7 +120,7 @@ beforeEach(async () => {
   publishSpy = vi.spyOn(syncRelays, 'publishToRelays').mockResolvedValue(true);
   vi.useFakeTimers();
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { resetPendingPublishesForTests(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 /**
  * fake-indexeddb schedules its callbacks on `setImmediate`, which vitest's
@@ -158,6 +159,18 @@ describe('useContactProjections', () => {
     expect(event.kind).toBe(30078);
     expect(event.tags).toEqual([['d', projectionTag('f'.repeat(32))]]);
     expect(event.pubkey).toBe(new LocalSigningBackend(RAIL_SK).activePublicKeyHex);
+    unmount();
+  });
+
+  it('flushPendingPublishes publishes without waiting out the jittered delay', async () => {
+    await withRealTimers(() => seedContact(CONTACT_ID, '9'.repeat(32)));
+    await withRealTimers(() => db.saveContactGrantV2(grant(), KEY));
+    const { unmount } = renderHook(() => useContactProjections(baseOptions() as never));
+    // Only a sliver of the 6–91 s jitter has elapsed.
+    await vi.advanceTimersByTimeAsync(10);
+    expect(publishSpy).not.toHaveBeenCalled();
+    await withRealTimers(() => flushPendingPublishes());
+    expect(publishSpy).toHaveBeenCalledTimes(1);
     unmount();
   });
 

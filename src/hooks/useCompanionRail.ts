@@ -12,6 +12,7 @@ import * as db from '../lib/db';
 import { publishSnapshot } from '../lib/companion-rail';
 import { contactToKindredEntry } from '../lib/kindred-adapter';
 import { identityKeypairs } from '../lib/contacts-sync';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const DEBOUNCE_MS = 1000;
 
@@ -28,13 +29,13 @@ interface Options {
 function nowSec(): number { return Math.floor(Date.now() / 1000); }
 
 export function useCompanionRail({ identity, railBackends, relayUrl, encryptionKey, contacts, kens, enabled }: Options) {
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef = useRef<PendingPublish | null>(null);
 
   useEffect(() => {
     if (!enabled || !identity || !relayUrl || !encryptionKey || railBackends.size === 0) return;
 
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(async () => {
+    if (timerRef.current) timerRef.current.cancel();
+    timerRef.current = schedulePublish(async () => {
       timerRef.current = null;
       try {
         const grants = await db.listCompanionGrants();
@@ -86,6 +87,6 @@ export function useCompanionRail({ identity, railBackends, relayUrl, encryptionK
       } catch { /* non-fatal — retry on next mutation */ }
     }, DEBOUNCE_MS);
 
-    return () => { if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } };
+    return () => { if (timerRef.current) { timerRef.current.cancel(); timerRef.current = null; } };
   }, [identity, railBackends, relayUrl, encryptionKey, contacts, kens, enabled]);
 }

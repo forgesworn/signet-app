@@ -337,6 +337,8 @@ import { buildPairingURI, generatePairingSecret } from './lib/pairing-uri';
 import type { NostrConnectRequest } from './lib/nip46';
 import type { AuthRequest, LoginRequest } from './lib/qr-router';
 import { Z } from './lib/z-index';
+import { hasPendingPublishes, flushPendingPublishes } from './lib/pending-publish';
+import { createLockRequester } from './lib/lock-after-flush';
 
 const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 const NOSTRCONNECT_SERVE_MINUTES = 2;
@@ -403,6 +405,16 @@ export function App() {
   const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
   const [pendingEncryptionKey, setPendingEncryptionKey] = useState<string | null>(null);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Every auto-lock path goes through this: when a relay publish is armed or
+  // in flight it is started at once and the lock waits for it (capped at
+  // 5 s), so an edit made just before the app hid still reaches the relay.
+  // Nothing pending ⇒ locks synchronously, as before. `setEncryptionKey` is a
+  // stable setter, so creating this once in a ref initialiser is safe.
+  const requestLockRef = useRef(createLockRequester({
+    lock: () => setEncryptionKey(null),
+    hasPending: hasPendingPublishes,
+    flush: flushPendingPublishes,
+  }));
   const inactivityTimeoutRef = useRef(INACTIVITY_TIMEOUT_MS);
 
   // Stay-awake window — foreground-only; holds off the inactivity auto-lock.
@@ -4265,7 +4277,7 @@ export function App() {
         inactivityTimer.current = setTimeout(fire, inactivityTimeoutRef.current);
         return;
       }
-      setEncryptionKey(null); // lock the app
+      requestLockRef.current(); // lock the app (after flushing pending publishes)
     }, inactivityTimeoutRef.current);
   }, []);
 
@@ -4366,6 +4378,11 @@ export function App() {
     resetInactivityTimer(); // start the timer immediately on unlock
 
     let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Hide = lock, unconditionally. A lock requested while hidden may wait up
+    // to 5 s on a publish flush (`requestLockRef`); coming back to visible
+    // inside that window does NOT cancel it — whether a quick app-switch
+    // locks must not depend on hidden publish state (review 2026-09-27).
+    const requestHideLock = () => { requestLockRef.current(); };
     // The grace runs from when the app was HIDDEN, not from the latest
     // re-run: otherwise anything that keeps changing a dependency while
     // backgrounded (a NIP-46 client repeating auth requests) would restart
@@ -4399,7 +4416,7 @@ export function App() {
             if (document.visibilityState !== 'hidden') return;
             const until = phoneAppsUntilRef.current;
             if (until !== null && Date.now() < until) { graceTimer = setTimeout(lockWhenWindowEnds, until - Date.now()); return; }
-            setEncryptionKey(null);
+            requestHideLock();
           };
           graceTimer = setTimeout(lockWhenWindowEnds, phoneAppsUntil - Date.now());
           return;
@@ -4411,9 +4428,9 @@ export function App() {
           || page === 'contacts-grant-approve' || page === 'contacts-grant-code') {
           if (graceTimer) clearTimeout(graceTimer);
           const graceLeft = Math.max(0, hiddenAtRef.current + 30000 - Date.now());
-          graceTimer = setTimeout(() => { graceTimer = null; setEncryptionKey(null); }, graceLeft);
+          graceTimer = setTimeout(() => { graceTimer = null; requestHideLock(); }, graceLeft);
         } else {
-          setEncryptionKey(null);
+          requestHideLock();
         }
       } else {
         hiddenAtRef.current = null;
@@ -4447,7 +4464,7 @@ export function App() {
     const timer = setTimeout(() => {
       setStayAwakeUntil(null);
       if (document.visibilityState === 'hidden') {
-        setEncryptionKey(null);
+        requestLockRef.current();
       } else {
         resetInactivityTimer();
       }

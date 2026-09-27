@@ -42,6 +42,7 @@ import {
 import { createSyncDecryptCache, type SyncDecryptCache } from '../lib/sync-decrypt-cache';
 import { getSyncSeen, setSyncSeen, classifyFetchOutcome, type SyncRemoteState } from '../lib/sync-seen';
 import { computePublishDelayMs } from '../lib/personas-sync';
+import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 /**
  * R6: whether the local log still fits the rail at all.
@@ -205,7 +206,7 @@ export function useContactsV2Sync({
     onBackupStateChangeRef.current?.(state);
   };
   const verifiedRef = useRef(false);
-  const publishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishTimerRef = useRef<PendingPublish | null>(null);
   // R2: the highest checkpoint sequence this device has ever recorded, read
   // once per fetch. `nextCheckpointSeq` takes the max of this and whatever the
   // relay served, so a rollback cannot walk the sequence backwards.
@@ -472,9 +473,9 @@ export function useContactsV2Sync({
     // re-arm below only ever clear/replace a timer this closure actually
     // owns, never one a newer effect instance scheduled after this one's
     // own timer already fired.
-    let myTimerHandle: ReturnType<typeof setTimeout> | null = null;
+    let myTimerHandle: PendingPublish | null = null;
     const schedule = (ms: number) => {
-      myTimerHandle = setTimeout(runCycle, ms);
+      myTimerHandle = schedulePublish(runCycle, ms);
       publishTimerRef.current = myTimerHandle;
     };
     // I1: is it still safe for a cycle scheduled under `generationAtSchedule`
@@ -642,7 +643,7 @@ export function useContactsV2Sync({
       // conditional — never stomp on a DIFFERENT, still-live handle a later
       // re-arm has since installed there.
       if (myTimerHandle !== null) {
-        clearTimeout(myTimerHandle);
+        myTimerHandle.cancel();
         if (publishTimerRef.current === myTimerHandle) publishTimerRef.current = null;
       }
     };
