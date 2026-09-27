@@ -551,6 +551,12 @@ export const CONTACTS_GRANT_CODE_KEEP_LABEL = 'Keep it';
 export const CONTACTS_GRANT_CODE_DISCONNECT_LABEL = 'Disconnect';
 export const CONTACTS_GRANT_CODE_TRY_AGAIN_LABEL = 'Try again';
 
+/** Shown when the app locked mid-check (a switch to the app to read its code
+ *  locks this one). The check is kept; unlocking brings it straight back. */
+export const CONTACTS_GRANT_CODE_LOCKED_COPY =
+  'Unlock to finish checking the code. Nothing has been lost.';
+export const CONTACTS_GRANT_CODE_UNLOCK_LABEL = 'Unlock';
+
 export function contactsGrantCodeMatchCopy(appName: string): string {
   return `The codes match. ${safeName(appName)} is connected to your contacts.`;
 }

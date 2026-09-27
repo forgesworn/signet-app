@@ -247,7 +247,7 @@ import {
   CONTACTS_GRANT_DISCONNECT_FAILED_COPY, CONTACTS_GRANT_FORGET_FAILED_COPY,
   GRANTS_BACKUP_TOO_LARGE_COPY, GRANTS_SKIPPED_REMOTE_COPY, CONTACTS_GRANT_APPROVE_TITLE,
   CONTACTS_GRANT_CAPABILITIES_INVALID_COPY, CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
-  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE,
+  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
 } from './lib/contacts-v2-copy';
 import {
   saveContactGrantV2, getContactGrantV2, listContactGrantsV2, updateContactGrantV2,
@@ -4309,7 +4309,11 @@ export function App() {
           graceTimer = setTimeout(lockWhenWindowEnds, phoneAppsUntil - Date.now());
           return;
         }
-        if (pendingVerifyRequest || pendingAuthRequest || page === 'venue-entry') {
+        // A contacts grant in flight gets the same 30s: on a same-phone
+        // grant the user MUST switch to the app to read its 6-digit code,
+        // and an instant lock there stranded the check (found on device).
+        if (pendingVerifyRequest || pendingAuthRequest || page === 'venue-entry'
+          || page === 'contacts-grant-approve' || page === 'contacts-grant-code') {
           if (graceTimer) clearTimeout(graceTimer);
           graceTimer = setTimeout(() => { graceTimer = null; setEncryptionKey(null); }, 30000);
         } else {
@@ -4457,10 +4461,14 @@ export function App() {
     // end-to-end verification caught 'approve-companion-grant' missing here:
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
-    const signingPages: Page[] = ['venue-entry', 'photo-capture', 'approve-auth', 'approve-verification', 'approve-connect', 'approve-add-dependant', 'approve-companion-grant', 'vouch-someone', 'add-dependant', 'import-dependant', 'roster', 'manage-carousel', 'migrate-heartwood'];
+    const signingPages: Page[] = ['venue-entry', 'photo-capture', 'approve-auth', 'approve-verification', 'approve-connect', 'approve-add-dependant', 'approve-companion-grant', 'vouch-someone', 'add-dependant', 'import-dependant', 'roster', 'manage-carousel', 'migrate-heartwood', 'contacts-grant-approve', 'contacts-grant-code'];
     if (signingPages.includes(page) && !encryptionKey) {
       requestAuth().then(key => {
-        if (!key) navigateReplace('home'); // user cancelled or auth not set up — go back
+        // The code check is kept on cancel: leaving the page would let the
+        // exit effect below clear it on the next unlock, and the grant is
+        // already live, so it would stay live unchecked. The page's locked
+        // state offers Unlock again instead.
+        if (!key && page !== 'contacts-grant-code') navigateReplace('home'); // user cancelled or auth not set up — go back
       });
     }
   }, [page, encryptionKey, requestAuth]);
@@ -10417,11 +10425,23 @@ export function App() {
   // paired-child install (R-8), matching the approve screen above.
   // Back/leave is wired the same as "Keep it": the grant stands, nothing is
   // revoked silently.
-  // Finding 2: gated on `encryptionKey` too — the disconnect action needs an
-  // unlocked app, so a locked app falls through to the normal unlock flow
-  // instead, and this render picks the page back up once unlocked (`page`
-  // is untouched by locking, and `contactsGrantCodeCheck`'s mismatch count
-  // is preserved by finding 1's fix regardless).
+  // Finding 2: the page itself needs an unlocked app (the disconnect action
+  // does), so while locked it shows an Unlock step instead — `signingPages`
+  // prompts on arrival, and a cancelled prompt stays here rather than
+  // falling through to Home, where the exit effect would clear the check on
+  // the next unlock. `page` is untouched by locking, and the mismatch count
+  // survives regardless (finding 1).
+  if (page === 'contacts-grant-code' && contactsGrantCodeCheck && identity && !encryptionKey && !isPairedChild) {
+    return (
+      <>
+        <Layout title={CONTACTS_GRANT_CODE_TITLE} showBack onBack={handleContactsGrantCodeDone}>
+          <p>{CONTACTS_GRANT_CODE_LOCKED_COPY}</p>
+          <button className="btn btn-primary" onClick={() => { void requestAuth(); }}>{CONTACTS_GRANT_CODE_UNLOCK_LABEL}</button>
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
   if (page === 'contacts-grant-code' && contactsGrantCodeCheck && identity && encryptionKey && !isPairedChild) {
     return (
       <>
