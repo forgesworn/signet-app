@@ -18,6 +18,14 @@ interface NavigationOptions {
   onAttemptBoundaryExit?: () => void;
 }
 
+/** How many in-app entries sit below the current one. An entry without a
+ *  depth (the mount entry, or one replaced from outside this hook) is the
+ *  bottom of the app's own history. */
+function currentDepth(): number {
+  const depth = (window.history.state as { depth?: unknown } | null)?.depth;
+  return typeof depth === 'number' && depth > 0 ? depth : 0;
+}
+
 export function useNavigation(
   setPage: (page: Page) => void,
   opts?: NavigationOptions,
@@ -44,7 +52,7 @@ export function useNavigation(
         // Hardware / browser back inside a bounded session (child-mode).
         // Re-pin history and route through the caller's gated exit handler.
         // See dependant-account-ux-spec §2.
-        window.history.pushState({ page: 'home' }, '');
+        window.history.pushState({ page: 'home', depth: currentDepth() + 1 }, '');
         onAttemptBoundaryExitRef.current?.();
         return;
       }
@@ -68,17 +76,26 @@ export function useNavigation(
 
   const navigateTo = useCallback((page: Page) => {
     setPage(page);
-    window.history.pushState({ page }, '');
+    window.history.pushState({ page, depth: currentDepth() + 1 }, '');
   }, [setPage]);
 
+  // A page reached only by replaces (e.g. a signet-grant: link → approve →
+  // code check → companion apps) has nothing of the app's below it, and
+  // history.back() is then a silent no-op, or leaves the app entirely: the
+  // back chevron did nothing (2026-09-27 device test). Go home instead.
   const navigateBack = useCallback(() => {
+    if (currentDepth() === 0) {
+      setPage('home');
+      window.history.replaceState({ page: 'home', depth: 0 }, '');
+      return;
+    }
     pendingIntentionalBacksRef.current++;
     window.history.back();
-  }, []);
+  }, [setPage]);
 
   const navigateReplace = useCallback((page: Page) => {
     setPage(page);
-    window.history.replaceState({ page }, '');
+    window.history.replaceState({ page, depth: currentDepth() }, '');
   }, [setPage]);
 
   return { navigateTo, navigateBack, navigateReplace };
