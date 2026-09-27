@@ -12,23 +12,32 @@
  */
 import type { AppGrantV2 } from '../types';
 
+/** The picker's key for one directory choice: a directory plus the identity
+ *  (persona) that owns it, since one `'owner'` directory can be offered once
+ *  per persona. Shared by the approve screen and App so both key alike. */
+export function grantOptionKey(target: { directoryId: string; ownerIdentityPubkey?: string }): string {
+  return `${target.directoryId}/${(target.ownerIdentityPubkey ?? '').toLowerCase()}`;
+}
+
 /**
- * Grant ids on `directoryId` that are ACTIVE (not revoked), belong to the
- * same `appPubkey` (compared case-insensitively — pubkeys are hex and case
- * carries no meaning), and are not `excludeGrantId` itself (the grant being
- * approved, so a re-check after minting never supersedes its own row).
+ * Grant ids that are ACTIVE (not revoked), on the same directory AND owner
+ * identity as `target` (approving an app for persona B must never touch its
+ * grant for persona A), belong to the same `appPubkey` (compared
+ * case-insensitively — pubkeys are hex and case carries no meaning), and are
+ * not `excludeGrantId` itself (the grant being approved).
  */
 export function supersededGrantIds(
   grants: readonly AppGrantV2[],
   appPubkey: string,
-  directoryId: string,
+  target: { directoryId: string; ownerIdentityPubkey?: string },
   excludeGrantId?: string,
 ): string[] {
   const targetApp = appPubkey.toLowerCase();
+  const targetKey = grantOptionKey(target);
   return grants
     .filter((g) => (
       !g.revokedAt
-      && g.directoryId === directoryId
+      && grantOptionKey(g) === targetKey
       && g.appPubkey.toLowerCase() === targetApp
       && g.grantId !== excludeGrantId
     ))

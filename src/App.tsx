@@ -239,7 +239,7 @@ import { useContactGrantsRail, type ContactGrantsRailBackupState } from './hooks
 import { applyOperations } from './lib/contacts-v2-reducer';
 import { resolveEffectiveDirectory } from './lib/contacts-v2-effective';
 import { isValidRelayUrl } from './lib/relay-url';
-import { supersededGrantIds } from './lib/contacts-grant-supersede';
+import { grantOptionKey, supersededGrantIds } from './lib/contacts-grant-supersede';
 import { CONTACT_GRANT_V2_CAP } from './types';
 import type { AppGrantV2 } from './types';
 import {
@@ -2509,18 +2509,14 @@ export function App() {
   /**
    * Supersede: disconnect every grant a just-confirmed pairing-code check
    * replaced (`ContactsGrantCodeCheck.supersedes`, set by
-   * `handleApproveContactsGrantV2` from `supersededGrantIds`). Fire-and-forget
-   * — called from `applyContactsGrantCodeExit`, which is not itself async and
-   * must not throw out of an effect (the popstate-recovery effect calls it
-   * directly).
+   * `handleApproveContactsGrantV2` from `supersededGrantIds`). Fire-and-forget,
+   * never throws; called ONLY on a code match (`handleContactsGrantCodeMatch`),
+   * the one moment that proves the app holds the new pairing. Keep it, Back
+   * and a mismatch leave the old grant alone. Not persisted: if the app dies
+   * between approve and match, both grants stay live (never neither).
    *
-   * The NEW grant is read back first, and superseding proceeds only if it
-   * still exists and is not revoked. A failed reconnect (a code mismatch that
-   * reached the disconnect step, or a "not showing a code" disconnect) revokes
-   * the NEW grant via `revokeContactsGrantForCodeCheck` before this ever runs,
-   * so reading it back as revoked here is what makes the old grant survive a
-   * failed reconnect rather than being torn down for a replacement that never
-   * took.
+   * The NEW grant is still read back first as a guard, and superseding
+   * proceeds only if it exists and is not revoked.
    */
   const supersedeGrantsAfterCodeCheck = useCallback(async (check: ContactsGrantCodeCheck) => {
     if (!check.supersedes || check.supersedes.length === 0) return;
@@ -2587,7 +2583,7 @@ export function App() {
     // reconnecting an app already at the cap would be refused for a slot the
     // reconnect itself is about to free.
     const active = (await listContactGrantsV2(encryptionKey)).filter((g) => !g.revokedAt);
-    const supersedes = supersededGrantIds(active, req.appPubkey, choice.directoryId);
+    const supersedes = supersededGrantIds(active, req.appPubkey, choice);
     if (active.length - supersedes.length >= CONTACT_GRANT_V2_CAP) throw new Error(CONTACTS_GRANT_AT_CAP_COPY);
 
     const relays = resolveSyncRelays(preferences, DEFAULT_RELAY_URL);
@@ -2751,15 +2747,13 @@ export function App() {
    * which skips the page entirely — see finding 3), so the error is applied
    * exactly once no matter which path leaves the page.
    *
-   * Also fires the same-app/same-directory supersede (fire-and-forget —
-   * `supersedeGrantsAfterCodeCheck` never throws) exactly once, for the same
-   * reason: every way off this page funnels through here.
+   * Deliberately does NOT supersede the app's earlier grant — only a code
+   * match does (`handleContactsGrantCodeMatch`).
    */
   const applyContactsGrantCodeExit = useCallback((check: ContactsGrantCodeCheck) => {
     if (check.followUpError) setContactsGrantActionError(check.followUpError);
     setContactsGrantCodeCheck(null);
-    void supersedeGrantsAfterCodeCheck(check);
-  }, [supersedeGrantsAfterCodeCheck]);
+  }, []);
 
   /**
    * B1/F1: every way off the pairing-code check page — match+Done,
@@ -2783,9 +2777,17 @@ export function App() {
   }, []);
 
   /** A match survives a remount too — see `ContactsGrantCodeCheck.matched`. */
+  /** A match is also the ONLY trigger for replacing the app's earlier grant:
+   *  "Keep it", Back or a mismatch prove nothing about whether the app got the
+   *  new pairing, and superseding then could leave the app with no working
+   *  grant at all. The page is unlocked at the moment of a match, so the
+   *  revoke has its key. `supersedes` is cleared so a remount's re-report of
+   *  the match cannot fire it twice. */
   const handleContactsGrantCodeMatch = useCallback(() => {
-    setContactsGrantCodeCheck((prev) => (prev ? { ...prev, matched: true } : prev));
-  }, []);
+    const check = contactsGrantCodeCheck;
+    setContactsGrantCodeCheck((prev) => (prev ? { ...prev, matched: true, supersedes: undefined } : prev));
+    if (check?.supersedes?.length) void supersedeGrantsAfterCodeCheck(check);
+  }, [contactsGrantCodeCheck, supersedeGrantsAfterCodeCheck]);
 
   /**
    * Finding 3: browser/hardware back goes through popstate (`setPage`
@@ -2988,7 +2990,7 @@ export function App() {
     const appPubkey = pendingContactsGrantV2.appPubkey;
     const ids = new Set<string>();
     for (const d of contactsGrantDirectoryOptions) {
-      if (supersededGrantIds(contactsGrantRows, appPubkey, d.directoryId).length > 0) ids.add(d.directoryId);
+      if (supersededGrantIds(contactsGrantRows, appPubkey, d).length > 0) ids.add(grantOptionKey(d));
     }
     return [...ids];
   }, [pendingContactsGrantV2, contactsGrantDirectoryOptions, contactsGrantRows]);
@@ -4341,6 +4343,7 @@ export function App() {
     void requestAuth();
   }, [identityLoading, prefsLoading, identity, preferences.signingMode, pendingEncryptionKey, encryptionKey, showAuthPrompt, requestAuth]);
 
+  const hiddenAtRef = useRef<number | null>(null);
   // Attach activity listeners when authenticated
   useEffect(() => {
     if (!encryptionKey) return;
@@ -4352,8 +4355,15 @@ export function App() {
     resetInactivityTimer(); // start the timer immediately on unlock
 
     let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    // The grace runs from when the app was HIDDEN, not from the latest
+    // re-run: otherwise anything that keeps changing a dependency while
+    // backgrounded (a NIP-46 client repeating auth requests) would restart
+    // the 30 s for ever. A visible app starts clean — a visibilitychange to
+    // visible that landed while locked (listener detached) never reset it.
+    if (document.visibilityState !== 'hidden') hiddenAtRef.current = null;
     const handleVisibility = () => {
       if (document.visibilityState === 'hidden') {
+        if (hiddenAtRef.current === null) hiddenAtRef.current = Date.now();
         // An ACTIVE stay-awake window suspends the hide-lock. Arming the
         // window is the user's explicit consent to serve for that period —
         // the phone's own lock screen is the security boundary while it
@@ -4389,11 +4399,13 @@ export function App() {
         if (pendingVerifyRequest || pendingAuthRequest || page === 'venue-entry'
           || page === 'contacts-grant-approve' || page === 'contacts-grant-code') {
           if (graceTimer) clearTimeout(graceTimer);
-          graceTimer = setTimeout(() => { graceTimer = null; setEncryptionKey(null); }, 30000);
+          const graceLeft = Math.max(0, hiddenAtRef.current + 30000 - Date.now());
+          graceTimer = setTimeout(() => { graceTimer = null; setEncryptionKey(null); }, graceLeft);
         } else {
           setEncryptionKey(null);
         }
       } else {
+        hiddenAtRef.current = null;
         if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
       }
     };
@@ -10505,7 +10517,7 @@ export function App() {
           <ContactsGrantApprove
             request={pendingContactsGrantV2}
             directories={contactsGrantDirectoryOptions}
-            replacesDirectoryIds={contactsGrantReplacesDirectoryIds}
+            replacesOptionKeys={contactsGrantReplacesDirectoryIds}
             onApprove={handleApproveContactsGrantV2}
             onDeny={handleDenyContactsGrantV2}
           />

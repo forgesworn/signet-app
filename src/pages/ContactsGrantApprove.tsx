@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_STALENESS_SECONDS } from '@forgesworn/signet-contacts/wire';
 import type { Capability, PairingRequestV2 } from '@forgesworn/signet-contacts/wire';
 import { STALENESS_CHOICES } from '../types';
+import { grantOptionKey } from '../lib/contacts-grant-supersede';
 import {
   CONTACTS_GRANT_CAPABILITY_COPY, CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY, CONTACTS_GRANT_FRESHNESS_LABEL, CONTACTS_GRANT_HONESTY,
   contactsGrantReplacesCopy,
@@ -41,7 +42,7 @@ interface Props {
   /** directoryIds where this same app (`request.appPubkey`) already holds an
    *  active grant — approving on one of these supersedes it (see
    *  `contactsGrantReplacesCopy`, `supersededGrantIds`). Defaults to none. */
-  replacesDirectoryIds?: string[];
+  replacesOptionKeys?: string[];
   onApprove: (choice: GrantChoice) => Promise<void>;
   onDeny: () => void;
 }
@@ -58,7 +59,7 @@ const optionKey = (d: GrantDirectoryOption) => `${d.directoryId}/${d.ownerIdenti
 
 const PRE_TICKED: Capability = 'signet.contacts.read:directory';
 
-export function ContactsGrantApprove({ request, directories, replacesDirectoryIds = [], onApprove, onDeny }: Props) {
+export function ContactsGrantApprove({ request, directories, replacesOptionKeys = [], onApprove, onDeny }: Props) {
   const dependants = useMemo(() => directories.filter((d) => d.directoryId !== 'owner'), [directories]);
   const owner = directories.find((d) => d.directoryId === 'owner');
 
@@ -94,7 +95,7 @@ export function ContactsGrantApprove({ request, directories, replacesDirectoryId
 
   const wantsDependantWithNone = request.directory === 'dependant' && dependants.length === 0;
   const selectedDirectory = directories.find((d) => optionKey(d) === directoryId);
-  const replacesSelected = !!selectedDirectory && replacesDirectoryIds.includes(selectedDirectory.directoryId);
+  const replacesSelected = !!selectedDirectory && replacesOptionKeys.includes(grantOptionKey(selectedDirectory));
 
   function toggle(cap: Capability, checked: boolean) {
     // Functional update: two quick taps on different boxes both have to land,

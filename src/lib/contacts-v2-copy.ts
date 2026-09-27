@@ -484,7 +484,7 @@ export function contactsGrantDisconnectConfirm(appName: string): string {
  *  earlier one is disconnected once the new grant's pairing code is
  *  confirmed, not before (the old grant must survive a failed reconnect). */
 export function contactsGrantReplacesCopy(appName: string): string {
-  return `This replaces ${safeName(appName)}'s earlier connection to these contacts. The earlier one is disconnected once you finish checking the code.`;
+  return `This replaces ${safeName(appName)}'s earlier connection to these contacts. The earlier one is disconnected once the codes match.`;
 }
 
 /**

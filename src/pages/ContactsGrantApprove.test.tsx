@@ -24,7 +24,7 @@ function setup(over: Partial<React.ComponentProps<typeof ContactsGrantApprove>> 
   const onDeny = vi.fn();
   render(
     <ContactsGrantApprove
-      request={REQUEST} directories={DIRECTORIES} replacesDirectoryIds={[]}
+      request={REQUEST} directories={DIRECTORIES} replacesOptionKeys={[]}
       onApprove={onApprove} onDeny={onDeny} {...over}
     />,
   );
@@ -241,22 +241,22 @@ it('disables approval when switching an invite-only grant to a dependant', async
 
 describe('replaces notice (same app, same directory already active)', () => {
   it('shows the replaces notice when the selected directory is already granted to this app', () => {
-    setup({ replacesDirectoryIds: ['owner'] });
+    setup({ replacesOptionKeys: ['owner/'] });
     expect(screen.getByText(/replaces Flock's earlier connection/)).toBeInTheDocument();
   });
 
-  it('hides the notice when the selected directory is not in replacesDirectoryIds', () => {
-    setup({ replacesDirectoryIds: [`dependant:${'b'.repeat(64)}`] });
+  it('hides the notice when the selected directory is not in replacesOptionKeys', () => {
+    setup({ replacesOptionKeys: [`dependant:${'b'.repeat(64)}/`] });
     expect(screen.queryByText(/replaces Flock's earlier connection/)).not.toBeInTheDocument();
   });
 
-  it('hides the notice entirely when replacesDirectoryIds is empty', () => {
-    setup({ replacesDirectoryIds: [] });
+  it('hides the notice entirely when replacesOptionKeys is empty', () => {
+    setup({ replacesOptionKeys: [] });
     expect(screen.queryByText(/replaces Flock's earlier connection/)).not.toBeInTheDocument();
   });
 
   it('follows the selected directory: notice appears after switching to the replaced one', async () => {
-    setup({ replacesDirectoryIds: [`dependant:${'b'.repeat(64)}`] });
+    setup({ replacesOptionKeys: [`dependant:${'b'.repeat(64)}/`] });
     expect(screen.queryByText(/replaces Flock's earlier connection/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('radio', { name: 'Robin' }));
     expect(screen.getByText(/replaces Flock's earlier connection/)).toBeInTheDocument();
