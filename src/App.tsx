@@ -224,7 +224,7 @@ import {
   buildPairingAckV2Content, newGrantId, newRailKeypair, parseContactsPairingRequestV2,
 } from './lib/companion-pair-v2';
 import type { PairingRequestV2 } from './lib/companion-pair-v2';
-import { ackEventTemplate, projectionTag, proposalTag } from '@forgesworn/signet-contacts/wire';
+import { ackEventTemplate, storedAckEventTemplate, projectionTag, proposalTag } from '@forgesworn/signet-contacts/wire';
 import { buildContactProjection, buildRevocationProjection, scopedIdIndex } from './lib/contact-projection';
 import {
   buildProjectionDirectories, grantIdentityOptions, projectableDirectoryRefs,
@@ -2631,8 +2631,16 @@ export function App() {
         // P8: the ack's event shape is the SDK's, not a hand-built copy — a
         // tag change there has to reach here, and a second spelling is a
         // second thing to keep in step.
+        const ackAt = Math.floor(Date.now() / 1000);
         const ackEvent = await ephemeral.signEvent(
-          ackEventTemplate(ephemeral.activePublicKeyHex, req.appPubkey, Math.floor(Date.now() / 1000), content),
+          ackEventTemplate(ephemeral.activePublicKeyHex, req.appPubkey, ackAt, content),
+        );
+        // The stored, NIP-40-expiring copy (same content) is what a
+        // BACKGROUNDED app fetches when it comes back — on one phone the app
+        // is always backgrounded while the owner approves here, and the
+        // ephemeral copy goes past its frozen socket (2026-09-27 field test).
+        const storedAckEvent = await ephemeral.signEvent(
+          storedAckEventTemplate(ephemeral.activePublicKeyHex, req.appPubkey, ackAt, content, req.challenge),
         );
         const rendezvous = new RelayClient(req.rendezvousRelay);
         try {
@@ -2641,8 +2649,11 @@ export function App() {
           // app has never heard of, holding a cap slot for nothing — so a
           // relay rejection is a failed approval the owner can retry, not a
           // silent half-pairing.
-          const ack = await rendezvous.publish(ackEvent);
-          if (!ack.ok) throw new Error('ack rejected');
+          // The gate is "the app can learn of it": either copy landing will
+          // do, and the stored one first, since it is the one that survives.
+          const stored = await rendezvous.publish(storedAckEvent).catch(() => ({ ok: false }));
+          const ephemeralAck = await rendezvous.publish(ackEvent).catch(() => ({ ok: false }));
+          if (!stored.ok && !ephemeralAck.ok) throw new Error('ack rejected');
           ackSent = true;
         } finally {
           rendezvous.disconnect();
