@@ -20,7 +20,7 @@ import { DEFAULT_STALENESS_SECONDS } from '@forgesworn/signet-contacts/wire';
 import type { Capability, PairingRequestV2 } from '@forgesworn/signet-contacts/wire';
 import { STALENESS_CHOICES } from '../types';
 import {
-  CONTACTS_GRANT_CAPABILITY_COPY, CONTACTS_GRANT_FRESHNESS_LABEL, CONTACTS_GRANT_HONESTY,
+  CONTACTS_GRANT_CAPABILITY_COPY, CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY, CONTACTS_GRANT_FRESHNESS_LABEL, CONTACTS_GRANT_HONESTY,
 } from '../lib/contacts-v2-copy';
 // M8: ONE definition of the picker option, beside the function that builds it.
 import type { GrantDirectoryOption } from '../lib/contacts-grant-directories';
@@ -127,22 +127,34 @@ export function ContactsGrantApprove({ request, directories, onApprove, onDeny }
         <fieldset style={{ border: 'none', padding: 0, margin: '0 0 20px' }}>
           <legend style={{ fontWeight: 600, marginBottom: 8, fontSize: '0.9rem' }}>What it may do</legend>
           {request.capabilities.some(cap => cap.startsWith('signet.contacts.invites:')) && !directoryId.startsWith('owner/') && <p>App invitations are currently available for your own identities only.</p>}
-          {request.capabilities.map((cap) => (
-            <label
-              key={cap}
-              style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: '0.9rem', marginBottom: 10, cursor: 'pointer' }}
-            >
-              <input
-                type="checkbox"
-                aria-label={CONTACTS_GRANT_CAPABILITY_COPY[cap]}
-                checked={capabilities.includes(cap) && availableCapability(cap)}
-                onChange={(e) => toggle(cap, e.target.checked)}
-                disabled={busy || !availableCapability(cap)}
-                style={{ marginTop: 3 }}
-              />
-              <span>{CONTACTS_GRANT_CAPABILITY_COPY[cap]}</span>
-            </label>
-          ))}
+          {request.capabilities.map((cap) => {
+            const withoutId = `contacts-grant-without-${cap.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`;
+            return (
+              <label
+                key={cap}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: '0.9rem', marginBottom: 10, cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  aria-label={CONTACTS_GRANT_CAPABILITY_COPY[cap]}
+                  aria-describedby={withoutId}
+                  checked={capabilities.includes(cap) && availableCapability(cap)}
+                  onChange={(e) => toggle(cap, e.target.checked)}
+                  disabled={busy || !availableCapability(cap)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  <span>{CONTACTS_GRANT_CAPABILITY_COPY[cap]}</span>
+                  <span
+                    id={withoutId}
+                    style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.8rem', marginTop: 2 }}
+                  >
+                    {CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY[cap]}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
         </fieldset>
 
         <fieldset style={{ border: 'none', padding: 0, margin: '0 0 20px' }}>

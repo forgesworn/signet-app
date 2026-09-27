@@ -4,7 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import { ContactsGrantApprove } from './ContactsGrantApprove';
-import { CONTACTS_GRANT_CAPABILITY_COPY } from '../lib/contacts-v2-copy';
+import { CONTACTS_GRANT_CAPABILITY_COPY, CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY } from '../lib/contacts-v2-copy';
 import type { PairingRequestV2 } from '@forgesworn/signet-contacts/wire';
 
 const REQUEST: PairingRequestV2 = {
@@ -179,6 +179,20 @@ describe('ContactsGrantApprove', () => {
   it('explains when there is no dependant to grant against', () => {
     setup({ directories: [{ directoryId: 'owner', label: 'You' }], request: { ...REQUEST, directory: 'dependant' } });
     expect(screen.getByText(/no dependants/i)).toBeInTheDocument();
+  });
+
+  it('shows what each capability unlocks, so the box is not unticked (each with its without-line)', () => {
+    setup({ request: { ...REQUEST, capabilities: [
+      'signet.contacts.read:directory', 'signet.contacts.read:tier',
+    ] } });
+    expect(screen.getByText(CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY['signet.contacts.read:directory'])).toBeInTheDocument();
+    expect(screen.getByText(CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY['signet.contacts.read:tier'])).toBeInTheDocument();
+    const tierCheckbox = screen.getByRole('checkbox', { name: CONTACTS_GRANT_CAPABILITY_COPY['signet.contacts.read:tier'] });
+    const describedById = tierCheckbox.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    expect(document.getElementById(describedById as string)).toHaveTextContent(
+      CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY['signet.contacts.read:tier'],
+    );
   });
 });
 

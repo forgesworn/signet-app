@@ -25,6 +25,7 @@ import {
   removeContactConfirmCopy,
   addingToContactsCopy,
   CONTACTS_GRANT_CAPABILITY_COPY,
+  CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY,
 } from './contacts-v2-copy';
 import { CAPABILITIES } from '@forgesworn/signet-contacts/wire';
 
@@ -211,6 +212,7 @@ describe('fixed strings', () => {
       defaultChildCeilingCopy('Sam'),
       shareConfirmCopy('Dave', ['Sam']),
       vouchConfirmCopy('Dave', 'kith', ['Sam']),
+      ...Object.values(CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY),
     ]
       .join(' ')
       .toLowerCase();

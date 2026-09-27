@@ -390,6 +390,29 @@ export const CONTACTS_GRANT_CAPABILITY_COPY: Record<Capability, string> = {
     'Rename a contact inside this app only — your own list is unchanged.',
 };
 
+/**
+ * What the app cannot do if the box is left unticked. Written by My Signet,
+ * never by the app: app-supplied text on a consent screen is an injection
+ * surface.
+ */
+export const CONTACTS_GRANT_CAPABILITY_WITHOUT_COPY: Record<Capability, string> = {
+  'signet.contacts.invites:create': 'Without it, the app cannot make invites for you.',
+  'signet.contacts.invites:receive': 'Without it, the app cannot send contact requests for you.',
+  'signet.contacts.read:directory': 'Without it, the app sees none of your contacts.',
+  'signet.contacts.read:method:phone': 'Without it, the app cannot see their phone numbers.',
+  'signet.contacts.read:method:email': 'Without it, the app cannot see their email addresses.',
+  'signet.contacts.read:method:website': 'Without it, the app cannot see their websites.',
+  'signet.contacts.read:method:postal-address': 'Without it, the app cannot see their postal addresses.',
+  'signet.contacts.read:method:other': 'Without it, the app cannot see their other contact methods.',
+  'signet.contacts.read:tier': 'Without it, the app cannot tell your close circle from people you have only met.',
+  'signet.contacts.read:check-records': 'Without it, the app cannot show how you checked their keys.',
+  'signet.contacts.read:checks': 'Without it, the app cannot show which keys and contact methods are verified.',
+  'signet.contacts.read:roles': 'Without it, the app shows contacts without the roles you gave them.',
+  'signet.contacts.blocks.read': 'Without it, the app cannot hide people you have blocked, so they may still appear there.',
+  'signet.contacts.propose:add-ken': 'Without it, the app cannot add people to your contacts.',
+  'signet.contacts.propose:rename-app-label': 'Without it, the app shows contacts under the names in your own list.',
+};
+
 /** The honesty line. Revocation stops the next update; it cannot reach into
  *  another device and delete what is already there, and with a seven-day
  *  window the app may keep using what it has for that long (S5). */
