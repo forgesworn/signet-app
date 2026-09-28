@@ -12,6 +12,8 @@ import { useBunkerServer } from './useBunkerServer';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { buildConnectedClientFromNostrConnect } from '../lib/nip46';
 import { deleteConnectedClient, getConnectedClient, saveConnectedClient } from '../lib/db';
+import * as db from '../lib/db';
+import type { TrustedAppPairing } from '../types';
 
 class MockRelaySocket {
   static CONNECTING = 0;
@@ -552,5 +554,80 @@ describe('dedicated bot dispatch', () => {
     unmount();
     expect(send({ pubkey: backend.activePublicKeyHex, kind: 24133 } as NostrEvent)).toBe(false);
     expect(socket.published).toHaveLength(0); backend.destroy();
+  });
+});
+
+
+describe('dependant trusted-app reconnect and approval identity', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  async function setup(secret?: string, key: string | null = 'unlocked') {
+    const clientSk = generateSecretKey();
+    const backend = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const dependantId = getPublicKey(generateSecretKey());
+    const pairings: TrustedAppPairing[] = [{ clientPubkey: getPublicKey(clientSk), label: 'Kindependence', origin: 'https://kindependence.example', pairedAt: 1 }];
+    const lookup = vi.spyOn(db, 'listAppBunkerPairings').mockImplementation(async () => [...pairings]);
+    const bind = vi.fn(async () => {});
+    const hook = renderOwnerServer('wss://dependant-reconnect.example', {
+      routes: [{ pubkey: backend.activePublicKeyHex, backend, dependantId, routeKind: 'app', pairingSecret: secret }],
+      appPairingsEncryptionKey: key,
+      onAppPairingComplete: bind,
+    });
+    const ws = await waitForOpenRelay(backend.activePublicKeyHex, hook.relayUrl);
+    let serial = 0;
+    async function send(method: string, params: string[], sender = clientSk) {
+      const id = `trusted-${++serial}`;
+      await act(async () => { ws.deliver(buildClientRequest({ clientSk: sender, targetPubkey: backend.activePublicKeyHex, id, method, params })); });
+      await waitFor(() => expect(ws.published.some(e => e.tags.some(t => t[0] === 'p' && t[1] === getPublicKey(sender)) && decryptServerResponse(sender, e).id === id)).toBe(true));
+      return decryptServerResponse(sender, ws.published.find(e => e.tags.some(t => t[0] === 'p' && t[1] === getPublicKey(sender)) && decryptServerResponse(sender, e).id === id)!);
+    }
+    return { ...hook, ws, backend, clientSk, dependantId, pairings, lookup, bind, send };
+  }
+
+  it('ACKs a stored pairing after its one-use secret was cleared, without rebinding', async () => {
+    const h = await setup();
+    expect(await h.send('connect', [h.backend.activePublicKeyHex, 'old-secret'])).toMatchObject({ result: 'ack' });
+    expect(h.lookup).toHaveBeenCalledWith(h.dependantId, 'unlocked');
+    expect(h.bind).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown and subsequently revoked clients with no pair window', async () => {
+    const h = await setup();
+    expect(await h.send('connect', ['', ''], generateSecretKey())).toMatchObject({ error: 'pairing not active' });
+    expect(await h.send('connect', ['', ''])).toMatchObject({ result: 'ack' });
+    h.pairings.length = 0;
+    expect(await h.send('connect', ['', ''])).toMatchObject({ error: 'pairing not active' });
+    expect(await h.send('get_public_key', [])).toMatchObject({ error: 'not paired' });
+  });
+
+  it('fails closed when locked or when the pairing lookup fails', async () => {
+    const h = await setup(undefined, null);
+    expect(await h.send('connect', ['', ''])).toMatchObject({ error: 'pairing not active' });
+    expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a failed encrypted pairing read', async () => {
+    const h = await setup(); h.lookup.mockRejectedValue(new Error('locked'));
+    expect(await h.send('connect', ['', ''])).toMatchObject({ error: 'pairing not active' });
+  });
+
+  it('keeps a fresh pair window intact when an existing client reconnects', async () => {
+    const h = await setup('fresh-secret');
+    expect(await h.send('connect', ['', 'old-secret'])).toMatchObject({ result: 'ack' });
+    expect(h.bind).not.toHaveBeenCalled();
+    expect(await h.send('connect', ['', 'wrong-secret'], generateSecretKey())).toMatchObject({ error: 'invalid secret' });
+    const newClient = generateSecretKey();
+    expect(await h.send('connect', ['', 'fresh-secret', JSON.stringify({ name: 'Another app' })], newClient)).toMatchObject({ result: 'ack' });
+    expect(h.bind).toHaveBeenCalledWith(h.dependantId, getPublicKey(newClient), 'Another app', undefined);
+  });
+
+  it('shows the authorised app label in a dependant approval without auto-approving', async () => {
+    const h = await setup();
+    await act(async () => { h.ws.deliver(buildClientRequest({ clientSk: h.clientSk, targetPubkey: h.backend.activePublicKeyHex, id: 'label-sign', method: 'sign_event', params: [JSON.stringify({ kind: 30078, tags: [], content: '', created_at: Math.floor(Date.now()/1000) })] })); });
+    await waitFor(() => expect(h.result.current.pendingApprovals).toHaveLength(1));
+    expect(h.result.current.pendingApprovals[0].client).toMatchObject({ appName: 'Kindependence', appUrl: 'https://kindependence.example' });
+    expect(h.ws.published).toHaveLength(0);
+    await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApprovals[0].handle); });
+    await waitFor(() => expect(h.ws.published).toHaveLength(1));
   });
 });

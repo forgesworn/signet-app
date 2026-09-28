@@ -624,6 +624,18 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         // the binding state; route.authorizedClientPubkey is unused for
         // app routes.
         if (route.routeKind === 'app') {
+          // Reconnects authenticate the same client key against the live stored
+          // pairing. They must not need or consume another one-shot secret.
+          const key = appPairingsKeyRef.current;
+          if (key) {
+            try {
+              const pairings = await db.listAppBunkerPairings(route.dependantId, key);
+              if (pairingMatches(pairings, request.clientPubkey)) {
+                await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+                return;
+              }
+            } catch { /* fail closed; only a valid new pairing secret may bind */ }
+          }
           if (!route.pairingSecret) {
             await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing not active');
             return;
@@ -786,6 +798,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       return;
     }
 
+    let authorizedAppPairing: import('../types').TrustedAppPairing | undefined;
+
     // For non-connect methods on a bound dependant route, enforce the
     // client-pubkey binding up front. An unpaired endpoint (no bound
     // client, no pair in flight) also refuses — same "not paired" code.
@@ -807,7 +821,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         } catch {
           pairings = [];
         }
-        if (!pairingMatches(pairings, request.clientPubkey)) {
+        authorizedAppPairing = pairings.find(p => p.clientPubkey.toLowerCase() === request.clientPubkey.toLowerCase());
+        if (!authorizedAppPairing) {
           await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
           return;
         }
@@ -1341,8 +1356,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       origin,
     });
     const existing = route.dependantId ? undefined : await db.getConnectedClient(request.clientPubkey);
-    const appName = existing?.appName ?? 'Unknown app';
-    const appUrl = existing?.appUrl;
+    const appName = authorizedAppPairing?.label ?? existing?.appName ?? 'Unknown app';
+    const appUrl = authorizedAppPairing?.origin ?? existing?.appUrl;
     const entry: PendingApproval = {
       handle,
       client: {
