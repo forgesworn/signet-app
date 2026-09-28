@@ -1,3 +1,4 @@
+import { isKinterestAuthority, parseKinterestRequest, confirmKinterest, kinterestDescription } from '../lib/kinterest-authority';
 /**
  * NIP-46 bunker server hook (Phase 2; multi-identity
  * routing added later).
@@ -194,9 +195,15 @@ export interface PendingApproval {
   template: UnsignedEvent;
   /** One-liner label suitable for modal copy. */
   description: string;
+  kinterestChildName?: string;
+  kinterestChildAvatar?: { hash: string; blossomUrl: string; keyHex: string };
 }
 
 interface Options {
+  /** Resolve a selected dependant profile and child-signed device statement after explicit approval. */
+  kinterestChildLabel?: (identityPk: string) => { name: string; avatar?: { hash: string; blossomUrl: string; keyHex: string } } | null;
+  kinterestChildConsent?: (template: UnsignedEvent) => Promise<string>;
+
   enabled: boolean;
   relayUrl: string;
   /**
@@ -406,7 +413,11 @@ async function publishResponseToSocket(
   }
 }
 
-export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive }: Options) {
+export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel }: Options) {
+  const kinterestChildLabelRef = useRef(kinterestChildLabel);
+  kinterestChildLabelRef.current = kinterestChildLabel;
+  const kinterestChildConsentRef = useRef(kinterestChildConsent);
+  kinterestChildConsentRef.current = kinterestChildConsent;
   // Keep the onPairingComplete callback in a ref so the inbound handler
   // always sees the latest — callers typically pass inline arrows.
   const onPairingCompleteRef = useRef(onPairingComplete);
@@ -467,6 +478,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const activeRequestRef = useRef<Map<number, {
     requestId: string;
     clientPubkey: string;
+    kinterestChildName?: string;
     template: UnsignedEvent;
     /** The route that received this request — determines which backend signs. */
     route: BunkerRoute;
@@ -1073,6 +1085,21 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       return;
     }
 
+    // This reserved authority ceremony is never a generic or remembered signature.
+    const kinterest = isKinterestAuthority(template);
+    if (kinterest && (route.dependantId || !parseKinterestRequest(template))) {
+      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid Kinterest authority request');
+      return;
+    }
+
+    const selectedChild = kinterest ? parseKinterestRequest(template)?.child : undefined;
+    const kinterestChildProfile = selectedChild ? kinterestChildLabelRef.current?.(selectedChild.identityPk) : undefined;
+    const kinterestChildName = kinterestChildProfile?.name;
+    if (selectedChild && !kinterestChildName) {
+      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'Activate your real identity and select an existing named dependant');
+      return;
+    }
+
     // Infer scope + origin once. Used by both the dependant policy path
     // (grant lookup, policy decision) and the resolveApproval grant save.
     const scope = inferScope(template);
@@ -1100,7 +1127,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       // whole-client bearer credential — without this carve-out, a single
       // "Allow always for <app>" click would authorise that app to pair
       // further bunker clients or rename the guardian's identity silently.
-      const sensitiveForAllowAlways = scope === 'pair-device' || scope === 'mutate-identity';
+      const sensitiveForAllowAlways = kinterest || scope === 'pair-device' || scope === 'mutate-identity';
       if (existing?.allowAlways && !sensitiveForAllowAlways) {
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
@@ -1339,6 +1366,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       route,
       scope,
       origin,
+      ...(kinterestChildName ? { kinterestChildName } : {}),
     });
     const existing = route.dependantId ? undefined : await db.getConnectedClient(request.clientPubkey);
     const appName = existing?.appName ?? 'Unknown app';
@@ -1357,7 +1385,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       },
       method: 'sign_event',
       template,
-      description: describeEventTemplate(template),
+      description: kinterestDescription(template) ?? describeEventTemplate(template),
+      ...(kinterestChildName ? { kinterestChildName, kinterestChildAvatar: kinterestChildProfile?.avatar } : {}),
     };
     setPendingApprovals(prev => [...prev, entry]);
     try { onApprovalPendingRef.current?.(entry); } catch { /* non-fatal */ }
@@ -1414,7 +1443,18 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         // Inner USER template signed with the dependant's signing key on
         // dependant routes; with the guardian's key on guardian routes.
         const signingBackend = req.route.signingBackend ?? req.route.backend;
-        signed = await signingBackend.signEvent(req.template);
+        let template = req.template;
+        if (isKinterestAuthority(template)) {
+          const authority = parseKinterestRequest(template);
+          if (!authority || req.route.dependantId || !routesRef.current.some(r => !r.dependantId && r.pubkey === req.route.pubkey && r.backend === req.route.backend && r.signingBackend === req.route.signingBackend)) throw new Error('Authority route retired');
+          const childContent = authority.child ? await kinterestChildConsentRef.current?.(template) : undefined;
+          if (authority.child && childContent === undefined) throw new Error('Dependant selection unavailable');
+          if (childContent !== undefined && JSON.parse(childContent).name !== req.kinterestChildName) throw new Error('Selected profile changed; request a fresh approval');
+          if (!routesRef.current.some(r => !r.dependantId && r.pubkey === req.route.pubkey && r.backend === req.route.backend && r.signingBackend === req.route.signingBackend)) throw new Error('Authority route retired');
+          template = confirmKinterest(template, childContent);
+          decision = 'approve-once';
+        }
+        signed = await signingBackend.signEvent(template);
       } catch {
         await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'signing failed');
         return;

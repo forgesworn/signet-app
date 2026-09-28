@@ -554,3 +554,38 @@ describe('dedicated bot dispatch', () => {
     expect(socket.published).toHaveLength(0); backend.destroy();
   });
 });
+
+describe('explicit Kinterest family authority', () => {
+  function template() {
+    return { kind:30078,pubkey:'',created_at:Math.floor(Date.now()/1000),content:'Authorise this family key to manage Kinterest and its encrypted family backup.',
+      tags:[['d',`kin-jar/family-authorisation/v2/${'a'.repeat(64)}`],['scope','kin-jar:family:v2'],['family','a'.repeat(64)],['challenge','b'.repeat(64)],['approval','request']] };
+  }
+  it('requires a fresh decision despite remembered allow-always, and never grants always for this ceremony', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer();
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex,relayUrl), clientSk = generateSecretKey(), pk = getPublicKey(clientSk);
+    await saveConnectedClient({clientPubkey:pk,appName:'Kinterest',connectedAt:1,lastSeenAt:1,allowAlways:true});
+    await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'consent',method:'sign_event',params:[JSON.stringify(template())]})));
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(0);
+    const handle = result.current.pendingApprovals[0].handle;
+    await act(async () => result.current.approveAlways(handle));
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    const response = decryptServerResponse(clientSk,ws.published[0]);
+    expect(response.error).toBeUndefined();
+    expect(JSON.parse(response.result!).tags).toContainEqual(['approval','confirmed']);
+    await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'second',method:'sign_event',params:[JSON.stringify({...template(),tags:template().tags.map(t => t[0] === 'challenge' ? ['challenge','c'.repeat(64)] : t)})]})));
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(1);
+    unmount();
+  });
+  it('refuses a reserved but malformed request instead of signing it through a generic grant', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer();
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex,relayUrl), clientSk = generateSecretKey(), pk = getPublicKey(clientSk);
+    await saveConnectedClient({clientPubkey:pk,appName:'Kinterest',connectedAt:1,lastSeenAt:1,allowAlways:true});
+    await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'malformed',method:'sign_event',params:[JSON.stringify({...template(),kind:1})]})));
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk,ws.published[0]).error).toBeTruthy();
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    unmount();
+  });
+});

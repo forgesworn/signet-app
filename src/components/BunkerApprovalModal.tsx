@@ -1,3 +1,6 @@
+import { useEffect, useState } from 'react';
+import { fetchAvatar } from '../lib/avatar';
+import { isKinterestAuthority, parseKinterestRequest } from '../lib/kinterest-authority';
 import type { PendingApproval } from '../hooks/useBunkerServer';
 import { shortPubkey, safeAppName } from '../lib/bunker-display';
 
@@ -35,6 +38,16 @@ function safeUrl(url: string | undefined): string | null {
 }
 
 export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny }: Props) {
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const avatar = approval.kinterestChildAvatar;
+  useEffect(() => {
+    let cancelled = false; let url: string | null = null;
+    setAvatarUrl(null);
+    if (avatar) void fetchAvatar(avatar).then(blob => { if (!cancelled) { url = URL.createObjectURL(blob); setAvatarUrl(url); } }).catch(() => {});
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
+  }, [approval.handle, avatar?.hash, avatar?.keyHex, avatar?.blossomUrl]);
+  const authority = parseKinterestRequest(approval.template);
+  const reserved = isKinterestAuthority(approval.template);
   const name = safeAppName(approval.client.appName);
   const url = safeUrl(approval.client.appUrl);
 
@@ -69,6 +82,7 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
         }}
       >
         <div>
+          {avatarUrl && <img src={avatarUrl} alt="Selected child" style={{width:48,height:48,borderRadius:"50%",objectFit:"cover"}} />}
           <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>
             Signature request
           </div>
@@ -94,6 +108,13 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
           </div>
         </div>
 
+        {authority && <div className="card">
+          <strong>{authority.parentPresence ? 'Confirm parent PIN setup or reset' : authority.child ? 'Add this child and authorise their Kinterest device' : 'Authorise this Kinterest family'}</strong>
+          <p>{authority.parentPresence ? 'This confirms your presence to set or reset the separate parent PIN on this Kinterest device. It does not reveal or change your My Signet PIN.' : authority.child ? 'This shares the selected dependant’s persona name and picture with Kinterest. This device may ask, tick chores and count pots; it cannot approve spending or change parent settings.' : 'This family key may manage Kinterest and back up the family to your My Signet identity. Approve only the family you are setting up.'}</p>
+          <p style={{ overflowWrap: 'anywhere' }}>Family key: {authority.familyPk}</p>
+          {authority.child && <><p>Selected child: <strong>{approval.kinterestChildName}</strong></p><p style={{ overflowWrap: 'anywhere' }}>Child identity: {authority.child.identityPk}</p><p style={{ overflowWrap: 'anywhere' }}>Device key: {authority.child.devicePk}</p></>}
+          <p>This approval applies once. It is never remembered for future family or child authorisations.</p>
+        </div>}
         {!approval.client.existing && (
           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '4px 2px' }}>
             This is the first request we've seen from this client. Only approve if you started this.
@@ -108,7 +129,7 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
             a trusted site stop costing kid-side foreground-wait latency.
             Buttons keep their wiring — only the visual weight flips. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-          {approval.client.existing ? (
+          {reserved ? (<button className="btn btn-primary" onClick={() => onApproveOnce(approval.handle)}>Approve this Kinterest authorisation</button>) : approval.client.existing ? (
             <>
               <button className="btn btn-primary" onClick={() => onApproveAlways(approval.handle)}>
                 Allow always for {name.slice(0, 30)}

@@ -1,3 +1,4 @@
+import { isKinterestAuthority } from './kinterest-authority';
 /**
  * NIP-55, the Android signer intent, on the web side of the MySignet APK.
  *
@@ -208,6 +209,7 @@ export function planNip55(
   activePubkey: string | null,
 ): Nip55Plan {
   if (!parsed) return { kind: 'reject', reason: 'malformed' };
+  if (parsed.template && isKinterestAuthority(parsed.template)) return { kind: 'reject', reason: 'malformed' };
   if (grant?.denyAlways) return { kind: 'reject', reason: 'denied' };
   const owned = ownerPubkeys.map(p => p.toLowerCase());
   if (owned.length === 0) return viaProvider ? { kind: 'defer' } : { kind: 'reject', reason: 'no-identity' };
