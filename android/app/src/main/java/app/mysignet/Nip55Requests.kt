@@ -15,18 +15,34 @@ import java.util.concurrent.TimeUnit
  * for what it missed. The answer comes back by the plugin and is routed to
  * the callback by id. A request nobody answers is timed out by whoever
  * registered it.
+ *
+ * `cancel` also tells the page, through `withdrawSink`: a request whose
+ * caller has gone away (task swiped, or the activity's own timeout fired)
+ * would otherwise sit in the app's approval queue and get answered into the
+ * void once the person finally decides. Telling the page lets it drop the
+ * request instead.
  */
 object Nip55Requests {
     private const val TAG = "Nip55"
     /** Where the web layer is reached, when it is. Set by the plugin on load, cleared when the bridge goes. */
     @Volatile private var sink: ((Nip55Incoming) -> Unit)? = null
+    /** Told a request id whose caller can no longer receive an answer. Same lifecycle as `sink`. */
+    @Volatile private var withdrawSink: ((String) -> Unit)? = null
     private val waiting = ConcurrentHashMap<String, (Nip55Answer) -> Unit>()
     private val held = ArrayDeque<Nip55Incoming>()
 
     fun newId(): String = UUID.randomUUID().toString()
 
-    fun attach(deliver: (Nip55Incoming) -> Unit) { sink = deliver; Log.i(TAG, "page attached, held=${synchronized(held) { held.size }}") }
-    fun detach(deliver: (Nip55Incoming) -> Unit) { if (sink === deliver) sink = null }
+    fun attach(deliver: (Nip55Incoming) -> Unit, withdraw: (String) -> Unit) {
+        sink = deliver
+        withdrawSink = withdraw
+        Log.i(TAG, "page attached, held=${synchronized(held) { held.size }}")
+    }
+
+    fun detach(deliver: (Nip55Incoming) -> Unit, withdraw: (String) -> Unit) {
+        if (sink === deliver) sink = null
+        if (withdrawSink === withdraw) withdrawSink = null
+    }
 
     /** Whether the page is there to answer right now. */
     val pageUp: Boolean get() = sink != null
@@ -48,10 +64,14 @@ object Nip55Requests {
         callback?.invoke(answer)
     }
 
-    /** Forgets a request the requester gave up on. */
+    /** Forgets a request the requester gave up on, and tells the page if anything was actually there to forget. */
     fun cancel(id: String) {
-        waiting.remove(id)
-        synchronized(held) { held.removeAll { it.id == id } }
+        val removedWaiting = waiting.remove(id) != null
+        val removedHeld = synchronized(held) { held.removeAll { it.id == id } }
+        if (removedWaiting || removedHeld) {
+            withdrawSink?.invoke(id)
+            Log.i(TAG, "withdraw $id")
+        }
     }
 
     /** Submits and blocks, for the provider, which has to answer on the spot. Null means nobody answered in time. */

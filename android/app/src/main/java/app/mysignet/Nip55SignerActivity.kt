@@ -12,8 +12,9 @@ import android.os.Looper
  * It has no screen of its own: it lifts the request off the intent, hands
  * it to the web layer, and brings My Signet to the front so the person can
  * approve there. When the web layer answers, the result goes back to the
- * caller and this activity is gone. A caller that gets no answer within a
- * few minutes gets a cancel rather than an activity that never finishes.
+ * caller and this activity is gone. A caller that goes away, or that gets
+ * no answer within a few minutes, gets a cancel and the request is
+ * withdrawn from the app.
  */
 class Nip55SignerActivity : Activity() {
     private var requestId: String? = null
@@ -59,6 +60,7 @@ class Nip55SignerActivity : Activity() {
     }
 
     private fun deliver(request: Nip55Incoming, answer: Nip55Answer) {
+        requestId = null
         android.util.Log.i("Nip55", "deliver ${request.id} ${answer.status}")
         timeout.removeCallbacks(giveUp)
         if (!answer.ok) { finishRejected(); return }
@@ -79,6 +81,11 @@ class Nip55SignerActivity : Activity() {
 
     override fun onDestroy() {
         timeout.removeCallbacks(giveUp)
+        // isFinishing is false on a configuration-change recreate (the
+        // activity is being torn down only to be rebuilt with the same
+        // request); only a genuine finish — the caller's task swiped away,
+        // or giveUp/onNewIntent already finished us — should withdraw.
+        if (isFinishing) requestId?.let { Nip55Requests.cancel(it) }
         super.onDestroy()
     }
 

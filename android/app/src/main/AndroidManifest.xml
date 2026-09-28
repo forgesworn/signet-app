@@ -58,10 +58,12 @@
              `nostrsigner:` intents and, once allowed always, through the
              content provider below without a screen. The activity has no UI
              of its own; the decision is made in the app. -->
+        <!-- No UI, so nothing to rebuild on a config change; a recreate would resubmit the request under a new id. -->
         <activity
             android:name=".Nip55SignerActivity"
             android:exported="true"
             android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|locale|fontScale"
             android:theme="@style/AppTheme.Nip55Handoff">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

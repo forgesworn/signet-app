@@ -44,9 +44,14 @@ class SignetNativePlugin : Plugin() {
     // The web layer listens for `nip55Request`, drains what arrived before it
     // was up with `nip55Pending`, and answers each one with `nip55Respond`.
     // See Nip55Requests for the hand-over and src/lib/nip55.ts for what the
-    // web layer does with a request.
+    // web layer does with a request. `nip55Withdrawn` carries the id of a
+    // request whose caller gave up; the page drops it unanswered.
     private val deliverToPage: (Nip55Incoming) -> Unit = { request ->
         notifyListeners("nip55Request", incomingJson(request), true)
+    }
+
+    private val withdrawFromPage: (String) -> Unit = { id ->
+        notifyListeners("nip55Withdrawn", JSObject().put("id", id), true)
     }
 
     private fun incomingJson(request: Nip55Incoming): JSObject = JSObject().apply {
@@ -59,11 +64,11 @@ class SignetNativePlugin : Plugin() {
 
     override fun load() {
         super.load()
-        Nip55Requests.attach(deliverToPage)
+        Nip55Requests.attach(deliverToPage, withdrawFromPage)
     }
 
     override fun handleOnDestroy() {
-        Nip55Requests.detach(deliverToPage)
+        Nip55Requests.detach(deliverToPage, withdrawFromPage)
         super.handleOnDestroy()
     }
 

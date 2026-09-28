@@ -39,6 +39,8 @@ export interface SignetNativePlugin {
   /** The answer to one request. `deferred` tells a provider query to make the app ask by intent. */
   nip55Respond(opts: Nip55Response): Promise<void>;
   addListener(eventName: 'nip55Request', listener: (request: NativeNip55Request) => void): Promise<PluginListenerHandle>;
+  /** A request's caller went away (task swiped, or the shell's own timeout fired); drop it unanswered. */
+  addListener(eventName: 'nip55Withdrawn', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>;
 }
 
 export interface Nip55Response {

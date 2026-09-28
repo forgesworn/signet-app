@@ -132,15 +132,30 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     }
   }, [execute, respond]);
 
+  // The caller is gone (task swiped away, or the shell's timeout fired):
+  // whatever was waiting for the person's decision is dropped unanswered. A
+  // request already being executed is not interrupted — the shell simply
+  // has nobody left to hand its answer to. Adding the id to `seen` means a
+  // copy that arrives later (a retained event drained after the withdraw)
+  // is ignored too.
+  const withdraw = useCallback((id: string) => {
+    seen.current.add(id);
+    setQueue(q => q.filter(w => w.raw.id !== id));
+  }, []);
+
   useEffect(() => {
     if (!enabled || !isNativeApp()) return;
     let cancelled = false;
+    let withdrawHandle: { remove(): Promise<void> } | null = null;
     let handle: { remove(): Promise<void> } | null = null;
+    void SignetNative.addListener('nip55Withdrawn', (event) => {
+      if (event && typeof event.id === 'string') withdraw(event.id);
+    }).then(h => { if (cancelled) void h.remove(); else withdrawHandle = h; });
     void SignetNative.addListener('nip55Request', (request) => { void handleRequest(request); })
       .then(h => { if (cancelled) void h.remove(); else handle = h; });
     void SignetNative.nip55Pending().then(({ requests }) => { for (const r of requests ?? []) void handleRequest(r); }).catch(() => {});
-    return () => { cancelled = true; void handle?.remove(); };
-  }, [enabled, handleRequest]);
+    return () => { cancelled = true; void withdrawHandle?.remove(); void handle?.remove(); };
+  }, [enabled, handleRequest, withdraw]);
 
   // A request held through an unlock was never planned against the keys:
   // once they are there, one the person already allowed always is answered
