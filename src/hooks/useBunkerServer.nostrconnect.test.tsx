@@ -22,6 +22,7 @@ class MockRelaySocket {
   static CLOSED = 3;
   static instances: MockRelaySocket[] = [];
 
+  autoAck = true;
   readyState = MockRelaySocket.CONNECTING;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
@@ -48,7 +49,12 @@ class MockRelaySocket {
       this.filter = parsed[2];
     } else if (parsed[0] === 'EVENT') {
       this.published.push(parsed[1]);
+      if (this.autoAck) this.ack(parsed[1].id);
     }
+  }
+
+  ack(id: string, accepted = true) {
+    this.onmessage?.({ data: JSON.stringify(['OK', id, accepted, accepted ? '' : 'blocked: test rejection']) });
   }
 
   close() {
@@ -629,5 +635,150 @@ describe('dependant trusted-app reconnect and approval identity', () => {
     expect(h.ws.published).toHaveLength(0);
     await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApprovals[0].handle); });
     await waitFor(() => expect(h.ws.published).toHaveLength(1));
+  });
+});
+
+
+describe('approval replies across socket reconnects', () => {
+  async function setup() {
+    const ownerBackend = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const relayUrl = 'wss://approval-reconnect.example';
+    const hook = renderHook(({ nonce, enabled, relay }) => useBunkerServer({
+      enabled, relayUrl: relay,
+      routes: [{ pubkey: ownerBackend.activePublicKeyHex, backend: ownerBackend }],
+      isOwnerServingActive: () => true, reconnectNonce: nonce,
+    }), { initialProps: { nonce: 0, enabled: true, relay: relayUrl } });
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    await act(async () => ws.deliver(buildClientRequest({
+      clientSk, targetPubkey: ownerBackend.activePublicKeyHex,
+      id: 'approve-reconnect', method: 'sign_event',
+      params: [JSON.stringify({ kind: 1, pubkey: '', created_at: Math.floor(Date.now() / 1000), tags: [], content: 'approve once' })],
+    })));
+    await waitFor(() => expect(hook.result.current.pendingApproval).not.toBeNull());
+    return { ...hook, ownerBackend, ws, clientSk, relayUrl };
+  }
+
+  async function latestSocket(old: MockRelaySocket) {
+    await waitFor(() => {
+      expect(MockRelaySocket.instances.at(-1)).not.toBe(old);
+      expect(MockRelaySocket.instances.at(-1)?.readyState).toBe(MockRelaySocket.OPEN);
+    });
+    return MockRelaySocket.instances.at(-1)!;
+  }
+
+  it('delivers an approval on the replacement socket when encryption spans a resume reconnect', async () => {
+    const h = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const encrypt = h.ownerBackend.nip44Encrypt.bind(h.ownerBackend);
+    vi.spyOn(h.ownerBackend, 'nip44Encrypt').mockImplementationOnce(async (...args) => {
+      await gate;
+      return encrypt(...args);
+    });
+    const signing = vi.spyOn(h.ownerBackend, 'signEvent');
+    let approval!: Promise<void>;
+    await act(async () => { approval = h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    h.rerender({ nonce: 1, enabled: true, relay: h.relayUrl });
+    const replacement = await latestSocket(h.ws);
+    await act(async () => { release(); await approval; });
+    await waitFor(() => expect(replacement.published).toHaveLength(1));
+    expect(h.ws.published).toHaveLength(0);
+    const reply = decryptServerResponse(h.clientSk, replacement.published[0]);
+    expect(reply.id).toBe('approve-reconnect');
+    expect(JSON.parse(reply.result!).content).toBe('approve once');
+    expect(signing).toHaveBeenCalledTimes(2); // user event + response envelope
+  });
+
+  it('buffers an approved reply while disconnected and sends it on reconnect', async () => {
+    const h = await setup();
+    await act(async () => { h.ws.close(); });
+    await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    const replacement = await latestSocket(h.ws);
+    await waitFor(() => expect(replacement.published).toHaveLength(1));
+    expect(decryptServerResponse(h.clientSk, replacement.published[0]).result).toBeTruthy();
+  });
+
+  it('preserves a waiting approval across the native resume reconnect kick', async () => {
+    const h = await setup();
+    const handle = h.result.current.pendingApproval!.handle;
+    h.rerender({ nonce: 1, enabled: true, relay: h.relayUrl });
+    const replacement = await latestSocket(h.ws);
+    expect(h.result.current.pendingApproval!.handle).toBe(handle);
+    await act(async () => { await h.result.current.approveOnce(handle); });
+    expect(replacement.published).toHaveLength(1);
+    expect(decryptServerResponse(h.clientSk, replacement.published[0]).result).toBeTruthy();
+  });
+
+  it.each([true, false])('does not replay a reply after relay OK accepted=%s', async accepted => {
+    const h = await setup();
+    h.ws.autoAck = false;
+    await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    await act(async () => { h.ws.ack(h.ws.published[0].id, accepted); h.ws.close(); });
+    const replacement = await latestSocket(h.ws);
+    expect(replacement.published).toHaveLength(0);
+    if (!accepted) expect(h.result.current.serveStatus.lastNotice).toBe('blocked: test rejection');
+  });
+
+  it('replays the identical signed envelope when the connection drops before OK', async () => {
+    const h = await setup();
+    h.ws.autoAck = false;
+    await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    const original = h.ws.published[0];
+    await act(async () => { h.ws.close(); });
+    const replacement = await latestSocket(h.ws);
+    await waitFor(() => expect(replacement.published).toEqual([original]));
+  });
+
+  it('expires buffered replies instead of replaying them after five minutes', async () => {
+    const h = await setup();
+    h.ws.autoAck = false;
+    await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 300_001);
+    try {
+      h.rerender({ nonce: 1, enabled: true, relay: h.relayUrl });
+      const replacement = await latestSocket(h.ws);
+      expect(replacement.published).toHaveLength(0);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('retains the reply if send throws and delivers it after reconnect', async () => {
+    const h = await setup();
+    const originalSend = h.ws.send.bind(h.ws);
+    vi.spyOn(h.ws, 'send').mockImplementation(data => {
+      if (JSON.parse(data)[0] === 'EVENT') throw new Error('socket closed during send');
+      originalSend(data);
+    });
+    await act(async () => { await h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    const replacement = await latestSocket(h.ws);
+    expect(decryptServerResponse(h.clientSk, replacement.published[0]).result).toBeTruthy();
+  });
+
+  it('discards a user signature that completes after serving stops', async () => {
+    const h = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const sign = h.ownerBackend.signEvent.bind(h.ownerBackend);
+    vi.spyOn(h.ownerBackend, 'signEvent').mockImplementationOnce(async template => { await gate; return sign(template); });
+    let approval!: Promise<void>;
+    await act(async () => { approval = h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    h.rerender({ nonce: 0, enabled: false, relay: h.relayUrl });
+    await act(async () => { release(); await approval; });
+    expect(h.ws.published).toHaveLength(0);
+  });
+
+  it.each(['disable', 'relay', 'unmount'])('discards a late encrypted approval after %s', async change => {
+    const h = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const encrypt = h.ownerBackend.nip44Encrypt.bind(h.ownerBackend);
+    vi.spyOn(h.ownerBackend, 'nip44Encrypt').mockImplementationOnce(async (...args) => { await gate; return encrypt(...args); });
+    let approval!: Promise<void>;
+    await act(async () => { approval = h.result.current.approveOnce(h.result.current.pendingApproval!.handle); });
+    if (change === 'unmount') h.unmount();
+    else h.rerender({ nonce: 0, enabled: change !== 'disable', relay: change === 'relay' ? 'wss://different-relay.example' : h.relayUrl });
+    await act(async () => { release(); await approval; });
+    expect(MockRelaySocket.instances.flatMap(ws => ws.published)).toHaveLength(0);
   });
 });

@@ -456,6 +456,32 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   // when they change. The effect-teardown closes them.
   const wsRef = useRef<WebSocket | null>(null);
   const subIdRef = useRef<string | null>(null);
+  // Keep only encrypted, signed replies. A relay OK retires them; a reconnect
+  // republishes the same event (and never signs the user action a second time).
+  const responseOutboxRef = useRef<Map<string, { event: NostrEvent; expiresAt: number; sentOn?: WebSocket }>>(new Map());
+  const responseGenerationRef = useRef(0);
+  const liveConnectionConfigRef = useRef({ enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce });
+  liveConnectionConfigRef.current = { enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce };
+  const flushResponses = useCallback(() => {
+    const ws = wsRef.current;
+    for (const [id, entry] of responseOutboxRef.current) {
+      if (entry.expiresAt <= Date.now()) {
+        responseOutboxRef.current.delete(id);
+        continue;
+      }
+      if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+      if (entry.sentOn === ws) continue;
+      try {
+        entry.sentOn = ws;
+        ws.send(JSON.stringify(['EVENT', entry.event]));
+      }
+      catch {
+        // Retain the event for the next socket; close triggers normal backoff.
+        try { ws.close(); } catch { /* best effort */ }
+        break;
+      }
+    }
+  }, []);
   // Live view of the current route list — lets handleInboundEvent look up
   // routes without forcing a re-subscribe on every render.
   const routesRef = useRef<BunkerRoute[]>(routes);
@@ -516,9 +542,25 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   /** Publish a response event to the relay the client spoke to us on. */
   const publishResponse = useCallback(
     async (backend: DecryptingSigningBackend, clientPubkey: string, requestId: string, result?: string, error?: string) => {
-      await publishResponseToSocket(wsRef.current, backend, clientPubkey, requestId, result, error);
+      const generation = responseGenerationRef.current;
+      const response = { id: requestId, ...(result !== undefined ? { result } : {}), ...(error !== undefined ? { error } : {}) };
+      let event: NostrEvent;
+      try { event = await buildResponseEvent(response, clientPubkey, backend); }
+      catch { return; }
+      // Disable, lock, relay/route changes or unmount invalidate in-flight work.
+      // A socket reconnect alone retains this serving session.
+      if (generation !== responseGenerationRef.current) return;
+      for (const [id, entry] of responseOutboxRef.current) {
+        if (entry.expiresAt <= Date.now()) responseOutboxRef.current.delete(id);
+      }
+      if (responseOutboxRef.current.size >= 256) {
+        devLog('[bunker-serve] response buffer full');
+        return;
+      }
+      responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000 });
+      flushResponses();
     },
-    [],
+    [flushResponses],
   );
 
   /** Dispatch an inbound kind-24133 event to the right handler. */
@@ -1383,6 +1425,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     async (handle: number, decision: 'approve-once' | 'approve-always' | 'deny') => {
       const req = activeRequestRef.current.get(handle);
       if (!req) return;
+      const generation = responseGenerationRef.current;
       activeRequestRef.current.delete(handle);
       setPendingApprovals(prev => {
         const next = prev.filter(p => p.handle !== handle);
@@ -1411,6 +1454,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
             fireGrantMutated();
           } catch { /* best-effort — denial still fires below */ }
         }
+        if (generation !== responseGenerationRef.current) return;
         await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'user denied');
         if (req.route.dependantId) {
           fireAudit({
@@ -1431,10 +1475,12 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         const signingBackend = req.route.signingBackend ?? req.route.backend;
         signed = await signingBackend.signEvent(req.template);
       } catch {
+        if (generation !== responseGenerationRef.current) return;
         await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'signing failed');
         return;
       }
 
+      if (generation !== responseGenerationRef.current) return;
       // Publish BEFORE persisting the approve-always grant, so a transient
       // IDB error doesn't mask a successful sign from the client.
       await publishResponse(backend, req.clientPubkey, req.requestId, JSON.stringify(signed));
@@ -1593,6 +1639,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }
         devLog(`[bunker-serve] open — REQ sent (#p: ${pubkeys.map(p => p.slice(0, 8)).join(',')})`);
         setServeStatus(s => ({ ...s, phase: 'open', openedAt: Date.now(), reconnectAttempt: 0 }));
+        flushResponses();
       };
 
       ws.onmessage = (msg) => {
@@ -1615,6 +1662,12 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
             ...(isNotice ? { lastNotice: rest[0] as string } : {}),
             ...(isOurEvent ? { lastEventAt: Date.now() } : {}),
           }));
+        }
+        if (tag === 'OK' && typeof rest[0] === 'string' && typeof rest[1] === 'boolean') {
+          // Rejection is terminal too: repeating a rejected event won't repair it.
+          responseOutboxRef.current.delete(rest[0]);
+          if (!rest[1]) setServeStatus(s => ({ ...s, lastNotice: typeof rest[2] === 'string' ? rest[2] : 'Response rejected by relay' }));
+          return;
         }
         if (tag !== 'EVENT' || rest[0] !== subId) return;
         const event = rest[1] as NostrEvent;
@@ -1647,12 +1700,19 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       }
       const ws = wsRef.current;
       const subId = subIdRef.current;
-      const pendingRequests = Array.from(activeRequestRef.current.values());
+      const live = liveConnectionConfigRef.current;
+      const reconnectOnly = live.enabled === enabled && live.relayUrl === relayUrl
+        && live.routesKey === routesKeyStr && live.reconnectNonce !== reconnectNonce;
+      const pendingRequests = reconnectOnly ? [] : Array.from(activeRequestRef.current.values());
 
-      activeRequestRef.current.clear();
-      queueSizeRef.current = 0;
-      bindingInFlightRef.current.clear();
-      setPendingApprovals([]);
+      if (!reconnectOnly) {
+        responseGenerationRef.current += 1;
+        responseOutboxRef.current.clear();
+        activeRequestRef.current.clear();
+        queueSizeRef.current = 0;
+        bindingInFlightRef.current.clear();
+        setPendingApprovals([]);
+      }
 
       const closeSocket = () => {
         if (ws) {
