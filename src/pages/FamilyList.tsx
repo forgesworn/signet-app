@@ -11,6 +11,10 @@ interface Props {
   onAddKen?: () => void;
   /** Navigate to the cross-family contacts manager. Omit to hide the entry (e.g. the paired-child surface). */
   onManageContacts?: () => void;
+  /** The guardian's own recovery words are not yet written down. Guardian surface only. */
+  backupPending?: boolean;
+  /** Open Security → Backup Words. */
+  onBackup?: () => void;
 }
 
 /**
@@ -22,10 +26,24 @@ interface Props {
  * Intentionally thin — no controls, just routing. All management lives
  * in Dependant settings. Spec §3.5.
  */
-export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onManageContacts }: Props) {
+export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onManageContacts, backupPending, onBackup }: Props) {
+  const backupLine = backupPending && onBackup ? (
+    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+      Their keys are inside yours.{' '}
+      <button
+        type="button"
+        onClick={onBackup}
+        style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', font: 'inherit', cursor: 'pointer' }}
+      >
+        Back up →
+      </button>
+    </p>
+  ) : null;
+
   if (dependants.length === 0) {
     return (
       <div className="fade-in" role="main">
+        {backupLine}
         <div className="empty-state" style={{ paddingTop: 64 }}>
           <div className="empty-state-icon"><Icon name="users" size={36} /></div>
           <h3 className="empty-state-title">No dependants yet</h3>
@@ -49,6 +67,7 @@ export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onM
 
   return (
     <div className="fade-in" role="main">
+      {backupLine}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         {dependants.map((dep, i) => {
           const paired = !!dep.bunkerEndpoint?.authorizedClientPubkey;

@@ -174,6 +174,34 @@ export function usePreferences() {
     await db.savePreferences(updated);
   }, [preferences]);
 
+  /**
+   * Bookkeeping after a dependant is created: stamp the one-time role
+   * confirm, and (while the words are not backed up) clear the nudge snooze
+   * so the reminder reappears at once — holding someone else's keys makes the
+   * identity worth losing whatever was dismissed before.
+   *
+   * ONE setter for both fields, on purpose. Every other setter here spreads
+   * the `preferences` captured at render and `db.savePreferences` is a full
+   * overwrite, so two setters called back-to-back would each write a record
+   * missing the other's field, and the closure predates an `await
+   * addDependant` that can take up to 120 s on a device derive. So the state
+   * update is functional and the disk write is applied to a fresh read.
+   */
+  const noteDependantAdded = useCallback(async (opts: { clearSnooze: boolean }) => {
+    const stamp = Date.now();
+    const apply = (p: AppPreferences): AppPreferences => {
+      const next = { ...p };
+      let changed = false;
+      if (!next.dependantRoleConfirmedAt) { next.dependantRoleConfirmedAt = stamp; changed = true; }
+      if (opts.clearSnooze && next.backupNudgeSnoozedUntil !== undefined) { delete next.backupNudgeSnoozedUntil; changed = true; }
+      return changed ? next : p;
+    };
+    setPreferences(apply);
+    const stored = await db.getPreferences();
+    const updated = apply(stored);
+    if (updated !== stored) await db.savePreferences(updated);
+  }, []);
+
   const setFallbackBunkerRelays = useCallback(async (relays: string[]) => {
     // Defence-in-depth: drop anything that doesn't pass the scheme check on
     // write. buildPairingURI will also reject, but silently filtering here
@@ -214,5 +242,5 @@ export function usePreferences() {
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences };
 }

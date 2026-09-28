@@ -153,4 +153,11 @@ export interface AppPreferences {
    * like the rest of this record — it identifies a device, never a key.
    */
   contactsDeviceId?: string;
+  /**
+   * Ms epoch the first time this identity creates a dependant. After this is
+   * set, the add-dependant forms show their ordinary button copy rather than
+   * the first-time "I'll hold their keys" role-confirm framing. Routing
+   * metadata, stored in clear like the rest of this record.
+   */
+  dependantRoleConfirmedAt?: number;
 }

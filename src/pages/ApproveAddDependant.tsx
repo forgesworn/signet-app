@@ -28,6 +28,8 @@ interface Props {
     autoPair: boolean;
   }) => Promise<void> | void;
   onCancel: () => void;
+  /** First time this identity has ever added a dependant — show the role-confirm framing. */
+  showRoleConfirm: boolean;
 }
 
 function safeOrigin(origin: string): string {
@@ -38,7 +40,7 @@ function safeOrigin(origin: string): string {
   }
 }
 
-export function ApproveAddDependant({ request, canAutoPair, onApprove, onCancel }: Props) {
+export function ApproveAddDependant({ request, canAutoPair, onApprove, onCancel, showRoleConfirm }: Props) {
   const [childName, setChildName] = useState<string>(request.childName ?? '');
   const [dateOfBirth, setDateOfBirth] = useState<string>('');
   const [autoPair, setAutoPair] = useState<boolean>(true);
@@ -201,6 +203,19 @@ export function ApproveAddDependant({ request, canAutoPair, onApprove, onCancel 
           </label>
         )}
 
+        {showRoleConfirm && (
+          <div
+            className="card"
+            style={{ borderLeft: '3px solid var(--accent)', padding: 12, marginBottom: 16 }}
+          >
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              <li>You will hold their keys. They come from your recovery words.</li>
+              <li>Sites will ask you to approve things for them.</li>
+              <li>One day they take these keys with them. That's a ceremony, not a delete.</li>
+            </ul>
+          </div>
+        )}
+
         {error && (
           <div
             className="card"
@@ -217,7 +232,7 @@ export function ApproveAddDependant({ request, canAutoPair, onApprove, onCancel 
         )}
 
         <button className="btn btn-primary" onClick={handleSubmit} disabled={submitting}>
-          {submitting ? 'Adding…' : 'Add dependant'}
+          {submitting ? 'Adding…' : showRoleConfirm ? "I'll hold their keys" : 'Add dependant'}
         </button>
         <button
           className="btn btn-ghost"

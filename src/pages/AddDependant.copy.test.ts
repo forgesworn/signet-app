@@ -29,4 +29,17 @@ describe('AddDependant copy', () => {
   it('never synthesises an "(anonymous)" name', () => {
     expect(text).not.toContain('(anonymous)');
   });
+
+  it('says a missing date of birth hides their age range from sites', () => {
+    expect(text).toContain("Without it, sites can't see their age range.");
+  });
+
+  it('uses the role-confirm button label when confirming for the first time', () => {
+    expect(text).toContain("I'll hold their keys");
+  });
+
+  it('offers an escape hatch off the backup step', () => {
+    expect(text).toContain('Not here');
+    expect(text).toContain("We'll keep reminding you.");
+  });
 });

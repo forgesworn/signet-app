@@ -136,7 +136,7 @@ import { RateLimitBanner } from './components/RateLimitBanner';
 import { AndroidAppPromo } from './components/AndroidAppPromo';
 import { ANDROID_APP_URL, shouldPromoteAndroidApp, snoozeApkPromo } from './lib/android-promo';
 import { BackupCard } from './components/BackupCard';
-import { shouldShowBackupNudge, BACKUP_NUDGE_SNOOZE_MS } from './lib/backup-nudge';
+import { shouldShowBackupNudge, backupNudgeCopy, backupNudgeSnoozeMs } from './lib/backup-nudge';
 import { LegacyGuestNotice } from './components/LegacyGuestNotice';
 import { DependantSwitchPicker } from './components/DependantSwitchPicker';
 import { useCarousel } from './hooks/useCarousel';
@@ -562,7 +562,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, snoozeBackupNudge, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -595,18 +595,6 @@ export function App() {
   const { documents } = useDocuments(identity?.naturalPerson.publicKey, encryptionKey);
   const { credentials, addCredential, refresh: reloadCredentials } = useCredentials(encryptionKey);
   const { sites: authorizedSites, authorize: authorizeSite, revoke: revokeSite, updateAlias: updateSiteAlias } = useAuthorizedSites();
-  // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
-  // the same slot. `identity` and `encryptionKey` gate it to the unlocked,
-  // loaded state; the rule itself lives in `shouldShowBackupNudge`.
-  const showBackupNudge = !!identity && !!encryptionKey && shouldShowBackupNudge({
-    backedUp: identity.backedUp === true,
-    hasMnemonic: !!identity.mnemonic,
-    isPairedChild: preferences.signingMode === 'paired-child',
-    createdAtSeconds: identity.createdAt,
-    authorizedSiteCount: authorizedSites.length,
-    snoozedUntilMs: preferences.backupNudgeSnoozedUntil,
-    nowMs: Date.now(),
-  });
   const { clients: connectedClients, disconnect: disconnectClient } = useConnectedClients();
   const { policies: originPolicies, recordSignIn: recordOriginSignIn, setPinned: setOriginPinned } = useOriginPolicies();
   const { badge: ownBadge } = useOwnBadge(activePubkey, preferences.relayUrl);
@@ -697,6 +685,33 @@ export function App() {
   const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
+  // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
+  // the same slot. `identity` and `encryptionKey` gate it to the unlocked,
+  // loaded state; the rule itself lives in `shouldShowBackupNudge`. Holding a
+  // dependant makes the identity worth losing regardless of age or site
+  // count, so `dependantCount` is threaded through as well.
+  // The words the add-dependant flow offers after creation (design §3.3).
+  // Memoised: `toRecoveryWords` runs BIP-39 PBKDF2 synchronously, which must
+  // not happen on every render of a page that only shows the result once.
+  const addDependantRecoveryWords = useMemo<string[] | null>(() => {
+    if (!identity?.mnemonic || identity.backedUp === true) return null;
+    try {
+      const words = toRecoveryWords(identity.mnemonic).split(' ');
+      return words.length > 0 ? words : null;
+    } catch {
+      return null;
+    }
+  }, [identity?.mnemonic, identity?.backedUp]);
+  const showBackupNudge = !!identity && !!encryptionKey && shouldShowBackupNudge({
+    backedUp: identity.backedUp === true,
+    hasMnemonic: !!identity.mnemonic,
+    isPairedChild: preferences.signingMode === 'paired-child',
+    createdAtSeconds: identity.createdAt,
+    authorizedSiteCount: authorizedSites.length,
+    snoozedUntilMs: preferences.backupNudgeSnoozedUntil,
+    nowMs: Date.now(),
+    dependantCount: dependants.length,
+  });
   const [activeDependantId, setActiveDependantId] = useState<string | null>(null);
   const activeDependant = activeDependantId ? dependants.find(d => d.id === activeDependantId) ?? null : null;
 
@@ -7500,6 +7515,7 @@ export function App() {
       // 1. Mint the dependant (NP under the guardian's identity).
       const newDep = await addDependant(params.childName, params.dateOfBirth, { deviceDerive: dependantDeviceDerive });
       dependantPubkey = newDep.id;
+      void noteDependantAdded({ clearSnooze: identity?.backedUp !== true });
     } catch {
       // Per the issue's error matrix, dependant-creation failures redirect
       // with `?error=create_failed` so the consumer can show its own retry UX.
@@ -7601,6 +7617,9 @@ export function App() {
     backends,
     bunkerServerEnabled,
     preferences.relayUrl,
+    preferences.dependantRoleConfirmedAt,
+    preferences.backupNudgeSnoozedUntil,
+    noteDependantAdded,
     reloadDependants,
     removeDependant,
     identity,
@@ -10415,13 +10434,6 @@ export function App() {
     );
   }
 
-  if (page === 'approve-add-dependant' && identity && !npActive) {
-    return renderRealIdentityGate(
-      'A site asked you to add a dependant. You are the guardian on record, so this needs your real identity.',
-      'approve-add-dependant',
-    );
-  }
-
   // Approve third-party Add Dependant
   if (page === 'approve-add-dependant' && pendingAddDependantRequest && identity) {
     const props = {
@@ -10429,6 +10441,7 @@ export function App() {
       canAutoPair: bunkerServerEnabled,
       onApprove: handleApproveAddDependant,
       onCancel: handleDenyAddDependant,
+      showRoleConfirm: !preferences.dependantRoleConfirmedAt,
     };
     return (
       <>
@@ -10613,13 +10626,6 @@ export function App() {
     );
   }
 
-  if (page === 'add-dependant' && identity && !npActive) {
-    return renderRealIdentityGate(
-      'You are the guardian on record for anyone you add, so family needs your real identity.',
-      'add-dependant',
-    );
-  }
-
   if (page === 'add-dependant') {
     return (
       <>
@@ -10627,6 +10633,7 @@ export function App() {
         <AddDependant
           onCreateDependant={async (name, dob) => {
             const dep = await addDependant(name, dob, { deviceDerive: dependantDeviceDerive });
+            void noteDependantAdded({ clearSnooze: identity?.backedUp !== true });
             return dep.id;
           }}
           onSwitchToDependant={(depId) => { setActiveDependantId(depId); navigateReplace('home'); }}
@@ -10634,20 +10641,14 @@ export function App() {
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-security'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           onBack={() => navigateBack()}
+          showRoleConfirm={!preferences.dependantRoleConfirmedAt}
+          recoveryWords={addDependantRecoveryWords}
+          onMarkBackedUp={markBackedUp}
         />
       </Layout>
       {authOverlay}{nip55Overlay}
           {handoffPickerOverlay}
       </>
-    );
-  }
-
-  // Gated only while the list is empty: a user who already has dependants (e.g.
-  // from a cross-device sync) must never be locked out of managing them.
-  if (page === 'family-list' && identity && !npActive && dependants.length === 0) {
-    return renderRealIdentityGate(
-      'You are the guardian on record for anyone you add, so family needs your real identity.',
-      'family-list',
     );
   }
 
@@ -10705,6 +10706,8 @@ export function App() {
           onAddDependant={() => navigateTo('add-dependant')}
           onAddKen={() => navigateTo('ken-add')}
           onManageContacts={contactsScope.canManageFamily ? handleOpenFamilyContacts : undefined}
+          backupPending={!!identity?.mnemonic && identity?.backedUp !== true && preferences.signingMode !== 'paired-child'}
+          onBackup={() => navigateTo('settings-security')}
         />
       </Layout>
       {authOverlay}{nip55Overlay}
@@ -11341,8 +11344,9 @@ export function App() {
       )}
       {showBackupNudge && (
         <BackupCard
+          {...backupNudgeCopy(dependants.map(d => d.displayName))}
           onBackup={() => { navigateTo('settings-security'); }}
-          onDismiss={() => { void snoozeBackupNudge(Date.now() + BACKUP_NUDGE_SNOOZE_MS); }}
+          onDismiss={() => { void snoozeBackupNudge(Date.now() + backupNudgeSnoozeMs(dependants.length)); }}
         />
       )}
       {!apkPromoDismissed && shouldPromoteAndroidApp() && !showBackupNudge && (

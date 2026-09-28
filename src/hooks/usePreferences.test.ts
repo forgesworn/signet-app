@@ -320,3 +320,41 @@ describe('preferPersonaForSignIns default', () => {
     expect(resolvePreferPersonaForSignIns({ id: 'current', theme: 'system', preferPersonaForSignIns: true } as never)).toBe(true);
   });
 });
+
+describe('usePreferences — noteDependantAdded', () => {
+  it('stamps the role confirm and clears the snooze in ONE write, keeping both', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.snoozeBackupNudge(Date.now() + 1000); });
+    await act(async () => { await result.current.noteDependantAdded({ clearSnooze: true }); });
+    expect(result.current.preferences.dependantRoleConfirmedAt).toBeTypeOf('number');
+    expect(result.current.preferences.backupNudgeSnoozedUntil).toBeUndefined();
+    const stored = await db.getPreferences();
+    expect(stored.dependantRoleConfirmedAt).toBeTypeOf('number');
+    expect(stored.backupNudgeSnoozedUntil).toBeUndefined();
+  });
+
+  it('applies to a FRESH read, so a preference saved during the await is not reverted', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    // Written behind the hook's back — as a slow addDependant would let happen.
+    await db.savePreferences({ ...(await db.getPreferences()), relayUrl: 'wss://example.invalid' });
+    await act(async () => { await result.current.noteDependantAdded({ clearSnooze: false }); });
+    const stored = await db.getPreferences();
+    expect(stored.relayUrl).toBe('wss://example.invalid');
+    expect(stored.dependantRoleConfirmedAt).toBeTypeOf('number');
+  });
+
+  it('keeps the first confirm stamp and leaves the snooze when told not to clear it', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const until = Date.now() + 5000;
+    await act(async () => { await result.current.snoozeBackupNudge(until); });
+    await act(async () => { await result.current.noteDependantAdded({ clearSnooze: false }); });
+    const first = result.current.preferences.dependantRoleConfirmedAt;
+    await new Promise(r => setTimeout(r, 5));
+    await act(async () => { await result.current.noteDependantAdded({ clearSnooze: false }); });
+    expect(result.current.preferences.dependantRoleConfirmedAt).toBe(first);
+    expect(result.current.preferences.backupNudgeSnoozedUntil).toBe(until);
+  });
+});
