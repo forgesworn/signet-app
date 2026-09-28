@@ -1,3 +1,5 @@
+import { BunkerApprovalModal } from './BunkerApprovalModal';
+import { isKinterestAuthority } from '../lib/kinterest-authority';
 import { shortNpub } from '../lib/signet';
 // src/components/BunkerPanel.tsx
 import { useEffect, useState, type CSSProperties } from 'react';
@@ -89,6 +91,8 @@ export function BunkerPanel({
   escalationNotices, onDismissEscalation, resolveEscalationIdentityName,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
 }: Props) {
+  const [reviewHandle, setReviewHandle] = useState<number | null>(null);
+  const reviewed = pendingApprovals.find(a => a.handle === reviewHandle);
   const hasEscalations = !!escalationNotices && escalationNotices.length > 0;
   const [verdictRows, setVerdictRows] = useState<Map<string, VerdictRowState>>(() => new Map());
   const setVerdictRow = (id: string, state: VerdictRowState | null) => {
@@ -250,6 +254,12 @@ export function BunkerPanel({
     </div>
   ) : null;
 
+  if (reviewed && isKinterestAuthority(reviewed.template)) {
+    return <BunkerApprovalModal approval={reviewed}
+      onApproveOnce={handle => { onApproveOnce(handle); setReviewHandle(null); }}
+      onApproveAlways={handle => { onApproveOnce(handle); setReviewHandle(null); }}
+      onDeny={handle => { onDeny(handle); setReviewHandle(null); }} />;
+  }
   return (
     <div style={backdrop} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={sheet} role="dialog" aria-labelledby="bunker-panel-title" aria-modal="true">
@@ -328,10 +338,15 @@ export function BunkerPanel({
                     {a.description} · signing as <strong>{target}</strong>
                   </div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    <button type="button" className="btn btn-primary" onClick={() => onApproveOnce(a.handle)}
-                      style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Approve</button>
-                    <button type="button" className="btn btn-secondary" onClick={() => onApproveAlways(a.handle)}
-                      style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Always</button>
+                    {isKinterestAuthority(a.template) ? (
+                      <button type="button" className="btn btn-primary" onClick={() => setReviewHandle(a.handle)}
+                        style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Review authorisation</button>
+                    ) : <>
+                      <button type="button" className="btn btn-primary" onClick={() => onApproveOnce(a.handle)}
+                        style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Approve</button>
+                      <button type="button" className="btn btn-secondary" onClick={() => onApproveAlways(a.handle)}
+                        style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Always</button>
+                    </>}
                     <button type="button" className="btn btn-ghost" onClick={() => onDeny(a.handle)}
                       style={{ fontSize: 13, padding: '6px 10px', color: 'var(--danger)' }}>Deny</button>
                   </div>
