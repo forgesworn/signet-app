@@ -39,6 +39,21 @@ describe('Heartwood dedicated vault context', () => {
     expect(() => HeartwoodVaultBackend.fromResolvedPubkey(pubkey, context, rpc, [pubkey])).toThrow('dedicated vault');
   });
 
+  it('a control event signed under a different pubkey fires onKeyMismatch and is refused', async () => {
+    const device = new LocalSigningBackend('04'.repeat(32));
+    const rpc = vi.fn(async (_method: string, params: string[]) => {
+      const template = JSON.parse(params[0]);
+      return JSON.stringify(await device.signEvent({ ...template, pubkey: device.activePublicKeyHex }));
+    });
+    const onKeyMismatch = vi.fn();
+    const stale = 'b'.repeat(64);
+    const vault = HeartwoodVaultBackend.fromResolvedPubkey(stale, { purpose: 'signet:vault:profiles', index: 0 }, rpc, [], onKeyMismatch);
+    try {
+      await expect(vault.signEvent({ kind: 30078, pubkey: stale, created_at: 1, tags: [], content: 'x' })).rejects.toThrow('Vault key changed');
+      expect(onKeyMismatch).toHaveBeenCalledTimes(1);
+    } finally { device.destroy(); }
+  });
+
   it('two instances built from the same resolved pubkey have independent destroy()', async () => {
     const local = new LocalSigningBackend('03'.repeat(32));
     const rpc = vi.fn(async (method: string, params: string[]) => {

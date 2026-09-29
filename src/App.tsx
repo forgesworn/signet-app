@@ -257,7 +257,8 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys } from './lib/db';
+import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { contactToKindredEntry } from './lib/kindred-adapter';
 import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
@@ -5382,6 +5383,15 @@ export function App() {
     if (result.state === 'cancelled') return 'Backup key change interrupted. Check its status after unlocking.';
     return 'The key change is unfinished. Existing backups are retained. Use Resume key change to try again; a signed handover may also finish during sync.';
   };
+  // Persist resolved Heartwood vault pubkeys across unlocks (vault-pubkey-cache.ts):
+  // one store per unlock key, detached on lock. Bunker mode only — no other
+  // backend resolves vault keys on a device.
+  useEffect(() => {
+    if (!bunkerBackend) return;
+    bunkerBackend.setVaultPubkeyStore(encryptionKey && preferences.signingMode === 'bunker'
+      ? createVaultPubkeyStore(encryptionKey) : null);
+    return () => bunkerBackend.setVaultPubkeyStore(null);
+  }, [bunkerBackend, encryptionKey, preferences.signingMode]);
   usePrivateVaults({
     sessionKey: identity && encryptionKey ? privateVaultSession : null,
     ownerPubkey: identity?.naturalPerson.publicKey ?? null,
@@ -5639,6 +5649,8 @@ export function App() {
 
     // Delete bunker secret
     await deleteBunkerSecret();
+    // Vault pubkeys resolved on the device we just walked away from.
+    try { await deleteHeartwoodVaultPubkeys(); } catch { /* a stale row only ever misses under another master */ }
 
     // The operator key manages the device we just walked away from — drop
     // it too (stops the kind-24134 client and deletes the encrypted row).

@@ -347,6 +347,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== BUNKER_SECRET_KEY &&
     r.id !== PRO_PERSONA_KEY &&
     r.id !== HEARTWOOD_OPERATOR_KEY &&
+    r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     !r.id.startsWith(DEPENDANT_PREFIX),
   );
 }
@@ -553,6 +554,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === BUNKER_SECRET_KEY) continue;
     if (identity.id === PRO_PERSONA_KEY) continue;
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
+    if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (!identity.encrypted) {
       await db.delete('identity', identity.id);
@@ -2147,6 +2149,54 @@ export async function loadHeartwoodOperator(
 export async function deleteHeartwoodOperator(): Promise<void> {
   const db = await getDB();
   await db.delete('identity', HEARTWOOD_OPERATOR_KEY);
+}
+
+// --- Heartwood vault pubkeys (encrypted) ---
+// One `identity`-store row keyed 'heartwoodVaultPubkeys': the vault pubkeys a
+// paired Heartwood resolved for `get_public_key` + a `signet:vault:*` context,
+// keyed `${purpose}:${index}` and pinned to the master pubkey they were
+// resolved under. Public data, but encrypted like `bunkerSecret` anyway — the
+// set of vault keys links this install to its backups on a relay. Cached so an
+// unlock does not re-send a context `get_public_key`, which the device answers
+// with an `NPUB AS` card it never remembers. See `vault-pubkey-cache.ts`.
+
+const HEARTWOOD_VAULT_PUBKEYS_KEY = 'heartwoodVaultPubkeys';
+
+export interface HeartwoodVaultPubkeys {
+  masterPubkey: string;
+  entries: Record<string, string>;
+}
+
+function isHeartwoodVaultPubkeys(value: unknown): value is HeartwoodVaultPubkeys {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as { masterPubkey?: unknown; entries?: unknown };
+  if (typeof v.masterPubkey !== 'string' || !/^[0-9a-f]{64}$/.test(v.masterPubkey)) return false;
+  if (!v.entries || typeof v.entries !== 'object' || Array.isArray(v.entries)) return false;
+  return Object.values(v.entries as Record<string, unknown>).every(pk => typeof pk === 'string' && /^[0-9a-f]{64}$/.test(pk));
+}
+
+export async function saveHeartwoodVaultPubkeys(record: HeartwoodVaultPubkeys, encryptionKey: string): Promise<void> {
+  const encrypted = await encryptSecret(JSON.stringify(record), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: HEARTWOOD_VAULT_PUBKEYS_KEY, secret: encrypted });
+}
+
+/** Returns null when nothing is stored, the key is wrong, or the payload is malformed. */
+export async function loadHeartwoodVaultPubkeys(encryptionKey: string): Promise<HeartwoodVaultPubkeys | null> {
+  const db = await getDB();
+  const record = await db.get('identity', HEARTWOOD_VAULT_PUBKEYS_KEY);
+  if (!record || !record.secret) return null;
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(record.secret, encryptionKey));
+    return isHeartwoodVaultPubkeys(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteHeartwoodVaultPubkeys(): Promise<void> {
+  const db = await getDB();
+  await db.delete('identity', HEARTWOOD_VAULT_PUBKEYS_KEY);
 }
 
 // --- Professional Persona Private Key (encrypted) ---

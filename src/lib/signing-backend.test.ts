@@ -490,12 +490,15 @@ function getPublicKeyRpcCount(): number {
 
 vi.mock('./heartwood-vault', () => ({
   HeartwoodVaultBackend: {
-    fromResolvedPubkey: vi.fn((pubkey: string, context: unknown, rpc: (m: string, p: string[], c: unknown) => Promise<string>, identityPubkeys: string[]) => {
+    fromResolvedPubkey: vi.fn((pubkey: string, context: unknown, rpc: (m: string, p: string[], c: unknown) => Promise<string>, identityPubkeys: string[],
+      onKeyMismatch?: () => void) => {
       if (!/^[0-9a-f]{64}$/.test(pubkey) || identityPubkeys.includes(pubkey)) throw new Error('Signer did not resolve a dedicated vault key');
       let destroyed = false;
       return {
         type: 'bunker' as const,
         activePublicKeyHex: pubkey,
+        /** Stands in for the real signEvent's pubkey-mismatch branch. */
+        simulateKeyMismatch: () => onKeyMismatch?.(),
         nip44Decrypt: async (peer: string, ciphertext: string) => {
           if (destroyed) throw new Error('Vault backend destroyed');
           return rpc('nip44_decrypt', [peer, ciphertext], context);
@@ -787,5 +790,86 @@ describe('BunkerSigningBackend.vaultBackend caching', () => {
     const before = getPublicKeyRpcCount();
     await backend.vaultBackend('profiles', 0, []);
     expect(getPublicKeyRpcCount()).toBe(before + 1);
+  });
+});
+
+describe('BunkerSigningBackend.vaultBackend persistent pubkey store', () => {
+  const CLIENT_SECRET = 'e'.repeat(64);
+  const MASTER = 'cd'.repeat(32);
+
+  function memoryStore() {
+    const rows = new Map<string, string>();
+    return {
+      rows,
+      get: vi.fn(async (master: string, key: string) => rows.get(`${master}|${key}`) ?? null),
+      put: vi.fn(async (master: string, key: string, pubkey: string) => { rows.set(`${master}|${key}`, pubkey); }),
+      drop: vi.fn(async (master: string, key: string) => { rows.delete(`${master}|${key}`); }),
+    };
+  }
+
+  async function connectedBackend(): Promise<BunkerSigningBackend> {
+    bunkerMock.pubkeyReply = MASTER;
+    poolMock.silent = false;
+    const backend = new BunkerSigningBackend(CLIENT_SECRET);
+    await backend.connect('bunker://x?relay=wss://relay.example');
+    return backend;
+  }
+
+  beforeEach(() => {
+    heartwoodVaultMock.rpcCalls = [];
+    heartwoodVaultMock.shouldReject = false;
+    heartwoodVaultMock.nextPubkey = 'a'.repeat(64);
+    heartwoodVaultMock.gate = null;
+  });
+
+  it('a device answer is persisted, and a later unlock (fresh backend) skips the context get_public_key', async () => {
+    const store = memoryStore();
+    const first = await connectedBackend();
+    first.setVaultPubkeyStore(store);
+    await first.vaultBackend('profiles', 0, []);
+    expect(getPublicKeyRpcCount()).toBe(1);
+    await vi.waitFor(() => expect(store.rows.get(`${MASTER}|signet:vault:profiles:0`)).toBe('a'.repeat(64)));
+    first.destroy();
+
+    const second = await connectedBackend();
+    second.setVaultPubkeyStore(store);
+    const vault = await second.vaultBackend('profiles', 0, []);
+    expect(vault.activePublicKeyHex).toBe('a'.repeat(64));
+    expect(getPublicKeyRpcCount()).toBe(1);
+  });
+
+  it('a signature under a different pubkey drops the entry and the next call asks the device again', async () => {
+    const store = memoryStore();
+    store.rows.set(`${MASTER}|signet:vault:profiles:0`, 'f'.repeat(64));
+    const backend = await connectedBackend();
+    backend.setVaultPubkeyStore(store);
+    const vault = await backend.vaultBackend('profiles', 0, []) as unknown as { activePublicKeyHex: string; simulateKeyMismatch(): void };
+    expect(vault.activePublicKeyHex).toBe('f'.repeat(64));
+    expect(getPublicKeyRpcCount()).toBe(0);
+    vault.simulateKeyMismatch();
+    await vi.waitFor(() => expect(store.rows.has(`${MASTER}|signet:vault:profiles:0`)).toBe(false));
+    const again = await backend.vaultBackend('profiles', 0, []);
+    expect(getPublicKeyRpcCount()).toBe(1);
+    expect(again.activePublicKeyHex).toBe('a'.repeat(64));
+  });
+
+  it('a persisted value that is now an identity key is dropped, not served forever', async () => {
+    const store = memoryStore();
+    store.rows.set(`${MASTER}|signet:vault:profiles:0`, 'f'.repeat(64));
+    const backend = await connectedBackend();
+    backend.setVaultPubkeyStore(store);
+    await expect(backend.vaultBackend('profiles', 0, ['f'.repeat(64)])).rejects.toThrow('dedicated vault');
+    await vi.waitFor(() => expect(store.drop).toHaveBeenCalled());
+    expect(store.rows.size).toBe(0);
+  });
+
+  it('entries are looked up under the connected master pubkey', async () => {
+    const store = memoryStore();
+    store.rows.set(`${'99'.repeat(32)}|signet:vault:profiles:0`, 'f'.repeat(64));
+    const backend = await connectedBackend();
+    backend.setVaultPubkeyStore(store);
+    const vault = await backend.vaultBackend('profiles', 0, []);
+    expect(vault.activePublicKeyHex).toBe('a'.repeat(64));
+    expect(getPublicKeyRpcCount()).toBe(1);
   });
 });

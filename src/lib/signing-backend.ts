@@ -8,6 +8,7 @@ import { generateSecretKey, verifyEvent } from 'nostr-tools/pure';
 import { encrypt as nip04EncryptRaw, decrypt as nip04DecryptRaw } from 'nostr-tools/nip04';
 import { vaultKeyContext } from 'signet-protocol/experimental';
 import { waitForReplySubscription, RELAY_READY_CAP_MS } from './relay-ready';
+import type { VaultPubkeyStore } from './vault-pubkey-cache';
 
 // Re-exported so existing importers of RELAY_READY_CAP_MS from this module
 // keep working — the readiness helper itself now lives in relay-ready.ts,
@@ -229,6 +230,13 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    */
   private vaultPubkeys = new Map<string, { generation: number; pubkey: Promise<string> }>();
   private vaultGeneration = 0;
+  /**
+   * Optional persistent layer under `vaultPubkeys`, set by App per unlock
+   * (vault-pubkey-cache.ts). A miss in memory consults it before asking the
+   * device; a device answer is written back to it. Keyed by the master
+   * (`activePublicKeyHex`) the pubkey was resolved under.
+   */
+  private vaultPubkeyStore: VaultPubkeyStore | null = null;
 
   constructor(clientSecretHex: string) {
     if (!clientSecretHex || !/^[0-9a-f]{64}$/.test(clientSecretHex)) {
@@ -420,6 +428,11 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     return this.request('nip04_decrypt', [senderPubkey, ciphertext], SIGNER_REQUEST_TIMEOUT_MS);
   }
 
+  /** Attach (or with null, detach) the persistent vault-pubkey layer. */
+  setVaultPubkeyStore(store: VaultPubkeyStore | null): void {
+    this.vaultPubkeyStore = store;
+  }
+
   /**
    * Dedicated vault route on MySignet's own pairing; never registers a
    * persona. Shares the resolved vault PUBKEY across calls for the same
@@ -454,13 +467,27 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     // (rather than after the first has settled) buys nothing once the
     // module is cached — doing it sequentially avoids two in-flight
     // resolutions of the same dynamic import racing each other.
+    const master = this.activePublicKeyHex;
+    const store = this.vaultPubkeyStore;
     const pubkey = await pubkeyPromise;
     const { HeartwoodVaultBackend, heartwoodVaultRequest } = await this.heartwoodVaultModule();
-    return HeartwoodVaultBackend.fromResolvedPubkey(pubkey, context, (method, params, ctx) => {
-      if (!this.signer) return Promise.reject(new Error('Not connected to bunker'));
-      return heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
-        method, params, context: ctx });
-    }, forbidden);
+    // A stale resolution (the device now signs under another key, or the
+    // value turned out to be one of the owner's identity keys) must not be
+    // served again — drop it from both layers so the next call asks the device.
+    const forget = () => {
+      if (this.vaultPubkeys.get(key)?.pubkey === pubkeyPromise) this.vaultPubkeys.delete(key);
+      if (store) void store.drop(master, key);
+    };
+    try {
+      return HeartwoodVaultBackend.fromResolvedPubkey(pubkey, context, (method, params, ctx) => {
+        if (!this.signer) return Promise.reject(new Error('Not connected to bunker'));
+        return heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
+          method, params, context: ctx });
+      }, forbidden, forget);
+    } catch (err) {
+      forget();
+      throw err;
+    }
   }
 
   /**
@@ -471,10 +498,21 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    * and share this one in-flight RPC instead of issuing a second.
    */
   private resolveVaultPubkey(key: string, context: { purpose: string; index: number }, generation: number): Promise<string> {
+    const master = this.activePublicKeyHex;
+    const store = this.vaultPubkeyStore;
     const pubkeyPromise: Promise<string> = (async () => {
+      // Persisted from an earlier unlock: no device round trip, and no
+      // `NPUB AS` card — the device never remembers that approval.
+      const persisted = store ? await store.get(master, key).catch(() => null) : null;
+      if (persisted) return persisted;
       const { heartwoodVaultRequest } = await this.heartwoodVaultModule();
-      return heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
+      const resolved = await heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
         method: 'get_public_key', params: [], context });
+      // Only an answer from the pairing that is still current is kept.
+      if (store && generation === this.vaultGeneration && master === this.activePublicKeyHex) {
+        void store.put(master, key, resolved);
+      }
+      return resolved;
     })();
     this.vaultPubkeys.set(key, { generation, pubkey: pubkeyPromise });
     pubkeyPromise.then(
