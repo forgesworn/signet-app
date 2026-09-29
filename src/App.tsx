@@ -261,7 +261,7 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke } from './lib/db';
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
@@ -5942,9 +5942,19 @@ export function App() {
 
     // A9: the child's own phone loses its Heartwood slot with the dependant —
     // best effort, inside the same 5 s budget (§9.4 "The whole phone").
+    // A24: a revoke that fails (or cannot be tried without the operator key) is
+    // remembered and retried by the policy push; never swept by label.
     const operatorClient = heartwoodOperator.client;
-    if (dep.childDevice?.mode === 'heartwood-direct' && operatorClient) {
-      retractions.push(revokeChildDeviceSlot(operatorClient, dep).catch(() => { /* best effort */ }));
+    const cd = dep.childDevice;
+    if (cd?.mode === 'heartwood-direct') {
+      const key = encryptionKey;
+      const remember = async () => {
+        if (!key) return;
+        try {
+          await addPendingChildRevoke({ label: cd.slotLabel, slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint, dependantId: dep.id }, key);
+        } catch { /* nothing more we can do on this device */ }
+      };
+      retractions.push(operatorClient ? revokeChildDeviceSlot(operatorClient, dep).catch(remember) : remember());
     }
 
     if (retractions.length === 0) return;
@@ -5952,7 +5962,7 @@ export function App() {
       Promise.allSettled(retractions),
       new Promise(resolve => setTimeout(resolve, 5_000)),
     ]).catch(() => { /* non-fatal */ });
-  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet, heartwoodOperator.client]);
+  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet, heartwoodOperator.client, encryptionKey]);
 
   /**
    * Phase 2F shared publish helper. Resolves the per-slot signing backend

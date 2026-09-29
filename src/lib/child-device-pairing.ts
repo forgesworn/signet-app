@@ -15,6 +15,7 @@ import { isChildDirectSlot } from './policy-compiler';
 import { rulesFromLegacyGrants } from './child-rules';
 import type { RememberedGrant } from '../types/grants';
 import type { ChildRule } from '../types/child-rules';
+import type { PendingChildRevoke } from './db';
 
 /** Firmware MAX_CONNECT_SLOTS. */
 export const MAX_CONNECT_SLOTS = 16;
@@ -167,4 +168,32 @@ export function pendingRuleSeeds(
     out.push({ dep, seed: has ? [] : rulesFromLegacyGrants(id, grants, nowMs) });
   }
   return out;
+}
+
+/** A24: the io a pending-revoke retry needs (db rows + the operator's revoke). */
+export interface PendingRevokeIo {
+  list(): Promise<PendingChildRevoke[]>;
+  revoke(r: PendingChildRevoke): Promise<void>;
+  remove(r: PendingChildRevoke): Promise<void>;
+}
+
+/**
+ * A24: retry every remembered revoke. A record is dropped on success or when
+ * the device says the slot is gone (no such slot / stale slot — a re-minted
+ * index no longer carries our fingerprint). Anything else stays for the next
+ * run. Never throws; returns how many records were cleared.
+ */
+export async function retryPendingChildRevokes(io: PendingRevokeIo): Promise<number> {
+  let cleared = 0;
+  let list: PendingChildRevoke[];
+  try { list = await io.list(); } catch { return 0; }
+  for (const r of list) {
+    try {
+      await io.revoke(r);
+    } catch (e) {
+      if (!isGoneSlotError(e)) continue;
+    }
+    try { await io.remove(r); cleared += 1; } catch { /* retried next run */ }
+  }
+  return cleared;
 }

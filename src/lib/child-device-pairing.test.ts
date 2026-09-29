@@ -9,7 +9,7 @@ import { listClients, revokeClient, type HeartwoodMgmtClient } from './heartwood
 import { buildPersonaFirstDependant } from './dependant-record';
 import { mergeDependantWithLocal } from './dependants-sync';
 import {
-  childDirectPersona, clientKeyInUse, pendingRuleSeeds, replyPersonas, revokeChildDeviceSlot, unconfirmedMintSlots, usesChildDirectPairing,
+  childDirectPersona, clientKeyInUse, pendingRuleSeeds, retryPendingChildRevokes, replyPersonas, revokeChildDeviceSlot, unconfirmedMintSlots, usesChildDirectPairing,
 } from './child-device-pairing';
 import type { RememberedGrant } from '../types/grants';
 import type { DeviceClientSlot } from './heartwood-mgmt-types';
@@ -102,5 +102,22 @@ describe('A23 / A25 helpers', () => {
     expect(work).toHaveLength(1);
     expect(work[0].seed).toHaveLength(1);
     expect(pendingRuleSeeds([pending], [{ dependantId: d.id.toUpperCase() }], [grant], 5_000)[0].seed).toEqual([]);
+  });
+});
+
+describe('A24: retryPendingChildRevokes', () => {
+  const rec = (i: number) => ({ label: 'signet:child-device:v2:x', slotIndex: i, secretFingerprint: 'ab', dependantId: 'd' });
+  it('drops a record on success or on a gone slot, keeps it on any other failure', async () => {
+    const removed: number[] = [];
+    const revoke = vi.fn(async (r: { slotIndex: number }) => {
+      if (r.slotIndex === 2) throw new Error('stale_client_slot: fingerprint mismatch');
+      if (r.slotIndex === 3) throw new Error('timeout waiting for device (revoke_client)');
+    });
+    const n = await retryPendingChildRevokes({ list: async () => [rec(1), rec(2), rec(3)], revoke, remove: async (r) => { removed.push(r.slotIndex); } });
+    expect(n).toBe(2);
+    expect(removed).toEqual([1, 2]);
+  });
+  it('never throws when the list cannot be read', async () => {
+    expect(await retryPendingChildRevokes({ list: async () => { throw new Error('x'); }, revoke: vi.fn(), remove: vi.fn() })).toBe(0);
   });
 });

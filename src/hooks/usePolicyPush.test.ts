@@ -4,10 +4,15 @@ import { renderHook, act } from '@testing-library/react';
 
 vi.mock('../lib/heartwood-mgmt', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/heartwood-mgmt')>();
-  return { ...actual, listClients: vi.fn(), updateClientPolicy: vi.fn() };
+  return { ...actual, listClients: vi.fn(), updateClientPolicy: vi.fn(), revokeClient: vi.fn() };
 });
+vi.mock('../lib/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/db')>();
+  return { ...actual, listPendingChildRevokes: vi.fn(async () => []), removePendingChildRevoke: vi.fn(async () => {}) };
+});
+import { listPendingChildRevokes, removePendingChildRevoke } from '../lib/db';
 
-import { listClients, updateClientPolicy, type HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
+import { listClients, revokeClient, updateClientPolicy, type HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import { childDirectSlotLabel } from '../lib/policy-compiler';
 import { childRuleId } from '../lib/child-rules';
@@ -106,5 +111,17 @@ describe('earliestChildExpiryMs', () => {
     expect(earliestChildExpiryMs({ d: [{ kind: 1, until: 2_000 }] }, [kindRule(1, { expiresAt: 1_500_000 })], now)).toBe(1_500_000);
     expect(earliestChildExpiryMs({ d: [{ kind: 1, until: 1_200 }] }, [kindRule(1, { expiresAt: 1_500_000 })], now)).toBe(1_200_000);
     expect(earliestChildExpiryMs({}, [kindRule(1, { expiresAt: 900_000 }), kindRule(2, { expiresAt: 1_100_000, tombstonedAt: 5 })], now)).toBeNull();
+  });
+});
+
+describe('A24: pending revokes', () => {
+  it('a push first retries each remembered revoke and drops the done ones', async () => {
+    const rec = { label: 'signet:child-device:v2:x', slotIndex: 9, secretFingerprint: 'ab'.repeat(32), dependantId: dep.id };
+    vi.mocked(listPendingChildRevokes).mockResolvedValue([rec]);
+    vi.mocked(revokeClient).mockResolvedValue(undefined);
+    renderHook(() => usePolicyPush(base({ encryptionKey: 'k'.repeat(64), childRules: [] })));
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(vi.mocked(revokeClient).mock.calls[0][1]).toEqual({ slotIndex: 9, secretFingerprint: 'ab'.repeat(32) });
+    expect(vi.mocked(removePendingChildRevoke)).toHaveBeenCalledWith(rec, 'k'.repeat(64));
   });
 });

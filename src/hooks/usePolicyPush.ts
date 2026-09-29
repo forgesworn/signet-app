@@ -23,8 +23,9 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { ChildRule } from '../types/child-rules';
-import { loadBunkerSecret } from '../lib/db';
-import { HeartwoodMgmtClient, listClients, updateClientPolicy } from '../lib/heartwood-mgmt';
+import { listPendingChildRevokes, loadBunkerSecret, removePendingChildRevoke } from '../lib/db';
+import { HeartwoodMgmtClient, listClients, revokeClient, updateClientPolicy } from '../lib/heartwood-mgmt';
+import { retryPendingChildRevokes } from '../lib/child-device-pairing';
 import { runPolicyPush, type PolicyPushIo, type PolicyPushResult } from '../lib/policy-push';
 
 export const POLICY_PUSH_DEBOUNCE_MS = 1_500;
@@ -108,8 +109,8 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   // Latest inputs in refs so the debounced runner reads fresh values
   // without re-arming on every render.
-  const inputsRef = useRef({ client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds });
-  inputsRef.current = { client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds };
+  const inputsRef = useRef({ client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, encryptionKey });
+  inputsRef.current = { client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, encryptionKey };
 
   const runningRef = useRef(false);
   const queuedRef = useRef(false);
@@ -128,7 +129,7 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   const runOnce = useCallback(async () => {
     if (runningRef.current) { queuedRef.current = true; return; }
-    const { client: c, dependants: deps, grants: gs, guardianClientPubkey: gcp, childRules: rules, approvedOnceKinds: once } = inputsRef.current;
+    const { client: c, dependants: deps, grants: gs, guardianClientPubkey: gcp, childRules: rules, approvedOnceKinds: once, encryptionKey: key } = inputsRef.current;
     // Rules still loading: a child-direct ceiling compiled without them would narrow, then widen.
     if (!c || !c.isOpen || gs === null || rules === null) return;
     runningRef.current = true;
@@ -138,6 +139,14 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
       updateClientPolicy: (slot, policy) => updateClientPolicy(c, slot, policy),
     };
     try {
+      // A24: child-direct slots whose removal-time revoke did not land.
+      if (key) {
+        await retryPendingChildRevokes({
+          list: () => listPendingChildRevokes(key),
+          revoke: (r) => revokeClient(c, { slotIndex: r.slotIndex, secretFingerprint: r.secretFingerprint }),
+          remove: (r) => removePendingChildRevoke(r, key),
+        });
+      }
       const result = await runPolicyPush(io, {
         dependants: deps,
         grants: gs,
