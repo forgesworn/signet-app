@@ -20,8 +20,8 @@ const KIND = 30078;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STAGES: readonly string[] = ['full-control', 'request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'];
 const MAX_RULES = 2000, MAX_KINDS = 256, MAX_DISCONNECTED = 64, MAX_ID = 200;
-const TARGET_RE = /^(?:site:https?:\/\/[^\s]{1,200}|app:[0-9a-f]{64}|app:nip55:[A-Za-z0-9._]{1,200}|peer:[0-9a-f]{64}|\*)$/;
-const SCOPE_RE = /^[a-z0-9:_-]{1,64}$/;
+export const TARGET_RE = /^(?:site:https?:\/\/[^\s]{1,200}|app:[0-9a-f]{64}|app:nip55:[A-Za-z0-9._]{1,200}|peer:[0-9a-f]{64}|\*)$/;
+export const SCOPE_RE = /^[a-z0-9:_-]{1,64}$/;
 
 export interface ChildRulesPayload {
   v: 1;
