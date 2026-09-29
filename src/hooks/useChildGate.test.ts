@@ -10,7 +10,7 @@ import type { ChildRulesPayload } from '../lib/child-rules-wire';
 import { buildVerdictEvent, openAskEvent, templateHash, type ChildSignVerdict } from '../lib/child-sign-asks';
 import type { ChildActivityEntry } from '../lib/child-activity';
 import {
-  useChildGate, nextRequestCreatedAt, resetRequestCreatedAtForTests, CHILD_GATE_MAX_HELD, type ChildGateTransport,
+  useChildGate, nextRequestCreatedAt, reserveRequestCreatedAt, resetRequestCreatedAtForTests, CHILD_GATE_MAX_HELD, REQUEST_STAMP_MAX_AHEAD_S, type ChildGateTransport,
 } from './useChildGate';
 
 const DEP = 'ef'.repeat(32);
@@ -258,14 +258,30 @@ describe('A55: every gated request touches its app', () => {
   });
 });
 
+describe('A58: request stamps never run more than 30 s ahead', () => {
+  it('a burst waits until its stamp fits within now + 30 s', async () => {
+    const clock = { t: NOW };
+    const sleeps: number[] = [];
+    const deps = { now: () => clock.t, sleep: async (ms: number) => { sleeps.push(ms); clock.t += ms; } };
+    const out: number[] = [];
+    for (let i = 0; i < REQUEST_STAMP_MAX_AHEAD_S + 3; i++) out.push(await reserveRequestCreatedAt(PERSONA, deps));
+    const base = Math.floor(NOW / 1000);
+    expect(out.slice(0, REQUEST_STAMP_MAX_AHEAD_S + 1)).toEqual(Array.from({ length: REQUEST_STAMP_MAX_AHEAD_S + 1 }, (_, i) => base + i));
+    expect(sleeps.length).toBeGreaterThan(0);
+    for (let i = 1; i < out.length; i++) expect(out[i]).toBe(out[i - 1] + 1);
+    for (const v of out) expect(v).toBeLessThanOrEqual(Math.floor(clock.t / 1000) + REQUEST_STAMP_MAX_AHEAD_S);
+    expect(nextRequestCreatedAt(PERSONA, NOW)).toBeNull(); // the sync step refuses rather than run ahead
+  });
+});
+
 describe('nextRequestCreatedAt', () => {
   it('is at least now and strictly increasing per persona, independent across personas', () => {
     const a1 = nextRequestCreatedAt(PERSONA, NOW);
     const a2 = nextRequestCreatedAt(PERSONA, NOW);
     const a3 = nextRequestCreatedAt(PERSONA, NOW - 5000);
     expect(a1).toBe(Math.floor(NOW / 1000));
-    expect(a2).toBe(a1 + 1);
-    expect(a3).toBe(a2 + 1);
+    expect(a2).toBe(a1! + 1);
+    expect(a3).toBe(a2! + 1);
     expect(nextRequestCreatedAt('cd'.repeat(32), NOW)).toBe(Math.floor(NOW / 1000));
     expect(nextRequestCreatedAt(PERSONA, NOW + 60_000)).toBe(Math.floor(NOW / 1000) + 60);
   });

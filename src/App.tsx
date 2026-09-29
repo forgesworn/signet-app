@@ -289,7 +289,7 @@ import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMess
 import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
-import { useChildGate, nextRequestCreatedAt } from './hooks/useChildGate';
+import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
 import { guardianActingBackend } from './lib/guardian-acting';
 import { dependantPersonaPubkeys } from './hooks/useChildActivity';
 import type { RouterProbeState, RouteDecorator } from './lib/bunker-router';
@@ -1250,7 +1250,7 @@ export function App() {
     let wrapped = cache.get(route);
     if (!wrapped) {
       wrapped = guardianActingBackend(route, pk, {
-        stamp: (p) => nextRequestCreatedAt(p),
+        stamp: (p) => reserveRequestCreatedAt(p),
         record: (e) => {
           const key = guardianActingRef.current.key;
           if (key) void appendGuardianActing(e, key).catch(() => { /* bookkeeping only */ });

@@ -59,8 +59,8 @@ export function pruneGuardianActing(list: GuardianActingEntry[], nowS: number): 
 }
 
 export interface GuardianActingDeps {
-  /** Strictly increasing per persona (useChildGate's `nextRequestCreatedAt`). */
-  stamp(persona: string): number;
+  /** Strictly increasing per persona, at most 30 s ahead (useChildGate's `reserveRequestCreatedAt`, A58). */
+  stamp(persona: string): number | Promise<number>;
   record(e: GuardianActingEntry): void;
   nowS?: () => number;
 }
@@ -78,19 +78,19 @@ export function guardianActingBackend(inner: DecryptingSigningBackend, persona: 
     try { deps.record({ source: 'guardian', persona: p, kind, method, requestCreatedAt, at: nowS() }); } catch { /* bookkeeping only */ }
   };
   const signEvent = async (event: UnsignedEvent): Promise<NostrEvent> => {
-    const n = deps.stamp(p);
+    const n = await deps.stamp(p);
     const out = await withRequestCreatedAt(inner, n).signEvent(event);
     note(typeof event?.kind === 'number' ? event.kind : null, 'sign_event', n);
     return out;
   };
   const nip44Encrypt = async (peer: string, plaintext: string): Promise<string> => {
-    const n = deps.stamp(p);
+    const n = await deps.stamp(p);
     const out = await withRequestCreatedAt(inner, n).nip44Encrypt(peer, plaintext);
     note(null, 'nip44_encrypt', n);
     return out;
   };
   const nip44Decrypt = async (peer: string, ciphertext: string): Promise<string> => {
-    const n = deps.stamp(p);
+    const n = await deps.stamp(p);
     const out = await withRequestCreatedAt(inner, n).nip44Decrypt(peer, ciphertext);
     note(null, 'nip44_decrypt', n);
     return out;

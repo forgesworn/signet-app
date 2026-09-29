@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { guardianActingBackend, pruneGuardianActing, parseGuardianActingEntry, GUARDIAN_ACTING_KEEP_S, type GuardianActingEntry } from './guardian-acting';
-import { nextRequestCreatedAt, resetRequestCreatedAtForTests } from '../hooks/useChildGate';
+import { reserveRequestCreatedAt, resetRequestCreatedAtForTests } from '../hooks/useChildGate';
 
 const P = 'b'.repeat(64);
 
@@ -25,7 +25,7 @@ describe('guardianActingBackend (A48)', () => {
     const inner = new FakeRouted();
     const rows: GuardianActingEntry[] = [];
     const b = guardianActingBackend(inner as unknown as DecryptingSigningBackend, P, {
-      stamp: (p) => nextRequestCreatedAt(p, 1_000_000_000), record: (e) => rows.push(e), nowS: () => 1_000_000_050,
+      stamp: (p) => reserveRequestCreatedAt(p, { now: () => 1_000_000_000, sleep: async () => {} }), record: (e) => rows.push(e), nowS: () => 1_000_000_050,
     });
     await b.signEvent({ kind: 1, created_at: 1, tags: [], content: '', pubkey: P });
     await b.nip44Encrypt('c'.repeat(64), 'hi');

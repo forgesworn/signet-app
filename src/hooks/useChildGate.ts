@@ -14,8 +14,9 @@
  *            (`unpaired`, Review Focus 5)
  *   deny / blocked → refused, nothing asked
  *
- * `requestCreatedAt` comes from `nextRequestCreatedAt(persona)`: strictly
- * increasing per persona and ≥ now, stamped by the caller on the NIP-46
+ * `requestCreatedAt` comes from `reserveRequestCreatedAt(persona)`: strictly
+ * increasing per persona, ≥ now and never more than 30 s ahead (A58: a burst
+ * waits), stamped by the caller on the NIP-46
  * request envelope (`withRequestCreatedAt`) — the Heartwood echoes it in its
  * C5 rumor and the guardian joins the two records on it (§9.2).
  *
@@ -54,12 +55,37 @@ const HEX64 = /^[0-9a-f]{64}$/;
 // ── Forced request created_at ─────────────────────────────────────────────
 const lastStamp = new Map<string, number>();
 
-/** Strictly increasing per persona, never below now (unix seconds). */
-export function nextRequestCreatedAt(persona: string, nowMs: number = Date.now()): number {
+/** A58: a stamp never runs more than this far ahead of the clock (seconds). */
+export const REQUEST_STAMP_MAX_AHEAD_S = 30;
+
+/**
+ * Strictly increasing per persona, never below now (unix seconds). Null —
+ * nothing reserved — when the next stamp would run more than
+ * REQUEST_STAMP_MAX_AHEAD_S ahead of now (A58); `reserveRequestCreatedAt` waits.
+ */
+export function nextRequestCreatedAt(persona: string, nowMs: number = Date.now()): number | null {
   const p = persona.toLowerCase();
-  const next = Math.max(Math.floor(nowMs / 1000), (lastStamp.get(p) ?? 0) + 1);
+  const nowS = Math.floor(nowMs / 1000);
+  const next = Math.max(nowS, (lastStamp.get(p) ?? 0) + 1);
+  if (next > nowS + REQUEST_STAMP_MAX_AHEAD_S) return null;
   lastStamp.set(p, next);
   return next;
+}
+
+/** A58: the next stamp for `persona`, waiting until it fits within now + 30 s. */
+export async function reserveRequestCreatedAt(
+  persona: string,
+  deps: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<number> {
+  const now = deps.now ?? (() => Date.now());
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  for (;;) {
+    const n = nextRequestCreatedAt(persona, now());
+    if (n !== null) return n;
+    const last = lastStamp.get(persona.toLowerCase()) ?? 0;
+    const waitS = last + 1 - REQUEST_STAMP_MAX_AHEAD_S - Math.floor(now() / 1000);
+    await sleep(Math.max(1, waitS) * 1000);
+  }
 }
 
 /** Test seam only. */
@@ -191,8 +217,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       : decideChildCrypto({ rules: at.rules, persona, appId: req.appId, method: req.method as 'nip44_encrypt' | 'nip44_decrypt', peer: req.peer!.toLowerCase(), nowMs, rateState: rateRef.current });
     rateRef.current = checkRateLimit(rateRef.current, nowMs).newState;
 
-    const forward = (outcome: 'signed' | 'approved', target?: string): ChildGateOutcome => {
-      const requestCreatedAt = nextRequestCreatedAt(persona, nowRef.current());
+    const forward = async (outcome: 'signed' | 'approved', target?: string): Promise<ChildGateOutcome> => {
+      const requestCreatedAt = await reserveRequestCreatedAt(persona, { now: () => nowRef.current() });
       emit({ ...base, kind, outcome, ...(target ? { target } : {}), requestCreatedAt });
       touchApp(req.appId, persona, req.appLabel);
       return { ok: true, requestCreatedAt, ...(template ? { template } : {}) };
@@ -284,7 +310,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
               settle({ ok: false, error: 'denied' });
               return;
             }
-            settle(forward('approved', target));
+            void forward('approved', target).then(settle);
           });
         },
       );
