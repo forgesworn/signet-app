@@ -220,6 +220,9 @@ export async function mergeInventory(
     naturalPerson: payload.naturalPerson
       ? {
           ...stored.naturalPerson,
+          // A61: the payload's key is authoritative, so a dormant (empty)
+          // or stub NP slot picks up the real key once it is activated.
+          publicKey: payload.naturalPerson.publicKey,
           avatarHash: payload.naturalPerson.avatarHash,
           avatarBlossomUrl: payload.naturalPerson.avatarBlossomUrl,
           avatarKey: payload.naturalPerson.avatarKey,

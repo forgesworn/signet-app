@@ -313,6 +313,23 @@ describe('mergeInventory omits a dormant real identity (spec §7.6)', () => {
     expect(savedIdentity.persona.displayName).toBe('Lily');
   });
 
+  it('A61: a dormant (empty-key) NP takes the active NP key from the payload', async () => {
+    mockLoadId.mockResolvedValue({
+      ...pairTimeStub,
+      naturalPerson: { publicKey: '', privateKey: '', displayName: '' },
+      naturalPersonActive: false,
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 1,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      persona: { publicKey: PERSONA_PUB, displayName: 'Lily' },
+      extraPersonas: [],
+    } as PersonaInventoryPayload, DEP_PUB, 'test-key');
+    const saved = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(saved.naturalPerson.publicKey).toBe(NP_PUB);
+    expect(saved.naturalPersonActive).toBe(true);
+  });
+
   it('leaves the naturalPerson merge and primaryKeypair exactly as before this task when the wire carries naturalPerson', async () => {
     mockLoadId.mockResolvedValue(pairTimeStub);
 
@@ -341,7 +358,7 @@ describe('mergeInventory omits a dormant real identity (spec §7.6)', () => {
 
     const savedIdentity = mockSaveId.mock.calls[0][0] as SignetIdentity;
     // publicKey/privateKey/displayName untouched — still the stored stub.
-    expect(savedIdentity.naturalPerson.publicKey).toBe(PERSONA_PUB);
+    expect(savedIdentity.naturalPerson.publicKey).toBe(NP_PUB);
     expect(savedIdentity.naturalPerson.displayName).toBe('');
     // Avatar + publicProfile config DO flow through from the wire.
     expect(savedIdentity.naturalPerson.avatarHash).toBe('c'.repeat(64));
