@@ -282,6 +282,7 @@ import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys,
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { buildChildDirectRoutes, childDirectWithheldSlots, gatedSigningBackend, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
+import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate } from './hooks/useChildGate';
 import type { RouterProbeState } from './lib/bunker-router';
 import { awaitRoutedBackend, acquireRoutedBackend, ROUTED_APPROVAL_WAIT_MS } from './lib/await-routed-backend';
@@ -3391,6 +3392,8 @@ export function App() {
     }, (priv) => new LocalSigningBackend(priv));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: the persona routes need a connected primary
   }, [childDirect, encryptionKey, signerStatus, childBunkerPersonasCsv, childTransportKeys, bunkerBackend, bunkerRouter, slotResolveOpts]);
+  const childBunkerRoutesRef = useRef(childBunkerRoutes);
+  childBunkerRoutesRef.current = childBunkerRoutes;
   // A45: each rebuild (lock, unpair, a new persona, a reconnect) retires the
   // previous routes' LOCAL transport backends (their key reference dropped).
   useEffect(() => () => { for (const r of childBunkerRoutes) { try { r.backend.destroy(); } catch { /* already gone */ } } }, [childBunkerRoutes]);
@@ -6808,6 +6811,64 @@ export function App() {
       }
     }
 
+    // A40: a direct-paired child answers from the persona's LOCAL transport
+    // key; the app is then served by that persona's existing gated route.
+    // Nothing here touches the Heartwood router, and no ungated route is
+    // installed.
+    if (childDirect) {
+      const route = sel.source === 'guardian'
+        ? childConnectRoute(childBunkerRoutesRef.current, resolveSelectedPubkey(sel, identity, dependants))
+        : null;
+      if (!route?.signingBackend) throw new Error(CHILD_SIDE_COPY.connectNotServed);
+      const persona = route.signingBackend.activePublicKeyHex.toLowerCase();
+      const relayCandidates = (connectRequest.relayUrls?.length ? connectRequest.relayUrls : [connectRequest.relayUrl])
+        .filter((relay, idx, arr) => relay.length > 0 && arr.indexOf(relay) === idx);
+      const delivery = await deliverChildNostrConnect({
+        route,
+        relayCandidates,
+        stillOpen: connectStillOpen,
+        claim: () => connectStillPending() && connectSettlementRef.current.claimDelivery(connectKey),
+        unclaim: () => connectSettlementRef.current.unclaimDelivery(connectKey),
+        finishDelivery: () => connectSettlementRef.current.finishDelivery(connectKey),
+        arm: (routePubkey, relayUrl) => armNostrConnectServe(routePubkey, relayUrl,
+          relayCandidates.length > 1 ? NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS : NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS),
+        send: (backend, relayUrl, beforePublish) => sendConnectResponse(connectRequest, backend, relayUrl, async () => {
+          if (!beforePublish()) throw new ConnectWithdrawnError();
+        }),
+        onConnected: () => {
+          const now = Math.floor(Date.now() / 1000);
+          childGateRef.current.noteConnectedApp({
+            appId: connectRequest.clientPubkey.toLowerCase(), kind: 'nip46',
+            label: connectRequest.appName || `App ${connectRequest.clientPubkey.slice(0, 8)}`,
+            ...(connectRequest.appUrl ? { url: connectRequest.appUrl } : {}), persona, firstSeen: now, lastUsed: now,
+          });
+        },
+      });
+      if (delivery.status === 'withdrawn' || delivery.status === 'cancelled') return;
+      if (delivery.status === 'failed') {
+        const attempts = delivery.failures.length > 0 ? delivery.failures.join(' | ') : 'no valid relay candidates';
+        throw new Error(`Could not complete NostrConnect pairing. Tried ${delivery.failures.length} relay${delivery.failures.length === 1 ? '' : 's'}: ${attempts}`);
+      }
+      const callback = pendingConnectCallback;
+      setTimeout(() => {
+        if (pendingConnectRequestRef.current !== connectRequest) return;
+        const cameByIntent = connectCameByIntentRef.current;
+        connectCameByIntentRef.current = false;
+        setPendingConnectRequest(null);
+        setPendingConnectSelection(null);
+        setPendingConnectCallback(null);
+        alignCarouselToApprovedSelection(sel);
+        if (cameByIntent) {
+          navigateReplace('home');
+          void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
+          return;
+        }
+        if (callback) { window.location.href = buildCallbackRedirect(callback, 'approved'); return; }
+        navigateReplace('home');
+      }, 1500);
+      return;
+    }
+
     let selectedBackend: SigningBackend;
     let tempBackend: LocalSigningBackend | null = null;
     let tempBackendRetainedForRoute = false;
@@ -7012,7 +7073,7 @@ export function App() {
     } finally {
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
     }
-  }, [pendingConnectRequest, pendingConnectCallback, identity, dependants, activeDependant, backends, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, signerStatus, navigateReplace, requestFreshAuth, requestAuth, encryptionKey, alignCarouselToApprovedSelection, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, routedApprovalUnavailableMessage, acquireApprovalRoute, clearNostrConnectTransientRouteByToken, setPendingConnectRequest]);
+  }, [childDirect, pendingConnectRequest, pendingConnectCallback, identity, dependants, activeDependant, backends, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, signerStatus, navigateReplace, requestFreshAuth, requestAuth, encryptionKey, alignCarouselToApprovedSelection, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, routedApprovalUnavailableMessage, acquireApprovalRoute, clearNostrConnectTransientRouteByToken, setPendingConnectRequest]);
 
   // One answer per connect request, as for sign-in: starts the in-flight
   // approval synchronously, dismisses a request already answered, and reopens
