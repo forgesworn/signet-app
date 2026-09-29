@@ -22,6 +22,7 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
+import type { ChildRule } from '../types/child-rules';
 import { loadBunkerSecret } from '../lib/db';
 import { HeartwoodMgmtClient, listClients, updateClientPolicy } from '../lib/heartwood-mgmt';
 import { runPolicyPush, type PolicyPushIo, type PolicyPushResult } from '../lib/policy-push';
@@ -37,6 +38,10 @@ export interface UsePolicyPushArgs {
   dependants: DependantIdentity[];
   /** Live grants INCLUDING tombstones (`grantsForSync`); null while loading. */
   grants: RememberedGrant[] | null;
+  /** Child-direct rules, all dependants, INCLUDING tombstones; null/absent ⇒ none yet. */
+  childRules?: ChildRule[] | null;
+  /** Approved-once kinds per dependant id (`until` unix seconds); a push re-runs at the earliest expiry. */
+  approvedOnceKinds?: Record<string, { kind: number; until: number }[]>;
 }
 
 export interface UsePolicyPushReturn {
@@ -48,7 +53,7 @@ export interface UsePolicyPushReturn {
   guardianClientPubkey: string | null;
 }
 
-export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dependants, grants }: UsePolicyPushArgs): UsePolicyPushReturn {
+export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dependants, grants, childRules, approvedOnceKinds }: UsePolicyPushArgs): UsePolicyPushReturn {
   const [lastPushAt, setLastPushAt] = useState<number | null>(null);
   const [lastResult, setLastResult] = useState<PolicyPushResult | null>(null);
   const [pushing, setPushing] = useState(false);
@@ -80,8 +85,8 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   // Latest inputs in refs so the debounced runner reads fresh values
   // without re-arming on every render.
-  const inputsRef = useRef({ client, dependants, grants, guardianClientPubkey });
-  inputsRef.current = { client, dependants, grants, guardianClientPubkey };
+  const inputsRef = useRef({ client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds });
+  inputsRef.current = { client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds };
 
   const runningRef = useRef(false);
   const queuedRef = useRef(false);
@@ -100,8 +105,9 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   const runOnce = useCallback(async () => {
     if (runningRef.current) { queuedRef.current = true; return; }
-    const { client: c, dependants: deps, grants: gs, guardianClientPubkey: gcp } = inputsRef.current;
-    if (!c || !c.isOpen || gs === null) return;
+    const { client: c, dependants: deps, grants: gs, guardianClientPubkey: gcp, childRules: rules, approvedOnceKinds: once } = inputsRef.current;
+    // Rules still loading: a child-direct ceiling compiled without them would narrow, then widen.
+    if (!c || !c.isOpen || gs === null || rules === null) return;
     runningRef.current = true;
     if (mountedRef.current) setPushing(true);
     const io: PolicyPushIo = {
@@ -114,6 +120,8 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
         grants: gs,
         guardianClientPubkey: gcp,
         nowSeconds: Math.floor(Date.now() / 1000),
+        childRules: rules ?? [],
+        approvedOnceKinds: once ?? {},
       });
       if (mountedRef.current) {
         setLastResult(result);
@@ -147,12 +155,24 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   // Debounced trigger on any input change (client becoming available included).
   useEffect(() => {
-    if (!enabled || !client || grants === null) {
+    if (!enabled || !client || grants === null || childRules === null) {
       if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
       return;
     }
     schedule(POLICY_PUSH_DEBOUNCE_MS);
-  }, [enabled, client, dependants, grants, guardianClientPubkey, schedule]);
+  }, [enabled, client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, schedule]);
+
+  // Spec §6: an approved-once kind leaves the ceiling when its window ends —
+  // recompile just after the earliest live expiry.
+  useEffect(() => {
+    if (!enabled || !client || grants === null || !approvedOnceKinds) return;
+    const nowS = Math.floor(Date.now() / 1000);
+    let earliest = Infinity;
+    for (const list of Object.values(approvedOnceKinds)) for (const a of list) if (a.until > nowS && a.until < earliest) earliest = a.until;
+    if (!Number.isFinite(earliest)) return;
+    const id = setTimeout(() => schedule(0), (earliest - nowS) * 1000 + 1_000);
+    return () => clearTimeout(id);
+  }, [enabled, client, grants, approvedOnceKinds, schedule]);
 
   // Drop stale results when the client goes away (lock / forget).
   useEffect(() => {

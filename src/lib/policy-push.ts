@@ -24,7 +24,7 @@ import {
   type VerdictAction,
   type VerdictResult,
 } from './heartwood-mgmt';
-import { buildCompilerInput, compileSlotPolicies, type CompiledSlot } from './policy-compiler';
+import { buildCompilerInput, compileSlotPolicies, type ChildRuleLike, type CompiledSlot } from './policy-compiler';
 
 // ---------------------------------------------------------------------------
 // Push
@@ -43,6 +43,10 @@ export interface PolicyPushInput {
   grants: RememberedGrant[];
   guardianClientPubkey: string | null;
   nowSeconds: number;
+  /** Child-direct rules (all dependants, incl. tombstones); absent ⇒ none. */
+  childRules?: (ChildRuleLike & { dependantId: string })[];
+  /** Approved-once kinds per dependant id (spec §7); absent ⇒ none. */
+  approvedOnceKinds?: Record<string, { kind: number; until: number }[]>;
 }
 
 export interface PolicyPushResult {
@@ -90,6 +94,8 @@ export async function runPolicyPush(io: PolicyPushIo, input: PolicyPushInput): P
       guardianClientPubkey: input.guardianClientPubkey,
       deviceSlots,
       nowSeconds: input.nowSeconds,
+      childRules: input.childRules,
+      approvedOnceKinds: input.approvedOnceKinds,
     }));
   };
 
