@@ -46,10 +46,11 @@ function fakeTransport() {
   return { t, subs };
 }
 
-function fakeRouter(behaviour: Record<string, 'ok' | 'fail'>, primaryClient: string = clientPub) {
+function fakeRouter(behaviour: Record<string, 'ok' | 'fail'>, primaryClient: string = clientPub, confirm: () => Promise<string> = async () => PERSONA) {
   const calls: { slot: string; args: string[] }[] = [];
   const router = {
     primaryClientPubkeyHex: primaryClient,
+    primary: { request: async () => confirm() },
     backendFor: (slot: string) => ({
       nip44Encrypt: async (recipient: string, text: string) => {
         calls.push({ slot, args: [recipient, text] });
@@ -246,25 +247,48 @@ describe('useChildDeviceLink — unpaired (§9.4)', () => {
 
   it('three "unauthorised" answers in a row from the Heartwood set unpaired; a success in between resets', async () => {
     const { t } = fakeTransport();
-    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    const { router } = fakeRouter({}, clientPub, async () => { throw new Error('unauthorised'); });
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, onRecordUpdated: async () => {}, transport: t }));
     const call = (fail: string | null) => withRequestCreatedAt(stamped(fail), 5).signEvent({} as never).catch(() => {});
     await act(async () => { await call('unauthorised'); await call('unauthorised'); await call(null); await call('unauthorised'); await call('unauthorised'); });
     expect(result.current.unpaired).toBe(false);
     await act(async () => { await call('user denied'); });
     expect(result.current.unpaired).toBe(false);
     await act(async () => { await call('unauthorised'); await call('unauthorised'); await call('unauthorised'); });
-    expect(result.current.unpaired).toBe(true);
+    await waitFor(() => expect(result.current.unpaired).toBe(true));
+  });
+
+  it('A62: three refusals but the confirmation succeeds → not unpaired, strikes reset', async () => {
+    const { t } = fakeTransport();
+    const { router } = fakeRouter({}, clientPub, async () => PERSONA);
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, onRecordUpdated: async () => {}, transport: t }));
+    const call = () => withRequestCreatedAt(stamped('unauthorised'), 5).signEvent({} as never).catch(() => {});
+    await act(async () => { await call(); await call(); await call(); await new Promise(r => setTimeout(r, 20)); });
+    expect(result.current.unpaired).toBe(false);
+    // Strikes were reset: two more refusals are not enough.
+    await act(async () => { await call(); await call(); await new Promise(r => setTimeout(r, 20)); });
+    expect(result.current.unpaired).toBe(false);
+  });
+
+  it('A62: three refusals and the confirmation is unauthorised → unpaired', async () => {
+    const { t } = fakeTransport();
+    const { router } = fakeRouter({}, clientPub, async () => { throw new Error('Unauthorized'); });
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, onRecordUpdated: async () => {}, transport: t }));
+    const call = () => withRequestCreatedAt(stamped('unauthorised'), 5).signEvent({} as never).catch(() => {});
+    await act(async () => { await call(); await call(); await call(); });
+    await waitFor(() => expect(result.current.unpaired).toBe(true));
   });
 
   it('A51: refusals on another persona route never count — only the bound primary connection', async () => {
     const { t } = fakeTransport();
-    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    const { router } = fakeRouter({}, clientPub, async () => { throw new Error('unauthorised'); });
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, onRecordUpdated: async () => {}, transport: t }));
     const call = (persona: string) => withRequestCreatedAt(stamped('unauthorised', persona), 5).signEvent({} as never).catch(() => {});
     await act(async () => { for (let i = 0; i < 5; i++) await call(EXTRA); });
     expect(result.current.unpaired).toBe(false);
     // An EXTRA refusal between bound-persona refusals neither counts nor resets.
     await act(async () => { await call(PERSONA); await call(EXTRA); await call(PERSONA); await call(PERSONA); });
-    expect(result.current.unpaired).toBe(true);
+    await waitFor(() => expect(result.current.unpaired).toBe(true));
   });
 
   it('A51: the ceremony skips a persona the rules payload no longer allows on this phone', async () => {

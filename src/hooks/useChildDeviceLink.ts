@@ -98,6 +98,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   onUpdatedRef.current = onRecordUpdated;
   const transportRef = useRef(transport);
   transportRef.current = transport;
+  const routerRef = useRef(router);
+  routerRef.current = router;
 
   // ── Rules ────────────────────────────────────────────────────────────────
   const [rules, setRules] = useState<ChildRulesPayload | null>(null);
@@ -120,12 +122,29 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     setUnpaired(false);
     if (!clientPub || !bound) return;
     let strikes = 0;
-    return observeStampedCalls((r) => {
+    let confirming = false;
+    let cancelled = false;
+    const unobserve = observeStampedCalls((r) => {
       if (r.persona !== bound) return; // A51: only the bound primary connection
       if (r.ok) { strikes = 0; return; }
       if (!isUnauthorised(r.error)) return;
-      if (++strikes >= UNPAIRED_STRIKES) markUnpaired();
+      if (++strikes < UNPAIRED_STRIKES || confirming) return;
+      // A62: three refusals are only a suspicion. Confirm on the primary
+      // (bound persona) connection; only an unauthorised answer there means
+      // the slot is gone. Any other outcome (answer, timeout, no router,
+      // network) resets the count.
+      const rt = routerRef.current;
+      if (!rt || rt.primaryClientPubkeyHex !== clientPub) { strikes = 0; return; }
+      confirming = true;
+      void rt.primary.request('get_public_key', [], 15_000).then(
+        () => { strikes = 0; },
+        (err) => {
+          if (!cancelled && isUnauthorised(err)) markUnpaired();
+          else strikes = 0;
+        },
+      ).finally(() => { confirming = false; });
     });
+    return () => { cancelled = true; unobserve(); };
   }, [depId, clientPub, bound, markUnpaired]);
 
   // A51: the ceremony waits for the cached payload, whose `personas` may exclude one.
@@ -201,9 +220,6 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     const rec = recordRef.current;
     if (rec && state !== 'waiting') void onUpdatedRef.current({ ...rec, identityApprovals: next }).catch(() => { /* re-run next start */ });
   }, []);
-
-  const routerRef = useRef(router);
-  routerRef.current = router;
 
   const approve = useCallback((persona: string): Promise<void> => {
     const run = queue.current.then(async () => {
