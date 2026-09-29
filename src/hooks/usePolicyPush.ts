@@ -28,6 +28,29 @@ import { HeartwoodMgmtClient, listClients, updateClientPolicy } from '../lib/hea
 import { runPolicyPush, type PolicyPushIo, type PolicyPushResult } from '../lib/policy-push';
 
 export const POLICY_PUSH_DEBOUNCE_MS = 1_500;
+/** setTimeout's ceiling (~24.8 days); a later expiry re-arms on the next input change. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * A21: the earliest future moment (unix ms) the child-direct ceiling changes on
+ * its own — an approved-once `until` (unix seconds) or a live ChildRule's
+ * `expiresAt` (ms). Null when nothing is due.
+ */
+export function earliestChildExpiryMs(
+  approvedOnceKinds: Record<string, { kind: number; until: number }[]> | undefined,
+  childRules: ChildRule[] | null | undefined,
+  nowMs: number,
+): number | null {
+  let earliest = Infinity;
+  for (const list of Object.values(approvedOnceKinds ?? {})) {
+    for (const a of list) { const ms = a.until * 1000; if (ms > nowMs && ms < earliest) earliest = ms; }
+  }
+  for (const r of childRules ?? []) {
+    if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0) continue;
+    if (typeof r.expiresAt === 'number' && r.expiresAt > nowMs && r.expiresAt < earliest) earliest = r.expiresAt;
+  }
+  return Number.isFinite(earliest) ? earliest : null;
+}
 
 export interface UsePolicyPushArgs {
   client: HeartwoodMgmtClient | null;
@@ -162,17 +185,16 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
     schedule(POLICY_PUSH_DEBOUNCE_MS);
   }, [enabled, client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, schedule]);
 
-  // Spec §6: an approved-once kind leaves the ceiling when its window ends —
-  // recompile just after the earliest live expiry.
+  // Spec §6 / A21: an approved-once kind leaves the ceiling when its window
+  // ends, and an expiring child rule narrows it — recompile just after the
+  // earliest of the two.
   useEffect(() => {
-    if (!enabled || !client || grants === null || !approvedOnceKinds) return;
-    const nowS = Math.floor(Date.now() / 1000);
-    let earliest = Infinity;
-    for (const list of Object.values(approvedOnceKinds)) for (const a of list) if (a.until > nowS && a.until < earliest) earliest = a.until;
-    if (!Number.isFinite(earliest)) return;
-    const id = setTimeout(() => schedule(0), (earliest - nowS) * 1000 + 1_000);
+    if (!enabled || !client || grants === null) return;
+    const at = earliestChildExpiryMs(approvedOnceKinds, childRules, Date.now());
+    if (at === null) return;
+    const id = setTimeout(() => schedule(0), Math.min(at - Date.now() + 1_000, MAX_TIMER_MS));
     return () => clearTimeout(id);
-  }, [enabled, client, grants, approvedOnceKinds, schedule]);
+  }, [enabled, client, grants, approvedOnceKinds, childRules, schedule]);
 
   // Drop stale results when the client goes away (lock / forget).
   useEffect(() => {

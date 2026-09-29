@@ -14,7 +14,7 @@ import { childRuleId } from '../lib/child-rules';
 import type { DeviceClientSlot } from '../lib/heartwood-mgmt-types';
 import type { ChildRule } from '../types/child-rules';
 import type { DependantIdentity } from '../types';
-import { usePolicyPush, POLICY_PUSH_DEBOUNCE_MS, type UsePolicyPushArgs } from './usePolicyPush';
+import { usePolicyPush, earliestChildExpiryMs, POLICY_PUSH_DEBOUNCE_MS, type UsePolicyPushArgs } from './usePolicyPush';
 
 const mList = vi.mocked(listClients), mUpdate = vi.mocked(updateClientPolicy);
 const PERSONA = 'b'.repeat(64), NP = 'a'.repeat(64), CLIENT = 'c'.repeat(64);
@@ -85,5 +85,26 @@ describe('usePolicyPush — child-direct inputs', () => {
     await flush(62_000);
     expect(mList.mock.calls.length).toBeGreaterThan(before);
     expect(mUpdate.mock.calls.at(-1)![2].allowedKinds).not.toContain(30311);
+  });
+
+  it('A21: a push re-runs just after the earliest child rule expiry', async () => {
+    const rules = [kindRule(30023, { expiresAt: Date.now() + 30_000 })];
+    renderHook(() => usePolicyPush(base({ childRules: rules })));
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(mUpdate.mock.calls[0][2].allowedKinds).toContain(30023);
+    const before = mList.mock.calls.length;
+    await flush(32_000);
+    expect(mList.mock.calls.length).toBeGreaterThan(before);
+    expect(mUpdate.mock.calls.at(-1)![2].allowedKinds).not.toContain(30023);
+  });
+});
+
+describe('earliestChildExpiryMs', () => {
+  it('takes the earlier of approved-once (s) and live rule expiry (ms); ignores past and tombstoned', () => {
+    const now = 1_000_000;
+    expect(earliestChildExpiryMs({}, [], now)).toBeNull();
+    expect(earliestChildExpiryMs({ d: [{ kind: 1, until: 2_000 }] }, [kindRule(1, { expiresAt: 1_500_000 })], now)).toBe(1_500_000);
+    expect(earliestChildExpiryMs({ d: [{ kind: 1, until: 1_200 }] }, [kindRule(1, { expiresAt: 1_500_000 })], now)).toBe(1_200_000);
+    expect(earliestChildExpiryMs({}, [kindRule(1, { expiresAt: 900_000 }), kindRule(2, { expiresAt: 1_100_000, tombstonedAt: 5 })], now)).toBeNull();
   });
 });

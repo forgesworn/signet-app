@@ -17,6 +17,8 @@ import { buildChildRulesEvent, type ChildRulesPayload } from '../lib/child-rules
 import { compileChildDirectPolicy } from '../lib/policy-compiler';
 import { resolveAuditVisibility } from '../lib/audit-visibility';
 import { publishEvent } from '../lib/relay-service';
+import { isValidRelayUrl } from '../lib/relay-url';
+import { earliestChildExpiryMs } from './usePolicyPush';
 
 export const CHILD_RULES_PUBLISH_DEBOUNCE_MS = 1_000;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -109,7 +111,9 @@ export function useChildRulesPublisher({ enabled, dependants, childRules, approv
         if (lastRef.current.get(dep.id) === h) continue;
         try {
           const ev = await buildChildRulesEvent({ ...body, updatedAt: nowMs }, ep.privateKey, cd.clientPubkey, Math.floor(nowMs / 1000));
-          const r = await send(ev, [relay]);
+          // A25: the relay agreed at pairing; older records fall back to the guardian's relay.
+          const target = cd.railRelay && isValidRelayUrl(cd.railRelay) ? cd.railRelay : relay;
+          const r = await send(ev, [target]);
           if (r.ok) lastRef.current.set(dep.id, h);
         } catch { /* one dependant must not block the others; retried on the next change */ }
       }
@@ -124,4 +128,14 @@ export function useChildRulesPublisher({ enabled, dependants, childRules, approv
     const id = setTimeout(() => { void runRef.current(); }, CHILD_RULES_PUBLISH_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [enabled, dependants, childRules, approvedOnceKinds, relayUrl]);
+
+  // A21: republish just after the earliest approved-once / rule expiry, so the
+  // child's copy narrows when the guardian's does.
+  useEffect(() => {
+    if (!enabled || childRules === null) return;
+    const at = earliestChildExpiryMs(approvedOnceKinds, childRules, Date.now());
+    if (at === null) return;
+    const id = setTimeout(() => { void runRef.current(); }, Math.min(at - Date.now() + 1_000, 2 ** 31 - 1));
+    return () => clearTimeout(id);
+  }, [enabled, childRules, approvedOnceKinds]);
 }

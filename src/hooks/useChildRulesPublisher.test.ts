@@ -76,4 +76,24 @@ describe('useChildRulesPublisher', () => {
     await flush(1100);
     await vi.waitFor(() => expect(published).toHaveLength(1));
   });
+
+  it('A25: publishes on the relay stored at pairing', async () => {
+    const d = directDep();
+    const dep = { ...d, childDevice: { ...d.childDevice!, railRelay: 'wss://paired.example.com' } };
+    renderHook(() => useChildRulesPublisher({ enabled: true, dependants: [dep], childRules: [], relayUrl: RELAY, publish }));
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    expect(published[0].relays).toEqual(['wss://paired.example.com']);
+  });
+
+  it('A21: republishes after the earliest rule expiry', async () => {
+    const dep = directDep();
+    renderHook(() => useChildRulesPublisher({ enabled: true, dependants: [dep], childRules: [rule(dep.id, { expiresAt: Date.now() + 20_000 })], relayUrl: RELAY, publish }));
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    await flush(22_000);
+    await vi.waitFor(() => expect(published).toHaveLength(2));
+    const payload = await openChildRulesEvent(published[1].ev, bytesToHex(clientSk), { railPubkey: RAIL, dependantId: dep.id });
+    expect(payload?.rules).toHaveLength(0);
+  });
 });
