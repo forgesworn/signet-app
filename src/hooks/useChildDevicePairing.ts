@@ -16,7 +16,9 @@
  *            reply on the rail.
  *   A4       any mint error (incl. the operator client's 35 s timeout) →
  *            `list_clients` reconcile, revoking a slot of ours we never confirmed.
- *   unpair() operator `revoke_client`, then clear `childDevice` + `authorizedClientPubkey`.
+ *   unpair() publish the `signet:child-unpaired:v1` notice (rail key → client),
+ *            then operator `revoke_client`, then clear `childDevice` +
+ *            `authorizedClientPubkey` (§9.4).
  *
  * Nothing here throws out of an effect; `unpair` rejects with copy.
  */
@@ -29,6 +31,7 @@ import type { RememberedGrant } from '../types/grants';
 import type { DeviceStatus } from '../lib/heartwood-mgmt-types';
 import { listClients, nostrconnectV2, revokeClient, type HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { publishEvent, subscribeEvents } from '../lib/relay-service';
+import { buildUnpairedNotice } from '../lib/child-activity';
 import {
   buildChildPairUri, buildChildPairReplyEvent, CHILD_PAIR_TTL_S, newPairCode,
   openChildPairRequestEvent, pairCheckWords, pairRequestDTag, type ChildPairRequest,
@@ -456,7 +459,20 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     if (!dep?.childDevice) return;
     if (!o.operator) throw new Error(COPY.blocked['no-operator-key'].body);
     const opc = o.operator;
-    try { await withOperatorLock(opc, () => revokeChildDeviceSlot(opc, dep)); } catch { throw new Error(COPY.errors.unpair); }
+    const railPriv = dep.bunkerEndpoint?.privateKey ?? '';
+    const client = dep.childDevice.clientPubkey;
+    const noticeRelay = dep.childDevice.railRelay ?? o.railRelay;
+    try {
+      await withOperatorLock(opc, async () => {
+        // §9.4: tell the child's phone FIRST (it rejects held asks and says
+        // "unpaired"); the revoke is the hard stop either way.
+        if (HEX64.test(railPriv) && HEX64.test(client) && isValidRelayUrl(noticeRelay)) {
+          try { await transport().publish(buildUnpairedNotice(railPriv, client, Math.floor(now() / 1000)), [noticeRelay]); }
+          catch { /* the Heartwood's "unauthorised" still tells the phone */ }
+        }
+        await revokeChildDeviceSlot(opc, dep);
+      });
+    } catch { throw new Error(COPY.errors.unpair); }
     const { childDevice: _cd, ...rest } = dep;
     void _cd;
     await o.onDependantUpdated({

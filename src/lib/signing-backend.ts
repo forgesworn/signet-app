@@ -69,9 +69,38 @@ export interface DecryptingSigningBackend extends SigningBackend {
 /** The calls a stamped view carries. */
 export type StampedSigningCalls = Pick<DecryptingSigningBackend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'>;
 
+/** The result of one stamped (child-direct, forwarded-to-the-signer) call. */
+export type StampedCallResult = { ok: true } | { ok: false; error: unknown };
+const stampedObservers = new Set<(r: StampedCallResult) => void>();
+
+/**
+ * Watch every stamped call's result (the child-direct unpaired signal, §9.4:
+ * a revoked phone's Heartwood answers "unauthorised"). Returns the unsubscribe.
+ */
+export function observeStampedCalls(listener: (r: StampedCallResult) => void): () => void {
+  stampedObservers.add(listener);
+  return () => { stampedObservers.delete(listener); };
+}
+
+function notifyStamped(r: StampedCallResult): void {
+  for (const l of [...stampedObservers]) { try { l(r); } catch { /* observers never break a call */ } }
+}
+
+async function observed<T>(p: Promise<T>): Promise<T> {
+  try { const v = await p; notifyStamped({ ok: true }); return v; }
+  catch (error) { notifyStamped({ ok: false, error }); throw error; }
+}
+
 /** A view of `backend` that stamps its NIP-46 requests when it can; the backend itself otherwise. */
 export function withRequestCreatedAt(backend: DecryptingSigningBackend, createdAt: number): StampedSigningCalls {
-  return backend.stamped?.(createdAt) ?? backend;
+  const stamped = backend.stamped?.(createdAt);
+  if (!stamped) return backend;
+  if (stampedObservers.size === 0) return stamped;
+  return {
+    signEvent: (event) => observed(stamped.signEvent(event)),
+    nip44Encrypt: (peer, plaintext) => observed(stamped.nip44Encrypt(peer, plaintext)),
+    nip44Decrypt: (peer, ciphertext) => observed(stamped.nip44Decrypt(peer, ciphertext)),
+  };
 }
 
 /**

@@ -106,6 +106,9 @@ export const CHILD_SIDE_COPY = {
     expired: 'This code has expired. Ask your guardian for a new one.',
     generic: 'Pairing did not finish. Nothing was set up — try again.',
   },
+  /** §9.4: the guardian unpaired this phone (notice or the Heartwood refusing it). */
+  unpaired: 'Your guardian has unpaired this phone',
+  pairAgain: 'Pair again',
   /** A45: the local app-connection keys will not decrypt; nothing was replaced. */
   transportKeysUnreadable: 'Your app connections could not be read on this phone, so apps cannot connect right now. Lock and unlock to try again.',
   /** A41: `?action=add-dependant` on a child's phone. */
@@ -188,4 +191,21 @@ export const CHILD_WAITING_COPY = {
   body: 'Your guardian gets this request on their phone. This page waits for their answer.',
   longTitle: 'Still waiting for your guardian…',
   longBody: 'They may not have seen it yet. The request stays open for 10 minutes.',
+} as const;
+
+/** Guardian's merged activity timeline for a child's own phone (spec §9.2, §9.3). */
+export const CHILD_ACTIVITY_COPY = {
+  outcome: {
+    signed: 'Signed',
+    approved: 'Allowed by you',
+    denied: 'Denied',
+    asked: 'Asked you',
+    blocked: 'Blocked',
+    expired: 'Not answered in time',
+  } as Record<string, string>,
+  as: (persona: string) => `As ${persona}`,
+  onHeartwood: 'On the Heartwood',
+  crypto: 'Read or sent a private message',
+  mismatch: (name: string) => `Signed on the Heartwood but not reported by ${name}'s phone`,
+  empty: (name: string) => `What ${name}'s phone signs, and what it asks you, will appear here.`,
 } as const;

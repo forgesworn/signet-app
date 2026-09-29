@@ -23,6 +23,7 @@ import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import { childDirectSlotLabel } from '../lib/policy-compiler';
 import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
+import { isUnpairedNotice } from '../lib/child-activity';
 import type { NostrEvent } from 'signet-protocol';
 import { useChildDevicePairing, GRANTS_WAIT_MS, PAIR_REQUEST_MAX_AGE_S, STATUS_WAIT_MS, type PairingTransport, type UseChildDevicePairingOpts } from './useChildDevicePairing';
 import { withOperatorLock } from '../lib/operator-lock';
@@ -473,6 +474,23 @@ describe('useChildDevicePairing — unpair', () => {
     expect(last.childDevice).toBeUndefined();
     expect(last.bunkerEndpoint?.authorizedClientPubkey).toBeUndefined();
     expect(last.bunkerEndpoint?.publicKey).toBe('c'.repeat(64));
+  });
+  it('publishes the unpaired notice (rail key → client, on the rail relay) BEFORE revoking', async () => {
+    const railSk = generateSecretKey();
+    const railPriv = bytesToHex(railSk), railPub = getPublicKey(railSk);
+    const c = child();
+    dependant = { ...dependant, bunkerEndpoint: { publicKey: railPub, privateKey: railPriv, createdAt: 1, authorizedClientPubkey: c.pub },
+      childDevice: { mode: 'heartwood-direct', slotLabel: childDirectSlotLabel(dependant.id), secretFingerprint: 'ab'.repeat(32), slotIndex: 4,
+        clientPubkey: c.pub, boundPersona: dependant.persona.publicKey, pairedAt: 1, railRelay: 'wss://rail2.example' } };
+    const order: string[] = [];
+    const relays: string[][] = [];
+    (t as unknown as { publish: (ev: NostrEvent, r: string[]) => Promise<unknown> }).publish = async (ev: NostrEvent, r: string[]) => { order.push('notice'); relays.push(r); t.published.push(ev); return { ok: true, message: '' }; };
+    mRevoke.mockImplementation(async () => { order.push('revoke'); });
+    const s = setup({ clearChildDevice: async () => {} });
+    await act(async () => { await s.hook.result.current.unpair(); });
+    expect(order).toEqual(['notice', 'revoke']);
+    expect(relays[0]).toEqual(['wss://rail2.example']);
+    expect(isUnpairedNotice(t.published[0], railPub, c.pub)).toBe(true);
   });
   it('a device that cannot be reached leaves the record alone and rejects', async () => {
     dependant = { ...dependant, childDevice: { mode: 'heartwood-direct', slotLabel: 'l', secretFingerprint: 'ab'.repeat(32), slotIndex: 4,

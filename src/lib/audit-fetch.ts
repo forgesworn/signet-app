@@ -59,6 +59,8 @@ export interface AuditEntry {
   counterpartyPubkey?: string;
   /** Origin / domain when the scope had one (`origin` tag). */
   origin?: string;
+  /** NIP-46 transport method for encrypt/decrypt records (`method` tag, no `k`). */
+  method?: string;
 }
 
 /**
@@ -288,6 +290,9 @@ export function parseAuditRumor(rumor: AuditRumor): AuditEntry | null {
   }
   if (typeof tagMap.origin === 'string' && tagMap.origin.length > 0) {
     entry.origin = tagMap.origin;
+  }
+  if (typeof tagMap.method === 'string' && /^[a-z0-9_]{1,32}$/.test(tagMap.method)) {
+    entry.method = tagMap.method;
   }
 
   return entry;

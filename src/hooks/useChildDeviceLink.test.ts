@@ -9,6 +9,8 @@ import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 import type { PairedChildRecord } from '../types';
 import { useChildDeviceLink, APPROVE_IDENTITY_PLAINTEXT, type ChildLinkTransport } from './useChildDeviceLink';
+import { buildUnpairedNotice, CHILD_UNPAIRED_D_TAG } from '../lib/child-activity';
+import { withRequestCreatedAt } from '../lib/signing-backend';
 
 const KEY = 'k'.repeat(64);
 const DEP = 'ef'.repeat(32);
@@ -208,5 +210,56 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, transport: t, onRecordUpdated: async () => {} }));
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('waiting');
+  });
+});
+
+describe('useChildDeviceLink — unpaired (§9.4)', () => {
+  const stamped = (fail: string | null) => ({
+    stamped: () => ({
+      signEvent: async () => { if (fail) throw fail; return {} as never; },
+      nip44Encrypt: async () => 'x', nip44Decrypt: async () => 'x',
+    }),
+  }) as unknown as import('../lib/signing-backend').DecryptingSigningBackend;
+
+  it('the rail-key notice for this client sets unpaired and clears the rules cache', async () => {
+    await saveChildRulesCache(DEP, payload(100), KEY);
+    const { t, subs } = fakeTransport();
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(100));
+    expect(subs[0].filters[1]).toMatchObject({ kinds: [30078], authors: [railPub], '#d': [CHILD_UNPAIRED_D_TAG], '#p': [clientPub] });
+    await act(async () => { subs[0].onEvent(buildUnpairedNotice(railPriv, clientPub)); });
+    expect(result.current.unpaired).toBe(true);
+    expect(result.current.rules).toBeNull();
+    await waitFor(async () => expect(await loadChildRulesCache(DEP, KEY)).toBeNull());
+  });
+
+  it('a notice from the wrong author is ignored', async () => {
+    const { t, subs } = fakeTransport();
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    await waitFor(() => expect(subs.length).toBe(1));
+    const stranger = bytesToHex(generateSecretKey());
+    await act(async () => { subs[0].onEvent({ ...buildUnpairedNotice(stranger, clientPub), pubkey: railPub }); });
+    await act(async () => { subs[0].onEvent(buildUnpairedNotice(stranger, clientPub)); });
+    expect(result.current.unpaired).toBe(false);
+  });
+
+  it('three "unauthorised" answers in a row from the Heartwood set unpaired; a success in between resets', async () => {
+    const { t } = fakeTransport();
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    const call = (fail: string | null) => withRequestCreatedAt(stamped(fail), 5).signEvent({} as never).catch(() => {});
+    await act(async () => { await call('unauthorised'); await call('unauthorised'); await call(null); await call('unauthorised'); await call('unauthorised'); });
+    expect(result.current.unpaired).toBe(false);
+    await act(async () => { await call('user denied'); });
+    expect(result.current.unpaired).toBe(false);
+    await act(async () => { await call('unauthorised'); await call('unauthorised'); await call('unauthorised'); });
+    expect(result.current.unpaired).toBe(true);
+  });
+
+  it('a legacy phone pairing never listens', async () => {
+    const { t, subs } = fakeTransport();
+    const { result } = renderHook(() => useChildDeviceLink({ record: record({ mode: undefined }), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    await act(async () => { await withRequestCreatedAt(stamped('unauthorised'), 5).signEvent({} as never).catch(() => {}); });
+    expect(subs.length).toBe(0);
+    expect(result.current.unpaired).toBe(false);
   });
 });

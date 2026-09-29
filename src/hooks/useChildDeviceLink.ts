@@ -14,6 +14,14 @@
  *             the router is up — and again when a new persona appears.
  *             A failed persona waits for `retryApproval`.
  *
+ *   unpaired  (spec §9.4, Review Focus 5) set by the guardian's
+ *             `signet:child-unpaired:v1` notice (authored by the rail key,
+ *             `p` = our client key, on the rail relay) or by the Heartwood
+ *             answering "unauthorised" to UNPAIRED_STRIKES forwarded requests
+ *             in a row (the firmware also says "unauthorised" for a single
+ *             out-of-policy request, so one refusal is not enough). Clears the
+ *             rules cache; the gate rejects every held ask.
+ *
  * A legacy phone pairing (`mode` absent / 'phone') does nothing here.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,7 +29,9 @@ import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import type { PairedChildRecord } from '../types';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 import { CHILD_RULES_WIRE_D_TAG, newerRulesPayload, openChildRulesEvent, type ChildRulesPayload } from '../lib/child-rules-wire';
-import { loadChildRulesCache, saveChildRulesCache } from '../lib/db';
+import { CHILD_UNPAIRED_D_TAG, isUnpairedNotice } from '../lib/child-activity';
+import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '../lib/db';
+import { observeStampedCalls } from '../lib/signing-backend';
 import { subscribeEvents } from '../lib/relay-service';
 
 export const APPROVE_IDENTITY_PLAINTEXT = 'signet:approve-identity:v1';
@@ -56,6 +66,14 @@ export interface ChildDeviceLink {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+/** Consecutive "unauthorised" answers to forwarded requests that mean the slot is gone. */
+export const UNPAIRED_STRIKES = 3;
+
+function isUnauthorised(err: unknown): boolean {
+  const m = typeof err === 'string' ? err : err instanceof Error ? err.message : '';
+  const t = m.trim().toLowerCase();
+  return t === 'unauthorised' || t === 'unauthorized';
+}
 
 export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLink {
   const { encryptionKey, router, onRecordUpdated } = opts;
@@ -79,13 +97,37 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const [rules, setRules] = useState<ChildRulesPayload | null>(null);
   const rulesRef = useRef<ChildRulesPayload | null>(null);
 
+  // ── Unpaired (§9.4) ──────────────────────────────────────────────────────
+  const [unpaired, setUnpaired] = useState(false);
+  const unpairedRef = useRef(false);
+  const markUnpaired = useCallback(() => {
+    if (unpairedRef.current) return;
+    unpairedRef.current = true;
+    setUnpaired(true);
+    rulesRef.current = null;
+    setRules(null);
+    const id = recordRef.current?.dependantPubkey;
+    if (id) void clearChildRulesCache(id).catch(() => { /* best effort */ });
+  }, []);
+  useEffect(() => {
+    unpairedRef.current = false;
+    setUnpaired(false);
+    if (!clientPub) return;
+    let strikes = 0;
+    return observeStampedCalls((r) => {
+      if (r.ok) { strikes = 0; return; }
+      if (!isUnauthorised(r.error)) return;
+      if (++strikes >= UNPAIRED_STRIKES) markUnpaired();
+    });
+  }, [depId, clientPub, markUnpaired]);
+
   useEffect(() => {
     rulesRef.current = null;
     setRules(null);
     if (!depId || !clientPub || !clientPriv || !railPub || !railRelay || !encryptionKey) return;
     let cancelled = false;
     const apply = (incoming: ChildRulesPayload | null): boolean => {
-      if (cancelled || !incoming) return false;
+      if (cancelled || !incoming || unpairedRef.current) return false;
       const next = newerRulesPayload(rulesRef.current, incoming);
       if (next === rulesRef.current) return false;
       rulesRef.current = next;
@@ -94,16 +136,24 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     };
     void loadChildRulesCache(depId, encryptionKey).then(apply).catch(() => { /* no cache ⇒ fail closed */ });
     const unsubscribe = transportRef.current.subscribe(
-      [{ kinds: [30078], authors: [railPub], '#d': [CHILD_RULES_WIRE_D_TAG], '#p': [clientPub] }],
+      [
+        { kinds: [30078], authors: [railPub], '#d': [CHILD_RULES_WIRE_D_TAG], '#p': [clientPub] },
+        { kinds: [30078], authors: [railPub], '#d': [CHILD_UNPAIRED_D_TAG], '#p': [clientPub] },
+      ],
       [railRelay],
       (ev) => {
+        if (cancelled) return;
+        if (ev?.tags?.some?.(t => t[0] === 'd' && t[1] === CHILD_UNPAIRED_D_TAG)) {
+          if (isUnpairedNotice(ev, railPub, clientPub)) markUnpaired();
+          return;
+        }
         void openChildRulesEvent(ev, clientPriv, { railPubkey: railPub, dependantId: depId }).then((p) => {
-          if (p && apply(p)) void saveChildRulesCache(depId, p, encryptionKey).catch(() => { /* next event retries */ });
+          if (p && apply(p) && !unpairedRef.current) void saveChildRulesCache(depId, p, encryptionKey).catch(() => { /* next event retries */ });
         });
       },
     );
     return () => { cancelled = true; unsubscribe(); };
-  }, [depId, clientPub, clientPriv, railPub, railRelay, encryptionKey]);
+  }, [depId, clientPub, clientPriv, railPub, railRelay, encryptionKey, markUnpaired]);
 
   // ── Identity approvals ceremony ──────────────────────────────────────────
   const [approvals, setApprovals] = useState<Record<string, Approval>>({});
@@ -191,5 +241,5 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     pubkey, name, approval: (pubkey === bound ? 'approved' : approvals[pubkey] ?? 'waiting') as Approval,
   })), [candidates, approvals, bound]);
 
-  return { rules, personas, retryApproval, unpaired: false };
+  return { rules, personas, retryApproval, unpaired };
 }

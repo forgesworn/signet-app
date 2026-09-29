@@ -266,6 +266,8 @@ import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
+import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
+import { buildUnpairedNotice } from './lib/child-activity';
 import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
@@ -1979,6 +1981,15 @@ export function App() {
   });
   const childGateRef = useRef(childGate);
   childGateRef.current = childGate;
+  // Child → guardian rails (spec §9.1, §9.2): every gate decision, and the
+  // connected-apps record, on the rail relay.
+  const childActivityPublisher = useChildActivityPublisher({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    unpaired: childDeviceLink.unpaired,
+    connectedApps: childGate.connectedApps,
+    noteConnectedApp: childGate.noteConnectedApp,
+  });
+  childActivitySinkRef.current = childActivityPublisher.report;
 
   // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
   const childBunkerPersonasCsv = childDirect
@@ -6245,8 +6256,18 @@ export function App() {
           await addPendingChildRevoke({ label: cd.slotLabel, slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint, dependantId: dep.id }, key);
         } catch { /* nothing more we can do on this device */ }
       };
+      // §9.4: the unpaired notice goes out before the revoke (best effort).
+      const railPriv = dep.bunkerEndpoint?.privateKey ?? '';
+      const noticeRelay = cd.railRelay ?? preferences.relayUrl ?? DEFAULT_RELAY_URL;
+      const notice = (async () => {
+        try {
+          if (/^[0-9a-f]{64}$/.test(railPriv) && /^[0-9a-f]{64}$/.test(cd.clientPubkey) && isValidRelayUrl(noticeRelay)) {
+            await publishEvent(buildUnpairedNotice(railPriv, cd.clientPubkey), { relays: [noticeRelay] });
+          }
+        } catch { /* the Heartwood's "unauthorised" still tells the phone */ }
+      })();
       // A31: the revoke is a slot mutation — it waits its turn on the operator lock.
-      retractions.push(operatorClient ? withOperatorLock(operatorClient, () => revokeChildDeviceSlot(operatorClient, dep)).catch(remember) : remember());
+      retractions.push(notice.then(() => (operatorClient ? withOperatorLock(operatorClient, () => revokeChildDeviceSlot(operatorClient, dep)).catch(remember) : remember())));
     }
 
     if (retractions.length === 0) return;
@@ -9265,12 +9286,18 @@ export function App() {
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
   // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
-  const childApprovalsBanner = (childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
+  const childApprovalsBanner = (childDeviceLink.unpaired || childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
     <>
+      {childDeviceLink.unpaired ? (
+        <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{CHILD_SIDE_COPY.unpaired}</span>
+          <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigateTo('paired-child-repair')}>{CHILD_SIDE_COPY.pairAgain}</button>
+        </div>
+      ) : null}
       {childDirect && childTransportKeysUnreadable ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
       ) : null}
-      {childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
+      {!childDeviceLink.unpaired && childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
         <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
       ) : null}
     </>
@@ -11747,6 +11774,7 @@ export function App() {
           guardianPubkey={identity?.naturalPerson.publicKey ?? ''}
           guardianBackend={guardianAuditBackend}
           relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
+          encryptionKey={encryptionKey}
         />
       </Layout>
     );
