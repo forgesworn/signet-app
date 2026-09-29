@@ -40,7 +40,7 @@ import { resolveAuditVisibility } from '../lib/audit-visibility';
 import { listChildRules, saveChildRule } from '../lib/db';
 import { rulesFromLegacyGrants } from '../lib/child-rules';
 import {
-  childDirectPersona, MAX_CONNECT_SLOTS, replyPersonas, revokeChildDeviceSlot, staticPairBlock,
+  childDirectPersona, clientKeyInUse, isSameSlot, MAX_CONNECT_SLOTS, replyPersonas, revokeChildDeviceSlot, staticPairBlock,
   supersededSlots, unconfirmedMintSlots, verifyMintedSlot, type PairBlockReason,
 } from '../lib/child-device-pairing';
 import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
@@ -71,6 +71,8 @@ export interface UseChildDevicePairingOpts {
   dependant: DependantIdentity | null;
   operator: HeartwoodMgmtClient | null;
   operatorStatus: DeviceStatus | null;
+  /** Set when the status probe failed; while null and `operatorStatus` is null the probe is pending (A20). */
+  operatorStatusError?: string | null;
   guardianNpPubkey: string;
   /** Rail relay (the guardian's relay); carries the pairing request/reply. */
   railRelay: string;
@@ -83,6 +85,10 @@ export interface UseChildDevicePairingOpts {
   onDependantUpdated(dep: DependantIdentity): Promise<void>;
   /** Rules were seeded from legacy grants; the caller reloads its rule state. */
   onRulesChanged?(): void;
+  /** A25: a fresh read of the dependant at mint time (the policy compiles from it). */
+  readDependant?(id: string): Promise<DependantIdentity | null>;
+  /** A25: unpair clears `childDevice` through this dedicated path (generic saves preserve it). */
+  clearChildDevice?(id: string): Promise<void>;
   transport?: PairingTransport;
   now?: () => number;
 }
@@ -115,6 +121,14 @@ interface Session {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+/** A20: how long a pending device-status probe may take before the page says offline. */
+export const STATUS_WAIT_MS = 10_000;
+/** A25: how long the mint waits for grants to load before minting unseeded. */
+export const GRANTS_WAIT_MS = 5_000;
+/** A28: the oldest pairing request "They match" will still act on. */
+export const PAIR_REQUEST_MAX_AGE_S = 240;
+const POLL_MS = 250;
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChildDevicePairing {
   const [state, setStateRaw] = useState<ChildPairingState>({ phase: 'idle' });
@@ -188,7 +202,18 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       const o = optsRef.current;
       const dep = o.dependant;
       if (!dep) { setState(gen, { phase: 'error', message: COPY.errors.noDependant }); return; }
-      const block = staticPairBlock({ dependant: dep, hasOperator: !!o.operator, status: o.operatorStatus });
+      // A20: a probe still in flight is "checking", not offline — wait up to 10 s.
+      if (o.operator && !o.operatorStatus && !o.operatorStatusError) {
+        for (let waited = 0; waited < STATUS_WAIT_MS; waited += POLL_MS) {
+          await sleep(POLL_MS);
+          if (genRef.current !== gen) return;
+          const cur = optsRef.current;
+          if (cur.operatorStatus || cur.operatorStatusError || !cur.operator) break;
+        }
+      }
+      if (genRef.current !== gen) return;
+      const o2 = optsRef.current;
+      const block = staticPairBlock({ dependant: dep, hasOperator: !!o2.operator, status: o2.operatorStatus });
       if (block) { setState(gen, { phase: 'blocked', reason: block }); return; }
       const persona = childDirectPersona(dep)!;
       const hwRelays = [...new Set(o.hwRelays)];
@@ -198,7 +223,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
         return;
       }
       let slots;
-      try { slots = await listClients(o.operator!); } catch { setState(gen, { phase: 'blocked', reason: 'offline' }); return; }
+      try { slots = await listClients(o2.operator!); } catch { setState(gen, { phase: 'blocked', reason: 'offline' }); return; }
       if (genRef.current !== gen) return;
       if (slots.length >= MAX_CONNECT_SLOTS) {
         setState(gen, { phase: 'blocked', reason: 'slots-full', labels: slots.map(sl => sl.label || `#${sl.slotIndex}`) });
@@ -272,6 +297,13 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     stopListening(s);
     sessionRef.current = null;
     if (now() > s.expiresAtMs) { setState(gen, { phase: 'expired' }); return; }
+    // A28: a request older than 240 s is refused at confirm time (the child's
+    // nostrconnect handshake would be stale by the time the device answers).
+    if (Math.floor(now() / 1000) - s.request.createdAt > PAIR_REQUEST_MAX_AGE_S) {
+      setState(gen, { phase: 'error', message: COPY.errors.stale });
+      void replyFailure(s, [s.request.clientPubkey], 'stale');
+      return;
+    }
     const o = optsRef.current;
     const op = o.operator;
     const req = s.request;
@@ -281,15 +313,45 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       return;
     }
     setState(gen, { phase: 'minting' });
-    const dep = s.dep;
+    // A25: compile from a FRESH read (stage / schedule may have moved since the offer).
+    let dep = s.dep;
+    try {
+      const fresh = o.readDependant ? await o.readDependant(s.dep.id) : null;
+      if (fresh) dep = { ...fresh, bunkerEndpoint: s.dep.bunkerEndpoint };
+    } catch { /* keep the offer-time snapshot */ }
+    if (genRef.current !== gen) return;
+    const current = dep.childDevice ?? null;
+
+    // A23: a client key the device already knows is refused before anything is minted.
+    try {
+      const before = await listClients(op);
+      if (clientKeyInUse(before, req.clientPubkey)) {
+        setState(gen, { phase: 'error', message: COPY.errors.clientReused });
+        void replyFailure(s, [req.clientPubkey], 'client-reused');
+        return;
+      }
+    } catch {
+      setState(gen, { phase: 'blocked', reason: 'offline' });
+      void replyFailure(s, [req.clientPubkey], 'mint-failed');
+      return;
+    }
+
+    // A25: grants still loading — wait up to 5 s, else mint unseeded and seed later.
+    let grants = optsRef.current.grants;
+    for (let waited = 0; grants === null && waited < GRANTS_WAIT_MS; waited += POLL_MS) {
+      await sleep(POLL_MS);
+      grants = optsRef.current.grants;
+    }
+    if (genRef.current !== gen) return;
+    const seedPending = grants === null;
     const nowMs = now();
 
     // A9: seed the rules from legacy grants BEFORE compiling the mint policy.
     let rules;
     try {
       rules = await listChildRules(dep.id, o.encryptionKey);
-      if (rules.length === 0 && o.grants) {
-        const seeded = rulesFromLegacyGrants(dep.id, o.grants, nowMs);
+      if (rules.length === 0 && grants) {
+        const seeded = rulesFromLegacyGrants(dep.id, grants, nowMs);
         for (const r of seeded) await saveChildRule(r, o.encryptionKey);
         rules = seeded;
         if (seeded.length > 0) o.onRulesChanged?.();
@@ -319,7 +381,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       try {
         const slots = await listClients(op);
         for (const stray of unconfirmedMintSlots(slots, { label: s.label, clientPubkey: req.clientPubkey,
-          slotIndex: typeof errIndex === 'number' ? errIndex : undefined })) {
+          slotIndex: typeof errIndex === 'number' ? errIndex : undefined, current })) {
           try { await revokeClient(op, { slotIndex: stray.slotIndex, secretFingerprint: stray.secretFingerprint }); } catch { clean = false; }
         }
       } catch { clean = false; }
@@ -329,6 +391,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     }
 
     const revokeMinted = async () => {
+      if (isSameSlot(minted, current)) return false; // A23: never the current phone's slot
       try { await revokeClient(op, { slotIndex: minted.slotIndex, secretFingerprint: minted.secretFingerprint }); return true; } catch { return false; }
     };
 
@@ -350,6 +413,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       childDevice: {
         mode: 'heartwood-direct', slotLabel: s.label, secretFingerprint: minted.secretFingerprint,
         slotIndex: minted.slotIndex, clientPubkey: req.clientPubkey, boundPersona: s.persona, pairedAt: now(),
+        railRelay: s.railRelay, ...(seedPending ? { seedPending: true } : {}),
       },
     };
     try {
@@ -384,11 +448,14 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     if (!dep?.childDevice) return;
     if (!o.operator) throw new Error(COPY.blocked['no-operator-key'].body);
     try { await revokeChildDeviceSlot(o.operator, dep); } catch { throw new Error(COPY.errors.unpair); }
+    const { childDevice: _cd, ...rest } = dep;
+    void _cd;
     await o.onDependantUpdated({
-      ...dep,
-      childDevice: undefined,
+      ...rest,
       bunkerEndpoint: dep.bunkerEndpoint ? { ...dep.bunkerEndpoint, authorizedClientPubkey: undefined } : undefined,
     });
+    // A25: generic saves preserve childDevice; clearing takes the dedicated path.
+    if (o.clearChildDevice) await o.clearChildDevice(dep.id);
     const gen = ++genRef.current;
     teardown();
     setState(gen, { phase: 'idle' });

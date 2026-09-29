@@ -24,7 +24,8 @@ import { childDirectSlotLabel } from '../lib/policy-compiler';
 import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { NostrEvent } from 'signet-protocol';
-import { useChildDevicePairing, type PairingTransport, type UseChildDevicePairingOpts } from './useChildDevicePairing';
+import { useChildDevicePairing, GRANTS_WAIT_MS, PAIR_REQUEST_MAX_AGE_S, STATUS_WAIT_MS, type PairingTransport, type UseChildDevicePairingOpts } from './useChildDevicePairing';
+import { CHILD_DEVICE_COPY } from '../lib/child-device-copy';
 
 const mMint = vi.mocked(nostrconnectV2), mList = vi.mocked(listClients), mRevoke = vi.mocked(revokeClient);
 const mListRules = vi.mocked(listChildRules), mSaveRule = vi.mocked(saveChildRule);
@@ -136,8 +137,26 @@ describe('useChildDevicePairing — preconditions', () => {
     act(() => s.hook.result.current.start()); await flush();
     expect(s.hook.result.current.state).toEqual({ phase: 'blocked', reason: 'no-operator-key' });
   });
-  it('no device status → offline', async () => {
+  it('A20: a pending status probe shows checking, and offline only after 10 s', async () => {
     const s = setup({ operatorStatus: null });
+    act(() => s.hook.result.current.start()); await flush();
+    expect(s.hook.result.current.state).toEqual({ phase: 'checking' });
+    await flush(STATUS_WAIT_MS - 1_000);
+    expect(s.hook.result.current.state).toEqual({ phase: 'checking' });
+    await flush(1_500);
+    expect(s.hook.result.current.state).toEqual({ phase: 'blocked', reason: 'offline' });
+  });
+  it('A20: a status arriving while checking proceeds to the offer', async () => {
+    let status: DeviceStatus | null = null;
+    const s = setup({ get operatorStatus() { return status; } } as Partial<UseChildDevicePairingOpts>);
+    act(() => s.hook.result.current.start()); await flush(500);
+    expect(s.hook.result.current.state.phase).toBe('checking');
+    status = STATUS; s.rerender();
+    await flush(500);
+    expect(s.hook.result.current.state.phase).toBe('offer');
+  });
+  it('A20: a failed probe shows offline at once', async () => {
+    const s = setup({ operatorStatus: null, operatorStatusError: 'timeout' });
     act(() => s.hook.result.current.start()); await flush();
     expect(s.hook.result.current.state).toEqual({ phase: 'blocked', reason: 'offline' });
   });
@@ -304,7 +323,7 @@ describe('useChildDevicePairing — request, check words, mint', () => {
     const stray = slot({ slotIndex: 5, label, secretFingerprint: 'cd'.repeat(32), currentPubkey: s.c.pub });
     const oldPhone = slot({ slotIndex: 2, label, secretFingerprint: 'ef'.repeat(32), currentPubkey: 'a'.repeat(64) });
     mMint.mockRejectedValue(new Error('timeout waiting for device (nostrconnect_v2)'));
-    mList.mockResolvedValue([stray, oldPhone]);
+    mList.mockResolvedValueOnce([oldPhone]).mockResolvedValue([stray, oldPhone]);
     const before = saved.length;
     await act(async () => { await s.hook.result.current.confirmMatch(); });
     expect(s.hook.result.current.state.phase).toBe('error');
@@ -357,14 +376,98 @@ describe('useChildDevicePairing — request, check words, mint', () => {
   });
 });
 
+describe('useChildDevicePairing — amendments A23, A25, A28', () => {
+  it('A23: a client key already on a slot is refused before minting (client-reused)', async () => {
+    const s = await toConfirm();
+    mList.mockResolvedValue([slot({ slotIndex: 1, label: 'other', secretFingerprint: '11'.repeat(32), authorizedPubkeys: [s.c.pub] })]);
+    await act(async () => { await s.hook.result.current.confirmMatch(); });
+    expect(mMint).not.toHaveBeenCalled();
+    expect(s.hook.result.current.state).toEqual({ phase: 'error', message: CHILD_DEVICE_COPY.errors.clientReused });
+    const offer = parseChildPairUri(s.uri, Math.floor(clock / 1000))!;
+    const reply = await openChildPairReplyEvent(t.published[0], s.c.priv, { code: offer.code, railPubkey: offer.rail });
+    expect(reply).toMatchObject({ ok: false, reason: 'client-reused' });
+  });
+
+  it('A23: the reconcile after a mint error never touches the CURRENT phone slot', async () => {
+    const label = childDirectSlotLabel(dependant.id);
+    const cur = { slotIndex: 7, secretFingerprint: '77'.repeat(32) };
+    dependant = { ...dependant, childDevice: { mode: 'heartwood-direct', slotLabel: label, ...cur, clientPubkey: 'a'.repeat(64),
+      boundPersona: dependant.persona.publicKey, pairedAt: 1 } };
+    const s = await toConfirm();
+    mMint.mockRejectedValue(Object.assign(new Error('heartwood-mint-mismatch-unrevoked'), { slotIndex: 7 }));
+    mList.mockResolvedValueOnce([]).mockResolvedValue([slot({ slotIndex: 7, label, secretFingerprint: '77'.repeat(32), currentPubkey: null })]);
+    await act(async () => { await s.hook.result.current.confirmMatch(); });
+    expect(mRevoke).not.toHaveBeenCalled();
+  });
+
+  it('A28: a request older than 240 s at "They match" is refused as stale; nothing minted', async () => {
+    const s = await toConfirm();
+    clock += (PAIR_REQUEST_MAX_AGE_S + 1) * 1000;
+    await act(async () => { await s.hook.result.current.confirmMatch(); });
+    expect(mMint).not.toHaveBeenCalled();
+    expect(s.hook.result.current.state).toEqual({ phase: 'error', message: CHILD_DEVICE_COPY.errors.stale });
+    const offer = parseChildPairUri(s.uri, Math.floor((clock) / 1000))!;
+    const reply = await openChildPairReplyEvent(t.published[0], s.c.priv, { code: offer.code, railPubkey: offer.rail });
+    expect(reply).toMatchObject({ ok: false, reason: 'stale' });
+  });
+
+  it('A28: a request 200 s old still mints', async () => {
+    const s = await toConfirm();
+    clock += 200_000;
+    mMint.mockRejectedValue(new Error('stop here'));
+    await act(async () => { await s.hook.result.current.confirmMatch(); });
+    expect(mMint).toHaveBeenCalledTimes(1);
+  });
+
+  it('A25: stores railRelay, compiles from a FRESH read of the dependant', async () => {
+    const readDependant = vi.fn(async () => ({ ...dependant, autonomyStage: 'full-autonomy' as const }));
+    const s = await toOffer({ readDependant });
+    const c = child();
+    t.deliver(await requestFrom(c, s.uri, Math.floor(clock / 1000)));
+    await flush();
+    const persona = dependant.persona.publicKey;
+    const listed = mintOk(c, persona);
+    mList.mockImplementation(async () => {
+      const policy = mMint.mock.calls[0]?.[1].policy;
+      return policy ? [listed(policy)] : [];
+    });
+    await act(async () => { await s.hook.result.current.confirmMatch(); });
+    expect(readDependant).toHaveBeenCalled();
+    expect(mMint.mock.calls[0][1].policy.allowedKinds).toEqual([]); // full-autonomy from the fresh read
+    expect(saved[saved.length - 1].childDevice).toMatchObject({ railRelay: RAIL_RELAY });
+    expect(saved[saved.length - 1].childDevice?.seedPending).toBeUndefined();
+  });
+
+  it('A25: grants still null after 5 s → mints unseeded and marks seedPending', async () => {
+    const s = await toOffer({ grants: null });
+    const c = child();
+    t.deliver(await requestFrom(c, s.uri, Math.floor(clock / 1000)));
+    await flush();
+    const persona = dependant.persona.publicKey;
+    const listed = mintOk(c, persona);
+    mList.mockImplementation(async () => {
+      const policy = mMint.mock.calls[0]?.[1].policy;
+      return policy ? [listed(policy)] : [];
+    });
+    let done = false;
+    act(() => { void s.hook.result.current.confirmMatch().then(() => { done = true; }); });
+    await flush(GRANTS_WAIT_MS + 500);
+    expect(done).toBe(true);
+    expect(mSaveRule).not.toHaveBeenCalled();
+    expect(saved[saved.length - 1].childDevice?.seedPending).toBe(true);
+  });
+});
+
 describe('useChildDevicePairing — unpair', () => {
   it('revokes the slot and clears childDevice + authorizedClientPubkey', async () => {
     dependant = { ...dependant, bunkerEndpoint: { publicKey: 'c'.repeat(64), privateKey: 'd'.repeat(64), createdAt: 1, authorizedClientPubkey: 'a'.repeat(64) },
       childDevice: { mode: 'heartwood-direct', slotLabel: childDirectSlotLabel(dependant.id), secretFingerprint: 'ab'.repeat(32), slotIndex: 4,
         clientPubkey: 'a'.repeat(64), boundPersona: dependant.persona.publicKey, pairedAt: 1 } };
-    const s = setup();
+    const clearChildDevice = vi.fn(async () => {});
+    const s = setup({ clearChildDevice });
     await act(async () => { await s.hook.result.current.unpair(); });
     expect(mRevoke.mock.calls[0][1]).toEqual({ slotIndex: 4, secretFingerprint: 'ab'.repeat(32) });
+    expect(clearChildDevice).toHaveBeenCalledWith(dependant.id);
     const last = saved[saved.length - 1];
     expect(last.childDevice).toBeUndefined();
     expect(last.bunkerEndpoint?.authorizedClientPubkey).toBeUndefined();

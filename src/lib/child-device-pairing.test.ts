@@ -9,8 +9,9 @@ import { listClients, revokeClient, type HeartwoodMgmtClient } from './heartwood
 import { buildPersonaFirstDependant } from './dependant-record';
 import { mergeDependantWithLocal } from './dependants-sync';
 import {
-  childDirectPersona, replyPersonas, revokeChildDeviceSlot, unconfirmedMintSlots, usesChildDirectPairing,
+  childDirectPersona, clientKeyInUse, pendingRuleSeeds, replyPersonas, revokeChildDeviceSlot, unconfirmedMintSlots, usesChildDirectPairing,
 } from './child-device-pairing';
+import type { RememberedGrant } from '../types/grants';
 import type { DeviceClientSlot } from './heartwood-mgmt-types';
 import type { DependantIdentity } from '../types';
 
@@ -83,5 +84,23 @@ describe('child-device-pairing', () => {
     const local = paired();
     const remote = { ...dep(), childDevice: undefined };
     expect(mergeDependantWithLocal(remote, local).childDevice).toEqual(local.childDevice);
+  });
+});
+
+describe('A23 / A25 helpers', () => {
+  it('clientKeyInUse sees current and authorised keys, any case', () => {
+    const k = 'e'.repeat(64);
+    expect(clientKeyInUse([slot({ currentPubkey: k.toUpperCase() })], k)).toBe(true);
+    expect(clientKeyInUse([slot({ authorizedPubkeys: [k] })], k)).toBe(true);
+    expect(clientKeyInUse([slot({ currentPubkey: 'f'.repeat(64) })], k)).toBe(false);
+  });
+  it('pendingRuleSeeds seeds only seedPending dependants with no rule rows', () => {
+    const d = paired();
+    const pending = { ...d, childDevice: { ...d.childDevice!, seedPending: true } };
+    const grant = { id: 'g', dependantId: d.id, origin: 'https://game.example.com', scope: 'dm-private', decision: 'allow', decidedAt: 1 } as unknown as RememberedGrant;
+    const work = pendingRuleSeeds([pending, paired()], [], [grant], 5_000);
+    expect(work).toHaveLength(1);
+    expect(work[0].seed).toHaveLength(1);
+    expect(pendingRuleSeeds([pending], [{ dependantId: d.id.toUpperCase() }], [grant], 5_000)[0].seed).toEqual([]);
   });
 });

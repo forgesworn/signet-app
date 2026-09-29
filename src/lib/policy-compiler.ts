@@ -534,7 +534,7 @@ function findDependantForSlot(
     const tag = (slot.label ?? '').slice(CHILD_DIRECT_LABEL_PREFIX.length);
     const bound0 = lower(slot.boundIdentity);
     for (const dep of dependants) {
-      if (tag.length > 0 && dep.id.slice(0, 16) === tag
+      if (tag.length > 0 && dep.id.slice(0, 16).toLowerCase() === tag.toLowerCase()
         && dep.identityPubkeys.some((p) => lower(p) === bound0)) return dep;
     }
     return null;

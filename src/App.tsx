@@ -261,10 +261,11 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice } from './lib/db';
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
+import { pendingRuleSeeds } from './lib/child-device-pairing';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
@@ -1598,9 +1599,35 @@ export function App() {
     try {
       const rows = await listAllChildRules(key);
       if (encryptionKeyRef.current === key) setChildRules(rows);
-    } catch { if (encryptionKeyRef.current === key) setChildRules([]); }
+    } catch {
+      // A22: a failed read is "unknown", never "none" — null keeps the push
+      // and the publisher waiting rather than compiling an empty rule set.
+      if (encryptionKeyRef.current === key) setChildRules(null);
+    }
   }, [encryptionKey, isPairedChild]);
   useEffect(() => { void reloadChildRules(); }, [reloadChildRules]);
+  // A25: a phone minted before grants had loaded is seeded from legacy grants
+  // on the next rules load, then its `seedPending` flag clears.
+  const seedingRef = useRef(false);
+  useEffect(() => {
+    if (!encryptionKey || isPairedChild || childRules === null || grantsForSync === null || seedingRef.current) return;
+    const work = pendingRuleSeeds(dependants, childRules, grantsForSync, Date.now());
+    if (work.length === 0) return;
+    const key = encryptionKey;
+    seedingRef.current = true;
+    void (async () => {
+      try {
+        for (const { dep, seed } of work) {
+          for (const r of seed) await saveChildRule(r, key);
+          const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+          if (fresh?.childDevice) await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, seedPending: undefined } }, key);
+        }
+        await reloadChildRules();
+        await reloadDependants();
+      } catch { /* retried on the next change */ } finally { seedingRef.current = false; }
+    })();
+  }, [encryptionKey, isPairedChild, childRules, grantsForSync, dependants, loadFreshDependants, reloadChildRules, reloadDependants]);
+
   useChildRulesSync({
     publishEnabled: !isPairedChild && legacyPrivateWrite('settings'),
     identity: isPairedChild ? null : identity,
@@ -11159,6 +11186,7 @@ export function App() {
           direct={identity ? {
             operator: heartwoodOperator.client,
             operatorStatus: heartwoodOperator.status,
+            operatorStatusError: heartwoodOperator.statusError,
             guardianNpPubkey: identity.naturalPerson.publicKey,
             railRelay: preferences.relayUrl ?? DEFAULT_RELAY_URL,
             hwRelays: heartwoodOperator.credential?.relays ?? [],
@@ -11175,6 +11203,12 @@ export function App() {
               await reloadDependants();
             },
             onRulesChanged: () => { void reloadChildRules(); },
+            readDependant: async (id) => {
+              const key = encryptionKey || await requestAuth();
+              if (!key) return null;
+              return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
+            },
+            clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
             onOpenOperatorImport: () => navigateTo('settings-advanced'),
           } : undefined}
         />

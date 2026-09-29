@@ -233,4 +233,8 @@ export interface DependantChildDevice {
   boundPersona: string;
   /** Unix ms. */
   pairedAt: number;
+  /** Relay carrying the rules / ask / verdict rails for this phone (A25). Older records fall back to `preferences.relayUrl`. */
+  railRelay?: string;
+  /** Minted before grants had loaded: seed rules from legacy grants on the next rules load (A25). */
+  seedPending?: boolean;
 }

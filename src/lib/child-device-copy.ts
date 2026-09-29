@@ -67,6 +67,8 @@ export const CHILD_DEVICE_COPY = {
     badRelay: 'A relay address is not valid. Check your relay settings.',
     unpair: 'Could not reach your Heartwood to unpair. Try again.',
     noDependant: 'Dependant not found.',
+    stale: 'That pairing request is too old to use, so nothing was set up. Start again with a new code.',
+    clientReused: 'That phone offered a connection your Heartwood already knows, so nothing was set up. Start again — the phone will use a new one.',
     generic: 'Something went wrong. Try again.',
   },
 } as const;
@@ -93,6 +95,7 @@ export const CHILD_SIDE_COPY = {
       'mint-failed': 'Your Heartwood could not set up a slot for this phone. Ask your guardian to try again.',
       'verify-failed': 'Your Heartwood slot did not check out, so it was removed. Ask your guardian to try again.',
       'save-failed': "Your guardian's phone could not save the pairing. Ask them to try again.",
+      stale: 'Your guardian answered too late for this request, so nothing was set up. Ask them for a new code.',
       'client-reused': 'Your guardian\'s phone saw a connection it had used before, so nothing was set up. Try again — this phone will use a new one.',
       other: 'Your guardian stopped the pairing. Ask them for a new code.',
     } as Record<string, string>,

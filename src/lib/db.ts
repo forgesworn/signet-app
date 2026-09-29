@@ -358,6 +358,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== HEARTWOOD_OPERATOR_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
+    !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
     !r.id.startsWith(DEPENDANT_PREFIX),
   );
 }
@@ -567,6 +568,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
+    if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_DIRECT_ROW_PREFIX)) continue;
     if (!identity.encrypted) {
       await db.delete('identity', identity.id);
       removed++;
@@ -1766,8 +1768,18 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
           : undefined,
       }
     : undefined;
+  const db = await getDB();
+  // A25: `childDevice` is set only by the pairing flow and cleared only by
+  // `clearChildDevice`. A generic save (mutators, sync merges) whose object
+  // lacks it keeps the stored one.
+  let childDevice = dependant.childDevice;
+  if (childDevice === undefined) {
+    const existing = await db.get('identity', DEPENDANT_PREFIX + dependant.id) as { childDevice?: DependantIdentity['childDevice'] } | undefined;
+    if (existing?.childDevice) childDevice = existing.childDevice;
+  }
   const stored = {
     ...dependant,
+    ...(childDevice ? { childDevice } : {}),
     id: DEPENDANT_PREFIX + dependant.id,
     naturalPerson: { ...dependant.naturalPerson, privateKey: encNpPriv, avatarKey: encNpAvatarKey, contactAvatarKey: encNpContactAvatarKey },
     persona: { ...dependant.persona, privateKey: encPersonaPriv, avatarKey: encPersonaAvatarKey, contactAvatarKey: encPersonaContactAvatarKey },
@@ -1776,8 +1788,25 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
     appBunkerEndpoint: encAppEndpoint,
     encrypted: true,
   };
-  const db = await getDB();
   await db.put('identity', stored);
+}
+
+/**
+ * A25: the one path that removes a dependant's `childDevice` (unpair). Also
+ * drops `bunkerEndpoint.authorizedClientPubkey` when it names that phone.
+ * Touches only clear routing fields, so no key is needed.
+ */
+export async function clearChildDevice(dependantId: string): Promise<void> {
+  const db = await getDB();
+  const key = DEPENDANT_PREFIX + dependantId;
+  const row = await db.get('identity', key) as (Record<string, unknown> & { childDevice?: { clientPubkey?: string }; bunkerEndpoint?: { authorizedClientPubkey?: string } }) | undefined;
+  if (!row || !row.childDevice) return;
+  const { childDevice, ...rest } = row;
+  const ep = rest.bunkerEndpoint;
+  const next = ep && ep.authorizedClientPubkey && ep.authorizedClientPubkey === childDevice.clientPubkey
+    ? { ...rest, bunkerEndpoint: { ...ep, authorizedClientPubkey: undefined } }
+    : rest;
+  await db.put('identity', next);
 }
 
 export async function getDependants(guardianPubkey: string, encryptionKey?: string): Promise<DependantIdentity[]> {
@@ -2585,6 +2614,8 @@ export async function setPairedChildIdentityApprovals(
 // the gate fails closed (asks for everything).
 
 const CHILD_RULES_CACHE_PREFIX = 'childRulesCache:';
+/** Guardian-local child-direct rows (approved-once kinds, verdict history, pending revokes). Not identities. */
+const CHILD_DIRECT_ROW_PREFIX = 'childDirect:';
 
 export async function saveChildRulesCache(dependantPubkey: string, payload: ChildRulesPayload, encryptionKey: string): Promise<void> {
   if (!HEX64.test(dependantPubkey)) throw new Error('Invalid dependantPubkey');
@@ -3247,4 +3278,86 @@ export async function getGraceKey(): Promise<GraceKeyRecord | undefined> {
 export async function clearGraceKey(): Promise<void> {
   const db = await getDB();
   await db.delete('graceKey', 'current');
+}
+
+// --- Child-direct guardian-local rows (spec §7; A24) ---
+//
+// Encrypted identity-store rows holding JSON. Each loader type-guards what it
+// decrypts and returns an empty value for anything absent, undecryptable or
+// malformed.
+
+async function saveEncryptedJsonRow(id: string, value: unknown, encryptionKey: string): Promise<void> {
+  const secret = await encryptSecret(JSON.stringify(value), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id, secret });
+}
+
+async function loadEncryptedJsonRow(id: string, encryptionKey: string): Promise<unknown> {
+  const db = await getDB();
+  const row = await db.get('identity', id);
+  if (!row || typeof row.secret !== 'string') return undefined;
+  try { return JSON.parse(await decryptSecret(row.secret, encryptionKey)); } catch { return undefined; }
+}
+
+const CHILD_APPROVED_ONCE_ROW = CHILD_DIRECT_ROW_PREFIX + 'approvedOnce';
+const CHILD_ASK_HISTORY_ROW = CHILD_DIRECT_ROW_PREFIX + 'askHistory';
+const CHILD_PENDING_REVOKES_ROW = CHILD_DIRECT_ROW_PREFIX + 'pendingRevokes';
+
+export type ApprovedOnceKinds = Record<string, { kind: number; until: number }[]>;
+
+/** Approved-once kinds per dependant id (`until` unix seconds). */
+export async function saveChildApprovedOnce(map: ApprovedOnceKinds, encryptionKey: string): Promise<void> {
+  await saveEncryptedJsonRow(CHILD_APPROVED_ONCE_ROW, map, encryptionKey);
+}
+
+export async function loadChildApprovedOnce(encryptionKey: string): Promise<ApprovedOnceKinds> {
+  const raw = await loadEncryptedJsonRow(CHILD_APPROVED_ONCE_ROW, encryptionKey);
+  const out: ApprovedOnceKinds = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [dep, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (!HEX64.test(dep) || !Array.isArray(list)) continue;
+    const ok = list.filter((a): a is { kind: number; until: number } => !!a && typeof a === 'object'
+      && Number.isInteger((a as { kind: unknown }).kind) && (a as { kind: number }).kind >= 0 && (a as { kind: number }).kind <= 65535
+      && Number.isSafeInteger((a as { until: unknown }).until)).map(a => ({ kind: a.kind, until: a.until }));
+    if (ok.length > 0) out[dep] = ok;
+  }
+  return out;
+}
+
+/** Guardian-local verdict history (newest first, capped by the caller). Opaque JSON records. */
+export async function saveChildAskHistory(entries: unknown[], encryptionKey: string): Promise<void> {
+  await saveEncryptedJsonRow(CHILD_ASK_HISTORY_ROW, entries, encryptionKey);
+}
+
+export async function loadChildAskHistory(encryptionKey: string): Promise<unknown[]> {
+  const raw = await loadEncryptedJsonRow(CHILD_ASK_HISTORY_ROW, encryptionKey);
+  return Array.isArray(raw) ? raw : [];
+}
+
+/** A24: a child-direct slot revoke that could not be completed at removal time. */
+export interface PendingChildRevoke { label: string; slotIndex: number; secretFingerprint: string; dependantId: string }
+
+function isPendingChildRevoke(x: unknown): x is PendingChildRevoke {
+  if (!x || typeof x !== 'object') return false;
+  const o = x as Record<string, unknown>;
+  return typeof o.label === 'string' && o.label.length <= 128 && Number.isSafeInteger(o.slotIndex) && (o.slotIndex as number) >= 0
+    && typeof o.secretFingerprint === 'string' && /^[0-9a-f]{1,128}$/i.test(o.secretFingerprint)
+    && typeof o.dependantId === 'string' && o.dependantId.length <= 128;
+}
+
+export async function listPendingChildRevokes(encryptionKey: string): Promise<PendingChildRevoke[]> {
+  const raw = await loadEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, encryptionKey);
+  return Array.isArray(raw) ? raw.filter(isPendingChildRevoke) : [];
+}
+
+export async function addPendingChildRevoke(rec: PendingChildRevoke, encryptionKey: string): Promise<void> {
+  const list = await listPendingChildRevokes(encryptionKey);
+  if (list.some(r => r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase())) return;
+  await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, [...list, rec], encryptionKey);
+}
+
+export async function removePendingChildRevoke(rec: Pick<PendingChildRevoke, 'slotIndex' | 'secretFingerprint'>, encryptionKey: string): Promise<void> {
+  const list = await listPendingChildRevokes(encryptionKey);
+  const next = list.filter(r => !(r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase()));
+  if (next.length !== list.length) await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, next, encryptionKey);
 }

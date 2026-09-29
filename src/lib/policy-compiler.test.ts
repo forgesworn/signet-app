@@ -1181,6 +1181,13 @@ describe('child-direct compiler', () => {
     expect(b.policy.escalate).toBe(true);
   });
 
+  it('A25: a v2 label in upper case still finds its dependant', () => {
+    const d = dep({ autonomyStage: 'request-approve', childRules: [allow('sign-in')] });
+    const direct = slot({ label: childDirectSlotLabel(NP).replace(/[a-f]/g, c => c.toUpperCase()).replace('SIGNET:CHILD-DEVICE:V2:', 'signet:child-device:v2:'), boundIdentity: PERSONA });
+    const res = compileSlotPolicies({ dependants: [d], guardianClientPubkey: null, deviceSlots: [direct], nowSeconds: NOW });
+    expect(res.slots).toHaveLength(1);
+  });
+
   it('a v2 slot naming a different dependant is left untouched; a dormant binding locks', () => {
     const d = dep({ dormantIdentityPubkeys: [NP] });
     const other = slot({ label: childDirectSlotLabel('f'.repeat(64)), boundIdentity: PERSONA });

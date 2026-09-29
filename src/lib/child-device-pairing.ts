@@ -12,6 +12,9 @@ import { CAP_NOSTRCONNECT_V2, hasCapability, listClients, revokeClient, type Hea
 import { resolveDependantCardSlot } from './carousel-utils';
 import { isDependantNaturalPersonActive } from './identity-display';
 import { isChildDirectSlot } from './policy-compiler';
+import { rulesFromLegacyGrants } from './child-rules';
+import type { RememberedGrant } from '../types/grants';
+import type { ChildRule } from '../types/child-rules';
 
 /** Firmware MAX_CONNECT_SLOTS. */
 export const MAX_CONNECT_SLOTS = 16;
@@ -95,11 +98,22 @@ export function verifyMintedSlot(
  *  we never confirmed. The previous phone's slot (other client key) is not ours. */
 export function unconfirmedMintSlots(
   slots: DeviceClientSlot[],
-  ours: { label: string; clientPubkey: string; slotIndex?: number },
+  ours: { label: string; clientPubkey: string; slotIndex?: number; current?: { slotIndex: number; secretFingerprint: string } | null },
 ): DeviceClientSlot[] {
-  return slots.filter(s => s.label === ours.label && (
+  return slots.filter(s => s.label === ours.label && !isSameSlot(s, ours.current) && (
     (s.currentPubkey ?? '').toLowerCase() === ours.clientPubkey.toLowerCase()
     || (typeof ours.slotIndex === 'number' && s.slotIndex === ours.slotIndex && !s.currentPubkey)));
+}
+
+/** Same slot index AND fingerprint (A23: the dependant's CURRENT phone slot is never cleaned up). */
+export function isSameSlot(s: { slotIndex: number; secretFingerprint: string }, other: { slotIndex: number; secretFingerprint: string } | null | undefined): boolean {
+  return !!other && s.slotIndex === other.slotIndex && s.secretFingerprint.toLowerCase() === other.secretFingerprint.toLowerCase();
+}
+
+/** A23: a client key already on ANY slot (current or authorised) must not be paired again. */
+export function clientKeyInUse(slots: DeviceClientSlot[], clientPubkey: string): boolean {
+  const c = clientPubkey.toLowerCase();
+  return slots.some(s => (s.currentPubkey ?? '').toLowerCase() === c || (s.authorizedPubkeys ?? []).some(p => p.toLowerCase() === c));
 }
 
 /** Re-pair: every OTHER slot carrying this dependant's label (the old phone). */
@@ -132,4 +146,25 @@ export async function revokeChildDeviceSlot(operator: HeartwoodMgmtClient, dep: 
       return;
     }
   }
+}
+
+/**
+ * A25: dependants minted while grants were still loading (`seedPending`),
+ * with the rules each one should be seeded with now. A dependant that already
+ * has any rule row (tombstones included) is not seeded again — only the flag clears.
+ */
+export function pendingRuleSeeds(
+  dependants: DependantIdentity[],
+  rules: { dependantId: string }[],
+  grants: RememberedGrant[],
+  nowMs: number,
+): { dep: DependantIdentity; seed: ChildRule[] }[] {
+  const out: { dep: DependantIdentity; seed: ChildRule[] }[] = [];
+  for (const dep of dependants) {
+    if (dep.childDevice?.mode !== 'heartwood-direct' || !dep.childDevice.seedPending) continue;
+    const id = dep.id.toLowerCase();
+    const has = rules.some(r => r.dependantId.toLowerCase() === id);
+    out.push({ dep, seed: has ? [] : rulesFromLegacyGrants(id, grants, nowMs) });
+  }
+  return out;
 }
