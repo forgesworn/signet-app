@@ -123,9 +123,14 @@ export function supersededSlots(slots: DeviceClientSlot[], label: string, keep: 
     && !(s.slotIndex === keep.slotIndex && s.secretFingerprint.toLowerCase() === keep.secretFingerprint.toLowerCase()));
 }
 
-function isGoneSlotError(e: unknown): boolean {
-  const m = e instanceof Error ? e.message : String(e);
-  return /stale_client_slot|no such slot|not found/i.test(m);
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** A38: the firmware's exact "slot index is empty" error (`no such slot: <n>`) — never a bare /not found/. */
+export function isNoSuchSlotError(e: unknown): boolean {
+  return /^no such slot: \d+$/.test(errText(e));
+}
+/** A38: the firmware's exact fingerprint-mismatch error; the slot index now holds another credential (or ours moved). */
+export function isStaleClientSlotMessage(e: unknown): boolean {
+  return errText(e).startsWith('stale_client_slot: slot credential changed');
 }
 
 /**
@@ -140,8 +145,9 @@ export async function revokeChildDeviceSlot(operator: HeartwoodMgmtClient, dep: 
     await revokeClient(operator, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint });
     return;
   } catch (e) {
-    if (!isGoneSlotError(e)) {
-      // Unknown failure — only treat it as done if the device confirms the slot is gone.
+    if (!isNoSuchSlotError(e)) {
+      // Stale slot or unknown failure — only treat it as done if the device
+      // confirms no slot carries our fingerprint any more (A38).
       const slots = await listClients(operator);
       if (slots.some(s => s.secretFingerprint.toLowerCase() === cd.secretFingerprint.toLowerCase())) throw e;
       return;
@@ -175,12 +181,15 @@ export interface PendingRevokeIo {
   list(): Promise<PendingChildRevoke[]>;
   revoke(r: PendingChildRevoke): Promise<void>;
   remove(r: PendingChildRevoke): Promise<void>;
+  /** A38: confirms a `stale_client_slot` by fingerprint; absent ⇒ a stale record is kept. */
+  listClients?(): Promise<DeviceClientSlot[]>;
 }
 
 /**
  * A24: retry every remembered revoke. A record is dropped on success or when
- * the device says the slot is gone (no such slot / stale slot — a re-minted
- * index no longer carries our fingerprint). Anything else stays for the next
+ * the device says the slot is gone — the exact `no such slot: <n>`, or a
+ * `stale_client_slot` that `list_clients` confirms (no slot carries our
+ * fingerprint any more; A38). Anything else stays for the next
  * run. Never throws; returns how many records were cleared.
  */
 export async function retryPendingChildRevokes(io: PendingRevokeIo): Promise<number> {
@@ -191,7 +200,13 @@ export async function retryPendingChildRevokes(io: PendingRevokeIo): Promise<num
     try {
       await io.revoke(r);
     } catch (e) {
-      if (!isGoneSlotError(e)) continue;
+      if (!isNoSuchSlotError(e)) {
+        if (!isStaleClientSlotMessage(e) || !io.listClients) continue;
+        try {
+          const fp = r.secretFingerprint.toLowerCase();
+          if ((await io.listClients()).some(s => s.secretFingerprint.toLowerCase() === fp)) continue;
+        } catch { continue; }
+      }
     }
     try { await io.remove(r); cleared += 1; } catch { /* retried next run */ }
   }

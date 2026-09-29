@@ -74,4 +74,12 @@ describe('guardian-local child-direct rows', () => {
     await db.removePendingChildRevoke({ slotIndex: 4, secretFingerprint: 'AB'.repeat(32) }, KEY);
     expect(await db.listPendingChildRevokes(KEY)).toEqual([]);
   });
+  it('A38: concurrent pending-revoke writes are serialised — none is lost', async () => {
+    const db = await import('./db');
+    const rec = (i: number) => ({ label: 'signet:child-device:v2:x', slotIndex: i, secretFingerprint: 'ab'.repeat(32), dependantId: DEP });
+    await Promise.all([db.addPendingChildRevoke(rec(1), KEY), db.addPendingChildRevoke(rec(2), KEY), db.addPendingChildRevoke(rec(3), KEY)]);
+    expect((await db.listPendingChildRevokes(KEY)).map(r => r.slotIndex).sort()).toEqual([1, 2, 3]);
+    await Promise.all([db.removePendingChildRevoke(rec(1), KEY), db.addPendingChildRevoke(rec(4), KEY), db.removePendingChildRevoke(rec(3), KEY)]);
+    expect((await db.listPendingChildRevokes(KEY)).map(r => r.slotIndex).sort()).toEqual([2, 4]);
+  });
 });

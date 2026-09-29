@@ -3350,16 +3350,23 @@ export async function listPendingChildRevokes(encryptionKey: string): Promise<Pe
   return Array.isArray(raw) ? raw.filter(isPendingChildRevoke) : [];
 }
 
-export async function addPendingChildRevoke(rec: PendingChildRevoke, encryptionKey: string): Promise<void> {
-  const list = await listPendingChildRevokes(encryptionKey);
-  if (list.some(r => r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase())) return;
-  await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, [...list, rec], encryptionKey);
+/** A38: every read-modify-write of the pending-revoke row runs on one chain, so concurrent writers never lose a record. */
+const pendingRevokeWrites = createSerialQueue();
+
+export function addPendingChildRevoke(rec: PendingChildRevoke, encryptionKey: string): Promise<void> {
+  return pendingRevokeWrites.run(async () => {
+    const list = await listPendingChildRevokes(encryptionKey);
+    if (list.some(r => r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase())) return;
+    await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, [...list, rec], encryptionKey);
+  });
 }
 
-export async function removePendingChildRevoke(rec: Pick<PendingChildRevoke, 'slotIndex' | 'secretFingerprint'>, encryptionKey: string): Promise<void> {
-  const list = await listPendingChildRevokes(encryptionKey);
-  const next = list.filter(r => !(r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase()));
-  if (next.length !== list.length) await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, next, encryptionKey);
+export function removePendingChildRevoke(rec: Pick<PendingChildRevoke, 'slotIndex' | 'secretFingerprint'>, encryptionKey: string): Promise<void> {
+  return pendingRevokeWrites.run(async () => {
+    const list = await listPendingChildRevokes(encryptionKey);
+    const next = list.filter(r => !(r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase()));
+    if (next.length !== list.length) await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, next, encryptionKey);
+  });
 }
 
 const CHILD_TRANSPORT_KEYS_ROW = CHILD_DIRECT_ROW_PREFIX + 'transportKeys';

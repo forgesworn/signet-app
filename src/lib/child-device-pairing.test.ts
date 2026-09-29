@@ -17,6 +17,7 @@ import type { DependantIdentity } from '../types';
 
 const mList = vi.mocked(listClients), mRevoke = vi.mocked(revokeClient);
 const op = {} as HeartwoodMgmtClient;
+const STALE = 'stale_client_slot: slot credential changed; refresh clients and try again';
 const NP = 'a'.repeat(64), PERSONA = 'b'.repeat(64), EXTRA = 'c'.repeat(64);
 
 function dep(over: Partial<DependantIdentity> = {}): DependantIdentity {
@@ -65,9 +66,22 @@ describe('child-device-pairing', () => {
       await revokeChildDeviceSlot(op, paired());
       expect(mRevoke).toHaveBeenCalledWith(op, { slotIndex: 6, secretFingerprint: 'ab' });
     });
-    it('a slot already gone counts as revoked', async () => {
-      mRevoke.mockRejectedValue(new Error('stale_client_slot'));
+    it('a slot already gone counts as revoked (exact firmware string)', async () => {
+      mRevoke.mockRejectedValue(new Error('no such slot: 6'));
       await expect(revokeChildDeviceSlot(op, paired())).resolves.toBeUndefined();
+      expect(mList).not.toHaveBeenCalled();
+    });
+    it('A38: stale_client_slot is confirmed by a list_clients fingerprint lookup', async () => {
+      mRevoke.mockRejectedValue(new Error(STALE));
+      mList.mockResolvedValue([slot({ slotIndex: 6, secretFingerprint: 'cd' })]);
+      await expect(revokeChildDeviceSlot(op, paired())).resolves.toBeUndefined();
+      mList.mockResolvedValue([slot({ slotIndex: 9, secretFingerprint: 'AB' })]);
+      await expect(revokeChildDeviceSlot(op, paired())).rejects.toThrow('stale_client_slot');
+    });
+    it('A38: a bare "not found" is not taken as gone', async () => {
+      mRevoke.mockRejectedValue(new Error('identity not found'));
+      mList.mockResolvedValue([slot({ slotIndex: 6, secretFingerprint: 'ab' })]);
+      await expect(revokeChildDeviceSlot(op, paired())).rejects.toThrow('identity not found');
     });
     it('an unknown failure with the slot still listed throws', async () => {
       mRevoke.mockRejectedValue(new Error('device busy'));
@@ -107,15 +121,29 @@ describe('A23 / A25 helpers', () => {
 
 describe('A24: retryPendingChildRevokes', () => {
   const rec = (i: number) => ({ label: 'signet:child-device:v2:x', slotIndex: i, secretFingerprint: 'ab', dependantId: 'd' });
-  it('drops a record on success or on a gone slot, keeps it on any other failure', async () => {
+  it('drops a record on success or on the exact "no such slot" string; keeps it on any other failure', async () => {
     const removed: number[] = [];
     const revoke = vi.fn(async (r: { slotIndex: number }) => {
-      if (r.slotIndex === 2) throw new Error('stale_client_slot: fingerprint mismatch');
+      if (r.slotIndex === 2) throw new Error('no such slot: 2');
       if (r.slotIndex === 3) throw new Error('timeout waiting for device (revoke_client)');
+      if (r.slotIndex === 4) throw new Error('slot not found');
+      if (r.slotIndex === 5) throw new Error('no such slot: 5 (and more)');
     });
-    const n = await retryPendingChildRevokes({ list: async () => [rec(1), rec(2), rec(3)], revoke, remove: async (r) => { removed.push(r.slotIndex); } });
+    const n = await retryPendingChildRevokes({ list: async () => [rec(1), rec(2), rec(3), rec(4), rec(5)], revoke, remove: async (r) => { removed.push(r.slotIndex); } });
     expect(n).toBe(2);
     expect(removed).toEqual([1, 2]);
+  });
+  it('A38: stale_client_slot drops the record only when list_clients no longer shows its fingerprint', async () => {
+    const removed: number[] = [];
+    const revoke = vi.fn(async () => { throw new Error(STALE); });
+    const listClients = vi.fn(async () => [slot({ slotIndex: 1, secretFingerprint: 'AB' })]);
+    await retryPendingChildRevokes({ list: async () => [rec(1), { ...rec(2), secretFingerprint: 'ef' }], revoke, remove: async (r) => { removed.push(r.slotIndex); }, listClients });
+    expect(removed).toEqual([2]);
+    // Without a way to confirm, or when the lookup fails, the record stays.
+    removed.length = 0;
+    await retryPendingChildRevokes({ list: async () => [rec(2)], revoke, remove: async (r) => { removed.push(r.slotIndex); } });
+    await retryPendingChildRevokes({ list: async () => [rec(2)], revoke, remove: async (r) => { removed.push(r.slotIndex); }, listClients: async () => { throw new Error('offline'); } });
+    expect(removed).toEqual([]);
   });
   it('never throws when the list cannot be read', async () => {
     expect(await retryPendingChildRevokes({ list: async () => { throw new Error('x'); }, revoke: vi.fn(), remove: vi.fn() })).toBe(0);
