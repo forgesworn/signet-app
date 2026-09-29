@@ -1755,7 +1755,6 @@ export function App() {
     relays: syncRelays,
     encryptionKey: isPairedChild ? null : encryptionKey,
     rules: childRules,
-    onPruned: () => { void reloadChildRules(); },
     onMerged: (merged) => {
       const key = encryptionKey;
       if (!key) return;

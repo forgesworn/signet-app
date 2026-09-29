@@ -102,15 +102,4 @@ describe('A52: child rules storage', () => {
     expect(await db.listChildRules(DEP, 'x'.repeat(64))).toEqual([]);
     vi.doUnmock('./crypto-store');
   });
-
-  it('prunes tombstones older than the cutoff, keeping live rules and newer tombstones', async () => {
-    const db = await import('./db');
-    await db.saveChildRule(rule('live'), KEY);
-    await db.saveChildRule(rule('old', { tombstonedAt: 100, updatedAt: 100 }), KEY);
-    await db.saveChildRule(rule('new', { tombstonedAt: 5_000, updatedAt: 5_000 }), KEY);
-    expect(await db.pruneChildRuleTombstones(KEY, 1_000)).toBe(1);
-    expect((await db.listAllChildRules(KEY)).map(r => r.id).sort()).toEqual(['live', 'new']);
-    db.forgetChildRuleCache();
-    expect((await db.listAllChildRules(KEY)).map(r => r.id).sort()).toEqual(['live', 'new']);
-  });
 });

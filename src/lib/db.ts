@@ -1220,22 +1220,6 @@ export async function tombstoneChildRule(id: string, encryptionKey: string, nowM
   await saveChildRule({ ...rule, tombstonedAt: nowMs, updatedAt: nowMs }, encryptionKey);
 }
 
-/** A52: hard-delete tombstones older than `cutoffMs` (after they have been
- *  published). Returns how many rows went. */
-export async function pruneChildRuleTombstones(encryptionKey: string, cutoffMs: number): Promise<number> {
-  const db = await getDB();
-  const memo = childRuleMemoFor(encryptionKey);
-  let n = 0;
-  for (const r of await listAllChildRules(encryptionKey)) {
-    if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0 && r.tombstonedAt < cutoffMs) {
-      await db.delete('childRules', r.id);
-      memo.delete(r.id);
-      n++;
-    }
-  }
-  return n;
-}
-
 // --- Sync decrypt cache (v21, family-bunker §11.1.10) ---
 // One row per cross-device sync rail, keyed `${dTag}:${authorPubkey}`, holding the
 // plaintext of the last relay event we decrypted — AES-256-GCM ciphertext

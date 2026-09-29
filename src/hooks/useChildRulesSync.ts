@@ -15,7 +15,6 @@ import { resolveHookRelays } from '../lib/sync-relays';
 import { getSyncSeen, setSyncSeen, classifyFetchOutcome, type SyncRemoteState } from '../lib/sync-seen';
 import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 import { useSyncReadRetry } from './useSyncReadRetry';
-import { pruneChildRuleTombstones } from '../lib/db';
 
 const PUBLISH_DEBOUNCE_MS = 2000;
 
@@ -45,14 +44,9 @@ interface Options {
   rules: ChildRule[] | null;
   /** Fires with the merged set after an inbound fetch changed it; the caller persists it. */
   onMerged: (rules: ChildRule[]) => void;
-  /** A52: tombstones older than 30 days were pruned after a successful publish; reload. */
-  onPruned?: () => void;
 }
 
-/** A52: how long a published tombstone is kept before it is pruned locally. */
-export const CHILD_RULE_TOMBSTONE_TTL_MS = 30 * 86_400_000;
-
-export function useChildRulesSync({ publishEnabled = true, identity, npBackend, relays, relayUrl, encryptionKey, rules, onMerged, onPruned }: Options): { remoteState: SyncRemoteState | null } {
+export function useChildRulesSync({ publishEnabled = true, identity, npBackend, relays, relayUrl, encryptionKey, rules, onMerged }: Options): { remoteState: SyncRemoteState | null } {
   const effectiveRelays = resolveHookRelays(relays, relayUrl);
   const readRelaysKey = effectiveRelays.read.join('|');
   const writeRelaysKey = effectiveRelays.write.join('|');
@@ -68,8 +62,6 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
   rulesRef.current = rules;
   const onMergedRef = useRef(onMerged);
   onMergedRef.current = onMerged;
-  const onPrunedRef = useRef(onPruned);
-  onPrunedRef.current = onPruned;
 
   const syncAuthorRef = useRef<string | undefined>(undefined);
   const hydratedAuthorRef = useRef<string | null>(null);
@@ -168,13 +160,7 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
         if (ok && syncAuthorRef.current === identity.naturalPerson.publicKey) {
           lastPublishedHashRef.current = hash;
           remoteRulesRef.current = rules;
-          // A52: the tombstones are out; old ones no longer need a local row.
-          const key = encryptionKey;
-          if (rules.some(r => typeof r.tombstonedAt === 'number' && r.tombstonedAt < Date.now() - CHILD_RULE_TOMBSTONE_TTL_MS)) {
-            void pruneChildRuleTombstones(key, Date.now() - CHILD_RULE_TOMBSTONE_TTL_MS)
-              .then((n) => { if (n > 0) onPrunedRef.current?.(); })
-              .catch(() => { /* next publish retries */ });
-          }
+          // A63: tombstones are kept (a pruned one lets a stale device resurrect the rule).
         }
       } catch { /* next debounce cycle retries */ }
     }, PUBLISH_DEBOUNCE_MS);
