@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import {
-  childRuleId, siteTarget, appTarget, peerTarget, isLiveRule, findRule, rulesFromLegacyGrants, isValidRuleScope,
+  childRuleId, siteTarget, appTarget, peerTarget, isLiveRule, findRule, rulesFromLegacyGrants, isValidRuleScope, findBlockingAppRule,
 } from './child-rules';
 import type { ChildRule, RememberedGrant } from '../types';
 
@@ -83,7 +83,7 @@ describe('A7 scope * and A8 case', () => {
     const block = rule({ scope: '*', persona: '*', target: 'app:com.Bad.App', decision: 'deny' });
     const allow = rule({ target: 'app:com.Bad.App', decision: 'allow' });
     expect(findRule([block], q({ targets: ['app:com.Bad.App'] }))).toBe(block);
-    expect(findRule([allow, block], q({ persona: P1, targets: ['app:com.Bad.App'] }))).toBe(allow); // exact persona level wins
+    expect(findRule([allow, block], q({ persona: P1, targets: ['app:com.Bad.App'] }))).toBe(block); // A11: a blocked app wins
     const allowStar = rule({ persona: '*', target: 'app:com.Bad.App', decision: 'allow' });
     expect(findRule([allowStar, block], q({ targets: ['app:com.Bad.App'] }))?.decision).toBe('deny');
   });
@@ -95,6 +95,17 @@ describe('A7 scope * and A8 case', () => {
     expect(findRule([r], q({ targets: ['app:com.Example.App'] }))).toBe(r);
     expect(findRule([r], q({ targets: ['app:com.example.app'] }))).toBeNull();
     expect(childRuleId(DEP, P1, 'sign-in', 'app:com.Example.App')).not.toBe(childRuleId(DEP, P1, 'sign-in', 'app:com.example.app'));
+  });
+});
+
+describe('A11 blocked app', () => {
+  it('findBlockingAppRule ignores scope and persona level; findRule returns it before any allow', () => {
+    const block = rule({ scope: 'post-public', persona: '*', target: 'app:x', decision: 'deny' });
+    const allow = rule({ target: 'app:x', decision: 'allow' });
+    expect(findBlockingAppRule([allow, block], { persona: P1, targets: ['app:x'], nowMs: NOW })).toBe(block);
+    expect(findRule([allow, block], q({ targets: ['app:x'] }))).toBe(block);
+    expect(findBlockingAppRule([rule({ target: 'site:https://g.example', decision: 'deny' })], { persona: P1, targets: ['app:x'], nowMs: NOW })).toBeNull();
+    expect(findBlockingAppRule([rule({ persona: P2, target: 'app:x', decision: 'deny' })], { persona: P1, targets: ['app:x'], nowMs: NOW })).toBeNull();
   });
 });
 

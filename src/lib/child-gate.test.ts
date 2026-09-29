@@ -31,7 +31,10 @@ function rule(over: Partial<ChildRule> = {}): ChildRule {
     createdAt: 1, updatedAt: 1, ...over } as ChildRule;
 }
 function payload(over: Partial<ChildRulesPayload> = {}): ChildRulesPayload {
-  return { v: 1, dependantId: DEP, stage: 'request-approve', ceilingKinds: [], rules: [], disconnectedApps: [], updatedAt: 1, ...over };
+  const stage = over.stage ?? 'request-approve';
+  // An empty ceiling means "all kinds" only at full-autonomy (A14): default to every test kind elsewhere.
+  const ceilingKinds = stage === 'full-autonomy' ? [] : [0, 1, 7, 13, 21235, 21236, 24133, 24242, 30023];
+  return { v: 1, dependantId: DEP, stage, ceilingKinds, rules: [], disconnectedApps: [], updatedAt: 1, ...over };
 }
 const run = (rules: ChildRulesPayload | null, scope: Scope = 'sign-in', over: Partial<Parameters<typeof decideChildRequest>[0]> = {}): ChildGateVerdict =>
   decideChildRequest({ rules, persona: P1, template: TEMPLATES[scope], appId: APP, nowMs: NOW, rateState: FRESH, ...over });
@@ -77,7 +80,9 @@ describe('rules', () => {
   it('kind outside the ceiling asks; empty ceiling means all', () => {
     expect(run(payload({ ceilingKinds: [1] }))).toEqual({ verdict: 'ask', reason: 'outside-ceiling', alwaysOffered: true });
     expect(run(payload({ ceilingKinds: [21236], rules: [rule()] })).verdict).toBe('sign');
-    expect(run(payload({ ceilingKinds: [] , rules: [rule()] })).verdict).toBe('sign');
+    expect(run(payload({ stage: 'full-autonomy', ceilingKinds: [] })).verdict).toBe('sign');
+    // A14: an empty ceiling below full-autonomy admits nothing
+    expect(run(payload({ ceilingKinds: [], rules: [rule()] }))).toEqual({ verdict: 'ask', reason: 'outside-ceiling', alwaysOffered: true });
   });
   it('out-of-ceiling at full-control offers no Always', () => {
     expect(run(payload({ stage: 'full-control', ceilingKinds: [1] }))).toEqual({ verdict: 'ask', reason: 'outside-ceiling', alwaysOffered: false });
@@ -113,6 +118,33 @@ describe('rules', () => {
     const t = { ...TEMPLATES['post-public'], kind: 30023 };
     const r = rule({ scope: 'kind:30023', target: `app:${APP}` });
     expect(run(payload({ rules: [r] }), 'sign-in', { template: t })).toMatchObject({ verdict: 'sign', reason: 'rule' });
+  });
+});
+
+describe('round 2 gate rules', () => {
+  it('A11: a blocked app denies before any allow, any persona level, any scope', () => {
+    const block = rule({ scope: '*', persona: '*', target: `app:${APP}`, decision: 'deny' });
+    const allow = rule({ persona: P1, scope: 'sign-in', target: 'site:https://a.example' });
+    expect(run(payload({ stage: 'full-autonomy', rules: [allow, block] }))).toEqual({ verdict: 'deny', reason: 'rule', ruleId: block.id });
+    const blockScoped = rule({ scope: 'post-public', persona: P1, target: `app:${APP}`, decision: 'deny' });
+    expect(run(payload({ rules: [allow, blockScoped] })).verdict).toBe('deny'); // different scope than the request
+  });
+  it('A17: deny rules apply at full-control, allow rules do not', () => {
+    const deny = rule({ decision: 'deny' });
+    expect(run(payload({ stage: 'full-control', rules: [deny] }))).toMatchObject({ verdict: 'deny', reason: 'rule' });
+    expect(run(payload({ stage: 'full-control', rules: [rule()] })).verdict).toBe('ask');
+  });
+  it('A14: schedule is checked before the ceiling', () => {
+    const paused: GrantSchedule = { v: 1, tz: 'UTC', paused: true, weekly: {}, issuedAt: 1 };
+    expect(run(payload({ defaultSchedule: paused, ceilingKinds: [1] })).verdict).toBe('blocked');
+  });
+  it('A14: rate limit is checked before the schedule', () => {
+    const paused: GrantSchedule = { v: 1, tz: 'UTC', paused: true, weekly: {}, issuedAt: 1 };
+    expect(run(payload({ defaultSchedule: paused }), 'sign-in', { rateState: { count: 10, windowStart: NOW } })).toEqual({ verdict: 'deny', reason: 'rate-limit' });
+  });
+  it('A13: app:mysignet is a usable target', () => {
+    const r = rule({ target: 'app:mysignet', scope: 'sign-in' });
+    expect(run(payload({ rules: [r] }), 'sign-in', { appId: 'mysignet' })).toMatchObject({ verdict: 'sign', reason: 'rule' });
   });
 });
 

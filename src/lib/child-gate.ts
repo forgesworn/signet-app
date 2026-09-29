@@ -11,7 +11,7 @@
 import type { UnsignedEvent } from 'signet-protocol';
 import type { ChildRuleTarget } from '../types/child-rules';
 import type { ChildRulesPayload } from './child-rules-wire';
-import { appTarget, findRule, normaliseAppId, peerTarget, siteTarget } from './child-rules';
+import { appTarget, findBlockingAppRule, findRule, normaliseAppId, peerTarget, siteTarget } from './child-rules';
 import { inferOrigin, inferScope, type Scope } from './scope-inference';
 import { resolvePolicy } from './autonomy-gate';
 import { intersectSchedules, isWithinSchedule } from './grant-schedule';
@@ -55,21 +55,32 @@ export function childTargetsFor(template: UnsignedEvent, scope: Scope | null, ap
 
 const alwaysOffered = (rules: ChildRulesPayload): boolean => rules.stage !== 'full-control';
 
-/** Shared tail: rule lookup, schedule, rule decision, stage matrix. */
+/**
+ * Shared tail, in order: schedule -> ceiling -> rule -> stage matrix.
+ * `ceilingKind` is set for sign_event only. A ceiling of [] means "every kind"
+ * ONLY at full-autonomy (as the firmware reads it there); at any other stage an
+ * empty ceiling admits nothing.
+ */
 function decideWithRules(
   rules: ChildRulesPayload,
-  q: { persona: string; scope: Scope | null; scopeKey: string; targets: ChildRuleTarget[]; nowMs: number },
+  q: { persona: string; scope: Scope | null; scopeKey: string; targets: ChildRuleTarget[]; nowMs: number; ceilingKind?: number },
 ): ChildGateVerdict {
-  // A rule for a full-control child is ignored: the stage matrix wins.
-  const rule = rules.stage === 'full-control'
-    ? null
-    : findRule(rules.rules, { persona: q.persona, scope: q.scopeKey, targets: q.targets, nowMs: q.nowMs });
+  // Allow rules are ignored at full-control (the stage matrix wins); deny rules apply at every stage.
+  const usable = rules.stage === 'full-control' ? rules.rules.filter(r => r.decision === 'deny') : rules.rules;
+  const rule = findRule(usable, { persona: q.persona, scope: q.scopeKey, targets: q.targets, nowMs: q.nowMs });
 
   const effective = intersectSchedules(rules.defaultSchedule, rule?.schedule);
   if (effective) {
     const w = isWithinSchedule(effective, new Date(q.nowMs));
     if (!w.allowed) {
       return { verdict: 'blocked', reason: 'schedule', ...(w.nextAllowedAt ? { nextAllowedAt: w.nextAllowedAt.getTime() } : {}) };
+    }
+  }
+
+  if (q.ceilingKind !== undefined) {
+    const everyKind = rules.stage === 'full-autonomy' && rules.ceilingKinds.length === 0;
+    if (!everyKind && !rules.ceilingKinds.includes(q.ceilingKind)) {
+      return { verdict: 'ask', reason: 'outside-ceiling', alwaysOffered: alwaysOffered(rules) };
     }
   }
 
@@ -85,24 +96,30 @@ function decideWithRules(
   return { verdict: 'ask', reason: 'stage', alwaysOffered: alwaysOffered(rules) };
 }
 
-export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
-  const { rules, persona, template, appId, siteOrigin, nowMs, rateState } = input;
+/** Disconnected or blocked app, then rate limit; null when the request may go on. */
+function preflight(rules: ChildRulesPayload | null, persona: string, appId: string, nowMs: number, rateState: RateLimitState): ChildGateVerdict | null {
   const app = normaliseAppId(appId ?? '');
   if (rules && rules.disconnectedApps.some(a => normaliseAppId(a) === app)) {
     return { verdict: 'deny', reason: 'disconnected-app' };
   }
-  if (!checkRateLimit(rateState, nowMs).allowed) return { verdict: 'deny', reason: 'rate-limit' };
-  if (!rules) return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
-
-  // A ceiling of [] means every kind (as the firmware reads it).
-  if (rules.ceilingKinds.length > 0 && !rules.ceilingKinds.includes(template.kind)) {
-    return { verdict: 'ask', reason: 'outside-ceiling', alwaysOffered: alwaysOffered(rules) };
+  if (rules && app) {
+    const blocker = findBlockingAppRule(rules.rules, { persona, targets: [appTarget(app)], nowMs });
+    if (blocker) return { verdict: 'deny', reason: 'rule', ruleId: blocker.id };
   }
+  if (!checkRateLimit(rateState, nowMs).allowed) return { verdict: 'deny', reason: 'rate-limit' };
+  return null;
+}
+
+export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
+  const { rules, persona, template, appId, siteOrigin, nowMs, rateState } = input;
+  const early = preflight(rules, persona, appId, nowMs, rateState);
+  if (early) return early;
+  if (!rules) return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
 
   const scope = inferScope(template);
   return decideWithRules(rules, {
     persona, scope, scopeKey: scope ?? `kind:${template.kind}`,
-    targets: childTargetsFor(template, scope, appId, siteOrigin), nowMs,
+    targets: childTargetsFor(template, scope, appId, siteOrigin), nowMs, ceilingKind: template.kind,
   });
 }
 
@@ -117,12 +134,10 @@ export function decideChildCrypto(input: {
   rateState: RateLimitState;
 }): ChildGateVerdict {
   const { rules, persona, appId, peer, nowMs, rateState } = input;
-  const app = normaliseAppId(appId ?? '');
-  if (rules && rules.disconnectedApps.some(a => normaliseAppId(a) === app)) {
-    return { verdict: 'deny', reason: 'disconnected-app' };
-  }
-  if (!checkRateLimit(rateState, nowMs).allowed) return { verdict: 'deny', reason: 'rate-limit' };
+  const early = preflight(rules, persona, appId, nowMs, rateState);
+  if (early) return early;
   if (!rules) return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
+  const app = normaliseAppId(appId ?? '');
 
   const targets: ChildRuleTarget[] = [];
   const p = peerTarget(peer);

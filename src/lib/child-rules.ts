@@ -65,6 +65,22 @@ export function isLiveRule(r: ChildRule, nowMs: number): boolean {
 }
 
 /**
+ * A live `deny` rule on one of the request's `app:` targets, at any persona
+ * level (exact or `*`) and any scope (incl. `*`). A blocked app wins over every
+ * allow at every level, so callers check this first.
+ */
+export function findBlockingAppRule(
+  rules: ChildRule[],
+  q: { persona: string; targets: ChildRuleTarget[]; nowMs: number },
+): ChildRule | null {
+  const persona = q.persona.toLowerCase();
+  const apps = new Set<string>(q.targets.filter(t => t.startsWith('app:')));
+  if (apps.size === 0) return null;
+  return rules.find(r => r.decision === 'deny' && apps.has(r.target) && isLiveRule(r, q.nowMs)
+    && (r.persona === '*' || r.persona.toLowerCase() === persona)) ?? null;
+}
+
+/**
  * Best matching live rule. Precedence: exact persona + exact target, then
  * `*` persona + exact target, then exact persona + `*` target, then `*` + `*`.
  * Within a level, `deny` wins. `targets` are the request's candidate targets
@@ -74,6 +90,8 @@ export function findRule(
   rules: ChildRule[],
   q: { persona: string; scope: string; targets: ChildRuleTarget[]; nowMs: number },
 ): ChildRule | null {
+  const blocker = findBlockingAppRule(rules, q);
+  if (blocker) return blocker;
   const persona = q.persona.toLowerCase();
   const wanted = new Set<string>(q.targets.map(targetKey));
   const live = rules.filter(r => (r.scope === q.scope || r.scope === '*') && isLiveRule(r, q.nowMs));

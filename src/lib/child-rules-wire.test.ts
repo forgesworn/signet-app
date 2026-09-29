@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
-import { buildChildRulesEvent, openChildRulesEvent, parseChildRuleRecord, CHILD_RULES_WIRE_D_TAG, type ChildRulesPayload } from './child-rules-wire';
+import { buildChildRulesEvent, openChildRulesEvent, parseChildRuleRecord, newerRulesPayload, CHILD_RULES_WIRE_D_TAG, type ChildRulesPayload } from './child-rules-wire';
 import { childRuleId } from './child-rules';
 import type { ChildRule } from '../types/child-rules';
 
@@ -17,8 +17,8 @@ function rule(over: Partial<ChildRule> = {}): ChildRule {
   return { id: childRuleId(dependantId, persona, scope, target), dependantId, persona, scope, target, decision: 'allow',
     createdAt: 1000, updatedAt: 2000, ...over } as ChildRule;
 }
-function payload(rules: ChildRule[]): ChildRulesPayload {
-  return { v: 1, dependantId: DEP, stage: 'request-approve', ceilingKinds: [1, 21236], rules, disconnectedApps: ['b'.repeat(64)], updatedAt: 5000 };
+function payload(rules: ChildRule[], over: Partial<ChildRulesPayload> = {}): ChildRulesPayload {
+  return { v: 1, dependantId: DEP, stage: 'request-approve', ceilingKinds: [1, 21236], rules, disconnectedApps: ['b'.repeat(64)], updatedAt: 5000, ...over };
 }
 const expectOk = { railPubkey: RAIL_PK, dependantId: DEP };
 
@@ -70,6 +70,25 @@ describe('child rules wire', () => {
     expect(parseChildRuleRecord(rule({ scope: 'kind:65535' }))).not.toBeNull();
     expect(parseChildRuleRecord(rule({ scope: 'kind:65536' }))).toBeNull();
     expect(parseChildRuleRecord(rule({ scope: 'kind:99999999999' }))).toBeNull();
+  });
+
+  it('A13: app:mysignet is a valid target', () => {
+    expect(parseChildRuleRecord(rule({ target: 'app:mysignet' }))).not.toBeNull();
+  });
+
+  it('A16: caps ceilingKinds at 64', async () => {
+    const many = Array.from({ length: 65 }, (_, i) => i);
+    await expect(buildChildRulesEvent(payload([], { ceilingKinds: many }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
+    const ok = await buildChildRulesEvent(payload([], { ceilingKinds: many.slice(0, 64) }), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(ok, CLIENT_SK, expectOk))?.ceilingKinds).toHaveLength(64);
+  });
+
+  it('A18: newerRulesPayload keeps the newest updatedAt', () => {
+    const a = payload([], { updatedAt: 5 }), b = payload([], { updatedAt: 9 });
+    expect(newerRulesPayload(a, b)).toBe(b);
+    expect(newerRulesPayload(b, a)).toBe(b);
+    expect(newerRulesPayload(null, a)).toBe(a);
+    expect(newerRulesPayload(a, null)).toBe(a);
   });
 
   it('drops malformed rule entries individually', async () => {

@@ -12,6 +12,7 @@ import type { AutonomyStage } from '../types/dependants';
 import type { ChildRule } from '../types/child-rules';
 import { validateSchedule, type GrantSchedule } from './grant-schedule';
 import { childRuleId, isValidRuleScope } from './child-rules';
+import { CHILD_CEILING_MAX } from './policy-compiler';
 import { sanitizeDisplayName } from './text-sanitize';
 import { sealVaultPayload, openVaultPayload, MAX_ENVELOPE_CHARS } from './vault-envelope';
 
@@ -19,8 +20,8 @@ export const CHILD_RULES_WIRE_D_TAG = 'signet:child-rules:v1';
 const KIND = 30078;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STAGES: readonly string[] = ['full-control', 'request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'];
-const MAX_RULES = 2000, MAX_KINDS = 256, MAX_DISCONNECTED = 64, MAX_ID = 200;
-export const TARGET_RE = /^(?:site:https?:\/\/[^\s]{1,200}|app:[0-9a-f]{64}|app:nip55:[A-Za-z0-9._]{1,200}|peer:[0-9a-f]{64}|\*)$/;
+const MAX_RULES = 2000, MAX_DISCONNECTED = 64, MAX_ID = 200;
+export const TARGET_RE = /^(?:site:https?:\/\/[^\s]{1,200}|app:[0-9a-f]{64}|app:nip55:[A-Za-z0-9._]{1,200}|app:mysignet|peer:[0-9a-f]{64}|\*)$/;
 export const SCOPE_RE = /^(?:\*|[a-z0-9:_-]{1,64})$/;
 
 export interface ChildRulesPayload {
@@ -76,7 +77,7 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
   if (o.v !== 1 || typeof o.dependantId !== 'string' || !HEX64.test(o.dependantId)) return null;
   if (typeof o.stage !== 'string' || !STAGES.includes(o.stage)) return null;
   if (!posInt(o.updatedAt)) return null;
-  if (!Array.isArray(o.ceilingKinds) || o.ceilingKinds.length > MAX_KINDS
+  if (!Array.isArray(o.ceilingKinds) || o.ceilingKinds.length > CHILD_CEILING_MAX
     || !o.ceilingKinds.every(k => Number.isInteger(k) && k >= 0 && k <= 65535)) return null;
   if (!Array.isArray(o.rules) || o.rules.length > MAX_RULES) return null;
   if (!Array.isArray(o.disconnectedApps) || o.disconnectedApps.length > MAX_DISCONNECTED
@@ -143,4 +144,11 @@ export async function openChildRulesEvent(ev: NostrEvent, clientPrivateKey: stri
     return payload;
   } catch { return null; }
   finally { sk?.fill(0); }
+}
+
+/** The payload with the newest `updatedAt` (`current` wins a tie; null-safe). */
+export function newerRulesPayload(current: ChildRulesPayload | null, incoming: ChildRulesPayload | null): ChildRulesPayload | null {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  return incoming.updatedAt > current.updatedAt ? incoming : current;
 }
