@@ -96,6 +96,22 @@ describe('useChildActivityPublisher (child)', () => {
     expect((await openConnectedAppsEvent(f.published[0].ev, rail.priv, client.pub))?.map(a => a.appId)).toEqual(['nip55:com.x2', 'nip55:com.x1']);
   });
 
+  it('A55: after a seed timeout it merges with its last published record instead of overwriting it', async () => {
+    const f = fake();
+    const { rerender } = renderHook((p: { apps: ConnectedChildApp[] }) => useChildActivityPublisher({
+      record: record(), unpaired: false, connectedApps: p.apps, noteConnectedApp: () => {}, transport: f.t,
+    }), { initialProps: { apps: [] as ConnectedChildApp[] } });
+    await advance(CONNECTED_APPS_SEED_WAIT_MS); // the read-back did not arrive in time
+    // The old record arrives late (slow relay): it is still merged.
+    const own = await buildConnectedAppsEvent([app(1), { ...app(2), lastUsed: 99 }], client.priv, rail.pub, 500);
+    await act(async () => { f.subs[0].onEvent(own); await vi.advanceTimersByTimeAsync(0); });
+    rerender({ apps: [app(2)] });
+    await advance(CONNECTED_APPS_DEBOUNCE_MS);
+    await act(async () => { await vi.waitFor(() => expect(f.published).toHaveLength(1)); });
+    const out = await openConnectedAppsEvent(f.published[0].ev, rail.priv, client.pub);
+    expect(out?.map(a => [a.appId, a.lastUsed])).toEqual([['nip55:com.x2', 99], ['nip55:com.x1', 11]]);
+  });
+
   it('never publishes an empty list', async () => {
     const f = fake();
     renderHook(() => useChildActivityPublisher({ record: record(), unpaired: false, connectedApps: [], noteConnectedApp: () => {}, transport: f.t }));

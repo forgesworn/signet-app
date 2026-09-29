@@ -13,7 +13,9 @@
  *             the list changes. The list lives in the gate's memory, so on
  *             start the child first reads its OWN last record back (NIP-44 is
  *             symmetric) and seeds the gate from it; nothing is published
- *             until that read settles, and an empty list is never published.
+ *             until that read settles or times out, every publish is merged
+ *             with the last record read (A55), and an empty list is never
+ *             published.
  *
  * Inert unless the record is `heartwood-direct` and the phone is paired.
  */
@@ -54,6 +56,20 @@ export interface UseChildActivityPublisherOpts {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+/** Mirrors the gate's cap (CHILD_CONNECTED_APPS_MAX). */
+const APPS_MAX = 64;
+
+/** A55: union by appId — max lastUsed, min firstSeen, the newer entry's fields — newest first. */
+export function mergeConnectedApps(a: ConnectedChildApp[], b: ConnectedChildApp[]): ConnectedChildApp[] {
+  const byId = new Map<string, ConnectedChildApp>();
+  for (const x of [...a, ...b]) {
+    const prev = byId.get(x.appId);
+    if (!prev) { byId.set(x.appId, x); continue; }
+    const newer = x.lastUsed >= prev.lastUsed ? x : prev;
+    byId.set(x.appId, { ...newer, firstSeen: Math.min(prev.firstSeen, x.firstSeen), lastUsed: Math.max(prev.lastUsed, x.lastUsed) });
+  }
+  return [...byId.values()].sort((x, y) => y.lastUsed - x.lastUsed).slice(0, APPS_MAX);
+}
 
 export function useChildActivityPublisher(opts: UseChildActivityPublisherOpts): { report(e: ChildActivityEntry): void } {
   const direct = opts.record?.mode === 'heartwood-direct' ? opts.record : null;
@@ -132,31 +148,38 @@ export function useChildActivityPublisher(opts: UseChildActivityPublisherOpts): 
   }, [schedule]);
 
   // ── Connected apps ──────────────────────────────────────────────────────
+  // A55: the read-back of our own record stays open for the whole pairing.
+  // Whatever it yields — before or after the seed timeout — is merged into
+  // the gate AND into every publish (union by appId, max lastUsed), so a slow
+  // read can never let a shorter list overwrite the relay record.
   const seeded = useRef(false);
   const lastPublished = useRef('');
+  const remoteApps = useRef<ConnectedChildApp[]>([]);
   const [seedTick, setSeedTick] = useState(0);
   useEffect(() => {
     seeded.current = false;
     lastPublished.current = '';
+    remoteApps.current = [];
     if (!key) return;
-    let done = false;
-    const finish = () => { if (!done) { done = true; seeded.current = true; unsub(); setSeedTick(t => t + 1); } };
+    let closed = false;
+    const finish = () => { if (!closed && !seeded.current) { seeded.current = true; setSeedTick(t => t + 1); } };
     let newest = -1;
     const unsub = transportRef.current.subscribe(
       [{ kinds: [30078], authors: [clientPub], '#d': [CHILD_CONNECTED_APPS_D_TAG], '#p': [railPub] }],
       [relay],
       (ev) => {
-        if (done || !ev || typeof ev.created_at !== 'number' || ev.created_at <= newest) return;
+        if (closed || !ev || typeof ev.created_at !== 'number' || ev.created_at <= newest) return;
         void openOwnConnectedAppsEvent(ev, cfg.current.clientPriv, railPub).then((apps) => {
-          if (done || !apps || ev.created_at <= newest) return;
+          if (closed || !apps || ev.created_at <= newest) return;
           newest = ev.created_at;
+          remoteApps.current = mergeConnectedApps(remoteApps.current, apps);
           for (const a of apps) noteRef.current(a);
           finish();
         });
       },
     );
     const t = setTimeout(finish, CONNECTED_APPS_SEED_WAIT_MS);
-    return () => { done = true; clearTimeout(t); unsub(); };
+    return () => { closed = true; clearTimeout(t); unsub(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on `key`
   }, [key]);
 
@@ -169,9 +192,10 @@ export function useChildActivityPublisher(opts: UseChildActivityPublisherOpts): 
       const at = cfg.current;
       if (at.key !== key) return;
       const snapshot = appsHash;
-      void buildConnectedAppsEvent(appsRef.current, at.clientPriv, at.railPub, Math.floor(nowRef.current() / 1000))
+      const apps = mergeConnectedApps(remoteApps.current, appsRef.current);
+      void buildConnectedAppsEvent(apps, at.clientPriv, at.railPub, Math.floor(nowRef.current() / 1000))
         .then(ev => transportRef.current.publish(ev, [at.relay]))
-        .then(r => { if (r.ok && cfg.current.key === key) lastPublished.current = snapshot; })
+        .then(r => { if (r.ok && cfg.current.key === key) { lastPublished.current = snapshot; remoteApps.current = apps; } })
         .catch(() => { /* the next change retries */ });
     }, CONNECTED_APPS_DEBOUNCE_MS);
     return () => clearTimeout(t);

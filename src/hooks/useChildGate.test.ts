@@ -236,6 +236,28 @@ describe('useChildGate', () => {
   });
 });
 
+describe('A55: every gated request touches its app', () => {
+  it('a NIP-46 app that resumes without connect is listed on its first request, even when it is only asked about', async () => {
+    const s = setup({ rules: rules() });
+    await act(async () => {
+      void s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note(), wait: false });
+      await new Promise(r => setTimeout(r, 0));
+    });
+    expect(s.hook.result.current.connectedApps).toEqual([
+      expect.objectContaining({ appId: APP, kind: 'nip46', label: 'Blocks', persona: PERSONA, lastUsed: Math.floor(NOW / 1000) }),
+    ]);
+  });
+
+  it('a NIP-55 app and a denied request are touched too; the app’s own acts are not listed', async () => {
+    const s = setup({ rules: rules({ disconnectedApps: ['nip55:com.chat'] }) });
+    await act(async () => {
+      await s.hook.result.current.authorise({ persona: PERSONA, appId: 'nip55:com.chat', appLabel: 'Chatty', method: 'sign_event', template: note() });
+      await s.hook.result.current.authorise({ persona: PERSONA, appId: 'mysignet', appLabel: 'My Signet', method: 'sign_event', template: note(), wait: false });
+    });
+    expect(s.hook.result.current.connectedApps.map(a => [a.appId, a.kind])).toEqual([['nip55:com.chat', 'nip55']]);
+  });
+});
+
 describe('nextRequestCreatedAt', () => {
   it('is at least now and strictly increasing per persona, independent across personas', () => {
     const a1 = nextRequestCreatedAt(PERSONA, NOW);

@@ -149,11 +149,18 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     try { onActivityRef.current({ ...e, at: Math.floor(nowRef.current() / 1000) }); } catch { /* bookkeeping only */ }
   }, []);
 
-  const touchApp = useCallback((appId: string, persona: string) => {
+  // A55: every gated request touches its app — and lists one not seen yet (a
+  // NIP-46 app that resumed without `connect`), so the guardian can find and
+  // block it. The app's own acts (`mysignet`) are not an app.
+  const touchApp = useCallback((appId: string, persona: string, label: string) => {
+    const kind: ConnectedChildApp['kind'] | null = HEX64.test(appId) ? 'nip46'
+      : appId.startsWith('nip55:') ? 'nip55' : appId.startsWith('site:') ? 'site' : null;
+    if (!kind) return;
     const at = Math.floor(nowRef.current() / 1000);
     setConnectedApps(prev => prev.some(a => a.appId === appId)
       ? prev.map(a => a.appId === appId ? { ...a, persona, lastUsed: Math.max(a.lastUsed, at) } : a)
-      : prev);
+      : [{ appId, kind, label: (label || `App ${appId.slice(0, 8)}`).slice(0, 100), persona, firstSeen: at, lastUsed: at }, ...prev]
+        .sort((a, b) => b.lastUsed - a.lastUsed).slice(0, CHILD_CONNECTED_APPS_MAX));
   }, []);
 
   const authorise = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
@@ -164,6 +171,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     if (!HEX64.test(persona)) return { ok: false, error: 'denied' };
     const nowMs = nowRef.current();
     const base = { persona, method: req.method, appId: req.appId, appLabel: req.appLabel };
+    touchApp(req.appId, persona, req.appLabel);
 
     // A12: the persona is on the template before anything is decided or asked.
     let template: UnsignedEvent | undefined;
@@ -186,7 +194,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     const forward = (outcome: 'signed' | 'approved', target?: string): ChildGateOutcome => {
       const requestCreatedAt = nextRequestCreatedAt(persona, nowRef.current());
       emit({ ...base, kind, outcome, ...(target ? { target } : {}), requestCreatedAt });
-      touchApp(req.appId, persona);
+      touchApp(req.appId, persona, req.appLabel);
       return { ok: true, requestCreatedAt, ...(template ? { template } : {}) };
     };
 
