@@ -13,7 +13,9 @@ const HEX64 = /^[0-9a-f]{64}$/;
 
 /** sha256('signet:child-rule:v1:' + dep|persona|scope|target), first 32 hex, inputs lowercased. */
 export function childRuleId(dependantId: string, persona: string, scope: string, target: string): string {
-  const text = `signet:child-rule:v1:${dependantId}|${persona}|${scope}|${target}`.toLowerCase();
+  // `app:` targets are case-sensitive (NIP-55 package names); everything else is lowercased.
+  const t = target.startsWith('app:') ? target : target.toLowerCase();
+  const text = `signet:child-rule:v1:${dependantId}|${persona}|${scope}|`.toLowerCase() + t;
   return bytesToHex(sha256(new TextEncoder().encode(text))).slice(0, 32);
 }
 
@@ -23,9 +25,32 @@ export function siteTarget(origin: string): ChildRuleTarget | null {
   return safe ? (`site:${safe}` as ChildRuleTarget) : null;
 }
 
-export function appTarget(appId: string): ChildRuleTarget {
-  return `app:${appId}` as ChildRuleTarget;
+/** 64-hex app ids are lowercased; package-style ids keep their case. */
+export function normaliseAppId(appId: string): string {
+  return /^[0-9a-f]{64}$/i.test(appId) ? appId.toLowerCase() : appId;
 }
+
+export function appTarget(appId: string): ChildRuleTarget {
+  return `app:${normaliseAppId(appId)}` as ChildRuleTarget;
+}
+
+/** `kind:<n>` with n an integer 0..65535, no leading zeros. */
+export function kindFromScope(scope: string): number | null {
+  const m = /^kind:(0|[1-9]\d{0,4})$/.exec(scope);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n <= 65535 ? n : null;
+}
+
+/** A rule scope: `*`, a `kind:<n>` in range, or a lowercase scope name. */
+export function isValidRuleScope(scope: string): boolean {
+  if (typeof scope !== 'string') return false;
+  if (scope === '*') return true;
+  if (scope.startsWith('kind:')) return kindFromScope(scope) !== null;
+  return /^[a-z0-9:_-]{1,64}$/.test(scope);
+}
+
+const targetKey = (t: string): string => (t.startsWith('app:') ? t : t.toLowerCase());
 
 export function peerTarget(hex: string): ChildRuleTarget | null {
   const h = (hex ?? '').toLowerCase();
@@ -50,11 +75,11 @@ export function findRule(
   q: { persona: string; scope: string; targets: ChildRuleTarget[]; nowMs: number },
 ): ChildRule | null {
   const persona = q.persona.toLowerCase();
-  const wanted = new Set<string>(q.targets.map(t => t.toLowerCase()));
-  const live = rules.filter(r => r.scope === q.scope && isLiveRule(r, q.nowMs));
+  const wanted = new Set<string>(q.targets.map(targetKey));
+  const live = rules.filter(r => (r.scope === q.scope || r.scope === '*') && isLiveRule(r, q.nowMs));
   const levels: Array<(r: ChildRule) => boolean> = [
-    r => r.persona.toLowerCase() === persona && wanted.has(r.target.toLowerCase()),
-    r => r.persona === '*' && wanted.has(r.target.toLowerCase()),
+    r => r.persona.toLowerCase() === persona && wanted.has(targetKey(r.target)),
+    r => r.persona === '*' && wanted.has(targetKey(r.target)),
     r => r.persona.toLowerCase() === persona && r.target === '*',
     r => r.persona === '*' && r.target === '*',
   ];

@@ -32,6 +32,7 @@
  * alongside the compiler (hooks have no RTL harness).
  */
 
+import { kindFromScope } from './child-rules';
 import type { AutonomyStage, DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { DeviceClientSlot, SlotPolicyUpdate } from './heartwood-mgmt-types';
@@ -312,6 +313,7 @@ export interface ChildRuleLike {
   decision: 'allow' | 'deny';
   tombstonedAt?: number;
   expiresAt?: number;
+  updatedAt?: number;
 }
 
 export interface ChildDirectCompileInput {
@@ -324,6 +326,9 @@ export interface ChildDirectCompileInput {
   auditVisible: boolean;
   nowSeconds: number;
 }
+
+/** Firmware MAX_ALLOWED_KINDS: the most kinds one slot ceiling can list. */
+export const CHILD_CEILING_MAX = 64;
 
 /** Kinds the child's own app signs as a persona regardless of rules (relay AUTH). */
 const CHILD_INTERNAL_KINDS: readonly number[] = Object.freeze([22242]);
@@ -355,26 +360,39 @@ export function compileChildDirectPolicy(input: ChildDirectCompileInput): SlotPo
   };
   if (input.stage === 'full-autonomy') return { ...base, allowedKinds: [] };
 
-  const kinds = new Set<number>(CHILD_INTERNAL_KINDS);
+  // Priority order (the firmware lists at most CHILD_CEILING_MAX kinds):
+  // 1 stage/scope kinds + relay AUTH, 2 approved-once, 3 `kind:<n>` rules newest first.
+  const tier1 = new Set<number>(CHILD_INTERNAL_KINDS);
   for (const scope of Object.keys(SCOPE_KINDS)) {
     if (resolvePolicy(input.stage, scope as Scope).startsWith('auto')) {
-      for (const k of SCOPE_KINDS[scope]) kinds.add(k);
+      for (const k of SCOPE_KINDS[scope]) tier1.add(k);
     }
   }
   const nowMs = input.nowSeconds * 1000;
-  for (const r of input.rules) {
-    if (r.decision !== 'allow') continue;
-    if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0) continue;
-    if (typeof r.expiresAt === 'number' && r.expiresAt > 0 && r.expiresAt <= nowMs) continue;
-    const m = /^kind:(\d+)$/.exec(r.scope);
-    if (m) kinds.add(Number(m[1]));
-    else for (const k of SCOPE_KINDS[r.scope] ?? []) kinds.add(k);
+  const kindRules: { kind: number; at: number }[] = [];
+  // At full-control the gate ignores allow rules, so they must not widen the ceiling.
+  if (input.stage !== 'full-control') {
+    for (const r of input.rules) {
+      if (r.decision !== 'allow') continue;
+      if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0) continue;
+      if (typeof r.expiresAt === 'number' && r.expiresAt > 0 && r.expiresAt <= nowMs) continue;
+      const n = kindFromScope(r.scope);
+      if (n !== null) kindRules.push({ kind: n, at: r.updatedAt ?? 0 });
+      else if (!r.scope.startsWith('kind:')) for (const k of SCOPE_KINDS[r.scope] ?? []) tier1.add(k);
+    }
   }
-  for (const a of input.approvedOnceKinds) {
-    if (Number.isInteger(a.kind) && a.kind >= 0 && a.until > input.nowSeconds) kinds.add(a.kind);
-  }
-  for (const k of NEVER_LISTED_KINDS) kinds.delete(k);
-  return { ...base, allowedKinds: sortedUniqueKinds([...kinds]) };
+  const tier2 = input.approvedOnceKinds
+    .filter(a => Number.isInteger(a.kind) && a.kind >= 0 && a.kind <= 65535 && a.until > input.nowSeconds)
+    .map(a => a.kind);
+  kindRules.sort((x, y) => y.at - x.at);
+  const ordered: number[] = [];
+  const seen = new Set<number>();
+  const push = (k: number) => { if (!seen.has(k) && !NEVER_LISTED_KINDS.includes(k)) { seen.add(k); ordered.push(k); } };
+  push(22242);
+  sortedUniqueKinds([...tier1]).forEach(push);
+  tier2.forEach(push);
+  kindRules.forEach(r => push(r.kind));
+  return { ...base, allowedKinds: sortedUniqueKinds(ordered.slice(0, CHILD_CEILING_MAX)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +620,11 @@ export function buildCompilerInput(args: {
   /** Approved-once kinds per dependant id; absent ⇒ none. */
   approvedOnceKinds?: Record<string, { kind: number; until: number }[]>;
 }): CompilerInput {
+  const approvedFor = (id: string): { kind: number; until: number }[] => {
+    const out: { kind: number; until: number }[] = [];
+    for (const [k, v] of Object.entries(args.approvedOnceKinds ?? {})) if (k.toLowerCase() === id.toLowerCase()) out.push(...v);
+    return out;
+  };
   const dependants: CompilerDependant[] = args.dependants.map((dep) => {
     const identityPubkeys = uniqueStrings(
       [
@@ -613,7 +636,7 @@ export function buildCompilerInput(args: {
         .map((p) => p.toLowerCase()),
     );
     const grants: CompilerGrant[] = args.grants
-      .filter((g) => g.dependantId === dep.id)
+      .filter((g) => g.dependantId.toLowerCase() === dep.id.toLowerCase())
       .map((g) => ({
         scope: g.scope,
         decision: g.decision,
@@ -634,8 +657,8 @@ export function buildCompilerInput(args: {
       petitionOnDeny: dep.petitionOnDeny === true,
       grants,
       defaultSchedulePaused: dep.defaultSchedule?.paused === true,
-      childRules: (args.childRules ?? []).filter((r) => r.dependantId === dep.id),
-      approvedOnceKinds: args.approvedOnceKinds?.[dep.id] ?? [],
+      childRules: (args.childRules ?? []).filter((r) => r.dependantId.toLowerCase() === dep.id.toLowerCase()),
+      approvedOnceKinds: approvedFor(dep.id),
     };
   });
   return {

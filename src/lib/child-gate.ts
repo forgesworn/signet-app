@@ -11,7 +11,7 @@
 import type { UnsignedEvent } from 'signet-protocol';
 import type { ChildRuleTarget } from '../types/child-rules';
 import type { ChildRulesPayload } from './child-rules-wire';
-import { appTarget, findRule, peerTarget, siteTarget } from './child-rules';
+import { appTarget, findRule, normaliseAppId, peerTarget, siteTarget } from './child-rules';
 import { inferOrigin, inferScope, type Scope } from './scope-inference';
 import { resolvePolicy } from './autonomy-gate';
 import { intersectSchedules, isWithinSchedule } from './grant-schedule';
@@ -47,7 +47,7 @@ export function childTargetsFor(template: UnsignedEvent, scope: Scope | null, ap
     if (t && !out.includes(t)) out.push(t);
   }
   if (appId) {
-    const t = appTarget(appId.toLowerCase());
+    const t = appTarget(appId);
     if (!out.includes(t)) out.push(t);
   }
   return out;
@@ -87,8 +87,8 @@ function decideWithRules(
 
 export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
   const { rules, persona, template, appId, siteOrigin, nowMs, rateState } = input;
-  const app = (appId ?? '').toLowerCase();
-  if (rules && rules.disconnectedApps.some(a => a.toLowerCase() === app)) {
+  const app = normaliseAppId(appId ?? '');
+  if (rules && rules.disconnectedApps.some(a => normaliseAppId(a) === app)) {
     return { verdict: 'deny', reason: 'disconnected-app' };
   }
   if (!checkRateLimit(rateState, nowMs).allowed) return { verdict: 'deny', reason: 'rate-limit' };
@@ -117,8 +117,8 @@ export function decideChildCrypto(input: {
   rateState: RateLimitState;
 }): ChildGateVerdict {
   const { rules, persona, appId, peer, nowMs, rateState } = input;
-  const app = (appId ?? '').toLowerCase();
-  if (rules && rules.disconnectedApps.some(a => a.toLowerCase() === app)) {
+  const app = normaliseAppId(appId ?? '');
+  if (rules && rules.disconnectedApps.some(a => normaliseAppId(a) === app)) {
     return { verdict: 'deny', reason: 'disconnected-app' };
   }
   if (!checkRateLimit(rateState, nowMs).allowed) return { verdict: 'deny', reason: 'rate-limit' };

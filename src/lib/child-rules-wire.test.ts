@@ -65,6 +65,13 @@ describe('child rules wire', () => {
     expect(await openChildRulesEvent(ev, CLIENT_SK, expectOk)).toBeNull();
   });
 
+  it("accepts scope '*', case-preserving app targets and kind:0..65535; rejects out-of-range kinds", () => {
+    expect(parseChildRuleRecord(rule({ scope: '*', persona: '*', target: 'app:nip55:com.Bad.App', decision: 'deny' }))).not.toBeNull();
+    expect(parseChildRuleRecord(rule({ scope: 'kind:65535' }))).not.toBeNull();
+    expect(parseChildRuleRecord(rule({ scope: 'kind:65536' }))).toBeNull();
+    expect(parseChildRuleRecord(rule({ scope: 'kind:99999999999' }))).toBeNull();
+  });
+
   it('drops malformed rule entries individually', async () => {
     const good = rule();
     const bad = [

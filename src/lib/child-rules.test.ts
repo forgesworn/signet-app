@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import {
-  childRuleId, siteTarget, appTarget, peerTarget, isLiveRule, findRule, rulesFromLegacyGrants,
+  childRuleId, siteTarget, appTarget, peerTarget, isLiveRule, findRule, rulesFromLegacyGrants, isValidRuleScope,
 } from './child-rules';
 import type { ChildRule, RememberedGrant } from '../types';
 
@@ -75,6 +75,39 @@ describe('findRule precedence', () => {
   it('ignores expired, tombstoned, other-scope and other-persona rules', () => {
     const rules = [rule({ expiresAt: NOW - 5 }), rule({ tombstonedAt: 1, persona: '*' }), rule({ scope: 'dm-private' }), rule({ persona: P2 })];
     expect(findRule(rules, q())).toBeNull();
+  });
+});
+
+describe('A7 scope * and A8 case', () => {
+  it("a scope '*' rule matches any scope; deny still wins at its level", () => {
+    const block = rule({ scope: '*', persona: '*', target: 'app:com.Bad.App', decision: 'deny' });
+    const allow = rule({ target: 'app:com.Bad.App', decision: 'allow' });
+    expect(findRule([block], q({ targets: ['app:com.Bad.App'] }))).toBe(block);
+    expect(findRule([allow, block], q({ persona: P1, targets: ['app:com.Bad.App'] }))).toBe(allow); // exact persona level wins
+    const allowStar = rule({ persona: '*', target: 'app:com.Bad.App', decision: 'allow' });
+    expect(findRule([allowStar, block], q({ targets: ['app:com.Bad.App'] }))?.decision).toBe('deny');
+  });
+  it('app targets keep their case, site/peer are lowercased', () => {
+    expect(appTarget('com.Example.App')).toBe('app:com.Example.App');
+    expect(appTarget('AB'.repeat(32))).toBe('app:' + 'ab'.repeat(32));
+    expect(siteTarget('https://Game.Example')).toBe('site:https://game.example');
+    const r = rule({ target: 'app:com.Example.App' });
+    expect(findRule([r], q({ targets: ['app:com.Example.App'] }))).toBe(r);
+    expect(findRule([r], q({ targets: ['app:com.example.app'] }))).toBeNull();
+    expect(childRuleId(DEP, P1, 'sign-in', 'app:com.Example.App')).not.toBe(childRuleId(DEP, P1, 'sign-in', 'app:com.example.app'));
+  });
+});
+
+describe('A5 scope validation', () => {
+  it('kind scopes are integers 0..65535 only', () => {
+    expect(isValidRuleScope('kind:0')).toBe(true);
+    expect(isValidRuleScope('kind:65535')).toBe(true);
+    expect(isValidRuleScope('kind:65536')).toBe(false);
+    expect(isValidRuleScope('kind:99999999999')).toBe(false);
+    expect(isValidRuleScope('kind:01')).toBe(false);
+    expect(isValidRuleScope('*')).toBe(true);
+    expect(isValidRuleScope('sign-in')).toBe(true);
+    expect(isValidRuleScope('Bad Scope')).toBe(false);
   });
 });
 

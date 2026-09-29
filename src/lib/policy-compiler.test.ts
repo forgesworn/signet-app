@@ -17,6 +17,7 @@ import {
   CHILD_DEVICE_LABEL_PREFIX,
   LOCKED_SLOT_POLICY,
   compileChildDirectPolicy,
+  CHILD_CEILING_MAX,
   childDirectSlotLabel,
   isChildDirectSlot,
   CHILD_DIRECT_LABEL_PREFIX,
@@ -1092,6 +1093,48 @@ describe('child-direct compiler', () => {
 
   it('kind:<n> scope allows that raw kind', () => {
     expect(compileChildDirectPolicy(cd({ rules: [allow('kind:30023')] })).allowedKinds).toEqual([21235, 22242, 30023]);
+  });
+
+  it('A5: kind:<n> outside 0..65535 is ignored', () => {
+    expect(compileChildDirectPolicy(cd({ rules: [allow('kind:65536'), allow('kind:99999999999'), allow('kind:65535')] })).allowedKinds)
+      .toEqual([21235, 22242, 65535]);
+  });
+
+  it('A5: caps at CHILD_CEILING_MAX, dropping approved-once then oldest kind rules', () => {
+    expect(CHILD_CEILING_MAX).toBe(64);
+    const rules = Array.from({ length: 80 }, (_, i) => allow(`kind:${40000 + i}`, { updatedAt: 1000 + i }));
+    const p = compileChildDirectPolicy(cd({ rules, approvedOnceKinds: [{ kind: 5, until: NOW + 60 }] }));
+    expect(p.allowedKinds).toHaveLength(64);
+    expect(p.allowedKinds).toContain(22242);
+    expect(p.allowedKinds).toContain(21235);
+    expect(p.allowedKinds).toContain(5);
+    expect(p.allowedKinds).toContain(40079); // newest kept
+    expect(p.allowedKinds).not.toContain(40000); // oldest dropped
+    const many = Array.from({ length: 70 }, (_, i) => ({ kind: 100 + i, until: NOW + 60 }));
+    const q2 = compileChildDirectPolicy(cd({ approvedOnceKinds: many, rules: [allow('kind:30023', { updatedAt: 1 })] }));
+    expect(q2.allowedKinds).toHaveLength(64);
+    expect(q2.allowedKinds).toContain(22242);
+    expect(q2.allowedKinds).not.toContain(30023);
+  });
+
+  it('A6: at full-control allow rules do not widen the ceiling, approved-once still does', () => {
+    const p = compileChildDirectPolicy(cd({ stage: 'full-control', rules: [allow('sign-in'), allow('kind:30023')], approvedOnceKinds: [{ kind: 1, until: NOW + 5 }] }));
+    expect(p.allowedKinds).toEqual([1, 22242, ...(compileChildDirectPolicy(cd({ stage: 'full-control' })).allowedKinds.filter(k => k !== 22242 && k !== 1))].sort((a, b) => a - b));
+    expect(p.allowedKinds).not.toContain(21236);
+    expect(p.allowedKinds).not.toContain(30023);
+    expect(p.allowedKinds).toContain(1);
+  });
+
+  it('A8: buildCompilerInput matches dependant ids case-insensitively', () => {
+    const dep = appDep();
+    const upper = dep.id.toUpperCase();
+    const input = buildCompilerInput({
+      dependants: [dep], grants: [], guardianClientPubkey: null, deviceSlots: [], nowSeconds: 1,
+      childRules: [{ dependantId: upper, scope: 'sign-in', decision: 'allow' }],
+      approvedOnceKinds: { [upper]: [{ kind: 1, until: 9 }] },
+    });
+    expect(input.dependants[0].childRules).toHaveLength(1);
+    expect(input.dependants[0].approvedOnceKinds).toEqual([{ kind: 1, until: 9 }]);
   });
 
   it('approved-once kinds count only until they lapse', () => {

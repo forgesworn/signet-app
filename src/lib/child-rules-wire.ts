@@ -11,7 +11,7 @@ import type { NostrEvent } from 'signet-protocol';
 import type { AutonomyStage } from '../types/dependants';
 import type { ChildRule } from '../types/child-rules';
 import { validateSchedule, type GrantSchedule } from './grant-schedule';
-import { childRuleId } from './child-rules';
+import { childRuleId, isValidRuleScope } from './child-rules';
 import { sanitizeDisplayName } from './text-sanitize';
 import { sealVaultPayload, openVaultPayload, MAX_ENVELOPE_CHARS } from './vault-envelope';
 
@@ -21,7 +21,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const STAGES: readonly string[] = ['full-control', 'request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'];
 const MAX_RULES = 2000, MAX_KINDS = 256, MAX_DISCONNECTED = 64, MAX_ID = 200;
 export const TARGET_RE = /^(?:site:https?:\/\/[^\s]{1,200}|app:[0-9a-f]{64}|app:nip55:[A-Za-z0-9._]{1,200}|peer:[0-9a-f]{64}|\*)$/;
-export const SCOPE_RE = /^[a-z0-9:_-]{1,64}$/;
+export const SCOPE_RE = /^(?:\*|[a-z0-9:_-]{1,64})$/;
 
 export interface ChildRulesPayload {
   v: 1;
@@ -51,7 +51,7 @@ export function parseChildRuleRecord(raw: unknown): ChildRule | null {
   const r = raw as Record<string, unknown>;
   if (typeof r.dependantId !== 'string' || !HEX64.test(r.dependantId)) return null;
   if (typeof r.persona !== 'string' || !(r.persona === '*' || HEX64.test(r.persona))) return null;
-  if (typeof r.scope !== 'string' || !SCOPE_RE.test(r.scope)) return null;
+  if (typeof r.scope !== 'string' || !SCOPE_RE.test(r.scope) || !isValidRuleScope(r.scope)) return null;
   if (typeof r.target !== 'string' || !TARGET_RE.test(r.target)) return null;
   if (r.decision !== 'allow' && r.decision !== 'deny') return null;
   if (!posInt(r.createdAt) || !posInt(r.updatedAt)) return null;
