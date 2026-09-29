@@ -286,7 +286,7 @@ import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, nextRequestCreatedAt } from './hooks/useChildGate';
@@ -5551,6 +5551,9 @@ export function App() {
       await saveIdentityEncrypted({
         ...identity,
         persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
+        // A50: a stale stub that put the bound persona in the NP slot is cleared.
+        ...(identity.naturalPerson.publicKey.toLowerCase() === offer.persona
+          ? { naturalPerson: { ...identity.naturalPerson, publicKey: '' }, naturalPersonActive: false } : {}),
         primaryKeypair: 'persona',
       }, encryptionKey);
       // A27: retire the old pairing's router and backends BEFORE the new
@@ -5573,21 +5576,8 @@ export function App() {
     }
 
     const key = generateEncryptionKey();
-    // Stub identity: no signing material. `id` stays the dependant pubkey (the
-    // row key every paired-child rail uses); the PRIMARY is the bound persona,
-    // and the real-identity slot stays dormant until the inventory says so.
-    const identityRecord: import('./types').SignetIdentity = {
-      id: offer.dependant,
-      mnemonic: '',
-      naturalPerson: { publicKey: offer.dependant, privateKey: '', displayName: offer.name },
-      persona: { publicKey: offer.persona, privateKey: '', displayName: personaName },
-      primaryKeypair: 'persona',
-      naturalPersonActive: false,
-      isChild: true,
-      createdAt: now,
-      encrypted: true,
-      backedUp: true,
-    };
+    // A50: the stub never puts the bound persona in the real-identity slot.
+    const identityRecord = childDirectStubIdentity(offer, result.personas, now);
     await saveIdentityEncrypted(identityRecord, key);
     await savePreferences({
       ...(await getPreferences()),

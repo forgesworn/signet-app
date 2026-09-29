@@ -5,7 +5,7 @@ import type { SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -50,6 +50,52 @@ describe('childDirectWithheldSlots (A26)', () => {
     resolveSlotBunkerBackend(primary, router, EXTRA, { withheld });
     expect(backendFor).toHaveBeenCalledWith(EXTRA);
     expect(backendFor).not.toHaveBeenCalledWith(NP);
+  });
+});
+
+describe('A50: the default new-child direct pairing', () => {
+  // A new-model dependant's id IS its persona pubkey (dependant-record.ts).
+  const offer = { v: 2 as const, rail: '12'.repeat(32), guardian: '56'.repeat(32), dependant: PERSONA, persona: PERSONA,
+    name: 'Ally', relay: 'wss://r.example', hwRelays: ['wss://hw.example'], code: 'c', t: 1 };
+  const record = { mode: 'heartwood-direct' as const, personaPubkey: PERSONA };
+
+  it('the stub never puts the bound persona in the real-identity slot', () => {
+    const stub = childDirectStubIdentity(offer, [{ pubkey: PERSONA, name: 'Ally', role: 'persona' }], 10);
+    expect(stub.id).toBe(PERSONA);
+    expect(stub.persona.publicKey).toBe(PERSONA);
+    expect(stub.naturalPerson.publicKey).toBe('');
+    expect(stub.naturalPersonActive).toBe(false);
+    expect(stub.primaryKeypair).toBe('persona');
+  });
+
+  it('takes the real identity from the reply when the guardian sent it (activated)', () => {
+    const stub = childDirectStubIdentity(offer, [
+      { pubkey: PERSONA, name: 'Ally', role: 'persona' }, { pubkey: NP, name: 'Alice', role: 'natural-person' },
+    ], 10);
+    expect(stub.naturalPerson).toMatchObject({ publicKey: NP, displayName: 'Alice' });
+    expect(stub.naturalPersonActive).toBe(true);
+  });
+
+  it('never withholds the bound persona, even when a stale stub put it in the NP slot', () => {
+    const stale = identity({ id: PERSONA, naturalPerson: { publicKey: PERSONA, privateKey: '', displayName: 'Ally' } });
+    expect(childDirectWithheldSlots({ signingMode: 'paired-child', record, identity: stale })).toEqual([]);
+    expect(childDirectWithheldSlots({ signingMode: 'paired-child', record: null, identity: stale })).toEqual([]);
+  });
+
+  it('routes exist immediately after pairing, before any inventory arrives', () => {
+    const stub = childDirectStubIdentity(offer, [{ pubkey: PERSONA, name: 'Ally', role: 'persona' }], 10);
+    const withheld = childDirectWithheldSlots({ signingMode: 'paired-child', record, identity: stub });
+    const primary = { activePublicKeyHex: PERSONA } as unknown as BunkerSigningBackend;
+    const router = { backendFor: vi.fn(() => null) } as unknown as BunkerBackendRouter;
+    const sk = generateSecretKey();
+    const routes = buildChildDirectRoutes({
+      personas: [PERSONA],
+      transportKeys: { [PERSONA]: { publicKey: getPublicKey(sk), privateKey: bytesToHex(sk) } },
+      signingBackendFor: (p) => resolveSlotBunkerBackend(primary, router, p, { withheld }),
+      gateFor: () => ({ authorise: vi.fn() }),
+    }, (priv) => new LocalSigningBackend(priv));
+    expect(routes).toHaveLength(1);
+    expect(routes[0].signingBackend).toBe(primary);
   });
 });
 

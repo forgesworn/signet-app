@@ -16,6 +16,7 @@
 import type { UnsignedEvent } from 'signet-protocol';
 import type { SignetIdentity } from '../types';
 import type { BunkerRoute } from '../hooks/useBunkerServer';
+import type { ChildPairOffer, ChildPairReply } from './child-pair-wire';
 import { withRequestCreatedAt, type DecryptingSigningBackend } from './signing-backend';
 
 /** What the child's gate answers. `requestCreatedAt` is the forced NIP-46
@@ -61,14 +62,48 @@ export function isDirectChildInstall(input: {
  */
 export function childDirectWithheldSlots(input: {
   signingMode: Mode;
-  record: { mode?: 'phone' | 'heartwood-direct' } | null | undefined;
-  identity: Pick<SignetIdentity, 'primaryKeypair' | 'naturalPerson' | 'naturalPersonActive'> | null | undefined;
+  record: { mode?: 'phone' | 'heartwood-direct'; personaPubkey?: string } | null | undefined;
+  identity: Pick<SignetIdentity, 'primaryKeypair' | 'naturalPerson' | 'naturalPersonActive' | 'persona'> | null | undefined;
 }): string[] {
   const { identity } = input;
   if (!identity || !isDirectChildInstall(input)) return [];
   if (identity.naturalPersonActive === true) return [];
   const np = (identity.naturalPerson.publicKey || '').trim().toLowerCase();
-  return np ? [np] : [];
+  // A50: the bound persona is the phone's own slot — never withheld, even
+  // when a stub (or a new-model dependant, whose id IS its persona) put the
+  // same key in the real-identity slot.
+  const bound = new Set([input.record?.personaPubkey, identity.persona?.publicKey]
+    .map(k => (k || '').trim().toLowerCase()).filter(Boolean));
+  return np && !bound.has(np) ? [np] : [];
+}
+
+/**
+ * A50: the child's stub identity after a direct pairing. No signing material.
+ * `id` stays the dependant pubkey (the row key every paired-child rail uses);
+ * the PRIMARY is the bound persona. The real-identity slot is the reply's
+ * `natural-person` entry (the guardian sends it only when activated), else
+ * empty — never the dependant id, which for a new-model dependant IS the
+ * bound persona.
+ */
+export function childDirectStubIdentity(
+  offer: Pick<ChildPairOffer, 'dependant' | 'persona' | 'name'>,
+  personas: ChildPairReply['personas'],
+  nowS: number,
+): SignetIdentity {
+  const personaName = personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
+  const np = personas.find(p => p.role === 'natural-person' && p.pubkey !== offer.persona);
+  return {
+    id: offer.dependant,
+    mnemonic: '',
+    naturalPerson: { publicKey: np?.pubkey ?? '', privateKey: '', displayName: np?.name || offer.name },
+    persona: { publicKey: offer.persona, privateKey: '', displayName: personaName },
+    primaryKeypair: 'persona',
+    naturalPersonActive: !!np,
+    isChild: true,
+    createdAt: nowS,
+    encrypted: true,
+    backedUp: true,
+  } as SignetIdentity;
 }
 
 /**
