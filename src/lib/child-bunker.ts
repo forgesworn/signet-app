@@ -81,6 +81,28 @@ export function legacyRailIdentity<T>(signingMode: Mode, identity: T | null): T 
   return signingMode === 'paired-child' ? null : identity;
 }
 
+/**
+ * A41: the "Family asks" inbox is a guardian surface — a Heartwood-connected
+ * guardian (mnemonic gone, signer connected, unlocked, not viewing as a
+ * dependant) and NEVER a paired-child install, whose signer is the
+ * dependant's own slot.
+ */
+export function escalationsAvailable(input: {
+  signingMode: Mode;
+  hasMnemonic: boolean;
+  bunkerConnected: boolean;
+  unlocked: boolean;
+  viewingDependant: boolean;
+}): boolean {
+  if (input.signingMode === 'paired-child') return false;
+  return !input.hasMnemonic && input.bunkerConnected && input.unlocked && !input.viewingDependant;
+}
+
+/** A41: `?action=add-dependant` makes the signer a guardian — never on a child's phone. */
+export function addDependantRequestAllowed(signingMode: Mode): boolean {
+  return signingMode !== 'paired-child';
+}
+
 export interface ChildDirectRouteInputs {
   /** Non-dormant personas, in order. */
   personas: string[];
@@ -143,10 +165,45 @@ export class ChildGateRefusedError extends Error {
  * (with `siteOrigin`). NIP-04 is not offered. `destroy` is a no-op: the inner
  * backend is a shared, cached router route.
  */
+const GATED_INNER = Symbol('childGatedInner');
+
+/** The backend a gated wrapper forwards to (itself when not gated). */
+export function ungatedInner<T extends object | null>(backend: T): T {
+  if (!backend) return backend;
+  return ((backend as Record<symbol, unknown>)[GATED_INNER] as T | undefined) ?? backend;
+}
+
+/** The child's own app id on the gate (spec §8.4). */
+export const CHILD_OWN_APP_ID = 'mysignet';
+export const CHILD_OWN_APP_LABEL = 'My Signet';
+
+/**
+ * A41: an NP (or any persona) seam on a direct child — the app's own acts
+ * (Venue Entry, Blossom uploads, audit publishing, …) — signs through the
+ * gate as appId `mysignet`. Off a direct child, or with no backend, the
+ * backend is returned unchanged.
+ */
+export function childOwnActsBackend<T extends DecryptingSigningBackend | null | undefined>(input: {
+  childDirect: boolean;
+  backend: T;
+  authorise: (req: { persona: string; appId: string; appLabel: string; method: ChildGateMethod; template?: UnsignedEvent; peer?: string }) => Promise<ChildGateOutcome>;
+}): T {
+  const { backend } = input;
+  if (!input.childDirect || !backend) return backend;
+  const inner = ungatedInner(backend) as DecryptingSigningBackend;
+  return gatedSigningBackend(inner, (req) => input.authorise({
+    persona: inner.activePublicKeyHex, appId: CHILD_OWN_APP_ID, appLabel: CHILD_OWN_APP_LABEL, method: req.method,
+    ...(req.template ? { template: req.template } : {}), ...(req.peer ? { peer: req.peer } : {}),
+  })) as T;
+}
+
 export function gatedSigningBackend(
   inner: DecryptingSigningBackend,
   authorise: (req: { method: ChildGateMethod; template?: UnsignedEvent; peer?: string }) => Promise<ChildGateOutcome>,
 ): DecryptingSigningBackend {
+  // Never gate twice: wrapping an already-gated backend (e.g. the NP seam
+  // under a sign-in's site gate) replaces the outer decision, one ask only.
+  inner = ungatedInner(inner);
   const pass = async (req: { method: ChildGateMethod; template?: UnsignedEvent; peer?: string }) => {
     const outcome = await authorise(req);
     if (!outcome.ok) throw new ChildGateRefusedError(outcome.error);
@@ -172,5 +229,6 @@ export function gatedSigningBackend(
       return withRequestCreatedAt(inner, o.requestCreatedAt).nip44Decrypt(peer, ciphertext);
     },
     destroy() { /* the inner route is shared */ },
+    [GATED_INNER]: inner,
   } as DecryptingSigningBackend;
 }

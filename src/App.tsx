@@ -280,7 +280,7 @@ import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { buildChildDirectRoutes, childDirectWithheldSlots, gatedSigningBackend, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childOwnActsBackend, escalationsAvailable, gatedSigningBackend, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate } from './hooks/useChildGate';
@@ -1097,6 +1097,8 @@ export function App() {
   const [pendingPostUrl, setPendingPostUrl] = useState<string | null>(null);
   /** Pending third-party-initiated add-dependant request. */
   const [pendingAddDependantRequest, setPendingAddDependantRequest] = useState<AddDependantRequest | null>(null);
+  /** A41: an add-dependant request that reached a child's phone (shown, then answered `denied`). */
+  const [addDependantRefused, setAddDependantRefused] = useState<AddDependantRequest | null>(null);
   /** Current request's entry in the developer auth-request log. */
   const currentLogEntryRef = useRef<AuthRequestLogEntry | null>(null);
 
@@ -1223,10 +1225,17 @@ export function App() {
   // router route is ever requested for it.
   const withheldSlotsCsv = childDirectWithheldSlots({ signingMode: preferences.signingMode, record: pairedChildRecord, identity }).join(',');
   const slotResolveOpts = useMemo(() => ({ withheld: withheldSlotsCsv ? withheldSlotsCsv.split(',') : [] }), [withheldSlotsCsv]);
+  // A41: on a direct child every NP seam (Venue Entry, Blossom, audit, the
+  // legacy fallbacks) signs through the child's gate as appId `mysignet` once
+  // the real identity is active. `childGateRef` is read at call time.
   const npBunkerBackend = useMemo<DecryptingSigningBackend | null>(
-    () => resolveNpBunkerBackend(bunkerBackend, bunkerRouter, identity?.naturalPerson.publicKey, slotResolveOpts),
+    () => childOwnActsBackend({
+      childDirect,
+      backend: resolveNpBunkerBackend(bunkerBackend, bunkerRouter, identity?.naturalPerson.publicKey, slotResolveOpts),
+      authorise: (req) => childGateRef.current.authorise(req),
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: primary pubkey lands on connect
-    [bunkerBackend, bunkerRouter, signerStatus, identity?.naturalPerson.publicKey, slotResolveOpts],
+    [childDirect, bunkerBackend, bunkerRouter, signerStatus, identity?.naturalPerson.publicKey, slotResolveOpts],
   );
 
   /**
@@ -1236,9 +1245,13 @@ export function App() {
    * route rather than the master pairing.
    */
   const personaBunkerBackend = useMemo<DecryptingSigningBackend | null>(
-    () => resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, identity?.persona.publicKey, slotResolveOpts),
+    () => childOwnActsBackend({
+      childDirect,
+      backend: resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, identity?.persona.publicKey, slotResolveOpts),
+      authorise: (req) => childGateRef.current.authorise(req),
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: primary pubkey lands on connect
-    [bunkerBackend, bunkerRouter, signerStatus, identity?.persona.publicKey, slotResolveOpts],
+    [childDirect, bunkerBackend, bunkerRouter, signerStatus, identity?.persona.publicKey, slotResolveOpts],
   );
 
   // Migration-wizard pending connection (family-bunker §11.1.2). Holds a
@@ -3923,7 +3936,11 @@ export function App() {
   // the same "Heartwood-connected guardian surface" shape as the rest of
   // the bunker UI: mnemonic gone (Heartwood connect deletes it), a bunker
   // signer connected, unlocked, and not currently viewing as a dependant.
-  const escalationsEnabled = !identity?.mnemonic && !!bunkerBackend && !!encryptionKey && !activeDependant;
+  // A41: never on a paired-child install.
+  const escalationsEnabled = escalationsAvailable({
+    signingMode: preferences.signingMode, hasMnemonic: !!identity?.mnemonic,
+    bunkerConnected: !!bunkerBackend, unlocked: !!encryptionKey, viewingDependant: !!activeDependant,
+  });
 
   // Resolve an escalation notice's `identityPubkey` (the dependant slot the
   // parked/petitioned request would sign as) to a display name. Checks the
@@ -5038,7 +5055,7 @@ export function App() {
   // simpler — no carousel context, no consumer hint, just a single page.
   useEffect(() => {
     if (!pendingAddDependantRequest) return;
-    if (page === 'approve-add-dependant') return; // already there
+    if (page === 'approve-add-dependant' && addDependantRequestAllowed(preferences.signingMode)) return; // already there
     if (!encryptionKey) {
       // No identity / not unlocked yet. If auth is set up, prompt the user.
       // Otherwise wait — the !identity onboarding branch will eventually
@@ -5055,8 +5072,16 @@ export function App() {
       });
       return;
     }
+    // A41: a child's phone never becomes a guardian. Unlocked ⇒ preferences
+    // are loaded, so the signing mode is the real one here.
+    if (!addDependantRequestAllowed(preferences.signingMode)) {
+      setAddDependantRefused(pendingAddDependantRequest);
+      setPendingAddDependantRequest(null);
+      if (page === 'approve-add-dependant') navigateReplace('home');
+      return;
+    }
     navigateReplace('approve-add-dependant');
-  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace]);
+  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
@@ -8088,6 +8113,7 @@ export function App() {
   ): Promise<void> => {
     const req = pendingAddDependantRequest;
     if (!req) throw new Error('No pending add-dependant request');
+    if (!addDependantRequestAllowed(preferences.signingMode)) throw new Error(CHILD_SIDE_COPY.addDependantRefused);
     // Encryption-key absence means the app got into an inconsistent state
     // (the page should only render when a key is present). Surface as an
     // in-app error rather than redirect — leaking state via a `create_failed`
@@ -8201,6 +8227,7 @@ export function App() {
     }
   }, [
     pendingAddDependantRequest,
+    preferences.signingMode,
     encryptionKey,
     addDependant,
     dependantDeviceDerive,
@@ -9157,6 +9184,22 @@ export function App() {
    * the person holding the phone has no way to learn that the guardian device
    * is the one that can do this.
    */
+  const addDependantRefusedBanner = addDependantRefused ? (
+    <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ flex: 1 }}>{CHILD_SIDE_COPY.addDependantRefused}</span>
+      <button
+        onClick={() => {
+          const req = addDependantRefused;
+          setAddDependantRefused(null);
+          const errUrl = buildAddDependantErrorUrl(req.callback, 'denied');
+          if (errUrl) window.location.href = errUrl;
+        }}
+        className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}
+      >
+        OK
+      </button>
+    </div>
+  ) : null;
   const contactsGrantPairedChildBanner = contactsGrantPairedChildNotice ? (
     <div style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
       <span style={{ flex: 1 }}>{CONTACTS_GRANT_PAIRED_CHILD_COPY}</span>
@@ -9222,10 +9265,10 @@ export function App() {
   ) : null;
   const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || addDependantRefusedBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{addDependantRefusedBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</>
   ) : null;
 
@@ -11068,7 +11111,7 @@ export function App() {
   }
 
   // Approve third-party Add Dependant
-  if (page === 'approve-add-dependant' && pendingAddDependantRequest && identity) {
+  if (page === 'approve-add-dependant' && pendingAddDependantRequest && identity && addDependantRequestAllowed(preferences.signingMode)) {
     const props = {
       request: pendingAddDependantRequest,
       canAutoPair: bunkerServerEnabled,

@@ -5,7 +5,7 @@ import type { SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  buildChildDirectRoutes, childDirectWithheldSlots, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, escalationsAvailable, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -119,5 +119,23 @@ describe('gatedSigningBackend', () => {
     await expect(gated.signEvent({ kind: 1, created_at: 1, tags: [], content: '', pubkey: '' })).rejects.toBeInstanceOf(ChildGateRefusedError);
     await expect(gated.nip44Decrypt(EXTRA, 'x')).rejects.toBeInstanceOf(ChildGateRefusedError);
     expect((inner as { signEvent: ReturnType<typeof vi.fn> }).signEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('A41: guardian-only surfaces are off on every paired-child install', () => {
+  const base = { hasMnemonic: false, bunkerConnected: true, unlocked: true, viewingDependant: false };
+  it('escalations (Family asks) are disabled on paired-child, direct or not', () => {
+    expect(escalationsAvailable({ ...base, signingMode: 'bunker' })).toBe(true);
+    expect(escalationsAvailable({ ...base, signingMode: 'paired-child' })).toBe(false);
+    expect(escalationsAvailable({ ...base, signingMode: 'bunker', hasMnemonic: true })).toBe(false);
+    expect(escalationsAvailable({ ...base, signingMode: 'bunker', viewingDependant: true })).toBe(false);
+    expect(escalationsAvailable({ ...base, signingMode: 'bunker', unlocked: false })).toBe(false);
+  });
+
+  it('?action=add-dependant is refused on paired-child', () => {
+    expect(addDependantRequestAllowed('paired-child')).toBe(false);
+    expect(addDependantRequestAllowed('bunker')).toBe(true);
+    expect(addDependantRequestAllowed('local')).toBe(true);
+    expect(addDependantRequestAllowed(undefined)).toBe(true);
   });
 });
