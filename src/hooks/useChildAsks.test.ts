@@ -16,8 +16,8 @@ vi.mock('../lib/db', async (importOriginal) => {
   };
 });
 
-import { listChildRules, saveChildRule } from '../lib/db';
-import { buildAskEvent, openVerdictEvent, type ChildSignAsk } from '../lib/child-sign-asks';
+import { listChildRules, saveChildRule, saveChildAskHistory } from '../lib/db';
+import { buildAskEvent, buildVerdictEvent, openVerdictEvent, type ChildSignAsk } from '../lib/child-sign-asks';
 import { childRuleId } from '../lib/child-rules';
 import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import type { ChildRule } from '../types/child-rules';
@@ -25,7 +25,7 @@ import type { DependantIdentity } from '../types';
 import type { NostrEvent } from 'signet-protocol';
 import { useChildAsks, type ChildAskTransport, type UseChildAsksOpts } from './useChildAsks';
 
-const mListRules = vi.mocked(listChildRules), mSaveRule = vi.mocked(saveChildRule);
+const mListRules = vi.mocked(listChildRules), mSaveRule = vi.mocked(saveChildRule), mSaveHistory = vi.mocked(saveChildAskHistory);
 const RELAY = 'wss://rail.example.com';
 const KEY = 'k'.repeat(64);
 
@@ -84,14 +84,15 @@ const askEv = (a: ChildSignAsk) => buildAskEvent(a, CLIENT_PRIV, RAIL);
 
 function setup(over: Partial<UseChildAsksOpts> = {}) {
   const pushCeiling = vi.fn(async (_d: string, _k?: { kind: number; until: number }): Promise<'ok' | 'failed'> => 'ok');
+  const dropOnce = vi.fn(async (_d: string, _e: { kind: number; until: number }) => {});
   const onRulesChanged = vi.fn();
   const onNewAsk = vi.fn();
   const props = (): UseChildAsksOpts => ({
-    dependants: [dep], relays: ['wss://fallback.example.com'], encryptionKey: KEY, pushCeiling, onRulesChanged, onNewAsk,
+    dependants: [dep], relays: ['wss://fallback.example.com'], encryptionKey: KEY, pushCeiling, dropOnce, onRulesChanged, onNewAsk,
     transport: t, now: () => clock, ...over,
   });
   const hook = renderHook(() => useChildAsks(props()));
-  return { hook, pushCeiling, onRulesChanged, onNewAsk };
+  return { hook, pushCeiling, dropOnce, onRulesChanged, onNewAsk };
 }
 const flush = async (ms = 0) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
 const verdictOf = (ev: NostrEvent, id: string) => openVerdictEvent(ev, CLIENT_PRIV, { railPubkey: RAIL, id });
@@ -105,6 +106,7 @@ beforeEach(() => {
   store.clear();
   mListRules.mockReset(); mListRules.mockResolvedValue([]);
   mSaveRule.mockReset(); mSaveRule.mockResolvedValue(undefined);
+  mSaveHistory.mockClear();
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -115,6 +117,8 @@ describe('useChildAsks — inbox', () => {
     expect(t.handlers).toHaveLength(1);
     expect(t.handlers[0].relays).toEqual([RELAY]);
     expect(t.handlers[0].filters[0]).toMatchObject({ kinds: [30078], authors: [CLIENT], '#p': [RAIL] });
+    // A35: the rail key's own replies (any guardian device) on the same subscription.
+    expect(t.handlers[0].filters[1]).toMatchObject({ kinds: [30078], authors: [RAIL], '#p': [CLIENT] });
   });
 
   it('an ask appears once; a duplicate event is ignored; onNewAsk fires once', async () => {
@@ -183,13 +187,18 @@ describe('useChildAsks — verdicts', () => {
     expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'once' });
   });
 
-  it('a kind already inside the ceiling needs no push', async () => {
+  it('A33: a kind the LOCAL compile already holds still calls pushCeiling (once and always)', async () => {
     mListRules.mockResolvedValue([{ id: '1'.repeat(32), dependantId: dep.id, persona: '*', scope: 'sign-in', target: '*', decision: 'allow', createdAt: 1, updatedAt: 1 }]);
     const a = ask({ scope: 'sign-in' }, 21236);
     const s = await withAsk({}, a);
     await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
-    expect(s.pushCeiling).not.toHaveBeenCalled();
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 21236, until: Math.floor(clock / 1000) + 600 });
     expect(await verdictOf(t.published[0].ev, a.id)).toMatchObject({ verdict: 'once' });
+    const b = ask({ scope: 'sign-in' }, 21236);
+    t.deliver(await askEv(b)); await flush();
+    await act(async () => { await s.hook.result.current.decide(b.id, 'always'); });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(2);
+    expect(s.pushCeiling.mock.calls[1]).toEqual([dep.id.toLowerCase()]);
   });
 
   it('pushCeiling failed → deny with device-unreachable, and the guardian is told', async () => {
@@ -259,5 +268,120 @@ describe('useChildAsks — verdicts', () => {
     expect(again.hook.result.current.history[0].verdict.verdict).toBe('deny');
     t.deliver(ev); await flush();
     expect(again.hook.result.current.asks).toHaveLength(0);
+  });
+
+  it('A34: the chosen verdict is saved BEFORE any side effect; a failed publish offers only "Send again" of the same verdict', async () => {
+    const s = await withAsk();
+    const order: string[] = [];
+    mSaveHistory.mockImplementation(async (e: unknown[]) => { order.push(`save:${(e[0] as { sent: boolean }).sent}`); store.set('history', e); });
+    s.pushCeiling.mockImplementation(async () => { order.push('push'); return 'ok'; });
+    t.ok = false;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: false, reason: 'publish-failed' });
+    expect(order[0]).toBe('save:false');
+    expect(order.indexOf('save:false')).toBeLessThan(order.indexOf('push'));
+    const first = (store.get('history') as { chosen: string; sent: boolean }[])[0];
+    expect(first).toMatchObject({ chosen: 'once', sent: false });
+    // The ask stays, marked with the chosen verdict; the once entry it widened with is given back.
+    expect(s.hook.result.current.asks[0].unsent).toEqual({ verdict: 'once' });
+    expect(s.dropOnce).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30311, until: Math.floor(clock / 1000) + 600 });
+    // A different verdict is refused; the same one is sent again (and re-widens the ceiling first).
+    let other;
+    await act(async () => { other = await s.hook.result.current.decide(s.a.id, 'deny'); });
+    expect(other).toEqual({ sent: false, reason: 'already-decided' });
+    t.ok = true;
+    let again;
+    await act(async () => { again = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(again).toEqual({ sent: true });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(2);
+    const v1 = await verdictOf(t.published[0].ev, s.a.id), v2 = await verdictOf(t.published[1].ev, s.a.id);
+    expect(v1).toMatchObject({ verdict: 'once' });
+    expect(v2).toEqual(v1);
+    expect(s.hook.result.current.asks).toHaveLength(0);
+    expect(s.hook.result.current.history[0]).toMatchObject({ sent: true, chosen: 'once' });
+  });
+
+  it('A34: an unsent answer survives a restart — the ask comes back with only "Send again"', async () => {
+    const s = await withAsk();
+    const ev = await askEv(s.a);
+    t.ok = false;
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'deny'); });
+    s.hook.unmount();
+    t.ok = true;
+    const again = setup();
+    await flush();
+    t.deliver(ev); await flush();
+    expect(again.hook.result.current.asks).toHaveLength(1);
+    expect(again.hook.result.current.asks[0].unsent).toEqual({ verdict: 'deny' });
+    expect(again.onNewAsk).not.toHaveBeenCalled();
+    let r;
+    await act(async () => { r = await again.hook.result.current.decide(s.a.id, 'deny'); });
+    expect(r).toEqual({ sent: true });
+    expect(await verdictOf(t.published[t.published.length - 1].ev, s.a.id)).toMatchObject({ verdict: 'deny' });
+  });
+
+  it('A34: when the choice cannot be saved nothing else happens', async () => {
+    const s = await withAsk();
+    mSaveHistory.mockRejectedValueOnce(new Error('quota'));
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: false, reason: 'save-failed' });
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+    expect(t.published).toHaveLength(0);
+    expect(s.hook.result.current.asks[0].unsent).toBeUndefined();
+  });
+
+  it('A35: a reply already on the relay (another guardian device) marks the ask answered — no second publish', async () => {
+    const s = await withAsk();
+    const reply = await buildVerdictEvent({ v: 1, id: s.a.id, verdict: 'always', decidedAt: Math.floor(clock / 1000) }, bytesToHex(railSk), CLIENT);
+    t.deliver(reply); await flush();
+    expect(s.hook.result.current.asks).toHaveLength(0);
+    expect(s.hook.result.current.history[0]).toMatchObject({ sent: true, verdict: { verdict: 'always' } });
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: false, reason: 'already-decided' });
+    expect(t.published).toHaveLength(0);
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+  });
+
+  it('A35: a reply that lands before the ask means the ask is never listed', async () => {
+    const s = setup();
+    await flush();
+    const a = ask();
+    t.deliver(await buildVerdictEvent({ v: 1, id: a.id, verdict: 'deny', decidedAt: Math.floor(clock / 1000) }, bytesToHex(railSk), CLIENT)); await flush();
+    t.deliver(await askEv(a)); await flush();
+    expect(s.hook.result.current.asks).toHaveLength(0);
+    expect(s.onNewAsk).not.toHaveBeenCalled();
+  });
+
+  it('A35: a reply arriving while this device is deciding stops the publish and gives the once entry back', async () => {
+    const s = await withAsk();
+    const reply = await buildVerdictEvent({ v: 1, id: s.a.id, verdict: 'deny', decidedAt: Math.floor(clock / 1000) }, bytesToHex(railSk), CLIENT);
+    s.pushCeiling.mockImplementation(async () => { t.deliver(reply); await new Promise(r => setTimeout(r, 0)); return 'ok'; });
+    let r;
+    await act(async () => { const p = s.hook.result.current.decide(s.a.id, 'once'); await vi.advanceTimersByTimeAsync(10); r = await p; });
+    expect(r).toEqual({ sent: false, reason: 'already-decided' });
+    expect(t.published).toHaveLength(0);
+    expect(s.dropOnce).toHaveBeenCalled();
+    expect(s.hook.result.current.asks).toHaveLength(0);
+  });
+
+  it('A37: an expired ask leaves the list on time and is never answerable', async () => {
+    const s = await withAsk();
+    clock += 601_000;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: false, reason: 'expired' });
+    expect(t.published).toHaveLength(0);
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+    expect(s.hook.result.current.asks).toHaveLength(0);
+  });
+
+  it('A37: the list drops an ask at its expiry without any action', async () => {
+    const s = await withAsk();
+    clock += 601_000;
+    await flush(601_000);
+    expect(s.hook.result.current.asks).toHaveLength(0);
   });
 });

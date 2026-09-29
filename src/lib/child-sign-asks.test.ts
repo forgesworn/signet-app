@@ -3,7 +3,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure
 import { getConversationKey, encrypt } from 'nostr-tools/nip44';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
-import { buildAskEvent, openAskEvent, askInScope, buildVerdictEvent, openVerdictEvent, templateHash, type ChildSignAsk } from './child-sign-asks';
+import { buildAskEvent, openAskEvent, askInScope, buildVerdictEvent, openVerdictEvent, openRailVerdictEvent, templateHash, type ChildSignAsk } from './child-sign-asks';
 
 const rail = generateSecretKey(), client = generateSecretKey();
 const RAIL_SK = bytesToHex(rail), RAIL_PK = getPublicKey(rail);
@@ -122,5 +122,15 @@ describe('verdict rail', () => {
     const forged = finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', 'signet:child-sign-reply:v1:' + ID], ['p', CLIENT_PK]],
       content: encrypt(JSON.stringify({ v: 1, id: ID, verdict: 'once', decidedAt: NOW }), getConversationKey(attacker, CLIENT_PK)) }, attacker) as unknown as NostrEvent;
     expect(await openVerdictEvent(forged, CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
+  });
+});
+
+describe('A35: openRailVerdictEvent (guardian side)', () => {
+  it('the rail key opens its own published verdict; anything else is null', async () => {
+    const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'once', decidedAt: NOW }, RAIL_SK, CLIENT_PK);
+    expect(await openRailVerdictEvent(ev, RAIL_SK, { clientPubkey: CLIENT_PK })).toMatchObject({ id: ID, verdict: 'once' });
+    expect(await openRailVerdictEvent(ev, bytesToHex(generateSecretKey()), { clientPubkey: CLIENT_PK })).toBeNull();
+    expect(await openRailVerdictEvent(ev, RAIL_SK, { clientPubkey: getPublicKey(generateSecretKey()) })).toBeNull();
+    expect(await openRailVerdictEvent({ ...ev, tags: [['d', 'signet:child-sign-request:v1:' + ID], ev.tags[1]] }, RAIL_SK, { clientPubkey: CLIENT_PK })).toBeNull();
   });
 });

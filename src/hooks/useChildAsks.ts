@@ -9,15 +9,23 @@
  * consistent with the template, A12 integrity) — anything else is dropped and
  * never shown.
  *
- * `decide()` — first verdict per ask id wins:
+ * `decide()` — first verdict per ask id wins, and (A34) it is written to the
+ * encrypted history row BEFORE any side effect or publish:
  *   always → ChildRule (persona-specific, target from the ask) + `onRulesChanged`;
- *   once   → nothing stored here (the caller keeps the approved-once kind);
+ *   once   → an approved-once entry for the kind (added by `pushCeiling`);
  *   deny   → an optional deny rule when "Always deny" is ticked.
- * When a sign_event's kind is outside the dependant's CURRENT ceiling, the
- * widened ceiling is pushed (`pushCeiling`) BEFORE the verdict is published;
- * a failed push sends `deny` with `device-unreachable` (Review Focus 3). An
- * "Always" or "Allow once" the 64-kind ceiling cannot hold is refused and
- * answered `deny` (A5).
+ * For a sign_event `once` / `always` the ceiling is ALWAYS pushed
+ * (`pushCeiling`, a no-op on the device when it already matches — A33) BEFORE
+ * the verdict is published; a failed push sends `deny` with
+ * `device-unreachable` (Review Focus 3). An "Always" or "Allow once" the
+ * 64-kind ceiling cannot hold is refused and answered `deny` (A5).
+ * If the publish fails the ask stays listed with its chosen verdict and the
+ * only answer offered is "Send again" of that verdict; a `once` that did not
+ * reach the child gives its approved-once entry back (`dropOnce`, A32 path).
+ *
+ * A35: the rail key's own replies are watched too — a verdict another
+ * guardian device already published marks the ask answered here, and it is
+ * never answered twice. An expired ask leaves the list and is not answerable (A37).
  *
  * History (last 200 verdicts) is guardian-local, in an encrypted row.
  * Never throws out of an effect.
@@ -27,7 +35,7 @@ import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import type { DependantIdentity } from '../types';
 import type { ChildRule } from '../types/child-rules';
 import {
-  buildVerdictEvent, openAskEvent, CHILD_SIGN_ASK_LIVE_LIMIT, CHILD_SIGN_ASK_TTL_S,
+  buildVerdictEvent, openAskEvent, openRailVerdictEvent, CHILD_SIGN_ASK_LIVE_LIMIT, CHILD_SIGN_ASK_TTL_S,
   type ChildSignAsk, type ChildSignVerdict,
 } from '../lib/child-sign-asks';
 import { childRuleId } from '../lib/child-rules';
@@ -46,12 +54,26 @@ export interface PendingChildAsk {
   personaName: string;
   /** Unix ms. */
   receivedAt: number;
+  /** A34: the guardian's answer is chosen and saved but has not reached the child — only "Send again" is offered. */
+  unsent?: { verdict: ChildVerdictChoice };
 }
 
-export interface ChildAskHistoryEntry { ask: ChildSignAsk; verdict: ChildSignVerdict }
+export type ChildVerdictChoice = 'once' | 'always' | 'deny';
+
+export interface ChildAskHistoryEntry {
+  ask: ChildSignAsk;
+  /** What is (or will be) sent; for an unsent `once`/`always` the side effects are re-run on "Send again". */
+  verdict: ChildSignVerdict;
+  /** The guardian's choice (absent on older rows ⇒ `verdict.verdict`). */
+  chosen?: ChildVerdictChoice;
+  /** False while the verdict has not been published; absent on older rows ⇒ sent. */
+  sent?: boolean;
+  /** Why the sent verdict differs from the choice, for the guardian. */
+  reason?: ChildAskDecideReason;
+}
 
 export type ChildAskDecideReason =
-  | 'device-unreachable' | 'ceiling-full' | 'paused' | 'expired' | 'publish-failed'
+  | 'device-unreachable' | 'ceiling-full' | 'paused' | 'expired' | 'publish-failed' | 'save-failed'
   | 'always-unavailable' | 'already-decided' | 'not-found' | 'locked';
 
 export interface ChildAskTransport {
@@ -92,7 +114,6 @@ export interface UseChildAsks {
 
 export const CHILD_ASK_HISTORY_MAX = 200;
 export const CHILD_ASK_ONCE_WINDOW_S = 600;
-const PRUNE_MS = 15_000;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 interface DirectChild {
@@ -134,7 +155,6 @@ function ceilingFor(dep: DependantIdentity, rules: ChildRule[], once: { kind: nu
     nowSeconds: nowS,
   }).allowedKinds;
 }
-const holds = (c: number[] | 'all', kind: number) => c === 'all' || c.includes(kind);
 /**
  * A5: the widened ceiling must list the new kind AND keep every kind it lists
  * now — the firmware holds at most 64, and the compiler would otherwise make
@@ -143,11 +163,20 @@ const holds = (c: number[] | 'all', kind: number) => c === 'all' || c.includes(k
 const fits = (current: number[] | 'all', widened: number[] | 'all', kind: number) =>
   widened === 'all' || (widened.includes(kind) && (current === 'all' || current.every(k => widened.includes(k))));
 
+const isChoice = (v: unknown): v is ChildVerdictChoice => v === 'once' || v === 'always' || v === 'deny';
 function isHistoryEntry(x: unknown): x is ChildAskHistoryEntry {
   if (!x || typeof x !== 'object') return false;
-  const o = x as { ask?: { id?: unknown }; verdict?: { id?: unknown; verdict?: unknown } };
+  const o = x as { ask?: { id?: unknown; expiresAt?: unknown }; verdict?: { id?: unknown; verdict?: unknown }; chosen?: unknown; sent?: unknown };
   return typeof o.ask?.id === 'string' && typeof o.verdict?.id === 'string' && o.ask.id === o.verdict.id
-    && (o.verdict.verdict === 'once' || o.verdict.verdict === 'always' || o.verdict.verdict === 'deny');
+    && isChoice(o.verdict.verdict) && (o.chosen === undefined || isChoice(o.chosen))
+    && (o.sent === undefined || typeof o.sent === 'boolean') && typeof o.ask.expiresAt === 'number';
+}
+const isSent = (e: ChildAskHistoryEntry) => e.sent !== false;
+/** History keeps what was asked, not the event body (the row stays small). */
+function slim(ask: ChildSignAsk): ChildSignAsk {
+  const { template: _t, ...rest } = ask;
+  void _t;
+  return rest;
 }
 
 export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
@@ -160,6 +189,10 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
   /** Ask ids already shown, answered, or being answered — never raised twice. */
   const seenRef = useRef(new Set<string>());
   const decidingRef = useRef(new Set<string>());
+  /** A34: chosen-but-unsent verdicts, by ask id (live asks only). */
+  const unsentRef = useRef(new Map<string, ChildAskHistoryEntry>());
+  /** A35: verdicts the rail key has already published, by ask id. */
+  const repliedRef = useRef(new Map<string, ChildSignVerdict>());
   const mountedRef = useRef(true);
   const now = () => (optsRef.current.now ?? Date.now)();
   const transport = () => optsRef.current.transport ?? defaultTransport;
@@ -183,20 +216,49 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     setHistoryLoaded(false);
     commitAsks([]);
     seenRef.current = new Set();
+    unsentRef.current = new Map();
+    repliedRef.current = new Map();
     if (!encryptionKey) return;
     let cancelled = false;
     loadChildAskHistory(encryptionKey)
       .then((raw) => {
         if (cancelled) return;
         const entries = raw.filter(isHistoryEntry).slice(0, CHILD_ASK_HISTORY_MAX);
+        const nowS = Math.floor(now() / 1000);
         historyRef.current = entries;
-        for (const e of entries) seenRef.current.add(e.ask.id);
+        for (const e of entries) {
+          // An unsent answer to a live ask waits for the ask to arrive again, with only "Send again".
+          if (!isSent(e) && e.ask.expiresAt > nowS) unsentRef.current.set(e.ask.id, e);
+          else seenRef.current.add(e.ask.id);
+        }
         setHistory(entries);
         setHistoryLoaded(true);
       })
       .catch(() => { if (!cancelled) setHistoryLoaded(true); });
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey, commitAsks]);
+
+  /** Write the history row with `entry` first. True when it reached storage. */
+  const recordHistory = async (entry: ChildAskHistoryEntry): Promise<boolean> => {
+    const next = [entry, ...historyRef.current.filter(e => e.ask.id !== entry.ask.id)].slice(0, CHILD_ASK_HISTORY_MAX);
+    historyRef.current = next;
+    if (mountedRef.current) setHistory(next);
+    const key = optsRef.current.encryptionKey;
+    if (!key) return false;
+    try { await saveChildAskHistory(next, key); return true; } catch { return false; /* kept in memory this session */ }
+  };
+
+  /** A35: the ask was answered by the rail key already (another guardian device). */
+  const markAnswered = (id: string, verdict: ChildSignVerdict) => {
+    seenRef.current.add(id);
+    unsentRef.current.delete(id);
+    const pending = asksRef.current.find(a => a.ask.id === id);
+    const known = historyRef.current.find(e => e.ask.id === id);
+    if (pending) commitAsks(asksRef.current.filter(a => a.ask.id !== id));
+    const ask = pending ? slim(pending.ask) : known?.ask;
+    if (ask) void recordHistory({ ask, verdict, chosen: verdict.verdict, sent: true });
+  };
 
   // Subscriptions, one per direct-paired child; re-armed only when a binding changes.
   const children = useMemo(() => directChildren(opts.dependants, opts.relays), [opts.dependants, opts.relays]);
@@ -207,14 +269,28 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     for (const c of children) {
       const since = Math.floor(now() / 1000) - CHILD_SIGN_ASK_TTL_S;
       unsubs.push(transport().subscribe(
-        [{ kinds: [30078], authors: [c.client], '#p': [c.railPub], since }],
+        [
+          { kinds: [30078], authors: [c.client], '#p': [c.railPub], since },
+          // A35: replies the rail key has published (from any guardian device).
+          { kinds: [30078], authors: [c.railPub], '#p': [c.client], since },
+        ],
         c.relays,
-        (ev) => { void onAskEvent(c, ev); },
+        (ev) => { void (ev.pubkey === c.railPub ? onReplyEvent(c, ev) : onAskEvent(c, ev)); },
       ));
     }
     return () => { for (const u of unsubs) { try { u(); } catch { /* already closed */ } } };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindingKey, encryptionKey, historyLoaded]);
+
+  const onReplyEvent = async (c: DirectChild, ev: NostrEvent) => {
+    const verdict = await openRailVerdictEvent(ev, c.railPriv, { clientPubkey: c.client });
+    if (!verdict || !mountedRef.current) return;
+    const id = verdict.id;
+    if (historyRef.current.some(e => e.ask.id === id && isSent(e))) return; // already answered (our own echo included)
+    repliedRef.current.set(id, verdict);
+    if (decidingRef.current.has(id)) return; // `decide` checks before it publishes
+    markAnswered(id, verdict);
+  };
 
   const onAskEvent = async (c: DirectChild, ev: NostrEvent) => {
     const nowS = Math.floor(now() / 1000);
@@ -222,123 +298,169 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     const inventory = replyPersonas(dep);
     const ask = await openAskEvent(ev, c.railPriv, { clientPubkey: c.client, dependantId: c.id, personas: inventory.map(p => p.pubkey), nowS });
     if (!ask || !mountedRef.current || seenRef.current.has(ask.id)) return;
+    const replied = repliedRef.current.get(ask.id);
+    if (replied) {
+      seenRef.current.add(ask.id);
+      unsentRef.current.delete(ask.id);
+      void recordHistory({ ask: slim(ask), verdict: replied, chosen: replied.verdict, sent: true });
+      return;
+    }
     if (asksRef.current.filter(a => a.dependantId === c.id).length >= CHILD_SIGN_ASK_LIVE_LIMIT) return;
     seenRef.current.add(ask.id);
+    const unsent = unsentRef.current.get(ask.id);
     const pending: PendingChildAsk = {
       ask, dependantId: c.id, dependantName: dep.displayName,
       personaName: inventory.find(p => p.pubkey === ask.persona)?.name ?? dep.displayName,
       receivedAt: now(),
+      ...(unsent ? { unsent: { verdict: unsent.chosen ?? unsent.verdict.verdict } } : {}),
     };
     commitAsks([...asksRef.current, pending]);
-    try { optsRef.current.onNewAsk?.(pending); } catch { /* notification is best effort */ }
+    if (!unsent) { try { optsRef.current.onNewAsk?.(pending); } catch { /* notification is best effort */ } }
   };
 
-  // Expired asks leave the list (the child has already given up on them).
+  // A37: an ask leaves the list the moment it expires (the child has already given up on it).
   useEffect(() => {
-    const id = setInterval(() => {
+    if (asks.length === 0) return;
+    const earliest = Math.min(...asks.map(a => a.ask.expiresAt));
+    const id = setTimeout(() => {
       const nowS = Math.floor(now() / 1000);
       const live = asksRef.current.filter(a => a.ask.expiresAt > nowS);
       if (live.length !== asksRef.current.length) commitAsks(live);
-    }, PRUNE_MS);
-    return () => clearInterval(id);
+    }, Math.max(0, Math.min(earliest * 1000 - now() + 50, 2 ** 31 - 1)));
+    return () => clearTimeout(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commitAsks]);
+  }, [asks, commitAsks]);
 
-  const recordHistory = async (entry: ChildAskHistoryEntry) => {
-    const next = [entry, ...historyRef.current.filter(e => e.ask.id !== entry.ask.id)].slice(0, CHILD_ASK_HISTORY_MAX);
-    historyRef.current = next;
-    if (mountedRef.current) setHistory(next);
-    const key = optsRef.current.encryptionKey;
-    if (key) { try { await saveChildAskHistory(next, key); } catch { /* kept in memory this session */ } }
+  const markUnsent = (id: string, verdict: ChildVerdictChoice) => {
+    if (!asksRef.current.some(a => a.ask.id === id && a.unsent?.verdict !== verdict)) return;
+    commitAsks(asksRef.current.map(a => (a.ask.id === id ? { ...a, unsent: { verdict } } : a)));
   };
 
-  const decide = useCallback(async (id: string, verdict: 'once' | 'always' | 'deny', dopts?: { alwaysDeny?: boolean }): Promise<{ sent: boolean; reason?: ChildAskDecideReason }> => {
+  const decide = useCallback(async (id: string, verdict: ChildVerdictChoice, dopts?: { alwaysDeny?: boolean }): Promise<{ sent: boolean; reason?: ChildAskDecideReason }> => {
     if (decidingRef.current.has(id)) return { sent: false, reason: 'already-decided' };
     const pending = asksRef.current.find(a => a.ask.id === id);
-    if (!pending) return { sent: false, reason: historyRef.current.some(e => e.ask.id === id) ? 'already-decided' : 'not-found' };
+    if (!pending) return { sent: false, reason: historyRef.current.some(e => e.ask.id === id && isSent(e)) ? 'already-decided' : 'not-found' };
+    const ask = pending.ask;
+    const nowS0 = Math.floor(now() / 1000);
+    // A37: an expired ask is never answered — it just leaves the list.
+    if (ask.expiresAt <= nowS0) {
+      commitAsks(asksRef.current.filter(a => a.ask.id !== id));
+      return { sent: false, reason: 'expired' };
+    }
+    const replied = repliedRef.current.get(id);
+    if (replied) { markAnswered(id, replied); return { sent: false, reason: 'already-decided' }; }
     const o = optsRef.current;
     const key = o.encryptionKey;
     if (!key) return { sent: false, reason: 'locked' };
     const c = directChildren(o.dependants, o.relays).find(x => x.id === pending.dependantId);
     if (!c) return { sent: false, reason: 'not-found' };
     const dep = c.dep;
-    if (verdict === 'always' && dep.autonomyStage === 'full-control') return { sent: false, reason: 'always-unavailable' };
+    const stored = unsentRef.current.get(id);
+    // A34: once chosen, only the SAME verdict can be sent again.
+    if (stored && (stored.chosen ?? stored.verdict.verdict) !== verdict) return { sent: false, reason: 'already-decided' };
+    if (!stored && verdict === 'always' && dep.autonomyStage === 'full-control') return { sent: false, reason: 'always-unavailable' };
     decidingRef.current.add(id);
+    try {
+      const nowMs = now();
+      const nowS = Math.floor(nowMs / 1000);
+      let entry: ChildAskHistoryEntry;
+      if (stored) {
+        entry = stored;
+      } else {
+        // A34: the choice is saved before anything else happens.
+        entry = {
+          ask: slim(ask), chosen: verdict, sent: false,
+          verdict: { v: 1, id, verdict, decidedAt: nowS, ...(verdict === 'deny' && dopts?.alwaysDeny ? { alwaysDeny: true } : {}) },
+        };
+        if (!(await recordHistory(entry))) {
+          historyRef.current = historyRef.current.filter(e => e.ask.id !== id);
+          if (mountedRef.current) setHistory(historyRef.current);
+          return { sent: false, reason: 'save-failed' };
+        }
+        unsentRef.current.set(id, entry);
+        markUnsent(id, verdict);
+      }
 
-    const ask = pending.ask;
-    const nowMs = now();
-    const nowS = Math.floor(nowMs / 1000);
-    let reason: ChildAskDecideReason | undefined;
-    let out: ChildSignVerdict = { v: 1, id, verdict, decidedAt: nowS };
+      let out: ChildSignVerdict = entry.verdict;
+      let reason: ChildAskDecideReason | undefined = entry.reason;
+      let onceEntry: OnceEntry | undefined;
+      const refuse = (r: ChildAskDecideReason, wire?: ChildSignVerdict['reason']) => {
+        reason = r;
+        out = { v: 1, id, verdict: 'deny', decidedAt: entry.verdict.decidedAt, ...(wire ? { reason: wire } : {}) };
+      };
+      const scope = ask.scope ?? `kind:${ask.kind}`;
+      const signs = ask.method === 'sign_event';
 
-    const finish = async (): Promise<{ sent: boolean; reason?: ChildAskDecideReason }> => {
+      if (out.verdict === 'deny') {
+        if (out.alwaysDeny && !out.ruleId) {
+          const rule: ChildRule = {
+            id: childRuleId(c.id, ask.persona, scope, ask.target), dependantId: c.id, persona: ask.persona, scope, target: ask.target,
+            decision: 'deny', label: ask.targetLabel, createdAt: nowMs, updatedAt: nowMs,
+          };
+          try { await saveChildRule(rule, key); o.onRulesChanged(); out = { ...out, ruleId: rule.id }; } catch {
+            const { alwaysDeny: _a, ...plain } = out; void _a; out = plain; // a plain deny still goes
+          }
+        }
+      } else {
+        let rules: ChildRule[];
+        try { rules = await listChildRules(c.id, key); } catch { return { sent: false, reason: 'publish-failed' }; }
+        const onceFor = Object.entries(o.approvedOnceKinds ?? {}).filter(([k]) => k.toLowerCase() === c.id).flatMap(([, v]) => v);
+        if (signs && dep.defaultSchedule?.paused === true) {
+          refuse('paused');
+        } else if (out.verdict === 'always') {
+          const rule: ChildRule = {
+            id: childRuleId(c.id, ask.persona, scope, ask.target), dependantId: c.id, persona: ask.persona, scope, target: ask.target,
+            decision: 'allow', label: ask.targetLabel, createdAt: nowMs, updatedAt: nowMs,
+          };
+          const current = signs ? ceilingFor(dep, rules, onceFor, nowS) : 'all';
+          // A5: the 64-kind ceiling must be able to hold it.
+          if (signs && !fits(current, ceilingFor(dep, [...rules.filter(r => r.id !== rule.id), rule], onceFor, nowS), ask.kind)) {
+            refuse('ceiling-full');
+          } else {
+            try { await saveChildRule(rule, key); } catch { return { sent: false, reason: 'publish-failed' }; }
+            o.onRulesChanged();
+            out = { ...out, ruleId: rule.id };
+            // A33: always push; the device no-ops when it already matches.
+            if (signs && (await o.pushCeiling(c.id)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
+          }
+        } else if (signs) {
+          // once
+          const e: OnceEntry = { kind: ask.kind, until: nowS + CHILD_ASK_ONCE_WINDOW_S };
+          const current = ceilingFor(dep, rules, onceFor, nowS);
+          if (!fits(current, ceilingFor(dep, rules, [...onceFor, e], nowS), ask.kind)) refuse('ceiling-full');
+          // A33: always push; the pusher adds `e` and removes it again if the push fails.
+          else if ((await o.pushCeiling(c.id, e)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
+          else onceEntry = e;
+        }
+      }
+
+      entry = { ...entry, verdict: out, sent: false, ...(reason ? { reason } : {}) };
+      unsentRef.current.set(id, entry);
+      await recordHistory(entry);
+
+      const giveBackOnce = async () => {
+        if (onceEntry && o.dropOnce) { try { await o.dropOnce(c.id, onceEntry); } catch { /* expires on its own */ } }
+      };
+      // A35: another guardian device answered while we were working — never a second answer.
+      const repliedNow = repliedRef.current.get(id);
+      if (repliedNow) { await giveBackOnce(); markAnswered(id, repliedNow); return { sent: false, reason: 'already-decided' }; }
+
       let ok = false;
       try {
         const ev = await buildVerdictEvent(out, c.railPriv, c.client);
         ok = (await transport().publish(ev, c.relays)).ok;
       } catch { ok = false; }
       if (!ok) {
-        decidingRef.current.delete(id); // the guardian may try again; side effects are idempotent
+        await giveBackOnce();
         return { sent: false, reason: 'publish-failed' };
       }
+      unsentRef.current.delete(id);
       commitAsks(asksRef.current.filter(a => a.ask.id !== id));
-      // History keeps what was asked, not the event body (the row stays small).
-      const { template: _t, ...slim } = ask;
-      void _t;
-      await recordHistory({ ask: slim, verdict: out });
+      await recordHistory({ ...entry, sent: true });
       return { sent: true, ...(reason ? { reason } : {}) };
-    };
-    const refuse = (r: ChildAskDecideReason, wire?: ChildSignVerdict['reason']) => {
-      reason = r;
-      out = { v: 1, id, verdict: 'deny', decidedAt: nowS, ...(wire ? { reason: wire } : {}) };
-      return finish();
-    };
-
-    if (ask.expiresAt <= nowS) return refuse('expired', 'expired');
-
-    let rules: ChildRule[];
-    try { rules = await listChildRules(c.id, key); } catch { decidingRef.current.delete(id); return { sent: false, reason: 'publish-failed' }; }
-    const onceFor = Object.entries(o.approvedOnceKinds ?? {}).filter(([k]) => k.toLowerCase() === c.id).flatMap(([, v]) => v);
-    const scope = ask.scope ?? `kind:${ask.kind}`;
-    const signs = ask.method === 'sign_event';
-
-    if (verdict === 'deny') {
-      if (dopts?.alwaysDeny) {
-        const rule: ChildRule = {
-          id: childRuleId(c.id, ask.persona, scope, ask.target), dependantId: c.id, persona: ask.persona, scope, target: ask.target,
-          decision: 'deny', label: ask.targetLabel, createdAt: nowMs, updatedAt: nowMs,
-        };
-        try { await saveChildRule(rule, key); o.onRulesChanged(); out = { ...out, alwaysDeny: true, ruleId: rule.id }; } catch { /* a plain deny still goes */ }
-      }
-      return finish();
+    } finally {
+      decidingRef.current.delete(id);
     }
-
-    if (signs && dep.defaultSchedule?.paused === true) return refuse('paused');
-
-    const current = ceilingFor(dep, rules, onceFor, nowS);
-    const needsPush = signs && !holds(current, ask.kind);
-
-    if (verdict === 'always') {
-      const rule: ChildRule = {
-        id: childRuleId(c.id, ask.persona, scope, ask.target), dependantId: c.id, persona: ask.persona, scope, target: ask.target,
-        decision: 'allow', label: ask.targetLabel, createdAt: nowMs, updatedAt: nowMs,
-      };
-      // A5: the 64-kind ceiling must be able to hold it.
-      if (needsPush && !fits(current, ceilingFor(dep, [...rules.filter(r => r.id !== rule.id), rule], onceFor, nowS), ask.kind)) return refuse('ceiling-full');
-      try { await saveChildRule(rule, key); } catch { decidingRef.current.delete(id); return { sent: false, reason: 'publish-failed' }; }
-      o.onRulesChanged();
-      out = { ...out, ruleId: rule.id };
-      if (needsPush && (await o.pushCeiling(c.id)) !== 'ok') return refuse('device-unreachable', 'device-unreachable');
-      return finish();
-    }
-
-    // once
-    if (needsPush) {
-      const widened = ceilingFor(dep, rules, [...onceFor, { kind: ask.kind, until: nowS + CHILD_ASK_ONCE_WINDOW_S }], nowS);
-      if (!fits(current, widened, ask.kind)) return refuse('ceiling-full');
-      if ((await o.pushCeiling(c.id, { kind: ask.kind, until: nowS + CHILD_ASK_ONCE_WINDOW_S })) !== 'ok') return refuse('device-unreachable', 'device-unreachable');
-    }
-    return finish();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commitAsks]);
 

@@ -225,3 +225,24 @@ export async function openVerdictEvent(ev: NostrEvent, clientPrivateKey: string,
   } catch { return null; }
   finally { sk?.fill(0); }
 }
+
+/**
+ * A35: the guardian side reading a verdict the rail key already published
+ * (another guardian device, or our own echo). The NIP-44 conversation key is
+ * symmetric, so the rail private key + the child's client pubkey open it.
+ */
+export async function openRailVerdictEvent(ev: NostrEvent, railPrivateKey: string, expect: { clientPubkey: string }): Promise<ChildSignVerdict | null> {
+  let sk: Uint8Array | null = null;
+  try {
+    if (!HEX64.test(expect.clientPubkey) || !ev || !Array.isArray(ev.tags)) return null;
+    const d = ev.tags[0]?.[0] === 'd' ? ev.tags[0][1] : undefined;
+    if (typeof d !== 'string' || !d.startsWith(REPLY_PREFIX)) return null;
+    const id = d.slice(REPLY_PREFIX.length);
+    if (!HEX32.test(id)) return null;
+    sk = hexToBytes(railPrivateKey);
+    if (ev.pubkey !== getPublicKey(sk) || !validEnvelope(ev, REPLY_PREFIX + id, expect.clientPubkey)) return null;
+    const verdict = checkVerdict(JSON.parse(decrypt(ev.content, getConversationKey(sk, expect.clientPubkey))));
+    return verdict && verdict.id === id ? verdict : null;
+  } catch { return null; }
+  finally { sk?.fill(0); }
+}
