@@ -176,8 +176,13 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     }
   }, [router, routerCurrent, bound, candidates, approve]);
 
+  // A43: only a persona the ceremony itself would ask for (never a withheld
+  // dormant real identity, never a pubkey this pairing does not list).
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
   const retryApproval = useCallback(async (persona: string) => {
     if (!HEX64.test(persona) || persona === bound) return;
+    if (!candidatesRef.current.some(c => c.pubkey === persona)) return;
     attempted.current.add(persona);
     await approve(persona);
   }, [approve, bound]);

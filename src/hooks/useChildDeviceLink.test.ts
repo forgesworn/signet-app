@@ -190,6 +190,19 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
   });
 
+  it('A43: retryApproval refuses a persona outside the ceremony candidates (a withheld dormant NP, a stranger)', async () => {
+    const { t } = fakeTransport();
+    const fr = fakeRouter({});
+    const { result } = renderHook(() => useChildDeviceLink({
+      record: record({ personas: [{ pubkey: PERSONA, name: 'Ally', role: 'persona' }, { pubkey: NP, name: 'Alice', role: 'natural-person' }, { pubkey: EXTRA, name: 'Gamer', role: 'extra' }] }),
+      encryptionKey: KEY, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated: async () => {},
+    }));
+    await waitFor(() => expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved'));
+    await act(async () => { await result.current.retryApproval(NP); });
+    await act(async () => { await result.current.retryApproval('99'.repeat(32)); });
+    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+  });
+
   it('waits for the router before asking', async () => {
     const { t } = fakeTransport();
     const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, transport: t, onRecordUpdated: async () => {} }));
