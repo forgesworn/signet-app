@@ -9,7 +9,7 @@ import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { isValidRelayUrl } from './relay-url';
 import { waitForReplySubscription, RELAY_READY_CAP_MS } from './relay-ready';
-import { VaultApprovalError } from './vault-approval';
+import { VaultApprovalError, isSignerRefusalMessage } from './vault-approval';
 
 type Context = { purpose: string; index: number };
 export type VaultRpc = (method: string, params: string[], context: Context) => Promise<string>;
@@ -52,9 +52,12 @@ export async function heartwoodVaultRequest(args: {
           try {
             const reply = JSON.parse(decrypt(event.content, conversation));
             if (reply?.id !== id) return;
-            // Any error reply is the device's own verdict — denied, its card
-            // timed out, or busy — never a transport failure.
-            if (reply.error) finish(undefined, new VaultApprovalError('The signer refused the vault request'));
+            // Only the device's own verdict (denied, card timed out, busy,
+            // not authorised) is a refusal; an operational error such as
+            // "decryption failed" stays an ordinary, retryable failure.
+            if (reply.error) finish(undefined, isSignerRefusalMessage(reply.error)
+              ? new VaultApprovalError('The signer refused the vault request')
+              : new Error('The signer could not complete the vault request'));
             else if (typeof reply.result === 'string' && reply.result !== 'auth_url') finish(reply.result);
             else finish(undefined, new VaultApprovalError('The signer requires approval for this vault request'));
           } catch { /* Ignore malformed/foreign replies; timeout remains armed. */ }
