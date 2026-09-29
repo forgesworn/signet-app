@@ -24,7 +24,7 @@ vi.mock('signet-protocol', async () => {
 });
 beforeEach(() => { relayMock.fetchReturns = {}; relayMock.fetchThrows = new Set(); relayMock.published = []; });
 
-import { mergeChildRules, publishChildRulesSync, fetchChildRulesSync } from './child-rules-sync';
+import { mergeChildRules, publishChildRulesSync, fetchChildRulesSync, isRulesRicherThan } from './child-rules-sync';
 import { childRuleId } from './child-rules';
 import type { ChildRule } from '../types/child-rules';
 
@@ -81,6 +81,51 @@ describe('mergeChildRules', () => {
   });
 });
 
+describe('A15 merge determinism', () => {
+  it('an equal-time tie is order-independent: tombstone wins, else larger canonical JSON', () => {
+    const a = rule({ decision: 'allow', updatedAt: 200 }), b = rule({ decision: 'deny', updatedAt: 200 });
+    const ab = mergeChildRules([a], [b]).merged[0], ba = mergeChildRules([b], [a]).merged[0];
+    expect(ab).toEqual(ba);
+    const t = rule({ updatedAt: 200, tombstonedAt: 200 });
+    expect(mergeChildRules([a], [t]).merged[0].tombstonedAt).toBe(200);
+    expect(mergeChildRules([t], [a]).merged[0].tombstonedAt).toBe(200);
+  });
+  it('lastUsedAt merges as max and is not a change on its own', () => {
+    const local = rule({ updatedAt: 200, lastUsedAt: 50 }), remote = rule({ updatedAt: 200, lastUsedAt: 90 });
+    expect(mergeChildRules([local], [remote]).merged[0].lastUsedAt).toBe(90);
+    expect(mergeChildRules([remote], [rule({ updatedAt: 100, lastUsedAt: 500 })]).merged[0].lastUsedAt).toBe(500);
+  });
+  it('isRulesRicherThan: extra id or newer wins yes; equal, older, lastUsedAt-only no', () => {
+    const r = rule();
+    expect(isRulesRicherThan([r], [r])).toBe(false);
+    expect(isRulesRicherThan([r], [])).toBe(true);
+    expect(isRulesRicherThan([rule({ updatedAt: 300, decision: 'deny' })], [r])).toBe(true);
+    expect(isRulesRicherThan([rule({ updatedAt: 50 })], [r])).toBe(false);
+    expect(isRulesRicherThan([rule({ lastUsedAt: 999 })], [r])).toBe(false);
+    expect(isRulesRicherThan([], [r])).toBe(false);
+    expect(isRulesRicherThan([rule({ tombstonedAt: 100 })], [r])).toBe(true); // tie: tombstone wins
+  });
+});
+
+describe('A15 fetch outcomes', () => {
+  const put = (content: string) => { relayMock.fetchReturns = { 'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content }] }; };
+  it("'unusable' when the record cannot be decrypted, is not JSON, or has an unknown v", async () => {
+    put('not-base64!!');
+    expect(await fetchChildRulesSync(AUTHOR, backend(), ['wss://a.example'])).toBe('unusable');
+    put(fakeNip44('{{{'));
+    expect(await fetchChildRulesSync(AUTHOR, backend(), ['wss://a.example'])).toBe('unusable');
+    put(fakeNip44(JSON.stringify({ v: 2, rules: [] })));
+    expect(await fetchChildRulesSync(AUTHOR, backend(), ['wss://a.example'])).toBe('unusable');
+  });
+  it('flags partial when entries could not be parsed', async () => {
+    put(fakeNip44(JSON.stringify({ v: 1, rules: [rule(), { junk: true }] })));
+    const r = await fetchChildRulesSync(AUTHOR, backend(), ['wss://a.example']);
+    expect(r).toMatchObject({ partial: true });
+    put(fakeNip44(JSON.stringify({ v: 1, rules: [rule()] })));
+    expect(await fetchChildRulesSync(AUTHOR, backend(), ['wss://a.example'])).toMatchObject({ partial: false });
+  });
+});
+
 describe('publish/fetch', () => {
   it('never publishes an information-free record', async () => {
     expect(await publishChildRulesSync([], backend(), ['wss://a.example'])).toBe(false);
@@ -99,6 +144,6 @@ describe('publish/fetch', () => {
     relayMock.fetchReturns = { 'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content: fakeNip44(payload) }] };
     const r = await fetchChildRulesSync(AUTHOR, backend(), ['wss://a.example']);
     expect(r).not.toBeNull();
-    if (r && r !== 'unreachable') expect(r.rules).toHaveLength(1);
+    if (r && typeof r === 'object') expect(r.rules).toHaveLength(1);
   });
 });

@@ -89,4 +89,46 @@ describe('useChildRulesSync', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
     expect(mockPublish).toHaveBeenCalledTimes(1);
   });
+
+  it('A15: an unusable remote is never published over', async () => {
+    mockFetch.mockResolvedValue('unusable');
+    vi.useFakeTimers();
+    const { rerender } = renderHook((p: { rules: ChildRule[] }) => useChildRulesSync(hookProps(p.rules)), { initialProps: { rules: [rule()] } });
+    await flush();
+    rerender({ rules: [rule({ decision: 'deny', updatedAt: 999 })] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('A15: a partially parsed remote is never published over', async () => {
+    mockFetch.mockResolvedValue({ rules: [rule()], createdAt: 1, eventId: 'e'.repeat(64), reachableRelays: 1, partial: true });
+    vi.useFakeTimers();
+    const { rerender } = renderHook((p: { rules: ChildRule[] }) => useChildRulesSync(hookProps(p.rules)), { initialProps: { rules: [rule()] } });
+    await flush();
+    rerender({ rules: [rule({ decision: 'deny', updatedAt: 999 })] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('A15: no fetch until local rules have loaded', async () => {
+    mockFetch.mockResolvedValue(null);
+    vi.useFakeTimers();
+    const { rerender } = renderHook((p: { rules: ChildRule[] | null }) => useChildRulesSync({ ...hookProps([]), rules: p.rules }), { initialProps: { rules: null as ChildRule[] | null } });
+    await flush();
+    expect(mockFetch).not.toHaveBeenCalled();
+    rerender({ rules: [rule()] });
+    await flush();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('A15: a lastUsedAt-only change does not publish', async () => {
+    const r = rule();
+    mockFetch.mockResolvedValue({ rules: [r], createdAt: 1, eventId: 'e'.repeat(64), reachableRelays: 1 });
+    vi.useFakeTimers();
+    const { rerender } = renderHook((p: { rules: ChildRule[] }) => useChildRulesSync(hookProps(p.rules)), { initialProps: { rules: [r] } });
+    await flush();
+    rerender({ rules: [rule({ lastUsedAt: 12345 })] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
 });

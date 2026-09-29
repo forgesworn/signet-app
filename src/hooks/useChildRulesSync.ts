@@ -7,6 +7,7 @@ import {
   publishChildRulesSync,
   fetchChildRulesSync,
   mergeChildRules,
+  isRulesRicherThan,
   CHILD_RULES_SYNC_D_TAG,
 } from '../lib/child-rules-sync';
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
@@ -26,8 +27,9 @@ function canon(v: unknown): unknown {
   }
   return v;
 }
+/** `lastUsedAt` is device-local usage metadata: it must never trigger a publish. */
 function hashRules(rules: ChildRule[]): string {
-  return JSON.stringify(canon([...rules].sort((a, b) => a.id.localeCompare(b.id))));
+  return JSON.stringify(canon([...rules].map(({ lastUsedAt: _u, ...r }) => { void _u; return r; }).sort((a, b) => a.id.localeCompare(b.id))));
 }
 
 interface Options {
@@ -66,6 +68,11 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
   const lastPublishedHashRef = useRef<string>('');
   const lastRemoteCreatedAtRef = useRef<number>(0);
   const publishTimerRef = useRef<PendingPublish | null>(null);
+  /** The remote rules as last known (fetched or published); null = no remote record. */
+  const remoteRulesRef = useRef<ChildRule[] | null>(null);
+  /** The remote record exists but was unreadable / partly unparsed: never publish over it. */
+  const remoteBlockedRef = useRef(false);
+  const rulesLoaded = rules !== null;
   const [hydrated, setHydrated] = useState(false);
   const [remoteState, setRemoteState] = useState<SyncRemoteState | null>(null);
   const readRetry = useSyncReadRetry(remoteState === 'unreachable');
@@ -77,11 +84,14 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
       hydratedAuthorRef.current = null;
       lastRemoteCreatedAtRef.current = 0;
       lastPublishedHashRef.current = '';
+      remoteRulesRef.current = null;
+      remoteBlockedRef.current = false;
       setRemoteState(null);
     }
-    if (!identity || !npBackend || effectiveRelays.read.length === 0 || !encryptionKey) return;
+    if (!identity || !npBackend || effectiveRelays.read.length === 0 || !encryptionKey || !rulesLoaded) return;
     let cancelled = false;
     setHydrated(false);
+    remoteBlockedRef.current = false;
 
     (async () => {
       try {
@@ -90,6 +100,7 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
         const remote = await fetchChildRulesSync(authorPubkey, npBackend, effectiveRelays.read, lastRemoteCreatedAtRef.current || undefined, decryptCache);
         if (cancelled) return;
         if (remote === 'unreachable') { setRemoteState('unreachable'); return; }
+        if (remote === 'unusable') { remoteBlockedRef.current = true; setRemoteState('present'); return; }
         if (remote === null) {
           if (lastRemoteCreatedAtRef.current > 0) {
             setRemoteState('present');
@@ -104,6 +115,8 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
         const { merged, changed } = mergeChildRules(local, remote.rules);
         if (cancelled) return;
         lastRemoteCreatedAtRef.current = remote.createdAt;
+        remoteRulesRef.current = remote.rules;
+        remoteBlockedRef.current = remote.partial === true;
         await setSyncSeen(authorPubkey, CHILD_RULES_SYNC_D_TAG, { eventId: remote.eventId, createdAt: remote.createdAt });
         if (cancelled) return;
         setRemoteState('present');
@@ -122,7 +135,7 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readRetry, identity, npBackend, readRelaysKey, encryptionKey, decryptCache]);
+  }, [readRetry, identity, npBackend, readRelaysKey, encryptionKey, decryptCache, rulesLoaded]);
 
   useEffect(() => {
     if (!publishEnabled) return;
@@ -137,10 +150,17 @@ export function useChildRulesSync({ publishEnabled = true, identity, npBackend, 
     publishTimerRef.current = schedulePublish(async () => {
       publishTimerRef.current = null;
       try {
+        if (remoteBlockedRef.current) return;
         const hash = hashRules(rules);
         if (hash === lastPublishedHashRef.current) return;
+        // Only push what the remote lacks or loses to.
+        const remoteRules = remoteRulesRef.current;
+        if (remoteRules !== null && !isRulesRicherThan(rules, remoteRules)) return;
         const ok = await publishChildRulesSync(rules, publishingBackend, effectiveRelays.write);
-        if (ok && syncAuthorRef.current === identity.naturalPerson.publicKey) lastPublishedHashRef.current = hash;
+        if (ok && syncAuthorRef.current === identity.naturalPerson.publicKey) {
+          lastPublishedHashRef.current = hash;
+          remoteRulesRef.current = rules;
+        }
       } catch { /* next debounce cycle retries */ }
     }, PUBLISH_DEBOUNCE_MS);
 
