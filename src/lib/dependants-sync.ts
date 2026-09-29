@@ -436,6 +436,7 @@ export function mergeDependantWithLocal(
     appBunkerEndpoint: local.appBunkerEndpoint,
     auditVisibility: local.auditVisibility,
     petitionOnDeny: local.petitionOnDeny,
+    childDevice: local.childDevice,
     // Monotonic OR (spec §3.4). Activation propagates; absence on either side
     // never deactivates. Both sides are read through the lift-aware accessor so
     // a pre-field record on either device resolves before the OR.

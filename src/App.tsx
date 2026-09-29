@@ -257,7 +257,11 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule } from './lib/db';
+import type { ChildRule } from './types/child-rules';
+import { useChildRulesSync } from './hooks/useChildRulesSync';
+import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
+import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
 import { contactToKindredEntry } from './lib/kindred-adapter';
@@ -1578,6 +1582,36 @@ export function App() {
     encryptionKey,
     grants: grantsForSync,
     onRemoteMerged: reloadGrants,
+  });
+
+  // Child-direct rules (spec §5): guardian source of truth, all dependants,
+  // INCLUDING tombstones. Null while loading — the policy push and the
+  // guardian→child rules publisher both wait for it. Guardian installs only.
+  const [childRules, setChildRules] = useState<ChildRule[] | null>(null);
+  const reloadChildRules = useCallback(async () => {
+    if (!encryptionKey || isPairedChild) { setChildRules(null); return; }
+    const key = encryptionKey;
+    try {
+      const rows = await listAllChildRules(key);
+      if (encryptionKeyRef.current === key) setChildRules(rows);
+    } catch { if (encryptionKeyRef.current === key) setChildRules([]); }
+  }, [encryptionKey, isPairedChild]);
+  useEffect(() => { void reloadChildRules(); }, [reloadChildRules]);
+  useChildRulesSync({
+    publishEnabled: !isPairedChild && legacyPrivateWrite('settings'),
+    identity: isPairedChild ? null : identity,
+    npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
+    relays: syncRelays,
+    encryptionKey: isPairedChild ? null : encryptionKey,
+    rules: childRules,
+    onMerged: (merged) => {
+      const key = encryptionKey;
+      if (!key) return;
+      void (async () => {
+        for (const r of merged) { try { await saveChildRule(r, key); } catch { /* next fetch retries */ } }
+        await reloadChildRules();
+      })();
+    },
   });
 
   // Guardian-side per-dependant status publisher. Signals each
@@ -3732,6 +3766,16 @@ export function App() {
     signingMode: preferences.signingMode,
     dependants,
     grants: grantsForSync,
+    childRules: isPairedChild ? [] : childRules,
+  });
+
+  // Guardian → child rules rail for every dependant whose own phone is
+  // paired straight to the Heartwood (spec §5.2), on the rail relay.
+  useChildRulesPublisher({
+    enabled: !!encryptionKey && !isPairedChild,
+    dependants,
+    childRules,
+    relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
   });
 
   // C4 verdict leg — `resolve_approval` for a parked "Family asks" row.
@@ -5743,12 +5787,19 @@ export function App() {
     retractions.push(...await tombstoneGrantsFor((g) => g.directoryId === depDirectoryId, true));
     bumpContactsGrantSet();
 
+    // A9: the child's own phone loses its Heartwood slot with the dependant —
+    // best effort, inside the same 5 s budget (§9.4 "The whole phone").
+    const operatorClient = heartwoodOperator.client;
+    if (dep.childDevice?.mode === 'heartwood-direct' && operatorClient) {
+      retractions.push(revokeChildDeviceSlot(operatorClient, dep).catch(() => { /* best effort */ }));
+    }
+
     if (retractions.length === 0) return;
     await Promise.race([
       Promise.allSettled(retractions),
       new Promise(resolve => setTimeout(resolve, 5_000)),
     ]).catch(() => { /* non-fatal */ });
-  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet]);
+  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet, heartwoodOperator.client]);
 
   /**
    * Phase 2F shared publish helper. Resolves the per-slot signing backend
@@ -10965,6 +11016,28 @@ export function App() {
           onOpenSecuritySettings={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-security'); }}
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
+          signingMode={preferences.signingMode}
+          direct={identity ? {
+            operator: heartwoodOperator.client,
+            operatorStatus: heartwoodOperator.status,
+            guardianNpPubkey: identity.naturalPerson.publicKey,
+            railRelay: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+            hwRelays: heartwoodOperator.credential?.relays ?? [],
+            encryptionKey,
+            grants: grantsForSync,
+            // Merge ONLY the pairing fields onto a fresh read, so a concurrent
+            // edit to the dependant is never overwritten by this snapshot.
+            onDependantUpdated: async (dep) => {
+              const key = encryptionKey || await requestAuth();
+              if (!key) throw new Error('Authentication required');
+              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+              if (!fresh) throw new Error('Dependant not found');
+              await saveDependant({ ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice }, key);
+              await reloadDependants();
+            },
+            onRulesChanged: () => { void reloadChildRules(); },
+            onOpenOperatorImport: () => navigateTo('settings-advanced'),
+          } : undefined}
         />
       </Layout>
     );

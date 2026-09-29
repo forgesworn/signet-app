@@ -210,4 +210,27 @@ export interface DependantIdentity {
    * See 2026-05-15-persona-inventory-sync-to-paired-child-design.md §2.2.
    */
   hiddenOnPairedDeviceKeys?: string[];
+  /**
+   * The child's own phone, paired straight to the family Heartwood
+   * (child-direct, spec §4). Absent for a phone-paired child. Device-local:
+   * never crosses the dependants sync wire (the slot is managed from the
+   * guardian device holding the operator key).
+   */
+  childDevice?: DependantChildDevice;
+}
+
+/** A Heartwood client slot minted for the child's own phone (spec §4 step 3). */
+export interface DependantChildDevice {
+  mode: 'heartwood-direct';
+  /** `signet:child-device:v2:<first 16 hex of dep.id>` */
+  slotLabel: string;
+  /** Echoed as `expected_secret_fingerprint` on every slot mutation. */
+  secretFingerprint: string;
+  slotIndex: number;
+  /** The child phone's NIP-46 client pubkey (also `bunkerEndpoint.authorizedClientPubkey`). */
+  clientPubkey: string;
+  /** Persona the slot is bound to. */
+  boundPersona: string;
+  /** Unix ms. */
+  pairedAt: number;
 }
