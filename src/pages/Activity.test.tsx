@@ -41,6 +41,16 @@ describe('Activity — merged child-direct timeline', () => {
     expect(screen.getAllByRole('alert')).toHaveLength(1);
   });
 
+  it('A48: a record the guardian made as the child reads "Signed by you", with no mismatch', () => {
+    const rows: MergedActivityRow[] = [
+      { entry: null, device: { id: 'g', dependantPubkey: PERSONA, createdAt: now - 1200, outcome: 'auto-approved', eventKind: 1 }, mismatch: false, byGuardian: true },
+    ];
+    render(<Activity dependant={dep} entries={[]} loading={false} error={null} onRefresh={() => {}} merged={rows} />);
+    const [item] = screen.getAllByTestId('merged-activity-row');
+    expect(item).toHaveTextContent('As Skylark · Signed by you · Signed');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('empty merged timeline has its own copy', () => {
     render(<Activity dependant={dep} entries={[]} loading={false} error={null} onRefresh={() => {}} merged={[]} />);
     expect(screen.getByText("What Sky's phone signs, and what it asks you, will appear here.")).toBeInTheDocument();

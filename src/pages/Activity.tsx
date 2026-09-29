@@ -379,7 +379,7 @@ function mergedSummary(row: MergedActivityRow): string {
 function MergedRow({ row, last, childName, personaNames }: { row: MergedActivityRow; last: boolean; childName: string; personaNames: Map<string, string> }) {
   const persona = row.entry?.persona ?? row.device?.dependantPubkey ?? '';
   const personaName = personaNames.get(persona) ?? `${persona.slice(0, 8)}…`;
-  const app = row.entry ? row.entry.appLabel : CHILD_ACTIVITY_COPY.onHeartwood;
+  const app = row.entry ? row.entry.appLabel : row.byGuardian ? CHILD_ACTIVITY_COPY.signedByYou : CHILD_ACTIVITY_COPY.onHeartwood;
   const outcome = row.entry
     ? CHILD_ACTIVITY_COPY.outcome[row.entry.outcome] ?? row.entry.outcome
     : (row.device?.outcome === 'denied' || row.device?.outcome === 'auto-denied' ? CHILD_ACTIVITY_COPY.outcome.denied : CHILD_ACTIVITY_COPY.outcome.signed);

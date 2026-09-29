@@ -164,4 +164,18 @@ describe('mergeActivity', () => {
     const rows = mergeActivity([entry({ at: 5, requestCreatedAt: undefined, outcome: 'denied' })], [dev({ createdAt: 9 })], 20);
     expect(rows[0].device?.createdAt).toBe(9);
   });
+
+  it('A48: a device record matched by the guardian\'s own signing is "by you", never a mismatch', () => {
+    const d = dev({ createdAt: NOW - 5000 });
+    const g = { source: 'guardian' as const, persona: d.dependantPubkey, kind: d.eventKind ?? null, method: 'sign_event' as const, requestCreatedAt: NOW - 5000, at: NOW - 5000 };
+    const rows = mergeActivity([], [d], NOW, [g]);
+    expect(rows).toEqual([{ entry: null, device: d, mismatch: false, byGuardian: true }]);
+    // a guardian row for another persona does not excuse it
+    expect(mergeActivity([], [d], NOW, [{ ...g, persona: OTHER }])[0].mismatch).toBe(true);
+    // a child record wins the device record first
+    const both = mergeActivity([entry({ requestCreatedAt: NOW - 5000 })], [d], NOW, [g]);
+    expect(both).toHaveLength(1);
+    expect(both[0].entry).not.toBeNull();
+    expect(both[0].byGuardian).toBeUndefined();
+  });
 });

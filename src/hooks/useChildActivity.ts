@@ -22,6 +22,8 @@ import {
 } from '../lib/child-activity';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { subscribeEvents } from '../lib/relay-service';
+import { loadGuardianActing as dbLoadGuardianActing } from '../lib/db';
+import type { GuardianActingEntry } from '../lib/guardian-acting';
 
 /** Child records kept (newest). */
 export const CHILD_ACTIVITY_KEEP = 1000;
@@ -46,6 +48,8 @@ export interface UseChildActivityOpts {
   deviceEntries: AuditEntry[];
   transport?: ChildActivityRailTransport;
   now?: () => number;
+  /** A48: this phone's own signings as the child (device-local row). */
+  loadGuardianActing?: (encryptionKey: string) => Promise<GuardianActingEntry[]>;
 }
 
 export interface ChildActivity {
@@ -116,6 +120,18 @@ export function useChildActivity(opts: UseChildActivityOpts): ChildActivity {
   }, [key, clientPub, relay, pairedAtS]);
 
   const [tick, setTick] = useState(0);
+  // A48: re-read on every tick, so a signing this phone just made as the child
+  // matches the Heartwood's record the next time the timeline is aged.
+  const [guardianRows, setGuardianRows] = useState<GuardianActingEntry[]>([]);
+  const loadGuardianRef = useRef(opts.loadGuardianActing ?? dbLoadGuardianActing);
+  loadGuardianRef.current = opts.loadGuardianActing ?? dbLoadGuardianActing;
+  const key2 = key ? opts.encryptionKey : null;
+  useEffect(() => {
+    if (!key2) { setGuardianRows([]); return; }
+    let cancelled = false;
+    loadGuardianRef.current(key2).then((rows) => { if (!cancelled) setGuardianRows(rows); }).catch(() => { /* none shown */ });
+    return () => { cancelled = true; };
+  }, [key2, tick]);
   useEffect(() => {
     if (!key) return;
     const t = setInterval(() => setTick(n => n + 1), TICK_MS);
@@ -126,9 +142,10 @@ export function useChildActivity(opts: UseChildActivityOpts): ChildActivity {
     if (!cd) return [];
     const mine = new Set(opts.dependant ? dependantPersonaPubkeys(opts.dependant) : []);
     const device = opts.deviceEntries.filter(d => d.createdAt >= pairedAtS && mine.has(d.dependantPubkey));
-    return mergeActivity(entries, device, Math.floor(nowRef.current() / 1000));
+    const mineGuardian = guardianRows.filter(g => mine.has(g.persona));
+    return mergeActivity(entries, device, Math.floor(nowRef.current() / 1000), mineGuardian);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `tick` re-ages the mismatch flag
-  }, [cd, entries, opts.deviceEntries, opts.dependant, pairedAtS, tick]);
+  }, [cd, entries, opts.deviceEntries, opts.dependant, pairedAtS, tick, guardianRows]);
 
   return { apps, rows };
 }

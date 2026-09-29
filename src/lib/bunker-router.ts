@@ -334,6 +334,9 @@ export function routedSignerUnavailableMessage(input: {
  * destroy() tears down the routes it created but never the primary (App.tsx
  * owns that lifecycle).
  */
+/** A48: wraps a derived route (see `BunkerBackendRouter.setRouteDecorator`). */
+export type RouteDecorator = (slotPubkeyHex: string, route: DecryptingSigningBackend) => DecryptingSigningBackend;
+
 export class BunkerBackendRouter {
   readonly primary: BunkerSigningBackend;
   readonly capabilities: HeartwoodCapabilities;
@@ -341,6 +344,7 @@ export class BunkerBackendRouter {
   private readonly makeBackend: MakeBackend;
   private readonly routes = new Map<string, RoutedBunkerSigningBackend>();
   private destroyed = false;
+  private decorator: RouteDecorator | null = null;
 
   private constructor(primary: BunkerSigningBackend, clientSecretHex: string, capabilities: HeartwoodCapabilities, makeBackend: MakeBackend) {
     this.primary = primary;
@@ -393,6 +397,16 @@ export class BunkerBackendRouter {
     return { kind: 'router', router: new BunkerBackendRouter(primary, clientSecretHex, caps, makeBackend) };
   }
 
+  /**
+   * A48: a view applied to every derived route `backendFor` hands out (never
+   * the primary). The guardian install uses it to stamp and record signings
+   * made as a direct-paired child's persona. Called on every lookup, so the
+   * decorator decides per call and keeps its own cache.
+   */
+  setRouteDecorator(fn: RouteDecorator | null): void {
+    this.decorator = fn;
+  }
+
   backendFor(slotPubkeyHex: string | undefined | null): DecryptingSigningBackend | null {
     if (this.destroyed) return null;
     const pk = (slotPubkeyHex || '').trim().toLowerCase();
@@ -416,7 +430,7 @@ export class BunkerBackendRouter {
       route = new RoutedBunkerSigningBackend(this.clientSecretHex, uri, pk, this.makeBackend);
       this.routes.set(pk, route);
     }
-    return route;
+    return this.decorator ? this.decorator(pk, route) : route;
   }
 
   destroy(): void {

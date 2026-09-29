@@ -15,6 +15,7 @@ import { LocalSigningBackend } from './signing-backend';
 import { unwrapWrappedRumorWithKey, type AuditEntry } from './audit-fetch';
 import { AUDIT_EVENT_KIND } from './audit';
 import { TARGET_RE } from './child-rules-wire';
+import type { GuardianActingEntry } from './guardian-acting';
 
 
 /** An app or site the child's phone has served (spec §9.1). Unix seconds. */
@@ -240,11 +241,19 @@ export function isUnpairedNotice(ev: NostrEvent, railPubkey: string, clientPubke
 
 // ── Merged timeline ────────────────────────────────────────────────────────
 
-export interface MergedActivityRow { entry: ChildActivityEntry | null; device: AuditEntry | null; mismatch: boolean; }
+export interface MergedActivityRow {
+  entry: ChildActivityEntry | null;
+  device: AuditEntry | null;
+  mismatch: boolean;
+  /** A48: the device record matches a signing the guardian's own phone made as this persona. */
+  byGuardian?: boolean;
+}
 
 const DEVICE_SIGNED = new Set(['approved', 'auto-approved']);
 
-function sameOp(c: ChildActivityEntry, d: AuditEntry): boolean {
+type OpLike = Pick<ChildActivityEntry, 'persona' | 'kind' | 'method'>;
+
+function sameOp(c: OpLike, d: AuditEntry): boolean {
   if (c.persona !== d.dependantPubkey) return false;
   if (c.kind !== null) return d.eventKind === c.kind;
   if (d.eventKind !== undefined) return false;
@@ -255,25 +264,38 @@ function sameOp(c: ChildActivityEntry, d: AuditEntry): boolean {
  * Join the child's own records with the Heartwood's C5 records (spec §9.2) on
  * (persona, kind, forced request `created_at`). The device's `created_at` is
  * the request's, or bumped up to +2 s on a collision: each device record takes
- * the nearest unused child record in that window. A device-only SIGNING older
- * than 600 s is flagged; a child-only row (denied/asked/blocked never reach
- * the device) is shown as-is. Newest first.
+ * the nearest unused child record in that window. A48: a device record no
+ * child record claims is then matched the same way against the guardian's own
+ * signings as the child (`guardian`) — shown "Signed by you", never flagged.
+ * A device-only SIGNING older than 600 s is flagged; a child-only row
+ * (denied/asked/blocked never reach the device) is shown as-is. Newest first.
  */
-export function mergeActivity(child: ChildActivityEntry[], device: AuditEntry[], nowS: number): MergedActivityRow[] {
+export function mergeActivity(child: ChildActivityEntry[], device: AuditEntry[], nowS: number, guardian: GuardianActingEntry[] = []): MergedActivityRow[] {
   const rows: MergedActivityRow[] = [];
   const used = new Set<number>();
-  const devices = [...device].sort((a, b) => a.createdAt - b.createdAt);
-  for (const d of devices) {
+  const usedGuardian = new Set<number>();
+  const nearest = <T extends OpLike & { requestCreatedAt?: number }>(list: T[], taken: Set<number>, d: AuditEntry): number => {
     let best = -1, bestDelta = Infinity;
-    child.forEach((c, i) => {
-      if (used.has(i) || c.requestCreatedAt === undefined || !sameOp(c, d)) return;
+    list.forEach((c, i) => {
+      if (taken.has(i) || c.requestCreatedAt === undefined || !sameOp(c, d)) return;
       const delta = d.createdAt - c.requestCreatedAt;
       if (delta < 0 || delta > ACTIVITY_JOIN_WINDOW_S) return;
-      if (delta < bestDelta || (delta === bestDelta && c.requestCreatedAt < child[best].requestCreatedAt!)) { best = i; bestDelta = delta; }
+      if (delta < bestDelta || (delta === bestDelta && c.requestCreatedAt < list[best].requestCreatedAt!)) { best = i; bestDelta = delta; }
     });
+    return best;
+  };
+  const devices = [...device].sort((a, b) => a.createdAt - b.createdAt);
+  for (const d of devices) {
+    const best = nearest(child, used, d);
     if (best >= 0) {
       used.add(best);
       rows.push({ entry: child[best], device: d, mismatch: false });
+      continue;
+    }
+    const mine = nearest(guardian, usedGuardian, d);
+    if (mine >= 0) {
+      usedGuardian.add(mine);
+      rows.push({ entry: null, device: d, mismatch: false, byGuardian: true });
     } else {
       rows.push({ entry: null, device: d, mismatch: DEVICE_SIGNED.has(d.outcome) && nowS - d.createdAt > ACTIVITY_MISMATCH_AFTER_S });
     }

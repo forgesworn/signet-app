@@ -20,6 +20,7 @@ import { validateOperation, validateRecord } from './contacts-v2-reducer';
 import { createSerialQueue } from './contacts-v2-queue';
 import { portableSettingsValues } from './portable-settings';
 import { privateVaultQueue } from './private-vault-queue';
+import { parseGuardianActingEntry, pruneGuardianActing, type GuardianActingEntry } from './guardian-acting';
 
 export { encryptSecret, decryptSecret } from './crypto-store';
 
@@ -3366,6 +3367,26 @@ export function removePendingChildRevoke(rec: Pick<PendingChildRevoke, 'slotInde
     const list = await listPendingChildRevokes(encryptionKey);
     const next = list.filter(r => !(r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase()));
     if (next.length !== list.length) await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, next, encryptionKey);
+  });
+}
+
+const GUARDIAN_ACTING_ROW = CHILD_DIRECT_ROW_PREFIX + 'guardianActing';
+
+/** A48: signings this guardian phone made as a direct-paired child's persona (7 days, ≤1000). */
+export async function loadGuardianActing(encryptionKey: string): Promise<GuardianActingEntry[]> {
+  const raw = await loadEncryptedJsonRow(GUARDIAN_ACTING_ROW, encryptionKey);
+  if (!Array.isArray(raw)) return [];
+  return pruneGuardianActing(raw.map(parseGuardianActingEntry).filter((e): e is GuardianActingEntry => e !== null), Math.floor(Date.now() / 1000));
+}
+
+const guardianActingWrites = createSerialQueue();
+
+/** Append one record (serialised read-modify-write; pruned on every write). */
+export function appendGuardianActing(entry: GuardianActingEntry, encryptionKey: string): Promise<void> {
+  return guardianActingWrites.run(async () => {
+    const list = await loadGuardianActing(encryptionKey);
+    const next = pruneGuardianActing([entry, ...list], Math.floor(Date.now() / 1000));
+    await saveEncryptedJsonRow(GUARDIAN_ACTING_ROW, next, encryptionKey);
   });
 }
 

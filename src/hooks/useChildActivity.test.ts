@@ -71,4 +71,13 @@ describe('useChildActivity (guardian)', () => {
     expect(a.subs.length + b.subs.length).toBe(0);
     expect(result.current.rows).toEqual([]);
   });
+
+  it('A48: a Heartwood record of the guardian acting as the child is "by you", not a mismatch', async () => {
+    const { t } = fake();
+    const device: AuditEntry[] = [{ id: 'g', dependantPubkey: PERSONA, createdAt: NOW_MS / 1000 - 1200, outcome: 'auto-approved', eventKind: 1 }];
+    const loadGuardianActing = async () => [{ source: 'guardian' as const, persona: PERSONA, kind: 1, method: 'sign_event' as const, requestCreatedAt: NOW_MS / 1000 - 1200, at: NOW_MS / 1000 - 1200 }];
+    const { result } = renderHook(() => useChildActivity({ dependant: dep(), relays: [], encryptionKey: KEY, deviceEntries: device, transport: t, now: () => NOW_MS, loadGuardianActing }));
+    await waitFor(() => expect(result.current.rows[0]?.byGuardian).toBe(true));
+    expect(result.current.rows[0].mismatch).toBe(false);
+  });
 });

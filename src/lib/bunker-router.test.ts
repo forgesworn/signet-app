@@ -171,6 +171,19 @@ describe('BunkerBackendRouter', () => {
     expect(a!.activePublicKeyHex).toBe(PK_B);
   });
 
+  it('A48: setRouteDecorator wraps derived routes, never the primary', async () => {
+    const primary = connectedPrimary();
+    const router = (await BunkerBackendRouter.create(primary, SECRET))!;
+    const seen: string[] = [];
+    const wrapped = { tag: 'wrapped' } as never;
+    router.setRouteDecorator((pk, route) => { seen.push(pk); return pk === PK_B ? wrapped : route; });
+    expect(router.backendFor(PK_B)).toBe(wrapped);
+    expect(router.backendFor(PK_A)).toBe(primary);
+    expect(seen).toEqual([PK_B]);
+    router.setRouteDecorator(null);
+    expect(router.backendFor(PK_B)).not.toBe(wrapped);
+  });
+
   it('backendFor() fails soft on empty/invalid pubkeys', async () => {
     const router = (await BunkerBackendRouter.create(connectedPrimary(), SECRET))!;
     expect(router.backendFor('')).toBeNull();

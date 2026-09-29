@@ -262,7 +262,7 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, type ApprovedOnceKinds } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, type ApprovedOnceKinds } from './lib/db';
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
@@ -285,8 +285,10 @@ import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMess
 import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
-import { useChildGate } from './hooks/useChildGate';
-import type { RouterProbeState } from './lib/bunker-router';
+import { useChildGate, nextRequestCreatedAt } from './hooks/useChildGate';
+import { guardianActingBackend } from './lib/guardian-acting';
+import { dependantPersonaPubkeys } from './hooks/useChildActivity';
+import type { RouterProbeState, RouteDecorator } from './lib/bunker-router';
 import { awaitRoutedBackend, acquireRoutedBackend, ROUTED_APPROVAL_WAIT_MS } from './lib/await-routed-backend';
 import { handOffAuthCallback, shouldRedirectDenial } from './lib/auth-redirect-handoff';
 import { AuthRequestSettlement, authRequestKey, requestObjectKey } from './lib/auth-request-settlement';
@@ -1227,6 +1229,34 @@ export function App() {
   // router route is ever requested for it.
   const withheldSlotsCsv = childDirectWithheldSlots({ signingMode: preferences.signingMode, record: pairedChildRecord, identity }).join(',');
   const slotResolveOpts = useMemo(() => ({ withheld: withheldSlotsCsv ? withheldSlotsCsv.split(',') : [] }), [withheldSlotsCsv]);
+  // A48: the guardian's own phone signing as one of a direct-paired child's
+  // personas (any feature, through the routed Heartwood backend) is stamped
+  // and recorded locally, so the merged timeline shows the Heartwood's record
+  // as "Signed by you" instead of "not reported by their phone". Applied at the
+  // router, before any memo below asks it for a backend.
+  const guardianActingPersonasCsv = isPairedChild ? '' : [...new Set(dependants
+    .filter(d => d.childDevice?.mode === 'heartwood-direct')
+    .flatMap(dependantPersonaPubkeys))].sort().join(',');
+  const guardianActingRef = useRef<{ personas: Set<string>; key: string | null }>({ personas: new Set(), key: null });
+  guardianActingRef.current = { personas: new Set(guardianActingPersonasCsv ? guardianActingPersonasCsv.split(',') : []), key: encryptionKey };
+  const guardianActingWrappersRef = useRef(new WeakMap<object, DecryptingSigningBackend>());
+  const guardianActingDecorator = useCallback<RouteDecorator>((pk, route) => {
+    if (!guardianActingRef.current.personas.has(pk)) return route;
+    const cache = guardianActingWrappersRef.current;
+    let wrapped = cache.get(route);
+    if (!wrapped) {
+      wrapped = guardianActingBackend(route, pk, {
+        stamp: (p) => nextRequestCreatedAt(p),
+        record: (e) => {
+          const key = guardianActingRef.current.key;
+          if (key) void appendGuardianActing(e, key).catch(() => { /* bookkeeping only */ });
+        },
+      });
+      cache.set(route, wrapped);
+    }
+    return wrapped;
+  }, []);
+  bunkerRouter?.setRouteDecorator(isPairedChild ? null : guardianActingDecorator);
   // A41: on a direct child every NP seam (Venue Entry, Blossom, audit, the
   // legacy fallbacks) signs through the child's gate as appId `mysignet` once
   // the real identity is active. `childGateRef` is read at call time.
