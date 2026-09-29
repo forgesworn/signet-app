@@ -210,6 +210,45 @@ describe('useChildAsks — verdicts', () => {
     expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
   });
 
+  it('A47: "Send again" of a once converted to device-unreachable re-attempts the original choice', async () => {
+    const s = await withAsk();
+    s.pushCeiling.mockResolvedValue('failed');
+    t.ok = false; // the converted deny does not reach the child either
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
+    // The button names the original choice, and a later push that works sends `once`.
+    s.pushCeiling.mockResolvedValue('ok');
+    t.ok = true;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(2);
+    expect(r).toEqual({ sent: true });
+    expect(await verdictOf(t.published[t.published.length - 1].ev, s.a.id)).toMatchObject({ verdict: 'once' });
+  });
+
+  it('A47: if the push fails again the resend is deny / device-unreachable; a plain deny resends deny', async () => {
+    const s = await withAsk();
+    s.pushCeiling.mockResolvedValue('failed');
+    t.ok = false;
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(s.hook.result.current.asks[0].unsent).toEqual({ verdict: 'once' });
+    t.ok = true;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(2);
+    expect(r).toEqual({ sent: true, reason: 'device-unreachable' });
+    expect(await verdictOf(t.published[t.published.length - 1].ev, s.a.id)).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
+
+    const d = await withAsk();
+    t.ok = false;
+    await act(async () => { await d.hook.result.current.decide(d.a.id, 'deny'); });
+    t.ok = true;
+    const before = d.pushCeiling.mock.calls.length;
+    await act(async () => { await d.hook.result.current.decide(d.a.id, 'deny'); });
+    expect(d.pushCeiling.mock.calls.length).toBe(before);
+    expect(await verdictOf(t.published[t.published.length - 1].ev, d.a.id)).toMatchObject({ verdict: 'deny' });
+  });
+
   it('A5: an Always that would need a 65th kind is refused and answered deny; no rule saved, no push', async () => {
     // request-approve lists only 22242 on its own; 63 kind rules fill the 64.
     const full: ChildRule[] = Array.from({ length: 63 }, (_, i) => ({

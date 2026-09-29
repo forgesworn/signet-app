@@ -25,6 +25,7 @@ import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { NostrEvent } from 'signet-protocol';
 import { useChildDevicePairing, GRANTS_WAIT_MS, PAIR_REQUEST_MAX_AGE_S, STATUS_WAIT_MS, type PairingTransport, type UseChildDevicePairingOpts } from './useChildDevicePairing';
+import { withOperatorLock } from '../lib/operator-lock';
 import { CHILD_DEVICE_COPY } from '../lib/child-device-copy';
 
 const mMint = vi.mocked(nostrconnectV2), mList = vi.mocked(listClients), mRevoke = vi.mocked(revokeClient);
@@ -481,5 +482,51 @@ describe('useChildDevicePairing — unpair', () => {
     const s = setup();
     await expect(act(async () => { await s.hook.result.current.unpair(); })).rejects.toThrow();
     expect(saved).toHaveLength(0);
+  });
+});
+
+describe('useChildDevicePairing — operator lock (A46)', () => {
+  it('a policy push during the mint waits until the whole mint sequence completes', async () => {
+    const s = await toConfirm();
+    const persona = dependant.persona.publicKey;
+    const listed = mintOk(s.c, persona);
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const base = mMint.getMockImplementation()!;
+    mMint.mockImplementation(async (op, req) => { order.push('mint:start'); await gate; const m = await base(op, req); order.push('mint:done'); return m; });
+    mList.mockImplementation(async () => {
+      const policy = mMint.mock.calls[0]?.[1].policy;
+      return policy ? [listed(policy)] : [];
+    });
+    s.onDependantUpdated.mockImplementation(async (d: DependantIdentity) => { order.push('save'); saved.push(d); dependant = d; });
+    let done!: Promise<void>;
+    await act(async () => { done = s.hook.result.current.confirmMatch(); await vi.advanceTimersByTimeAsync(0); });
+    expect(order).toEqual(['mint:start']);
+    const push = withOperatorLock(operator, async () => { order.push('push'); });
+    await flush(10);
+    expect(order).toEqual(['mint:start']);
+    release();
+    await act(async () => { await done; await push; });
+    expect(order).toEqual(['mint:start', 'mint:done', 'save', 'push']);
+  });
+
+  it('unpair is locked too', async () => {
+    dependant = { ...dependant, bunkerEndpoint: { publicKey: 'c'.repeat(64), privateKey: 'd'.repeat(64), createdAt: 1, authorizedClientPubkey: 'a'.repeat(64) },
+      childDevice: { mode: 'heartwood-direct', slotLabel: childDirectSlotLabel(dependant.id), secretFingerprint: 'ab'.repeat(32), slotIndex: 4,
+        clientPubkey: 'a'.repeat(64), boundPersona: dependant.persona.publicKey, pairedAt: 1 } };
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    mRevoke.mockImplementation(async () => { order.push('revoke:start'); await gate; order.push('revoke:done'); });
+    const s = setup({ clearChildDevice: async () => {} });
+    let done!: Promise<void>;
+    await act(async () => { done = s.hook.result.current.unpair(); await vi.advanceTimersByTimeAsync(0); });
+    const push = withOperatorLock(operator, async () => { order.push('push'); });
+    await flush(10);
+    expect(order).toEqual(['revoke:start']);
+    release();
+    await act(async () => { await done; await push; });
+    expect(order).toEqual(['revoke:start', 'revoke:done', 'push']);
   });
 });

@@ -43,6 +43,7 @@ import {
   childDirectPersona, clientKeyInUse, isSameSlot, MAX_CONNECT_SLOTS, replyPersonas, revokeChildDeviceSlot, staticPairBlock,
   supersededSlots, unconfirmedMintSlots, verifyMintedSlot, type PairBlockReason,
 } from '../lib/child-device-pairing';
+import { withOperatorLock } from '../lib/operator-lock';
 import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
 
 export type ChildPairingState =
@@ -368,69 +369,76 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       nowSeconds: Math.floor(nowMs / 1000),
     });
 
-    let minted;
-    try {
-      minted = await nostrconnectV2(op, {
-        clientPubkey: req.clientPubkey, secret: nc.secret, createdAt: req.createdAt,
-        relay: s.hwRelays[0], identity: s.persona, label: s.label, policy,
-      });
-    } catch (e) {
-      // A4: the device may have created the slot before the reply was lost.
-      const errIndex = (e as { slotIndex?: unknown })?.slotIndex;
-      let clean = true;
+    // A46: mint → verify → save → rollback → superseded revoke is one operator-locked unit,
+    // so a policy push can never interleave with a half-made slot.
+    const sequence = await withOperatorLock(op, async () => {
+      let minted;
       try {
-        const slots = await listClients(op);
-        for (const stray of unconfirmedMintSlots(slots, { label: s.label, clientPubkey: req.clientPubkey,
-          slotIndex: typeof errIndex === 'number' ? errIndex : undefined, current })) {
-          try { await revokeClient(op, { slotIndex: stray.slotIndex, secretFingerprint: stray.secretFingerprint }); } catch { clean = false; }
-        }
-      } catch { clean = false; }
-      setState(gen, { phase: 'error', message: clean ? COPY.errors.mint : COPY.errors.mintUnconfirmed });
-      void replyFailure(s, [req.clientPubkey], 'mint-failed');
-      return;
-    }
+        minted = await nostrconnectV2(op, {
+          clientPubkey: req.clientPubkey, secret: nc.secret, createdAt: req.createdAt,
+          relay: s.hwRelays[0], identity: s.persona, label: s.label, policy,
+        });
+      } catch (e) {
+        // A4: the device may have created the slot before the reply was lost.
+        const errIndex = (e as { slotIndex?: unknown })?.slotIndex;
+        let clean = true;
+        try {
+          const slots = await listClients(op);
+          for (const stray of unconfirmedMintSlots(slots, { label: s.label, clientPubkey: req.clientPubkey,
+            slotIndex: typeof errIndex === 'number' ? errIndex : undefined, current })) {
+            try { await revokeClient(op, { slotIndex: stray.slotIndex, secretFingerprint: stray.secretFingerprint }); } catch { clean = false; }
+          }
+        } catch { clean = false; }
+        setState(gen, { phase: 'error', message: clean ? COPY.errors.mint : COPY.errors.mintUnconfirmed });
+        void replyFailure(s, [req.clientPubkey], 'mint-failed');
+        return null;
+      }
 
-    const revokeMinted = async () => {
-      if (isSameSlot(minted, current)) return false; // A23: never the current phone's slot
-      try { await revokeClient(op, { slotIndex: minted.slotIndex, secretFingerprint: minted.secretFingerprint }); return true; } catch { return false; }
-    };
+      const revokeMinted = async () => {
+        if (isSameSlot(minted, current)) return false; // A23: never the current phone's slot
+        try { await revokeClient(op, { slotIndex: minted.slotIndex, secretFingerprint: minted.secretFingerprint }); return true; } catch { return false; }
+      };
 
-    // A9: the slot must now list exactly what we asked for.
-    let slots;
-    try { slots = await listClients(op); } catch { slots = null; }
-    const verified = slots ? verifyMintedSlot(slots, { slotIndex: minted.slotIndex, secretFingerprint: minted.secretFingerprint,
-      label: s.label, persona: s.persona, clientPubkey: req.clientPubkey, policy }) : null;
-    if (!slots || !verified) {
-      const ok = await revokeMinted();
-      setState(gen, { phase: 'error', message: ok ? COPY.errors.verify : COPY.errors.mintUnconfirmed });
-      void replyFailure(s, [req.clientPubkey], 'verify-failed');
-      return;
-    }
+      // A9: the slot must now list exactly what we asked for.
+      let slots;
+      try { slots = await listClients(op); } catch { slots = null; }
+      const verified = slots ? verifyMintedSlot(slots, { slotIndex: minted.slotIndex, secretFingerprint: minted.secretFingerprint,
+        label: s.label, persona: s.persona, clientPubkey: req.clientPubkey, policy }) : null;
+      if (!slots || !verified) {
+        const ok = await revokeMinted();
+        setState(gen, { phase: 'error', message: ok ? COPY.errors.verify : COPY.errors.mintUnconfirmed });
+        void replyFailure(s, [req.clientPubkey], 'verify-failed');
+        return null;
+      }
 
-    const updated: DependantIdentity = {
-      ...dep,
-      bunkerEndpoint: { ...dep.bunkerEndpoint!, authorizedClientPubkey: req.clientPubkey, pairingSecret: undefined },
-      childDevice: {
-        mode: 'heartwood-direct', slotLabel: s.label, secretFingerprint: minted.secretFingerprint,
-        slotIndex: minted.slotIndex, clientPubkey: req.clientPubkey, boundPersona: s.persona, pairedAt: now(),
-        railRelay: s.railRelay, ...(seedPending ? { seedPending: true } : {}),
-      },
-    };
-    try {
-      await o.onDependantUpdated(updated);
-    } catch {
-      const ok = await revokeMinted();
-      setState(gen, { phase: 'error', message: ok ? COPY.errors.save : COPY.errors.mintUnconfirmed });
-      void replyFailure(s, [req.clientPubkey], 'save-failed');
-      return;
-    }
+      const updated: DependantIdentity = {
+        ...dep,
+        bunkerEndpoint: { ...dep.bunkerEndpoint!, authorizedClientPubkey: req.clientPubkey, pairingSecret: undefined },
+        childDevice: {
+          mode: 'heartwood-direct', slotLabel: s.label, secretFingerprint: minted.secretFingerprint,
+          slotIndex: minted.slotIndex, clientPubkey: req.clientPubkey, boundPersona: s.persona, pairedAt: now(),
+          railRelay: s.railRelay, ...(seedPending ? { seedPending: true } : {}),
+        },
+      };
+      try {
+        await o.onDependantUpdated(updated);
+      } catch {
+        const ok = await revokeMinted();
+        setState(gen, { phase: 'error', message: ok ? COPY.errors.save : COPY.errors.mintUnconfirmed });
+        void replyFailure(s, [req.clientPubkey], 'save-failed');
+        return null;
+      }
 
-    // Re-pair: the old phone's slot goes only now the new one has answered.
-    let warning: string | undefined;
-    for (const old of supersededSlots(slots, s.label, minted)) {
-      try { await revokeClient(op, { slotIndex: old.slotIndex, secretFingerprint: old.secretFingerprint }); }
-      catch { warning = COPY.pairedOldSlotWarning; }
-    }
+      // Re-pair: the old phone's slot goes only now the new one has answered.
+      let warning: string | undefined;
+      for (const old of supersededSlots(slots, s.label, minted)) {
+        try { await revokeClient(op, { slotIndex: old.slotIndex, secretFingerprint: old.secretFingerprint }); }
+        catch { warning = COPY.pairedOldSlotWarning; }
+      }
+      return { warning };
+    });
+    if (!sequence) return;
+    const { warning } = sequence;
 
     try {
       const reply = await buildChildPairReplyEvent({ v: 1, code: s.code, ok: true, personas: replyPersonas(dep), stage: dep.autonomyStage },
@@ -447,7 +455,8 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     const dep = o.dependant;
     if (!dep?.childDevice) return;
     if (!o.operator) throw new Error(COPY.blocked['no-operator-key'].body);
-    try { await revokeChildDeviceSlot(o.operator, dep); } catch { throw new Error(COPY.errors.unpair); }
+    const opc = o.operator;
+    try { await withOperatorLock(opc, () => revokeChildDeviceSlot(opc, dep)); } catch { throw new Error(COPY.errors.unpair); }
     const { childDevice: _cd, ...rest } = dep;
     void _cd;
     await o.onDependantUpdated({

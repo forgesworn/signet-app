@@ -381,8 +381,13 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
         markUnsent(id, verdict);
       }
 
-      let out: ChildSignVerdict = entry.verdict;
-      let reason: ChildAskDecideReason | undefined = entry.reason;
+      // A47: "Send again" of a once/always that was converted to deny re-attempts the ORIGINAL choice;
+      // only a second failure converts it again.
+      const original = stored && (entry.chosen ?? entry.verdict.verdict) !== 'deny' && entry.verdict.verdict === 'deny';
+      let out: ChildSignVerdict = original
+        ? { v: 1, id, verdict: entry.chosen as ChildVerdictChoice, decidedAt: entry.verdict.decidedAt }
+        : entry.verdict;
+      let reason: ChildAskDecideReason | undefined = original ? undefined : entry.reason;
       let onceEntry: OnceEntry | undefined;
       const refuse = (r: ChildAskDecideReason, wire?: ChildSignVerdict['reason']) => {
         reason = r;
