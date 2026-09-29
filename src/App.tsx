@@ -341,7 +341,7 @@ import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
 import type { PurposeContext } from './lib/auth-purposes';
-import { loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
+import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
 import { deriveDependantOnDevice, deriveExtraPersonaOnDevice } from './lib/heartwood-dependant-create';
@@ -1754,6 +1754,7 @@ export function App() {
     relays: syncRelays,
     encryptionKey: isPairedChild ? null : encryptionKey,
     rules: childRules,
+    onPruned: () => { void reloadChildRules(); },
     onMerged: (merged) => {
       const key = encryptionKey;
       if (!key) return;
@@ -4306,6 +4307,8 @@ export function App() {
       // encrypted rows stay in IDB — only the derived key is forgotten, so a
       // locked device can't read the cached sync plaintexts.
       forgetSyncCacheKeys();
+      // A52: and the decrypted child-rule memo.
+      forgetChildRuleCache();
       // The Heartwood operator client (kind-24134) is stopped by
       // useHeartwoodOperator's own effect on the same encryptionKey flip.
       if (nip07Backend) {

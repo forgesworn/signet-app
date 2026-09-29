@@ -1139,6 +1139,20 @@ type StoredChildRule = {
   encrypted: true; encryptedData: string;
 };
 
+// A52: every row is PBKDF2-600k sealed, so decrypted rules are memoised per
+// encryption key. An entry is valid only for the exact ciphertext it was read
+// from (a write re-seals with a fresh salt, so any other writer invalidates it
+// by construction); writes through this module update it directly.
+let childRuleMemo: { key: string; byId: Map<string, { data: string; rule: ChildRule }> } | null = null;
+function childRuleMemoFor(encryptionKey: string): Map<string, { data: string; rule: ChildRule }> {
+  if (!childRuleMemo || childRuleMemo.key !== encryptionKey) childRuleMemo = { key: encryptionKey, byId: new Map() };
+  return childRuleMemo.byId;
+}
+/** Drop the decrypted child-rule memo (on lock, and on purge). */
+export function forgetChildRuleCache(): void {
+  childRuleMemo = null;
+}
+
 export async function saveChildRule(rule: ChildRule, encryptionKey: string): Promise<void> {
   const db = await getDB();
   const { id, dependantId, updatedAt, ...sensitive } = rule;
@@ -1146,25 +1160,37 @@ export async function saveChildRule(rule: ChildRule, encryptionKey: string): Pro
   const encryptedData = await encryptSecret(JSON.stringify(sensitive), encryptionKey);
   const row: StoredChildRule = { id, dependantId: dep, updatedAt, encrypted: true, encryptedData };
   await db.put('childRules', row);
+  const memo = childRuleMemoFor(encryptionKey);
+  const decoded = decodeChildRule(row, sensitive);
+  if (decoded) memo.set(id, { data: encryptedData, rule: decoded });
+  else memo.delete(id);
+}
+
+function decodeChildRule(r: StoredChildRule, b: Partial<ChildRule>): ChildRule | undefined {
+  if (typeof b.persona !== 'string' || typeof b.scope !== 'string' || typeof b.target !== 'string') return undefined;
+  if (b.decision !== 'allow' && b.decision !== 'deny') return undefined;
+  return {
+    id: r.id, dependantId: r.dependantId, updatedAt: r.updatedAt,
+    persona: b.persona, scope: b.scope, target: b.target as ChildRule['target'], decision: b.decision,
+    createdAt: typeof b.createdAt === 'number' ? b.createdAt : r.updatedAt,
+    ...(b.schedule ? { schedule: b.schedule } : {}),
+    ...(typeof b.label === 'string' ? { label: b.label } : {}),
+    ...(typeof b.expiresAt === 'number' ? { expiresAt: b.expiresAt } : {}),
+    ...(typeof b.tombstonedAt === 'number' ? { tombstonedAt: b.tombstonedAt } : {}),
+    ...(typeof b.lastUsedAt === 'number' ? { lastUsedAt: b.lastUsedAt } : {}),
+  };
 }
 
 async function decryptChildRule(row: unknown, encryptionKey: string): Promise<ChildRule | undefined> {
   const r = row as StoredChildRule | undefined;
-  if (!r || r.encrypted !== true) return undefined;
+  if (!r || r.encrypted !== true || typeof r.encryptedData !== 'string') return undefined;
+  const memo = childRuleMemoFor(encryptionKey);
+  const hit = memo.get(r.id);
+  if (hit && hit.data === r.encryptedData) return { ...hit.rule };
   try {
-    const b = JSON.parse(await decryptSecret(r.encryptedData, encryptionKey)) as Partial<ChildRule>;
-    if (typeof b.persona !== 'string' || typeof b.scope !== 'string' || typeof b.target !== 'string') return undefined;
-    if (b.decision !== 'allow' && b.decision !== 'deny') return undefined;
-    return {
-      id: r.id, dependantId: r.dependantId, updatedAt: r.updatedAt,
-      persona: b.persona, scope: b.scope, target: b.target as ChildRule['target'], decision: b.decision,
-      createdAt: typeof b.createdAt === 'number' ? b.createdAt : r.updatedAt,
-      ...(b.schedule ? { schedule: b.schedule } : {}),
-      ...(typeof b.label === 'string' ? { label: b.label } : {}),
-      ...(typeof b.expiresAt === 'number' ? { expiresAt: b.expiresAt } : {}),
-      ...(typeof b.tombstonedAt === 'number' ? { tombstonedAt: b.tombstonedAt } : {}),
-      ...(typeof b.lastUsedAt === 'number' ? { lastUsedAt: b.lastUsedAt } : {}),
-    };
+    const rule = decodeChildRule(r, JSON.parse(await decryptSecret(r.encryptedData, encryptionKey)) as Partial<ChildRule>);
+    if (rule) memo.set(r.id, { data: r.encryptedData, rule });
+    return rule ? { ...rule } : undefined;
   } catch {
     // Wrong key or corrupt row: a missing rule, never a thrown load.
     return undefined;
@@ -1192,6 +1218,22 @@ export async function tombstoneChildRule(id: string, encryptionKey: string, nowM
   const rule = await decryptChildRule(await db.get('childRules', id), encryptionKey);
   if (!rule) return;
   await saveChildRule({ ...rule, tombstonedAt: nowMs, updatedAt: nowMs }, encryptionKey);
+}
+
+/** A52: hard-delete tombstones older than `cutoffMs` (after they have been
+ *  published). Returns how many rows went. */
+export async function pruneChildRuleTombstones(encryptionKey: string, cutoffMs: number): Promise<number> {
+  const db = await getDB();
+  const memo = childRuleMemoFor(encryptionKey);
+  let n = 0;
+  for (const r of await listAllChildRules(encryptionKey)) {
+    if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0 && r.tombstonedAt < cutoffMs) {
+      await db.delete('childRules', r.id);
+      memo.delete(r.id);
+      n++;
+    }
+  }
+  return n;
 }
 
 // --- Sync decrypt cache (v21, family-bunker §11.1.10) ---
@@ -2427,6 +2469,7 @@ export async function purgeAllUserData(): Promise<void> {
     await grantWriteQueue.run(() => db.clear('contactGrantsV2'));
   }
   if (db.objectStoreNames.contains('childRules')) {
+    forgetChildRuleCache();
     await db.clear('childRules');
   }
 }

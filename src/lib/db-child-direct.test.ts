@@ -74,3 +74,43 @@ describe('paired-child record, heartwood-direct fields', () => {
     await expect(db.savePairedChild({ ...base, personaPubkey: PERSONA, railRelay: 'ws://evil.example' }, KEY)).rejects.toThrow();
   });
 });
+
+describe('A52: child rules storage', () => {
+  const rule = (id: string, over: Record<string, unknown> = {}) => ({ id, dependantId: DEP, persona: '*', scope: 'sign-in',
+    target: 'site:https://a.example' as const, decision: 'allow' as const, createdAt: 1, updatedAt: 1, ...over });
+
+  it('memoises decrypted rules per key: repeated reads cost no decryption; a write is seen at once', async () => {
+    const decrypt = vi.fn();
+    vi.doMock('./crypto-store', async (orig) => {
+      const actual = await orig<typeof import('./crypto-store')>();
+      return { ...actual, decryptSecret: (...a: Parameters<typeof actual.decryptSecret>) => { decrypt(); return actual.decryptSecret(...a); } };
+    });
+    const db = await import('./db');
+    await db.saveChildRule(rule('r1'), KEY);
+    await db.saveChildRule(rule('r2'), KEY);
+    db.forgetChildRuleCache();
+    expect((await db.listChildRules(DEP, KEY)).map(r => r.id).sort()).toEqual(['r1', 'r2']);
+    const first = decrypt.mock.calls.length;
+    expect(first).toBe(2);
+    await db.listChildRules(DEP, KEY);
+    await db.listAllChildRules(KEY);
+    expect(decrypt.mock.calls.length).toBe(first);
+    await db.saveChildRule(rule('r1', { decision: 'deny', updatedAt: 2 }), KEY);
+    expect((await db.listChildRules(DEP, KEY)).find(r => r.id === 'r1')?.decision).toBe('deny');
+    expect(decrypt.mock.calls.length).toBe(first);
+    // Another key never sees the memo.
+    expect(await db.listChildRules(DEP, 'x'.repeat(64))).toEqual([]);
+    vi.doUnmock('./crypto-store');
+  });
+
+  it('prunes tombstones older than the cutoff, keeping live rules and newer tombstones', async () => {
+    const db = await import('./db');
+    await db.saveChildRule(rule('live'), KEY);
+    await db.saveChildRule(rule('old', { tombstonedAt: 100, updatedAt: 100 }), KEY);
+    await db.saveChildRule(rule('new', { tombstonedAt: 5_000, updatedAt: 5_000 }), KEY);
+    expect(await db.pruneChildRuleTombstones(KEY, 1_000)).toBe(1);
+    expect((await db.listAllChildRules(KEY)).map(r => r.id).sort()).toEqual(['live', 'new']);
+    db.forgetChildRuleCache();
+    expect((await db.listAllChildRules(KEY)).map(r => r.id).sort()).toEqual(['live', 'new']);
+  });
+});
