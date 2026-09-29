@@ -16,6 +16,11 @@ import {
   CHILD_DEVICE_LABEL,
   CHILD_DEVICE_LABEL_PREFIX,
   LOCKED_SLOT_POLICY,
+  compileChildDirectPolicy,
+  childDirectSlotLabel,
+  isChildDirectSlot,
+  CHILD_DIRECT_LABEL_PREFIX,
+  type ChildDirectCompileInput,
   type CompilerDependant,
   type CompilerGrant,
 } from './policy-compiler';
@@ -1044,5 +1049,113 @@ describe('dormant dependant NP compiles locked (spec §7.6)', () => {
       petitionOnDeny: false,
       auditChildWrap: false,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Child-direct slots
+// ---------------------------------------------------------------------------
+
+describe('child-direct compiler', () => {
+  const NOW = 1_800_000_000;
+  const cd = (o: Partial<ChildDirectCompileInput> = {}): ChildDirectCompileInput => ({
+    stage: 'request-approve', paused: false, rules: [], approvedOnceKinds: [],
+    boundPersona: PERSONA, auditVisible: true, nowSeconds: NOW, ...o,
+  });
+  const allow = (scope: string, o: object = {}) => ({ scope, decision: 'allow' as const, ...o });
+
+  it('labels: prefix, 16-hex truncation, detection', () => {
+    expect(CHILD_DIRECT_LABEL_PREFIX).toBe('signet:child-device:v2:');
+    expect(childDirectSlotLabel('ab'.repeat(32))).toBe('signet:child-device:v2:' + 'ab'.repeat(8));
+    expect(isChildDirectSlot('signet:child-device:v2:abc')).toBe(true);
+    expect(isChildDirectSlot('signet:child-device:abc')).toBe(false);
+    expect(isChildDirectSlot('MySignet')).toBe(false);
+  });
+
+  it('request-approve with no rules: venue entry + relay AUTH only, no escalation', () => {
+    const p = compileChildDirectPolicy(cd());
+    expect(p.allowedKinds).toEqual([21235, 22242]);
+    expect(p.allowedMethods).toEqual(['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt']);
+    expect(p).toMatchObject({ autoApprove: true, escalate: false, petitionOnDeny: false, boundIdentity: PERSONA, auditChildWrap: true });
+  });
+
+  it('a live allow rule adds its scope kinds; a deny rule changes nothing', () => {
+    expect(compileChildDirectPolicy(cd({ rules: [allow('sign-in')] })).allowedKinds).toEqual([21235, 21236, 22242]);
+    expect(compileChildDirectPolicy(cd({ rules: [{ scope: 'sign-in', decision: 'deny' }] })).allowedKinds).toEqual([21235, 22242]);
+  });
+
+  it('tombstoned or expired allow rules are excluded (rule times are ms)', () => {
+    const rules = [allow('sign-in', { tombstonedAt: 5 }), allow('dm-private', { expiresAt: (NOW - 1) * 1000 })];
+    expect(compileChildDirectPolicy(cd({ rules })).allowedKinds).toEqual([21235, 22242]);
+    expect(compileChildDirectPolicy(cd({ rules: [allow('sign-in', { expiresAt: (NOW + 60) * 1000 })] })).allowedKinds).toContain(21236);
+  });
+
+  it('kind:<n> scope allows that raw kind', () => {
+    expect(compileChildDirectPolicy(cd({ rules: [allow('kind:30023')] })).allowedKinds).toEqual([21235, 22242, 30023]);
+  });
+
+  it('approved-once kinds count only until they lapse', () => {
+    const p = compileChildDirectPolicy(cd({ approvedOnceKinds: [{ kind: 1, until: NOW + 5 }, { kind: 7, until: NOW - 5 }] }));
+    expect(p.allowedKinds).toContain(1);
+    expect(p.allowedKinds).not.toContain(7);
+  });
+
+  it('full-autonomy lists every kind ([])', () => {
+    expect(compileChildDirectPolicy(cd({ stage: 'full-autonomy' })).allowedKinds).toEqual([]);
+  });
+
+  it('never lists a non-empty ceiling as [] below full-autonomy', () => {
+    for (const stage of STAGES.filter(s => s !== 'full-autonomy')) {
+      expect(compileChildDirectPolicy(cd({ stage })).allowedKinds.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('paused compiles to the locked policy, still bound', () => {
+    const p = compileChildDirectPolicy(cd({ paused: true, rules: [allow('sign-in')] }));
+    expect(p).toEqual({ ...LOCKED_SLOT_POLICY, boundIdentity: PERSONA });
+  });
+
+  it('never lists 24133 or 31000, even for an allow rule', () => {
+    const p = compileChildDirectPolicy(cd({ rules: [allow('kind:24133'), allow('kind:31000')], approvedOnceKinds: [{ kind: 31000, until: NOW + 9 }] }));
+    expect(p.allowedKinds).not.toContain(24133);
+    expect(p.allowedKinds).not.toContain(31000);
+  });
+
+  it('autonomous stages add their auto scopes', () => {
+    expect(compileChildDirectPolicy(cd({ stage: 'autonomous-alerts' })).allowedKinds).toEqual([0, 1, 4, 7, 13, 1059, 9734, 21235, 21236, 22242, 24242]);
+  });
+
+  it('compileSlotPolicies routes a v2 label to the child-direct branch; legacy slots are unchanged', () => {
+    const d = dep({ autonomyStage: 'request-approve', childRules: [allow('sign-in')] });
+    const direct = slot({ label: childDirectSlotLabel(NP), boundIdentity: PERSONA });
+    const legacy = slot({ slotIndex: 2, label: 'MySignet', boundIdentity: PERSONA });
+    const res = compileSlotPolicies({ dependants: [d], guardianClientPubkey: null, deviceSlots: [direct, legacy], nowSeconds: NOW });
+    const a = res.slots.find(x => x.slotIndex === 1)!;
+    const b = res.slots.find(x => x.slotIndex === 2)!;
+    expect(a.policy.allowedKinds).toEqual([21235, 21236, 22242]);
+    expect(a.policy.escalate).toBe(false);
+    expect(b.policy).toEqual(compileDependantSlotPolicy(d, legacy));
+    expect(b.policy.escalate).toBe(true);
+  });
+
+  it('a v2 slot naming a different dependant is left untouched; a dormant binding locks', () => {
+    const d = dep({ dormantIdentityPubkeys: [NP] });
+    const other = slot({ label: childDirectSlotLabel('f'.repeat(64)), boundIdentity: PERSONA });
+    const dormant = slot({ slotIndex: 3, label: childDirectSlotLabel(NP), boundIdentity: NP });
+    const res = compileSlotPolicies({ dependants: [d], guardianClientPubkey: null, deviceSlots: [other, dormant], nowSeconds: NOW });
+    expect(res.untouched).toBe(1);
+    expect(res.slots[0].policy.allowedMethods).toEqual([]);
+  });
+
+  it('buildCompilerInput threads rules, approved-once kinds and pause to the dependant', () => {
+    const input = buildCompilerInput({
+      dependants: [appDep({ autonomyStage: 'request-approve', defaultSchedule: { paused: true } as unknown as DependantIdentity['defaultSchedule'] })],
+      grants: [], guardianClientPubkey: null, deviceSlots: [], nowSeconds: NOW,
+      childRules: [{ dependantId: NP, scope: 'sign-in', decision: 'allow' }, { dependantId: 'x', scope: 'dm-private', decision: 'allow' }],
+      approvedOnceKinds: { [NP]: [{ kind: 1, until: NOW + 1 }] },
+    });
+    expect(input.dependants[0].childRules).toHaveLength(1);
+    expect(input.dependants[0].approvedOnceKinds).toEqual([{ kind: 1, until: NOW + 1 }]);
+    expect(input.dependants[0].defaultSchedulePaused).toBe(true);
   });
 });
