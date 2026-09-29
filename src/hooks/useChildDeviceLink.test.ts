@@ -44,9 +44,10 @@ function fakeTransport() {
   return { t, subs };
 }
 
-function fakeRouter(behaviour: Record<string, 'ok' | 'fail'>) {
+function fakeRouter(behaviour: Record<string, 'ok' | 'fail'>, primaryClient: string = clientPub) {
   const calls: { slot: string; args: string[] }[] = [];
   const router = {
+    primaryClientPubkeyHex: primaryClient,
     backendFor: (slot: string) => ({
       nip44Encrypt: async (recipient: string, text: string) => {
         calls.push({ slot, args: [recipient, text] });
@@ -160,6 +161,21 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     rerender();
     await waitFor(() => expect(result.current.personas.find(p => p.pubkey === NP)?.approval).toBe('approved'));
     expect(fr.calls.map(c => c.slot)).toEqual([NP]);
+  });
+
+  it('A27: a router still bound to an older pairing client is never used for the ceremony', async () => {
+    const { t } = fakeTransport();
+    const stale = fakeRouter({}, getPublicKey(generateSecretKey()));
+    const { result, rerender } = renderHook(({ router }) => useChildDeviceLink({
+      record: record(), encryptionKey: KEY, router, transport: t, onRecordUpdated: async () => {},
+    }), { initialProps: { router: stale.router } });
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(stale.calls).toHaveLength(0);
+    expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('waiting');
+    const fresh = fakeRouter({});
+    rerender({ router: fresh.router });
+    await waitFor(() => expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved'));
+    expect(stale.calls).toHaveLength(0);
   });
 
   it('waits for the router before asking', async () => {

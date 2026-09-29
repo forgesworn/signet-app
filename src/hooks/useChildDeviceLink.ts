@@ -142,7 +142,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const approve = useCallback((persona: string): Promise<void> => {
     const run = queue.current.then(async () => {
       const r = routerRef.current;
-      const backend = r?.backendFor(persona) ?? null;
+      const current = !!r && r.primaryClientPubkeyHex === recordRef.current?.clientKeypair.publicKey;
+      const backend = current ? r.backendFor(persona) : null;
       if (!backend) { setApproval(persona, 'failed'); return; }
       setApproval(persona, 'waiting');
       try {
@@ -156,8 +157,12 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     return run;
   }, [setApproval]);
 
+  // A27: after a re-pair the previous router may still be up for a render or
+  // two; only a router riding THIS record's client key may run the ceremony.
+  const routerCurrent = !!router && !!clientPub && router.primaryClientPubkeyHex === clientPub;
+
   useEffect(() => {
-    if (!router || !bound) return;
+    if (!router || !bound || !routerCurrent) return;
     for (const { pubkey } of candidates) {
       if (pubkey === bound || attempted.current.has(pubkey)) continue;
       const state = approvalsRef.current[pubkey];
@@ -165,7 +170,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
       attempted.current.add(pubkey);
       void approve(pubkey);
     }
-  }, [router, bound, candidates, approve]);
+  }, [router, routerCurrent, bound, candidates, approve]);
 
   const retryApproval = useCallback(async (persona: string) => {
     if (!HEX64.test(persona) || persona === bound) return;

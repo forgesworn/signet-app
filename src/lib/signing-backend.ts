@@ -4,7 +4,8 @@ import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46';
 import { SimplePool } from 'nostr-tools/pool';
-import { generateSecretKey, verifyEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools/pure';
+import { encrypt as nip44EncryptRaw } from 'nostr-tools/nip44';
 import { encrypt as nip04EncryptRaw, decrypt as nip04DecryptRaw } from 'nostr-tools/nip04';
 import { vaultKeyContext } from 'signet-protocol/experimental';
 import { waitForReplySubscription, RELAY_READY_CAP_MS } from './relay-ready';
@@ -55,6 +56,53 @@ export interface DecryptingSigningBackend extends SigningBackend {
    * more requests.
    */
   readonly transportClientPubkeyHex?: string;
+  /**
+   * Remote (NIP-46) signers only: a view whose requests go out with the
+   * given kind-24133 envelope `created_at` (unix seconds) instead of "now".
+   * The child-direct join (§9.2) forces a strictly increasing per-persona
+   * value that the Heartwood echoes in its C5 audit rumor. Use
+   * `withRequestCreatedAt`, which falls back to the backend itself.
+   */
+  stamped?(createdAt: number): StampedSigningCalls;
+}
+
+/** The calls a stamped view carries. */
+export type StampedSigningCalls = Pick<DecryptingSigningBackend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'>;
+
+/** A view of `backend` that stamps its NIP-46 requests when it can; the backend itself otherwise. */
+export function withRequestCreatedAt(backend: DecryptingSigningBackend, createdAt: number): StampedSigningCalls {
+  return backend.stamped?.(createdAt) ?? backend;
+}
+
+/**
+ * The runtime fields of nostr-tools' BunkerSigner a stamped request needs.
+ * They are TS-private; `sendStamped` checks each one and falls back to the
+ * signer's own `sendRequest` (unstamped) if a nostr-tools upgrade moves them.
+ */
+interface BunkerSignerInternals {
+  isOpen: boolean;
+  subCloser?: unknown;
+  setupSubscription(): void;
+  serial: number;
+  idPrefix: string;
+  conversationKey: Uint8Array;
+  secretKey: Uint8Array;
+  bp: { pubkey: string; relays: string[] };
+  listeners: Record<string, { resolve(v: string): void; reject(e: unknown): void }>;
+  waitingForAuth: Record<string, boolean>;
+  pool: { publish(relays: string[], ev: unknown): Promise<string>[] };
+}
+
+function hasSignerInternals(s: unknown): s is BunkerSignerInternals {
+  if (!s || typeof s !== 'object') return false;
+  const o = s as Record<string, unknown>;
+  const bp = o.bp as Record<string, unknown> | undefined;
+  const pool = o.pool as Record<string, unknown> | undefined;
+  return o.isOpen === true && typeof o.setupSubscription === 'function' && typeof o.serial === 'number'
+    && typeof o.idPrefix === 'string' && o.conversationKey instanceof Uint8Array && o.secretKey instanceof Uint8Array
+    && !!bp && typeof bp.pubkey === 'string' && Array.isArray(bp.relays)
+    && !!o.listeners && typeof o.listeners === 'object' && !!o.waitingForAuth && typeof o.waitingForAuth === 'object'
+    && !!pool && typeof pool.publish === 'function';
 }
 
 export class LocalSigningBackend implements DecryptingSigningBackend {
@@ -462,6 +510,24 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
   }
 
   async signEvent(event: UnsignedEvent): Promise<NostrEvent> {
+    return this.signEventAt(event);
+  }
+
+  stamped(createdAt: number): StampedSigningCalls {
+    return {
+      signEvent: (event) => this.signEventAt(event, createdAt),
+      nip44Encrypt: async (recipientPubkey, plaintext) => {
+        if (!this.signer) throw new Error('Not connected to bunker');
+        return this.request('nip44_encrypt', [recipientPubkey, plaintext], SIGNER_REQUEST_TIMEOUT_MS, createdAt);
+      },
+      nip44Decrypt: async (senderPubkey, ciphertext) => {
+        if (!this.signer) throw new Error('Not connected to bunker');
+        return this.request('nip44_decrypt', [senderPubkey, ciphertext], SIGNER_REQUEST_TIMEOUT_MS, createdAt);
+      },
+    };
+  }
+
+  private async signEventAt(event: UnsignedEvent, requestCreatedAt?: number): Promise<NostrEvent> {
     if (!this.signer) throw new Error('Not connected to bunker');
     const template = {
       kind: event.kind,
@@ -469,7 +535,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       tags: event.tags,
       content: event.content,
     };
-    const resp = await this.request('sign_event', [JSON.stringify(template)], SIGNER_REQUEST_TIMEOUT_MS);
+    const resp = await this.request('sign_event', [JSON.stringify(template)], SIGNER_REQUEST_TIMEOUT_MS, requestCreatedAt);
     const signed = JSON.parse(resp);
     // Same verification BunkerSigner.signEvent performs before trusting a reply.
     if (!verifyEvent(signed)) {
@@ -620,9 +686,12 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    * (heartwood_capabilities, heartwood_derive_persona, …). Returns the
    * response `result` string verbatim; callers parse/validate.
    */
-  async request(method: string, params: string[], timeoutMs?: number): Promise<string> {
+  async request(method: string, params: string[], timeoutMs?: number, requestCreatedAt?: number): Promise<string> {
     if (!this.signer) throw new Error('Not connected to bunker');
-    if (timeoutMs === undefined) return this.signer.sendRequest(method, params);
+    const send = () => (requestCreatedAt === undefined
+      ? this.signer!.sendRequest(method, params)
+      : this.sendStamped(method, params, requestCreatedAt));
+    if (timeoutMs === undefined) return send();
     // BunkerSigner has no request timeout and never forgets a listener whose
     // reply does not come. Its `listeners` map is TS-private but a plain
     // object at runtime, and sendRequest registers the listener synchronously
@@ -633,7 +702,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     const listeners = (this.signer as unknown as { listeners?: unknown }).listeners;
     const map = listeners && typeof listeners === 'object' ? listeners as Record<string, unknown> : null;
     const before = map ? new Set(Object.keys(map)) : null;
-    const pending = this.signer.sendRequest(method, params);
+    const pending = send();
     const ours = map && before ? Object.keys(map).filter((k) => !before.has(k)) : [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -649,6 +718,35 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  /**
+   * `BunkerSigner.sendRequest` with a caller-chosen envelope `created_at`.
+   * Same id scheme, encryption, listener registration (synchronous, before
+   * any await — `request`'s timeout cleanup relies on that) and publish as
+   * nostr-tools; only the timestamp differs. The reply is delivered by the
+   * signer's own subscription through its `listeners` map. Unknown signer
+   * shape ⇒ the plain request (unstamped) rather than no request at all.
+   */
+  private sendStamped(method: string, params: string[], createdAt: number): Promise<string> {
+    const s = this.signer as unknown;
+    if (!hasSignerInternals(s) || !Number.isSafeInteger(createdAt) || createdAt <= 0) {
+      return this.signer!.sendRequest(method, params);
+    }
+    return new Promise<string>((resolve, reject) => {
+      try {
+        if (!s.subCloser) s.setupSubscription();
+        s.serial++;
+        const id = `${s.idPrefix}-${s.serial}`;
+        const content = nip44EncryptRaw(JSON.stringify({ id, method, params }), s.conversationKey);
+        const ev = finalizeEvent({ kind: 24133, tags: [['p', s.bp.pubkey]], content, created_at: createdAt }, s.secretKey);
+        s.listeners[id] = { resolve, reject };
+        s.waitingForAuth[id] = true;
+        Promise.any(s.pool.publish(s.bp.relays, ev)).catch(reject);
+      } catch (err) {
+        reject(err);
+      }
+    });
   }
 
   destroy(): void {

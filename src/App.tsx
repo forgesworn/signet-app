@@ -5337,13 +5337,19 @@ export function App() {
         persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
         primaryKeypair: 'persona',
       }, encryptionKey);
-      await savePairedChild(record, encryptionKey);
-      await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
+      // A27: retire the old pairing's router and backends BEFORE the new
+      // record is used — bump the generation so an in-flight probe for the
+      // old client cannot install itself afterwards.
+      bunkerRouterGenRef.current++;
+      setBunkerRouter((prev) => { prev?.destroy(); return null; });
+      setRouterProbeState(null);
       if (bunkerBackend) {
         bunkerBackend.destroy();
         setBunkerBackend(null);
       }
       setSignerStatus(null);
+      await savePairedChild(record, encryptionKey);
+      await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
       await reloadIdentity();
       setPairedChildBumpCounter(n => n + 1);
       return;

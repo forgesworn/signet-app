@@ -1,5 +1,5 @@
 import { BunkerSigningBackend, BunkerRequestTimeoutError } from './signing-backend';
-import type { DecryptingSigningBackend } from './signing-backend';
+import type { DecryptingSigningBackend, StampedSigningCalls } from './signing-backend';
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -133,6 +133,18 @@ export class RoutedBunkerSigningBackend implements DecryptingSigningBackend {
   async nip44Decrypt(senderPubkey: string, ciphertext: string): Promise<string> {
     const inner = await this.ensure();
     return inner.nip44Decrypt(senderPubkey, ciphertext);
+  }
+
+  stamped(createdAt: number): StampedSigningCalls {
+    return {
+      signEvent: async (event) => {
+        const requested = typeof event.pubkey === 'string' ? event.pubkey.trim().toLowerCase() : '';
+        if (requested && requested !== this.activePublicKeyHex) throw new Error('Cannot sign event for a different pubkey.');
+        return (await this.ensure()).stamped(createdAt).signEvent(event);
+      },
+      nip44Encrypt: async (recipientPubkey, plaintext) => (await this.ensure()).stamped(createdAt).nip44Encrypt(recipientPubkey, plaintext),
+      nip44Decrypt: async (senderPubkey, ciphertext) => (await this.ensure()).stamped(createdAt).nip44Decrypt(senderPubkey, ciphertext),
+    };
   }
 
   async nip04Encrypt(recipientPubkey: string, plaintext: string): Promise<string> {
@@ -335,6 +347,12 @@ export class BunkerBackendRouter {
     this.clientSecretHex = clientSecretHex;
     this.capabilities = capabilities;
     this.makeBackend = makeBackend;
+  }
+
+  /** The NIP-46 client pubkey of the pairing this router rides (A27: the child's
+   *  ceremony runs only once this equals the stored record's client key). */
+  get primaryClientPubkeyHex(): string {
+    return this.primary.transportClientPubkeyHex;
   }
 
   static async create(primary: BunkerSigningBackend, clientSecretHex: string, makeBackend: MakeBackend = defaultMakeBackend): Promise<BunkerBackendRouter | null> {
