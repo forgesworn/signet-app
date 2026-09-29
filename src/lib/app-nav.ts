@@ -18,8 +18,13 @@ const CONTACTS: TabDef = { id: 'contacts', label: 'Contacts', icon: 'users', pag
 const BUNKER: TabDef = { id: 'bunker', label: 'Bunker', icon: 'key' };
 const SETTINGS: TabDef = { id: 'settings', label: 'Settings', icon: 'settings', page: 'settings' };
 
-/** Owner gets the Bunker tab; a dependant context (acting-as or paired-child) does not. */
-export function barTabsFor(opts: { isDependantContext: boolean }): TabDef[] {
+/**
+ * Owner gets the Bunker tab; a dependant context (acting-as or paired-child)
+ * does not — except a child's phone paired straight to the Heartwood, which
+ * IS the child's bunker (child-direct spec §8).
+ */
+export function barTabsFor(opts: { isDependantContext: boolean; childBunker?: boolean }): TabDef[] {
+  if (opts.childBunker) return [HOME, CONTACTS, BUNKER, SETTINGS];
   return opts.isDependantContext ? [HOME, CONTACTS, SETTINGS] : [HOME, CONTACTS, BUNKER, SETTINGS];
 }
 

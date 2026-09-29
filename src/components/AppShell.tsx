@@ -7,16 +7,18 @@ import { barTabsFor, isBarHiddenPage, activeTabForPage, BAR_HEIGHT, type TabDef 
 interface Props {
   page: Page;
   isDependantContext: boolean;
+  /** A child's phone paired straight to the Heartwood: it is the child's bunker. */
+  childBunker?: boolean;
   onNavigate: (page: Page) => void;
   onBunker: () => void;
   bunkerPanelOpen?: boolean;
   children: ReactNode;
 }
 
-export function AppShell({ page, isDependantContext, onNavigate, onBunker, bunkerPanelOpen, children }: Props) {
+export function AppShell({ page, isDependantContext, childBunker, onNavigate, onBunker, bunkerPanelOpen, children }: Props) {
   if (isBarHiddenPage(page)) return <>{children}</>;
 
-  const tabs = barTabsFor({ isDependantContext });
+  const tabs = barTabsFor({ isDependantContext, childBunker });
   const activeTab = bunkerPanelOpen ? 'bunker' : activeTabForPage(page);
 
   const handleTab = (t: TabDef) => {

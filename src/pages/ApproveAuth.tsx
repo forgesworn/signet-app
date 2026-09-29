@@ -115,6 +115,8 @@ interface Props {
    * Cancel after a long wait. See `PairedChildApprovalWaiting`.
    */
   isPairedChild?: boolean;
+  /** Paired straight to the Heartwood: the wait is an ask on the guardian's phone. */
+  childDirect?: boolean;
 }
 
 function isLoginRequest(r: AuthRequest | LoginRequest): r is LoginRequest {
@@ -178,6 +180,7 @@ export function ApproveAuth({
   onUserChoice,
   waitingGuardianPubkeys,
   isPairedChild = false,
+  childDirect = false,
 }: Props) {
   const login = isLoginRequest(request);
   const originDisplay = safeOrigin(request.origin);
@@ -536,7 +539,7 @@ export function ApproveAuth({
 
         <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {approving && isPairedChild ? (
-            <PairedChildApprovalWaiting onCancel={onDeny} />
+            <PairedChildApprovalWaiting onCancel={onDeny} direct={childDirect} />
           ) : (
             <>
               <button
@@ -818,7 +821,7 @@ export function ApproveAuth({
 
       <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {approving && isPairedChild ? (
-          <PairedChildApprovalWaiting onCancel={onDeny} />
+          <PairedChildApprovalWaiting onCancel={onDeny} direct={childDirect} />
         ) : (
           <>
             <button

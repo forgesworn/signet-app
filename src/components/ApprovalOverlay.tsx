@@ -31,6 +31,8 @@ interface Props {
    * `PairedChildApprovalWaiting` for the progressive-disclosure rules.
    */
   isPairedChild?: boolean;
+  /** Paired straight to the Heartwood: the wait is an ask on the guardian's phone. */
+  childDirect?: boolean;
 }
 
 const VALID_AGE_RANGES = ['0-3', '4-7', '8-12', '13-17', '18+'];
@@ -63,6 +65,7 @@ export function ApprovalOverlay({
   onApprove,
   onDeny,
   isPairedChild = false,
+  childDirect = false,
 }: Props) {
   // Local approving flag — App.tsx owns the actual signEvent lifecycle but
   // doesn't surface a loading state down to the overlay. Tracking it here
@@ -198,7 +201,7 @@ export function ApprovalOverlay({
 
         {approving && isPairedChild ? (
           <div style={{ marginTop: 12 }}>
-            <PairedChildApprovalWaiting onCancel={() => { setApproving(false); onDeny(); }} />
+            <PairedChildApprovalWaiting onCancel={() => { setApproving(false); onDeny(); }} direct={childDirect} />
           </div>
         ) : (
           <div className="approval-actions">

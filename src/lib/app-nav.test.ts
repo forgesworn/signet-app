@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { barTabsFor, isBarHiddenPage, activeTabForPage, isOrphanedApprovalPage } from './app-nav';
 
 describe('barTabsFor', () => {
+  it('a direct-paired child install shows the Bunker tab (it is the child\'s bunker)', () => {
+    expect(barTabsFor({ isDependantContext: true, childBunker: true }).map(t => t.id)).toEqual(['home', 'contacts', 'bunker', 'settings']);
+  });
   it('owner gets 4 tabs including bunker', () => {
     const tabs = barTabsFor({ isDependantContext: false });
     expect(tabs.map(t => t.id)).toEqual(['home', 'contacts', 'bunker', 'settings']);

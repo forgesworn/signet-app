@@ -13,9 +13,11 @@ import { describeEventTemplate } from '../lib/nip46-server';
 import { isNativeApp, SignetNative, type Nip55Response } from '../lib/native';
 import {
   describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
-  type NativeNip55Request, type Nip55Grants, type Nip55Method, type ParsedNip55,
+  type NativeNip55Request, type Nip55Grant, type Nip55Grants, type Nip55Method, type Nip55Plan, type ParsedNip55,
 } from '../lib/nip55';
 import type { BunkerRoute } from './useBunkerServer';
+import type { ChildGateOutcome } from '../lib/child-bunker';
+import { withRequestCreatedAt } from '../lib/signing-backend';
 
 export interface PendingNip55 {
   handle: number;
@@ -45,6 +47,17 @@ interface Options {
   onServed?: () => void;
   /** Test seam. */
   now?: () => number;
+  /**
+   * Child-direct install (spec §8.3): every sign / NIP-44 request goes
+   * through the child's gate (appId `nip55:<package>`) instead of the local
+   * approval screen; the gate's created_at is stamped on the forwarded
+   * Heartwood request. A content-provider request never waits: if the gate
+   * has to ask, it is rejected and the ask stays live.
+   */
+  gate?: (req: {
+    persona: string; appId: string; appLabel: string; method: 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
+    template?: UnsignedEvent; peer?: string; wait: boolean;
+  }) => Promise<ChildGateOutcome>;
 }
 
 interface Waiting {
@@ -54,7 +67,9 @@ interface Waiting {
   pubkey: string | null;
 }
 
-export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, now = () => Date.now() }: Options) {
+export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, now = () => Date.now(), gate }: Options) {
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
   const [queue, setQueue] = useState<Waiting[]>([]);
   const [grants, setGrants] = useState<Nip55Grants>(() => loadNip55Grants());
   const routesRef = useRef(routes);
@@ -84,7 +99,23 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const byIntent = !raw.viaProvider;
     const route = routesRef.current.find(r => !r.dependantId && r.pubkey.toLowerCase() === pubkey);
     if (!route) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
-    const backend = route.signingBackend ?? route.backend;
+    let backend: Pick<typeof route.backend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'> = route.signingBackend ?? route.backend;
+    let template = parsed.template ? { ...parsed.template, pubkey } as UnsignedEvent : undefined;
+    const g = gateRef.current;
+    if (g && parsed.method !== 'get_public_key') {
+      const pkg = raw.callerPackage ?? '';
+      if (!pkg) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
+      let outcome: ChildGateOutcome;
+      try {
+        outcome = await g({
+          persona: pubkey, appId: `nip55:${pkg}`, appLabel: raw.callerLabel ?? pkg, method: parsed.method,
+          ...(template ? { template } : {}), ...(parsed.peer ? { peer: parsed.peer } : {}), wait: byIntent,
+        });
+      } catch { outcome = { ok: false, error: 'denied' }; }
+      if (!outcome.ok) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
+      backend = withRequestCreatedAt(route.signingBackend ?? route.backend, outcome.requestCreatedAt);
+      if (outcome.template) template = outcome.template;
+    }
     onServedRef.current?.();
     try {
       switch (parsed.method) {
@@ -92,8 +123,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
           await respond({ id: raw.id, status: 'ok', result: npubOf(pubkey) }, byIntent);
           return;
         case 'sign_event': {
-          const template = { ...parsed.template!, pubkey } as UnsignedEvent;
-          const signed = await backend.signEvent(template);
+          const signed = await backend.signEvent(template!);
           await respond({ id: raw.id, status: 'ok', result: signed.sig, event: JSON.stringify(signed) }, byIntent);
           return;
         }
@@ -109,6 +139,18 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     }
   }, [respond]);
 
+  /**
+   * `planNip55`, except that on a gated (child-direct) install a sign / NIP-44
+   * request never shows the local approval screen and a provider request is
+   * not deferred: it goes to `execute`, where the gate decides.
+   */
+  const planFor = useCallback((parsed: ParsedNip55 | null, viaProvider: boolean, grant: Nip55Grant | undefined, owned: string[], active: string | null): Nip55Plan => {
+    const gated = !!gateRef.current && !!parsed && parsed.method !== 'get_public_key' && owned.length > 0;
+    const plan = planNip55(parsed, gated ? false : viaProvider, grant, owned, active);
+    if (gated && plan.kind === 'ask') return plan.pubkey ? { kind: 'forward', pubkey: plan.pubkey } : { kind: 'reject', reason: 'no-identity' };
+    return plan;
+  }, []);
+
   const handleRequest = useCallback(async (raw: NativeNip55Request) => {
     if (!raw || typeof raw.id !== 'string' || seen.current.has(raw.id)) return;
     seen.current.add(raw.id);
@@ -116,7 +158,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const pkg = raw.callerPackage ?? '';
     const grant = pkg ? grantsRef.current[pkg] : undefined;
     const owned = lockedRef.current ? [] : routesRef.current.filter(r => !r.dependantId).map(r => r.pubkey);
-    const plan = planNip55(parsed, raw.viaProvider, grant, owned, activeRef.current);
+    const plan = planFor(parsed, raw.viaProvider, grant, owned, activeRef.current);
     // Locked and asked by intent: the plan says "no identity" only because
     // the keys are not decrypted yet. Hold the request and ask for the PIN.
     if (!raw.viaProvider && lockedRef.current && parsed && plan.kind === 'reject' && plan.reason === 'no-identity') {
@@ -169,12 +211,12 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const settled: number[] = [];
     for (const item of queue) {
       const grant = item.raw.callerPackage ? grants[item.raw.callerPackage] : undefined;
-      const plan = planNip55(item.parsed, item.raw.viaProvider, grant, owned, activePubkey);
+      const plan = planFor(item.parsed, item.raw.viaProvider, grant, owned, activePubkey);
       if (plan.kind === 'forward') { settled.push(item.handle); void execute(item.raw, item.parsed, plan.pubkey); }
       else if (plan.kind === 'reject') { settled.push(item.handle); void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); }
     }
     if (settled.length) setQueue(q => q.filter(w => !settled.includes(w.handle)));
-  }, [locked, queue, routes, grants, activePubkey, execute, respond]);
+  }, [locked, queue, routes, grants, activePubkey, execute, respond, planFor]);
 
   const remember = useCallback((pkg: string, grant: Nip55Grants[string]) => {
     setGrants(g => { const next = { ...g, [pkg]: grant }; saveNip55Grants(next); return next; });

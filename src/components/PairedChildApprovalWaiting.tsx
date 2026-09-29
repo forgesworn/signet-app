@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { CHILD_WAITING_COPY } from '../lib/child-device-copy';
 
 interface Props {
   /** Threshold in ms before the long-wait nudge appears. Default 8000. */
@@ -10,6 +11,12 @@ interface Props {
    * stray tap doesn't abort a request the parent is just about to approve.
    */
   onCancel: () => void;
+  /**
+   * Child-direct install: the request is an ask on the guardian's phone (it
+   * waits up to 10 minutes and they get a notice), not a NIP-46 round trip
+   * to a guardian app that may be closed.
+   */
+  direct?: boolean;
 }
 
 /**
@@ -24,7 +31,7 @@ interface Props {
  *   ≥ longWaitMs:    add a soft "they may not be in the app yet" line and
  *                    expose a Cancel button.
  */
-export function PairedChildApprovalWaiting({ longWaitMs = 8000, onCancel }: Props) {
+export function PairedChildApprovalWaiting({ longWaitMs = 8000, onCancel, direct = false }: Props) {
   const [waitedLong, setWaitedLong] = useState(false);
 
   useEffect(() => {
@@ -61,13 +68,17 @@ export function PairedChildApprovalWaiting({ longWaitMs = 8000, onCancel }: Prop
           }}
         />
         <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>
-          {waitedLong ? 'Still waiting…' : 'Asking your guardian to approve…'}
+          {direct
+            ? (waitedLong ? CHILD_WAITING_COPY.longTitle : CHILD_WAITING_COPY.title)
+            : (waitedLong ? 'Still waiting…' : 'Asking your guardian to approve…')}
         </span>
       </div>
       <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-        {waitedLong
-          ? 'Your guardian might not be in the Signet app yet. Ask them to open it so they can approve.'
-          : "They'll only see this once they open the Signet app."}
+        {direct
+          ? (waitedLong ? CHILD_WAITING_COPY.longBody : CHILD_WAITING_COPY.body)
+          : waitedLong
+            ? 'Your guardian might not be in the Signet app yet. Ask them to open it so they can approve.'
+            : "They'll only see this once they open the Signet app."}
       </div>
       {waitedLong && (
         <button

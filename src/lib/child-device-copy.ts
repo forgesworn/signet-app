@@ -148,3 +148,11 @@ export const CHILD_ASK_COPY = {
   } as Record<string, string>,
   notificationTitle: (child: string) => `${child} needs an approval`,
 } as const;
+
+/** The child's phone while its gate waits on the guardian (spec §7, §8). */
+export const CHILD_WAITING_COPY = {
+  title: 'Asking your guardian…',
+  body: 'Your guardian gets this request on their phone. This page waits for their answer.',
+  longTitle: 'Still waiting for your guardian…',
+  longBody: 'They may not have seen it yet. The request stays open for 10 minutes.',
+} as const;

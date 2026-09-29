@@ -3361,3 +3361,26 @@ export async function removePendingChildRevoke(rec: Pick<PendingChildRevoke, 'sl
   const next = list.filter(r => !(r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase()));
   if (next.length !== list.length) await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, next, encryptionKey);
 }
+
+const CHILD_TRANSPORT_KEYS_ROW = CHILD_DIRECT_ROW_PREFIX + 'transportKeys';
+
+/** Child phone: the local NIP-46 transport keypair per persona (encrypted identity-store row). */
+export type ChildTransportKeys = Record<string, { publicKey: string; privateKey: string }>;
+
+export async function saveChildTransportKeys(map: ChildTransportKeys, encryptionKey: string): Promise<void> {
+  await saveEncryptedJsonRow(CHILD_TRANSPORT_KEYS_ROW, map, encryptionKey);
+}
+
+/** Malformed entries are dropped; nothing stored (or a wrong key) ⇒ `{}`. */
+export async function loadChildTransportKeys(encryptionKey: string): Promise<ChildTransportKeys> {
+  const raw = await loadEncryptedJsonRow(CHILD_TRANSPORT_KEYS_ROW, encryptionKey);
+  const out: ChildTransportKeys = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [persona, v] of Object.entries(raw as Record<string, unknown>)) {
+    const o = v as { publicKey?: unknown; privateKey?: unknown } | null;
+    if (!HEX64.test(persona) || !o || typeof o.publicKey !== 'string' || typeof o.privateKey !== 'string') continue;
+    if (!HEX64.test(o.publicKey) || !HEX64.test(o.privateKey)) continue;
+    out[persona] = { publicKey: o.publicKey, privateKey: o.privateKey };
+  }
+  return out;
+}

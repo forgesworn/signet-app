@@ -207,4 +207,41 @@ describe('useNip55Server', () => {
     expect(result.current.pending).toBeNull();
     expect(respond).not.toHaveBeenCalled();
   });
+
+  describe('child-direct gate (spec §8.3)', () => {
+    it('an unknown app is decided by the gate, not the local screen, and signs the gate\'s template', async () => {
+      const gate = vi.fn(async (req: { template?: { kind: number } }) => ({ ok: true as const, requestCreatedAt: 1_900_000_000, template: { ...req.template!, pubkey } as never }));
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ callerLabel: 'Kithmoot' })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(result.current.pending).toBeNull();
+      expect(gate).toHaveBeenCalledWith(expect.objectContaining({ persona: pubkey, appId: 'nip55:dev.forgesworn.kithmoot', appLabel: 'Kithmoot', method: 'sign_event', wait: true }));
+      const answer = respond.mock.calls[0][0];
+      expect(answer.status).toBe('ok');
+      expect(verifyEvent(JSON.parse(answer.event!))).toBe(true);
+    });
+
+    it('a content-provider request never waits: an ask is rejected at once', async () => {
+      const gate = vi.fn(async () => ({ ok: false as const, error: 'asked' as const }));
+      renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(gate).toHaveBeenCalledWith(expect.objectContaining({ wait: false }));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+    });
+
+    it('a gate refusal is rejected; get_public_key does not go through the gate', async () => {
+      const gate = vi.fn(async () => ({ ok: false as const, error: 'denied' as const }));
+      renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      gate.mockClear();
+      await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null, viaProvider: true })); });
+      expect(gate).not.toHaveBeenCalled();
+    });
+  });
 });
