@@ -77,6 +77,17 @@ describe('useChildRulesPublisher', () => {
     await vi.waitFor(() => expect(published).toHaveLength(1));
   });
 
+  it('fills disconnectedApps from the live *-scope app deny rules (Block app)', async () => {
+    const dep = directDep();
+    const app = 'c'.repeat(64);
+    const block = rule(dep.id, { id: childRuleId(dep.id, '*', '*', `app:${app}`), scope: '*', target: `app:${app}`, decision: 'deny' });
+    renderHook(() => useChildRulesPublisher({ enabled: true, dependants: [dep], childRules: [rule(dep.id), block], relayUrl: RELAY, publish }));
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    const payload = await openChildRulesEvent(published[0].ev, bytesToHex(clientSk), { railPubkey: RAIL, dependantId: dep.id });
+    expect(payload?.disconnectedApps).toEqual([app]);
+  });
+
   it('A25: publishes on the relay stored at pairing', async () => {
     const d = directDep();
     const dep = { ...d, childDevice: { ...d.childDevice!, railRelay: 'wss://paired.example.com' } };

@@ -8,6 +8,7 @@ import { UpdateStatusLine } from '../components/UpdateStatusLine';
 import { resolveDependantRealIdentityRow } from '../lib/real-identity-row';
 import type { ContactPolicy } from '../lib/lift-child-settings';
 import { DEFAULT_CHILD_CEILING_SECTION_TITLE, defaultChildCeilingCopy, tierChipLabel } from '../lib/contacts-v2-copy';
+import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 
 const TIER_LABELS: Record<string, string> = {
   basic: 'Basic',
@@ -35,6 +36,8 @@ interface Props {
   onPairApp?: () => void;
   /** Opens the per-dependant audit log (v1). */
   onViewActivity?: () => void;
+  /** Opens the Permissions page for a child's own phone paired straight to the Heartwood (spec §9.3). */
+  onOpenPermissions?: () => void;
   /**
    * Audit-visibility override — kept on the interface (Phase 2 transitional).
    * The selector UI moved to PersonaAdvanced's DepSettingsBlock. Read-only here.
@@ -112,6 +115,7 @@ export function GuardianSettings({
   onPairDevice,
   onPairApp,
   onViewActivity,
+  onOpenPermissions,
   appPairings,
   onRevokeAppPairing,
   // Kept on the prop interface (Phase 2 transitional) — the Switch buttons
@@ -442,6 +446,24 @@ export function GuardianSettings({
           >
             {activeDependant.bunkerEndpoint?.authorizedClientPubkey ? 'Manage pairing' : 'Pair a device'}
           </button>
+        </div>
+      )}
+
+      {/* Permissions — a child's own phone paired straight to the Heartwood
+          (spec §9.3): rules, the Heartwood ceiling, the apps on the phone. */}
+      {viewer === 'guardian' && onOpenPermissions && activeDependant.childDevice?.mode === 'heartwood-direct' && (
+        <div className="card section">
+          <div className="section-title">{CHILD_PERMISSIONS_COPY.entry}</div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4, lineHeight: 1.5 }}>
+            {CHILD_PERMISSIONS_COPY.pairedStatus(activeDependant.displayName)}
+          </p>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>
+            {CHILD_PERMISSIONS_COPY.entryBody(activeDependant.displayName)}
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary" onClick={onOpenPermissions}>{CHILD_PERMISSIONS_COPY.entry}</button>
+            <button className="btn btn-secondary" onClick={onOpenPermissions}>{CHILD_PERMISSIONS_COPY.appsHeading(activeDependant.displayName)}</button>
+          </div>
         </div>
       )}
 

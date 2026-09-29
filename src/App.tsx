@@ -113,7 +113,10 @@ import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hoo
 import { useEscalations } from './hooks/useEscalations';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
-import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy } from './lib/heartwood-mgmt';
+import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
+import { ChildPermissions, ChildPermissionsGuardianRoute } from './pages/ChildPermissions';
+import { blockAppRules } from './lib/child-permissions';
+import { CHILD_PERMISSIONS_COPY } from './lib/child-device-copy';
 import { submitVerdict, resolveVerdictAvailability, pushChildCeilingLocked, removeOnceEntry, type OnceEntry, type PanelVerdictAction } from './lib/policy-push';
 import { withOperatorLock } from './lib/operator-lock';
 import type { EscalationNotice } from './lib/escalation-fetch';
@@ -205,6 +208,7 @@ import { BadgeEmbed } from './pages/BadgeEmbed';
 import { VouchSomeone } from './pages/VouchSomeone';
 import { TransitionCeremony } from './pages/TransitionCeremony';
 import { PairDependantDevice } from './pages/PairDependantDevice';
+import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { parseHeartwoodIdentities, pickOwnerIdentities } from './lib/heartwood-identities';
@@ -262,7 +266,7 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, type ApprovedOnceKinds } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, listChildRules, tombstoneChildRule, type ApprovedOnceKinds } from './lib/db';
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
@@ -9648,6 +9652,7 @@ export function App() {
             onPairDevice={() => navigateTo('pair-dependant-device')}
             onPairApp={() => navigateTo('pair-dependant-app')}
             onViewActivity={() => navigateTo('activity')}
+            onOpenPermissions={() => navigateTo('child-permissions')}
             appPairings={activeDependant.appBunkerEndpoint?.pairings ?? []}
             onRevokeAppPairing={async (clientPubkey) => {
               const key = encryptionKey || await requestAuth();
@@ -9753,6 +9758,7 @@ export function App() {
           navigateTo(target);
         }}
         showPairedChildSwitcher={preferences.signingMode === 'paired-child' && pairedChildMetas.length > 1}
+        showChildPermissions={childDirect}
         connectedSiteCount={authorizedSites.length}
         dependantsCount={dependants.length}
         companionGrantCount={companionGrantCount}
@@ -11624,6 +11630,37 @@ export function App() {
     );
   }
 
+  // The child-direct pairing hook's options (spec §4, §9.4): the pairing page
+  // and the Permissions page (Unpair) share them.
+  const childDirectPairingOpts = (): (Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void }) | undefined => (identity ? {
+    operator: heartwoodOperator.client,
+    operatorStatus: heartwoodOperator.status,
+    operatorStatusError: heartwoodOperator.statusError,
+    guardianNpPubkey: identity.naturalPerson.publicKey,
+    railRelay: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+    hwRelays: heartwoodOperator.credential?.relays ?? [],
+    encryptionKey,
+    grants: grantsForSync,
+    // Merge ONLY the pairing fields onto a fresh read, so a concurrent
+    // edit to the dependant is never overwritten by this snapshot.
+    onDependantUpdated: async (dep) => {
+      const key = encryptionKey || await requestAuth();
+      if (!key) throw new Error('Authentication required');
+      const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+      if (!fresh) throw new Error('Dependant not found');
+      await saveDependant({ ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice }, key);
+      await reloadDependants();
+    },
+    onRulesChanged: () => { void reloadChildRules(); },
+    readDependant: async (id) => {
+      const key = encryptionKey || await requestAuth();
+      if (!key) return null;
+      return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
+    },
+    clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
+    onOpenOperatorImport: () => navigateTo('settings-advanced'),
+  } : undefined);
+
   // Pair a device — guardian-side QR for phone-as-family-bunker
   if (page === 'pair-dependant-device' && activeDependant) {
     return (
@@ -11663,34 +11700,80 @@ export function App() {
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
           signingMode={preferences.signingMode}
-          direct={identity ? {
-            operator: heartwoodOperator.client,
-            operatorStatus: heartwoodOperator.status,
-            operatorStatusError: heartwoodOperator.statusError,
-            guardianNpPubkey: identity.naturalPerson.publicKey,
-            railRelay: preferences.relayUrl ?? DEFAULT_RELAY_URL,
-            hwRelays: heartwoodOperator.credential?.relays ?? [],
-            encryptionKey,
-            grants: grantsForSync,
-            // Merge ONLY the pairing fields onto a fresh read, so a concurrent
-            // edit to the dependant is never overwritten by this snapshot.
-            onDependantUpdated: async (dep) => {
+          direct={childDirectPairingOpts()}
+        />
+      </Layout>
+    );
+  }
+
+  // Permissions for a child's own phone paired straight to the Heartwood
+  // (spec §9.3, §9.4). Guardian: manage; the child: the same page, read-only.
+  if (page === 'child-permissions' && activeDependant && !isPairedChild && activeDependant.childDevice?.mode === 'heartwood-direct') {
+    const dep = activeDependant;
+    const pairingOpts = childDirectPairingOpts();
+    return (
+      <Layout title={CHILD_PERMISSIONS_COPY.title(dep.displayName)} showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
+        {authOverlay}{nip55Overlay}
+        {bunkerApprovalOverlay}
+        {topBanners}
+        {pairingOpts && (
+          <ChildPermissionsGuardianRoute
+            dependant={dep}
+            childRules={childRules}
+            approvedOnce={Object.entries(approvedOnceKinds ?? {}).filter(([k]) => k.toLowerCase() === dep.id.toLowerCase()).flatMap(([, v]) => v)}
+            relays={[preferences.relayUrl ?? DEFAULT_RELAY_URL]}
+            encryptionKey={encryptionKey}
+            pairing={pairingOpts}
+            history={childAsks.history}
+            onRevokeRule={async (rule) => {
               const key = encryptionKey || await requestAuth();
               if (!key) throw new Error('Authentication required');
-              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-              if (!fresh) throw new Error('Dependant not found');
-              await saveDependant({ ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice }, key);
-              await reloadDependants();
-            },
-            onRulesChanged: () => { void reloadChildRules(); },
-            readDependant: async (id) => {
+              // Tombstone → rules self-rail, rules publisher and policy push (ceiling recompile).
+              await tombstoneChildRule(rule.id, key, Date.now());
+              await reloadChildRules();
+            }}
+            onBlockApp={async (app) => {
               const key = encryptionKey || await requestAuth();
-              if (!key) return null;
-              return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
-            },
-            clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
-            onOpenOperatorImport: () => navigateTo('settings-advanced'),
-          } : undefined}
+              if (!key) throw new Error('Authentication required');
+              // A7/A11: a `*`-scope deny rule for the app; `disconnectedApps` derives from it.
+              const out = blockAppRules(dep.id, app, await listChildRules(dep.id, key), Date.now());
+              if (!out) throw new Error('Cannot block this app');
+              for (const r of out) await saveChildRule(r, key);
+              await reloadChildRules();
+            }}
+            onRemovePersona={async (persona) => {
+              const c = heartwoodOperator.client;
+              const cd = dep.childDevice;
+              if (!c || !c.isOpen || !cd) throw new Error('Heartwood unreachable');
+              await withOperatorLock(c, () => mgmtRevokeClientIdentity(c, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint }, persona));
+            }}
+            onOpenStage={() => {
+              setPendingPersonaAdvancedTarget({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id });
+              navigateTo('persona-advanced');
+            }}
+            onUnpaired={() => navigateBack()}
+          />
+        )}
+      </Layout>
+    );
+  }
+  if (page === 'child-permissions' && childDirect && identity) {
+    const payload = childDeviceLink.rules;
+    return (
+      <Layout title={CHILD_PERMISSIONS_COPY.titleChild} showBack onBack={() => navigateBack()}>
+        {authOverlay}{nip55Overlay}
+        {topBanners}
+        <ChildPermissions
+          viewer="child"
+          childName={identity.persona.displayName || identity.naturalPerson.displayName || ''}
+          personas={childLinkInventory}
+          stage={payload?.stage ?? null}
+          paused={payload?.defaultSchedule?.paused === true}
+          rules={payload?.rules ?? []}
+          ceilingKinds={payload ? payload.ceilingKinds : null}
+          apps={childGate.connectedApps}
+          disconnectedApps={payload?.disconnectedApps ?? []}
+          paired={!childDeviceLink.unpaired}
         />
       </Layout>
     );

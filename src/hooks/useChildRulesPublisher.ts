@@ -19,6 +19,7 @@ import { resolveAuditVisibility } from '../lib/audit-visibility';
 import { publishEvent } from '../lib/relay-service';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { earliestChildExpiryMs } from './usePolicyPush';
+import { disconnectedAppsFromRules } from '../lib/child-permissions';
 
 export const CHILD_RULES_PUBLISH_DEBOUNCE_MS = 1_000;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -65,7 +66,8 @@ export function childRulesPayloadFor(
     ...(dep.defaultSchedule ? { defaultSchedule: dep.defaultSchedule } : {}),
     ceilingKinds: policy.allowedKinds,
     rules: live,
-    disconnectedApps: [],
+    // Blocked apps (spec §9.3): derived from the live `*`-scope app deny rules, so it syncs with the rules.
+    disconnectedApps: disconnectedAppsFromRules(live, nowMs),
   };
 }
 

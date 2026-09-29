@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 import type { SignetIdentity, AppPreferences, Page } from '../types';
 import { ANDROID_APP_URL, isAndroidWeb } from '../lib/android-promo';
 import { UpdateStatusLine } from '../components/UpdateStatusLine';
@@ -28,6 +29,8 @@ interface Props {
    * child" button that navigates to the picker page.
    */
   showPairedChildSwitcher?: boolean;
+  /** A child's phone paired straight to the Heartwood: link to the read-only Permissions page (spec §9.3). */
+  showChildPermissions?: boolean;
   /** Number of authorized (connected) sites for display in the Connections row. */
   connectedSiteCount?: number;
   /**
@@ -46,7 +49,7 @@ interface Props {
   onApplyWebUpdate?: () => void;
 }
 
-export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, connectedSiteCount = 0, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
+export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, connectedSiteCount = 0, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [versionTaps, setVersionTaps] = useState(0);
 
@@ -231,6 +234,19 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           </p>
           <button className="btn btn-secondary" onClick={() => onNavigate('paired-child-switcher')}>
             Switch to another child
+          </button>
+        </div>
+      )}
+
+      {/* What the guardian allows this phone (child-direct, spec §9.3) — read-only. */}
+      {showChildPermissions && (
+        <div className="card section">
+          <div className="section-title">{CHILD_PERMISSIONS_COPY.titleChild}</div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
+            {CHILD_PERMISSIONS_COPY.childEntryBody}
+          </p>
+          <button className="btn btn-secondary" onClick={() => onNavigate('child-permissions')}>
+            {CHILD_PERMISSIONS_COPY.childEntryButton}
           </button>
         </div>
       )}
