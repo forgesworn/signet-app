@@ -9,7 +9,7 @@ import type { DependantIdentity } from '../types';
 import type { DeviceClientSlot, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
 import type { ChildPairReply } from './child-pair-wire';
 import { CAP_NOSTRCONNECT_V2, hasCapability, listClients, revokeClient, type HeartwoodMgmtClient } from './heartwood-mgmt';
-import { resolveDependantCardSlot } from './carousel-utils';
+import { resolveDependantRouteSlots } from './dependant-route-slots';
 import { isDependantNaturalPersonActive } from './identity-display';
 import { isChildDirectSlot } from './policy-compiler';
 import { rulesFromLegacyGrants } from './child-rules';
@@ -23,19 +23,20 @@ export const MAX_CONNECT_SLOTS = 16;
 const HEX64 = /^[0-9a-f]{64}$/;
 const TREE_PATH_RE = /^dependant-\d+$/;
 
-/** Spec §4 "Unchanged": only a tree-derived dependant of a guardian on a
- *  Heartwood takes the direct flow; everyone else keeps the phone-served QR. */
+/** Spec §4 "Unchanged" + A53: the direct flow is only for a dependant the
+ *  phone cannot serve the legacy way — a tree-derived dependant of a guardian
+ *  in bunker mode whose keys have left this phone. A generic `bunker://`
+ *  guardian, or a Heartwood guardian who has not migrated, keeps the
+ *  phone-served QR. */
 export function usesChildDirectPairing(dep: DependantIdentity, signingMode: string | undefined): boolean {
-  return signingMode === 'bunker' && TREE_PATH_RE.test(dep.derivationPath ?? '');
+  return signingMode === 'bunker' && TREE_PATH_RE.test(dep.derivationPath ?? '') && resolveDependantRouteSlots(dep) === null;
 }
 
-/** The default persona the slot binds to; never a dormant natural person. */
+/** A54: the slot binds the dependant's DEFAULT persona (spec §4), never the
+ *  card slot — which is the real identity for most older dependants — nor an extra. */
 export function childDirectPersona(dep: DependantIdentity): string | null {
-  const card = resolveDependantCardSlot(dep);
-  const pub = (card.slot.publicKey ?? '').toLowerCase();
-  if (!HEX64.test(pub)) return null;
-  if (card.slotTarget === 'natural-person' && !isDependantNaturalPersonActive(dep)) return null;
-  return pub;
+  const pub = (dep.persona?.publicKey ?? '').toLowerCase();
+  return HEX64.test(pub) ? pub : null;
 }
 
 export type PairBlockReason = 'no-operator-key' | 'device-unsupported' | 'slots-full' | 'no-persona' | 'offline';

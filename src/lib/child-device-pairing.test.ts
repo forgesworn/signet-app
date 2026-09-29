@@ -34,8 +34,10 @@ function slot(over: Partial<DeviceClientSlot>): DeviceClientSlot {
 beforeEach(() => { mList.mockReset(); mRevoke.mockReset(); });
 
 describe('child-device-pairing', () => {
-  it('only a tree-derived dependant of a bunker-mode guardian takes the direct flow', () => {
+  it('A53: only a keys-stripped tree-derived dependant of a bunker-mode guardian takes the direct flow', () => {
     expect(usesChildDirectPairing(dep(), 'bunker')).toBe(true);
+    // Keys still local (generic bunker://, or a Heartwood guardian not yet migrated): the legacy QR.
+    expect(usesChildDirectPairing(dep({ persona: { ...dep().persona, privateKey: '11'.repeat(32) } }), 'bunker')).toBe(false);
     expect(usesChildDirectPairing(dep(), 'local')).toBe(false);
     expect(usesChildDirectPairing(dep({ derivationPath: 'imported' }), 'bunker')).toBe(false);
   });
@@ -43,6 +45,9 @@ describe('child-device-pairing', () => {
   it('binds the persona, never a dormant natural person', () => {
     expect(childDirectPersona(dep())).toBe(PERSONA);
     expect(childDirectPersona(dep({ primaryKeypair: 'natural-person' }))).toBe(PERSONA);
+    // A54: the default persona even when the card shows an ACTIVE real identity.
+    const active = dep({ primaryKeypair: 'natural-person' });
+    expect(childDirectPersona({ ...active, naturalPersonActive: true, naturalPerson: { ...active.naturalPerson, displayName: 'Lily Smith' } })).toBe(PERSONA);
     expect(childDirectPersona(dep({ persona: { ...dep().persona, publicKey: '' } }))).toBeNull();
   });
 
