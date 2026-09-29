@@ -422,6 +422,8 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
           mode: 'heartwood-direct', slotLabel: s.label, secretFingerprint: minted.secretFingerprint,
           slotIndex: minted.slotIndex, clientPubkey: req.clientPubkey, boundPersona: s.persona, pairedAt: now(),
           railRelay: s.railRelay, ...(seedPending ? { seedPending: true } : {}),
+          // A64: a re-pair keeps the personas the guardian already removed.
+          ...(dep.childDevice?.removedPersonas?.length ? { removedPersonas: [...dep.childDevice.removedPersonas] } : {}),
         },
       };
       try {

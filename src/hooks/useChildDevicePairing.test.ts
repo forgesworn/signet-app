@@ -228,6 +228,22 @@ describe('useChildDevicePairing — request, check words, mint', () => {
     expect(mMint).not.toHaveBeenCalled();
   });
 
+  it('A64: a re-pair carries over removedPersonas', async () => {
+    const removed = ['cd'.repeat(32)];
+    dependant = { ...dependant, childDevice: { mode: 'heartwood-direct', slotLabel: childDirectSlotLabel(dependant.id), secretFingerprint: 'ab'.repeat(32),
+      slotIndex: 9, clientPubkey: 'a'.repeat(64), boundPersona: dependant.persona.publicKey, pairedAt: 1, removedPersonas: removed } };
+    const s = await toConfirm();
+    const listed = mintOk(s.c, dependant.persona.publicKey);
+    mList.mockImplementation(async () => {
+      const policy = mMint.mock.calls[0]?.[1].policy;
+      return policy ? [listed(policy)] : [];
+    });
+    await act(async () => { await s.hook.result.current.confirmMatch(); });
+    const last = saved[saved.length - 1];
+    expect(last.childDevice?.clientPubkey).toBe(s.c.pub);
+    expect(last.childDevice?.removedPersonas).toEqual(removed);
+  });
+
   it('"They match" → nostrconnect_v2 with label/identity/compiled policy, then list_clients, then save, then reply', async () => {
     const s = await toConfirm();
     const persona = dependant.persona.publicKey;
