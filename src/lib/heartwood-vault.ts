@@ -9,6 +9,7 @@ import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { isValidRelayUrl } from './relay-url';
 import { waitForReplySubscription, RELAY_READY_CAP_MS } from './relay-ready';
+import { VaultApprovalError } from './vault-approval';
 
 type Context = { purpose: string; index: number };
 export type VaultRpc = (method: string, params: string[], context: Context) => Promise<string>;
@@ -51,9 +52,11 @@ export async function heartwoodVaultRequest(args: {
           try {
             const reply = JSON.parse(decrypt(event.content, conversation));
             if (reply?.id !== id) return;
-            if (reply.error) finish(undefined, new Error('The signer refused the vault request'));
+            // Any error reply is the device's own verdict — denied, its card
+            // timed out, or busy — never a transport failure.
+            if (reply.error) finish(undefined, new VaultApprovalError('The signer refused the vault request'));
             else if (typeof reply.result === 'string' && reply.result !== 'auth_url') finish(reply.result);
-            else finish(undefined, new Error('The signer requires approval for this vault request'));
+            else finish(undefined, new VaultApprovalError('The signer requires approval for this vault request'));
           } catch { /* Ignore malformed/foreign replies; timeout remains armed. */ }
         },
       });

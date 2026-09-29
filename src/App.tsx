@@ -259,6 +259,7 @@ import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
 import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys } from './lib/db';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
+import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
 import { contactToKindredEntry } from './lib/kindred-adapter';
 import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
@@ -5392,6 +5393,10 @@ export function App() {
       ? createVaultPubkeyStore(encryptionKey) : null);
     return () => bunkerBackend.setVaultPubkeyStore(null);
   }, [bunkerBackend, encryptionKey, preferences.signingMode]);
+  // Bumped by the "Approve on Heartwood" line: one explicit re-run after the
+  // device refused (usePrivateVaults stops retrying on its own).
+  const [privateVaultApproveToken, setPrivateVaultApproveToken] = useState(0);
+  const [privateVaultApprovalDismissed, setPrivateVaultApprovalDismissed] = useState(false);
   usePrivateVaults({
     sessionKey: identity && encryptionKey ? privateVaultSession : null,
     ownerPubkey: identity?.naturalPerson.publicKey ?? null,
@@ -5408,6 +5413,7 @@ export function App() {
       identity ? profilesChangeWire(identity) : null,
       dependants.map(dependantChangeWire), credentials?.map(c => c.id), grantsForSync,
       portableSettingsValues(preferences), [...childSettingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)]),
+    approveToken: privateVaultApproveToken,
     relays: syncRelays,
     jobs: isCurrent => privateVaultJobs({ identity: identity!, encryptionKey: encryptionKey!,
       deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent }),
@@ -5424,6 +5430,7 @@ export function App() {
     if (!encryptionKey) {
       setPersonasSkippedDismissed(false);
       setRestoreNoBackupDismissed(false);
+      setPrivateVaultApprovalDismissed(false);
       restoredThisSessionRef.current = false;
       // M5: the family-contacts Tier-1 gate is per-unlock, not per-session —
       // a lock must force the next visit back through requestAuth.
@@ -8499,6 +8506,22 @@ export function App() {
     </div>
   ) : null;
 
+  // The device refused a private-backup request (denied, card timed out or
+  // busy), so the vault jobs stopped retrying for this unlock rather than put
+  // the same cards back up. One quiet line; the button runs them once more.
+  const privateVaultApprovalBanner = (!isPairedChild && privateVaultSupported
+    && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed) ? (
+    <div style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ flex: 1 }}>{PRIVATE_VAULT_NEEDS_APPROVAL_COPY}</span>
+      <button onClick={() => setPrivateVaultApproveToken(t => t + 1)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>
+        {PRIVATE_VAULT_APPROVE_LABEL}
+      </button>
+      <button onClick={() => setPrivateVaultApprovalDismissed(true)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>
+        {PRIVATE_VAULT_APPROVAL_DISMISS_LABEL}
+      </button>
+    </div>
+  ) : null;
+
   // R6: the v2 contacts log has either outgrown what the rail can carry
   // ('too-large') or has a relay round trip stuck with no leg left that
   // could succeed ('stalled', Task 6 review ruling). Distinct from a missing
@@ -8618,10 +8641,11 @@ export function App() {
     health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
-  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || contactsBackupTooLargeBanner
+  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
+    || contactsBackupTooLargeBanner
     || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner
     || personasSkippedBanner || restoreNoBackupBanner) ? (
-    <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{contactsBackupTooLargeBanner}
+    <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
       {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}</>
   ) : null;
