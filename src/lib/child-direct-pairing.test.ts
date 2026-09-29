@@ -8,7 +8,7 @@ import {
 } from './child-pair-wire';
 import { parseNostrConnectURI } from './nip46';
 import {
-  runChildDirectPairing, buildChildNostrConnectUri, directBunkerUri, ChildDirectPairError, pairedChildSignerPubkey,
+  runChildDirectPairing, buildChildNostrConnectUri, directBunkerUri, ChildDirectPairError, pairedChildSignerPubkey, childPairRunTimeoutMs,
   type ChildDirectPairingDeps,
 } from './child-direct-pairing';
 
@@ -157,6 +157,33 @@ describe('runChildDirectPairing', () => {
     ac.abort();
     await expect(p).rejects.toMatchObject({ code: 'cancelled' });
     expect(h.subs[0].closed).toBe(true);
+  });
+});
+
+describe('childPairRunTimeoutMs (A28)', () => {
+  it('is 300 s while the code has more than that left', () => {
+    expect(childPairRunTimeoutMs(NOW, NOW + 5)).toBe(300_000);
+  });
+  it('shrinks to the time left on the 600 s code', () => {
+    expect(childPairRunTimeoutMs(NOW, NOW + 500)).toBe(100_000);
+  });
+  it('is zero once the code has expired', () => {
+    expect(childPairRunTimeoutMs(NOW, NOW + 700)).toBe(0);
+  });
+  it('a run on an expired code times out without publishing', async () => {
+    const h = harness();
+    h.deps.nowS = () => NOW + 601;
+    await expect(runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {} }))
+      .rejects.toMatchObject({ code: 'timeout' });
+    expect(h.published).toHaveLength(0);
+    expect(h.handshake).not.toHaveBeenCalled();
+  });
+  it('the handshake gets the capped timeout', async () => {
+    const h = harness({ handshake: () => new Promise<string>(() => {}) });
+    h.deps.nowS = () => NOW + 599;
+    await expect(runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {} }))
+      .rejects.toMatchObject({ code: 'timeout' });
+    expect(h.handshake.mock.calls[0][3]).toBe(1_000);
   });
 });
 

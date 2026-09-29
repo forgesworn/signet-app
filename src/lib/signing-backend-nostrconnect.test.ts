@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   fromUriCalls: [] as { uri: string; params: Record<string, unknown> }[],
   fromUriReject: false,
   closed: 0,
+  pubkeyHang: false,
 }));
 
 vi.mock('nostr-tools/nip46', () => ({
@@ -20,7 +21,7 @@ vi.mock('nostr-tools/nip46', () => ({
       if (m.fromUriReject) throw new Error('subscription closed before connection was established.');
       return {
         sendRequest: async (method: string) => {
-          if (method === 'get_public_key') return m.pubkeyReply;
+          if (method === 'get_public_key') return m.pubkeyHang ? new Promise<string>(() => {}) : m.pubkeyReply;
           return 'ok';
         },
         close: async () => { m.closed += 1; },
@@ -39,7 +40,7 @@ const PERSONA = 'ab'.repeat(32);
 const NC = `nostrconnect://${'a1'.repeat(32)}?relay=wss%3A%2F%2Fhw1.example&relay=wss%3A%2F%2Fhw2.example&secret=${'cc'.repeat(16)}`;
 
 describe('BunkerSigningBackend.acceptNostrConnect', () => {
-  beforeEach(() => { m.pubkeyReply = ''; m.fromUriCalls = []; m.fromUriReject = false; m.closed = 0; });
+  beforeEach(() => { m.pubkeyReply = ''; m.fromUriCalls = []; m.fromUriReject = false; m.closed = 0; m.pubkeyHang = false; });
 
   it('pins get_public_key to the persona and stores a secret-free bunker URI for reconnects', async () => {
     m.pubkeyReply = PERSONA;
@@ -67,5 +68,25 @@ describe('BunkerSigningBackend.acceptNostrConnect', () => {
     m.fromUriReject = true;
     const b = new BunkerSigningBackend('11'.repeat(32));
     await expect(b.acceptNostrConnect(NC, PERSONA, 5_000)).rejects.toThrow();
+  });
+
+  it('A29: an abort while get_public_key is pending rejects at once and tears the backend down', async () => {
+    m.pubkeyHang = true;
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    const ac = new AbortController();
+    const p = b.acceptNostrConnect(NC, PERSONA, 60_000, ac.signal);
+    await new Promise(r => setTimeout(r, 0));
+    ac.abort();
+    await expect(p).rejects.toThrow(/cancelled/i);
+    expect(m.closed).toBe(1);
+    expect(b.activePublicKeyHex).toBe('');
+    await expect(b.signEvent({ kind: 1, created_at: 1, tags: [], content: '', pubkey: PERSONA })).rejects.toThrow(/Not connected/);
+  });
+
+  it('A29: an abort before the handshake starts rejects without connecting', async () => {
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    const ac = new AbortController();
+    ac.abort();
+    await expect(b.acceptNostrConnect(NC, PERSONA, 60_000, ac.signal)).rejects.toThrow(/cancelled/i);
   });
 });

@@ -291,19 +291,37 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     const attempt = ++this.connectAttempt;
     const relays = new URL(nostrconnectUri.replace('nostrconnect://', 'https://')).searchParams.getAll('relay');
     if (relays.length === 0) throw new Error('nostrconnect URI must include at least one relay.');
+    if (signal?.aborted) throw new Error('Connection cancelled');
     this.releaseTransport();
     const pool = new SimplePool();
     const abort = new AbortController();
-    const onOuterAbort = () => abort.abort();
-    signal?.addEventListener('abort', onOuterAbort);
-    const timer = setTimeout(() => abort.abort(), timeoutMs);
     let signer: BunkerSigner | null = null;
+    let released = false;
+    let closedSigner: BunkerSigner | null = null;
     const release = () => {
-      if (signer) void signer.close().catch(() => { /* best-effort teardown */ });
+      // Idempotent, but a signer that arrived after the first release is still closed.
+      if (signer && signer !== closedSigner) { closedSigner = signer; void signer.close().catch(() => { /* best-effort teardown */ }); }
+      if (released) return;
+      released = true;
       try { pool.destroy(); } catch { /* best-effort teardown */ }
       if (this.signer === signer) { this.signer = null; this.vaultGeneration++; }
       if (this.pool === pool) this.pool = null;
     };
+    // A29: an outer abort retires this attempt and tears its transport down at
+    // once — including while `get_public_key` is still outstanding, which the
+    // abort signal alone would not interrupt.
+    let rejectAborted: (err: Error) => void = () => {};
+    const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+    aborted.catch(() => { /* observed via the race below */ });
+    const onOuterAbort = () => {
+      abort.abort();
+      if (attempt === this.connectAttempt) this.connectAttempt++;
+      this.activePublicKeyHex = '';
+      release();
+      rejectAborted(new Error('Connection cancelled'));
+    };
+    signal?.addEventListener('abort', onOuterAbort);
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
     try {
       const clientSk = hexToBytes(this.clientSecretHex);
       try {
@@ -313,10 +331,10 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
           onauth() { /* Heartwood auth callback — no action needed in signet */ },
         }, abort.signal);
       } finally { clientSk.fill(0); }
-      if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
+      if (attempt !== this.connectAttempt || signal?.aborted) throw new Error('Connection cancelled');
       this.pool = pool;
       this.signer = signer;
-      const pubkey = (await this.request('get_public_key', [], timeoutMs)).trim().toLowerCase();
+      const pubkey = (await Promise.race([this.request('get_public_key', [], timeoutMs), aborted])).trim().toLowerCase();
       if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
       if (pubkey !== expectedPubkey.toLowerCase()) {
         this.activePublicKeyHex = '';

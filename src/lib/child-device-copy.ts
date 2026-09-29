@@ -85,6 +85,8 @@ export const CHILD_SIDE_COPY = {
   checkBody: 'Your guardian will see four words. Tell them yours. They only carry on if every word is the same.',
   waiting: 'Waiting for your guardian…',
   cancel: 'Cancel',
+  /** A28: a failed run never retries the same code. */
+  scanNew: 'Scan a new code',
   errors: {
     timeout: "Your guardian's phone did not answer in time. Nothing was set up — ask them for a new code.",
     publish: 'Could not reach the relay. Check your internet connection and try again.',

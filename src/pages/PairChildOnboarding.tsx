@@ -333,8 +333,9 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
         {step.error ? (
           <>
             <p style={{ color: 'var(--danger)', lineHeight: 1.5, marginBottom: 16 }}>{step.error}</p>
-            <button className="btn btn-primary" onClick={() => startDirect(step.offer)} style={{ width: '100%', marginBottom: 8 }}>
-              Try again
+            {/* A28: a failed run is over — the same code is never tried twice. */}
+            <button className="btn btn-primary" onClick={() => enterCapture('scan')} style={{ width: '100%', marginBottom: 8 }}>
+              {KID.scanNew}
             </button>
             <button className="btn btn-ghost" onClick={cancelDirect} style={{ width: '100%' }}>{KID.cancel}</button>
           </>

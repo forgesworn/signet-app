@@ -62,14 +62,16 @@ describe('PairChildOnboarding — signet-child: direct pairing', () => {
     await act(async () => { finish(); });
   });
 
-  it('a timeout shows the timeout copy and offers to try again', async () => {
+  it('a timeout shows the timeout copy and sends the child back to scan a new code (A28)', async () => {
     const onStartDirect = vi.fn(async () => { throw new ChildDirectPairError('timeout'); });
     render(<PairChildOnboarding onConfirm={vi.fn()} onStartDirect={onStartDirect} onCancel={() => {}} />);
     pasteAndContinue(buildChildPairUri(offer()));
     fireEvent.click(screen.getByText(CHILD_SIDE_COPY.confirmGo));
     await waitFor(() => expect(screen.getByText(CHILD_SIDE_COPY.errors.timeout)).toBeTruthy());
-    fireEvent.click(screen.getByText('Try again'));
-    await waitFor(() => expect(onStartDirect).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Try again')).toBeNull();
+    fireEvent.click(screen.getByText(CHILD_SIDE_COPY.scanNew));
+    await waitFor(() => expect(screen.queryByText(CHILD_SIDE_COPY.errors.timeout)).toBeNull());
+    expect(onStartDirect).toHaveBeenCalledTimes(1);
   });
 
   it('a guardian refusal with client-reused shows its copy', async () => {

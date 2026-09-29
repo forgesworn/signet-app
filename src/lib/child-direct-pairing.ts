@@ -15,7 +15,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import type { AutonomyStage } from '../types/dependants';
 import {
-  buildChildPairRequestEvent, newPairCode, openChildPairReplyEvent, pairCheckWords, pairReplyDTag,
+  buildChildPairRequestEvent, newPairCode, openChildPairReplyEvent, pairCheckWords, pairReplyDTag, CHILD_PAIR_TTL_S,
   type ChildPairOffer, type ChildPairReply,
 } from './child-pair-wire';
 import { generateBunkerClientSecret } from './signing-backend';
@@ -25,6 +25,15 @@ import { generateBunkerClientSecret } from './signing-backend';
  * four words out loud before minting (A3). Still inside the code's 600 s TTL.
  */
 export const CHILD_PAIR_RUN_TIMEOUT_MS = 300_000;
+
+/**
+ * A28: the whole run is bounded by min(300 s, what is left of the code's
+ * 600 s TTL). Zero when the code has already expired.
+ */
+export function childPairRunTimeoutMs(offerT: number, nowS: number): number {
+  const leftMs = (offerT + CHILD_PAIR_TTL_S - nowS) * 1000;
+  return Math.max(0, Math.min(CHILD_PAIR_RUN_TIMEOUT_MS, leftMs));
+}
 
 export type ChildDirectPairErrorCode = 'timeout' | 'publish' | 'refused' | 'signer' | 'cancelled';
 
@@ -78,7 +87,9 @@ export async function runChildDirectPairing(
   deps: ChildDirectPairingDeps,
   opts: { onCheckWords(words: string[]): void; timeoutMs?: number; signal?: AbortSignal },
 ): Promise<ChildDirectPairingResult> {
-  const timeoutMs = opts.timeoutMs ?? CHILD_PAIR_RUN_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? childPairRunTimeoutMs(offer.t, deps.nowS());
+  // A28: never start on a code with no time left (the guardian would refuse it anyway).
+  if (timeoutMs <= 0) throw new ChildDirectPairError('timeout');
   const clientPriv = generateBunkerClientSecret();
   const clientPub = getPublicKey(hexToBytes(clientPriv));
   const nostrconnect = buildChildNostrConnectUri(clientPub, offer.hwRelays, newPairCode());
