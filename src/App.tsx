@@ -322,7 +322,7 @@ import type { PairedChildMeta } from './lib/db';
 import type { VerifyRequest, VerifyResponse } from './lib/presentation';
 import { buildVerifyResponse, sendResponseViaBroadcast, parseVerifyRequest } from './lib/presentation';
 import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } from './lib/pick-credential';
-import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, publishAuthResponseToRelay, getLastAuthPublishError } from './lib/relay-publish';
+import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError } from './lib/relay-publish';
 import type { AuthResponse } from './lib/relay-publish';
 import { publishAuditEvent } from './lib/audit';
 import { resolveAuditVisibility } from './lib/audit-visibility';
@@ -7121,11 +7121,20 @@ export function App() {
           ? [relayUrl, userRelay]
           : [relayUrl];
 
+        // The gift-wrap is built ONCE and the same event goes to every target
+        // relay, and to every retry: the seal is a NIP-44 encrypt plus a
+        // kind-13 sign, each a device round trip (and possibly a card) on a
+        // Heartwood. Only a wrap that failed is attempted again on retry.
+        let wrappedResponse: import('signet-protocol').NostrEvent | null = null;
+
         /** Publish (or re-publish on retry) and update ack state accordingly. */
         const doPublish = async () => {
-          const results = await Promise.all(
-            targetRelays.map(url => publishAuthResponseToRelay(capturedResponse, url, capturedBackend, sessionPubkey)),
-          );
+          if (!wrappedResponse) {
+            wrappedResponse = await wrapAuthResponse(capturedResponse, capturedBackend, sessionPubkey);
+          }
+          const results = wrappedResponse
+            ? await publishWrappedToRelays(wrappedResponse, targetRelays)
+            : targetRelays.map(() => false);
           // Consumer-relay acceptance is the only outcome that delivers the
           // response to the consumer's listener; see comment block above.
           const ok = results[0] === true;

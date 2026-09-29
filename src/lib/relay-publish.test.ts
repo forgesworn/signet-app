@@ -20,6 +20,7 @@ import {
   publishVerifyResponseToRelay,
   publishVerifyRejectionToRelay,
   publishAuthResponseToRelay,
+  publishAuthResponseToRelays,
 } from './relay-publish';
 import type { SigningBackend } from './signing-backend';
 import { LocalSigningBackend } from './signing-backend';
@@ -614,5 +615,73 @@ describe('publishVerifyResponseToRelay — ZKP pre-publish verification', () => 
     await expect(
       publishVerifyResponseToRelay(response, 'wss://relay.example', stubBackend, RECIPIENT_PUB),
     ).resolves.toBe(false);
+  });
+});
+
+// ── Multi-relay auth response: wrap ONCE ─────────────────────────────────────
+//
+// On a Heartwood the seal's nip44_encrypt and kind-13 sign are each a device
+// round trip that can put a card up — wrapping per relay doubled them.
+
+describe('publishAuthResponseToRelays — one wrap for every relay', () => {
+  let frames: string[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    frames = [];
+    const sent = { value: null as string | null };
+    const Base = buildOpenWsMock(sent);
+    vi.stubGlobal('WebSocket', class extends Base {
+      constructor(url: string) {
+        super(url);
+        const inner = this.send;
+        this.send = vi.fn((msg: string) => { frames.push(msg); inner(msg); });
+      }
+    });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('encrypts and signs the seal once and sends the identical wrap to both relays', async () => {
+    const backend = makeBackend();
+    const encSpy = vi.spyOn(backend, 'nip44Encrypt');
+    const signSpy = vi.spyOn(backend, 'signEvent');
+    const promise = publishAuthResponseToRelays(
+      makeAuthResponse(),
+      ['wss://consumer.example.com', 'wss://mine.example.com'],
+      backend,
+      RECIPIENT_PUB,
+    );
+    await vi.runAllTimersAsync();
+    expect(await promise).toEqual([true, true]);
+    expect(encSpy).toHaveBeenCalledTimes(1);
+    expect(signSpy).toHaveBeenCalledTimes(1);
+    expect(frames).toHaveLength(2);
+    expect(frames[0]).toBe(frames[1]);
+    assertWrapShape(frames[0]);
+  });
+
+  it('reports an invalid relay as false without spending a second wrap', async () => {
+    const backend = makeBackend();
+    const encSpy = vi.spyOn(backend, 'nip44Encrypt');
+    const promise = publishAuthResponseToRelays(
+      makeAuthResponse(),
+      ['wss://consumer.example.com', 'http://not-a-relay.example.com'],
+      backend,
+      RECIPIENT_PUB,
+    );
+    await vi.runAllTimersAsync();
+    expect(await promise).toEqual([true, false]);
+    expect(encSpy).toHaveBeenCalledTimes(1);
+    expect(frames).toHaveLength(1);
+  });
+
+  it('does not wrap at all when no relay is valid', async () => {
+    const backend = makeBackend();
+    const encSpy = vi.spyOn(backend, 'nip44Encrypt');
+    expect(await publishAuthResponseToRelays(makeAuthResponse(), ['http://x.example.com'], backend, RECIPIENT_PUB)).toEqual([false]);
+    expect(encSpy).not.toHaveBeenCalled();
   });
 });

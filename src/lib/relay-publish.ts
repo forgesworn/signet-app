@@ -343,6 +343,69 @@ export function getLastAuthPublishError(): string | null {
 }
 
 /**
+ * Gift-wrap an auth response (kind 1059) to `recipientPubkey`, ONCE. Returns
+ * null — with the reason captured for `getLastAuthPublishError` — when the
+ * recipient is malformed or the wrap step throws.
+ *
+ * Split out of the publisher so a response that goes to several relays is
+ * wrapped a single time: the seal is a NIP-44 encrypt plus a kind-13 sign by
+ * the signing identity, and on a Heartwood each of those is a device round
+ * trip that can put a card up. Wrapping per relay doubled both.
+ */
+export async function wrapAuthResponse(
+  response: AuthResponse,
+  backend: SigningBackend,
+  recipientPubkey: string,
+): Promise<NostrEvent | null> {
+  if (!/^[0-9a-f]{64}$/i.test(recipientPubkey)) return null;
+  try {
+    // Cast: the installed npm builder has the pre-21236-refactor type signature
+    // but the implementation just JSON-stringifies the response, so the runtime
+    // shape we pass is accepted verbatim. See the AuthResponse comment above.
+    const inner = buildAuthResponseEventTemplate(response as unknown as Parameters<typeof buildAuthResponseEventTemplate>[0], backend.activePublicKeyHex);
+    return await giftWrap(inner, recipientPubkey, backend);
+  } catch (e) {
+    // Capture (don't rethrow — the boolean contract is tested) so doPublish can
+    // show the REAL reason. The gift-wrap NIP-44 encrypt / sign step is the
+    // usual culprit behind a swallowed "failed to approve". No console output
+    // in production (project convention) — the message is surfaced to the UI
+    // via lastAuthPublishError above.
+    lastAuthPublishError = e instanceof Error ? e.message : String(e);
+    return null;
+  }
+}
+
+/**
+ * Publish one already-wrapped event to every relay in `relayUrls`, in
+ * parallel. Results are per relay, in input order; an invalid URL is `false`
+ * without a socket being opened.
+ */
+export function publishWrappedToRelays(wrapped: NostrEvent, relayUrls: readonly string[]): Promise<boolean[]> {
+  return Promise.all(relayUrls.map(url =>
+    (!url || !isValidRelayUrl(url)) ? Promise.resolve(false) : publishToRelay(wrapped, url),
+  ));
+}
+
+/**
+ * Publish an auth response to several relays, gift-wrapped (kind 1059) to
+ * `recipientPubkey` ONCE and the same wrap sent to each. Results are per
+ * relay, in input order. Every entry is false if the recipient is malformed,
+ * no relay URL is valid, or the wrap step fails.
+ */
+export async function publishAuthResponseToRelays(
+  response: AuthResponse,
+  relayUrls: readonly string[],
+  backend: SigningBackend,
+  recipientPubkey: string,
+): Promise<boolean[]> {
+  // No valid target — don't spend a (possibly device-carded) wrap on nothing.
+  if (!relayUrls.some(url => url && isValidRelayUrl(url))) return relayUrls.map(() => false);
+  const wrapped = await wrapAuthResponse(response, backend, recipientPubkey);
+  if (!wrapped) return relayUrls.map(() => false);
+  return publishWrappedToRelays(wrapped, relayUrls);
+}
+
+/**
  * Publish an auth response to a Nostr relay, gift-wrapped (kind 1059) to
  * `recipientPubkey`. Returns false if `recipientPubkey` is missing or
  * malformed — see `publishVerifyResponseToRelay`.
@@ -353,21 +416,6 @@ export async function publishAuthResponseToRelay(
   backend: SigningBackend,
   recipientPubkey: string,
 ): Promise<boolean> {
-  if (!relayUrl || !isValidRelayUrl(relayUrl)) return false;
-
-  try {
-    // Cast: the installed npm builder has the pre-21236-refactor type signature
-    // but the implementation just JSON-stringifies the response, so the runtime
-    // shape we pass is accepted verbatim. See the AuthResponse comment above.
-    const inner = buildAuthResponseEventTemplate(response as unknown as Parameters<typeof buildAuthResponseEventTemplate>[0], backend.activePublicKeyHex);
-    return await signAndPublish(inner, relayUrl, backend, recipientPubkey);
-  } catch (e) {
-    // Capture (don't rethrow — the boolean contract is tested) so doPublish can
-    // show the REAL reason. The gift-wrap NIP-44 encrypt / sign step is the
-    // usual culprit behind a swallowed "failed to approve". No console output
-    // in production (project convention) — the message is surfaced to the UI
-    // via lastAuthPublishError above.
-    lastAuthPublishError = e instanceof Error ? e.message : String(e);
-    return false;
-  }
+  const [ok] = await publishAuthResponseToRelays(response, [relayUrl], backend, recipientPubkey);
+  return ok;
 }
