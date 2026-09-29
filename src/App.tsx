@@ -286,7 +286,7 @@ import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, nextRequestCreatedAt } from './hooks/useChildGate';
@@ -5576,6 +5576,8 @@ export function App() {
       }
       setSignerStatus(null);
       await savePairedChild(record, encryptionKey);
+      await savePreferences(childDirectRelayPreferences(await getPreferences(), offer.relay)); // A56
+      await reloadPreferences();
       await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
       await setBackgroundBunkerEnabled(true).catch(() => { /* the toggle stays available */ });
       await reloadIdentity();
@@ -5588,7 +5590,8 @@ export function App() {
     const identityRecord = childDirectStubIdentity(offer, result.personas, now);
     await saveIdentityEncrypted(identityRecord, key);
     await savePreferences({
-      ...(await getPreferences()),
+      // A56: every guardian→child rail is read on the offer's relay.
+      ...childDirectRelayPreferences(await getPreferences(), offer.relay),
       activeAccountId: offer.dependant,
       signingMode: 'paired-child',
       // §8: the child's bunker keeps its games signed in with the screen off

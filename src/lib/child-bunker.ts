@@ -14,7 +14,8 @@
  *                             Heartwood route, every request through the gate
  */
 import type { UnsignedEvent } from 'signet-protocol';
-import type { SignetIdentity } from '../types';
+import type { AppPreferences, SignetIdentity } from '../types';
+import { isValidRelayUrl } from './relay-url';
 import type { BunkerRoute } from '../hooks/useBunkerServer';
 import type { ChildPairOffer, ChildPairReply } from './child-pair-wire';
 import { withRequestCreatedAt, type DecryptingSigningBackend } from './signing-backend';
@@ -104,6 +105,21 @@ export function childDirectStubIdentity(
     encrypted: true,
     backedUp: true,
   } as SignetIdentity;
+}
+
+/**
+ * A56: a direct pairing points the child's primary relay at the offer's rail
+ * relay, so every guardian→child rail it reads on `relayUrl` (persona
+ * inventory, status, contact policy) is read where the guardian publishes.
+ * A configured pool gets that relay first (enabled, read + write).
+ */
+export function childDirectRelayPreferences<P extends Pick<AppPreferences, 'relayUrl' | 'relays'>>(prefs: P, relay: string): P {
+  if (!isValidRelayUrl(relay)) return prefs;
+  return {
+    ...prefs,
+    relayUrl: relay,
+    ...(prefs.relays ? { relays: [{ url: relay, enabled: true, read: true, write: true }, ...prefs.relays.filter(r => r.url !== relay)] } : {}),
+  };
 }
 
 /**

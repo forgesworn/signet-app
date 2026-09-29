@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { SignetIdentity } from '../types';
+import type { AppPreferences, SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -108,6 +108,20 @@ describe('A51: childAllowedPersonas', () => {
   it('keeps only the listed personas, and always the bound one', () => {
     expect(childAllowedPersonas(list, { personas: [NP] }, PERSONA).map(p => p.pubkey)).toEqual([PERSONA, NP]);
     expect(childAllowedPersonas(list, { personas: [] }, PERSONA.toUpperCase()).map(p => p.pubkey)).toEqual([PERSONA]);
+  });
+});
+
+describe('A56: a direct pairing reads every guardian→child rail on the offer relay', () => {
+  it('sets the primary relay to the offer relay, first in a configured pool', () => {
+    expect(childDirectRelayPreferences({ theme: 'system' } as never, 'wss://rail.example')).toMatchObject({ relayUrl: 'wss://rail.example' });
+    const out = childDirectRelayPreferences({ theme: 'system', relayUrl: 'wss://old.example',
+      relays: [{ url: 'wss://old.example', enabled: true, read: true, write: true }, { url: 'wss://rail.example', enabled: false, read: false, write: false }] } as AppPreferences, 'wss://rail.example');
+    expect(out.relayUrl).toBe('wss://rail.example');
+    expect(out.relays).toEqual([{ url: 'wss://rail.example', enabled: true, read: true, write: true }, { url: 'wss://old.example', enabled: true, read: true, write: true }]);
+  });
+  it('an invalid relay changes nothing', () => {
+    const prefs = { theme: 'system', relayUrl: 'wss://old.example' } as never;
+    expect(childDirectRelayPreferences(prefs, 'http://nope')).toBe(prefs);
   });
 });
 
