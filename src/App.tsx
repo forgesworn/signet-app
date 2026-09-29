@@ -147,7 +147,11 @@ import { ApproveAddDependant } from './pages/ApproveAddDependant';
 import { ImportDependant } from './pages/ImportDependant';
 import { OnboardingApp } from './pages/OnboardingApp';
 import { Onboarding } from './pages/Onboarding';
-import { PairChildOnboarding } from './pages/PairChildOnboarding';
+import { PairChildOnboarding, type DirectPairControl } from './pages/PairChildOnboarding';
+import { runChildDirectPairing, pairedChildSignerPubkey } from './lib/child-direct-pairing';
+import type { ChildPairOffer } from './lib/child-pair-wire';
+import { useChildDeviceLink } from './hooks/useChildDeviceLink';
+import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
 import { getPublicKey } from 'nostr-tools/pure';
 import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
@@ -319,7 +323,7 @@ import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
 import type { PurposeContext } from './lib/auth-purposes';
-import { loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
+import { loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
 import { deriveDependantOnDevice, deriveExtraPersonaOnDevice } from './lib/heartwood-dependant-create';
@@ -336,7 +340,7 @@ import { markRecentRestore, hasRecentRestore, clearRecentRestore } from './lib/r
 import { buildConnectedClientFromNostrConnect, parseNostrConnectURI, sendConnectResponse } from './lib/nip46';
 import { parseCallback, buildCallbackRedirect } from './lib/nostrconnect-callback';
 import { checkAutonomy } from './lib/autonomy-gate';
-import { setRelays as setRelayServiceRelays, getRelayUrl as getRelayServiceUrl, connectRelay, DEFAULT_RELAY_URL, defaultRelays, fetchEvents } from './lib/relay-service';
+import { setRelays as setRelayServiceRelays, getRelayUrl as getRelayServiceUrl, connectRelay, DEFAULT_RELAY_URL, defaultRelays, fetchEvents, publishEvent, subscribeEvents } from './lib/relay-service';
 import { buildPhoneBunkerUrl, buildAuthFlowBunkerUrl } from './lib/bunker-url';
 import { runtimeBunkerUriForBackend, storedBunkerUriForGuardianNaturalPerson } from './lib/bunker-handoff';
 import { buildPairingURI, generatePairingSecret } from './lib/pairing-uri';
@@ -1797,18 +1801,24 @@ export function App() {
   // addressed to the client pubkey. Cleared on lock — the privkey is
   // sensitive material.
   const [pairedChildClientKeypair, setPairedChildClientKeypair] = useState<{ publicKey: string; privateKey: string; guardianPubkey: string | null } | null>(null);
+  // The whole decrypted record, for the child-direct link (rules rail,
+  // identity-approvals ceremony). Cleared with the keypair on lock.
+  const [pairedChildRecord, setPairedChildRecord] = useState<import('./types').PairedChildRecord | null>(null);
   useEffect(() => {
     if (preferences.signingMode !== 'paired-child') {
       setPairedChildClientKeypair(null);
+      setPairedChildRecord(null);
       return;
     }
     if (!encryptionKey || !identity?.id) {
       setPairedChildClientKeypair(null);
+      setPairedChildRecord(null);
       return;
     }
     let cancelled = false;
     loadPairedChild(identity.id, encryptionKey).then(record => {
       if (cancelled) return;
+      setPairedChildRecord(record);
       if (!record) {
         setPairedChildClientKeypair(null);
         return;
@@ -1822,9 +1832,30 @@ export function App() {
     }).catch(() => {
       if (cancelled) return;
       setPairedChildClientKeypair(null);
+      setPairedChildRecord(null);
     });
     return () => { cancelled = true; };
-  }, [preferences.signingMode, encryptionKey, identity?.id]);
+  }, [preferences.signingMode, encryptionKey, identity?.id, pairedChildBumpCounter]);
+
+  // Child-direct Heartwood pairing (spec §4 step 6, §5.2): rules cache + rail,
+  // identity-approvals ceremony. Inert for a legacy phone pairing.
+  const childLinkInventory = useMemo(() => {
+    if (!identity || pairedChildRecord?.mode !== 'heartwood-direct') return [];
+    const out: { pubkey: string; name: string }[] = [];
+    if (identity.persona.publicKey) out.push({ pubkey: identity.persona.publicKey, name: identity.persona.displayName || identity.naturalPerson.displayName });
+    if (isNaturalPersonActive(identity) && identity.naturalPerson.publicKey) {
+      out.push({ pubkey: identity.naturalPerson.publicKey, name: identity.naturalPerson.displayName });
+    }
+    for (const x of identity.extraPersonas ?? []) if (!x.hidden && x.publicKey) out.push({ pubkey: x.publicKey, name: x.displayName });
+    return out;
+  }, [identity, pairedChildRecord?.mode]);
+  const childDeviceLink = useChildDeviceLink({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    encryptionKey,
+    router: preferences.signingMode === 'paired-child' ? bunkerRouter : null,
+    inventoryPersonas: childLinkInventory,
+    onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}); },
+  });
 
   // Which contacts directory this surface acts in, and as what role.
   const contactsScope = useMemo(() => resolveContactsScope({
@@ -4156,6 +4187,9 @@ export function App() {
             setSignerStatus(null);
             return;
           }
+          // Direct mode pins the bound PERSONA, legacy the dependant pubkey.
+          const expectedSigner = pairedChildSignerPubkey(record);
+          if (!expectedSigner) { setSignerStatus('unavailable'); return; }
           const bunker = new BunkerSigningBackend(record.clientKeypair.privateKey);
           setBunkerBackend(bunker);
           try {
@@ -4168,7 +4202,7 @@ export function App() {
               // Signer's activePublicKeyHex is set by connect. Verify
               // against the dependant pubkey from the pairing URI —
               // defence against a MITM relay subbing a different identity.
-              if (bunker.activePublicKeyHex.toLowerCase() !== record.dependantPubkey.toLowerCase()) {
+              if (bunker.activePublicKeyHex.toLowerCase() !== expectedSigner.toLowerCase()) {
                 bunker.destroy();
                 setSignerStatus('unavailable');
                 return;
@@ -4182,7 +4216,7 @@ export function App() {
               // Subsequent unlocks — client pubkey already bound server-
               // side, `reconnect` skips the handshake and only fetches
               // the dependant pubkey for local verification.
-              await bunker.reconnect(record.bunkerUri, 30_000, record.dependantPubkey);
+              await bunker.reconnect(record.bunkerUri, 30_000, expectedSigner);
               setSignerStatus('connected');
             }
             // Probe for Heartwood per-slot routing on the family device
@@ -5114,6 +5148,98 @@ export function App() {
     setSignerStatus(null);
     setPairedChildBumpCounter(n => n + 1);
   }, [encryptionKey, identity, bunkerBackend]);
+
+  /**
+   * Child-direct Heartwood pairing, child side (spec §4 steps 2 and 5; A2,
+   * A3, A23). Runs the whole pairing — a FRESH client keypair every attempt,
+   * nostrconnect on the Heartwood relays, request on the rail relay, check
+   * words, guardian reply, handshake pinned to the offered persona — and
+   * persists only on success. The handshake backend is torn down afterwards;
+   * the paired-child signer effect reconnects from the stored secret-free
+   * `bunker://<persona>` and starts the router probe as usual.
+   *
+   * `repair` updates the existing install in place (same dependant, new
+   * client keypair and slot); otherwise a fresh stub identity is written and
+   * SetupAuth follows.
+   */
+  const handlePairChildDirect = useCallback(async (offer: ChildPairOffer, ctl: DirectPairControl, repair: boolean) => {
+    if (repair) {
+      if (!encryptionKey || !identity) throw new Error('Please unlock first.');
+      if (offer.dependant !== identity.id.toLowerCase()) throw new Error('This code is for a different account.');
+    }
+    const result = await runChildDirectPairing(offer, {
+      publish: (ev, relays) => publishEvent(ev, { relays }),
+      subscribe: (filters, relays, onEvent) => subscribeEvents(filters, relays, onEvent),
+      handshake: async (clientPriv, ncUri, expected, timeoutMs, signal) => {
+        const b = new BunkerSigningBackend(clientPriv);
+        try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
+        finally { b.destroy(); }
+      },
+      nowS: () => Math.floor(Date.now() / 1000),
+    }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal });
+
+    const now = Math.floor(Date.now() / 1000);
+    const personaName = result.personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
+    const record = {
+      bunkerUri: result.bunkerUri,
+      clientKeypair: result.clientKeypair,
+      dependantPubkey: offer.dependant,
+      dependantName: offer.name,
+      pairedAt: now,
+      guardianPubkey: offer.guardian,
+      hasPaired: true,
+      mode: 'heartwood-direct' as const,
+      railPubkey: offer.rail,
+      personaPubkey: offer.persona,
+      hwRelays: offer.hwRelays,
+      railRelay: offer.relay,
+      personas: result.personas,
+    };
+
+    if (repair && encryptionKey && identity) {
+      await saveIdentityEncrypted({
+        ...identity,
+        persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
+        primaryKeypair: 'persona',
+      }, encryptionKey);
+      await savePairedChild(record, encryptionKey);
+      await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
+      if (bunkerBackend) {
+        bunkerBackend.destroy();
+        setBunkerBackend(null);
+      }
+      setSignerStatus(null);
+      await reloadIdentity();
+      setPairedChildBumpCounter(n => n + 1);
+      return;
+    }
+
+    const key = generateEncryptionKey();
+    // Stub identity: no signing material. `id` stays the dependant pubkey (the
+    // row key every paired-child rail uses); the PRIMARY is the bound persona,
+    // and the real-identity slot stays dormant until the inventory says so.
+    const identityRecord: import('./types').SignetIdentity = {
+      id: offer.dependant,
+      mnemonic: '',
+      naturalPerson: { publicKey: offer.dependant, privateKey: '', displayName: offer.name },
+      persona: { publicKey: offer.persona, privateKey: '', displayName: personaName },
+      primaryKeypair: 'persona',
+      naturalPersonActive: false,
+      isChild: true,
+      createdAt: now,
+      encrypted: true,
+      backedUp: true,
+    };
+    await saveIdentityEncrypted(identityRecord, key);
+    await savePreferences({
+      ...(await getPreferences()),
+      activeAccountId: offer.dependant,
+      signingMode: 'paired-child',
+    });
+    await reloadPreferences();
+    await savePairedChild(record, key);
+    setPendingEncryptionKey(key);
+  }, [encryptionKey, identity, bunkerBackend, reloadIdentity, reloadPreferences]);
 
   const handleDeleteIdentity = useCallback(async () => {
     // Proof-of-presence gate: the most destructive action in the app must cost
@@ -6052,13 +6178,15 @@ export function App() {
         setSignerStatus(null);
         return;
       }
+      const expectedSigner = pairedChildSignerPubkey(record);
+      if (!expectedSigner) { setSignerStatus('unavailable'); return; }
       if (bunkerBackend) bunkerBackend.destroy();
       const bunker = new BunkerSigningBackend(record.clientKeypair.privateKey);
       setBunkerBackend(bunker);
       try {
         if (!record.hasPaired) {
           await bunker.connect(record.bunkerUri, 30_000);
-          if (bunker.activePublicKeyHex.toLowerCase() !== record.dependantPubkey.toLowerCase()) {
+          if (bunker.activePublicKeyHex.toLowerCase() !== expectedSigner.toLowerCase()) {
             bunker.destroy();
             setSignerStatus('unavailable');
             return;
@@ -6066,9 +6194,12 @@ export function App() {
           await markPairedChildConnected(dependantPubkey, encryptionKey).catch(() => { /* retry next unlock */ });
           setSignerStatus('connected');
         } else {
-          await bunker.reconnect(record.bunkerUri, 30_000, record.dependantPubkey);
+          await bunker.reconnect(record.bunkerUri, 30_000, expectedSigner);
           setSignerStatus('connected');
         }
+        // Direct mode needs the per-persona router (identity ceremony); the
+        // legacy phone pairing keeps its existing retry behaviour.
+        if (record.mode === 'heartwood-direct') startRouterProbe(bunker, record.clientKeypair.privateKey);
       } catch {
         setSignerStatus('unavailable');
       }
@@ -8411,6 +8542,10 @@ export function App() {
             await handlePairChild(parsed, rawUri);
             setPairChildFlow(false);
           }}
+          onStartDirect={async (offer, ctl) => {
+            await handlePairChildDirect(offer, ctl, false);
+            setPairChildFlow(false);
+          }}
           onCancel={() => setPairChildFlow(false)}
         />
       );
@@ -8697,13 +8832,17 @@ export function App() {
     health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
+  // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
+  const childApprovalsBanner = childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
+    <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
+  ) : null;
   const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
     || contactsBackupTooLargeBanner
     || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner
-    || personasSkippedBanner || restoreNoBackupBanner) ? (
+    || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
       {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}
-      {personasSkippedBanner}{restoreNoBackupBanner}</>
+      {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</>
   ) : null;
 
   // On-demand auth prompt overlay — rendered on any page that triggers requestAuth
@@ -11210,6 +11349,10 @@ export function App() {
             await handleRepairChild(parsed, rawUri);
             // Back to home — the bunker-setup effect re-runs from the
             // bumped counter and reconnects via the new endpoint.
+            navigateReplace('home');
+          }}
+          onStartDirect={async (offer, ctl) => {
+            await handlePairChildDirect(offer, ctl, true);
             navigateReplace('home');
           }}
           onCancel={() => navigateBack()}

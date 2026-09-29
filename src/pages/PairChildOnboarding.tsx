@@ -16,9 +16,27 @@ import { shortNpub } from '../lib/signet';
  *      into SetupAuth for PIN/biometric.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { QRScanner } from '../components/QRScanner';
 import { parsePairingURI, type PairingURIParams } from '../lib/pairing-uri';
+import { parseChildPairUri, type ChildPairOffer } from '../lib/child-pair-wire';
+import { ChildDirectPairError } from '../lib/child-direct-pairing';
+import { CHILD_SIDE_COPY as KID } from '../lib/child-device-copy';
+
+/** Plain-English copy for a failed child-direct pairing run. */
+function directErrorCopy(err: unknown): string {
+  if (!(err instanceof ChildDirectPairError)) return KID.errors.generic;
+  if (err.code === 'timeout') return KID.errors.timeout;
+  if (err.code === 'publish') return KID.errors.publish;
+  if (err.code === 'signer') return KID.errors.signer;
+  if (err.code === 'refused') return KID.errors.refused[err.reason ?? 'other'] ?? KID.errors.refused.other;
+  return KID.errors.generic;
+}
+
+export interface DirectPairControl {
+  onCheckWords(words: string[]): void;
+  signal: AbortSignal;
+}
 
 interface Props {
   /**
@@ -38,15 +56,26 @@ interface Props {
    * copy so it reads as "re-pair" rather than first-time onboarding.
    */
   expectedDependantPubkey?: string;
+  /**
+   * Child-direct Heartwood pairing (`signet-child:` codes, spec §4). Runs the
+   * whole pairing — request, check words, guardian reply, handshake — and
+   * persists only on success. Absent ⇒ `signet-child:` codes are refused.
+   */
+  onStartDirect?: (offer: ChildPairOffer, ctl: DirectPairControl) => Promise<void>;
 }
 
 type Step =
   | { kind: 'welcome' }
   | { kind: 'capture'; mode: 'scan' | 'paste'; error: string | null }
-  | { kind: 'confirm'; parsed: PairingURIParams; rawUri: string; saving: boolean; error: string | null };
+  | { kind: 'confirm'; parsed: PairingURIParams; rawUri: string; saving: boolean; error: string | null }
+  | { kind: 'confirm-direct'; offer: ChildPairOffer }
+  | { kind: 'pairing-direct'; offer: ChildPairOffer; words: string[] | null; error: string | null };
 
-export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubkey }: Props) {
+export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubkey, onStartDirect }: Props) {
   const [step, setStep] = useState<Step>({ kind: 'welcome' });
+  const abortRef = useRef<AbortController | null>(null);
+  // Leaving the page stops a pairing still in flight (nothing was saved yet).
+  useEffect(() => () => abortRef.current?.abort(), []);
   const [pasteDraft, setPasteDraft] = useState('');
   const isRepair = !!expectedDependantPubkey;
 
@@ -55,8 +84,43 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
     setStep({ kind: 'capture', mode, error: null });
   };
 
+  const captureError = (msg: string) => setStep(prev => prev.kind === 'capture' ? { ...prev, error: msg } : prev);
+
+  const startDirect = (offer: ChildPairOffer) => {
+    if (!onStartDirect) return;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setStep({ kind: 'pairing-direct', offer, words: null, error: null });
+    onStartDirect(offer, {
+      signal: ac.signal,
+      onCheckWords: (words) => {
+        if (!ac.signal.aborted) setStep(prev => prev.kind === 'pairing-direct' ? { ...prev, words } : prev);
+      },
+    }).catch((err: unknown) => {
+      if (ac.signal.aborted) return;
+      setStep(prev => prev.kind === 'pairing-direct' ? { ...prev, error: directErrorCopy(err) } : prev);
+    });
+  };
+
+  const cancelDirect = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStep({ kind: 'welcome' });
+  };
+
   const handleRawURI = (raw: string) => {
     const trimmed = raw.trim();
+    if (trimmed.startsWith('signet-child:')) {
+      const offer = onStartDirect ? parseChildPairUri(trimmed, Math.floor(Date.now() / 1000)) : null;
+      if (!offer) { captureError(KID.errors.invalid); return; }
+      if (expectedDependantPubkey && offer.dependant !== expectedDependantPubkey.toLowerCase()) {
+        captureError(KID.errors.wrongAccount);
+        return;
+      }
+      setStep({ kind: 'confirm-direct', offer });
+      return;
+    }
     const parsed = parsePairingURI(trimmed);
     if (!parsed) {
       setStep(prev => prev.kind === 'capture'
@@ -145,13 +209,14 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
   }
 
   if (step.kind === 'capture' && step.mode === 'paste') {
-    const canSubmit = pasteDraft.trim().startsWith('bunker://');
+    const canSubmit = pasteDraft.trim().startsWith('bunker://') || (!!onStartDirect && pasteDraft.trim().startsWith('signet-child:'));
     return (
       <div className="fade-in" style={{ padding: 24, maxWidth: 460, margin: '0 auto' }}>
         <h2 style={{ marginBottom: 12 }}>Paste the code</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 12 }}>
           Your guardian can send you the pairing code — paste it here. It starts with
-          {' '}<code style={{ background: 'var(--bg-card-alt)', padding: '2px 4px', borderRadius: 3 }}>bunker://</code>.
+          {' '}<code style={{ background: 'var(--bg-card-alt)', padding: '2px 4px', borderRadius: 3 }}>bunker://</code>
+          {onStartDirect && <> or <code style={{ background: 'var(--bg-card-alt)', padding: '2px 4px', borderRadius: 3 }}>signet-child:</code></>}.
         </p>
         <textarea
           value={pasteDraft}
@@ -237,6 +302,58 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
         >
           {isRepair ? 'Back' : 'Not me — back'}
         </button>
+      </div>
+    );
+  }
+
+  if (step.kind === 'confirm-direct') {
+    return (
+      <div className="fade-in" style={{ padding: 24, maxWidth: 460, margin: '0 auto' }}>
+        <h2 style={{ marginBottom: 12 }}>{KID.confirmHeading}</h2>
+        <div className="card section" style={{ padding: 20, marginBottom: 20 }}>
+          <div style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: 4 }}>{step.offer.name}</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+            {KID.confirmGuardian(shortNpub(step.offer.guardian))}
+          </div>
+        </div>
+        <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.9rem', marginBottom: 24 }}>{KID.confirmBody}</p>
+        <button className="btn btn-primary" onClick={() => startDirect(step.offer)} style={{ width: '100%', marginBottom: 8 }}>
+          {KID.confirmGo}
+        </button>
+        <button className="btn" onClick={() => setStep({ kind: 'welcome' })} style={{ width: '100%' }}>
+          {isRepair ? 'Back' : 'Not me — back'}
+        </button>
+      </div>
+    );
+  }
+
+  if (step.kind === 'pairing-direct') {
+    return (
+      <div className="fade-in" style={{ padding: 24, maxWidth: 460, margin: '0 auto' }}>
+        {step.error ? (
+          <>
+            <p style={{ color: 'var(--danger)', lineHeight: 1.5, marginBottom: 16 }}>{step.error}</p>
+            <button className="btn btn-primary" onClick={() => startDirect(step.offer)} style={{ width: '100%', marginBottom: 8 }}>
+              Try again
+            </button>
+            <button className="btn btn-ghost" onClick={cancelDirect} style={{ width: '100%' }}>{KID.cancel}</button>
+          </>
+        ) : step.words ? (
+          <>
+            <h2 style={{ marginBottom: 12 }}>{KID.checkHeading}</h2>
+            <ol className="card section" style={{ padding: '16px 16px 16px 40px', marginBottom: 16, fontSize: '1.25rem', fontWeight: 600 }}>
+              {step.words.map((w, i) => <li key={i}>{w}</li>)}
+            </ol>
+            <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.9rem', marginBottom: 8 }}>{KID.checkBody}</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 24 }}>{KID.waiting}</p>
+            <button className="btn btn-ghost" onClick={cancelDirect} style={{ width: '100%' }}>{KID.cancel}</button>
+          </>
+        ) : (
+          <>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>{KID.pairing}</p>
+            <button className="btn btn-ghost" onClick={cancelDirect} style={{ width: '100%' }}>{KID.cancel}</button>
+          </>
+        )}
       </div>
     );
   }

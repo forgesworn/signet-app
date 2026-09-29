@@ -10,6 +10,8 @@ import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
+import { isValidRelayUrl } from './relay-url';
+import type { ChildRulesPayload } from './child-rules-wire';
 import { liftDependantPublicProfileConfig } from './lift-public-profile-config';
 import { liftChildSettings } from './lift-child-settings';
 import { mergeChildContactSettings, portableChildContactSettings } from './child-contact-settings';
@@ -355,6 +357,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== PRO_PERSONA_KEY &&
     r.id !== HEARTWOOD_OPERATOR_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
+    !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
     !r.id.startsWith(DEPENDANT_PREFIX),
   );
 }
@@ -563,6 +566,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
+    if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
     if (!identity.encrypted) {
       await db.delete('identity', identity.id);
       removed++;
@@ -2503,6 +2507,7 @@ export async function savePairedChild(record: Omit<PairedChildRecord, 'id' | 'en
   if (record.guardianPubkey !== undefined && !HEX64.test(record.guardianPubkey)) {
     throw new Error('Invalid guardianPubkey');
   }
+  const direct = directPairingFields(record);
   const encryptedUri = await encryptSecret(record.bunkerUri, encryptionKey);
   const encryptedPriv = await encryptSecret(record.clientKeypair.privateKey, encryptionKey);
   const dependantPubkey = record.dependantPubkey.toLowerCase();
@@ -2520,9 +2525,96 @@ export async function savePairedChild(record: Omit<PairedChildRecord, 'id' | 'en
     hasPaired: record.hasPaired ?? false,
     encrypted: true,
     ...(record.guardianPubkey ? { guardianPubkey: record.guardianPubkey.toLowerCase() } : {}),
+    ...direct,
   };
   const db = await getDB();
   await db.put('pairedChild', stored);
+}
+
+const STRICT_HEX64 = /^[0-9a-f]{64}$/;
+const APPROVAL_STATES: readonly string[] = ['approved', 'waiting', 'failed'];
+
+/**
+ * Validate the child-direct fields (all routing metadata, stored in clear).
+ * A legacy record (no `mode`, or `'phone'`) carries none of them.
+ */
+function directPairingFields(record: Omit<PairedChildRecord, 'id' | 'encrypted'>): Partial<PairedChildRecord> {
+  if (record.mode === undefined || record.mode === 'phone') return record.mode ? { mode: 'phone' } : {};
+  if (record.mode !== 'heartwood-direct') throw new Error('Invalid pairing mode');
+  const { railPubkey, personaPubkey, hwRelays, railRelay } = record;
+  if (!railPubkey || !STRICT_HEX64.test(railPubkey) || !personaPubkey || !STRICT_HEX64.test(personaPubkey)) {
+    throw new Error('Invalid direct pairing keys');
+  }
+  if (!Array.isArray(hwRelays) || hwRelays.length === 0 || hwRelays.length > 8 || !hwRelays.every(r => isValidRelayUrl(r))
+    || !railRelay || !isValidRelayUrl(railRelay)) {
+    throw new Error('Invalid direct pairing relays');
+  }
+  const personas = (record.personas ?? []).filter(p => STRICT_HEX64.test(p.pubkey)).slice(0, 32)
+    .map(p => ({ pubkey: p.pubkey, name: p.name.slice(0, 100), role: p.role }));
+  return {
+    mode: 'heartwood-direct', railPubkey, personaPubkey, hwRelays: [...hwRelays], railRelay, personas,
+    ...(record.identityApprovals ? { identityApprovals: cleanApprovals(record.identityApprovals) } : {}),
+  };
+}
+
+function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 'waiting' | 'failed'> {
+  const out: Record<string, 'approved' | 'waiting' | 'failed'> = {};
+  for (const [k, v] of Object.entries(a)) {
+    if (STRICT_HEX64.test(k) && APPROVAL_STATES.includes(v)) out[k] = v as 'approved' | 'waiting' | 'failed';
+  }
+  return out;
+}
+
+/** Persist the identity-approval ceremony state (clear routing metadata). */
+export async function setPairedChildIdentityApprovals(
+  dependantPubkey: string,
+  approvals: Record<string, 'approved' | 'waiting' | 'failed'>,
+): Promise<void> {
+  if (!HEX64.test(dependantPubkey)) return;
+  const db = await getDB();
+  const tx = db.transaction('pairedChild', 'readwrite');
+  const raw = await tx.store.get(dependantPubkey.toLowerCase()) as PairedChildRecord | undefined;
+  if (raw?.mode === 'heartwood-direct') await tx.store.put({ ...raw, identityApprovals: cleanApprovals(approvals) });
+  await tx.done;
+}
+
+// --- Child-direct rules cache (spec §5.2) ---
+//
+// The last guardian → child rules payload, so the child enforces offline.
+// Encrypted identity-store row, one per paired dependant. Absent ⇒ null ⇒
+// the gate fails closed (asks for everything).
+
+const CHILD_RULES_CACHE_PREFIX = 'childRulesCache:';
+
+export async function saveChildRulesCache(dependantPubkey: string, payload: ChildRulesPayload, encryptionKey: string): Promise<void> {
+  if (!HEX64.test(dependantPubkey)) throw new Error('Invalid dependantPubkey');
+  const secret = await encryptSecret(JSON.stringify(payload), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: CHILD_RULES_CACHE_PREFIX + dependantPubkey.toLowerCase(), secret });
+}
+
+/** Null when absent, undecryptable, or not a payload for this dependant. */
+export async function loadChildRulesCache(dependantPubkey: string, encryptionKey: string): Promise<ChildRulesPayload | null> {
+  if (!HEX64.test(dependantPubkey)) return null;
+  const db = await getDB();
+  const row = await db.get('identity', CHILD_RULES_CACHE_PREFIX + dependantPubkey.toLowerCase());
+  if (!row || typeof row.secret !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(row.secret, encryptionKey));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const p = parsed as ChildRulesPayload;
+    if (p.v !== 1 || p.dependantId !== dependantPubkey.toLowerCase() || !Array.isArray(p.rules)
+      || !Array.isArray(p.ceilingKinds) || !Array.isArray(p.disconnectedApps) || !Number.isSafeInteger(p.updatedAt)) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearChildRulesCache(dependantPubkey: string): Promise<void> {
+  if (!HEX64.test(dependantPubkey)) return;
+  const db = await getDB();
+  await db.delete('identity', CHILD_RULES_CACHE_PREFIX + dependantPubkey.toLowerCase());
 }
 
 export async function loadPairedChild(dependantPubkey: string, encryptionKey: string): Promise<PairedChildRecord | null> {

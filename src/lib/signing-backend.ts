@@ -278,6 +278,66 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     await this.initSigner(bunkerUri, timeoutMs, resendConnect, expectedPubkey);
   }
 
+  /**
+   * Child-direct pairing (spec §4 step 5): wait for the Heartwood's connect
+   * ACK to OUR `nostrconnect://` request (the guardian mints the slot with
+   * its secret), then pin `get_public_key` to `expectedPubkey` — the offered
+   * persona. On success `bunkerUri` becomes a secret-free `bunker://<pubkey>`
+   * on the same relays, which every later start passes to `reconnect`
+   * (the slot already knows this client pubkey; no secret is needed again).
+   * Returns that URI. Mismatch, timeout or `signal` abort tears down.
+   */
+  async acceptNostrConnect(nostrconnectUri: string, expectedPubkey: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const attempt = ++this.connectAttempt;
+    const relays = new URL(nostrconnectUri.replace('nostrconnect://', 'https://')).searchParams.getAll('relay');
+    if (relays.length === 0) throw new Error('nostrconnect URI must include at least one relay.');
+    this.releaseTransport();
+    const pool = new SimplePool();
+    const abort = new AbortController();
+    const onOuterAbort = () => abort.abort();
+    signal?.addEventListener('abort', onOuterAbort);
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    let signer: BunkerSigner | null = null;
+    const release = () => {
+      if (signer) void signer.close().catch(() => { /* best-effort teardown */ });
+      try { pool.destroy(); } catch { /* best-effort teardown */ }
+      if (this.signer === signer) { this.signer = null; this.vaultGeneration++; }
+      if (this.pool === pool) this.pool = null;
+    };
+    try {
+      const clientSk = hexToBytes(this.clientSecretHex);
+      try {
+        signer = await BunkerSigner.fromURI(clientSk, nostrconnectUri, {
+          pool,
+          skipSwitchRelays: true,
+          onauth() { /* Heartwood auth callback — no action needed in signet */ },
+        }, abort.signal);
+      } finally { clientSk.fill(0); }
+      if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
+      this.pool = pool;
+      this.signer = signer;
+      const pubkey = (await this.request('get_public_key', [], timeoutMs)).trim().toLowerCase();
+      if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
+      if (pubkey !== expectedPubkey.toLowerCase()) {
+        this.activePublicKeyHex = '';
+        throw new Error(`Bunker pubkey mismatch: expected ${expectedPubkey.slice(0, 8)}… got ${pubkey.slice(0, 8)}…`);
+      }
+      const p = new URLSearchParams();
+      for (const r of relays) p.append('relay', r);
+      this.activePublicKeyHex = pubkey;
+      this.bunkerUri = `bunker://${pubkey}?${p.toString()}`;
+      this.vaultGeneration++;
+      return this.bunkerUri;
+    } catch (err) {
+      if (attempt === this.connectAttempt) this.connectAttempt++;
+      release();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onOuterAbort);
+    }
+  }
+
   private async initSigner(bunkerUri: string, timeoutMs: number, sendConnect: boolean, expectedPubkey?: string): Promise<void> {
     // Each attempt owns its own signer and pool. destroy(), a newer attempt
     // or this attempt's timeout makes it stale: it stops at its next await

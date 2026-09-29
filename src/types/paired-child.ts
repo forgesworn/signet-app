@@ -89,6 +89,26 @@ export interface PairedChildRecord {
   hasPaired?: boolean;
   /** Whether sensitive fields (bunkerUri, clientKeypair.privateKey) are encrypted. */
   encrypted?: boolean;
+  /**
+   * Child-direct Heartwood pairing (spec §4). Absent / `'phone'` = the legacy
+   * phone-served pairing, unchanged. `'heartwood-direct'` = this phone is a
+   * client of the family Heartwood; `bunkerUri` is then a secret-free
+   * `bunker://<personaPubkey>` on `hwRelays`, and the signer check pins
+   * `personaPubkey` (not `dependantPubkey`, the dormant real-identity slot).
+   * The fields below are routing metadata, stored in clear.
+   */
+  mode?: 'phone' | 'heartwood-direct';
+  /** The dependant's rail key (`dep.bunkerEndpoint` pubkey on the guardian). */
+  railPubkey?: string;
+  /** The persona the Heartwood slot is bound to (the stub identity's primary). */
+  personaPubkey?: string;
+  hwRelays?: string[];
+  /** Relay carrying the guardian ↔ child rails (pairing reply, rules). */
+  railRelay?: string;
+  /** Personas the guardian listed in its pairing reply (seed for the ceremony). */
+  personas?: { pubkey: string; name: string; role: 'persona' | 'natural-person' | 'extra' }[];
+  /** Identity-approval ceremony state per persona pubkey (§4 step 6). */
+  identityApprovals?: Record<string, 'approved' | 'waiting' | 'failed'>;
 }
 
 /**

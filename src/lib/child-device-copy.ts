@@ -70,3 +70,43 @@ export const CHILD_DEVICE_COPY = {
     generic: 'Something went wrong. Try again.',
   },
 } as const;
+
+/** Child-phone side of the child-direct pairing (spec §4 steps 2, 5, 6). */
+export const CHILD_SIDE_COPY = {
+  pasteHint: 'It starts with bunker:// or signet-child:.',
+  confirmHeading: "You're about to pair as",
+  confirmGuardian: (guardian: string) => `Your guardian: ${guardian}`,
+  confirmBody: "This phone will sign through your family's Heartwood. Your guardian decides what it can do.",
+  confirmGo: "That's me",
+  pairing: 'Contacting your guardian…',
+  checkHeading: 'Check these words match your guardian\'s phone',
+  checkBody: 'Your guardian will see four words. Tell them yours. They only carry on if every word is the same.',
+  waiting: 'Waiting for your guardian…',
+  cancel: 'Cancel',
+  errors: {
+    timeout: "Your guardian's phone did not answer in time. Nothing was set up — ask them for a new code.",
+    publish: 'Could not reach the relay. Check your internet connection and try again.',
+    signer: 'Your Heartwood did not connect as the right identity, so nothing was set up. Ask your guardian for a new code.',
+    refused: {
+      'check-mismatch': 'Your guardian said the words did not match, so nothing was set up. Ask them for a new code.',
+      'two-requests': 'Another phone also answered this code, so nothing was set up. Ask your guardian for a new code.',
+      'mint-failed': 'Your Heartwood could not set up a slot for this phone. Ask your guardian to try again.',
+      'verify-failed': 'Your Heartwood slot did not check out, so it was removed. Ask your guardian to try again.',
+      'save-failed': "Your guardian's phone could not save the pairing. Ask them to try again.",
+      'client-reused': 'Your guardian\'s phone saw a connection it had used before, so nothing was set up. Try again — this phone will use a new one.',
+      other: 'Your guardian stopped the pairing. Ask them for a new code.',
+    } as Record<string, string>,
+    wrongAccount: 'This code is for a different account. Ask your guardian to generate a new code for you specifically.',
+    invalid: "That doesn't look like a valid pairing code. Check you have the whole thing.",
+    expired: 'This code has expired. Ask your guardian for a new one.',
+    generic: 'Pairing did not finish. Nothing was set up — try again.',
+  },
+  approvals: {
+    heading: 'Approve your identities on the Heartwood',
+    body: 'For each identity, your guardian presses ALLOW AS on the Heartwood once.',
+    approved: 'Approved',
+    waiting: 'Waiting for the Heartwood',
+    failed: 'Not approved yet',
+    retry: 'Try again',
+  },
+} as const;
