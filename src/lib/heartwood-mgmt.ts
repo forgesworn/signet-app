@@ -43,6 +43,10 @@ export {
   TOFU_SAFE_METHODS,
 } from './heartwood-mgmt-types';
 
+/** Identity-addressed `nostrconnect_v2` rides the same capability as
+ *  persona-addressed pairing. */
+export const CAP_NOSTRCONNECT_V2 = 'pairing_identity_v1';
+
 /** Management envelope kind (distinct from NIP-46's 24133). */
 export const MGMT_KIND = 24134;
 
@@ -510,4 +514,120 @@ export async function resolveApproval(
     throw new Error('malformed resolve_approval reply');
   }
   return { park: park as VerdictResult['park'], applied: applied as VerdictResult['applied'] };
+}
+
+
+// ─── Child-device pairing and revocation ────────────────────────────────────
+
+export interface NostrconnectMintRequest {
+  /** hex64 */
+  clientPubkey: string;
+  /** From the child's nostrconnect URI. */
+  secret: string;
+  /** Unix seconds, from the pairing-rail payload. */
+  createdAt: number;
+  /** wss */
+  relay: string;
+  /** Persona hex64 the slot binds to. */
+  identity: string;
+  /** `signet:child-device:v2:<16 hex>` */
+  label: string;
+  /** `boundIdentity` must equal `identity`. */
+  policy: SlotPolicyUpdate;
+}
+
+export interface NostrconnectMintResult {
+  slotIndex: number;
+  secretFingerprint: string;
+  label: string;
+  boundIdentity: string | null;
+}
+
+function sameSet<T>(a: readonly T[], b: readonly T[]): boolean {
+  const x = [...new Set(a)];
+  const y = new Set(b);
+  return x.length === y.size && x.every(v => y.has(v));
+}
+
+function checkSlotRef(slot: { slotIndex: number; secretFingerprint: string }): void {
+  if (!Number.isInteger(slot.slotIndex) || slot.slotIndex < 0) throw new Error('slotIndex must be a non-negative integer');
+  if (typeof slot.secretFingerprint !== 'string' || slot.secretFingerprint.length === 0) throw new Error('secretFingerprint is required');
+}
+
+/** `nostrconnect_v2` — mint a client slot for the child's own key, bound to a
+ *  persona, and have the device publish the connect ACK. The reply is
+ *  verified against what was asked for (policy version, addressed identity,
+ *  methods, kinds, auto-approve); anything else revokes the slot just minted
+ *  and throws `heartwood-mint-mismatch`. Sent once — a stale challenge
+ *  propagates to the caller (see the transport notes above). */
+export async function nostrconnectV2(
+  c: HeartwoodMgmtClient,
+  req: NostrconnectMintRequest,
+): Promise<NostrconnectMintResult> {
+  const identity = (req.identity ?? '').toLowerCase();
+  if (!HEX64.test((req.clientPubkey ?? '').toLowerCase())) throw new Error('clientPubkey must be 64 hex chars');
+  if (!HEX64.test(identity)) throw new Error('identity must be 64 hex chars');
+  if (typeof req.secret !== 'string' || req.secret.length === 0) throw new Error('secret is required');
+  if (!Number.isInteger(req.createdAt) || req.createdAt <= 0) throw new Error('createdAt must be a unix timestamp');
+  if (typeof req.relay !== 'string' || req.relay.length === 0) throw new Error('relay is required');
+  if (typeof req.label !== 'string' || req.label.length === 0) throw new Error('label is required');
+  if ((req.policy.boundIdentity ?? '').toLowerCase() !== identity) {
+    throw new Error('policy.boundIdentity must equal identity');
+  }
+  const r = await c.request('nostrconnect_v2', {
+    client_pubkey: req.clientPubkey.toLowerCase(),
+    secret: req.secret,
+    created_at: req.createdAt,
+    relay: req.relay,
+    identity,
+    label: req.label,
+    policy: policyWireFields(req.policy),
+  });
+  const slotIndex = r.slot_index;
+  const fingerprint = typeof r.secret_fingerprint === 'string' ? r.secret_fingerprint.toLowerCase() : '';
+  const validSlot = typeof slotIndex === 'number' && Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex <= 255;
+  const echoedIdentity = typeof r.identity === 'string' ? r.identity.toLowerCase() : '';
+  const echoOk = r.policy_version === 2
+    && echoedIdentity === identity
+    && isStringArray(r.allowed_methods) && sameSet(r.allowed_methods, req.policy.allowedMethods)
+    && isKindArray(r.allowed_kinds) && sameSet(r.allowed_kinds, req.policy.allowedKinds)
+    && r.auto_approve === req.policy.autoApprove;
+  if (!validSlot || fingerprint.length === 0 || !echoOk) {
+    if (validSlot && fingerprint.length > 0) {
+      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }); } catch { /* fail closed regardless */ }
+    }
+    throw new Error('heartwood-mint-mismatch');
+  }
+  return { slotIndex, secretFingerprint: fingerprint, label: req.label, boundIdentity: echoedIdentity };
+}
+
+/** `revoke_client` — hard-revoke a whole slot (the phone). */
+export async function revokeClient(
+  c: HeartwoodMgmtClient,
+  slot: { slotIndex: number; secretFingerprint: string },
+): Promise<void> {
+  checkSlotRef(slot);
+  const r = await c.request('revoke_client', {
+    slot_index: slot.slotIndex,
+    expected_secret_fingerprint: slot.secretFingerprint,
+  });
+  if (r.revoked !== true) throw new Error('revoke_client did not confirm the revocation');
+  if (r.slot_index !== slot.slotIndex) throw new Error('revoke_client confirmed a different slot');
+}
+
+/** `revoke_client_identity` — withdraw one persona's approval on a slot. */
+export async function revokeClientIdentity(
+  c: HeartwoodMgmtClient,
+  slot: { slotIndex: number; secretFingerprint: string },
+  identity: string,
+): Promise<void> {
+  checkSlotRef(slot);
+  const id = (identity ?? '').toLowerCase();
+  if (!HEX64.test(id)) throw new Error('identity must be 64 hex chars');
+  const r = await c.request('revoke_client_identity', {
+    slot_index: slot.slotIndex,
+    expected_secret_fingerprint: slot.secretFingerprint,
+    identity: id,
+  });
+  if (r.slot_index !== slot.slotIndex) throw new Error('revoke_client_identity confirmed a different slot');
 }

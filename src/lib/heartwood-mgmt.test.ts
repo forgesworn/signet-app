@@ -20,6 +20,10 @@ import {
   listClients,
   parseDeviceClientSlot,
   updateClientPolicy,
+  nostrconnectV2,
+  revokeClient,
+  revokeClientIdentity,
+  CAP_NOSTRCONNECT_V2,
   resolveApproval,
   clampVerdictWindow,
   isRetryableMgmtError,
@@ -855,6 +859,106 @@ describe('resolveApproval', () => {
     await expect(resolveApproval(c, { park: 'p', action: 'deny' })).rejects.toThrow(/malformed resolve_approval reply/);
     await expect(resolveApproval(c, { park: '', action: 'deny' })).rejects.toThrow(/park id/);
     await expect(resolveApproval(c, { park: 'p', action: 'nuke' as never })).rejects.toThrow(/action must be/);
+    c.stop();
+  });
+});
+
+// ─── Child-device mint and revoke ───────────────────────────────────────────
+
+describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
+  const persona = 'b'.repeat(64);
+  const req = () => ({
+    clientPubkey: 'c'.repeat(64),
+    secret: 'shh',
+    createdAt: 1_800_000_000,
+    relay: 'wss://hw.example',
+    identity: persona,
+    label: 'signet:child-device:v2:0123456789abcdef',
+    policy: { ...policy, allowedMethods: ['get_public_key', 'sign_event'], allowedKinds: [22242, 21235], autoApprove: true, boundIdentity: persona },
+  });
+  const echo = (over: Record<string, unknown> = {}) => ({
+    slot_index: 4, client_pubkey: 'c'.repeat(64), identity: persona, secret_fingerprint: 'FP4',
+    policy_version: 2, allowed_methods: ['sign_event', 'get_public_key'], allowed_kinds: [21235, 22242], auto_approve: true, ...over,
+  });
+
+  it('exports the capability name', () => {
+    expect(CAP_NOSTRCONNECT_V2).toBe('pairing_identity_v1');
+  });
+
+  it('sends nostrconnect_v2 with a nested policy and a top-level challenge, and parses the slot', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'nostrconnect_v2' ? { result: echo() } : undefined) });
+    const c = d.client();
+    c.start();
+    const out = await nostrconnectV2(c, req());
+    const sent = d.seen.find(s => s.method === 'nostrconnect_v2')!;
+    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.params).toMatchObject({
+      client_pubkey: 'c'.repeat(64), secret: 'shh', created_at: 1_800_000_000,
+      relay: 'wss://hw.example', identity: persona, label: 'signet:child-device:v2:0123456789abcdef',
+    });
+    expect(sent.params.policy).toEqual({
+      allowed_methods: ['get_public_key', 'sign_event'], allowed_kinds: [22242, 21235], auto_approve: true,
+      escalate: policy.escalate, petition_on_deny: policy.petitionOnDeny, audit_child_wrap: policy.auditChildWrap,
+      bound_identity: persona,
+    });
+    expect(out).toEqual({ slotIndex: 4, secretFingerprint: 'fp4', label: 'signet:child-device:v2:0123456789abcdef', boundIdentity: persona });
+    c.stop();
+  });
+
+  it('revokes the minted slot and throws on an echo bound to another identity', async () => {
+    const d = makeFakeDevice({
+      handler: (r) => {
+        if (r.method === 'nostrconnect_v2') return { result: echo({ identity: 'd'.repeat(64) }) };
+        if (r.method === 'revoke_client') return { result: { slot_index: r.params.slot_index, revoked: true } };
+        return undefined;
+      },
+    });
+    const c = d.client();
+    c.start();
+    await expect(nostrconnectV2(c, req())).rejects.toThrow('heartwood-mint-mismatch');
+    const rev = d.seen.find(s => s.method === 'revoke_client')!;
+    expect(rev.params).toEqual({ slot_index: 4, expected_secret_fingerprint: 'fp4' });
+    c.stop();
+  });
+
+  it('treats a widened kind list or wrong policy version as a mismatch', async () => {
+    for (const over of [{ allowed_kinds: [21235, 22242, 1] }, { policy_version: 1 }]) {
+      const d = makeFakeDevice({ handler: (r) => (r.method === 'nostrconnect_v2' ? { result: echo(over) } : r.method === 'revoke_client' ? { result: { slot_index: 4, revoked: true } } : undefined) });
+      const c = d.client();
+      c.start();
+      await expect(nostrconnectV2(c, req())).rejects.toThrow('heartwood-mint-mismatch');
+      expect(d.seen.some(s => s.method === 'revoke_client')).toBe(true);
+      c.stop();
+    }
+  });
+
+  it('revokeClient sends slot_index and expected_secret_fingerprint', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'revoke_client' ? { result: { slot_index: 2, revoked: true } } : undefined) });
+    const c = d.client();
+    c.start();
+    await revokeClient(c, { slotIndex: 2, secretFingerprint: 'fp2' });
+    const sent = d.seen.find(s => s.method === 'revoke_client')!;
+    expect(sent.params).toEqual({ slot_index: 2, expected_secret_fingerprint: 'fp2' });
+    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
+    c.stop();
+  });
+
+  it('revokeClientIdentity includes the identity', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'revoke_client_identity' ? { result: { slot_index: 2, changed: true } } : undefined) });
+    const c = d.client();
+    c.start();
+    await revokeClientIdentity(c, { slotIndex: 2, secretFingerprint: 'fp2' }, persona.toUpperCase());
+    const sent = d.seen.find(s => s.method === 'revoke_client_identity')!;
+    expect(sent.params).toEqual({ slot_index: 2, expected_secret_fingerprint: 'fp2', identity: persona });
+    c.stop();
+  });
+
+  it('propagates a device error string', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'nostrconnect_v2' ? { error: 'create_slot failed (slot table full)' } : r.method === 'revoke_client' ? { error: 'stale_client_slot: changed' } : undefined) });
+    const c = d.client();
+    c.start();
+    await expect(nostrconnectV2(c, req())).rejects.toThrow('create_slot failed (slot table full)');
+    await expect(revokeClient(c, { slotIndex: 1, secretFingerprint: 'x' })).rejects.toThrow(/stale_client_slot/);
     c.stop();
   });
 });
