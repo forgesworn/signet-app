@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   runPolicyPush,
+  pushChildDirectCeiling,
   submitVerdict,
   describeVerdictOutcome,
   describePushResult,
@@ -14,6 +15,7 @@ import type { DeviceClientSlot, DeviceStatus, SlotPolicyUpdate } from './heartwo
 import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { VerdictResult } from './heartwood-mgmt';
+import { childDirectSlotLabel } from './policy-compiler';
 
 const NP = 'a'.repeat(64);
 const PERSONA = 'b'.repeat(64);
@@ -253,5 +255,44 @@ describe('availability + feature flags', () => {
     expect(operatorFeatureFlags(status(null))).toEqual({ canPush: null, canVerdict: null });
     expect(operatorFeatureFlags(status(['client_policy_flags_v1']))).toEqual({ canPush: true, canVerdict: false });
     expect(operatorFeatureFlags(status(['client_policy_flags_v1', 'resolve_approval_v1']))).toEqual({ canPush: true, canVerdict: true });
+  });
+});
+
+describe('pushChildDirectCeiling', () => {
+  const direct = (kinds: number[] = [21235, 21236, 22242]) => slot({ slotIndex: 5, label: childDirectSlotLabel(NP), boundIdentity: PERSONA,
+    secretFingerprint: 'ab'.repeat(32), autoApprove: true, allowedKinds: kinds,
+    allowedMethods: ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'] });
+  const input = (once: { kind: number; until: number }[] = []) => ({
+    dependants: [appDep({ autonomyStage: 'request-approve' })], grants: [], guardianClientPubkey: null, nowSeconds: NOW,
+    childRules: [], approvedOnceKinds: { [NP]: once },
+  });
+  const target = { slotIndex: 5, secretFingerprint: 'ab'.repeat(32) };
+
+  it('pushes only the child slot, with the widened ceiling', async () => {
+    const io = fakeIo(() => [direct(), currentDepSlot()]);
+    expect(await pushChildDirectCeiling(io, input([{ kind: 30311, until: NOW + 600 }]), target)).toBe('ok');
+    expect(io.updates).toHaveLength(1);
+    expect(io.updates[0].slotIndex).toBe(5);
+    expect(io.updates[0].policy.allowedKinds).toContain(30311);
+  });
+  it('already current → ok without a push', async () => {
+    const first = fakeIo(() => [direct([1])]);
+    await pushChildDirectCeiling(first, input(), target);
+    const p = first.updates[0].policy;
+    const io = fakeIo(() => [{ ...direct(p.allowedKinds), ...p, boundIdentity: PERSONA }]);
+    expect(await pushChildDirectCeiling(io, input(), target)).toBe('ok');
+    expect(io.updates).toHaveLength(0);
+  });
+  it('slot missing, unreachable device, or refusal → failed', async () => {
+    expect(await pushChildDirectCeiling(fakeIo(() => []), input(), target)).toBe('failed');
+    expect(await pushChildDirectCeiling({ listClients: async () => { throw new Error('timeout'); }, updateClientPolicy: vi.fn() }, input(), target)).toBe('failed');
+    const refusing = fakeIo(() => [direct()], async () => { throw new Error('denied'); });
+    expect(await pushChildDirectCeiling(refusing, input([{ kind: 30311, until: NOW + 600 }]), target)).toBe('failed');
+  });
+  it('retries once on a stale challenge', async () => {
+    let n = 0;
+    const io = fakeIo(() => [direct()], async () => { if (n++ === 0) throw new Error('stale_management_challenge'); });
+    expect(await pushChildDirectCeiling(io, input([{ kind: 30311, until: NOW + 600 }]), target)).toBe('ok');
+    expect(n).toBe(2);
   });
 });

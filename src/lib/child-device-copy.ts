@@ -113,3 +113,36 @@ export const CHILD_SIDE_COPY = {
     retry: 'Try again',
   },
 } as const;
+
+/** Guardian side of a child's fresh request (spec §7). */
+export const CHILD_ASK_COPY = {
+  eyebrow: 'Asking you',
+  heading: (child: string, what: string) => `${child} wants to sign a ${what}`,
+  headingCrypto: (child: string) => `${child} wants to read or send a private message`,
+  as: (persona: string) => `As ${persona}`,
+  on: (target: string) => `On ${target}`,
+  hidden: (n: number) => `Part of this request is hidden (${n} characters)`,
+  hiddenTags: 'Some of this request’s details are hidden',
+  allowOnce: 'Allow once',
+  allowAlways: (target: string, persona: string) => `Always allow ${target} for ${persona}`,
+  deny: 'Deny',
+  alwaysDeny: 'Always deny this',
+  sending: 'Sending…',
+  sent: {
+    once: 'Allowed once',
+    always: 'Allowed from now on',
+    deny: 'Denied',
+  },
+  reasons: {
+    'device-unreachable': 'Your Heartwood could not be reached, so the request was denied. Check it is on and online.',
+    'ceiling-full': 'Your Heartwood cannot hold another kind of request for this phone, so it was denied. Remove an older rule first.',
+    paused: 'This phone is paused, so the request was denied.',
+    expired: 'This request had already run out of time.',
+    'publish-failed': 'Could not reach the relay to answer. Try again.',
+    'always-unavailable': 'At this stage every request is asked for, so “Always” is not offered.',
+    'already-decided': 'This request has already been answered.',
+    'not-found': 'This request is no longer waiting.',
+    locked: 'Unlock to answer.',
+  } as Record<string, string>,
+  notificationTitle: (child: string) => `${child} needs an approval`,
+} as const;

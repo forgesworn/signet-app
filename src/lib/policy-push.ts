@@ -152,6 +152,40 @@ export async function runPolicyPush(io: PolicyPushIo, input: PolicyPushInput): P
   return result;
 }
 
+/**
+ * Spec §7: widen ONE child-direct slot's ceiling now, before a verdict is
+ * sent. Compiles the whole family as usual but pushes only the slot that
+ * matches `target` (index + fingerprint). `'ok'` when the device confirmed
+ * (or already had) the compiled policy; `'failed'` when the device could not
+ * be reached, refused, or no longer lists that slot. One refresh-and-retry on
+ * a stale challenge / stale slot, like `runPolicyPush`. Never throws.
+ */
+export async function pushChildDirectCeiling(
+  io: PolicyPushIo,
+  input: PolicyPushInput,
+  target: { slotIndex: number; secretFingerprint: string },
+): Promise<'ok' | 'failed'> {
+  const attempt = async (): Promise<'ok' | 'failed'> => {
+    const deviceSlots = await io.listClients();
+    const compiled = compileSlotPolicies(buildCompilerInput({
+      dependants: input.dependants, grants: input.grants, guardianClientPubkey: input.guardianClientPubkey,
+      deviceSlots, nowSeconds: input.nowSeconds, childRules: input.childRules, approvedOnceKinds: input.approvedOnceKinds,
+    }));
+    const slot = compiled.slots.find(s => s.slotIndex === target.slotIndex
+      && s.secretFingerprint.toLowerCase() === target.secretFingerprint.toLowerCase());
+    if (!slot) return 'failed';
+    if (!slot.changed) return 'ok';
+    await io.updateClientPolicy({ slotIndex: slot.slotIndex, secretFingerprint: slot.secretFingerprint }, slot.policy);
+    return 'ok';
+  };
+  try {
+    return await attempt();
+  } catch (e) {
+    if (!isRefreshAndRetryError(errorMessage(e))) return 'failed';
+    try { return await attempt(); } catch { return 'failed'; }
+  }
+}
+
 /** One-line summary for settings rows / the panel. */
 export function describePushResult(r: PolicyPushResult): string {
   const parts: string[] = [];

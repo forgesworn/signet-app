@@ -1,5 +1,9 @@
+import { useState } from 'react';
 import type { PendingApproval } from '../hooks/useBunkerServer';
+import type { PendingChildAsk } from '../hooks/useChildAsks';
 import { shortPubkey, safeAppName } from '../lib/bunker-display';
+import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
+import { CHILD_DEVICE_COPY } from '../lib/child-device-copy';
 
 /**
  * Modal surfaced when a NIP-46 client has asked the bunker server to
@@ -131,6 +135,42 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
             Deny
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A dependant's own phone asking (child-direct, spec §7): the same bottom
+ * sheet, one ask at a time, oldest first. After a verdict that did not go as
+ * chosen (device unreachable, ceiling full…) the sheet stays on that ask with
+ * the reason until the guardian closes it.
+ */
+export function ChildAskApprovalModal({ asks, alwaysAvailableFor, onDecide }: {
+  asks: PendingChildAsk[];
+  /** False at full-control (no "Always"). */
+  alwaysAvailableFor: (dependantId: string) => boolean;
+  onDecide: ChildAskDecide;
+}) {
+  const [held, setHeld] = useState<{ pending: PendingChildAsk; text: string } | null>(null);
+  const shown = held?.pending ?? asks[0];
+  if (!shown) return null;
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Child request" style={{
+      position: 'fixed', inset: 0, zIndex: 10000, background: 'var(--scrim)', display: 'flex', alignItems: 'flex-end',
+      justifyContent: 'center', padding: 16,
+    }}>
+      <div className="card" style={{ width: '100%', maxWidth: 480, background: 'var(--bg-card)', borderRadius: 16, padding: 20,
+        display: 'flex', flexDirection: 'column', gap: 12, boxShadow: 'var(--shadow-lg)' }}>
+        {held ? (
+          <>
+            <div role="alert" style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--danger)' }}>{held.text}</div>
+            <button className="btn btn-primary" onClick={() => setHeld(null)}>{CHILD_DEVICE_COPY.done}</button>
+          </>
+        ) : (
+          <ChildAskCard key={shown.ask.id} pending={shown} alwaysAvailable={alwaysAvailableFor(shown.dependantId)} onDecide={onDecide}
+            onOutcome={(r) => { const text = childAskOutcomeText(r); if (r.sent && text) setHeld({ pending: shown, text }); }} />
+        )}
       </div>
     </div>
   );

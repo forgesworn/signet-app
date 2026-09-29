@@ -113,8 +113,8 @@ import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hoo
 import { useEscalations } from './hooks/useEscalations';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
-import { resolveApproval as mgmtResolveApproval } from './lib/heartwood-mgmt';
-import { submitVerdict, resolveVerdictAvailability, type PanelVerdictAction } from './lib/policy-push';
+import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy } from './lib/heartwood-mgmt';
+import { submitVerdict, resolveVerdictAvailability, pushChildDirectCeiling, type PanelVerdictAction } from './lib/policy-push';
 import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
@@ -261,11 +261,14 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, type ApprovedOnceKinds } from './lib/db';
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
+import { useChildAsks, CHILD_ASK_ONCE_WINDOW_S, type PendingChildAsk } from './hooks/useChildAsks';
+import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
+import { CHILD_ASK_COPY } from './lib/child-device-copy';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
@@ -1606,6 +1609,35 @@ export function App() {
     }
   }, [encryptionKey, isPairedChild]);
   useEffect(() => { void reloadChildRules(); }, [reloadChildRules]);
+  // Spec §7: kinds a guardian allowed ONCE for a child's phone, widening its
+  // Heartwood ceiling for 10 minutes. Memory + an encrypted row; expired
+  // entries drop on load and whenever the state is next written.
+  const [approvedOnceKinds, setApprovedOnceKinds] = useState<ApprovedOnceKinds>({});
+  const approvedOnceRef = useRef<ApprovedOnceKinds>({});
+  useEffect(() => {
+    approvedOnceRef.current = {};
+    setApprovedOnceKinds({});
+    if (!encryptionKey || isPairedChild) return;
+    let cancelled = false;
+    loadChildApprovedOnce(encryptionKey).then((m) => {
+      if (cancelled) return;
+      const nowS = Math.floor(Date.now() / 1000);
+      const live: ApprovedOnceKinds = {};
+      for (const [k, v] of Object.entries(m)) { const l = v.filter(a => a.until > nowS); if (l.length) live[k] = l; }
+      approvedOnceRef.current = live;
+      setApprovedOnceKinds(live);
+    }).catch(() => { /* none */ });
+    return () => { cancelled = true; };
+  }, [encryptionKey, isPairedChild]);
+  const writeApprovedOnce = useCallback(async (next: ApprovedOnceKinds) => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const live: ApprovedOnceKinds = {};
+    for (const [k, v] of Object.entries(next)) { const l = v.filter(a => a.until > nowS); if (l.length) live[k] = l; }
+    approvedOnceRef.current = live;
+    setApprovedOnceKinds(live);
+    if (encryptionKey) { try { await saveChildApprovedOnce(live, encryptionKey); } catch { /* memory copy still widens this session */ } }
+  }, [encryptionKey]);
+
   // A25: a phone minted before grants had loaded is seeded from legacy grants
   // on the next rules load, then its `seedPending` flag clears.
   const seedingRef = useRef(false);
@@ -3826,6 +3858,7 @@ export function App() {
     dependants,
     grants: grantsForSync,
     childRules: isPairedChild ? [] : childRules,
+    approvedOnceKinds,
   });
 
   // Guardian → child rules rail for every dependant whose own phone is
@@ -3834,8 +3867,82 @@ export function App() {
     enabled: !!encryptionKey && !isPairedChild,
     dependants,
     childRules,
+    approvedOnceKinds,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
   });
+
+  // Spec §7 guardian half: widen one child phone's Heartwood ceiling now,
+  // before a verdict is sent. Reads rules and the dependant fresh (the rule an
+  // "Always" just wrote is not in React state yet).
+  const pushChildCeiling = useCallback(async (depId: string, extraOnceKind?: number): Promise<'ok' | 'failed'> => {
+    const c = heartwoodOperator.client;
+    const key = encryptionKey;
+    if (!c || !c.isOpen || !key) return 'failed';
+    const nowS = Math.floor(Date.now() / 1000);
+    const before = approvedOnceRef.current;
+    let once = before;
+    if (extraOnceKind !== undefined) {
+      const mine = Object.entries(before).filter(([k]) => k.toLowerCase() === depId.toLowerCase()).flatMap(([, v]) => v);
+      once = { ...before, [depId.toLowerCase()]: [...mine, { kind: extraOnceKind, until: nowS + CHILD_ASK_ONCE_WINDOW_S }] };
+      await writeApprovedOnce(once);
+    }
+    try {
+      const dep = (await loadFreshDependants(key)).find(d => d.id.toLowerCase() === depId.toLowerCase());
+      const cd = dep?.childDevice;
+      if (!dep || cd?.mode !== 'heartwood-direct') throw new Error('not paired');
+      const result = await pushChildDirectCeiling(
+        { listClients: () => mgmtListClients(c), updateClientPolicy: (slot, policy) => mgmtUpdateClientPolicy(c, slot, policy) },
+        { dependants: [dep], grants: grantsForSync ?? [], guardianClientPubkey: policyPush.guardianClientPubkey, nowSeconds: nowS,
+          childRules: await listAllChildRules(key), approvedOnceKinds: once },
+        { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint },
+      );
+      if (result !== 'ok' && extraOnceKind !== undefined) await writeApprovedOnce(before);
+      return result;
+    } catch {
+      if (extraOnceKind !== undefined) await writeApprovedOnce(before);
+      return 'failed';
+    }
+  }, [heartwoodOperator.client, encryptionKey, writeApprovedOnce, loadFreshDependants, grantsForSync, policyPush.guardianClientPubkey]);
+
+  // Native: a child's fresh request raises the same "needs an approval"
+  // notification as a phone-served one, in its own id range.
+  const notifiedChildAsksRef = useRef<Map<string, number>>(new Map());
+  const childAskRelays = useMemo(() => [preferences.relayUrl ?? DEFAULT_RELAY_URL], [preferences.relayUrl]);
+  const childAsks = useChildAsks({
+    dependants: isPairedChild ? [] : dependants,
+    relays: childAskRelays,
+    encryptionKey: isPairedChild ? null : encryptionKey,
+    approvedOnceKinds,
+    pushCeiling: pushChildCeiling,
+    onRulesChanged: () => { void reloadChildRules(); },
+    onNewAsk: (p: PendingChildAsk) => {
+      if (!isNativeApp() || document.visibilityState === 'visible') return;
+      const id = 0x40000000 + (parseInt(p.ask.id.slice(0, 7), 16) % 0x10000000);
+      notifiedChildAsksRef.current.set(p.ask.id, id);
+      void LocalNotifications.schedule({
+        notifications: [{
+          id,
+          channelId: 'signet-requests',
+          title: CHILD_ASK_COPY.notificationTitle(p.dependantName),
+          body: p.ask.targetLabel,
+          smallIcon: 'ic_stat_signet',
+        }],
+      }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
+    },
+  });
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    const tracked = notifiedChildAsksRef.current;
+    if (tracked.size === 0) return;
+    const live = new Set(childAsks.asks.map(a => a.ask.id));
+    const toCancel: number[] = [];
+    tracked.forEach((nid, askId) => { if (!live.has(askId)) { toCancel.push(nid); tracked.delete(askId); } });
+    if (toCancel.length > 0) {
+      void LocalNotifications.cancel({ notifications: toCancel.map((id) => ({ id })) }).catch(() => { /* already dismissed */ });
+    }
+  }, [childAsks.asks]);
+  const childAskAlwaysAvailable = useCallback((depId: string) =>
+    dependants.find(d => d.id.toLowerCase() === depId.toLowerCase())?.autonomyStage !== 'full-control', [dependants]);
 
   // C4 verdict leg — `resolve_approval` for a parked "Family asks" row.
   // Single stale-challenge retry lives in `submitVerdict`. Requires the
@@ -8912,6 +9019,13 @@ export function App() {
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
         />
+      ) : childAsks.asks.length > 0 && !showAuthPrompt ? (
+        // A dependant's own phone asking (child-direct, spec §7).
+        <ChildAskApprovalModal
+          asks={childAsks.asks}
+          alwaysAvailableFor={childAskAlwaysAvailable}
+          onDecide={childAsks.decide}
+        />
       ) : null);
 
   // A request from an app on this phone. Rendered wherever the auth overlay
@@ -12052,6 +12166,9 @@ export function App() {
           resolveEscalationIdentityName={resolveEscalationIdentityName}
           onEscalationVerdict={handleEscalationVerdict}
           verdictAvailability={verdictAvailability}
+          childAsks={childAsks.asks}
+          childAskAlwaysAvailable={childAskAlwaysAvailable}
+          onChildAskDecide={childAsks.decide}
         />
       )}
     </>

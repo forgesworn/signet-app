@@ -19,6 +19,8 @@ import {
   type VerdictAvailability,
 } from '../lib/policy-push';
 import { Icon } from './Icon';
+import type { PendingChildAsk } from '../hooks/useChildAsks';
+import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
 
 /** How long a landed verdict's outcome line stays before the row auto-dismisses. */
 const VERDICT_AUTO_DISMISS_MS = 4_000;
@@ -78,6 +80,11 @@ interface Props {
   onEscalationVerdict?: (notice: EscalationNotice, action: PanelVerdictAction) => Promise<VerdictResult>;
   /** Whether verdicts can be sent right now (operator key imported + device supports it). */
   verdictAvailability?: VerdictAvailability;
+  /** Fresh requests from dependants' own phones paired straight to the Heartwood (spec §7). */
+  childAsks?: PendingChildAsk[];
+  /** False at full-control (no "Always"). */
+  childAskAlwaysAvailable?: (dependantId: string) => boolean;
+  onChildAskDecide?: ChildAskDecide;
 }
 
 export function BunkerPanel({
@@ -88,8 +95,11 @@ export function BunkerPanel({
   isNative, backgroundServing, onSetBackgroundServing,
   escalationNotices, onDismissEscalation, resolveEscalationIdentityName,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
+  childAsks, childAskAlwaysAvailable, onChildAskDecide,
 }: Props) {
-  const hasEscalations = !!escalationNotices && escalationNotices.length > 0;
+  const hasChildAsks = !!childAsks && childAsks.length > 0 && !!onChildAskDecide;
+  const [childAskNote, setChildAskNote] = useState<string | null>(null);
+  const hasEscalations = (!!escalationNotices && escalationNotices.length > 0) || hasChildAsks || !!childAskNote;
   const [verdictRows, setVerdictRows] = useState<Map<string, VerdictRowState>>(() => new Map());
   const setVerdictRow = (id: string, state: VerdictRowState | null) => {
     setVerdictRows((prev) => {
@@ -346,7 +356,22 @@ export function BunkerPanel({
           <>
             <div style={sectionTitle}>Family asks</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {escalationNotices!.map((n) => {
+              {childAskNote && (
+                <div role="alert" style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <span style={{ flex: 1 }}>{childAskNote}</span>
+                  <button type="button" onClick={() => setChildAskNote(null)} aria-label="Dismiss"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: 2 }}>
+                    <Icon name="x" size={14} />
+                  </button>
+                </div>
+              )}
+              {hasChildAsks && childAsks!.map((p) => (
+                <div key={p.ask.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
+                  <ChildAskCard pending={p} alwaysAvailable={childAskAlwaysAvailable?.(p.dependantId) ?? true} onDecide={onChildAskDecide!}
+                    onOutcome={(r) => { const text = childAskOutcomeText(r); if (r.sent && text) setChildAskNote(text); }} />
+                </div>
+              ))}
+              {(escalationNotices ?? []).map((n) => {
                 const name = resolveEscalationIdentityName?.(n.identityPubkey) ?? shortNpub(n.identityPubkey);
                 const client = shortNpub(n.clientPubkey);
                 const ask = describeAsk(n.method, n.eventKind);
