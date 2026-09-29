@@ -37,6 +37,7 @@ import { replyPersonas } from '../lib/child-device-pairing';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { listChildRules, loadChildAskHistory, saveChildAskHistory, saveChildRule, type ApprovedOnceKinds } from '../lib/db';
 import { publishEvent, subscribeEvents } from '../lib/relay-service';
+import type { OnceEntry } from '../lib/policy-push';
 
 export interface PendingChildAsk {
   ask: ChildSignAsk;
@@ -69,8 +70,14 @@ export interface UseChildAsksOpts {
   encryptionKey: string | null;
   /** Approved-once kinds per dependant (the caller's state) — part of the current ceiling. */
   approvedOnceKinds?: ApprovedOnceKinds;
-  /** Push the dependant's widened ceiling now; `extraOnceKind` is added as approved-once for 10 minutes. */
-  pushCeiling(depId: string, extraOnceKind?: number): Promise<'ok' | 'failed'>;
+  /**
+   * Push the dependant's ceiling now (a no-op on the device when it already
+   * matches); `extraOnce` is added as approved-once first, and removed again
+   * by the pusher if the push fails.
+   */
+  pushCeiling(depId: string, extraOnce?: OnceEntry): Promise<'ok' | 'failed'>;
+  /** A34: give back an approved-once entry whose `once` verdict never reached the child. */
+  dropOnce?(depId: string, entry: OnceEntry): Promise<void>;
   onRulesChanged(): void;
   onNewAsk?(a: PendingChildAsk): void;
   transport?: ChildAskTransport;
@@ -329,7 +336,7 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     if (needsPush) {
       const widened = ceilingFor(dep, rules, [...onceFor, { kind: ask.kind, until: nowS + CHILD_ASK_ONCE_WINDOW_S }], nowS);
       if (!fits(current, widened, ask.kind)) return refuse('ceiling-full');
-      if ((await o.pushCeiling(c.id, ask.kind)) !== 'ok') return refuse('device-unreachable', 'device-unreachable');
+      if ((await o.pushCeiling(c.id, { kind: ask.kind, until: nowS + CHILD_ASK_ONCE_WINDOW_S })) !== 'ok') return refuse('device-unreachable', 'device-unreachable');
     }
     return finish();
   // eslint-disable-next-line react-hooks/exhaustive-deps

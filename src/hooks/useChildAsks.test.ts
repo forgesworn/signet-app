@@ -83,7 +83,7 @@ function ask(over: Partial<ChildSignAsk> = {}, kind = 30311): ChildSignAsk {
 const askEv = (a: ChildSignAsk) => buildAskEvent(a, CLIENT_PRIV, RAIL);
 
 function setup(over: Partial<UseChildAsksOpts> = {}) {
-  const pushCeiling = vi.fn(async (_d: string, _k?: number): Promise<'ok' | 'failed'> => 'ok');
+  const pushCeiling = vi.fn(async (_d: string, _k?: { kind: number; until: number }): Promise<'ok' | 'failed'> => 'ok');
   const onRulesChanged = vi.fn();
   const onNewAsk = vi.fn();
   const props = (): UseChildAsksOpts => ({
@@ -178,7 +178,7 @@ describe('useChildAsks — verdicts', () => {
     const pub = t.publish.bind(t);
     t.publish = async (ev, relays) => { order.push('publish'); return pub(ev, relays); };
     await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
-    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), 30311);
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30311, until: Math.floor(clock / 1000) + 600 });
     expect(order).toEqual(['push', 'publish']);
     expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'once' });
   });

@@ -71,6 +71,27 @@ describe('usePolicyPush — child-direct inputs', () => {
     expect(mList).toHaveBeenCalled();
   });
 
+  it('A38: holds the push while approved-once kinds are still loading (null)', async () => {
+    const { rerender } = renderHook((p: { once: Record<string, { kind: number; until: number }[]> | null }) =>
+      usePolicyPush(base({ childRules: [], approvedOnceKinds: p.once })), { initialProps: { once: null as Record<string, { kind: number; until: number }[]> | null } });
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(mList).not.toHaveBeenCalled();
+    rerender({ once: {} });
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(mList).toHaveBeenCalled();
+  });
+
+  it('A31: compiles from fresh reads (DB rules + the current approved-once ref) taken at push time', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    let onceRef: Record<string, { kind: number; until: number }[]> = {};
+    const loadChildRules = vi.fn(async () => [kindRule(30023)]);
+    renderHook(() => usePolicyPush(base({ childRules: [], approvedOnceKinds: {}, getApprovedOnce: () => onceRef, loadChildRules })));
+    onceRef = { [dep.id]: [{ kind: 30311, until: nowS + 600 }] }; // written after render, before the debounced run
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(loadChildRules).toHaveBeenCalled();
+    expect(mUpdate.mock.calls[0][2].allowedKinds).toEqual(expect.arrayContaining([30023, 30311]));
+  });
+
   it('recompiles when child rules change', async () => {
     const { rerender } = renderHook((p: { rules: ChildRule[] }) => usePolicyPush(base({ childRules: p.rules })), { initialProps: { rules: [] as ChildRule[] } });
     await flush(POLICY_PUSH_DEBOUNCE_MS + 10);

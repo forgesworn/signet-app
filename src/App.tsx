@@ -114,7 +114,8 @@ import { useEscalations } from './hooks/useEscalations';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
 import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy } from './lib/heartwood-mgmt';
-import { submitVerdict, resolveVerdictAvailability, pushChildDirectCeiling, type PanelVerdictAction } from './lib/policy-push';
+import { submitVerdict, resolveVerdictAvailability, pushChildCeilingLocked, removeOnceEntry, type OnceEntry, type PanelVerdictAction } from './lib/policy-push';
+import { withOperatorLock } from './lib/operator-lock';
 import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
@@ -266,7 +267,8 @@ import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
-import { useChildAsks, CHILD_ASK_ONCE_WINDOW_S, type PendingChildAsk } from './hooks/useChildAsks';
+import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
+import { createSerialQueue } from './lib/contacts-v2-queue';
 import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
 import { CHILD_ASK_COPY } from './lib/child-device-copy';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
@@ -1630,31 +1632,48 @@ export function App() {
   // Spec §7: kinds a guardian allowed ONCE for a child's phone, widening its
   // Heartwood ceiling for 10 minutes. Memory + an encrypted row; expired
   // entries drop on load and whenever the state is next written.
-  const [approvedOnceKinds, setApprovedOnceKinds] = useState<ApprovedOnceKinds>({});
-  const approvedOnceRef = useRef<ApprovedOnceKinds>({});
+  // A38: null while the stored row is loading — the policy push waits for it.
+  const [approvedOnceKinds, setApprovedOnceKinds] = useState<ApprovedOnceKinds | null>(null);
+  const approvedOnceRef = useRef<ApprovedOnceKinds | null>(null);
+  const approvedOnceSaveQueue = useMemo(() => createSerialQueue(), []);
   useEffect(() => {
-    approvedOnceRef.current = {};
-    setApprovedOnceKinds({});
+    approvedOnceRef.current = null;
+    setApprovedOnceKinds(null);
     if (!encryptionKey || isPairedChild) return;
     let cancelled = false;
-    loadChildApprovedOnce(encryptionKey).then((m) => {
+    const settle = (m: ApprovedOnceKinds) => {
       if (cancelled) return;
       const nowS = Math.floor(Date.now() / 1000);
       const live: ApprovedOnceKinds = {};
       for (const [k, v] of Object.entries(m)) { const l = v.filter(a => a.until > nowS); if (l.length) live[k] = l; }
       approvedOnceRef.current = live;
       setApprovedOnceKinds(live);
-    }).catch(() => { /* none */ });
+    };
+    loadChildApprovedOnce(encryptionKey).then(settle).catch(() => settle({}));
     return () => { cancelled = true; };
   }, [encryptionKey, isPairedChild]);
+  // The ref is updated synchronously (A31/A32 read it as the CURRENT state);
+  // saves run on one chain and always write the latest ref, so an older save
+  // can never land over a newer one.
   const writeApprovedOnce = useCallback(async (next: ApprovedOnceKinds) => {
     const nowS = Math.floor(Date.now() / 1000);
     const live: ApprovedOnceKinds = {};
     for (const [k, v] of Object.entries(next)) { const l = v.filter(a => a.until > nowS); if (l.length) live[k] = l; }
     approvedOnceRef.current = live;
     setApprovedOnceKinds(live);
-    if (encryptionKey) { try { await saveChildApprovedOnce(live, encryptionKey); } catch { /* memory copy still widens this session */ } }
-  }, [encryptionKey]);
+    const key = encryptionKey;
+    if (!key) return;
+    try {
+      await approvedOnceSaveQueue.run(async () => {
+        const latest = approvedOnceRef.current;
+        if (latest && encryptionKeyRef.current === key) await saveChildApprovedOnce(latest, key);
+      });
+    } catch { /* memory copy still widens this session */ }
+  }, [encryptionKey, approvedOnceSaveQueue]);
+  const approvedOnceStore = useMemo(() => ({
+    get: () => approvedOnceRef.current,
+    set: (next: ApprovedOnceKinds) => writeApprovedOnce(next),
+  }), [writeApprovedOnce]);
 
   // A25: a phone minted before grants had loaded is seeded from legacy grants
   // on the next rules load, then its `seedPending` flag clears.
@@ -3961,51 +3980,50 @@ export function App() {
     dependants,
     grants: grantsForSync,
     childRules: isPairedChild ? [] : childRules,
-    approvedOnceKinds,
+    approvedOnceKinds: isPairedChild ? {} : approvedOnceKinds,
+    // A31: the push compiles from reads taken inside the operator lock.
+    getApprovedOnce: isPairedChild ? undefined : approvedOnceStore.get,
+    loadChildRules: isPairedChild || !encryptionKey ? undefined : () => listAllChildRules(encryptionKey),
   });
 
   // Guardian → child rules rail for every dependant whose own phone is
   // paired straight to the Heartwood (spec §5.2), on the rail relay.
   useChildRulesPublisher({
-    enabled: !!encryptionKey && !isPairedChild,
+    enabled: !!encryptionKey && !isPairedChild && approvedOnceKinds !== null,
     dependants,
     childRules,
-    approvedOnceKinds,
+    approvedOnceKinds: approvedOnceKinds ?? undefined,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
   });
 
   // Spec §7 guardian half: widen one child phone's Heartwood ceiling now,
-  // before a verdict is sent. Reads rules and the dependant fresh (the rule an
-  // "Always" just wrote is not in React state yet).
-  const pushChildCeiling = useCallback(async (depId: string, extraOnceKind?: number): Promise<'ok' | 'failed'> => {
+  // before a verdict is sent. A31/A32: under the operator lock, compiled from
+  // fresh reads (the rule an "Always" just wrote is not in React state yet);
+  // a failure removes only the approved-once entry this call added.
+  const pushChildCeiling = useCallback(async (depId: string, extraOnce?: OnceEntry): Promise<'ok' | 'failed'> => {
     const c = heartwoodOperator.client;
     const key = encryptionKey;
     if (!c || !c.isOpen || !key) return 'failed';
-    const nowS = Math.floor(Date.now() / 1000);
-    const before = approvedOnceRef.current;
-    let once = before;
-    if (extraOnceKind !== undefined) {
-      const mine = Object.entries(before).filter(([k]) => k.toLowerCase() === depId.toLowerCase()).flatMap(([, v]) => v);
-      once = { ...before, [depId.toLowerCase()]: [...mine, { kind: extraOnceKind, until: nowS + CHILD_ASK_ONCE_WINDOW_S }] };
-      await writeApprovedOnce(once);
-    }
-    try {
-      const dep = (await loadFreshDependants(key)).find(d => d.id.toLowerCase() === depId.toLowerCase());
-      const cd = dep?.childDevice;
-      if (!dep || cd?.mode !== 'heartwood-direct') throw new Error('not paired');
-      const result = await pushChildDirectCeiling(
-        { listClients: () => mgmtListClients(c), updateClientPolicy: (slot, policy) => mgmtUpdateClientPolicy(c, slot, policy) },
-        { dependants: [dep], grants: grantsForSync ?? [], guardianClientPubkey: policyPush.guardianClientPubkey, nowSeconds: nowS,
-          childRules: await listAllChildRules(key), approvedOnceKinds: once },
-        { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint },
-      );
-      if (result !== 'ok' && extraOnceKind !== undefined) await writeApprovedOnce(before);
-      return result;
-    } catch {
-      if (extraOnceKind !== undefined) await writeApprovedOnce(before);
-      return 'failed';
-    }
-  }, [heartwoodOperator.client, encryptionKey, writeApprovedOnce, loadFreshDependants, grantsForSync, policyPush.guardianClientPubkey]);
+    return pushChildCeilingLocked({
+      lockKey: c,
+      io: { listClients: () => mgmtListClients(c), updateClientPolicy: (slot, policy) => mgmtUpdateClientPolicy(c, slot, policy) },
+      depId,
+      extraOnce,
+      store: approvedOnceStore,
+      read: async () => ({
+        dependants: await loadFreshDependants(key),
+        grants: grantsForSync ?? [],
+        guardianClientPubkey: policyPush.guardianClientPubkey,
+        childRules: await listAllChildRules(key),
+        nowSeconds: Math.floor(Date.now() / 1000),
+      }),
+    });
+  }, [heartwoodOperator.client, encryptionKey, approvedOnceStore, loadFreshDependants, grantsForSync, policyPush.guardianClientPubkey]);
+  // A34: a `once` whose verdict never reached the child gives its entry back (A32 path).
+  const dropChildOnce = useCallback(async (depId: string, entry: OnceEntry) => {
+    const cur = approvedOnceRef.current;
+    if (cur) await writeApprovedOnce(removeOnceEntry(cur, depId, entry));
+  }, [writeApprovedOnce]);
 
   // Native: a child's fresh request raises the same "needs an approval"
   // notification as a phone-served one, in its own id range.
@@ -4015,8 +4033,9 @@ export function App() {
     dependants: isPairedChild ? [] : dependants,
     relays: childAskRelays,
     encryptionKey: isPairedChild ? null : encryptionKey,
-    approvedOnceKinds,
+    approvedOnceKinds: approvedOnceKinds ?? undefined,
     pushCeiling: pushChildCeiling,
+    dropOnce: dropChildOnce,
     onRulesChanged: () => { void reloadChildRules(); },
     onNewAsk: (p: PendingChildAsk) => {
       if (!isNativeApp() || document.visibilityState === 'visible') return;
@@ -6175,7 +6194,8 @@ export function App() {
           await addPendingChildRevoke({ label: cd.slotLabel, slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint, dependantId: dep.id }, key);
         } catch { /* nothing more we can do on this device */ }
       };
-      retractions.push(operatorClient ? revokeChildDeviceSlot(operatorClient, dep).catch(remember) : remember());
+      // A31: the revoke is a slot mutation — it waits its turn on the operator lock.
+      retractions.push(operatorClient ? withOperatorLock(operatorClient, () => revokeChildDeviceSlot(operatorClient, dep)).catch(remember) : remember());
     }
 
     if (retractions.length === 0) return;

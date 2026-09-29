@@ -26,7 +26,7 @@ import type { ChildRule } from '../types/child-rules';
 import { listPendingChildRevokes, loadBunkerSecret, removePendingChildRevoke } from '../lib/db';
 import { HeartwoodMgmtClient, listClients, revokeClient, updateClientPolicy } from '../lib/heartwood-mgmt';
 import { retryPendingChildRevokes } from '../lib/child-device-pairing';
-import { runPolicyPush, type PolicyPushIo, type PolicyPushResult } from '../lib/policy-push';
+import { runPolicyPushLocked, type PolicyPushIo, type PolicyPushResult } from '../lib/policy-push';
 
 export const POLICY_PUSH_DEBOUNCE_MS = 1_500;
 /** setTimeout's ceiling (~24.8 days); a later expiry re-arms on the next input change. */
@@ -64,8 +64,12 @@ export interface UsePolicyPushArgs {
   grants: RememberedGrant[] | null;
   /** Child-direct rules, all dependants, INCLUDING tombstones; null/absent ⇒ none yet. */
   childRules?: ChildRule[] | null;
-  /** Approved-once kinds per dependant id (`until` unix seconds); a push re-runs at the earliest expiry. */
-  approvedOnceKinds?: Record<string, { kind: number; until: number }[]>;
+  /** Approved-once kinds per dependant id (`until` unix seconds); a push re-runs at the earliest expiry. Null while loading (A38: nothing is pushed). */
+  approvedOnceKinds?: Record<string, { kind: number; until: number }[]> | null;
+  /** A31: the CURRENT approved-once state (a ref read), taken inside the operator lock; null while loading. */
+  getApprovedOnce?: () => Record<string, { kind: number; until: number }[]> | null;
+  /** A31: a fresh read of every child rule (incl. tombstones), taken inside the operator lock. */
+  loadChildRules?: () => Promise<ChildRule[]>;
 }
 
 export interface UsePolicyPushReturn {
@@ -77,7 +81,7 @@ export interface UsePolicyPushReturn {
   guardianClientPubkey: string | null;
 }
 
-export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dependants, grants, childRules, approvedOnceKinds }: UsePolicyPushArgs): UsePolicyPushReturn {
+export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dependants, grants, childRules, approvedOnceKinds, getApprovedOnce, loadChildRules }: UsePolicyPushArgs): UsePolicyPushReturn {
   const [lastPushAt, setLastPushAt] = useState<number | null>(null);
   const [lastResult, setLastResult] = useState<PolicyPushResult | null>(null);
   const [pushing, setPushing] = useState(false);
@@ -109,8 +113,8 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   // Latest inputs in refs so the debounced runner reads fresh values
   // without re-arming on every render.
-  const inputsRef = useRef({ client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, encryptionKey });
-  inputsRef.current = { client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, encryptionKey };
+  const inputsRef = useRef({ client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, encryptionKey, getApprovedOnce, loadChildRules });
+  inputsRef.current = { client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, encryptionKey, getApprovedOnce, loadChildRules };
 
   const runningRef = useRef(false);
   const queuedRef = useRef(false);
@@ -129,9 +133,9 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   const runOnce = useCallback(async () => {
     if (runningRef.current) { queuedRef.current = true; return; }
-    const { client: c, dependants: deps, grants: gs, guardianClientPubkey: gcp, childRules: rules, approvedOnceKinds: once, encryptionKey: key } = inputsRef.current;
-    // Rules still loading: a child-direct ceiling compiled without them would narrow, then widen.
-    if (!c || !c.isOpen || gs === null || rules === null) return;
+    const { client: c, encryptionKey: key } = inputsRef.current;
+    // Rules / approved-once still loading: a child-direct ceiling compiled without them would narrow, then widen.
+    if (!c || !c.isOpen || inputsRef.current.grants === null || inputsRef.current.childRules === null || inputsRef.current.approvedOnceKinds === null) return;
     runningRef.current = true;
     if (mountedRef.current) setPushing(true);
     const io: PolicyPushIo = {
@@ -139,22 +143,34 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
       updateClientPolicy: (slot, policy) => updateClientPolicy(c, slot, policy),
     };
     try {
-      // A24: child-direct slots whose removal-time revoke did not land.
-      if (key) {
-        await retryPendingChildRevokes({
+      // A31: pending revokes, then list → compile → update_client, all under
+      // the operator lock, compiling from reads taken inside it.
+      const result = await runPolicyPushLocked({
+        lockKey: c,
+        io,
+        // A24: child-direct slots whose removal-time revoke did not land.
+        before: key ? () => retryPendingChildRevokes({
           list: () => listPendingChildRevokes(key),
           revoke: (r) => revokeClient(c, { slotIndex: r.slotIndex, secretFingerprint: r.secretFingerprint }),
           remove: (r) => removePendingChildRevoke(r, key),
-        });
-      }
-      const result = await runPolicyPush(io, {
-        dependants: deps,
-        grants: gs,
-        guardianClientPubkey: gcp,
-        nowSeconds: Math.floor(Date.now() / 1000),
-        childRules: rules ?? [],
-        approvedOnceKinds: once ?? {},
+          listClients: () => listClients(c),
+        }) : undefined,
+        read: async () => {
+          const cur = inputsRef.current;
+          const once = cur.getApprovedOnce ? cur.getApprovedOnce() : cur.approvedOnceKinds;
+          const rules = cur.loadChildRules ? await cur.loadChildRules() : cur.childRules;
+          if (cur.grants === null || rules === null || once === null) return null;
+          return {
+            dependants: cur.dependants,
+            grants: cur.grants,
+            guardianClientPubkey: cur.guardianClientPubkey,
+            nowSeconds: Math.floor(Date.now() / 1000),
+            childRules: rules ?? [],
+            approvedOnceKinds: once ?? {},
+          };
+        },
       });
+      if (result === null) return;
       if (mountedRef.current) {
         setLastResult(result);
         setLastPushAt(Date.now());
@@ -187,7 +203,7 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   // Debounced trigger on any input change (client becoming available included).
   useEffect(() => {
-    if (!enabled || !client || grants === null || childRules === null) {
+    if (!enabled || !client || grants === null || childRules === null || approvedOnceKinds === null) {
       if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
       return;
     }
@@ -199,7 +215,7 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
   // earliest of the two.
   useEffect(() => {
     if (!enabled || !client || grants === null) return;
-    const at = earliestChildExpiryMs(approvedOnceKinds, childRules, Date.now());
+    const at = earliestChildExpiryMs(approvedOnceKinds ?? undefined, childRules, Date.now());
     if (at === null) return;
     const id = setTimeout(() => schedule(0), Math.min(at - Date.now() + 1_000, MAX_TIMER_MS));
     return () => clearTimeout(id);
