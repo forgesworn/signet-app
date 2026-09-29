@@ -270,7 +270,7 @@ import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pair
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
 import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
-import { CHILD_ASK_COPY } from './lib/child-device-copy';
+import { CHILD_ASK_COPY, CHILD_SIDE_COPY } from './lib/child-device-copy';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
@@ -281,7 +281,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { buildChildDirectRoutes, childDirectWithheldSlots, gatedSigningBackend, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
-import { loadOrCreateTransportKeys } from './lib/child-transport-keys';
+import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { useChildGate } from './hooks/useChildGate';
 import type { RouterProbeState } from './lib/bunker-router';
 import { awaitRoutedBackend, acquireRoutedBackend, ROUTED_APPROVAL_WAIT_MS } from './lib/await-routed-backend';
@@ -1971,12 +1971,18 @@ export function App() {
     ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childLinkInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')
     : '';
   const [childTransportKeys, setChildTransportKeys] = useState<Record<string, { publicKey: string; privateKey: string }>>({});
+  // A45: a stored row that will not decrypt is surfaced, never minted over.
+  const [childTransportKeysUnreadable, setChildTransportKeysUnreadable] = useState(false);
   useEffect(() => {
-    if (!childBunkerPersonasCsv || !encryptionKey) { setChildTransportKeys({}); return; }
+    if (!childBunkerPersonasCsv || !encryptionKey) { setChildTransportKeys({}); setChildTransportKeysUnreadable(false); return; }
     let cancelled = false;
     loadOrCreateTransportKeys(childBunkerPersonasCsv.split(','), encryptionKey)
-      .then((keys) => { if (!cancelled) setChildTransportKeys(keys); })
-      .catch(() => { if (!cancelled) setChildTransportKeys({}); });
+      .then((keys) => { if (!cancelled) { setChildTransportKeys(keys); setChildTransportKeysUnreadable(false); } })
+      .catch((e) => {
+        if (cancelled) return;
+        setChildTransportKeys({});
+        setChildTransportKeysUnreadable(e instanceof ChildTransportKeysUnreadableError);
+      });
     return () => { cancelled = true; };
   }, [childBunkerPersonasCsv, encryptionKey]);
 
@@ -3385,6 +3391,9 @@ export function App() {
     }, (priv) => new LocalSigningBackend(priv));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: the persona routes need a connected primary
   }, [childDirect, encryptionKey, signerStatus, childBunkerPersonasCsv, childTransportKeys, bunkerBackend, bunkerRouter, slotResolveOpts]);
+  // A45: each rebuild (lock, unpair, a new persona, a reconnect) retires the
+  // previous routes' LOCAL transport backends (their key reference dropped).
+  useEffect(() => () => { for (const r of childBunkerRoutes) { try { r.backend.destroy(); } catch { /* already gone */ } } }, [childBunkerRoutes]);
 
   const bunkerRoutes = useMemo(() => {
     // A direct-paired child serves only its own gated persona routes.
@@ -9140,8 +9149,15 @@ export function App() {
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
   // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
-  const childApprovalsBanner = childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
-    <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
+  const childApprovalsBanner = (childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
+    <>
+      {childDirect && childTransportKeysUnreadable ? (
+        <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
+      ) : null}
+      {childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
+        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
+      ) : null}
+    </>
   ) : null;
   const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
     || contactsBackupTooLargeBanner

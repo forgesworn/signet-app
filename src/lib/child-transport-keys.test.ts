@@ -60,4 +60,24 @@ describe('loadOrCreateTransportKeys', () => {
     const out = await loadOrCreateTransportKeys(['nope', P1.toUpperCase()], KEY);
     expect(Object.keys(out)).toEqual([P1]);
   });
+
+  it('A45: a stored row that will not decrypt is an error — nothing is minted over it', async () => {
+    const { loadOrCreateTransportKeys, ChildTransportKeysUnreadableError } = await import('./child-transport-keys');
+    const first = await loadOrCreateTransportKeys([P1], KEY);
+    const rowBefore = await readRow();
+    await expect(loadOrCreateTransportKeys([P1, P2], 'z'.repeat(64))).rejects.toBeInstanceOf(ChildTransportKeysUnreadableError);
+    expect(await readRow()).toEqual(rowBefore);
+    // The right key still reads the original keys.
+    expect((await loadOrCreateTransportKeys([P1], KEY))[P1]).toEqual(first[P1]);
+  });
 });
+
+async function readRow(): Promise<unknown> {
+  return new Promise((resolve) => {
+    const req = indexedDB.open('my-signet');
+    req.onsuccess = () => {
+      const get = req.result.transaction('identity', 'readonly').objectStore('identity').get('childDirect:transportKeys');
+      get.onsuccess = () => { const v = get.result; req.result.close(); resolve(v); };
+    };
+  });
+}

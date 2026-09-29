@@ -3378,10 +3378,31 @@ export async function saveChildTransportKeys(map: ChildTransportKeys, encryption
   await saveEncryptedJsonRow(CHILD_TRANSPORT_KEYS_ROW, map, encryptionKey);
 }
 
-/** Malformed entries are dropped; nothing stored (or a wrong key) ⇒ `{}`. */
+/** A45: the transport-keys row exists but will not decrypt/parse. */
+export class ChildTransportKeysUnreadableError extends Error {
+  constructor() {
+    super('Your app connections could not be read on this phone. Lock and unlock to try again.');
+    this.name = 'ChildTransportKeysUnreadableError';
+  }
+}
+
+/**
+ * Malformed entries are dropped; nothing stored ⇒ `{}`. A45: a stored row
+ * that will not decrypt or parse THROWS `ChildTransportKeysUnreadableError`
+ * — the caller must never mint over keys apps have already paired with.
+ */
 export async function loadChildTransportKeys(encryptionKey: string): Promise<ChildTransportKeys> {
-  const raw = await loadEncryptedJsonRow(CHILD_TRANSPORT_KEYS_ROW, encryptionKey);
+  const db = await getDB();
+  const row = await db.get('identity', CHILD_TRANSPORT_KEYS_ROW);
   const out: ChildTransportKeys = {};
+  if (!row) return out;
+  let raw: unknown;
+  try {
+    if (typeof row.secret !== 'string') throw new Error('no secret');
+    raw = JSON.parse(await decryptSecret(row.secret, encryptionKey));
+  } catch {
+    throw new ChildTransportKeysUnreadableError();
+  }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [persona, v] of Object.entries(raw as Record<string, unknown>)) {
     const o = v as { publicKey?: unknown; privateKey?: unknown } | null;

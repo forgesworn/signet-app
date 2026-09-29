@@ -106,6 +106,12 @@ export const CHILD_SIDE_COPY = {
     expired: 'This code has expired. Ask your guardian for a new one.',
     generic: 'Pairing did not finish. Nothing was set up — try again.',
   },
+  /** A45: the local app-connection keys will not decrypt; nothing was replaced. */
+  transportKeysUnreadable: 'Your app connections could not be read on this phone, so apps cannot connect right now. Lock and unlock to try again.',
+  /** A41: `?action=add-dependant` on a child's phone. */
+  addDependantRefused: "This phone belongs to a child's account, so it cannot add someone to a family. Ask your guardian to do it on their phone.",
+  /** A40: nostrconnect:// on a direct child. */
+  connectNotServed: 'This identity cannot connect apps on this phone right now. Check your Heartwood is connected, then try again.',
   approvals: {
     heading: 'Approve your identities on the Heartwood',
     body: 'For each identity, your guardian presses ALLOW AS on the Heartwood once.',

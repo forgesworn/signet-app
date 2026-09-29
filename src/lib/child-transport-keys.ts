@@ -5,10 +5,16 @@
  * LOCAL key, so serving an app costs no Heartwood round trip — only the real
  * signing (as the persona) goes to the device. Never derived from, and never
  * equal to, a persona key.
+ *
+ * A45: a stored row that will not decrypt rejects with
+ * `ChildTransportKeysUnreadableError` and nothing is written — minting over it
+ * would silently orphan every app already paired with the old keys.
  */
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { loadChildTransportKeys, saveChildTransportKeys, type ChildTransportKeys } from './db';
+
+export { ChildTransportKeysUnreadableError } from './db';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
