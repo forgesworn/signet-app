@@ -8,6 +8,7 @@ import type { PairedChildRecord } from '../types';
 import type { ChildRule } from '../types/child-rules';
 import type { ChildRulesPayload } from '../lib/child-rules-wire';
 import { buildVerdictEvent, openAskEvent, templateHash, type ChildSignVerdict } from '../lib/child-sign-asks';
+import { withRequestCreatedAt, type DecryptingSigningBackend } from '../lib/signing-backend';
 import type { ChildActivityEntry } from '../lib/child-activity';
 import {
   useChildGate, nextRequestCreatedAt, reserveRequestCreatedAt, resetRequestCreatedAtForTests, CHILD_GATE_MAX_HELD, REQUEST_STAMP_MAX_AHEAD_S, type ChildGateTransport,
@@ -82,6 +83,18 @@ async function sendVerdict(subs: ReturnType<typeof fakeTransport>['subs'], id: s
 
 beforeEach(() => resetRequestCreatedAtForTests());
 
+/** The Heartwood answering a forwarded, stamped request (null ⇒ success). */
+function signWith(createdAt: number, fail: string | null) {
+  const backend = {
+    activePublicKeyHex: PERSONA,
+    stamped: () => ({
+      signEvent: async () => { if (fail) throw new Error(fail); return {} as never; },
+      nip44Encrypt: async () => 'x', nip44Decrypt: async () => 'x',
+    }),
+  } as unknown as DecryptingSigningBackend;
+  return withRequestCreatedAt(backend, createdAt).signEvent(note());
+}
+
 describe('useChildGate', () => {
   it('an allow rule forwards at once with the persona on the template and a forced created_at', async () => {
     const s = setup({ rules: rules({ rules: [allowApp()] }) });
@@ -92,7 +105,20 @@ describe('useChildGate', () => {
     expect(out).toMatchObject({ ok: true, requestCreatedAt: Math.floor(NOW / 1000) });
     expect(out!.ok && out!.template?.pubkey).toBe(PERSONA);
     expect(s.published).toHaveLength(0);
+    // A60: nothing is recorded as signed until the Heartwood returns the signature.
+    expect(s.activity).toEqual([]);
+    await act(async () => { await signWith(out!.ok ? out!.requestCreatedAt : 0, null); });
     expect(s.activity).toEqual([expect.objectContaining({ outcome: 'signed', persona: PERSONA, kind: 1, appId: APP, requestCreatedAt: Math.floor(NOW / 1000) })]);
+  });
+
+  it('A60: a Heartwood refusal after a forward is recorded as denied, never signed', async () => {
+    const s = setup({ rules: rules({ rules: [allowApp()] }) });
+    let out: Awaited<ReturnType<typeof s.hook.result.current.authorise>> | undefined;
+    await act(async () => {
+      out = await s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() });
+    });
+    await act(async () => { await signWith(out!.ok ? out!.requestCreatedAt : 0, 'unauthorised').catch(() => {}); });
+    expect(s.activity.map(a => a.outcome)).toEqual(['denied']);
   });
 
   it('asks the guardian on the rail relay and forwards after a once verdict, only the template it asked about', async () => {
@@ -109,8 +135,22 @@ describe('useChildGate', () => {
     expect(out.ok).toBe(true);
     if (out.ok) expect(templateHash(out.template!)).toBe(ask.templateHash);
     expect(s.hook.result.current.pendingAsks).toHaveLength(0);
+    expect(s.activity.map(a => a.outcome)).toEqual(['asked']);
+    await act(async () => { await signWith(out.ok ? out.requestCreatedAt : 0, null); });
     expect(s.activity.map(a => a.outcome)).toEqual(['asked', 'approved']);
     expect(s.activity[1].requestCreatedAt).toBeGreaterThan(0);
+    // A60: the child's own ask history keeps the answered ask.
+    expect(s.hook.result.current.askHistory).toEqual([expect.objectContaining({ id: ask.id, targetLabel: 'Blocks', state: 'approved' })]);
+  });
+
+  it('A60: the ask history shows a waiting ask, then its answer', async () => {
+    const s = setup();
+    act(() => { void s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note('x') }); });
+    await waitFor(() => expect(s.published).toHaveLength(1));
+    await waitFor(() => expect(s.hook.result.current.askHistory).toEqual([expect.objectContaining({ state: 'waiting', targetLabel: 'Blocks' })]));
+    const ask = await openLastAsk(s.published);
+    await sendVerdict(s.subs, ask.id, 'deny');
+    await waitFor(() => expect(s.hook.result.current.askHistory).toEqual([expect.objectContaining({ id: ask.id, state: 'denied' })]));
   });
 
   it('a deny verdict is denied', async () => {

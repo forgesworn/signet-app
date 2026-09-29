@@ -44,6 +44,17 @@ describe('targets', () => {
   });
 });
 
+describe('A60: tombstonesForRemovedDependant', () => {
+  it('tombstones every not-yet-tombstoned rule of that dependant only', async () => {
+    const { tombstonesForRemovedDependant } = await import('./child-rules');
+    const D = 'd'.repeat(64), O = 'e'.repeat(64);
+    const mk = (dep: string, target: string, extra: Partial<ChildRule> = {}): ChildRule => ({ id: childRuleId(dep, '*', 'sign-in', target), dependantId: dep, persona: '*', scope: 'sign-in',
+      target: target as ChildRule['target'], decision: 'allow', createdAt: 1, updatedAt: 1, ...extra });
+    const out = tombstonesForRemovedDependant([mk(D, 'site:https://a.example'), mk(D, 'site:https://b.example', { tombstonedAt: 5, updatedAt: 5 }), mk(O, 'site:https://a.example')], D.toUpperCase(), 100);
+    expect(out).toEqual([expect.objectContaining({ dependantId: D, target: 'site:https://a.example', tombstonedAt: 100, updatedAt: 100 })]);
+  });
+});
+
 describe('isLiveRule', () => {
   it('rejects tombstoned and expired, accepts the rest', () => {
     expect(isLiveRule(rule(), NOW)).toBe(true);

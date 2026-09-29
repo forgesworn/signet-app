@@ -20,8 +20,11 @@
  * request envelope (`withRequestCreatedAt`) — the Heartwood echoes it in its
  * C5 rumor and the guardian joins the two records on it (§9.2).
  *
- * A12: the persona is set on the template BEFORE the ask is built, and only a
- * template whose hash equals the ask's `templateHash` is ever forwarded.
+ * A12: the persona is set on the template BEFORE the ask is built, and only
+ * the template the ask was built from (its `templateHash`) is ever forwarded.
+ * A60: a forwarded request is recorded as signed / approved only after the
+ * Heartwood returns it; the child's own asks are kept (in memory) for its
+ * read-only Permissions page.
  * The rate limit (10/min) is read by the pure gate and advanced here, once
  * per request. `rules === null` ⇒ every request asks (fail closed).
  */
@@ -36,11 +39,12 @@ import { appTarget, peerTarget } from '../lib/child-rules';
 import { inferScope } from '../lib/scope-inference';
 import { checkRateLimit, type RateLimitState } from '../lib/rate-limit';
 import {
-  buildAskEvent, openVerdictEvent, templateHash, CHILD_SIGN_ASK_TTL_S, type ChildSignAsk,
+  buildAskEvent, openVerdictEvent, CHILD_SIGN_ASK_TTL_S, type ChildSignAsk,
 } from '../lib/child-sign-asks';
 import type { ChildActivityEntry, ConnectedChildApp } from '../lib/child-activity';
 import type { ChildGateError, ChildGateMethod, ChildGateOutcome } from '../lib/child-bunker';
 import { publishEvent, subscribeEvents } from '../lib/relay-service';
+import { observeStampedCalls } from '../lib/signing-backend';
 
 export type { ChildGateOutcome, ChildGateError, ChildGateMethod } from '../lib/child-bunker';
 
@@ -131,9 +135,28 @@ export interface UseChildGateOpts {
 
 export interface PendingChildGateAsk { id: string; targetLabel: string; since: number }
 
+/** A60: one of the child's own asks, as its read-only Permissions page shows it. */
+export interface ChildGateAskRecord {
+  id: string;
+  targetLabel: string;
+  persona: string;
+  kind: number;
+  /** Rule scope (`sign-in`, …) or `kind:<n>`. */
+  scope: string;
+  /** Unix seconds. */
+  since: number;
+  /** `sent`: raised for a caller that could not wait (the answer applies to its next try). */
+  state: 'waiting' | 'sent' | 'approved' | 'denied' | 'expired';
+}
+export const CHILD_GATE_ASK_HISTORY_MAX = 50;
+/** A60: a forwarded request whose result never comes back is forgotten after this. */
+const PENDING_REPORT_TTL_MS = 10 * 60_000;
+
 export interface ChildGate {
   authorise(req: ChildGateRequest): Promise<ChildGateOutcome>;
   pendingAsks: PendingChildGateAsk[];
+  /** A60: the child's own asks (newest first, pending and answered; in memory). */
+  askHistory: ChildGateAskRecord[];
   noteConnectedApp(app: ConnectedChildApp): void;
   connectedApps: ConnectedChildApp[];
 }
@@ -161,6 +184,13 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   const held = useRef(new Map<string, Held>());
   const [pendingAsks, setPendingAsks] = useState<PendingChildGateAsk[]>([]);
   const [connectedApps, setConnectedApps] = useState<ConnectedChildApp[]>([]);
+  const [askHistory, setAskHistory] = useState<ChildGateAskRecord[]>([]);
+  const noteAsk = useCallback((rec: ChildGateAskRecord) => {
+    setAskHistory(prev => [rec, ...prev.filter(r => r.id !== rec.id)].slice(0, CHILD_GATE_ASK_HISTORY_MAX));
+  }, []);
+  const answerAsk = useCallback((id: string, state: ChildGateAskRecord['state']) => {
+    setAskHistory(prev => prev.map(r => (r.id === id ? { ...r, state } : r)));
+  }, []);
 
   // Review Focus 5: unpairing (or a different pairing) rejects every held ask.
   useEffect(() => {
@@ -174,6 +204,22 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   const emit = useCallback((e: Omit<ChildActivityEntry, 'at'>) => {
     try { onActivityRef.current({ ...e, at: Math.floor(nowRef.current() / 1000) }); } catch { /* bookkeeping only */ }
   }, []);
+
+  // A60: a forwarded request is recorded as signed / approved only once the
+  // Heartwood has answered it (matched on persona + request stamp); a refusal
+  // there is recorded as denied.
+  const pendingReports = useRef(new Map<string, { entry: Omit<ChildActivityEntry, 'at'>; addedAt: number }>());
+  useEffect(() => {
+    pendingReports.current.clear();
+    if (!recordKey) return;
+    return observeStampedCalls((r) => {
+      const k = `${r.persona}:${r.createdAt}`;
+      const hit = pendingReports.current.get(k);
+      if (!hit) return;
+      pendingReports.current.delete(k);
+      emit(r.ok ? hit.entry : { ...hit.entry, outcome: 'denied' });
+    });
+  }, [recordKey, emit]);
 
   // A55: every gated request touches its app — and lists one not seen yet (a
   // NIP-46 app that resumed without `connect`), so the guardian can find and
@@ -219,7 +265,11 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
 
     const forward = async (outcome: 'signed' | 'approved', target?: string): Promise<ChildGateOutcome> => {
       const requestCreatedAt = await reserveRequestCreatedAt(persona, { now: () => nowRef.current() });
-      emit({ ...base, kind, outcome, ...(target ? { target } : {}), requestCreatedAt });
+      const t = nowRef.current();
+      for (const [k, v] of pendingReports.current) if (t - v.addedAt > PENDING_REPORT_TTL_MS) pendingReports.current.delete(k);
+      pendingReports.current.set(`${persona}:${requestCreatedAt}`, {
+        entry: { ...base, kind, outcome, ...(target ? { target } : {}), requestCreatedAt }, addedAt: t,
+      });
       touchApp(req.appId, persona, req.appLabel);
       return { ok: true, requestCreatedAt, ...(template ? { template } : {}) };
     };
@@ -250,7 +300,6 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       method: req.method, target, targetLabel: (req.appLabel || req.siteOrigin || 'An app').slice(0, 100),
       createdAt: nowS, expiresAt: nowS + CHILD_SIGN_ASK_TTL_S, ...(template ? { template } : {}),
     };
-    const askedHash = template ? templateHash(template) : null;
     let ev: NostrEvent;
     try { ev = await buildAskEvent(ask, rec.clientKeypair.privateKey, rec.railPubkey); }
     catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'denied' }; }
@@ -278,6 +327,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       };
       // The caller does not wait: the ask stays live on the guardian's phone
       // (an "always" there lets the next attempt through), nothing held here.
+      const record: ChildGateAskRecord = { id, targetLabel: ask.targetLabel, persona, kind: ask.kind, scope: ask.scope ?? `kind:${ask.kind}`, since: nowS, state: wait ? 'waiting' : 'sent' };
+      noteAsk(record);
       if (!wait) {
         emit({ ...base, kind, outcome: 'asked', target });
         void transportRef.current.publish(ev, relays).catch(() => { /* the next attempt asks again */ });
@@ -290,6 +341,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       emit({ ...base, kind, outcome: 'asked', target });
       timer = setTimeout(() => {
         emit({ ...base, kind, outcome: 'expired', target });
+        answerAsk(id, 'expired');
         settle({ ok: false, error: 'expired' });
       }, askTimeoutMs);
       unsubscribe = transportRef.current.subscribe(
@@ -301,24 +353,21 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
             if (live.current.unpaired || live.current.recordKey !== at.recordKey) { settle({ ok: false, error: 'unpaired' }); return; }
             if (v.verdict === 'deny') {
               emit({ ...base, kind, outcome: 'denied', target });
+              answerAsk(id, 'denied');
               settle({ ok: false, error: 'denied' });
               return;
             }
-            // A12: forward only the template the guardian was asked about.
-            if (template && templateHash(template) !== askedHash) {
-              emit({ ...base, kind, outcome: 'denied', target });
-              settle({ ok: false, error: 'denied' });
-              return;
-            }
+            // A12: the forwarded template is the one the guardian was asked
+            // about — `template` itself, never re-read from the caller.
+            answerAsk(id, 'approved');
             void forward('approved', target).then(settle);
           });
         },
       );
-      void transportRef.current.publish(ev, relays).then((r) => {
-        if (!r.ok) { emit({ ...base, kind, outcome: 'denied', target }); settle({ ok: false, error: 'denied' }); }
-      }).catch(() => { emit({ ...base, kind, outcome: 'denied', target }); settle({ ok: false, error: 'denied' }); });
+      const unsent = () => { emit({ ...base, kind, outcome: 'denied', target }); answerAsk(id, 'denied'); settle({ ok: false, error: 'denied' }); };
+      void transportRef.current.publish(ev, relays).then((r) => { if (!r.ok) unsent(); }).catch(unsent);
     });
-  }, [emit, touchApp, askTimeoutMs]);
+  }, [emit, touchApp, askTimeoutMs, noteAsk, answerAsk]);
 
   const noteConnectedApp = useCallback((app: ConnectedChildApp) => {
     setConnectedApps(prev => {
@@ -332,8 +381,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     });
   }, []);
 
-  useEffect(() => { setConnectedApps([]); }, [recordKey]);
+  useEffect(() => { setConnectedApps([]); setAskHistory([]); }, [recordKey]);
 
-  return useMemo(() => ({ authorise, pendingAsks, noteConnectedApp, connectedApps }),
-    [authorise, pendingAsks, noteConnectedApp, connectedApps]);
+  return useMemo(() => ({ authorise, pendingAsks, askHistory, noteConnectedApp, connectedApps }),
+    [authorise, pendingAsks, askHistory, noteConnectedApp, connectedApps]);
 }

@@ -147,3 +147,17 @@ describe('ChildPermissions — child viewer', () => {
     expect(screen.getByText(/Waiting for your guardian’s rules/)).toBeInTheDocument();
   });
 });
+
+describe('A60: the child sees its own asks', () => {
+  it('lists waiting and answered asks, read-only', () => {
+    setup({ viewer: 'child', history: undefined, childAsks: [
+      { id: '1', targetLabel: 'Block Game', persona: GAMER, kind: 1, scope: 'post-public', since: NOW / 1000 - 60, state: 'waiting' },
+      { id: '2', targetLabel: 'School', persona: SKY, kind: 21236, scope: 'sign-in', since: NOW / 1000 - 120, state: 'approved' },
+    ] });
+    const list = screen.getByTestId('child-own-asks');
+    expect(within(list).getByText(/Block Game/)).toBeInTheDocument();
+    expect(within(list).getByText(/Waiting for your guardian/)).toBeInTheDocument();
+    expect(within(list).getByText(/Allowed/)).toBeInTheDocument();
+    expect(within(list).queryByRole('button')).toBeNull();
+  });
+});

@@ -58,10 +58,18 @@ export function peerTarget(hex: string): ChildRuleTarget | null {
 }
 
 /** Not tombstoned and not expired. `nowMs` is milliseconds. */
-export function isLiveRule(r: ChildRule, nowMs: number): boolean {
+export function isLiveRule(r: Pick<ChildRule, 'tombstonedAt' | 'expiresAt'>, nowMs: number): boolean {
   if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0) return false;
   if (typeof r.expiresAt === 'number' && r.expiresAt > 0 && r.expiresAt <= nowMs) return false;
   return true;
+}
+
+/** A60: removing a dependant tombstones its rules (so the removal syncs). */
+export function tombstonesForRemovedDependant(rules: ChildRule[], dependantId: string, nowMs: number): ChildRule[] {
+  const id = dependantId.toLowerCase();
+  return rules
+    .filter(r => r.dependantId.toLowerCase() === id && !(typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0))
+    .map(r => ({ ...r, tombstonedAt: nowMs, updatedAt: Math.max(nowMs, r.updatedAt + 1) }));
 }
 
 /**

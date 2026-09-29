@@ -21,6 +21,7 @@ import { isValidRelayUrl } from '../lib/relay-url';
 import { earliestChildExpiryMs } from './usePolicyPush';
 import { disconnectedAppsFromRules } from '../lib/child-permissions';
 import { replyPersonas } from '../lib/child-device-pairing';
+import { isLiveRule } from '../lib/child-rules';
 
 export const CHILD_RULES_PUBLISH_DEBOUNCE_MS = 1_000;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -56,8 +57,7 @@ export function childRulesPayloadFor(
     nowSeconds: Math.floor(nowMs / 1000),
   });
   const live = mine
-    .filter(r => !(typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0))
-    .filter(r => !(typeof r.expiresAt === 'number' && r.expiresAt > 0 && r.expiresAt <= nowMs))
+    .filter(r => isLiveRule(r, nowMs))
     .map(r => ({ ...r, dependantId: id }))
     .sort((a, b) => a.id.localeCompare(b.id));
   return {

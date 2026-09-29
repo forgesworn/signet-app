@@ -32,7 +32,7 @@
  * alongside the compiler (hooks have no RTL harness).
  */
 
-import { kindFromScope } from './child-rules';
+import { isLiveRule, kindFromScope } from './child-rules';
 import type { AutonomyStage, DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { DeviceClientSlot, SlotPolicyUpdate } from './heartwood-mgmt-types';
@@ -374,8 +374,7 @@ export function compileChildDirectPolicy(input: ChildDirectCompileInput): SlotPo
   if (input.stage !== 'full-control') {
     for (const r of input.rules) {
       if (r.decision !== 'allow') continue;
-      if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0) continue;
-      if (typeof r.expiresAt === 'number' && r.expiresAt > 0 && r.expiresAt <= nowMs) continue;
+      if (!isLiveRule(r, nowMs)) continue;
       const n = kindFromScope(r.scope);
       if (n !== null) kindRules.push({ kind: n, at: r.updatedAt ?? 0 });
       else if (!r.scope.startsWith('kind:')) for (const k of SCOPE_KINDS[r.scope] ?? []) tier1.add(k);

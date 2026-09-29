@@ -70,8 +70,11 @@ export interface DecryptingSigningBackend extends SigningBackend {
 export type StampedSigningCalls = Pick<DecryptingSigningBackend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'>;
 
 /** The result of one stamped (child-direct, forwarded-to-the-signer) call. */
-/** `persona`: the backend's `activePublicKeyHex` (which slot answered, A51). */
-export type StampedCallResult = { ok: true; persona: string } | { ok: false; persona: string; error: unknown };
+/** `persona`: the backend's `activePublicKeyHex` (which slot answered, A51);
+ *  `createdAt`: the stamp the request went out with (A60). */
+export type StampedCallResult =
+  | { ok: true; persona: string; createdAt: number }
+  | { ok: false; persona: string; createdAt: number; error: unknown };
 const stampedObservers = new Set<(r: StampedCallResult) => void>();
 
 /**
@@ -87,21 +90,21 @@ function notifyStamped(r: StampedCallResult): void {
   for (const l of [...stampedObservers]) { try { l(r); } catch { /* observers never break a call */ } }
 }
 
-async function observed<T>(p: Promise<T>, persona: string): Promise<T> {
-  try { const v = await p; notifyStamped({ ok: true, persona }); return v; }
-  catch (error) { notifyStamped({ ok: false, persona, error }); throw error; }
+async function observed<T>(p: Promise<T>, persona: string, createdAt: number): Promise<T> {
+  try { const v = await p; notifyStamped({ ok: true, persona, createdAt }); return v; }
+  catch (error) { notifyStamped({ ok: false, persona, createdAt, error }); throw error; }
 }
 
-/** A view of `backend` that stamps its NIP-46 requests when it can; the backend itself otherwise. */
+/** A view of `backend` that stamps its NIP-46 requests when it can; the backend itself otherwise.
+ *  Either way, observers see each call's result (with the stamp it was given). */
 export function withRequestCreatedAt(backend: DecryptingSigningBackend, createdAt: number): StampedSigningCalls {
-  const stamped = backend.stamped?.(createdAt);
-  if (!stamped) return backend;
-  if (stampedObservers.size === 0) return stamped;
+  const calls: StampedSigningCalls = backend.stamped?.(createdAt) ?? backend;
+  if (stampedObservers.size === 0) return calls;
   const persona = (backend.activePublicKeyHex || '').toLowerCase();
   return {
-    signEvent: (event) => observed(stamped.signEvent(event), persona),
-    nip44Encrypt: (peer, plaintext) => observed(stamped.nip44Encrypt(peer, plaintext), persona),
-    nip44Decrypt: (peer, ciphertext) => observed(stamped.nip44Decrypt(peer, ciphertext), persona),
+    signEvent: (event) => observed(calls.signEvent(event), persona, createdAt),
+    nip44Encrypt: (peer, plaintext) => observed(calls.nip44Encrypt(peer, plaintext), persona, createdAt),
+    nip44Decrypt: (peer, ciphertext) => observed(calls.nip44Decrypt(peer, ciphertext), persona, createdAt),
   };
 }
 

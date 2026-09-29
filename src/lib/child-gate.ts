@@ -53,6 +53,11 @@ export function childTargetsFor(template: UnsignedEvent, scope: Scope | null, ap
   return out;
 }
 
+/** NIP-42 relay AUTH. */
+const RELAY_AUTH_KIND = 22242;
+/** The app's own acts (child-bunker's CHILD_OWN_APP_ID; not imported, to keep this module pure). */
+const OWN_APP_ID = 'mysignet';
+
 const alwaysOffered = (rules: ChildRulesPayload): boolean => rules.stage !== 'full-control';
 
 /**
@@ -63,7 +68,7 @@ const alwaysOffered = (rules: ChildRulesPayload): boolean => rules.stage !== 'fu
  */
 function decideWithRules(
   rules: ChildRulesPayload,
-  q: { persona: string; scope: Scope | null; scopeKey: string; targets: ChildRuleTarget[]; nowMs: number; ceilingKind?: number },
+  q: { persona: string; scope: Scope | null; scopeKey: string; targets: ChildRuleTarget[]; nowMs: number; ceilingKind?: number; ownRelayAuth?: boolean },
 ): ChildGateVerdict {
   // Allow rules are ignored at full-control (the stage matrix wins); deny rules apply at every stage.
   const usable = rules.stage === 'full-control' ? rules.rules.filter(r => r.decision === 'deny') : rules.rules;
@@ -83,6 +88,10 @@ function decideWithRules(
       return { verdict: 'ask', reason: 'outside-ceiling', alwaysOffered: alwaysOffered(rules) };
     }
   }
+
+  // A60: relay AUTH for the app's own relays is plumbing — within the
+  // ceiling, and unless a deny rule says otherwise, it signs without asking.
+  if (q.ownRelayAuth && rule?.decision !== 'deny') return { verdict: 'sign', reason: 'stage', audit: false };
 
   if (rule) {
     return rule.decision === 'allow'
@@ -117,9 +126,10 @@ export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
   if (!rules) return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
 
   const scope = inferScope(template);
+  const ownRelayAuth = template.kind === RELAY_AUTH_KIND && !siteOrigin && normaliseAppId(appId ?? '') === OWN_APP_ID;
   return decideWithRules(rules, {
     persona, scope, scopeKey: scope ?? `kind:${template.kind}`,
-    targets: childTargetsFor(template, scope, appId, siteOrigin), nowMs, ceilingKind: template.kind,
+    targets: childTargetsFor(template, scope, appId, siteOrigin), nowMs, ceilingKind: template.kind, ownRelayAuth,
   });
 }
 

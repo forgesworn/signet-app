@@ -27,6 +27,7 @@ import { listPendingChildRevokes, loadBunkerSecret, removePendingChildRevoke } f
 import { HeartwoodMgmtClient, listClients, revokeClient, updateClientPolicy } from '../lib/heartwood-mgmt';
 import { retryPendingChildRevokes } from '../lib/child-device-pairing';
 import { runPolicyPushLocked, type PolicyPushIo, type PolicyPushResult } from '../lib/policy-push';
+import { isLiveRule } from '../lib/child-rules';
 
 export const POLICY_PUSH_DEBOUNCE_MS = 1_500;
 /** setTimeout's ceiling (~24.8 days); a later expiry re-arms on the next input change. */
@@ -47,8 +48,8 @@ export function earliestChildExpiryMs(
     for (const a of list) { const ms = a.until * 1000; if (ms > nowMs && ms < earliest) earliest = ms; }
   }
   for (const r of childRules ?? []) {
-    if (typeof r.tombstonedAt === 'number' && r.tombstonedAt > 0) continue;
-    if (typeof r.expiresAt === 'number' && r.expiresAt > nowMs && r.expiresAt < earliest) earliest = r.expiresAt;
+    if (!isLiveRule(r, nowMs)) continue;
+    if (typeof r.expiresAt === 'number' && r.expiresAt > 0 && r.expiresAt < earliest) earliest = r.expiresAt;
   }
   return Number.isFinite(earliest) ? earliest : null;
 }

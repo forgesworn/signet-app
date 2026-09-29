@@ -116,6 +116,7 @@ import { usePolicyPush } from './hooks/usePolicyPush';
 import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
 import { ChildPermissions, ChildPermissionsGuardianRoute } from './pages/ChildPermissions';
 import { blockAppRules } from './lib/child-permissions';
+import { tombstonesForRemovedDependant } from './lib/child-rules';
 import { CHILD_PERMISSIONS_COPY } from './lib/child-device-copy';
 import { submitVerdict, resolveVerdictAvailability, pushChildCeilingLocked, removeOnceEntry, type OnceEntry, type PanelVerdictAction } from './lib/policy-push';
 import { withOperatorLock } from './lib/operator-lock';
@@ -6277,6 +6278,16 @@ export function App() {
     retractions.push(...await tombstoneGrantsFor((g) => g.directoryId === depDirectoryId, true));
     bumpContactsGrantSet();
 
+    // A60: its child rules are tombstoned, so the removal reaches the rules
+    // self-rail (and nothing is left to feed the ceiling or the rail).
+    if (encryptionKey) {
+      try {
+        const dead = tombstonesForRemovedDependant(await listChildRules(dep.id, encryptionKey), dep.id, Date.now());
+        for (const r of dead) await saveChildRule(r, encryptionKey);
+        if (dead.length > 0) void reloadChildRules();
+      } catch { /* best effort — the rules of a removed dependant are inert */ }
+    }
+
     // A9: the child's own phone loses its Heartwood slot with the dependant —
     // best effort, inside the same 5 s budget (§9.4 "The whole phone").
     // A24: a revoke that fails (or cannot be tried without the operator key) is
@@ -6310,7 +6321,7 @@ export function App() {
       Promise.allSettled(retractions),
       new Promise(resolve => setTimeout(resolve, 5_000)),
     ]).catch(() => { /* non-fatal */ });
-  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet, heartwoodOperator.client, encryptionKey]);
+  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet, heartwoodOperator.client, encryptionKey, reloadChildRules]);
 
   /**
    * Phase 2F shared publish helper. Resolves the per-slot signing backend
@@ -11784,6 +11795,7 @@ export function App() {
           ceilingKinds={payload ? payload.ceilingKinds : null}
           apps={childGate.connectedApps}
           disconnectedApps={payload?.disconnectedApps ?? []}
+          childAsks={childGate.askHistory}
           paired={!childDeviceLink.unpaired}
         />
       </Layout>

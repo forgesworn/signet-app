@@ -20,6 +20,7 @@ import type { ChildRule } from '../types/child-rules';
 import type { ConnectedChildApp } from '../lib/child-activity';
 import type { AuditEntry } from '../lib/audit-fetch';
 import type { ChildAskHistoryEntry } from '../hooks/useChildAsks';
+import type { ChildGateAskRecord } from '../hooks/useChildGate';
 import { useChildActivity } from '../hooks/useChildActivity';
 import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
 import { childRulesPayloadFor } from '../hooks/useChildRulesPublisher';
@@ -44,6 +45,8 @@ export interface ChildPermissionsProps {
   disconnectedApps: string[];
   /** Guardian only: past asks and verdicts for this dependant. */
   history?: ChildAskHistoryEntry[];
+  /** Child only (A60): its own asks, pending and answered (read-only). */
+  childAsks?: ChildGateAskRecord[];
   paired: boolean;
   nowMs?: number;
   onRevokeRule?: (rule: ChildRule) => Promise<void>;
@@ -284,6 +287,22 @@ export function ChildPermissions(props: ChildPermissionsProps) {
                 </div>
                 <div style={small}>
                   {COPY.as(clip(nameOf(h.ask.persona), 40))} · {h.sent === false ? COPY.notSent : (COPY.verdict[h.verdict.verdict] ?? h.verdict.verdict)} · {dateText(h.ask.createdAt * 1000)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!guardian && props.childAsks && props.childAsks.length > 0 && (
+        <div className="card section" data-testid="child-own-asks">
+          <div className="section-title">{COPY.ownAsksHeading}</div>
+          {props.childAsks.slice(0, 50).map(a => (
+            <div key={a.id} style={row}>
+              <div style={grow}>
+                <div style={{ fontSize: '0.92rem' }}>{ruleTypeName(a.scope)} · {clip(a.targetLabel, 60)}</div>
+                <div style={small}>
+                  {COPY.as(clip(nameOf(a.persona), 40))} · {COPY.ownAskState[a.state] ?? a.state} · {dateText(a.since * 1000)}
                 </div>
               </div>
             </div>

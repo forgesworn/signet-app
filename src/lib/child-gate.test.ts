@@ -148,6 +148,22 @@ describe('round 2 gate rules', () => {
   });
 });
 
+describe('A60: relay AUTH (22242)', () => {
+  const auth = { kind: 22242, pubkey: P1, created_at: 1, tags: [['relay', 'wss://r.example'], ['challenge', 'x']], content: '' } as UnsignedEvent;
+  const withAuth = payload({ ceilingKinds: [...payload().ceilingKinds, 22242] });
+  it('auto-signs for the app itself (its own relays)', () => {
+    expect(run(withAuth, 'sign-in', { template: auth, appId: 'mysignet' })).toEqual({ verdict: 'sign', reason: 'stage', audit: false });
+  });
+  it('any other app — or a site signing in — asks', () => {
+    expect(run(withAuth, 'sign-in', { template: auth }).verdict).toBe('ask');
+    expect(run(withAuth, 'sign-in', { template: auth, appId: 'mysignet', siteOrigin: 'https://a.example' }).verdict).toBe('ask');
+  });
+  it('still bounded by the ceiling, and fails closed with no rules', () => {
+    expect(run(payload(), 'sign-in', { template: auth, appId: 'mysignet' }).verdict).toBe('ask');
+    expect(run(null, 'sign-in', { template: auth, appId: 'mysignet' }).verdict).toBe('ask');
+  });
+});
+
 describe('decideChildCrypto', () => {
   const crypto = (rules: ChildRulesPayload | null, over = {}) =>
     decideChildCrypto({ rules, persona: P1, appId: APP, method: 'nip44_encrypt', peer: PEER, nowMs: NOW, rateState: FRESH, ...over });
