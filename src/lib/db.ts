@@ -6,7 +6,7 @@ import type { SignetIdentity, Contact, ChildSettings, AppPreferences, IdentityDo
 import { TRUSTED_APP_PAIRING_CAP, COMPANION_GRANT_CAP } from '../types';
 import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
-import type { AppGrantV2 } from '../types';
+import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
@@ -22,7 +22,7 @@ import { privateVaultQueue } from './private-vault-queue';
 export { encryptSecret, decryptSecret } from './crypto-store';
 
 const DB_NAME = 'my-signet';
-const DB_VERSION = 25;
+const DB_VERSION = 26;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -312,6 +312,13 @@ function getDB(): Promise<IDBPDatabase> {
         }
         if (oldVersion < 25 && !db.objectStoreNames.contains('privateVaultState')) {
           db.createObjectStore('privateVaultState', { keyPath: 'id' });
+        }
+        // Version 26: childRules — guardian rules for a dependant's own phone
+        // (child-direct Heartwood pairing). Body encrypted; id / dependantId /
+        // updatedAt stay clear so the by-dependant index works locked.
+        if (oldVersion < 26 && !db.objectStoreNames.contains('childRules')) {
+          const rules = db.createObjectStore('childRules', { keyPath: 'id' });
+          rules.createIndex('by-dependant', 'dependantId');
         }
       },
     });
@@ -1115,6 +1122,69 @@ export async function deleteContactGrantV2(grantId: string): Promise<void> {
     const db = await getDB();
     await db.delete('contactGrantsV2', grantId);
   });
+}
+
+// --- Child rules (db v26) ---
+// Routing-clear: id, dependantId, updatedAt. Everything else is encrypted.
+
+type StoredChildRule = {
+  id: string; dependantId: string; updatedAt: number;
+  encrypted: true; encryptedData: string;
+};
+
+export async function saveChildRule(rule: ChildRule, encryptionKey: string): Promise<void> {
+  const db = await getDB();
+  const { id, dependantId, updatedAt, ...sensitive } = rule;
+  const dep = dependantId.toLowerCase();
+  const encryptedData = await encryptSecret(JSON.stringify(sensitive), encryptionKey);
+  const row: StoredChildRule = { id, dependantId: dep, updatedAt, encrypted: true, encryptedData };
+  await db.put('childRules', row);
+}
+
+async function decryptChildRule(row: unknown, encryptionKey: string): Promise<ChildRule | undefined> {
+  const r = row as StoredChildRule | undefined;
+  if (!r || r.encrypted !== true) return undefined;
+  try {
+    const b = JSON.parse(await decryptSecret(r.encryptedData, encryptionKey)) as Partial<ChildRule>;
+    if (typeof b.persona !== 'string' || typeof b.scope !== 'string' || typeof b.target !== 'string') return undefined;
+    if (b.decision !== 'allow' && b.decision !== 'deny') return undefined;
+    return {
+      id: r.id, dependantId: r.dependantId, updatedAt: r.updatedAt,
+      persona: b.persona, scope: b.scope, target: b.target as ChildRule['target'], decision: b.decision,
+      createdAt: typeof b.createdAt === 'number' ? b.createdAt : r.updatedAt,
+      ...(b.schedule ? { schedule: b.schedule } : {}),
+      ...(typeof b.label === 'string' ? { label: b.label } : {}),
+      ...(typeof b.expiresAt === 'number' ? { expiresAt: b.expiresAt } : {}),
+      ...(typeof b.tombstonedAt === 'number' ? { tombstonedAt: b.tombstonedAt } : {}),
+      ...(typeof b.lastUsedAt === 'number' ? { lastUsedAt: b.lastUsedAt } : {}),
+    };
+  } catch {
+    // Wrong key or corrupt row: a missing rule, never a thrown load.
+    return undefined;
+  }
+}
+
+/** Includes tombstoned rows (they propagate over sync). */
+export async function listChildRules(dependantId: string, encryptionKey: string): Promise<ChildRule[]> {
+  const db = await getDB();
+  const rows = await db.getAllFromIndex('childRules', 'by-dependant', dependantId.toLowerCase());
+  const rules = await Promise.all(rows.map(r => decryptChildRule(r, encryptionKey)));
+  return rules.filter((r): r is ChildRule => r !== undefined);
+}
+
+export async function listAllChildRules(encryptionKey: string): Promise<ChildRule[]> {
+  const db = await getDB();
+  const rows = await db.getAll('childRules');
+  const rules = await Promise.all(rows.map(r => decryptChildRule(r, encryptionKey)));
+  return rules.filter((r): r is ChildRule => r !== undefined);
+}
+
+/** Soft-delete: keeps the row so the tombstone reaches other devices. */
+export async function tombstoneChildRule(id: string, encryptionKey: string, nowMs: number): Promise<void> {
+  const db = await getDB();
+  const rule = await decryptChildRule(await db.get('childRules', id), encryptionKey);
+  if (!rule) return;
+  await saveChildRule({ ...rule, tombstonedAt: nowMs, updatedAt: nowMs }, encryptionKey);
 }
 
 // --- Sync decrypt cache (v21, family-bunker §11.1.10) ---
@@ -2321,6 +2391,9 @@ export async function purgeAllUserData(): Promise<void> {
   // inside the task would race the purge's own connection.
   if (db.objectStoreNames.contains('contactGrantsV2')) {
     await grantWriteQueue.run(() => db.clear('contactGrantsV2'));
+  }
+  if (db.objectStoreNames.contains('childRules')) {
+    await db.clear('childRules');
   }
 }
 

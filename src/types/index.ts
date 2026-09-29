@@ -14,6 +14,7 @@ export * from './contacts-grants-v2';
 export * from './preferences';
 export * from './paired-child';
 export * from './grants';
+export * from './child-rules';
 export * from './auth-policy';
 export * from './routing';
 export * from './companion';

@@ -103,7 +103,7 @@ async function seedGraceKey(encryptionKey: string): Promise<void> {
   let binary = '';
   combined.forEach(b => { binary += String.fromCharCode(b); });
   const { openDB } = await import('idb');
-  const raw = await openDB('my-signet', 25, {
+  const raw = await openDB('my-signet', 26, {
     upgrade(d) {
       if (!d.objectStoreNames.contains('graceKey')) d.createObjectStore('graceKey', { keyPath: 'id' });
     },
