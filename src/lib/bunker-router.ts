@@ -437,8 +437,19 @@ export function resolveNpBunkerBackend(
   primary: BunkerSigningBackend | null,
   router: BunkerBackendRouter | null,
   npPubkeyHex: string | undefined | null,
+  opts?: SlotResolveOptions,
 ): DecryptingSigningBackend | null {
-  return resolveSlotBunkerBackend(primary, router, npPubkeyHex);
+  return resolveSlotBunkerBackend(primary, router, npPubkeyHex, opts);
+}
+
+export interface SlotResolveOptions {
+  /**
+   * Slot pubkeys that must never be addressed on this install (A26: the
+   * dormant real-identity slot of a child paired straight to the Heartwood).
+   * A withheld slot resolves to `null` BEFORE the router is consulted, so no
+   * route is ever minted for it.
+   */
+  withheld?: readonly string[];
 }
 
 /**
@@ -462,9 +473,11 @@ export function resolveNpBunkerBackend(
  * - slot pubkey unknown (an nsec-imported / NIP-07 identity and a paired-child
  *   stub all have an empty persona pubkey) → `null`. Never the primary: on a
  *   family bunker that is the master.
- * - primary bound to the slot itself (legacy NP-only `bunker://`; paired-child,
- *   where the identity IS the dependant the guardian phone serves) → the
- *   primary.
+ * - slot listed in `opts.withheld` → `null`, and the router is never asked.
+ * - primary bound to the slot itself (legacy NP-only `bunker://`; a legacy
+ *   phone-paired child, where the guardian phone serves the dependant pubkey;
+ *   a child paired straight to the Heartwood, where the primary is the bound
+ *   PERSONA, not the dependant's dormant real-identity slot) → the primary.
  * - primary bound to some OTHER pubkey → the router's route for that slot;
  *   `null` when there is no usable router (capabilities probe pending or
  *   failed). Never the master.
@@ -473,6 +486,7 @@ export function resolveSlotBunkerBackend(
   primary: BunkerSigningBackend | null,
   router: BunkerBackendRouter | null,
   slotPubkeyHex: string | undefined | null,
+  opts?: SlotResolveOptions,
 ): DecryptingSigningBackend | null {
   if (!primary) return null;
   const primaryPk = (primary.activePublicKeyHex || '').trim().toLowerCase();
@@ -485,6 +499,7 @@ export function resolveSlotBunkerBackend(
   // so collapsing an unknown slot onto it would hand out exactly the key this
   // resolver exists to withhold.
   if (!slot) return null;
+  if (opts?.withheld?.some(w => w.trim().toLowerCase() === slot)) return null;
   if (primaryPk === slot) return primary;
   return router?.backendFor(slot) ?? null;
 }

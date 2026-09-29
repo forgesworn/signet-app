@@ -42,6 +42,8 @@ export interface UseChildDeviceLinkOpts {
   onRecordUpdated(r: PairedChildRecord): Promise<void>;
   /** Non-dormant personas from the persona inventory (bound persona included or not). */
   inventoryPersonas?: { pubkey: string; name: string }[];
+  /** A26: slots never addressed on this install (the dormant real identity). */
+  withheldSlots?: string[];
   transport?: ChildLinkTransport;
 }
 
@@ -118,15 +120,17 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   }, [recordKey]);
 
   const invKey = (opts.inventoryPersonas ?? []).map(p => `${p.pubkey}:${p.name}`).join(',');
+  const withheldKey = (opts.withheldSlots ?? []).map(w => w.toLowerCase()).join(',');
   const candidates = useMemo(() => {
     if (!direct) return [];
     const out = new Map<string, string>();
     for (const p of direct.personas ?? []) if (HEX64.test(p.pubkey)) out.set(p.pubkey, p.name);
     for (const p of opts.inventoryPersonas ?? []) if (HEX64.test(p.pubkey)) out.set(p.pubkey, p.name);
     if (bound && !out.has(bound)) out.set(bound, direct.dependantName);
+    for (const w of withheldKey ? withheldKey.split(',') : []) if (w !== bound) out.delete(w);
     return [...out].map(([pubkey, name]) => ({ pubkey, name }));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on content, not identity
-  }, [recordKey, bound, invKey, direct?.personas]);
+  }, [recordKey, bound, invKey, direct?.personas, withheldKey]);
 
   const setApproval = useCallback((persona: string, state: Approval) => {
     const next = { ...approvalsRef.current, [persona]: state };

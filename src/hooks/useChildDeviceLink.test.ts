@@ -178,6 +178,18 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     expect(stale.calls).toHaveLength(0);
   });
 
+  it('A26: a withheld (dormant) real identity is never asked for, even if the pairing reply listed it', async () => {
+    const { t } = fakeTransport();
+    const fr = fakeRouter({});
+    const { result } = renderHook(() => useChildDeviceLink({
+      record: record({ personas: [{ pubkey: PERSONA, name: 'Ally', role: 'persona' }, { pubkey: NP, name: 'Alice', role: 'natural-person' }, { pubkey: EXTRA, name: 'Gamer', role: 'extra' }] }),
+      encryptionKey: KEY, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated: async () => {},
+    }));
+    await waitFor(() => expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved'));
+    expect(result.current.personas.some(p => p.pubkey === NP)).toBe(false);
+    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+  });
+
   it('waits for the router before asking', async () => {
     const { t } = fakeTransport();
     const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, transport: t, onRecordUpdated: async () => {} }));
