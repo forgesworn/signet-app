@@ -42,6 +42,13 @@ function observeRefusals(job: PrivateVaultJob, note: (err: unknown) => void): Pr
 }
 
 /**
+ * Longest a `paused` hold is honoured. A sign-in normally settles within
+ * seconds; this only stops a request that lingers unanswered from starving
+ * backups for the rest of the unlock.
+ */
+export const PRIVATE_VAULT_PAUSE_CAP_MS = 5 * 60_000;
+
+/**
  * One cycle at a time; mutations coalesce, offline failures retry without new
  * edits. A signer REFUSAL stops automatic retries for the unlock instead
  * (`needsApproval`); changing `approveToken` runs the jobs once more.
@@ -56,6 +63,13 @@ export function usePrivateVaults(options: {
   changeToken: string;
   /** Bump to re-run once after `needsApproval` (the user is at the device). */
   approveToken?: number;
+  /**
+   * Hold new device work while something more urgent owns the signer (a
+   * sign-in). A dataset already in flight finishes; no further one starts
+   * until the hold lifts (or `PRIVATE_VAULT_PAUSE_CAP_MS` passes), and the
+   * cycle then runs promptly rather than sitting out a backoff armed before.
+   */
+  paused?: boolean;
   relays: { read: string[]; write: string[] };
   jobs(isCurrent: () => boolean): Promise<PrivateVaultJob[]>;
   onMerged(): void;
@@ -72,6 +86,10 @@ export function usePrivateVaults(options: {
   // `approveToken` moves.
   const stoppedSession = useRef<string | null>(null);
   const seenApproveToken = useRef(options.approveToken ?? 0);
+  const pausedSince = useRef<number | null>(null);
+  if (options.paused && pausedSince.current === null) pausedSince.current = Date.now();
+  if (!options.paused) pausedSince.current = null;
+  const isPaused = () => pausedSince.current !== null && Date.now() - pausedSince.current < PRIVATE_VAULT_PAUSE_CAP_MS;
 
   useEffect(() => {
     if (!options.sessionKey || !options.encryptionKey) stoppedSession.current = null;
@@ -85,7 +103,7 @@ export function usePrivateVaults(options: {
     setHealth(initial); opts.current.onHealth?.(initial);
     if (!options.sessionKey || !options.encryptionKey || !options.ownerPubkey || !options.supported || !options.ready) return;
     if (stopped) return;
-    let cancelled = false, running = false, dirty = false, failures = 0, refused = false;
+    let cancelled = false, running = false, dirty = false, failures = 0, refused = false, held = false;
     const noteRefusal = (err: unknown) => { if (isVaultApprovalError(err)) refused = true; };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let latest = initial;
@@ -102,7 +120,9 @@ export function usePrivateVaults(options: {
     const run = async () => {
       if (!valid()) return;
       if (running) { dirty = true; return; }
-      running = true; dirty = false;
+      // Held: the un-pause (or the cap) kicks a fresh cycle.
+      if (isPaused()) return;
+      running = true; dirty = false; held = false;
       emit({ ...latest, phase: 'running' });
       try {
         let merged = false;
@@ -112,6 +132,8 @@ export function usePrivateVaults(options: {
           // One refusal is enough: every further dataset would only queue
           // more cards on a device that has just said no.
           if (refused) break;
+          // A sign-in took the device: leave the rest for when it is done.
+          if (isPaused()) { held = true; break; }
           const result = await syncPrivateVaultDataset({ adapter: job.adapter, resolve: job.resolve,
             ownerPubkey: options.ownerPubkey!, encryptionKey: options.encryptionKey!,
             relays: opts.current.relays, allowInitialPublish: opts.current.migrationReady, isCurrent: valid, now: Math.floor(Date.now() / 1000) });
@@ -133,7 +155,8 @@ export function usePrivateVaults(options: {
           emit({ ...latest, phase: 'idle', needsApproval: true });
         } else {
           emit({ ...latest, phase: 'idle' });
-          schedule(dirty ? 1000 : Math.min(300000, 30000 * 2 ** Math.min(failures, 4)));
+          // Held part-way: no timer — the un-pause kicks the next cycle.
+          if (!held) schedule(dirty ? 1000 : Math.min(300000, 30000 * 2 ** Math.min(failures, 4)));
         }
       }
     };
@@ -150,6 +173,18 @@ export function usePrivateVaults(options: {
       window.removeEventListener('online', online);
     };
   }, [session, options.supported, options.ready, relayKey, options.ownerPubkey, options.approveToken]);
+
+  // Un-pause (or the cap running out) kicks a cycle at once, replacing any
+  // long backoff armed before the hold. Only on a real transition, so mount
+  // does not double-run.
+  const wasPaused = useRef(!!options.paused);
+  useEffect(() => {
+    const was = wasPaused.current;
+    wasPaused.current = !!options.paused;
+    if (!options.paused) { if (was) kick.current?.(); return; }
+    const cap = setTimeout(() => kick.current?.(), PRIVATE_VAULT_PAUSE_CAP_MS + 50);
+    return () => clearTimeout(cap);
+  }, [options.paused]);
 
   const lastChangeToken = useRef(options.changeToken);
   useEffect(() => {

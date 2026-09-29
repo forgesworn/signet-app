@@ -3,7 +3,8 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 const sync = vi.hoisted(() => vi.fn());
 vi.mock('../lib/private-vault-sync', () => ({ syncPrivateVaultDataset: sync }));
-import { usePrivateVaults, legacyVaultWriteAllowed } from './usePrivateVaults';
+import { usePrivateVaults, legacyVaultWriteAllowed, PRIVATE_VAULT_PAUSE_CAP_MS } from './usePrivateVaults';
+import { VaultApprovalError } from '../lib/vault-approval';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 const job = { adapter: { dataset: 'profiles' as const, snapshot: async () => '{}', merge: async () => {} },
   resolve: async () => ({} as DecryptingSigningBackend) };
@@ -46,7 +47,6 @@ it('does not apply late cycle callbacks after unmount or start work without a re
 // ── Refusal vs transport failure ─────────────────────────────────────────────
 // private-vault-sync swallows errors into a dataset state; the hook sees the
 // kind of failure through the backend/resolve it hands out.
-import { VaultApprovalError } from '../lib/vault-approval';
 
 function failingJob(error: () => Error) {
   return { adapter: job.adapter, resolve: async () => { throw error(); } };
@@ -113,5 +113,69 @@ it('a network failure keeps the timed backoff', async () => {
   expect(result.current.needsApproval).toBeFalsy();
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(sync).toHaveBeenCalledTimes(2);
+  unmount();
+});
+
+// ── Sign-in gets the device first ─────────────────────────────────────────────
+
+it('starts no job while paused, and runs promptly once the pause lifts', async () => {
+  vi.useFakeTimers();
+  sync.mockResolvedValue({ state: 'verified', canonical: true });
+  const props = { ...opts(), paused: true };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(sync).not.toHaveBeenCalled();
+  rerender({ ...props, paused: false });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(sync).toHaveBeenCalledTimes(1);
+  unmount();
+});
+
+it('lets a dataset already in flight finish but starts no further one until un-paused', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: unknown) => void;
+  sync.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+    .mockResolvedValue({ state: 'verified', canonical: true });
+  const second = { ...job, adapter: { ...job.adapter, dataset: 'settings' as const } };
+  const props = { ...opts(), jobs: async () => [job, second], paused: false };
+  const { result, rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(sync).toHaveBeenCalledTimes(1);
+  rerender({ ...props, paused: true });
+  await act(async () => { finish({ state: 'verified', canonical: true }); await vi.advanceTimersByTimeAsync(10); });
+  // The in-flight one was not aborted…
+  expect(result.current.datasets['signet:vault:profiles'].state).toBe('verified');
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  // …and the second never started while held.
+  expect(sync).toHaveBeenCalledTimes(1);
+  rerender({ ...props, paused: false });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(sync.mock.calls.some(([args]) => (args as { adapter: { dataset: string } }).adapter.dataset === 'settings')).toBe(true);
+  unmount();
+});
+
+it('does not sit out a long backoff armed before the pause', async () => {
+  vi.useFakeTimers();
+  sync.mockResolvedValue({ state: 'unavailable', canonical: false });
+  const props = { ...opts(), paused: false };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(sync).toHaveBeenCalledTimes(1); // next retry armed for 60 s
+  rerender({ ...props, paused: true });
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  rerender({ ...props, paused: false });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(sync).toHaveBeenCalledTimes(2);
+  unmount();
+});
+
+it('a pause that is never lifted is honoured only up to the cap', async () => {
+  vi.useFakeTimers();
+  sync.mockResolvedValue({ state: 'verified', canonical: true });
+  const { unmount } = renderHook(() => usePrivateVaults({ ...opts(), paused: true }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_PAUSE_CAP_MS - 1000); });
+  expect(sync).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(sync).toHaveBeenCalledTimes(1);
   unmount();
 });

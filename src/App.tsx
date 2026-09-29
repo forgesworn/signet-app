@@ -5414,6 +5414,11 @@ export function App() {
       dependants.map(dependantChangeWire), credentials?.map(c => c.id), grantsForSync,
       portableSettingsValues(preferences), [...childSettingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)]),
     approveToken: privateVaultApproveToken,
+    // A sign-in gets the Heartwood first: while one is on screen or being
+    // signed, no new vault request goes to the device (its cards would queue
+    // ahead of, or beside, the sign-in's own). Bunker mode only — local-key
+    // vault work never touches a device.
+    paused: preferences.signingMode === 'bunker' && (pendingAuthRequest !== null || authApprovalInFlightKey !== null),
     relays: syncRelays,
     jobs: isCurrent => privateVaultJobs({ identity: identity!, encryptionKey: encryptionKey!,
       deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent }),
