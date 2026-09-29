@@ -110,6 +110,8 @@ export const CHILD_SIDE_COPY = {
   transportKeysUnreadable: 'Your app connections could not be read on this phone, so apps cannot connect right now. Lock and unlock to try again.',
   /** A41: `?action=add-dependant` on a child's phone. */
   addDependantRefused: "This phone belongs to a child's account, so it cannot add someone to a family. Ask your guardian to do it on their phone.",
+  /** A42: guardian-managed acts refused on a child's phone. */
+  guardianManages: 'Your guardian looks after this for you, on their phone.',
   /** A40: nostrconnect:// on a direct child. */
   connectNotServed: 'This identity cannot connect apps on this phone right now. Check your Heartwood is connected, then try again.',
   approvals: {

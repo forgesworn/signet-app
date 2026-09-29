@@ -5581,7 +5581,9 @@ export function App() {
     // timeout / reject). Without this the relay would keep the kind-0
     // forever after local wipe, leaving the user's public profile online
     // with no way for them to reach it.
-    if (identity) {
+    // A42: a direct child signs nothing here — its slots live on the family
+    // Heartwood behind the gate, and the guardian manages their profiles.
+    if (identity && !childDirect) {
       const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
       const retractions: Array<Promise<unknown>> = [];
 
@@ -5647,7 +5649,7 @@ export function App() {
     clearAuthData();
     setEncryptionKey(null);
     window.location.reload();
-  }, [requestFreshAuth, identity, dependants, preferences.relayUrl, bunkerRouter, tombstoneGrantsFor]);
+  }, [requestFreshAuth, identity, dependants, preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, childDirect]);
 
   const handleConnectSigner = useCallback(async (bunkerUri: string) => {
     if (!encryptionKey) return;
@@ -6271,6 +6273,8 @@ export function App() {
     opts?: { displayNameOverride?: string },
   ): Promise<{ ok: boolean; message?: string }> => {
     if (!identity) return { ok: false, message: 'No identity loaded.' };
+    // A42: never from a direct child's phone.
+    if (childDirect) return { ok: false, message: CHILD_SIDE_COPY.guardianManages };
     const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
 
 	    // Resolve the slot config + state + signing key.
@@ -6410,7 +6414,7 @@ export function App() {
       await setPersonaPublicProfile(slotTarget, config, newState);
     }
     return { ok: true };
-	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState]);
+	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect]);
 
   /**
    * Phase 2F shared retract helper. Mirror of `publishPersonaProfile`:
@@ -6429,6 +6433,7 @@ export function App() {
     depPubkey: string | undefined,
   ): Promise<void> => {
     if (!identity) return;
+    if (childDirect) return; // A42
     let slot:
       | { publicKey: string; privateKey: string; publicProfile?: import('./types').PersonaPublicProfile }
       | undefined;
@@ -6478,7 +6483,7 @@ export function App() {
     } else {
       await clearPersonaPublicProfile(slotTarget);
     }
-  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter]);
+  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter, childDirect]);
 
   const handleRetryConnect = useCallback(async () => {
     if (!encryptionKey) return;
@@ -10143,6 +10148,8 @@ export function App() {
           } catch { /* §6.10 best-effort */ }
         }}
         onDeletePersona={async (pubkey) => {
+          // A42: a child's personas are the guardian's to remove.
+          if (childDirect) throw new Error(CHILD_SIDE_COPY.guardianManages);
           // §9 Q8: 5s race budget for retract-before-purge, then hard-delete.
           // Resolve the extra to check for a published profile we should
           // try to retract first.
@@ -11854,6 +11861,8 @@ export function App() {
     plaintext?: Uint8Array;
     requireExisting: boolean;
   }): Promise<string | null> => {
+    // A42: a direct child publishes no avatar pointer (guardian-managed).
+    if (childDirect) return null;
     const key = encryptionKey || await requestAuth();
     if (!key) throw new Error('Authentication required');
 
@@ -12002,7 +12011,8 @@ export function App() {
     const ownedStop = !!slot.privateKey;
     const stopBackend: DecryptingSigningBackend | null = ownedStop
       ? new LocalSigningBackend(slot.privateKey)
-      : (bunkerRouter?.backendFor(slot.publicKey) ?? null);
+      // A42: never an ungated router route on a direct child.
+      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
     if (stopBackend) {
       try {
         await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
