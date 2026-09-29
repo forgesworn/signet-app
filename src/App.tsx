@@ -280,7 +280,7 @@ import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childOwnActsBackend, escalationsAvailable, gatedSigningBackend, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate } from './hooks/useChildGate';
@@ -7519,12 +7519,15 @@ export function App() {
       const origin = request.origin;
       let siteLabel = urlAuthSiteName;
       if (!siteLabel) { try { siteLabel = new URL(origin).hostname; } catch { siteLabel = origin.slice(0, 64); } }
-      const now = Math.floor(Date.now() / 1000);
-      childGateRef.current.noteConnectedApp({ appId: origin, kind: 'site', label: siteLabel, url: origin, persona, firstSeen: now, lastUsed: now });
-      selectedBackend = gatedSigningBackend(inner, (req) => childGateRef.current.authorise({
-        persona, appId: 'mysignet', appLabel: siteLabel, siteOrigin: origin, method: req.method,
-        ...(req.template ? { template: req.template } : {}), ...(req.peer ? { peer: req.peer } : {}),
-      }));
+      const label = siteLabel;
+      selectedBackend = childSignInBackend({
+        inner, origin, siteLabel: label,
+        authorise: (req) => childGateRef.current.authorise(req),
+        touch: (appId) => {
+          const now = Math.floor(Date.now() / 1000);
+          childGateRef.current.noteConnectedApp({ appId, kind: 'site', label, url: origin, persona, firstSeen: now, lastUsed: now });
+        },
+      });
     }
 
     try {
@@ -7622,10 +7625,12 @@ export function App() {
         // Pubkey of a transient serving route this approval installed, so a
         // delivery lost to a Deny can tear it down again.
         let installedRouteToken: number | null = null;
-        const remoteBunkerUri = await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+        // A44: a direct child hands no bunker (nothing would serve it).
+        const remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         // Denied/withdrawn while signing: arm nothing, deliver nothing.
         if (!authDeliveryStillOpen(request)) return;
-        if (remoteBunkerUri) {
+        const handoff = signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: bunkerServerEnabled });
+        if (handoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
           // signer — no dependence on this app (a phone) staying open, which is
@@ -7633,8 +7638,8 @@ export function App() {
           // because the bunker gates every signature with a per-sign approval on
           // the device: the consumer can request a signature but cannot produce
           // one without the user physically approving it on the bunker.
-          bunkerUri = remoteBunkerUri;
-        } else if (bunkerServerEnabled) {
+          bunkerUri = handoff.uri;
+        } else if (handoff.kind === 'in-page') {
           // A handoff must point to a live listener for the approved persona.
           const routeBackend = requireNostrConnectRouteBackend(selectedBackend);
           tempBackendRetainedForRoute = tempBackend === routeBackend;
@@ -7842,8 +7847,10 @@ export function App() {
         // Absent that, the consumer gets the plain auth-only EphemeralSigner
         // callback, same as before redirect-bunker shipped.
         let bunkerUri: string | undefined;
-        const remoteBunkerUri = await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
-        if (remoteBunkerUri) {
+        // A44: never on a direct child.
+        const remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+        const sameTabHandoff = signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: false });
+        if (sameTabHandoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
           // signer instead of through this app's NIP-46 server. Safe because the

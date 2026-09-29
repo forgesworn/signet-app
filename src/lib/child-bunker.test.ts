@@ -5,7 +5,7 @@ import type { SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, escalationsAvailable, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -137,5 +137,38 @@ describe('A41: guardian-only surfaces are off on every paired-child install', ()
     expect(addDependantRequestAllowed('bunker')).toBe(true);
     expect(addDependantRequestAllowed('local')).toBe(true);
     expect(addDependantRequestAllowed(undefined)).toBe(true);
+  });
+});
+
+describe('A44: sign-in bunker handoff', () => {
+  it('a direct child never hands the site a bunkerUri — nothing serves it', () => {
+    expect(signInBunkerHandoff({ childDirect: true, remoteBunkerUri: 'bunker://x', inPageServer: true })).toEqual({ kind: 'none' });
+    expect(signInBunkerHandoff({ childDirect: true, inPageServer: true })).toEqual({ kind: 'none' });
+  });
+  it('elsewhere: the remote bunker first, then the in-page server, else none', () => {
+    expect(signInBunkerHandoff({ childDirect: false, remoteBunkerUri: 'bunker://x', inPageServer: true })).toEqual({ kind: 'remote', uri: 'bunker://x' });
+    expect(signInBunkerHandoff({ childDirect: false, inPageServer: true })).toEqual({ kind: 'in-page' });
+    expect(signInBunkerHandoff({ childDirect: false, inPageServer: false })).toEqual({ kind: 'none' });
+  });
+});
+
+describe('A45: sign-in on a direct child', () => {
+  it('gates as the site and touches the site:<origin> connected-app entry on each forwarded sign', async () => {
+    const sk = generateSecretKey();
+    const inner = new LocalSigningBackend(bytesToHex(sk));
+    const touched: string[] = [];
+    const authorise = vi.fn(async (req: { template?: import('signet-protocol').UnsignedEvent }) =>
+      ({ ok: true as const, requestCreatedAt: 5, template: { ...req.template!, pubkey: inner.activePublicKeyHex } }));
+    const backend = childSignInBackend({
+      inner, origin: 'https://school.example', siteLabel: 'School', authorise,
+      touch: (appId) => touched.push(appId),
+    });
+    expect(touched).toEqual(['site:https://school.example']);
+    await backend.signEvent({ kind: 21236, created_at: 1, tags: [], content: '', pubkey: '' });
+    expect(authorise).toHaveBeenCalledWith(expect.objectContaining({ siteOrigin: 'https://school.example', appLabel: 'School', persona: inner.activePublicKeyHex }));
+    expect(touched).toEqual(['site:https://school.example', 'site:https://school.example']);
+    const refused = childSignInBackend({ inner, origin: 'https://x.example', siteLabel: 'X', authorise: async () => ({ ok: false, error: 'denied' }), touch: (a) => touched.push(a) });
+    await expect(refused.signEvent({ kind: 21236, created_at: 1, tags: [], content: '', pubkey: '' })).rejects.toBeInstanceOf(ChildGateRefusedError);
+    expect(touched.filter(a => a === 'site:https://x.example')).toHaveLength(1);
   });
 });

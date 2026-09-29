@@ -103,6 +103,55 @@ export function addDependantRequestAllowed(signingMode: Mode): boolean {
   return signingMode !== 'paired-child';
 }
 
+/**
+ * A44: the bunker handed to a signing-in site. A direct child hands none —
+ * its NIP-46 server serves only the gated per-persona transport routes, so a
+ * `bunker://` pointing at the persona or an in-page pairing would reach
+ * nothing (or, worse, an ungated path).
+ */
+export function signInBunkerHandoff(input: {
+  childDirect: boolean;
+  remoteBunkerUri?: string;
+  inPageServer: boolean;
+}): { kind: 'remote'; uri: string } | { kind: 'in-page' } | { kind: 'none' } {
+  if (input.childDirect) return { kind: 'none' };
+  if (input.remoteBunkerUri) return { kind: 'remote', uri: input.remoteBunkerUri };
+  return input.inPageServer ? { kind: 'in-page' } : { kind: 'none' };
+}
+
+/** The connected-app id a signed-in site is listed under (A45). */
+export function childSiteAppId(origin: string): string {
+  return `site:${origin}`;
+}
+
+/**
+ * Sign in with Signet on a direct child (spec §8.1): the gate decides as the
+ * site (`siteOrigin`, appId `mysignet`), and the site's own connected-app
+ * entry (`site:<origin>`) is touched when the request starts and again on
+ * every forwarded request (A45).
+ */
+export function childSignInBackend(input: {
+  inner: DecryptingSigningBackend;
+  origin: string;
+  siteLabel: string;
+  authorise: (req: { persona: string; appId: string; appLabel: string; siteOrigin: string; method: ChildGateMethod; template?: UnsignedEvent; peer?: string }) => Promise<ChildGateOutcome>;
+  touch: (appId: string) => void;
+}): DecryptingSigningBackend {
+  const inner = ungatedInner(input.inner);
+  const persona = inner.activePublicKeyHex;
+  const appId = childSiteAppId(input.origin);
+  const touch = () => { try { input.touch(appId); } catch { /* bookkeeping only */ } };
+  touch();
+  return gatedSigningBackend(inner, async (req) => {
+    const outcome = await input.authorise({
+      persona, appId: CHILD_OWN_APP_ID, appLabel: input.siteLabel, siteOrigin: input.origin, method: req.method,
+      ...(req.template ? { template: req.template } : {}), ...(req.peer ? { peer: req.peer } : {}),
+    });
+    if (outcome.ok) touch();
+    return outcome;
+  });
+}
+
 export interface ChildDirectRouteInputs {
   /** Non-dormant personas, in order. */
   personas: string[];
