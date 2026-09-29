@@ -475,7 +475,7 @@ describe('useChildDevicePairing — unpair', () => {
     expect(last.bunkerEndpoint?.authorizedClientPubkey).toBeUndefined();
     expect(last.bunkerEndpoint?.publicKey).toBe('c'.repeat(64));
   });
-  it('publishes the unpaired notice (rail key → client, on the rail relay) BEFORE revoking', async () => {
+  it('A57: revokes FIRST, then publishes the unpaired notice (rail key → client, on the rail relay)', async () => {
     const railSk = generateSecretKey();
     const railPriv = bytesToHex(railSk), railPub = getPublicKey(railSk);
     const c = child();
@@ -488,7 +488,7 @@ describe('useChildDevicePairing — unpair', () => {
     mRevoke.mockImplementation(async () => { order.push('revoke'); });
     const s = setup({ clearChildDevice: async () => {} });
     await act(async () => { await s.hook.result.current.unpair(); });
-    expect(order).toEqual(['notice', 'revoke']);
+    expect(order).toEqual(['revoke', 'notice']);
     expect(relays[0]).toEqual(['wss://rail2.example']);
     expect(isUnpairedNotice(t.published[0], railPub, c.pub)).toBe(true);
   });
@@ -499,6 +499,20 @@ describe('useChildDevicePairing — unpair', () => {
     mList.mockRejectedValue(new Error('timeout'));
     const s = setup();
     await expect(act(async () => { await s.hook.result.current.unpair(); })).rejects.toThrow();
+    expect(saved).toHaveLength(0);
+  });
+  it('A57: a failed revoke publishes no notice (the phone is not told it is unpaired)', async () => {
+    const railSk = generateSecretKey();
+    const c = child();
+    dependant = { ...dependant, bunkerEndpoint: { publicKey: getPublicKey(railSk), privateKey: bytesToHex(railSk), createdAt: 1, authorizedClientPubkey: c.pub },
+      childDevice: { mode: 'heartwood-direct', slotLabel: childDirectSlotLabel(dependant.id), secretFingerprint: 'ab'.repeat(32), slotIndex: 4,
+        clientPubkey: c.pub, boundPersona: dependant.persona.publicKey, pairedAt: 1, railRelay: 'wss://rail2.example' } };
+    const before = t.published.length;
+    mRevoke.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+    mList.mockRejectedValue(new Error('timeout'));
+    const s = setup();
+    await expect(act(async () => { await s.hook.result.current.unpair(); })).rejects.toThrow();
+    expect(t.published.length).toBe(before);
     expect(saved).toHaveLength(0);
   });
 });

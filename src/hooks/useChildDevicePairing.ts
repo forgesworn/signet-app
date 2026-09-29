@@ -16,9 +16,10 @@
  *            reply on the rail.
  *   A4       any mint error (incl. the operator client's 35 s timeout) →
  *            `list_clients` reconcile, revoking a slot of ours we never confirmed.
- *   unpair() publish the `signet:child-unpaired:v1` notice (rail key → client),
- *            then operator `revoke_client`, then clear `childDevice` +
- *            `authorizedClientPubkey` (§9.4).
+ *   unpair() operator `revoke_client` (under the lock); only after it
+ *            succeeds, the `signet:child-unpaired:v1` notice (rail key →
+ *            client, best effort); then clear `childDevice` +
+ *            `authorizedClientPubkey` (§9.4, A57).
  *
  * Nothing here throws out of an effect; `unpair` rejects with copy.
  */
@@ -464,13 +465,13 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     const noticeRelay = dep.childDevice.railRelay ?? o.railRelay;
     try {
       await withOperatorLock(opc, async () => {
-        // §9.4: tell the child's phone FIRST (it rejects held asks and says
-        // "unpaired"); the revoke is the hard stop either way.
+        // A57: revoke on the Heartwood FIRST; only a successful revoke tells
+        // the child's phone (best effort). A failed revoke changes nothing.
+        await revokeChildDeviceSlot(opc, dep);
         if (HEX64.test(railPriv) && HEX64.test(client) && isValidRelayUrl(noticeRelay)) {
           try { await transport().publish(buildUnpairedNotice(railPriv, client, Math.floor(now() / 1000)), [noticeRelay]); }
           catch { /* the Heartwood's "unauthorised" still tells the phone */ }
         }
-        await revokeChildDeviceSlot(opc, dep);
       });
     } catch { throw new Error(COPY.errors.unpair); }
     const { childDevice: _cd, ...rest } = dep;
