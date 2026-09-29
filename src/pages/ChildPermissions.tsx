@@ -31,6 +31,8 @@ export interface ChildPermissionsProps {
   viewer: 'guardian' | 'child';
   childName: string;
   personas: { pubkey: string; name: string }[];
+  /** A51: the persona the phone's slot is bound to — never offered "Remove from phone" (unpair is the way). */
+  boundPersona?: string;
   /** Null on a child whose rules have not arrived yet. */
   stage: AutonomyStage | null;
   paused?: boolean;
@@ -242,7 +244,7 @@ export function ChildPermissions(props: ChildPermissionsProps) {
             rules={byPersona.get(p.pubkey.toLowerCase()) ?? []}
             guardian={guardian}
             onRevoke={props.onRevokeRule}
-            {...(guardian && props.onRemovePersona && paired ? {
+            {...(guardian && props.onRemovePersona && paired && p.pubkey.toLowerCase() !== (props.boundPersona ?? '').toLowerCase() ? {
               removal: { childName, personaName: p.name, onRemove: () => props.onRemovePersona!(p.pubkey.toLowerCase()) },
             } : {})}
           />
@@ -359,6 +361,7 @@ export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRoutePr
       viewer="guardian"
       childName={dep.displayName}
       personas={permissionPersonas(dep)}
+      {...(dep.childDevice?.boundPersona ? { boundPersona: dep.childDevice.boundPersona } : {})}
       stage={dep.autonomyStage}
       paused={dep.defaultSchedule?.paused === true}
       rules={rules}

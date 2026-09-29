@@ -9,7 +9,7 @@ import { childRuleId } from '../lib/child-rules';
 import type { ChildRule } from '../types/child-rules';
 import type { DependantIdentity } from '../types';
 import type { NostrEvent } from 'signet-protocol';
-import { useChildRulesPublisher, CHILD_RULES_PUBLISH_DEBOUNCE_MS } from './useChildRulesPublisher';
+import { childRulesPayloadFor, useChildRulesPublisher, CHILD_RULES_PUBLISH_DEBOUNCE_MS } from './useChildRulesPublisher';
 
 const railSk = generateSecretKey(), clientSk = generateSecretKey();
 const RAIL = getPublicKey(railSk), CLIENT = getPublicKey(clientSk);
@@ -46,6 +46,16 @@ describe('useChildRulesPublisher', () => {
     expect(payload?.rules).toHaveLength(1);
     expect(payload?.stage).toBe('request-approve');
     expect(payload?.ceilingKinds).toContain(22242);
+  });
+
+  it('A51: tells the phone which personas it may use (minus those removed from it)', async () => {
+    const EXTRA = 'c'.repeat(64);
+    const base = directDep();
+    const dep = { ...base, extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer' } as never],
+      childDevice: { ...base.childDevice!, removedPersonas: [EXTRA] } };
+    expect(childRulesPayloadFor(dep, [], [], 1_000)?.personas).toEqual([PERSONA]);
+    expect(childRulesPayloadFor(directDep({ extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer' } as never] }), [], [], 1_000)?.personas)
+      .toEqual([PERSONA, EXTRA]);
   });
 
   it('republishes on a rules change, not on an identical re-render', async () => {

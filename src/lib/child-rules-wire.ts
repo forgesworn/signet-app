@@ -20,7 +20,7 @@ export const CHILD_RULES_WIRE_D_TAG = 'signet:child-rules:v1';
 const KIND = 30078;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STAGES: readonly string[] = ['full-control', 'request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'];
-const MAX_RULES = 2000, MAX_DISCONNECTED = 64, MAX_ID = 200;
+const MAX_RULES = 2000, MAX_DISCONNECTED = 64, MAX_ID = 200, MAX_PERSONAS = 32;
 export const TARGET_RE = /^(?:site:https?:\/\/[^\s]{1,200}|app:[0-9a-f]{64}|app:nip55:[A-Za-z0-9._]{1,200}|app:mysignet|peer:[0-9a-f]{64}|\*)$/;
 export const SCOPE_RE = /^(?:\*|[a-z0-9:_-]{1,64})$/;
 
@@ -32,6 +32,8 @@ export interface ChildRulesPayload {
   ceilingKinds: number[];
   rules: ChildRule[];
   disconnectedApps: string[];
+  /** A51: personas the guardian allows on this phone. Absent (older payloads) ⇒ every inventory persona. */
+  personas?: string[];
   updatedAt: number;
 }
 
@@ -82,6 +84,8 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
   if (!Array.isArray(o.rules) || o.rules.length > MAX_RULES) return null;
   if (!Array.isArray(o.disconnectedApps) || o.disconnectedApps.length > MAX_DISCONNECTED
     || !o.disconnectedApps.every(a => typeof a === 'string' && a.length > 0 && a.length <= MAX_ID)) return null;
+  if (o.personas !== undefined && (!Array.isArray(o.personas) || o.personas.length > MAX_PERSONAS
+    || !o.personas.every(p => typeof p === 'string' && HEX64.test(p)))) return null;
   const rules: ChildRule[] = [];
   for (const item of o.rules) {
     const rule = parseChildRuleRecord(item);
@@ -94,6 +98,7 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
     ceilingKinds: [...(o.ceilingKinds as number[])], rules,
     disconnectedApps: [...(o.disconnectedApps as string[])], updatedAt: o.updatedAt,
   };
+  if (o.personas !== undefined) out.personas = [...new Set(o.personas as string[])];
   if (o.defaultSchedule !== undefined) {
     const s = parseScheduleValue(o.defaultSchedule);
     if (!s) return null; // a schedule we cannot read must not silently become "no schedule"

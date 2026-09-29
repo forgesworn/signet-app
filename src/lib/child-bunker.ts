@@ -107,6 +107,23 @@ export function childDirectStubIdentity(
 }
 
 /**
+ * A51: the personas this phone may use. The guardian's rules payload lists
+ * them (`personas`, minus those removed from the phone); absent — an older
+ * payload, or none yet — means every inventory persona. The bound persona is
+ * always kept: unpair, not removal, is how it goes.
+ */
+export function childAllowedPersonas<T extends { pubkey: string }>(
+  list: T[],
+  rules: { personas?: string[] } | null | undefined,
+  bound: string | null | undefined,
+): T[] {
+  if (!rules?.personas) return list;
+  const allowed = new Set(rules.personas.map(p => p.toLowerCase()));
+  const b = (bound || '').toLowerCase();
+  return list.filter(p => { const k = p.pubkey.toLowerCase(); return k === b || allowed.has(k); });
+}
+
+/**
  * The five legacy guardian-self sync rails (contacts, kens, dependants,
  * credentials, grants) decrypt as the identity they sync. On a paired child
  * that is the dependant — on a direct install it would hit the Heartwood — so

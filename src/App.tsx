@@ -286,7 +286,7 @@ import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, buildChildDirectRoutes, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, nextRequestCreatedAt } from './hooks/useChildGate';
@@ -2025,9 +2025,14 @@ export function App() {
   });
   childActivitySinkRef.current = childActivityPublisher.report;
 
+  // A51: the personas the guardian allows on this phone (rules payload `personas`).
+  const childAllowedInventory = useMemo(
+    () => childAllowedPersonas(childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey),
+    [childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey],
+  );
   // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
   const childBunkerPersonasCsv = childDirect
-    ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childLinkInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')
+    ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childAllowedInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')
     : '';
   const [childTransportKeys, setChildTransportKeys] = useState<Record<string, { publicKey: string; privateKey: string }>>({});
   // A45: a stored row that will not decrypt is surfaced, never minted over.
@@ -11735,7 +11740,17 @@ export function App() {
               const c = heartwoodOperator.client;
               const cd = dep.childDevice;
               if (!c || !c.isOpen || !cd) throw new Error('Heartwood unreachable');
+              if (persona.toLowerCase() === cd.boundPersona.toLowerCase()) throw new Error('Unpair to remove this persona');
               await withOperatorLock(c, () => mgmtRevokeClientIdentity(c, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint }, persona));
+              // A51: the phone stops offering it too — the rules payload's `personas` drops it.
+              const key = encryptionKey || await requestAuth();
+              if (!key) throw new Error('Authentication required');
+              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+              if (fresh?.childDevice) {
+                const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), persona.toLowerCase()])];
+                await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } }, key);
+                await reloadDependants();
+              }
             }}
             onOpenStage={() => {
               setPendingPersonaAdvancedTarget({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id });
@@ -11756,7 +11771,7 @@ export function App() {
         <ChildPermissions
           viewer="child"
           childName={identity.persona.displayName || identity.naturalPerson.displayName || ''}
-          personas={childLinkInventory}
+          personas={childAllowedInventory}
           stage={payload?.stage ?? null}
           paused={payload?.defaultSchedule?.paused === true}
           rules={payload?.rules ?? []}

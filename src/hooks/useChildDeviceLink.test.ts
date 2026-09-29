@@ -214,7 +214,8 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
 });
 
 describe('useChildDeviceLink — unpaired (§9.4)', () => {
-  const stamped = (fail: string | null) => ({
+  const stamped = (fail: string | null, persona: string = PERSONA) => ({
+    activePublicKeyHex: persona,
     stamped: () => ({
       signEvent: async () => { if (fail) throw fail; return {} as never; },
       nip44Encrypt: async () => 'x', nip44Decrypt: async () => 'x',
@@ -253,6 +254,28 @@ describe('useChildDeviceLink — unpaired (§9.4)', () => {
     expect(result.current.unpaired).toBe(false);
     await act(async () => { await call('unauthorised'); await call('unauthorised'); await call('unauthorised'); });
     expect(result.current.unpaired).toBe(true);
+  });
+
+  it('A51: refusals on another persona route never count — only the bound primary connection', async () => {
+    const { t } = fakeTransport();
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    const call = (persona: string) => withRequestCreatedAt(stamped('unauthorised', persona), 5).signEvent({} as never).catch(() => {});
+    await act(async () => { for (let i = 0; i < 5; i++) await call(EXTRA); });
+    expect(result.current.unpaired).toBe(false);
+    // An EXTRA refusal between bound-persona refusals neither counts nor resets.
+    await act(async () => { await call(PERSONA); await call(EXTRA); await call(PERSONA); await call(PERSONA); });
+    expect(result.current.unpaired).toBe(true);
+  });
+
+  it('A51: the ceremony skips a persona the rules payload no longer allows on this phone', async () => {
+    await saveChildRulesCache(DEP, { ...payload(100), personas: [PERSONA] }, KEY);
+    const { t } = fakeTransport();
+    const { router, calls } = fakeRouter({});
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, onRecordUpdated: async () => {}, transport: t }));
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(100));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(result.current.personas.map(p => p.pubkey)).toEqual([PERSONA]);
+    expect(calls.some(c => c.slot === EXTRA)).toBe(false);
   });
 
   it('a legacy phone pairing never listens', async () => {

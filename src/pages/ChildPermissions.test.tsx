@@ -104,6 +104,12 @@ describe('ChildPermissions — guardian', () => {
     expect(await screen.findByText("Removed from Sky's phone")).toBeInTheDocument();
   });
 
+  it('A51: the bound persona has no "Remove from phone" (unpair is the way)', () => {
+    setup({ boundPersona: SKY });
+    expect(within(screen.getByTestId(`persona-${SKY}`)).queryByRole('button', { name: "Remove from Sky's phone" })).toBeNull();
+    expect(within(screen.getByTestId(`persona-${GAMER}`)).getByRole('button', { name: "Remove from Sky's phone" })).toBeInTheDocument();
+  });
+
   it('unpairs only after the confirm', async () => {
     const p = setup();
     fireEvent.click(screen.getByRole('button', { name: 'Unpair this phone' }));

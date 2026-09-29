@@ -18,9 +18,14 @@
  *             `signet:child-unpaired:v1` notice (authored by the rail key,
  *             `p` = our client key, on the rail relay) or by the Heartwood
  *             answering "unauthorised" to UNPAIRED_STRIKES forwarded requests
- *             in a row (the firmware also says "unauthorised" for a single
- *             out-of-policy request, so one refusal is not enough). Clears the
- *             rules cache; the gate rejects every held ask.
+ *             in a row ON THE BOUND PERSONA'S PRIMARY CONNECTION (A51: another
+ *             persona's route says "unauthorised" after a persona revoke or
+ *             ceiling drift while the slot is live; the firmware also says it
+ *             for a single out-of-policy request, so one refusal is not
+ *             enough). Clears the rules cache; the gate rejects every held ask.
+ *
+ * A51: the rules payload's `personas` (when present) limits which personas
+ * the ceremony runs for; the bound persona is always kept.
  *
  * A legacy phone pairing (`mode` absent / 'phone') does nothing here.
  */
@@ -32,6 +37,7 @@ import { CHILD_RULES_WIRE_D_TAG, newerRulesPayload, openChildRulesEvent, type Ch
 import { CHILD_UNPAIRED_D_TAG, isUnpairedNotice } from '../lib/child-activity';
 import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '../lib/db';
 import { observeStampedCalls } from '../lib/signing-backend';
+import { childAllowedPersonas } from '../lib/child-bunker';
 import { subscribeEvents } from '../lib/relay-service';
 
 export const APPROVE_IDENTITY_PLAINTEXT = 'signet:approve-identity:v1';
@@ -112,18 +118,22 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   useEffect(() => {
     unpairedRef.current = false;
     setUnpaired(false);
-    if (!clientPub) return;
+    if (!clientPub || !bound) return;
     let strikes = 0;
     return observeStampedCalls((r) => {
+      if (r.persona !== bound) return; // A51: only the bound primary connection
       if (r.ok) { strikes = 0; return; }
       if (!isUnauthorised(r.error)) return;
       if (++strikes >= UNPAIRED_STRIKES) markUnpaired();
     });
-  }, [depId, clientPub, markUnpaired]);
+  }, [depId, clientPub, bound, markUnpaired]);
 
+  // A51: the ceremony waits for the cached payload, whose `personas` may exclude one.
+  const [cacheRead, setCacheRead] = useState(false);
   useEffect(() => {
     rulesRef.current = null;
     setRules(null);
+    setCacheRead(false);
     if (!depId || !clientPub || !clientPriv || !railPub || !railRelay || !encryptionKey) return;
     let cancelled = false;
     const apply = (incoming: ChildRulesPayload | null): boolean => {
@@ -134,7 +144,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
       setRules(next);
       return true;
     };
-    void loadChildRulesCache(depId, encryptionKey).then(apply).catch(() => { /* no cache ⇒ fail closed */ });
+    void loadChildRulesCache(depId, encryptionKey).then(apply).catch(() => { /* no cache ⇒ fail closed */ })
+      .finally(() => { if (!cancelled) setCacheRead(true); });
     const unsubscribe = transportRef.current.subscribe(
       [
         { kinds: [30078], authors: [railPub], '#d': [CHILD_RULES_WIRE_D_TAG], '#p': [clientPub] },
@@ -169,6 +180,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     attempted.current = new Set();
   }, [recordKey]);
 
+  const allowedKey = rules?.personas ? rules.personas.join(',') : '*';
   const invKey = (opts.inventoryPersonas ?? []).map(p => `${p.pubkey}:${p.name}`).join(',');
   const withheldKey = (opts.withheldSlots ?? []).map(w => w.toLowerCase()).join(',');
   const candidates = useMemo(() => {
@@ -178,9 +190,9 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     for (const p of opts.inventoryPersonas ?? []) if (HEX64.test(p.pubkey)) out.set(p.pubkey, p.name);
     if (bound && !out.has(bound)) out.set(bound, direct.dependantName);
     for (const w of withheldKey ? withheldKey.split(',') : []) if (w !== bound) out.delete(w);
-    return [...out].map(([pubkey, name]) => ({ pubkey, name }));
+    return childAllowedPersonas([...out].map(([pubkey, name]) => ({ pubkey, name })), rules, bound);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on content, not identity
-  }, [recordKey, bound, invKey, direct?.personas, withheldKey]);
+  }, [recordKey, bound, invKey, direct?.personas, withheldKey, allowedKey]);
 
   const setApproval = useCallback((persona: string, state: Approval) => {
     const next = { ...approvalsRef.current, [persona]: state };
@@ -216,7 +228,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const routerCurrent = !!router && !!clientPub && router.primaryClientPubkeyHex === clientPub;
 
   useEffect(() => {
-    if (!router || !bound || !routerCurrent) return;
+    if (!router || !bound || !routerCurrent || !cacheRead) return;
     for (const { pubkey } of candidates) {
       if (pubkey === bound || attempted.current.has(pubkey)) continue;
       const state = approvalsRef.current[pubkey];
@@ -224,7 +236,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
       attempted.current.add(pubkey);
       void approve(pubkey);
     }
-  }, [router, routerCurrent, bound, candidates, approve]);
+  }, [router, routerCurrent, bound, candidates, approve, cacheRead]);
 
   // A43: only a persona the ceremony itself would ask for (never a withheld
   // dormant real identity, never a pubkey this pairing does not list).

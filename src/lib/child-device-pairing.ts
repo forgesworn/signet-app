@@ -56,11 +56,14 @@ export function staticPairBlock(args: {
 /** Personas the child's phone may act as (reply `personas`, spec §4 step 4). */
 export function replyPersonas(dep: DependantIdentity): ChildPairReply['personas'] {
   const hidden = new Set((dep.hiddenOnPairedDeviceKeys ?? []).map(k => k.toLowerCase()));
+  // A51: personas removed from the phone (revoke_client_identity) — never the bound one.
+  const bound = (dep.childDevice?.boundPersona ?? '').toLowerCase();
+  const removed = new Set((dep.childDevice?.removedPersonas ?? []).map(k => k.toLowerCase()).filter(k => k !== bound));
   const out: ChildPairReply['personas'] = [];
   const seen = new Set<string>();
   const add = (pubkey: string | undefined, name: string, role: ChildPairReply['personas'][number]['role']) => {
     const p = (pubkey ?? '').toLowerCase();
-    if (!HEX64.test(p) || seen.has(p) || out.length >= 32) return;
+    if (!HEX64.test(p) || seen.has(p) || removed.has(p) || out.length >= 32) return;
     seen.add(p);
     out.push({ pubkey: p, name: name || dep.displayName, role });
   };

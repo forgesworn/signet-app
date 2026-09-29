@@ -52,6 +52,13 @@ describe('child-device-pairing', () => {
     expect(replyPersonas(d).map(p => [p.pubkey, p.role])).toEqual([[PERSONA, 'persona'], [EXTRA, 'extra']]);
   });
 
+  it('A51: reply personas drop personas removed from the phone, never the bound one', () => {
+    const base = paired();
+    const d = { ...base, extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer' } as never],
+      childDevice: { ...base.childDevice!, removedPersonas: [EXTRA, PERSONA] } };
+    expect(replyPersonas(d).map(p => p.pubkey)).toEqual([PERSONA]);
+  });
+
   it('A4 reconcile targets only our label + this client, never the old phone', () => {
     const L = 'signet:child-device:v2:0123456789abcdef';
     const ours = slot({ slotIndex: 3, label: L, currentPubkey: 'd'.repeat(64) });

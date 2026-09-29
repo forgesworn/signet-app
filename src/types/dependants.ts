@@ -237,4 +237,6 @@ export interface DependantChildDevice {
   railRelay?: string;
   /** Minted before grants had loaded: seed rules from legacy grants on the next rules load (A25). */
   seedPending?: boolean;
+  /** A51: personas removed from the phone (`revoke_client_identity`), lowercase hex. Never the bound persona. */
+  removedPersonas?: string[];
 }

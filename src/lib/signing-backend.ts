@@ -70,7 +70,8 @@ export interface DecryptingSigningBackend extends SigningBackend {
 export type StampedSigningCalls = Pick<DecryptingSigningBackend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'>;
 
 /** The result of one stamped (child-direct, forwarded-to-the-signer) call. */
-export type StampedCallResult = { ok: true } | { ok: false; error: unknown };
+/** `persona`: the backend's `activePublicKeyHex` (which slot answered, A51). */
+export type StampedCallResult = { ok: true; persona: string } | { ok: false; persona: string; error: unknown };
 const stampedObservers = new Set<(r: StampedCallResult) => void>();
 
 /**
@@ -86,9 +87,9 @@ function notifyStamped(r: StampedCallResult): void {
   for (const l of [...stampedObservers]) { try { l(r); } catch { /* observers never break a call */ } }
 }
 
-async function observed<T>(p: Promise<T>): Promise<T> {
-  try { const v = await p; notifyStamped({ ok: true }); return v; }
-  catch (error) { notifyStamped({ ok: false, error }); throw error; }
+async function observed<T>(p: Promise<T>, persona: string): Promise<T> {
+  try { const v = await p; notifyStamped({ ok: true, persona }); return v; }
+  catch (error) { notifyStamped({ ok: false, persona, error }); throw error; }
 }
 
 /** A view of `backend` that stamps its NIP-46 requests when it can; the backend itself otherwise. */
@@ -96,10 +97,11 @@ export function withRequestCreatedAt(backend: DecryptingSigningBackend, createdA
   const stamped = backend.stamped?.(createdAt);
   if (!stamped) return backend;
   if (stampedObservers.size === 0) return stamped;
+  const persona = (backend.activePublicKeyHex || '').toLowerCase();
   return {
-    signEvent: (event) => observed(stamped.signEvent(event)),
-    nip44Encrypt: (peer, plaintext) => observed(stamped.nip44Encrypt(peer, plaintext)),
-    nip44Decrypt: (peer, ciphertext) => observed(stamped.nip44Decrypt(peer, ciphertext)),
+    signEvent: (event) => observed(stamped.signEvent(event), persona),
+    nip44Encrypt: (peer, plaintext) => observed(stamped.nip44Encrypt(peer, plaintext), persona),
+    nip44Decrypt: (peer, ciphertext) => observed(stamped.nip44Decrypt(peer, ciphertext), persona),
   };
 }
 

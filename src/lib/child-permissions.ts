@@ -119,9 +119,12 @@ export function ceilingTypeNames(kinds: number[], stage: AutonomyStage): string[
 /** The child's personas a guardian manages on the phone: default persona, the real identity once active, visible extras. */
 export function permissionPersonas(dep: DependantIdentity): { pubkey: string; name: string }[] {
   const out: { pubkey: string; name: string }[] = [];
+  // A51: a persona removed from the phone is no longer managed there (never the bound one).
+  const bound = (dep.childDevice?.boundPersona ?? '').toLowerCase();
+  const removed = new Set((dep.childDevice?.removedPersonas ?? []).map(k => k.toLowerCase()).filter(k => k !== bound));
   const put = (pk: string | undefined, name: string | undefined) => {
     const p = (pk ?? '').toLowerCase();
-    if (/^[0-9a-f]{64}$/.test(p) && !out.some(x => x.pubkey === p)) out.push({ pubkey: p, name: name || dep.displayName });
+    if (/^[0-9a-f]{64}$/.test(p) && !removed.has(p) && !out.some(x => x.pubkey === p)) out.push({ pubkey: p, name: name || dep.displayName });
   };
   put(dep.persona?.publicKey, dep.persona?.displayName);
   if (isDependantNaturalPersonActive(dep)) put(dep.naturalPerson?.publicKey, dep.naturalPerson?.displayName);

@@ -39,6 +39,18 @@ describe('child rules wire', () => {
     expect(out!.disconnectedApps).toEqual(['b'.repeat(64)]);
   });
 
+  it('A51: carries the personas allowed on the phone; absent means every inventory persona', async () => {
+    const ev = await buildChildRulesEvent(payload([rule()], { personas: [PERSONA] }), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(ev, CLIENT_SK, expectOk))!.personas).toEqual([PERSONA]);
+    const bare = await buildChildRulesEvent(payload([rule()]), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(bare, CLIENT_SK, expectOk))!.personas).toBeUndefined();
+  });
+
+  it('A51: a malformed personas list is refused', async () => {
+    await expect(buildChildRulesEvent(payload([rule()], { personas: ['nope'] }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
+    await expect(buildChildRulesEvent(payload([rule()], { personas: Array(33).fill(PERSONA) }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
+  });
+
   it('drops rules of another dependant on build', async () => {
     const other = rule({ dependantId: 'e'.repeat(64) });
     const ev = await buildChildRulesEvent(payload([other, rule()]), RAIL_SK, CLIENT_PK, 1_000_000);
