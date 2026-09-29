@@ -3,7 +3,7 @@ import type { PendingApproval } from '../hooks/useBunkerServer';
 import type { PendingChildAsk } from '../hooks/useChildAsks';
 import { shortPubkey, safeAppName } from '../lib/bunker-display';
 import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
-import { CHILD_DEVICE_COPY } from '../lib/child-device-copy';
+import { CHILD_ASK_COPY, CHILD_DEVICE_COPY } from '../lib/child-device-copy';
 
 /**
  * Modal surfaced when a NIP-46 client has asked the bunker server to
@@ -142,19 +142,25 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
 
 /**
  * A dependant's own phone asking (child-direct, spec §7): the same bottom
- * sheet, one ask at a time, oldest first. After a verdict that did not go as
- * chosen (device unreachable, ceiling full…) the sheet stays on that ask with
- * the reason until the guardian closes it.
+ * sheet, ONE ask at a time, oldest first, with "N more waiting". "Later"
+ * (A37) dismisses the sheet; the asks stay in the Bunker panel's "Family
+ * asks" until they expire (the caller filters what was put off out of
+ * `asks`). After a verdict that did not go as chosen (device unreachable,
+ * ceiling full…) the sheet stays on that ask with the reason until the
+ * guardian closes it.
  */
-export function ChildAskApprovalModal({ asks, alwaysAvailableFor, onDecide }: {
+export function ChildAskApprovalModal({ asks, alwaysAvailableFor, onDecide, onLater }: {
   asks: PendingChildAsk[];
   /** False at full-control (no "Always"). */
   alwaysAvailableFor: (dependantId: string) => boolean;
   onDecide: ChildAskDecide;
+  /** A37: put off every ask now in the sheet; they stay answerable in the Bunker panel. */
+  onLater?: (askIds: string[]) => void;
 }) {
   const [held, setHeld] = useState<{ pending: PendingChildAsk; text: string } | null>(null);
   const shown = held?.pending ?? asks[0];
   if (!shown) return null;
+  const more = asks.filter(a => a.ask.id !== shown.ask.id).length;
   return (
     <div role="dialog" aria-modal="true" aria-label="Child request" style={{
       position: 'fixed', inset: 0, zIndex: 10000, background: 'var(--scrim)', display: 'flex', alignItems: 'flex-end',
@@ -168,8 +174,18 @@ export function ChildAskApprovalModal({ asks, alwaysAvailableFor, onDecide }: {
             <button className="btn btn-primary" onClick={() => setHeld(null)}>{CHILD_DEVICE_COPY.done}</button>
           </>
         ) : (
-          <ChildAskCard key={shown.ask.id} pending={shown} alwaysAvailable={alwaysAvailableFor(shown.dependantId)} onDecide={onDecide}
-            onOutcome={(r) => { const text = childAskOutcomeText(r); if (r.sent && text) setHeld({ pending: shown, text }); }} />
+          <>
+            <ChildAskCard key={shown.ask.id} pending={shown} alwaysAvailable={alwaysAvailableFor(shown.dependantId)} onDecide={onDecide}
+              onOutcome={(r) => { const text = childAskOutcomeText(r); if (r.sent && text) setHeld({ pending: shown, text }); }} />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <span data-testid="child-ask-more" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                {more > 0 ? CHILD_ASK_COPY.moreWaiting(more) : ''}
+              </span>
+              {onLater && (
+                <button type="button" className="btn btn-ghost" onClick={() => onLater(asks.map(a => a.ask.id))}>{CHILD_ASK_COPY.later}</button>
+              )}
+            </div>
+          </>
         )}
       </div>
     </div>

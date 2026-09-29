@@ -4063,6 +4063,18 @@ export function App() {
       void LocalNotifications.cancel({ notifications: toCancel.map((id) => ({ id })) }).catch(() => { /* already dismissed */ });
     }
   }, [childAsks.asks]);
+  // A37: asks the guardian put off with "Later" leave the sheet (they stay in
+  // the Bunker panel until they expire); a new ask raises the sheet again.
+  const [laterChildAskIds, setLaterChildAskIds] = useState<ReadonlySet<string>>(() => new Set());
+  const sheetChildAsks = useMemo(() => childAsks.asks.filter(a => !laterChildAskIds.has(a.ask.id)), [childAsks.asks, laterChildAskIds]);
+  const putOffChildAsks = useCallback((ids: string[]) => {
+    setLaterChildAskIds(prev => {
+      const live = new Set(childAsks.asks.map(a => a.ask.id));
+      const next = new Set([...prev].filter(id => live.has(id)));
+      for (const id of ids) next.add(id);
+      return next;
+    });
+  }, [childAsks.asks]);
   const childAskAlwaysAvailable = useCallback((depId: string) =>
     dependants.find(d => d.id.toLowerCase() === depId.toLowerCase())?.autonomyStage !== 'full-control', [dependants]);
 
@@ -9169,12 +9181,13 @@ export function App() {
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
         />
-      ) : childAsks.asks.length > 0 && !showAuthPrompt ? (
+      ) : sheetChildAsks.length > 0 && !showAuthPrompt ? (
         // A dependant's own phone asking (child-direct, spec §7).
         <ChildAskApprovalModal
-          asks={childAsks.asks}
+          asks={sheetChildAsks}
           alwaysAvailableFor={childAskAlwaysAvailable}
           onDecide={childAsks.decide}
+          onLater={putOffChildAsks}
         />
       ) : null);
 

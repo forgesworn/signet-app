@@ -8,6 +8,8 @@ import { useState } from 'react';
 import type { PendingChildAsk, ChildAskDecideReason } from '../hooks/useChildAsks';
 import { describeEventTemplate } from '../lib/nip46-server';
 import { CHILD_ASK_COPY as COPY } from '../lib/child-device-copy';
+import { shortNpub } from '../lib/signet';
+import type { ChildSignAsk } from '../lib/child-sign-asks';
 
 export type ChildAskDecide = (id: string, verdict: 'once' | 'always' | 'deny', opts?: { alwaysDeny?: boolean }) => Promise<{ sent: boolean; reason?: ChildAskDecideReason }>;
 
@@ -33,6 +35,29 @@ export function hiddenLines(p: PendingChildAsk): string[] {
   return out;
 }
 
+/**
+ * A36: what the guardian sees as the target — derived from the verified
+ * `ask.target` (site origin host / peer npub / app id), never from the
+ * child-supplied label.
+ */
+export function askTargetText(target: string): string {
+  if (target === '*') return COPY.anywhere;
+  if (target.startsWith('site:')) {
+    const origin = target.slice(5);
+    try { return new URL(origin).host || origin; } catch { return origin; }
+  }
+  if (target.startsWith('peer:')) return shortNpub(target.slice(5));
+  if (target === 'app:mysignet') return COPY.appMySignet;
+  if (target.startsWith('app:nip55:')) return target.slice(10);
+  if (target.startsWith('app:')) return COPY.appHex(`${target.slice(4, 12)}…`);
+  return target;
+}
+
+/** "sign-in to", "public posts on", … or "kind N requests on" for an unclassified kind. */
+export function askScopePhrase(a: Pick<ChildSignAsk, 'scope' | 'kind'>): string {
+  return (a.scope && COPY.scopePhrase[a.scope]) || COPY.kindPhrase(a.kind);
+}
+
 export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: Props) {
   const [busy, setBusy] = useState(false);
   const [alwaysDeny, setAlwaysDeny] = useState(false);
@@ -40,7 +65,10 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
   const a = pending.ask;
   const child = clip(pending.dependantName, 40);
   const persona = clip(pending.personaName, 40);
-  const target = clip(a.targetLabel || a.target, 60);
+  const target = clip(askTargetText(a.target), 60);
+  const label = clip(a.targetLabel ?? '', 60);
+  const showLabel = label.length > 0 && label.toLowerCase() !== target.toLowerCase();
+  const unsent = pending.unsent?.verdict;
   const heading = a.method === 'sign_event' && a.template
     ? COPY.heading(child, describeEventTemplate(a.template))
     : COPY.headingCrypto(child);
@@ -69,7 +97,8 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
       </div>
       <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
         <div>{COPY.as(persona)}</div>
-        <div>{COPY.on(target)}</div>
+        <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{COPY.on(target)}</div>
+        {showLabel && <div data-testid="child-ask-label" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{COPY.labelNote(label)}</div>}
         {a.template && a.template.content && (
           <div style={{ marginTop: 6, padding: 8, borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
             fontSize: '0.8rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflow: 'auto' }}>
@@ -86,10 +115,17 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
           {message.text}
         </div>
       )}
+      {unsent ? (
+        // A34: the answer is fixed; only the same verdict can be sent again.
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {!message && <div role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{COPY.unsentNote(COPY.choiceName[unsent])}</div>}
+          <button className="btn btn-primary" disabled={busy} onClick={() => { void act(unsent); }}>{COPY.sendAgain(COPY.choiceName[unsent])}</button>
+        </div>
+      ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <button className="btn btn-primary" disabled={busy} onClick={() => { void act('once'); }}>{COPY.allowOnce}</button>
         {alwaysAvailable && (
-          <button className="btn btn-secondary" disabled={busy} onClick={() => { void act('always'); }}>{COPY.allowAlways(target, persona)}</button>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => { void act('always'); }}>{COPY.allowAlways(askScopePhrase(a), target, persona)}</button>
         )}
         <button className="btn btn-ghost" disabled={busy} onClick={() => { void act('deny'); }} style={{ color: 'var(--danger)' }}>{COPY.deny}</button>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
@@ -97,6 +133,7 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
           {COPY.alwaysDeny}
         </label>
       </div>
+      )}
     </div>
   );
 }
