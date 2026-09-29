@@ -197,3 +197,13 @@ export async function retryPendingChildRevokes(io: PendingRevokeIo): Promise<num
   }
   return cleared;
 }
+
+/**
+ * A19: dependants the guardian's own NIP-46 server may serve (device and app
+ * routes). A phone paired straight to the Heartwood is never phone-served —
+ * its `bunkerEndpoint` is the rail key, and a route on it would let that
+ * phone's client key sign through this phone's local copy of the keys.
+ */
+export function phoneServedDependants<T extends Pick<DependantIdentity, 'childDevice'>>(dependants: readonly T[]): T[] {
+  return dependants.filter(d => d.childDevice?.mode !== 'heartwood-direct');
+}

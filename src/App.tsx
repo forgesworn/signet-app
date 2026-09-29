@@ -265,7 +265,7 @@ import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules
 import type { ChildRule } from './types/child-rules';
 import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
-import { pendingRuleSeeds } from './lib/child-device-pairing';
+import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
@@ -3290,7 +3290,8 @@ export function App() {
     // Dependant routes — only once the user is unlocked (private keys must
     // be decrypted for LocalSigningBackend construction to succeed).
     if (encryptionKey) {
-      for (const dep of dependants) {
+      // A19: a phone paired straight to the Heartwood gets no route here.
+      for (const dep of phoneServedDependants(dependants)) {
         const slots = resolveDependantRouteSlots(dep);
         const endpoint = dep.bunkerEndpoint;
         const guarded = (backend: LocalSigningBackend, routeKind: 'device' | 'app') => contactPolicySigningBackend(backend, async (peer, signer) => {

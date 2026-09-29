@@ -9,7 +9,7 @@ import { listClients, revokeClient, type HeartwoodMgmtClient } from './heartwood
 import { buildPersonaFirstDependant } from './dependant-record';
 import { mergeDependantWithLocal } from './dependants-sync';
 import {
-  childDirectPersona, clientKeyInUse, pendingRuleSeeds, retryPendingChildRevokes, replyPersonas, revokeChildDeviceSlot, unconfirmedMintSlots, usesChildDirectPairing,
+  childDirectPersona, clientKeyInUse, pendingRuleSeeds, phoneServedDependants, retryPendingChildRevokes, replyPersonas, revokeChildDeviceSlot, unconfirmedMintSlots, usesChildDirectPairing,
 } from './child-device-pairing';
 import type { RememberedGrant } from '../types/grants';
 import type { DeviceClientSlot } from './heartwood-mgmt-types';
@@ -119,5 +119,12 @@ describe('A24: retryPendingChildRevokes', () => {
   });
   it('never throws when the list cannot be read', async () => {
     expect(await retryPendingChildRevokes({ list: async () => { throw new Error('x'); }, revoke: vi.fn(), remove: vi.fn() })).toBe(0);
+  });
+});
+
+describe('A19: phoneServedDependants', () => {
+  it('drops heartwood-direct dependants, keeps phone-paired ones', () => {
+    const legacy = dep();
+    expect(phoneServedDependants([legacy, paired()])).toEqual([legacy]);
   });
 });
