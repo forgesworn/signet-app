@@ -558,7 +558,7 @@ function checkSlotRef(slot: { slotIndex: number; secretFingerprint: string }): v
  *  persona, and have the device publish the connect ACK. The reply is
  *  verified against what was asked for (policy version, addressed identity,
  *  methods, kinds, auto-approve); anything else revokes the slot just minted
- *  and throws `heartwood-mint-mismatch`. Sent once — a stale challenge
+ *  and throws `heartwood-mint-mismatch` (`heartwood-mint-mismatch-unrevoked`, with `slotIndex`, when the revoke fails or cannot be attempted). Sent once — a stale challenge
  *  propagates to the caller (see the transport notes above). */
 export async function nostrconnectV2(
   c: HeartwoodMgmtClient,
@@ -593,8 +593,13 @@ export async function nostrconnectV2(
     && isKindArray(r.allowed_kinds) && sameSet(r.allowed_kinds, req.policy.allowedKinds)
     && r.auto_approve === req.policy.autoApprove;
   if (!validSlot || fingerprint.length === 0 || !echoOk) {
+    let revoked = false;
     if (validSlot && fingerprint.length > 0) {
-      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }); } catch { /* fail closed regardless */ }
+      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }); revoked = true; } catch { /* reported below */ }
+    }
+    if (validSlot && !revoked) {
+      // The slot may exist on the device and we could not remove it: say so, with its index.
+      throw Object.assign(new Error('heartwood-mint-mismatch-unrevoked'), { slotIndex });
     }
     throw new Error('heartwood-mint-mismatch');
   }
