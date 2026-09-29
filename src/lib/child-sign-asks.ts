@@ -7,17 +7,27 @@
  */
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { getConversationKey, encrypt, decrypt } from 'nostr-tools/nip44';
-import { hexToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import type { ChildRuleTarget } from '../types/child-rules';
-import { inferScope } from './scope-inference';
+import { inferScope, type Scope } from './scope-inference';
 import { sanitizeDisplayName } from './text-sanitize';
 import { TARGET_RE, SCOPE_RE } from './child-rules-wire';
+import { childTargetsFor } from './child-gate';
 
 export interface ChildSignAsk {
   v: 1; id: string; dependantId: string; persona: string; scope: string | null; kind: number;
   method: 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
   target: ChildRuleTarget; targetLabel: string; template?: UnsignedEvent; createdAt: number; expiresAt: number;
+  /** sha256 hex of JSON [pubkey, kind, tags, content] of the FULL template (present with `template`). */
+  templateHash?: string;
+  /** True when `template.content` is a prefix of a longer content. */
+  contentTruncated?: boolean;
+  /** Length in characters of the full content. */
+  contentLength?: number;
+  /** True when trailing tags were dropped to fit the 4 KB tag budget. */
+  tagsTruncated?: boolean;
 }
 export interface ChildSignVerdict {
   v: 1; id: string; verdict: 'once' | 'always' | 'deny'; alwaysDeny?: boolean;
@@ -26,13 +36,47 @@ export interface ChildSignVerdict {
 
 export const CHILD_SIGN_ASK_TTL_S = 600;
 export const CHILD_SIGN_ASK_LIVE_LIMIT = 32;
-const MAX_CONTENT = 16384, TEMPLATE_CONTENT_MAX = 4096, MAX_TAGS = 64, MAX_TAG_ITEMS = 8, MAX_TAG_ITEM_LEN = 512;
+const MAX_CONTENT = 16384, TEMPLATE_CONTENT_MAX = 4096, TEMPLATE_TAGS_BUDGET = 4096, MAX_TAGS = 64, MAX_TAG_ITEMS = 8, MAX_TAG_ITEM_LEN = 512;
 const FUTURE_SKEW_S = 300;
 const HEX64 = /^[0-9a-f]{64}$/, HEX32 = /^[0-9a-f]{32}$/;
 const ASK_PREFIX = 'signet:child-sign-request:v1:', REPLY_PREFIX = 'signet:child-sign-reply:v1:';
 const METHODS: readonly string[] = ['sign_event', 'nip44_encrypt', 'nip44_decrypt'];
 
 const posInt = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
+
+/** Hash the child forwards against: sha256 of JSON [pubkey, kind, tags, content]. */
+export function templateHash(t: UnsignedEvent): string {
+  return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify([t.pubkey, t.kind, t.tags, t.content]))));
+}
+
+/**
+ * Fill the integrity fields from the FULL template and shrink it for display:
+ * content to 4096 chars, tags to a 4 KB serialised budget (no silent drop:
+ * `tagsTruncated`). Throws when the template does not belong to the persona.
+ */
+function prepareAsk(a: ChildSignAsk): ChildSignAsk {
+  if (!a.template) return a;
+  const t = a.template;
+  if (t.pubkey !== a.persona) throw new Error('template pubkey must equal persona');
+  if (!Array.isArray(t.tags) || typeof t.content !== 'string') throw new Error('Invalid template');
+  const kept: string[][] = [];
+  let tagsTruncated = false;
+  for (const tag of t.tags) {
+    if (!Array.isArray(tag) || !tag.every(x => typeof x === 'string')) throw new Error('Invalid template');
+    const fits = kept.length < MAX_TAGS && tag.length <= MAX_TAG_ITEMS && tag.every(x => x.length <= MAX_TAG_ITEM_LEN)
+      && JSON.stringify([...kept, tag]).length <= TEMPLATE_TAGS_BUDGET;
+    if (!fits) { tagsTruncated = true; break; }
+    kept.push([...tag]);
+  }
+  return {
+    ...a,
+    template: { ...t, tags: kept, content: t.content.slice(0, TEMPLATE_CONTENT_MAX) },
+    templateHash: templateHash(t),
+    contentTruncated: t.content.length > TEMPLATE_CONTENT_MAX,
+    contentLength: t.content.length,
+    tagsTruncated,
+  };
+}
 
 function checkTemplate(raw: unknown, persona: string): UnsignedEvent | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -45,7 +89,8 @@ function checkTemplate(raw: unknown, persona: string): UnsignedEvent | null {
     if (!Array.isArray(tag) || tag.length > MAX_TAG_ITEMS || !tag.every(x => typeof x === 'string' && x.length <= MAX_TAG_ITEM_LEN)) return null;
     tags.push([...(tag as string[])]);
   }
-  const pubkey = typeof t.pubkey === 'string' && HEX64.test(t.pubkey) ? t.pubkey : persona;
+  if (t.pubkey !== persona) return null;
+  const pubkey = persona;
   return { kind: t.kind as number, pubkey, created_at: t.created_at as number, tags, content: t.content.slice(0, TEMPLATE_CONTENT_MAX) };
 }
 
@@ -70,6 +115,12 @@ function checkAsk(raw: unknown): ChildSignAsk | null {
     const t = checkTemplate(o.template, o.persona);
     if (!t) return null;
     out.template = t;
+    if (typeof o.templateHash !== 'string' || !HEX64.test(o.templateHash)
+      || typeof o.contentTruncated !== 'boolean' || typeof o.tagsTruncated !== 'boolean'
+      || !Number.isSafeInteger(o.contentLength) || (o.contentLength as number) < t.content.length) return null;
+    if (!o.contentTruncated && o.contentLength !== t.content.length) return null;
+    out.templateHash = o.templateHash; out.contentTruncated = o.contentTruncated;
+    out.contentLength = o.contentLength as number; out.tagsTruncated = o.tagsTruncated;
   }
   return out;
 }
@@ -90,7 +141,17 @@ export function askInScope(a: ChildSignAsk, scope: { dependantId: string; person
   if (a.expiresAt <= scope.nowS || a.createdAt > scope.nowS + FUTURE_SKEW_S) return false;
   if (a.method === 'sign_event') {
     if (!a.template || a.template.kind !== a.kind) return false;
-    return inferScope(a.template) === a.scope;
+    if (a.template.pubkey !== a.persona) return false;
+    if (inferScope(a.template) !== a.scope) return false;
+    // With the whole template in hand the hash must match (a truncated one cannot be re-hashed here).
+    if (!a.contentTruncated && !a.tagsTruncated && a.templateHash !== templateHash(a.template)) return false;
+    // A site/peer target must be one the template itself yields; an app target cannot be re-derived.
+    if (!a.target.startsWith('app:')) {
+      if (a.tagsTruncated) return false;
+      const appId = '';
+      if (!childTargetsFor(a.template, a.scope as Scope | null, appId).includes(a.target)) return false;
+    }
+    return true;
   }
   // nip44 ask: no event, dm-private semantics, a peer target.
   return !a.template && a.scope === 'dm-private' && a.target.startsWith('peer:');
@@ -98,17 +159,12 @@ export function askInScope(a: ChildSignAsk, scope: { dependantId: string; person
 
 export async function buildAskEvent(a: ChildSignAsk, clientPrivateKey: string, railPubkey: string): Promise<NostrEvent> {
   if (!HEX64.test(railPubkey)) throw new Error('Invalid rail pubkey');
-  let ask = checkAsk(a);
+  const ask = checkAsk(prepareAsk(a));
   if (!ask) throw new Error('Invalid child sign ask');
   const sk = hexToBytes(clientPrivateKey);
   try {
     const ck = getConversationKey(sk, railPubkey);
-    let content = encrypt(JSON.stringify(ask), ck);
-    if (content.length > MAX_CONTENT && ask.template) {
-      // Too many tags to display: send the ask without the template body.
-      ask = { ...ask, template: { ...ask.template, tags: [] } };
-      content = encrypt(JSON.stringify(ask), ck);
-    }
+    const content = encrypt(JSON.stringify(ask), ck);
     if (content.length > MAX_CONTENT) throw new Error('too-large');
     return finalizeEvent({ kind: 30078, created_at: ask.createdAt, tags: [['d', ASK_PREFIX + ask.id], ['p', railPubkey]], content }, sk) as unknown as NostrEvent;
   } finally { sk.fill(0); }
