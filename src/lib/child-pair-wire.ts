@@ -6,6 +6,8 @@
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { getConversationKey, encrypt, decrypt } from 'nostr-tools/nip44';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { BIP39_WORDLIST } from './signet';
 import type { NostrEvent } from 'signet-protocol';
 import type { AutonomyStage } from '../types/dependants';
 import { isValidRelayUrl } from './relay-url';
@@ -23,6 +25,26 @@ const FUTURE_SKEW_S = 300;
 const REQ_PREFIX = 'signet:child-pair:v1:', REPLY_PREFIX = 'signet:child-pair-reply:v1:';
 const STAGES: readonly string[] = ['full-control', 'request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'];
 const ROLES: readonly string[] = ['persona', 'natural-person', 'extra'];
+
+const sha256Hex = (t: string): string => bytesToHex(sha256(new TextEncoder().encode(t)));
+/** Relay d-tags are hashed so the pairing code never appears in clear on a relay. */
+export const pairRequestDTag = (code: string): string => sha256Hex(REQ_PREFIX + code);
+export const pairReplyDTag = (code: string): string => sha256Hex(REPLY_PREFIX + code);
+
+/**
+ * Out-of-band check both phones display before the guardian mints: 4 words
+ * from the BIP-39 list, 11 bits each from the first 44 bits of
+ * sha256('signet:child-pair-check:v1:' + code + clientPubkey).
+ */
+export function pairCheckWords(code: string, clientPubkey: string): string[] {
+  const h = sha256(new TextEncoder().encode('signet:child-pair-check:v1:' + code + clientPubkey));
+  let bits = 0n;
+  for (let i = 0; i < 6; i++) bits = (bits << 8n) | BigInt(h[i]);
+  bits >>= 4n; // 48 -> 44 bits
+  const out: string[] = [];
+  for (let i = 3; i >= 0; i--) out.push(BIP39_WORDLIST[Number((bits >> BigInt(i * 11)) & 0x7ffn)]);
+  return out;
+}
 
 const fresh = (t: unknown, nowS: number): t is number =>
   Number.isSafeInteger(t) && (t as number) <= nowS + FUTURE_SKEW_S && (t as number) + CHILD_PAIR_TTL_S >= nowS;
@@ -88,7 +110,7 @@ export async function buildChildPairRequestEvent(req: ChildPairRequest, clientPr
   const sk = hexToBytes(clientPrivateKey);
   try {
     const content = encrypt(JSON.stringify(r), getConversationKey(sk, railPubkey));
-    return finalizeEvent({ kind: 30078, created_at: r.createdAt, tags: [['d', REQ_PREFIX + r.code], ['p', railPubkey]], content }, sk) as unknown as NostrEvent;
+    return finalizeEvent({ kind: 30078, created_at: r.createdAt, tags: [['d', pairRequestDTag(r.code)], ['p', railPubkey]], content }, sk) as unknown as NostrEvent;
   } finally { sk.fill(0); }
 }
 
@@ -107,7 +129,7 @@ export async function openChildPairRequestEvent(ev: NostrEvent, railPrivateKey: 
     if (!HEX32.test(expect.code)) return null;
     sk = hexToBytes(railPrivateKey);
     const railPub = getPublicKey(sk);
-    if (!validEnvelope(ev, REQ_PREFIX + expect.code, railPub) || !fresh(ev.created_at, expect.nowS)) return null;
+    if (!validEnvelope(ev, pairRequestDTag(expect.code), railPub) || !fresh(ev.created_at, expect.nowS)) return null;
     const req = checkRequest(JSON.parse(decrypt(ev.content, getConversationKey(sk, ev.pubkey))));
     if (!req || req.clientPubkey !== ev.pubkey || !ctEqual(req.code, expect.code)
       || req.createdAt !== ev.created_at || !fresh(req.createdAt, expect.nowS)) return null;
@@ -144,7 +166,7 @@ export async function buildChildPairReplyEvent(r: ChildPairReply, railPrivateKey
   try {
     const content = encrypt(JSON.stringify(reply), getConversationKey(sk, clientPubkey));
     return finalizeEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', REPLY_PREFIX + reply.code], ['p', clientPubkey]], content }, sk) as unknown as NostrEvent;
+      tags: [['d', pairReplyDTag(reply.code)], ['p', clientPubkey]], content }, sk) as unknown as NostrEvent;
   } finally { sk.fill(0); }
 }
 
@@ -154,7 +176,7 @@ export async function openChildPairReplyEvent(ev: NostrEvent, clientPrivateKey: 
     if (!HEX32.test(expect.code) || !HEX64.test(expect.railPubkey)) return null;
     sk = hexToBytes(clientPrivateKey);
     const clientPub = getPublicKey(sk);
-    if (ev.pubkey !== expect.railPubkey || !validEnvelope(ev, REPLY_PREFIX + expect.code, clientPub)) return null;
+    if (ev.pubkey !== expect.railPubkey || !validEnvelope(ev, pairReplyDTag(expect.code), clientPub)) return null;
     const reply = checkReply(JSON.parse(decrypt(ev.content, getConversationKey(sk, ev.pubkey))));
     if (!reply || !ctEqual(reply.code, expect.code)) return null;
     return reply;

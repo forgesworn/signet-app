@@ -4,7 +4,7 @@ import { getConversationKey, encrypt } from 'nostr-tools/nip44';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import {
   buildChildPairUri, parseChildPairUri, buildChildPairRequestEvent, openChildPairRequestEvent,
-  buildChildPairReplyEvent, openChildPairReplyEvent, newPairCode,
+  buildChildPairReplyEvent, openChildPairReplyEvent, newPairCode, pairRequestDTag, pairReplyDTag, pairCheckWords,
   type ChildPairOffer, type ChildPairRequest, type ChildPairReply,
 } from './child-pair-wire';
 
@@ -68,7 +68,7 @@ describe('request event', () => {
     const req = mkReq(child.pk, code);
     const ev = await buildChildPairRequestEvent(req, child.sk, rail.pk);
     expect(ev.kind).toBe(30078);
-    expect(ev.tags).toContainEqual(['d', `signet:child-pair:v1:${code}`]);
+    expect(ev.tags).toContainEqual(['d', pairRequestDTag(code)]);
     expect(ev.tags).toContainEqual(['p', rail.pk]);
     expect(ev.content).not.toContain('nostrconnect');
     expect(await openChildPairRequestEvent(ev, rail.sk, { code, nowS: NOW + 10 })).toEqual(req);
@@ -86,7 +86,7 @@ describe('request event', () => {
   it('inner code differing from d tag -> null', async () => {
     const child = kp(), rail = kp(), code = newPairCode(), inner = newPairCode();
     const ev = await buildChildPairRequestEvent(mkReq(child.pk, inner), child.sk, rail.pk);
-    const forged = finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', `signet:child-pair:v1:${code}`], ['p', rail.pk]], content: ev.content }, hexToBytes(child.sk));
+    const forged = finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', pairRequestDTag(code)], ['p', rail.pk]], content: ev.content }, hexToBytes(child.sk));
     expect(await openChildPairRequestEvent(forged, rail.sk, { code, nowS: NOW })).toBeNull();
   });
   it('stale or future -> null', async () => {
@@ -120,7 +120,7 @@ describe('request event', () => {
   it('garbage plaintext -> null', async () => {
     const child = kp(), rail = kp(), code = newPairCode();
     const content = encrypt('not json', getConversationKey(hexToBytes(child.sk), rail.pk));
-    const ev = finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', `signet:child-pair:v1:${code}`], ['p', rail.pk]], content }, hexToBytes(child.sk));
+    const ev = finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', pairRequestDTag(code)], ['p', rail.pk]], content }, hexToBytes(child.sk));
     expect(await openChildPairRequestEvent(ev as never, rail.sk, { code, nowS: NOW })).toBeNull();
   });
 });
@@ -133,7 +133,7 @@ describe('reply event', () => {
   it('round trips', async () => {
     const child = kp(), rail = kp(), code = newPairCode();
     const ev = await buildChildPairReplyEvent(reply(code), rail.sk, child.pk);
-    expect(ev.tags).toContainEqual(['d', `signet:child-pair-reply:v1:${code}`]);
+    expect(ev.tags).toContainEqual(['d', pairReplyDTag(code)]);
     expect(await openChildPairReplyEvent(ev, child.sk, { code, railPubkey: rail.pk })).toEqual(reply(code));
   });
   it('round trips a refusal', async () => {
@@ -159,3 +159,26 @@ describe('reply event', () => {
     await expect(buildChildPairReplyEvent(bad, rail.sk, child.pk)).rejects.toThrow();
   });
 });
+
+describe('A2 hashed d-tags', () => {
+  it('never carries the code in clear', () => {
+    const code = 'ab'.repeat(16);
+    expect(pairRequestDTag(code)).toMatch(/^[0-9a-f]{64}$/);
+    expect(pairRequestDTag(code)).not.toContain(code);
+    expect(pairReplyDTag(code)).not.toBe(pairRequestDTag(code));
+  });
+});
+
+describe('A3 pairCheckWords', () => {
+  it('is deterministic with a fixed vector', () => {
+    const w = pairCheckWords('ab'.repeat(16), 'cd'.repeat(32));
+    expect(w).toEqual(pairCheckWords('ab'.repeat(16), 'cd'.repeat(32)));
+    expect(w).toEqual(VECTOR);
+  });
+  it('changes with either input', () => {
+    const base = pairCheckWords('ab'.repeat(16), 'cd'.repeat(32));
+    expect(pairCheckWords('ac'.repeat(16), 'cd'.repeat(32))).not.toEqual(base);
+    expect(pairCheckWords('ab'.repeat(16), 'ce'.repeat(32))).not.toEqual(base);
+  });
+});
+const VECTOR: string[] = ['claw', 'planet', 'junk', 'present'];
