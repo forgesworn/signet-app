@@ -1044,6 +1044,15 @@ export function App() {
   useEffect(() => {
     if (!pendingAuthRequest) setPickerInitialError(null);
   }, [pendingAuthRequest]);
+  // ...and when a NEW request replaces the one on screen: the error belonged
+  // to the old request, and nothing else would clear it while one stays up.
+  const pickerErrorRequestKey = pendingAuthRequest ? authRequestKey(pendingAuthRequest) : null;
+  const lastPickerErrorRequestKey = useRef(pickerErrorRequestKey);
+  useEffect(() => {
+    if (lastPickerErrorRequestKey.current === pickerErrorRequestKey) return;
+    lastPickerErrorRequestKey.current = pickerErrorRequestKey;
+    setPickerInitialError(null);
+  }, [pickerErrorRequestKey]);
   // Live view of the request an in-flight approval belongs to. An approval
   // that awaited an unlock or a signer reconnect re-checks this before it
   // delivers anything, so a request denied, replaced or finished meanwhile
