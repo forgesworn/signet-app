@@ -1821,6 +1821,7 @@ export function App() {
   const pairedContactPolicy = useChildContactPolicy({
     enabled: isPairedChild && !!encryptionKey, child: preferences.activeAccountId ?? identity?.id ?? null,
     key: encryptionKey, relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+    pairingGeneration: pairedChildBumpCounter,
   });
   useChildContactPolicyPublisher({
     enabled: !isPairedChild && !!identity && !!encryptionKey,
@@ -2077,6 +2078,7 @@ export function App() {
     child: preferences.activeAccountId ?? identity?.id ?? null,
     key: encryptionKey, relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     availablePersonas: identity ? childDirectoryPersonas(identity) : [],
+    pairingGeneration: pairedChildBumpCounter,
   });
   const pairedContactReplies = useChildContactReplyInbox({
     enabled: isPairedChild && !!encryptionKey,
@@ -2085,6 +2087,7 @@ export function App() {
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     guardian: pairedChildClientKeypair?.guardianPubkey ?? null,
     personas: identity ? childDirectoryPersonas(identity) : [],
+    pairingGeneration: pairedChildBumpCounter,
   });
 
   // D4 (child): the child's own request history — the durable outbox
@@ -2098,6 +2101,7 @@ export function App() {
     guardian: pairedChildClientKeypair?.guardianPubkey ?? null,
     personas: identity ? childDirectoryPersonas(identity) : [],
     version: childAskVersion,
+    pairingGeneration: pairedChildBumpCounter,
   });
   const childContactHistory = useMemo(() => childContactRequestHistory(childContactOutbox, pairedContactReplies),
     [childContactOutbox, pairedContactReplies]);

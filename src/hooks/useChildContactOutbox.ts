@@ -10,10 +10,12 @@ import type { ChildRequestScope } from '../lib/child-contact-requests';
  * new ask is queued. Scope derivation mirrors `useChildContactReplyInbox`. */
 export function useChildContactOutbox(options: {
   enabled: boolean; child: string | null; key: string | null; guardian: string | null; personas: string[]; version: number;
+  /** Bumped on an in-session re-pair (App's `pairedChildBumpCounter`): the record's client key and endpoint change under the same child id. */
+  pairingGeneration?: number;
 }) {
-  const { enabled, child, key, guardian, version } = options;
+  const { enabled, child, key, guardian, version, pairingGeneration = 0 } = options;
   const personas = JSON.stringify([...options.personas].sort());
-  const session = JSON.stringify([enabled, child, key, guardian, personas, version]);
+  const session = JSON.stringify([enabled, child, key, guardian, personas, version, pairingGeneration]);
   const latest = useRef(session); latest.current = session;
   const [entries, setEntries] = useState<ChildContactOutboxEntry[]>([]);
   useEffect(() => {

@@ -2,13 +2,14 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { NostrEvent } from 'signet-protocol';
-const state = vi.hoisted(() => ({ relays: [] as Array<{ receive?: (event: NostrEvent) => void; disconnect: ReturnType<typeof vi.fn> }> }));
+const state = vi.hoisted(() => ({ relays: [] as Array<{ filters?: Array<{ authors?: string[] }>; receive?: (event: NostrEvent) => void; disconnect: ReturnType<typeof vi.fn> }> }));
 vi.mock('signet-protocol', async original => ({ ...await original<typeof import('signet-protocol')>(), RelayClient: class {
+  filters?: Array<{ authors?: string[] }>;
   receive?: (event: NostrEvent) => void;
   disconnect = vi.fn();
   constructor() { state.relays.push(this); }
   async connect() {}
-  subscribe(_filters: unknown, receive: (event: NostrEvent) => void) { this.receive = receive; return 'sub'; }
+  subscribe(filters: Array<{ authors?: string[] }>, receive: (event: NostrEvent) => void) { this.filters = filters; this.receive = receive; return 'sub'; }
 } }));
 vi.mock('../lib/db', () => ({ loadPairedChild: vi.fn() }));
 vi.mock('../lib/child-contact-directory-cache', () => ({ loadChildContactDirectoryCache: vi.fn(), saveChildContactDirectoryCache: vi.fn() }));
@@ -130,4 +131,21 @@ it('rebuilds after a missing relay acknowledgement instead of replaying a signed
   expect(sockets[1].send.mock.calls[0][0]).toContain('revision 2');
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+});
+it('follows an in-session re-pair: new endpoint and client key are used once the pairing generation bumps', async () => {
+  const endpoint2 = new LocalSigningBackend('06'.repeat(32)), recipient2 = new LocalSigningBackend('07'.repeat(32));
+  const pair2 = { ...pair, bunkerUri: `bunker://${endpoint2.activePublicKeyHex}?relay=wss%3A%2F%2Frelay.example`,
+    clientKeypair: { publicKey: recipient2.activePublicKeyHex, privateKey: '07'.repeat(32) } };
+  const { result, rerender, unmount } = renderHook(({ gen }) => useChildContactDirectory({ ...options, pairingGeneration: gen }), { initialProps: { gen: 0 } });
+  await waitFor(() => expect(state.relays[0]?.receive).toBeDefined());
+  expect(state.relays[0].filters?.[0].authors).toEqual([endpoint.activePublicKeyHex]);
+  vi.mocked(loadPairedChild).mockResolvedValue(pair2);
+  rerender({ gen: 1 });
+  await waitFor(() => expect(state.relays[1]?.receive).toBeDefined());
+  expect(state.relays[0].disconnect).toHaveBeenCalled();
+  expect(state.relays[1].filters?.[0].authors).toEqual([endpoint2.activePublicKeyHex]);
+  const fresh = projectChildContactDirectory({ child, guardian, recipient: recipient2.activePublicKeyHex, records: [], availablePersonas: [persona], revision: 1, now: now() });
+  await act(async () => { state.relays[1].receive!(await sealChildContactDirectory(fresh, endpoint2)); });
+  await waitFor(() => expect(result.current).toEqual(fresh));
+  unmount();
 });
