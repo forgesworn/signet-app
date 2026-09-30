@@ -49,14 +49,19 @@ export function Nip55ApprovalModal({ approval, identities, onApproveOnce, onAppr
   // the request and the list as they change.
   const [chosen, setChosen] = useState<string | null>(null);
   const app = safeLabel(approval.callerLabel) ?? safePackage(approval.callerPackage);
-  const canChoose = approval.method === 'get_public_key' && identities.length > 1;
+  // A key the app named is the only one it can be answered with: no picker.
+  const canChoose = !approval.named && approval.method === 'get_public_key' && identities.length > 1;
   // The identities can land a render after the modal does (the keys are
   // decrypted just after unlock). The key is always one of them: a request's
   // default that is not in the list (a key with no route on this phone) would
   // be approved and then refused, so it yields to the first listed key.
   const listed = (k: string | null | undefined) => (k ? identities.find(i => i.pubkey.toLowerCase() === k.toLowerCase()) : undefined);
-  const selected = listed(chosen) ?? listed(approval.pubkey) ?? identities[0];
+  // A named key is never substituted: when it is not listed, Allow is off.
+  const selected = approval.named
+    ? listed(approval.pubkey)
+    : listed(chosen) ?? listed(approval.pubkey) ?? identities[0];
   const key = selected?.pubkey ?? null;
+  const namedUnavailable = approval.named && !selected;
 
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="nip55-approval-title"
@@ -106,6 +111,14 @@ export function Nip55ApprovalModal({ approval, identities, onApproveOnce, onAppr
               <span style={{ color: 'var(--text-muted)' }}>As: </span>
               <span>{selected.label}</span>{' '}
               <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{shortNpubish(selected.pubkey)}</span>
+            </div>
+          ) : namedUnavailable && approval.pubkey ? (
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>As: </span>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{shortNpubish(approval.pubkey)}</span>
+              <div style={{ marginTop: 6, color: 'var(--text-secondary)' }}>
+                {app.slice(0, 30)} asked for this key, and it can't answer on this phone right now.
+              </div>
             </div>
           ) : null}
         </div>

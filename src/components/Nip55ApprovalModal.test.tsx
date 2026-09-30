@@ -11,7 +11,7 @@ const C = 'c'.repeat(64);
 function approval(over: Partial<PendingNip55> = {}): PendingNip55 {
   return {
     handle: 1, id: 'r1', callerPackage: 'dev.forgesworn.kithmoot', callerLabel: 'Kithmoot', method: 'get_public_key',
-    description: 'know which key you are', permissions: [], existing: false, pubkey: A, ...over,
+    description: 'know which key you are', permissions: [], existing: false, pubkey: A, named: false, ...over,
   };
 }
 
@@ -62,5 +62,27 @@ describe('Nip55ApprovalModal', () => {
     expect((screen.getAllByRole('radio') as HTMLInputElement[]).find(r => r.value === B)!.checked).toBe(true);
     fireEvent.click(screen.getByText('Allow once'));
     expect(onApproveOnce).toHaveBeenCalledWith(1, B);
+  });
+
+  it('a named key that is listed: no picker even for get_public_key, and exactly that key is approved', () => {
+    const two = [{ pubkey: A, label: 'Persona' }, { pubkey: B, label: 'Extra' }];
+    const { onApproveOnce } = setup(approval({ pubkey: B, named: true }), two);
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.getByText('Extra')).toBeTruthy();
+    fireEvent.click(screen.getByText('Allow once'));
+    expect(onApproveOnce).toHaveBeenCalledWith(1, B);
+  });
+
+  it('a named key with no route here is never substituted: Allow is off and the screen says why', () => {
+    const { onApproveOnce, onApproveAlways, onDeny } = setup(approval({ method: 'sign_event', pubkey: C, named: true }), [{ pubkey: A, label: 'Persona' }]);
+    expect(screen.queryByText('Persona')).toBeNull();
+    expect(screen.getByText(/can't answer on this phone/)).toBeTruthy();
+    expect((screen.getByText('Allow once') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText(/Allow always/) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByText('Allow once'));
+    expect(onApproveOnce).not.toHaveBeenCalled();
+    expect(onApproveAlways).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Deny'));
+    expect(onDeny).toHaveBeenCalledWith(1);
   });
 });

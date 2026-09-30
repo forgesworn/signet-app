@@ -31,6 +31,11 @@ export interface PendingNip55 {
   peer?: string;
   /** The key the request will be answered with unless the person picks another. */
   pubkey: string | null;
+  /**
+   * The app named this key (`current_user`): it is answered with exactly
+   * this key or not at all, never another the person picks or a default.
+   */
+  named: boolean;
   permissions: string[];
   /** Whether this app has been seen before. */
   existing: boolean;
@@ -163,8 +168,9 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // the keys are not decrypted yet. Hold the request and ask for the PIN.
     if (!raw.viaProvider && lockedRef.current && parsed && plan.kind === 'reject' && plan.reason === 'no-identity') {
       onNeedsUnlockRef.current?.();
-      // No key yet: the default is picked when it is shown, against the routes that exist then.
-      setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed, pubkey: null }]);
+      // A key the app named is kept; otherwise there is no key yet, and one
+      // is picked once the routes that exist after the unlock are known.
+      setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed, pubkey: parsed.currentUser ?? null }]);
       return;
     }
     switch (plan.kind) {
@@ -210,13 +216,25 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // there is nothing to judge against, and "no key" would be a false refusal.
     if (owned.length === 0) return;
     const settled: number[] = [];
+    // A held request still waiting for the person gets its key now, once:
+    // the key the app named, else the default against these routes. Fixed
+    // here, it cannot switch under the person when more keys arrive later.
+    const keyed = new Map<number, string>();
     for (const item of queue) {
       const grant = item.raw.callerPackage ? grants[item.raw.callerPackage] : undefined;
       const plan = planFor(item.parsed, item.raw.viaProvider, grant, owned, activePubkey);
       if (plan.kind === 'forward') { settled.push(item.handle); void execute(item.raw, item.parsed, plan.pubkey); }
       else if (plan.kind === 'reject') { settled.push(item.handle); void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); }
+      else if (plan.kind === 'ask' && item.pubkey === null) {
+        const key = plan.pubkey ?? defaultNip55Pubkey(owned, grant, activePubkey);
+        if (key) keyed.set(item.handle, key);
+      }
     }
-    if (settled.length) setQueue(q => q.filter(w => !settled.includes(w.handle)));
+    if (settled.length || keyed.size) {
+      setQueue(q => q
+        .filter(w => !settled.includes(w.handle))
+        .map(w => (w.pubkey === null && keyed.has(w.handle) ? { ...w, pubkey: keyed.get(w.handle)! } : w)));
+    }
   }, [locked, queue, routes, grants, activePubkey, execute, respond, planFor]);
 
   const remember = useCallback((pkg: string, grant: Nip55Grants[string]) => {
@@ -229,26 +247,39 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     return item;
   }, [queue]);
 
+  /**
+   * The key an approval may answer with, or null: one of the owner routes,
+   * and, when the app named a key, exactly that one — a signature by a key
+   * the app did not ask for is refused, never substituted.
+   */
+  const approvedKey = useCallback((item: Waiting, pubkey?: string): string | null => {
+    const key = (pubkey ?? item.pubkey)?.toLowerCase();
+    if (!key) return null;
+    if (item.parsed.currentUser && item.parsed.currentUser !== key) return null;
+    if (!routesRef.current.some(r => !r.dependantId && r.pubkey.toLowerCase() === key)) return null;
+    return key;
+  }, []);
+
   const approveOnce = useCallback((handle: number, pubkey?: string) => {
     const item = take(handle);
     if (!item) return;
-    const key = (pubkey ?? item.pubkey)?.toLowerCase();
-    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }); return; }
+    const key = approvedKey(item, pubkey);
+    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) {
       const prior = grantsRef.current[item.raw.callerPackage];
       remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? prior?.label });
     }
     void execute(item.raw, item.parsed, key);
-  }, [take, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, execute, now]);
 
   const approveAlways = useCallback((handle: number, pubkey?: string) => {
     const item = take(handle);
     if (!item) return;
-    const key = (pubkey ?? item.pubkey)?.toLowerCase();
-    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }); return; }
+    const key = approvedKey(item, pubkey);
+    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
     void execute(item.raw, item.parsed, key);
-  }, [take, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, execute, now]);
 
   const deny = useCallback((handle: number) => {
     const item = take(handle);
@@ -279,9 +310,10 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       description: describeNip55(item.parsed, describeEventTemplate),
       template: item.parsed.template,
       peer: item.parsed.peer,
-      // A request held through an unlock has no key yet: the default is one
-      // that has an owner route now, never a key that could not sign.
+      // A request held through an unlock gets its key fixed by the effect
+      // above; for the one render before that, the same default it will pick.
       pubkey: item.pubkey ?? defaultNip55Pubkey(routes.filter(r => !r.dependantId).map(r => r.pubkey), pkg ? grants[pkg] : undefined, activePubkey),
+      named: !!item.parsed.currentUser,
       permissions: item.parsed.permissions,
       existing: !!(pkg && grants[pkg]),
     };

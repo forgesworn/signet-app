@@ -3776,9 +3776,11 @@ export function App() {
     }
     for (const ep of identity.extraPersonas ?? []) if (ep.publicKey) out.push({ pubkey: ep.publicKey.toLowerCase(), label: ep.displayName });
     if (identity.professionalPersona?.publicKey) out.push({ pubkey: identity.professionalPersona.publicKey.toLowerCase(), label: identity.professionalPersona.displayName || 'Professional' });
-    const owned = new Set(bunkerRoutes.filter(r => !r.dependantId).map(r => r.pubkey.toLowerCase()));
+    // The same routes the NIP-55 server signs with (on a direct-paired child
+    // these are the personas, not the NIP-46 transport keys).
+    const owned = new Set(nip55Routes.filter(r => !r.dependantId).map(r => r.pubkey.toLowerCase()));
     return out.filter((id, i) => owned.has(id.pubkey) && out.findIndex(o => o.pubkey === id.pubkey) === i);
-  }, [identity, npActive, bunkerRoutes]);
+  }, [identity, npActive, nip55Routes]);
   const bunkerServeStatusRef = useRef(bunkerServeStatus);
   bunkerServeStatusRef.current = bunkerServeStatus;
 

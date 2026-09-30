@@ -180,6 +180,76 @@ describe('useNip55Server', () => {
     expect(result.current.pending!.pubkey).toBe(pubkey);
   });
 
+  describe('held through an unlock', () => {
+    const sk2 = generateSecretKey();
+    const pubkey2 = getPublicKey(sk2);
+    const route2: BunkerRoute = { pubkey: pubkey2, backend: new LocalSigningBackend(bytesToHex(sk2)) };
+    const hold = async (raw: ReturnType<typeof request>, opts: { routes: BunkerRoute[]; active: string | null }) => {
+      const view = renderHook(({ locked, routes }) => useNip55Server({ enabled: true, routes: locked ? [] : routes, locked, activePubkey: opts.active }),
+        { initialProps: { locked: true, routes: opts.routes } });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](raw); });
+      await waitFor(() => expect(view.result.current.waiting).toBe(1));
+      view.rerender({ locked: false, routes: opts.routes });
+      return view;
+    };
+
+    it('a sign_event naming a key shows and signs with exactly that key, not the default', async () => {
+      const { result } = await hold(request({ currentUser: pubkey2 }), { routes: [route, route2], active: pubkey });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      expect(result.current.pending!.pubkey).toBe(pubkey2);
+      expect(result.current.pending!.named).toBe(true);
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(respond.mock.calls[0][0].event!).pubkey).toBe(pubkey2);
+    });
+
+    it('approving a named request with another key is refused, and nothing is remembered', async () => {
+      const { result } = await hold(request({ currentUser: pubkey2 }), { routes: [route, route2], active: pubkey });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle, pubkey); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
+    });
+
+    it('a named key with no route after the unlock is refused, never shown', async () => {
+      const { result } = await hold(request({ type: 'nip44_encrypt', payload: 'hi', peerPubkey: pubkey, currentUser: pubkey2 }), { routes: [route], active: pubkey });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(result.current.pending).toBeNull();
+      expect(result.current.waiting).toBe(0);
+    });
+
+    it('the default is fixed once shown: more keys arriving later do not switch it', async () => {
+      const view = await hold(request({ type: 'get_public_key', payload: null }), { routes: [route2], active: pubkey });
+      await waitFor(() => expect(view.result.current.pending).not.toBeNull());
+      expect(view.result.current.pending!.pubkey).toBe(pubkey2);
+      // The active key's route arrives (Heartwood reconnects).
+      view.rerender({ locked: false, routes: [route2, route] });
+      await waitFor(() => expect(view.result.current.pending).not.toBeNull());
+      expect(view.result.current.pending!.pubkey).toBe(pubkey2);
+    });
+
+    it('allow always for a routed key still forwards silently after the unlock', async () => {
+      localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: pubkey2, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+      const { result } = await hold(request(), { routes: [route, route2], active: pubkey });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('ok');
+      expect(JSON.parse(respond.mock.calls[0][0].event!).pubkey).toBe(pubkey2);
+      expect(result.current.pending).toBeNull();
+    });
+
+    it('allow always for a key with no route asks instead, with a routed key', async () => {
+      const unrouted = getPublicKey(generateSecretKey());
+      localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: unrouted, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+      const { result } = await hold(request(), { routes: [route], active: null });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      expect(result.current.pending!.pubkey).toBe(pubkey);
+      expect(respond).not.toHaveBeenCalled();
+    });
+  });
+
   it('a key the app names that this phone does not hold is refused, never substituted', async () => {
     renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
     await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
