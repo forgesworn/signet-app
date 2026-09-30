@@ -156,6 +156,30 @@ describe('useNip55Server', () => {
     expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok' });
   });
 
+  it('a request held through an unlock defaults to a key that has a route, not an unrouted active key', async () => {
+    const otherSk = generateSecretKey();
+    const unrouted = getPublicKey(otherSk);
+    const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: unrouted }), { initialProps: { locked: true } });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null })); });
+    await waitFor(() => expect(result.current.waiting).toBe(1));
+    rerender({ locked: false });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    expect(result.current.pending!.pubkey).toBe(pubkey);
+  });
+
+  it('a held request whose remembered key has no route falls to a routed one', async () => {
+    const unrouted = getPublicKey(generateSecretKey());
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: unrouted, allowAlways: false, denyAlways: false, grantedAt: 1 } }));
+    const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: null }), { initialProps: { locked: true } });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null })); });
+    await waitFor(() => expect(result.current.waiting).toBe(1));
+    rerender({ locked: false });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    expect(result.current.pending!.pubkey).toBe(pubkey);
+  });
+
   it('a key the app names that this phone does not hold is refused, never substituted', async () => {
     renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
     await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));

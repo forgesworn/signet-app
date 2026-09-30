@@ -12,7 +12,7 @@ import type { UnsignedEvent } from 'signet-protocol';
 import { describeEventTemplate } from '../lib/nip46-server';
 import { isNativeApp, SignetNative, type Nip55Response } from '../lib/native';
 import {
-  describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
+  defaultNip55Pubkey, describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
   type NativeNip55Request, type Nip55Grant, type Nip55Grants, type Nip55Method, type Nip55Plan, type ParsedNip55,
 } from '../lib/nip55';
 import type { BunkerRoute } from './useBunkerServer';
@@ -163,7 +163,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // the keys are not decrypted yet. Hold the request and ask for the PIN.
     if (!raw.viaProvider && lockedRef.current && parsed && plan.kind === 'reject' && plan.reason === 'no-identity') {
       onNeedsUnlockRef.current?.();
-      setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed, pubkey: grant?.pubkey ?? null }]);
+      // No key yet: the default is picked when it is shown, against the routes that exist then.
+      setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed, pubkey: null }]);
       return;
     }
     switch (plan.kind) {
@@ -278,12 +279,13 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       description: describeNip55(item.parsed, describeEventTemplate),
       template: item.parsed.template,
       peer: item.parsed.peer,
-      // A request held through an unlock has no key yet; the active one is the default.
-      pubkey: item.pubkey ?? activePubkey,
+      // A request held through an unlock has no key yet: the default is one
+      // that has an owner route now, never a key that could not sign.
+      pubkey: item.pubkey ?? defaultNip55Pubkey(routes.filter(r => !r.dependantId).map(r => r.pubkey), pkg ? grants[pkg] : undefined, activePubkey),
       permissions: item.parsed.permissions,
       existing: !!(pkg && grants[pkg]),
     };
-  }, [queue, locked, grants, activePubkey]);
+  }, [queue, locked, grants, activePubkey, routes]);
 
   return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget };
 }

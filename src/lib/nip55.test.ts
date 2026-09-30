@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import { nip19 } from 'nostr-tools';
-import { loadNip55Grants, parseNip55Request, parsePermissions, planNip55, pubkeyHexFrom, saveNip55Grants, type NativeNip55Request } from './nip55';
+import { defaultNip55Pubkey, loadNip55Grants, parseNip55Request, parsePermissions, planNip55, pubkeyHexFrom, saveNip55Grants, type NativeNip55Request } from './nip55';
 
 const A = 'a'.repeat(64);
 const B = 'b'.repeat(64);
@@ -102,5 +102,27 @@ describe('grants', () => {
     expect(loadNip55Grants()['app.one'].label).toBeUndefined();
     saveNip55Grants({});
     expect(localStorage.getItem('signet.nip55.grants')).toBeNull();
+  });
+});
+
+describe('defaultNip55Pubkey', () => {
+  const C = 'c'.repeat(64);
+  const grant = (pubkey: string) => ({ pubkey, allowAlways: false, denyAlways: false, grantedAt: 0 });
+
+  it('prefers the remembered key when it is owned, and ignores one that is not', () => {
+    expect(defaultNip55Pubkey([A, B], grant(B), A)).toBe(B);
+    expect(defaultNip55Pubkey([A, B], grant(C), A)).toBe(A);
+  });
+
+  it('takes the active key only when it is owned, else the first owned', () => {
+    expect(defaultNip55Pubkey([A, B], undefined, B)).toBe(B);
+    expect(defaultNip55Pubkey([B, A], undefined, C)).toBe(B);
+    expect(defaultNip55Pubkey([B, A], undefined, null)).toBe(B);
+  });
+
+  it('returns the only owned key, lowercase, and null when nothing is owned', () => {
+    expect(defaultNip55Pubkey([A.toUpperCase()], undefined, C)).toBe(A);
+    expect(defaultNip55Pubkey([A, B], undefined, B.toUpperCase())).toBe(B);
+    expect(defaultNip55Pubkey([], grant(A), A)).toBeNull();
   });
 });
