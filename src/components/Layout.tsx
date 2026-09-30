@@ -24,6 +24,7 @@ interface Props {
 }
 
 export function Layout({ title, showBack, onBack, guardianMode, guardianDependantName, guardianActingAs, onExitGuardianMode, onOpenHandoffPicker, children }: Props) {
+  const tint = guardianActingAs ? 'var(--guardian-light)' : 'var(--accent-light)';
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* Header tint pairs with the banner colour: amber for true child-mode
@@ -32,8 +33,11 @@ export function Layout({ title, showBack, onBack, guardianMode, guardianDependan
         borderBottom: guardianMode
           ? (guardianActingAs ? '2px solid var(--guardian)' : '2px solid var(--accent)')
           : '1px solid var(--border)',
+        // Opaque, always: the header is sticky and page content scrolls under
+        // it. `--accent-light` is translucent in the dark theme, so the tint is
+        // laid over a solid card colour instead of standing in for it.
         background: guardianMode
-          ? (guardianActingAs ? 'var(--guardian-light)' : 'var(--accent-light)')
+          ? `linear-gradient(${tint}, ${tint}), var(--bg-card)`
           : 'var(--bg-card)',
         zIndex: Z.header,
       }}>

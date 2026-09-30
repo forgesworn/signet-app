@@ -280,7 +280,7 @@ import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
 import { CHILD_ASK_COPY, CHILD_SIDE_COPY } from './lib/child-device-copy';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
-import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY, PRIVATE_VAULT_APPROVE_LABEL, PRIVATE_VAULT_APPROVAL_DISMISS_LABEL } from './lib/vault-approval';
+import { PrivateVaultApprovalBanner } from './components/PrivateVaultApprovalBanner';
 import { contactToKindredEntry } from './lib/kindred-adapter';
 import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
@@ -9205,15 +9205,10 @@ export function App() {
   // the same cards back up. One quiet line; the button runs them once more.
   const privateVaultApprovalBanner = (!isPairedChild && privateVaultSupported
     && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed) ? (
-    <div style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{ flex: 1 }}>{PRIVATE_VAULT_NEEDS_APPROVAL_COPY}</span>
-      <button onClick={() => setPrivateVaultApproveToken(t => t + 1)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>
-        {PRIVATE_VAULT_APPROVE_LABEL}
-      </button>
-      <button onClick={() => setPrivateVaultApprovalDismissed(true)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>
-        {PRIVATE_VAULT_APPROVAL_DISMISS_LABEL}
-      </button>
-    </div>
+    <PrivateVaultApprovalBanner
+      onApprove={() => setPrivateVaultApproveToken(t => t + 1)}
+      onDismiss={() => setPrivateVaultApprovalDismissed(true)}
+    />
   ) : null;
 
   // R6: the v2 contacts log has either outgrown what the rail can carry

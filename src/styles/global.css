@@ -599,6 +599,21 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
   white-space: nowrap;
 }
 
+/* Private-backup approval line (App's topBanners). The sentence keeps the
+   whole row; the buttons wrap beneath it on a narrow screen. */
+.vault-approval-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+.vault-approval-banner-text { flex: 1 1 100%; min-width: 0; }
+.vault-approval-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* ─── D9 — page identity strip ─── */
 .page-identity {
   display: flex;
