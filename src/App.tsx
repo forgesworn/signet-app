@@ -1191,11 +1191,11 @@ export function App() {
   // Every router-install site goes through here: bumps the generation, probes
   // with retry/backoff for as long as this generation is current and the
   // primary stays connected, and installs the router only if still current.
-  const startRouterProbe = useCallback((primary: BunkerSigningBackend, clientSecretHex: string) => {
+  const startRouterProbe = useCallback((primary: BunkerSigningBackend, clientSecretHex: string, assumeHeartwood = false) => {
     const gen = ++bunkerRouterGenRef.current;
     const isCurrent = () => bunkerRouterGenRef.current === gen;
     void createRouterWithRetry({
-      primary, clientSecretHex, isCurrent,
+      primary, clientSecretHex, isCurrent, assumeHeartwood,
       onState: (state) => { if (isCurrent()) setRouterProbeState(state); },
     }).then((router) => {
       if (!isCurrent()) {
@@ -4578,7 +4578,7 @@ export function App() {
             // null and the dormant copy is unchanged. Generation-guarded
             // exactly like the Heartwood branch above so a stale resolution
             // can't revive a superseded router.
-            startRouterProbe(bunker, record.clientKeypair.privateKey);
+            startRouterProbe(bunker, record.clientKeypair.privateKey, record.mode === 'heartwood-direct');
           } catch {
             setSignerStatus('unavailable');
           }
@@ -6597,7 +6597,7 @@ export function App() {
         }
         // Direct mode needs the per-persona router (identity ceremony); the
         // legacy phone pairing keeps its existing retry behaviour.
-        if (record.mode === 'heartwood-direct') startRouterProbe(bunker, record.clientKeypair.privateKey);
+        if (record.mode === 'heartwood-direct') startRouterProbe(bunker, record.clientKeypair.privateKey, true);
       } catch {
         setSignerStatus('unavailable');
       }

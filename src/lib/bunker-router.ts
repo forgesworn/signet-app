@@ -21,6 +21,9 @@ export interface HeartwoodCapabilities {
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 
+/** The methods a child-direct slot's compiled policy grants (see `assumeHeartwood`). */
+const ASSUMED_CHILD_METHODS: readonly string[] = ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'];
+
 /** Parse a heartwood_capabilities result payload (string-wrapped JSON). */
 export function parseHeartwoodCapabilities(raw: string): HeartwoodCapabilities | null {
   try {
@@ -233,6 +236,9 @@ export interface ProbeWithRetryOptions {
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
   makeBackend?: MakeBackend;
+  /** A child paired straight to the Heartwood: skip the capabilities probe
+   *  (its strict slot is refused it) and build the router at once. */
+  assumeHeartwood?: boolean;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -248,6 +254,11 @@ export async function createRouterWithRetry(opts: ProbeWithRetryOptions): Promis
   const sleep = opts.sleep ?? defaultSleep;
   const alive = () => opts.isCurrent() && !!opts.primary.activePublicKeyHex;
   const report = (s: RouterProbeState) => { if (opts.isCurrent()) opts.onState?.(s); };
+  if (opts.assumeHeartwood) {
+    if (!alive()) return null;
+    report('ready');
+    return BunkerBackendRouter.assumeHeartwood(opts.primary, opts.clientSecretHex, opts.makeBackend);
+  }
   let errorReplies = 0;
   let timeouts = 0;
   let attempt = 0;
@@ -362,6 +373,21 @@ export class BunkerBackendRouter {
   static async create(primary: BunkerSigningBackend, clientSecretHex: string, makeBackend: MakeBackend = defaultMakeBackend): Promise<BunkerBackendRouter | null> {
     const outcome = await BunkerBackendRouter.probe(primary, clientSecretHex, makeBackend);
     return outcome.kind === 'router' ? outcome.router : null;
+  }
+
+  /**
+   * A router for a slot already known to be on a Heartwood, without asking.
+   * A child paired straight to the device (`heartwood-direct`) rides a strict,
+   * identity-bound slot, and the firmware answers `heartwood_capabilities` on
+   * such a slot with `unauthorised` — so the probe can never succeed there and
+   * would leave the child with no routes at all. The pairing itself proved the
+   * device (the guardian minted the slot over the operator channel and read
+   * its bound identity back), and nothing reads `capabilities` beyond the
+   * probe's own accept check, so the methods below just restate the slot's
+   * fixed child policy.
+   */
+  static assumeHeartwood(primary: BunkerSigningBackend, clientSecretHex: string, makeBackend: MakeBackend = defaultMakeBackend): BunkerBackendRouter {
+    return new BunkerBackendRouter(primary, clientSecretHex, { version: 0, methods: [...ASSUMED_CHILD_METHODS] }, makeBackend);
   }
 
   /**

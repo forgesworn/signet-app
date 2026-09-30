@@ -461,6 +461,35 @@ describe('createRouterWithRetry', () => {
     expect(h.states).toEqual(['probing', 'retrying', 'retrying', 'retrying', 'retrying', 'ready']);
   });
 
+  it('assumeHeartwood: a direct child builds the router without probing (its strict slot is refused heartwood_capabilities)', async () => {
+    const request = vi.fn(async () => { throw 'unauthorised'; });
+    const primary = primaryWith(request);
+    const states: RouterProbeState[] = [];
+    const router = await createRouterWithRetry({
+      primary, clientSecretHex: SECRET, isCurrent: () => true, assumeHeartwood: true, onState: (s) => states.push(s),
+    });
+    expect(router).not.toBeNull();
+    expect(request).not.toHaveBeenCalled();
+    expect(states).toEqual(['ready']);
+    expect(router!.capabilities.methods).toContain('sign_event');
+    expect(router!.backendFor(PK_A)).toBe(primary);
+    expect(router!.backendFor(PK_B)).not.toBeNull();
+  });
+
+  it('assumeHeartwood: no router while the primary is not connected', async () => {
+    const primary = fakeInner({ activePublicKeyHex: '', bunkerUri: BASE_URI, request: vi.fn() });
+    expect(await createRouterWithRetry({ primary, clientSecretHex: SECRET, isCurrent: () => true, assumeHeartwood: true })).toBeNull();
+  });
+
+  it('assumeHeartwood: a superseded probe reports nothing', async () => {
+    const states: RouterProbeState[] = [];
+    const router = await createRouterWithRetry({
+      primary: primaryWith(vi.fn()), clientSecretHex: SECRET, isCurrent: () => false, assumeHeartwood: true, onState: (s) => states.push(s),
+    });
+    expect(states).toEqual([]);
+    expect(router).toBeNull();
+  });
+
   it('retries "not connected" failures (primary mid-reconnect) rather than giving up', async () => {
     let n = 0;
     const request = vi.fn(async () => { if (++n === 1) throw new Error('Not connected to bunker'); return CAPS; });
