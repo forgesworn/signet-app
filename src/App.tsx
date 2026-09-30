@@ -286,6 +286,7 @@ import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
+import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
@@ -1809,6 +1810,7 @@ export function App() {
     encryptionKey,
     dependantPubkey: preferences.activeAccountId ?? identity?.id ?? null,
     enabled: preferences.signingMode === 'paired-child' && !!encryptionKey,
+    pairingGeneration: pairedChildBumpCounter,
     onInventoryMerged: async () => {
       // Reload identity from IDB so the updated persona rows propagate
       // into React state and the carousel re-renders.
@@ -4332,9 +4334,13 @@ export function App() {
     // the guardian selects a different dependant (or switches back).
     // Include encrypted flag so the dedup guard doesn't match across
     // encrypted (public-only) and decrypted (full key material) states.
-    const targetId = activeDependant
-      ? `dep:${activeDependant.id}:${activeDependant.primaryKeypair}`
-      : `${identity.id}:${identity.encrypted ? 'enc' : 'dec'}`;
+    // A re-pair (pairedChildBumpCounter) is a new target too — bug 5.
+    const targetId = backendsTargetId({
+      identityId: identity.id,
+      identityEncrypted: !!identity.encrypted,
+      activeDependant: activeDependant ?? null,
+      pairingGeneration: pairedChildBumpCounter,
+    });
 
     // Already created for this target
     if (backendsIdentityId.current === targetId) return;

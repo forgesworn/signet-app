@@ -38,11 +38,18 @@ interface Options {
   encryptionKey: string | null;
   dependantPubkey: string | null;
   enabled: boolean;
+  /**
+   * Bumped on an in-session re-pair (App's `pairedChildBumpCounter`). The
+   * subscription holds a backend over the record's client key and the
+   * endpoint from its bunker URI, both of which a re-pair can replace under
+   * the same dependant pubkey — so it must re-read the record (bug 5).
+   */
+  pairingGeneration?: number;
   /** Called after a successful merge so App.tsx can reload identity React state. */
   onInventoryMerged: () => Promise<void>;
 }
 
-export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, enabled, onInventoryMerged }: Options) {
+export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, enabled, pairingGeneration = 0, onInventoryMerged }: Options) {
   // Keep onInventoryMerged in a ref so subscription identity doesn't churn
   // every render. The callback is recreated on every App.tsx render
   // (inline arrow), so including it in the subscribe effect's deps would
@@ -103,7 +110,7 @@ export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, 
       backend = null;
       record = null;
     };
-  }, [enabled, encryptionKey, dependantPubkey, relayUrl]);
+  }, [enabled, encryptionKey, dependantPubkey, relayUrl, pairingGeneration]);
 }
 
 /**
