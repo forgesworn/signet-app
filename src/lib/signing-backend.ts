@@ -278,6 +278,11 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
   bunkerUri: string = '';
   private signer: BunkerSigner | null = null;
   private pool: SimplePool | null = null;
+  /** The client key bytes `BunkerSigner.fromURI` holds by reference for the
+   *  signer's whole life. They must stay intact until the signer is dropped —
+   *  zeroing them earlier makes the next request encrypt with an all-zero key
+   *  ("invalid scalar") — so `releaseTransport` is what wipes them. */
+  private signerKey: Uint8Array | null = null;
   private connectAttempt = 0;
   private clientSecretHex: string;
   /** See DecryptingSigningBackend.transportClientPubkeyHex. */
@@ -378,9 +383,11 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     const pool = new SimplePool();
     const abort = new AbortController();
     let signer: BunkerSigner | null = null;
+    let clientSk: Uint8Array | null = null;
     let released = false;
     let closedSigner: BunkerSigner | null = null;
     const release = () => {
+      clientSk?.fill(0);
       // Idempotent, but a signer that arrived after the first release is still closed.
       if (signer && signer !== closedSigner) { closedSigner = signer; void signer.close().catch(() => { /* best-effort teardown */ }); }
       if (released) return;
@@ -405,17 +412,16 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     signal?.addEventListener('abort', onOuterAbort);
     const timer = setTimeout(() => abort.abort(), timeoutMs);
     try {
-      const clientSk = hexToBytes(this.clientSecretHex);
-      try {
-        signer = await BunkerSigner.fromURI(clientSk, nostrconnectUri, {
-          pool,
-          skipSwitchRelays: true,
-          onauth() { /* Heartwood auth callback — no action needed in signet */ },
-        }, abort.signal);
-      } finally { clientSk.fill(0); }
+      clientSk = hexToBytes(this.clientSecretHex);
+      signer = await BunkerSigner.fromURI(clientSk, nostrconnectUri, {
+        pool,
+        skipSwitchRelays: true,
+        onauth() { /* Heartwood auth callback — no action needed in signet */ },
+      }, abort.signal);
       if (attempt !== this.connectAttempt || signal?.aborted) throw new Error('Connection cancelled');
       this.pool = pool;
       this.signer = signer;
+      this.signerKey = clientSk;
       const pubkey = (await Promise.race([this.request('get_public_key', [], timeoutMs), aborted])).trim().toLowerCase();
       if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
       if (pubkey !== expectedPubkey.toLowerCase()) {
@@ -538,6 +544,8 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
   private releaseTransport(): void {
     if (this.signer) void this.signer.close().catch(() => { /* best-effort teardown */ });
     try { this.pool?.destroy(); } catch { /* best-effort teardown */ }
+    this.signerKey?.fill(0);
+    this.signerKey = null;
     this.signer = null;
     this.pool = null;
     this.vaultGeneration++;

@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const m = vi.hoisted(() => ({
   pubkeyReply: '',
   fromUriCalls: [] as { uri: string; params: Record<string, unknown> }[],
+  fromUriKeys: [] as Uint8Array[],
   fromUriReject: false,
   closed: 0,
   pubkeyHang: false,
@@ -16,11 +17,15 @@ vi.mock('nostr-tools/nip46', () => ({
   parseBunkerInput: async () => null,
   BunkerSigner: {
     fromBunker: () => { throw new Error('not used'); },
-    fromURI: async (_sk: Uint8Array, uri: string, params: Record<string, unknown>) => {
+    fromURI: async (sk: Uint8Array, uri: string, params: Record<string, unknown>) => {
       m.fromUriCalls.push({ uri, params });
+      m.fromUriKeys.push(sk);
       if (m.fromUriReject) throw new Error('subscription closed before connection was established.');
       return {
         sendRequest: async (method: string) => {
+          // The real BunkerSigner keeps `sk` by reference and encrypts every
+          // request with it — an all-zero key is nostr-tools' "invalid scalar".
+          if (sk.every((b) => b === 0)) throw new Error('invalid scalar: out of range');
           if (method === 'get_public_key') return m.pubkeyHang ? new Promise<string>(() => {}) : m.pubkeyReply;
           return 'ok';
         },
@@ -40,7 +45,7 @@ const PERSONA = 'ab'.repeat(32);
 const NC = `nostrconnect://${'a1'.repeat(32)}?relay=wss%3A%2F%2Fhw1.example&relay=wss%3A%2F%2Fhw2.example&secret=${'cc'.repeat(16)}`;
 
 describe('BunkerSigningBackend.acceptNostrConnect', () => {
-  beforeEach(() => { m.pubkeyReply = ''; m.fromUriCalls = []; m.fromUriReject = false; m.closed = 0; m.pubkeyHang = false; });
+  beforeEach(() => { m.pubkeyReply = ''; m.fromUriCalls = []; m.fromUriKeys = []; m.fromUriReject = false; m.closed = 0; m.pubkeyHang = false; });
 
   it('pins get_public_key to the persona and stores a secret-free bunker URI for reconnects', async () => {
     m.pubkeyReply = PERSONA;
@@ -53,6 +58,23 @@ describe('BunkerSigningBackend.acceptNostrConnect', () => {
     expect(new URL(uri.replace('bunker://', 'https://')).searchParams.getAll('relay')).toEqual(['wss://hw1.example', 'wss://hw2.example']);
     expect(m.fromUriCalls[0].uri).toBe(NC);
     expect(m.fromUriCalls[0].params.skipSwitchRelays).toBe(true);
+  });
+
+  it('keeps the client key intact while the signer lives and wipes it when the transport is dropped', async () => {
+    m.pubkeyReply = PERSONA;
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    await b.acceptNostrConnect(NC, PERSONA, 5_000);
+    const key = m.fromUriKeys[0];
+    expect(Array.from(key).every((x) => x === 0x11)).toBe(true);
+    b.destroy();
+    expect(key.every((x) => x === 0)).toBe(true);
+  });
+
+  it('wipes the client key when the handshake fails after the signer arrived', async () => {
+    m.pubkeyReply = 'cd'.repeat(32);
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    await expect(b.acceptNostrConnect(NC, PERSONA, 5_000)).rejects.toThrow(/mismatch/);
+    expect(m.fromUriKeys[0].every((x) => x === 0)).toBe(true);
   });
 
   it('a signer answering as a different pubkey is refused and torn down', async () => {
