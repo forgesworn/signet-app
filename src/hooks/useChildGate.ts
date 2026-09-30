@@ -41,7 +41,7 @@ import { checkRateLimit, type RateLimitState } from '../lib/rate-limit';
 import {
   buildAskEvent, openVerdictEvent, CHILD_SIGN_ASK_TTL_S, type ChildSignAsk,
 } from '../lib/child-sign-asks';
-import type { ChildActivityEntry, ConnectedChildApp } from '../lib/child-activity';
+import { childOutcomeForSignerError, type ChildActivityEntry, type ConnectedChildApp } from '../lib/child-activity';
 import type { ChildGateError, ChildGateMethod, ChildGateOutcome } from '../lib/child-bunker';
 import { publishEvent, subscribeEvents } from '../lib/relay-service';
 import { observeStampedCalls } from '../lib/signing-backend';
@@ -207,7 +207,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
 
   // A60: a forwarded request is recorded as signed / approved only once the
   // Heartwood has answered it (matched on persona + request stamp); a refusal
-  // there is recorded as denied.
+  // there is recorded as denied — but a timeout or an unreachable Heartwood
+  // is not a refusal, and is recorded as unanswered / failed.
   const pendingReports = useRef(new Map<string, { entry: Omit<ChildActivityEntry, 'at'>; addedAt: number }>());
   useEffect(() => {
     pendingReports.current.clear();
@@ -217,7 +218,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       const hit = pendingReports.current.get(k);
       if (!hit) return;
       pendingReports.current.delete(k);
-      emit(r.ok ? hit.entry : { ...hit.entry, outcome: 'denied' });
+      emit(r.ok ? hit.entry : { ...hit.entry, outcome: childOutcomeForSignerError(r.error) });
     });
   }, [recordKey, emit]);
 

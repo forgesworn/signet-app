@@ -120,18 +120,20 @@ export function useChildActivity(opts: UseChildActivityOpts): ChildActivity {
   }, [key, clientPub, relay, pairedAtS]);
 
   const [tick, setTick] = useState(0);
-  // A48: re-read on every tick, so a signing this phone just made as the child
-  // matches the Heartwood's record the next time the timeline is aged.
+  // A48: re-read on every tick and on every refresh of the device records, so
+  // a signing this phone just made as the child shows up straight away.
   const [guardianRows, setGuardianRows] = useState<GuardianActingEntry[]>([]);
   const loadGuardianRef = useRef(opts.loadGuardianActing ?? dbLoadGuardianActing);
   loadGuardianRef.current = opts.loadGuardianActing ?? dbLoadGuardianActing;
   const key2 = key ? opts.encryptionKey : null;
+  // A value, not the array: a caller may pass a fresh (equal) array each render.
+  const deviceSig = `${opts.deviceEntries.length}:${opts.deviceEntries[0]?.id ?? ''}:${opts.deviceEntries[opts.deviceEntries.length - 1]?.id ?? ''}`;
   useEffect(() => {
     if (!key2) { setGuardianRows([]); return; }
     let cancelled = false;
     loadGuardianRef.current(key2).then((rows) => { if (!cancelled) setGuardianRows(rows); }).catch(() => { /* none shown */ });
     return () => { cancelled = true; };
-  }, [key2, tick]);
+  }, [key2, tick, deviceSig]);
   useEffect(() => {
     if (!key) return;
     const t = setInterval(() => setTick(n => n + 1), TICK_MS);
@@ -142,7 +144,7 @@ export function useChildActivity(opts: UseChildActivityOpts): ChildActivity {
     if (!cd) return [];
     const mine = new Set(opts.dependant ? dependantPersonaPubkeys(opts.dependant) : []);
     const device = opts.deviceEntries.filter(d => d.createdAt >= pairedAtS && mine.has(d.dependantPubkey));
-    const mineGuardian = guardianRows.filter(g => mine.has(g.persona));
+    const mineGuardian = guardianRows.filter(g => g.at >= pairedAtS && mine.has(g.persona));
     return mergeActivity(entries, device, Math.floor(nowRef.current() / 1000), mineGuardian);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `tick` re-ages the mismatch flag
   }, [cd, entries, opts.deviceEntries, opts.dependant, pairedAtS, tick, guardianRows]);

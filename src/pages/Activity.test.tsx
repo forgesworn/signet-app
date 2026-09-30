@@ -51,6 +51,26 @@ describe('Activity — merged child-direct timeline', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('A48: a guardian signing with no Heartwood record still reads "Signed by you"', () => {
+    const rows: MergedActivityRow[] = [
+      { entry: null, device: null, mismatch: false, byGuardian: true,
+        guardian: { source: 'guardian', persona: PERSONA, kind: 0, method: 'sign_event', requestCreatedAt: now - 30, at: now - 29 } },
+    ];
+    render(<Activity dependant={dep} entries={[]} loading={false} error={null} onRefresh={() => {}} merged={rows} />);
+    const [item] = screen.getAllByTestId('merged-activity-row');
+    expect(item).toHaveTextContent('As Skylark · Signed by you · Signed');
+  });
+
+  it('a request the Heartwood never answered is not shown as denied', () => {
+    const rows: MergedActivityRow[] = [
+      { entry: { persona: PERSONA, kind: 22242, method: 'sign_event', outcome: 'unanswered', appId: 'site:https://x.org', appLabel: 'Harness', requestCreatedAt: now - 60, at: now - 29 }, device: null, mismatch: false },
+    ];
+    render(<Activity dependant={dep} entries={[]} loading={false} error={null} onRefresh={() => {}} merged={rows} />);
+    const [item] = screen.getAllByTestId('merged-activity-row');
+    expect(item).toHaveTextContent("Didn't complete (Heartwood didn't answer in time)");
+    expect(item).not.toHaveTextContent('Denied');
+  });
+
   it('empty merged timeline has its own copy', () => {
     render(<Activity dependant={dep} entries={[]} loading={false} error={null} onRefresh={() => {}} merged={[]} />);
     expect(screen.getByText("What Sky's phone signs, and what it asks you, will appear here.")).toBeInTheDocument();

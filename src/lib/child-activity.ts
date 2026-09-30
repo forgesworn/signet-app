@@ -41,12 +41,43 @@ export interface ChildActivityEntry {
   persona: string;
   kind: number | null;
   method: string;
-  outcome: 'signed' | 'denied' | 'asked' | 'approved' | 'blocked' | 'expired';
+  /**
+   * `denied`: refused (a rule, the guardian, or the Heartwood answered no).
+   * `unanswered` / `failed`: forwarded, but the Heartwood never gave an answer
+   * (timed out — e.g. waiting for its on-board press) or could not be reached.
+   * Nobody said no, so these are never shown as a denial.
+   */
+  outcome: 'signed' | 'denied' | 'asked' | 'approved' | 'blocked' | 'expired' | 'unanswered' | 'failed';
   appId: string;
   appLabel: string;
   target?: string;
   requestCreatedAt?: number;
   at: number;
+}
+
+/** The message `BunkerRequestTimeoutError` carries: `<method> timed out`. */
+const OWN_TIMEOUT = /^[a-z0-9_]+ timed out$/;
+/** Local transport failures: the request never reached, or never came back from, the Heartwood. */
+const UNREACHABLE = [
+  'not connected to bunker', 'backend destroyed', 'connection cancelled', 'bunker uri must include at least one relay.',
+];
+
+/**
+ * What a forwarded request that FAILED counts as in the activity record.
+ * Only an answer from the Heartwood (or anything unrecognised, which can only
+ * have come back from it) is a denial. A timeout — ours, the route's connect
+ * timeout, or the Heartwood's own `timeout` while it waits for its on-board
+ * press — or a request the device must approve on its screen is `unanswered`;
+ * a request that never reached it (not connected, busy) is `failed`.
+ */
+export function childOutcomeForSignerError(err: unknown): 'denied' | 'unanswered' | 'failed' {
+  const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : '';
+  const m = raw.trim().toLowerCase();
+  if (err instanceof Error && err.name === 'BunkerRequestTimeoutError') return 'unanswered';
+  if (m === 'timeout' || m === 'connection timed out' || OWN_TIMEOUT.test(m)) return 'unanswered';
+  if (m.includes('must be approved at the device')) return 'unanswered';
+  if (m.startsWith('signer is busy') || UNREACHABLE.includes(m)) return 'failed';
+  return 'denied';
 }
 
 // ── Rails ────────────────────────────────────────────────────────────────
@@ -63,7 +94,7 @@ export const ACTIVITY_JOIN_WINDOW_S = 2;
 
 const KIND = 30078;
 const HEX64 = /^[0-9a-f]{64}$/;
-const OUTCOMES: readonly ChildActivityEntry['outcome'][] = ['signed', 'denied', 'asked', 'approved', 'blocked', 'expired'];
+const OUTCOMES: readonly ChildActivityEntry['outcome'][] = ['signed', 'denied', 'asked', 'approved', 'blocked', 'expired', 'unanswered', 'failed'];
 const APP_KINDS: readonly ConnectedChildApp['kind'][] = ['nip46', 'nip55', 'site'];
 const METHOD_RE = /^[a-z0-9_]{1,32}$/;
 const APP_ID_RE = /^[^\s]{1,200}$/;
@@ -245,8 +276,10 @@ export interface MergedActivityRow {
   entry: ChildActivityEntry | null;
   device: AuditEntry | null;
   mismatch: boolean;
-  /** A48: the device record matches a signing the guardian's own phone made as this persona. */
+  /** A48: a signing the guardian's own phone made as this persona (with or without the device's record). */
   byGuardian?: boolean;
+  /** A48: this phone's own record of that signing. */
+  guardian?: GuardianActingEntry;
 }
 
 const DEVICE_SIGNED = new Set(['approved', 'auto-approved']);
@@ -267,8 +300,11 @@ function sameOp(c: OpLike, d: AuditEntry): boolean {
  * the nearest unused child record in that window. A48: a device record no
  * child record claims is then matched the same way against the guardian's own
  * signings as the child (`guardian`) — shown "Signed by you", never flagged.
- * A device-only SIGNING older than 600 s is flagged; a child-only row
- * (denied/asked/blocked never reach the device) is shown as-is. Newest first.
+ * A guardian signing with no device record (the Heartwood's C5 rumor for it
+ * never reaches this list, or has not yet) is still shown "Signed by you":
+ * this phone knows it made it. A device-only SIGNING older than 600 s is
+ * flagged; a child-only row (denied/asked/blocked never reach the device) is
+ * shown as-is. Newest first.
  */
 export function mergeActivity(child: ChildActivityEntry[], device: AuditEntry[], nowS: number, guardian: GuardianActingEntry[] = []): MergedActivityRow[] {
   const rows: MergedActivityRow[] = [];
@@ -295,12 +331,13 @@ export function mergeActivity(child: ChildActivityEntry[], device: AuditEntry[],
     const mine = nearest(guardian, usedGuardian, d);
     if (mine >= 0) {
       usedGuardian.add(mine);
-      rows.push({ entry: null, device: d, mismatch: false, byGuardian: true });
+      rows.push({ entry: null, device: d, mismatch: false, byGuardian: true, guardian: guardian[mine] });
     } else {
       rows.push({ entry: null, device: d, mismatch: DEVICE_SIGNED.has(d.outcome) && nowS - d.createdAt > ACTIVITY_MISMATCH_AFTER_S });
     }
   }
   child.forEach((c, i) => { if (!used.has(i)) rows.push({ entry: c, device: null, mismatch: false }); });
-  const when = (r: MergedActivityRow) => r.device?.createdAt ?? r.entry?.at ?? 0;
+  guardian.forEach((g, i) => { if (!usedGuardian.has(i)) rows.push({ entry: null, device: null, mismatch: false, byGuardian: true, guardian: g }); });
+  const when = (r: MergedActivityRow) => r.device?.createdAt ?? r.entry?.at ?? r.guardian?.requestCreatedAt ?? 0;
   return rows.sort((a, b) => when(b) - when(a));
 }

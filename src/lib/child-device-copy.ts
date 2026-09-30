@@ -202,6 +202,8 @@ export const CHILD_ACTIVITY_COPY = {
     asked: 'Asked you',
     blocked: 'Blocked',
     expired: 'Not answered in time',
+    unanswered: "Didn't complete (Heartwood didn't answer in time)",
+    failed: "Didn't complete (Heartwood couldn't be reached)",
   } as Record<string, string>,
   as: (persona: string) => `As ${persona}`,
   onHeartwood: 'On the Heartwood',

@@ -121,6 +121,18 @@ describe('useChildGate', () => {
     expect(s.activity.map(a => a.outcome)).toEqual(['denied']);
   });
 
+  it('a forwarded request the Heartwood never answered is recorded as unanswered, not denied', async () => {
+    const s = setup({ rules: rules({ rules: [allowApp()] }) });
+    for (const fail of ['Connection timed out', 'timeout', 'Not connected to bunker']) {
+      let out: Awaited<ReturnType<typeof s.hook.result.current.authorise>> | undefined;
+      await act(async () => {
+        out = await s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() });
+      });
+      await act(async () => { await signWith(out!.ok ? out!.requestCreatedAt : 0, fail).catch(() => {}); });
+    }
+    expect(s.activity.map(a => a.outcome)).toEqual(['unanswered', 'unanswered', 'failed']);
+  });
+
   it('asks the guardian on the rail relay and forwards after a once verdict, only the template it asked about', async () => {
     const s = setup();
     let p!: ReturnType<typeof s.hook.result.current.authorise>;

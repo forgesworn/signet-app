@@ -350,11 +350,11 @@ function personaNameMap(dep: DependantIdentity): Map<string, string> {
 }
 
 function rowTime(r: MergedActivityRow): number {
-  return r.device?.createdAt ?? r.entry?.at ?? 0;
+  return r.device?.createdAt ?? r.entry?.at ?? r.guardian?.requestCreatedAt ?? 0;
 }
 
 function rowKey(r: MergedActivityRow, ix: number): string {
-  return `${r.device?.id ?? ''}|${r.entry ? `${r.entry.persona}:${r.entry.at}:${r.entry.requestCreatedAt ?? ''}:${r.entry.outcome}` : ''}|${ix}`;
+  return `${r.device?.id ?? ''}|${r.entry ? `${r.entry.persona}:${r.entry.at}:${r.entry.requestCreatedAt ?? ''}:${r.entry.outcome}` : ''}|${r.guardian ? `${r.guardian.persona}:${r.guardian.requestCreatedAt}` : ''}|${ix}`;
 }
 
 function groupMergedByDay(rows: MergedActivityRow[]): Array<{ dayLabel: string; rows: MergedActivityRow[] }> {
@@ -369,7 +369,7 @@ function groupMergedByDay(rows: MergedActivityRow[]): Array<{ dayLabel: string; 
 }
 
 function mergedSummary(row: MergedActivityRow): string {
-  const kind = row.entry ? row.entry.kind : row.device?.eventKind ?? null;
+  const kind = row.entry ? row.entry.kind : row.device ? row.device.eventKind ?? null : row.guardian?.kind ?? null;
   if (kind === null || kind === undefined) return CHILD_ACTIVITY_COPY.crypto;
   const target = row.entry?.target;
   const origin = target && target.startsWith('site:') ? target.slice(5) : row.device?.origin;
@@ -377,7 +377,7 @@ function mergedSummary(row: MergedActivityRow): string {
 }
 
 function MergedRow({ row, last, childName, personaNames }: { row: MergedActivityRow; last: boolean; childName: string; personaNames: Map<string, string> }) {
-  const persona = row.entry?.persona ?? row.device?.dependantPubkey ?? '';
+  const persona = row.entry?.persona ?? row.device?.dependantPubkey ?? row.guardian?.persona ?? '';
   const personaName = personaNames.get(persona) ?? `${persona.slice(0, 8)}…`;
   const app = row.entry ? row.entry.appLabel : row.byGuardian ? CHILD_ACTIVITY_COPY.signedByYou : CHILD_ACTIVITY_COPY.onHeartwood;
   const outcome = row.entry

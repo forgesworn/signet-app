@@ -5,7 +5,7 @@ import type { NostrEvent } from 'signet-protocol';
 import type { AuditEntry } from './audit-fetch';
 import {
   buildConnectedAppsEvent, openConnectedAppsEvent, openOwnConnectedAppsEvent,
-  wrapChildActivity, unwrapChildActivity, mergeActivity,
+  wrapChildActivity, unwrapChildActivity, mergeActivity, childOutcomeForSignerError,
   buildUnpairedNotice, isUnpairedNotice,
   CHILD_CONNECTED_APPS_D_TAG, CHILD_UNPAIRED_D_TAG, CONNECTED_APPS_MAX,
   type ChildActivityEntry, type ConnectedChildApp,
@@ -169,13 +169,46 @@ describe('mergeActivity', () => {
     const d = dev({ createdAt: NOW - 5000 });
     const g = { source: 'guardian' as const, persona: d.dependantPubkey, kind: d.eventKind ?? null, method: 'sign_event' as const, requestCreatedAt: NOW - 5000, at: NOW - 5000 };
     const rows = mergeActivity([], [d], NOW, [g]);
-    expect(rows).toEqual([{ entry: null, device: d, mismatch: false, byGuardian: true }]);
+    expect(rows).toEqual([{ entry: null, device: d, mismatch: false, byGuardian: true, guardian: g }]);
     // a guardian row for another persona does not excuse it
     expect(mergeActivity([], [d], NOW, [{ ...g, persona: OTHER }])[0].mismatch).toBe(true);
     // a child record wins the device record first
     const both = mergeActivity([entry({ requestCreatedAt: NOW - 5000 })], [d], NOW, [g]);
-    expect(both).toHaveLength(1);
-    expect(both[0].entry).not.toBeNull();
-    expect(both[0].byGuardian).toBeUndefined();
+    expect(both.filter(r => r.device)).toHaveLength(1);
+    expect(both.find(r => r.device)!.entry).not.toBeNull();
+    expect(both.find(r => r.device)!.byGuardian).toBeUndefined();
+  });
+
+  it('A48: a guardian signing with no device record still shows, "by you", and is never listed twice', () => {
+    const g = { source: 'guardian' as const, persona: PERSONA, kind: 0, method: 'sign_event' as const, requestCreatedAt: NOW - 30, at: NOW - 29 };
+    // The Heartwood's C5 record for it never reached this list (e.g. a kind-0 publish).
+    const alone = mergeActivity([entry({ at: NOW - 100, requestCreatedAt: undefined, outcome: 'asked' })], [], NOW, [g]);
+    expect(alone).toHaveLength(2);
+    expect(alone[0]).toEqual({ entry: null, device: null, mismatch: false, byGuardian: true, guardian: g });
+    // Once the device record arrives, it is one row.
+    const d = dev({ createdAt: NOW - 29, eventKind: 0 });
+    const joined = mergeActivity([], [d], NOW, [g]);
+    expect(joined).toEqual([{ entry: null, device: d, mismatch: false, byGuardian: true, guardian: g }]);
+  });
+});
+
+describe('childOutcomeForSignerError', () => {
+  it('a timeout or unreachable Heartwood is never a denial', () => {
+    const t = new Error('sign_event timed out'); t.name = 'BunkerRequestTimeoutError';
+    expect(childOutcomeForSignerError(t)).toBe('unanswered');
+    expect(childOutcomeForSignerError(new Error('Connection timed out'))).toBe('unanswered');
+    expect(childOutcomeForSignerError(new Error('timeout'))).toBe('unanswered');
+    expect(childOutcomeForSignerError(new Error('This request must be approved at the device'))).toBe('unanswered');
+    expect(childOutcomeForSignerError(new Error('Not connected to bunker'))).toBe('failed');
+    expect(childOutcomeForSignerError(new Error('Signer is busy, try again'))).toBe('failed');
+  });
+  it('an answer from the Heartwood refusing it is a denial', () => {
+    expect(childOutcomeForSignerError(new Error('unauthorised'))).toBe('denied');
+    expect(childOutcomeForSignerError(new Error('user denied'))).toBe('denied');
+    expect(childOutcomeForSignerError(new Error('kind not allowed'))).toBe('denied');
+  });
+  it('the new outcomes survive the rail', async () => {
+    const ev = await wrapChildActivity(entry({ outcome: 'unanswered' }), client.priv, rail.pub);
+    expect((await unwrapChildActivity(ev, rail.priv, client.pub))?.outcome).toBe('unanswered');
   });
 });
