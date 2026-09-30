@@ -166,7 +166,8 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
       timerRef.current = null;
       for (const dep of dependants) {
         const endpoint = dep.bunkerEndpoint;
-        if (!endpoint?.privateKey || !endpoint?.authorizedClientPubkey) continue;
+        // A still-encrypted rail key is not a key: skip until the record is decrypted.
+        if (!endpoint || !/^[0-9a-f]{64}$/.test(endpoint.privateKey) || !endpoint.authorizedClientPubkey) continue;
         const npVisible = isDependantNaturalPersonActive(dep) && !!dep.naturalPerson.publicKey;
         const hiddenKeys = dep.hiddenOnPairedDeviceKeys ?? [];
         const personaVisible = !!dep.persona.publicKey && !hiddenKeys.includes(dep.persona.publicKey);

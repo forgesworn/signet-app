@@ -237,6 +237,8 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       // Rail key: fresh randomness, never tree-derived, never stripped.
       let working = dep;
       const ep = dep.bunkerEndpoint;
+      // A rail key still in its at-rest (encrypted) form must not be minted over nor used as a key.
+      if (ep?.privateKey && !HEX64.test(ep.privateKey)) { setState(gen, { phase: 'error', message: COPY.errors.generic }); return; }
       if (!ep?.privateKey || !HEX64.test(ep.publicKey ?? '')) {
         const sk = generateSecretKey();
         const endpoint = { publicKey: getPublicKey(sk), privateKey: bytesToHex(sk), createdAt: Math.floor(now() / 1000) };

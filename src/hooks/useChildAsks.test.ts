@@ -151,6 +151,34 @@ describe('useChildAsks — inbox', () => {
   });
 });
 
+describe('useChildAsks — rail key still encrypted at rest', () => {
+  // The at-rest form of a 64-hex key (salt + iv + ct + tag, base64): 144 chars, not hex.
+  const BLOB = 'Zm9v'.repeat(36);
+  const encrypted = () => makeDep({ bunkerEndpoint: { publicKey: RAIL, privateKey: BLOB, createdAt: 1, authorizedClientPubkey: CLIENT } });
+
+  it('does not subscribe with the encrypted blob, then arms with the decrypted key once it arrives', async () => {
+    expect(BLOB).toHaveLength(144);
+    let current = encrypted();
+    const pushCeiling = vi.fn(async (): Promise<'ok' | 'failed'> => 'ok');
+    const onNewAsk = vi.fn();
+    const hook = renderHook(() => useChildAsks({
+      dependants: [current], relays: ['wss://fallback.example.com'], encryptionKey: KEY, pushCeiling, onRulesChanged: vi.fn(), onNewAsk,
+      transport: t, now: () => clock,
+    }));
+    await flush();
+    expect(t.handlers).toHaveLength(0);
+
+    current = makeDep(); // the same dependant, decrypted
+    hook.rerender();
+    await flush();
+    expect(t.handlers).toHaveLength(1);
+    t.deliver(await askEv(ask()));
+    await flush();
+    expect(hook.result.current.asks).toHaveLength(1);
+    expect(onNewAsk).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('useChildAsks — verdicts', () => {
   async function withAsk(over: Partial<UseChildAsksOpts> = {}, a: ChildSignAsk = ask()) {
     const s = setup(over);

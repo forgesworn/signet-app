@@ -106,7 +106,7 @@ export function useChildRulesPublisher({ enabled, dependants, childRules, approv
         if (!enabledRef.current) return;
         const cd = dep.childDevice;
         const ep = dep.bunkerEndpoint;
-        if (cd?.mode !== 'heartwood-direct' || !ep?.privateKey || !HEX64.test(cd.clientPubkey)
+        if (cd?.mode !== 'heartwood-direct' || !ep || !HEX64.test(ep.privateKey) || !HEX64.test(cd.clientPubkey)
           || ep.authorizedClientPubkey !== cd.clientPubkey) continue;
         const nowMs = Date.now();
         const onceFor = Object.entries(once ?? {}).filter(([k]) => k.toLowerCase() === dep.id.toLowerCase()).flatMap(([, v]) => v);

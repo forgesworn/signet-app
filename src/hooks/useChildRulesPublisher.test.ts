@@ -48,6 +48,19 @@ describe('useChildRulesPublisher', () => {
     expect(payload?.ceilingKinds).toContain(22242);
   });
 
+  it('ignores a rail key still encrypted at rest, then publishes once it is decrypted', async () => {
+    const BLOB = 'Zm9v'.repeat(36);
+    let dep = directDep({ bunkerEndpoint: { publicKey: RAIL, privateKey: BLOB, createdAt: 1, authorizedClientPubkey: CLIENT } });
+    const hook = renderHook(() => useChildRulesPublisher({ enabled: true, dependants: [dep], childRules: [], relayUrl: RELAY, publish }));
+    await flush(CHILD_RULES_PUBLISH_DEBOUNCE_MS + 10);
+    expect(publish).not.toHaveBeenCalled();
+    dep = directDep();
+    hook.rerender();
+    await flush(CHILD_RULES_PUBLISH_DEBOUNCE_MS + 10);
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    expect(published[0].ev.pubkey).toBe(RAIL);
+  });
+
   it('A51: tells the phone which personas it may use (minus those removed from it)', async () => {
     const EXTRA = 'c'.repeat(64);
     const base = directDep();

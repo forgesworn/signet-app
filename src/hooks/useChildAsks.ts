@@ -125,13 +125,18 @@ interface DirectChild {
   relays: string[];
 }
 
-/** Dependants whose own phone is paired straight to the Heartwood and fully bound. */
+/**
+ * Dependants whose own phone is paired straight to the Heartwood and fully bound.
+ * The rail key must be DECRYPTED (64-hex): a record still carrying the at-rest
+ * blob is not listed, so `bindingKey` changes (and the subscription is armed
+ * with the real key) only once the record has been decrypted.
+ */
 export function directChildren(dependants: DependantIdentity[], fallbackRelays: string[]): DirectChild[] {
   const out: DirectChild[] = [];
   for (const dep of dependants) {
     const cd = dep.childDevice;
     const ep = dep.bunkerEndpoint;
-    if (cd?.mode !== 'heartwood-direct' || !ep?.privateKey || !HEX64.test(ep.publicKey ?? '')) continue;
+    if (cd?.mode !== 'heartwood-direct' || !ep || !HEX64.test(ep.privateKey) || !HEX64.test(ep.publicKey ?? '')) continue;
     const client = (cd.clientPubkey ?? '').toLowerCase();
     if (!HEX64.test(client) || (ep.authorizedClientPubkey ?? '').toLowerCase() !== client) continue;
     const relays = cd.railRelay && isValidRelayUrl(cd.railRelay) ? [cd.railRelay] : fallbackRelays.filter(r => isValidRelayUrl(r));
