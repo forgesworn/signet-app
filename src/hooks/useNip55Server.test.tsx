@@ -213,6 +213,31 @@ describe('useNip55Server', () => {
       expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
     });
 
+    it.each(['approveOnce', 'approveAlways'] as const)('%s with a key that has no owner route is refused, and nothing is remembered', async (approve) => {
+      const unrouted = getPublicKey(generateSecretKey());
+      const { result } = await hold(request(), { routes: [route], active: pubkey });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current[approve](result.current.pending!.handle, unrouted); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(respond.mock.calls[0][0].event).toBeUndefined();
+      expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
+      expect(localStorage.getItem('signet.nip55.grants') ?? '{}').not.toContain(unrouted);
+    });
+
+    it.each(['approveOnce', 'approveAlways'] as const)('%s for a key routed when the request was fixed but gone by approval is refused, and nothing is remembered', async (approve) => {
+      const view = await hold(request({ type: 'get_public_key', payload: null }), { routes: [route2, route], active: pubkey2 });
+      await waitFor(() => expect(view.result.current.pending).not.toBeNull());
+      expect(view.result.current.pending!.pubkey).toBe(pubkey2);
+      // The device route for the shown key drops away before the person taps.
+      view.rerender({ locked: false, routes: [route] });
+      await act(async () => { view.result.current[approve](view.result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(view.result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
+      expect(localStorage.getItem('signet.nip55.grants') ?? '{}').not.toContain(pubkey2);
+    });
+
     it('a named key with no route after the unlock is refused, never shown', async () => {
       const { result } = await hold(request({ type: 'nip44_encrypt', payload: 'hi', peerPubkey: pubkey, currentUser: pubkey2 }), { routes: [route], active: pubkey });
       await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
