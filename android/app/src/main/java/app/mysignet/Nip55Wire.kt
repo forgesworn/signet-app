@@ -65,8 +65,14 @@ data class Nip55Incoming(
     companion object {
         /**
          * From an intent: `nostrsigner:<payload>` in the data plus the extras.
-         * The payload is the scheme-specific part, kept exactly as sent, because
-         * a signed event's JSON must not be reformatted on the way through.
+         * The payload is the scheme-specific part, never reformatted, because a
+         * signed event's JSON must reach the page as the app wrote it.
+         *
+         * An app that builds the URI with `Uri.Builder().opaquePart()` (KithMoot
+         * does) sends it percent-encoded, and Cambium and Amber read it decoded
+         * (`schemeSpecificPart`), so it is decoded here too. One sent raw, as
+         * `Uri.parse("nostrsigner:$json")` leaves it, is kept as is: a `%` that
+         * does not start a valid escape ("50% off") means nothing was encoded.
          */
         fun fromIntent(
             id: String, callerPackage: String?, callerLabel: String?, dataString: String?,
@@ -75,9 +81,35 @@ data class Nip55Incoming(
             val payload = dataString?.let { raw ->
                 val colon = raw.indexOf(':')
                 if (colon < 0 || !raw.substring(0, colon).equals(Nip55Wire.SCHEME, ignoreCase = true)) null
-                else raw.substring(colon + 1).takeIf { it.isNotEmpty() }
+                else percentDecoded(raw.substring(colon + 1)).takeIf { it.isNotEmpty() }
             }
             return Nip55Incoming(id, callerPackage, callerLabel, type, payload, pubkey, currentUser, permissions, viaProvider = false)
+        }
+
+        /**
+         * `%XX` escapes decoded as UTF-8, as `Uri.decode` does (a `+` stays a
+         * `+`). The text comes back untouched if any `%` is not a valid escape,
+         * or the bytes are not UTF-8: then it was never encoded.
+         */
+        internal fun percentDecoded(text: String): String {
+            if ('%' !in text) return text
+            val bytes = java.io.ByteArrayOutputStream(text.length)
+            var i = 0
+            while (i < text.length) {
+                val next = text.indexOf('%', i)
+                if (next < 0) { bytes.write(text.substring(i).toByteArray(Charsets.UTF_8)); break }
+                bytes.write(text.substring(i, next).toByteArray(Charsets.UTF_8))
+                if (next + 2 >= text.length) return text
+                val hi = Character.digit(text[next + 1], 16)
+                val lo = Character.digit(text[next + 2], 16)
+                if (hi < 0 || lo < 0) return text
+                bytes.write(hi * 16 + lo)
+                i = next + 3
+            }
+            val decoder = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            return try { decoder.decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString() } catch (e: java.nio.charset.CharacterCodingException) { text }
         }
 
         /**
