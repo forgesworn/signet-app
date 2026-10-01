@@ -62,7 +62,7 @@ import { contactsForGrant } from './lib/contacts-v2-grant-scope';
 import { contactIdentityLists } from './lib/contacts-v2-identity-lists';
 import { contactBelongsToList } from './lib/contacts-v2-membership';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import type { Page, CarouselRow, SignetIdentity } from './types';
+import type { Page, CarouselRow, CarouselColumn, SignetIdentity } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
 import { resolveSelectedPubkey } from './lib/auth-selection';
 import { downscaleAvatar, uploadAvatar, fetchAvatar, uploadContactAvatar, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
@@ -794,6 +794,8 @@ export function App() {
   const [pendingBotContacts, setPendingBotContacts] = useState<string>();
   const botInventory = useBotInventory(preferences.signingMode === 'paired-child' ? null : identity?.naturalPerson.publicKey ?? null, encryptionKey, botsVersion);
   const carousel = useCarousel(identity, dependants, botInventory);
+  // Home-tap slide request for the carousel (a new seq starts one slide).
+  const [carouselJump, setCarouselJump] = useState<{ row: number; col: CarouselColumn; seq: number } | null>(null);
   // Refs so the __TEST__ harness (registered once) always accesses fresh values
   const identityRef = useRef(identity);
   identityRef.current = identity;
@@ -12532,6 +12534,7 @@ export function App() {
         onCommit={carousel.commitPosition}
         onAnimatingChange={carousel.setAnimating}
         swipeLocked={!!pendingAuthRequest}
+        jumpTo={carouselJump}
         badge={ownBadge ? {
           tier: ownBadge.tier,
           score: ownBadge.score ?? 0,
@@ -12825,8 +12828,12 @@ export function App() {
             // Child mode is left only through the guardian's unlock, so a
             // second tap goes to the top of whichever ring is showing.
             const action = homeTapAction({ onHome: page === 'home', row: carousel.row, col: carousel.col });
-            if (action === 'front') carousel.navigateToCell(carousel.row, 0);
-            else if (action === 'top') carousel.navigateToCell(0, 0);
+            const cell = action === 'front' ? { row: carousel.row, col: 0 as const }
+              : action === 'top' ? { row: 0, col: 0 as const } : null;
+            // On the carousel already: slide there. From another page the
+            // carousel mounts fresh, so it simply starts on that cell.
+            if (cell && page === 'home') setCarouselJump(prev => ({ ...cell, seq: (prev?.seq ?? 0) + 1 }));
+            else if (cell) carousel.navigateToCell(cell.row, cell.col);
           }
           void (async () => {
             if (target === 'contacts') setContactCardSearch('');

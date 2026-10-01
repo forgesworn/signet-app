@@ -29,6 +29,8 @@ interface CarouselProps {
   onCommit: (row: number, col: CarouselColumn) => void;
   onAnimatingChange: (v: boolean) => void;
   swipeLocked?: boolean;
+  /** Animated jump to any cell (Home tap). A new `seq` starts the slide. */
+  jumpTo?: { row: number; col: CarouselColumn; seq: number } | null;
   badge: { tier: number; score: number; vouchCount: number; iqBreakdown?: IQBreakdownItem[] } | null;
   onNavigateDeepPage: (page: string, opts?: {
     focusPersona?: string;
@@ -534,16 +536,8 @@ export function Carousel(props: CarouselProps) {
     }, 250);
   }, [clearSnapBackTimeout, setIncoming]);
 
-  const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
-    if (animating) return;
-
-    const target = resolveTarget(axis, direction);
-    if (!target) {
-      handleSnapBack();
-      return;
-    }
-    const { row: newRow, col: newCol } = target;
-
+  /** Slide to (newRow, newCol) as a swipe in `direction` on `axis` would. */
+  const animateTo = useCallback((axis: 'h' | 'v', direction: -1 | 1, newRow: number, newCol: CarouselColumn, dx: number, dy: number) => {
     onAnimatingChange(true);
 
     const vp = viewportRef.current;
@@ -614,7 +608,35 @@ export function Carousel(props: CarouselProps) {
     requestAnimationFrame(() => {
       requestAnimationFrame(runAnimation);
     });
-  }, [animating, resolveTarget, onCommit, onAnimatingChange, handleSnapBack, setIncoming, clearSnapBackTimeout]);
+  }, [onCommit, onAnimatingChange, setIncoming, clearSnapBackTimeout]);
+
+  const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
+    if (animating) return;
+    const target = resolveTarget(axis, direction);
+    if (!target) {
+      handleSnapBack();
+      return;
+    }
+    animateTo(axis, direction, target.row, target.col, dx, dy);
+  }, [animating, resolveTarget, handleSnapBack, animateTo]);
+
+  // Home tap: slide to the requested cell — vertically when the row changes,
+  // otherwise horizontally the short way round the column loop.
+  const jumpSeq = props.jumpTo?.seq;
+  useEffect(() => {
+    const jump = props.jumpTo;
+    if (!jump || animating) return;
+    const targetRow = clampIndex(jump.row, rows.length);
+    if (targetRow === row && jump.col === col) return;
+    if (targetRow !== row) {
+      animateTo('v', targetRow < row ? 1 : -1, targetRow, jump.col, 0, 0);
+    } else {
+      const forward = wrapIndex(jump.col - col, CAROUSEL_COLUMNS.length);
+      animateTo('h', forward <= CAROUSEL_COLUMNS.length / 2 ? -1 : 1, row, jump.col, 0, 0);
+    }
+    // Fires once per request: only a new seq starts a slide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpSeq]);
 
   const handleTap = useCallback(() => {
     // A gesture that locked an axis (mounting a neighbour) but ended under the
