@@ -96,8 +96,10 @@ export function IdentityCard({ row, resolved, badge, childMode, childDormant, ch
   // Public kind-0 picture (e.g. adopted by "Match it in Signet") — the last
   // resort when the slot has no decrypted in-app avatar. Untrusted URL: only
   // https (or loopback http) survives `safeImageOrLinkUrl`. A load failure is
-  // remembered per-URL, so a changed URL gets a fresh attempt.
-  const publicPictureHref = resolved.pictureUrl
+  // remembered per-URL, so a changed URL gets a fresh attempt. A slot with an
+  // in-app avatar never falls back to it: useResolvedAvatar reads null while
+  // loading, and the public picture would flash in before the avatar.
+  const publicPictureHref = resolved.pictureUrl && !resolved.avatarHash
     ? safeImageOrLinkUrl(resolved.pictureUrl)?.href ?? null
     : null;
   const [failedPictureHref, setFailedPictureHref] = useState<string | null>(null);
