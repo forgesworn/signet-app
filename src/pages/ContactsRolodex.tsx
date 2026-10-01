@@ -51,6 +51,8 @@ interface Props {
   followsPersonaName?: string;
   followsLast?: FollowsImportState;
   followsDisabledReason?: string;
+  /** Open the Import following panel on arrival (from the carousel card). */
+  initialFollowsOpen?: boolean;
   /** Guardian-only cross-family table. Absent unless the scope allows it. */
   onManageFamily?: () => void;
 }
@@ -101,9 +103,9 @@ function ContactRow({ contact, guardianName, relayUrl, encryptionKey, onTap }: {
 export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, selectedList, onSelectList,
   contacts, loading, guardianName, subjectName, relayUrl, encryptionKey,
   onSelectContact, onNewContact, onAddKen, onManageFamily, onInvites,
-  onImportFollows, onUnlinkFollows, followsPersonaName, followsLast, followsDisabledReason,
+  onImportFollows, onUnlinkFollows, followsPersonaName, followsLast, followsDisabledReason, initialFollowsOpen = false,
 }: Props) {
-  const [followsOpen, setFollowsOpen] = useState(false);
+  const [followsOpen, setFollowsOpen] = useState(initialFollowsOpen);
   const showFollows = !!((onImportFollows && onUnlinkFollows) || followsDisabledReason);
   const [filter, setFilter] = useState<ContactsFilter>('all');
   const [query, setQuery] = useState(initialSearch);

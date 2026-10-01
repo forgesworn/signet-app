@@ -17,3 +17,11 @@ it('passes the summary search through to the selected identity list', async () =
   fireEvent.click(screen.getByRole('button', { name: 'View contacts' }));
   await waitFor(() => expect(onOpen).toHaveBeenCalledWith('view', 'friend'));
 });
+it('shows Import following only when the persona has a public profile', async () => {
+  const onOpen = vi.fn(async () => {});
+  const { rerender } = render(<ContactsCard name="Persona" contacts={contacts} available onOpen={onOpen} />);
+  expect(screen.queryByRole('button', { name: 'Import following' })).toBeNull();
+  rerender(<ContactsCard name="Persona" contacts={contacts} available followsAvailable onOpen={onOpen} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Import following' }));
+  await waitFor(() => expect(onOpen).toHaveBeenCalledWith('follows', ''));
+});

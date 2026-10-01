@@ -178,7 +178,7 @@ import { PersonaAdvanced } from './pages/PersonaAdvanced';
 import { ActivateRealIdentity } from './pages/ActivateRealIdentity';
 import { RequireRealIdentity } from './components/RequireRealIdentity';
 import { resolveActivationBackupStep } from './lib/activation-backup-step';
-import { isNaturalPersonActive, isDependantNaturalPersonActive } from './lib/identity-display';
+import { isNaturalPersonActive, isDependantNaturalPersonActive, hasPublicNostrProfile } from './lib/identity-display';
 import { dependantGateReason } from './lib/real-identity-gate-reasons';
 import { toRecoveryWords } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
@@ -2121,6 +2121,9 @@ export function App() {
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
     ?? contactsIdentityLists[0]?.ownerIdentityPubkey ?? '';
   const [contactCardSearch, setContactCardSearch] = useState('');
+  // Carousel contacts card "Import following": open the panel on arrival.
+  const [contactsOpenFollows, setContactsOpenFollows] = useState(false);
+  useEffect(() => { if (page !== 'contacts') setContactsOpenFollows(false); }, [page]);
   const [contactsIdentityChoice, setContactsIdentityChoice] = useState<string | null>(null);
   useEffect(() => { setContactsIdentityChoice(null); }, [contactsScope.directoryId, defaultContactsIdentity]);
   const contactsListIdentity = contactsIdentityChoice ?? defaultContactsIdentity;
@@ -11149,6 +11152,7 @@ export function App() {
             };
           })()}
           initialSearch={contactCardSearch}
+          initialFollowsOpen={contactsOpenFollows}
           contacts={contactsListIdentity === 'all' ? contactsV2.effective : contactsV2.effective.filter(c => contactBelongsToList(c, contactsListIdentity))}
           lists={contactsIdentityLists}
           pendingLinks={contactsV2.records.reduce((n, r) => n + (r.appIntroductions?.filter(i => i.status === 'pending').length ?? 0), 0)}
@@ -12548,6 +12552,7 @@ export function App() {
           name={resolved.displayName} available={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild) && !contactsV2.loading}
           contacts={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild)
             ? contactsV2.effective.filter(contact => contactBelongsToList(contact, resolved.publicKey)) : []}
+          followsAvailable={!resolved.isDependant && !isPairedChild && !childDirect && hasPublicNostrProfile(identity, resolved.publicKey)}
           onOpen={async (action, query) => {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
@@ -12555,6 +12560,7 @@ export function App() {
             setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
+            setContactsOpenFollows(action === 'follows');
             navigateTo(action === 'new' ? 'contact-new' : 'contacts');
           }} />}
         row={carousel.row}
