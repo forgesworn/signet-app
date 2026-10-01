@@ -369,6 +369,8 @@ describe('usePreferences — bunker restore fields', () => {
       await Promise.all([
         result.current.setBackgroundBunkerEnabled(true),
         result.current.setStayAwakeEndsAt(1_790_000_120_000),
+        // The post-unlock reload must not put the old record back.
+        result.current.reloadPreferences(),
       ]);
     });
     const saved = await db.getPreferences();

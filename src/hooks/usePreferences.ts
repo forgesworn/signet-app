@@ -262,6 +262,9 @@ export function usePreferences() {
   // see db.getPreferences. Omit while locked; App.tsx calls this again
   // with the key once unlock completes.
   const reloadPreferences = useCallback(async (encryptionKey?: string) => {
+    // A queued applyFresh write has already changed state; read after it
+    // lands, or this read would put the old record back over it.
+    await applyFreshChainRef.current.catch(() => {});
     const fresh = await db.getPreferences(encryptionKey);
     setPreferences(fresh);
   }, []);
