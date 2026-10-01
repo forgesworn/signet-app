@@ -287,6 +287,22 @@ export async function authenticatePIN(pin: string): Promise<string | null> {
   }
 }
 
+/**
+ * Whether the stored record could be opened with a PIN. A native biometric
+ * install keeps no PIN-wrapped copy (the key lives in the Android Keystore,
+ * and the system prompt offers the phone's own PIN instead), so offering
+ * "Use PIN instead" there leads only to "wrong PIN".
+ */
+export function hasPinFallback(): boolean {
+  try {
+    const raw = localStorage.getItem(ENCRYPTED_KEY_KEY);
+    if (!raw) return true;
+    return (JSON.parse(raw) as Record<string, unknown>).native !== true;
+  } catch {
+    return true;
+  }
+}
+
 /** Check if auth is set up */
 export function isAuthSetUp(): boolean {
   return localStorage.getItem(AUTH_METHOD_KEY) !== null;

@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('./native', () => mocks);
 
-import { isBiometricAvailable, setupBiometric, authenticateBiometric } from './auth';
+import { isBiometricAvailable, setupBiometric, authenticateBiometric, hasPinFallback, setupPIN } from './auth';
 
 describe('auth native branches', () => {
   beforeEach(() => { localStorage.clear(); vi.clearAllMocks(); });
@@ -30,6 +30,13 @@ describe('auth native branches', () => {
     expect(mocks.SignetNative.biometricEnroll).toHaveBeenCalledWith({ secret: key });
     expect(localStorage.getItem('signet-auth-method')).toBe('biometric');
     expect(localStorage.getItem('signet-auth-encrypted-key')).toBe(JSON.stringify({ native: true }));
+  });
+
+  it('a native biometric install has no PIN to fall back to; a PIN install does', async () => {
+    await setupBiometric('a'.repeat(64));
+    expect(hasPinFallback()).toBe(false);
+    await setupPIN('123456', 'a'.repeat(64));
+    expect(hasPinFallback()).toBe(true);
   });
 
   it('authenticateBiometric returns the exact enrolled secret', async () => {
