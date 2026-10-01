@@ -17,6 +17,13 @@ public class MainActivity extends BridgeActivity {
      */
     private static Bridge parkedBridge;
 
+    /** The page that last heartbeated as an unlocked, serving page. */
+    private static volatile Bridge servingBridge;
+
+    static void noteServing(Bridge candidate) {
+        servingBridge = candidate;
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(SignetNativePlugin.class);
@@ -51,7 +58,10 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void maybePark() {
-        if (bridge == null || isChangingConfigurations()) return;
+        // Only the page that is actually serving parks. A locked page swiped
+        // away (e.g. opened on the PIN screen while another page is parked)
+        // is destroyed normally and must not displace the parked one.
+        if (bridge == null || bridge != servingBridge || isChangingConfigurations()) return;
         if (!BunkerForegroundService.isServingPersistently(this)) return;
         releaseParked();
         parkedBridge = bridge;
@@ -74,6 +84,7 @@ public class MainActivity extends BridgeActivity {
         Bridge parked = parkedBridge;
         parkedBridge = null;
         if (parked == null) return;
+        if (servingBridge == parked) servingBridge = null;
         try {
             parked.onDestroy();
             parked.onDetachedFromWindow();

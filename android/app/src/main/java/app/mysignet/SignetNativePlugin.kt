@@ -273,6 +273,7 @@ class SignetNativePlugin : Plugin() {
 
     @PluginMethod
     fun serviceHeartbeat(call: PluginCall) {
+        MainActivity.noteServing(bridge)
         BunkerForegroundService.heartbeat(
             context,
             call.getString("pubkeysCsv") ?: "",

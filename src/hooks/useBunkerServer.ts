@@ -65,6 +65,8 @@ import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/pers
 import type { ChildRouteGate } from '../lib/child-bunker';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
+import { isNativeApp } from '../lib/native';
+import { markAnswered, wasAnswered } from '../lib/bunker-answered-store';
 
 /**
  * Dev-only diagnostics for the bunker-serve socket lifecycle. Stripped from
@@ -551,6 +553,14 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const handledEventIdsRef = useRef<Set<string>>(new Set());
   const HANDLED_EVENT_IDS_CAP = 1000;
 
+  // Android only: a page parked after the app was swiped away keeps serving
+  // until a newer page unlocks and takes over (MainActivity). The newer page
+  // looks back further (see the REQ `since`) to pick up what the parked page
+  // could only queue, and skips what it already answered — recorded per
+  // inbound event id in storage both pages share (bunker-answered-store).
+  const shareAnswered = isNativeApp();
+  const inboundEventByRequestRef = useRef<Map<string, string>>(new Map());
+
   /** Publish a response event to the relay the client spoke to us on. */
   const publishResponse = useCallback(
     async (backend: DecryptingSigningBackend, clientPubkey: string, requestId: string, result?: string, error?: string) => {
@@ -570,9 +580,17 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         return;
       }
       responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000 });
+      if (shareAnswered) {
+        const key = `${clientPubkey}:${requestId}`;
+        const inbound = inboundEventByRequestRef.current.get(key);
+        if (inbound) {
+          inboundEventByRequestRef.current.delete(key);
+          markAnswered(inbound);
+        }
+      }
       flushResponses();
     },
-    [flushResponses],
+    [flushResponses, shareAnswered],
   );
 
   /** Dispatch an inbound kind-24133 event to the right handler. */
@@ -634,6 +652,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       const oldest = handled.values().next().value;
       if (oldest !== undefined) handled.delete(oldest);
     }
+    if (shareAnswered && wasAnswered(event.id)) return;
 
     // Bot handlers authorise the verified envelope author from their own fresh
     // encrypted grants before identity decryption. Missing handler means deny;
@@ -652,6 +671,14 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
 
     const request = await parseInboundRequest(event, route.backend);
     if (!request) return;
+    if (shareAnswered) {
+      const inbound = inboundEventByRequestRef.current;
+      inbound.set(`${request.clientPubkey}:${request.id}`, event.id);
+      if (inbound.size > HANDLED_EVENT_IDS_CAP) {
+        const oldest = inbound.keys().next().value;
+        if (oldest !== undefined) inbound.delete(oldest);
+      }
+    }
 
     // Owner serving is time-boxed. Outside an active owner serve session,
     // decline owner-route requests (third-party apps acting as the user).
@@ -1703,7 +1730,9 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         const filter = {
           kinds: [24133],
           '#p': pubkeys,
-          since: Math.floor(Date.now() / 1000) - 60,
+          // Native looks back 5 min (the request freshness bound) so a page
+          // taking over from a parked one sees what that page only queued.
+          since: Math.floor(Date.now() / 1000) - (shareAnswered ? 300 : 60),
         };
         try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }
         devLog(`[bunker-serve] open — REQ sent (#p: ${pubkeys.map(p => p.slice(0, 8)).join(',')})`);

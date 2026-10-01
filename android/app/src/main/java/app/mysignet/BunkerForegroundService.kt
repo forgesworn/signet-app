@@ -21,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground service for always-on bunker serving (GrapheneOS-first: no
@@ -28,8 +29,8 @@ import java.util.concurrent.TimeUnit
  *  1. Keep the process + WebView alive (FGS + partial wake lock) so the
  *     JS NIP-46 server keeps signing with the screen off — and, once the
  *     activity is swiped away, as a parked page (see MainActivity).
- *  2. When nothing is serving (boot, process restart, locked — JS heartbeat
- *     stale), say so: the ongoing notification changes and a one-off
+ *  2. When nothing is serving (boot, process restart, locked, relay socket
+ *     not open — JS heartbeat stale), say so: the ongoing notification changes and a one-off
  *     "tap to unlock" alert is posted. Nothing signs before an unlock; no
  *     key is held at rest without the PIN or biometric.
  *  3. Fallback: in that state, poll the relay directly and post a blind
@@ -52,7 +53,7 @@ class BunkerForegroundService : Service() {
         @Volatile private var lastHeartbeatMs: Long = 0
         @Volatile private var pubkeysCsv: String = ""
         @Volatile private var relayUrl: String = ""
-        @Volatile private var unlockAlerted = false
+        private val unlockAlerted = AtomicBoolean(false)
 
         /**
          * `fromBoot`: nothing has unlocked yet, so the service starts in the
@@ -93,7 +94,7 @@ class BunkerForegroundService : Service() {
             temporaryUntilMs = 0
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putBoolean("enabled", false).apply()
-            unlockAlerted = false
+            unlockAlerted.set(false)
             (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_UNLOCK_ID)
             context.stopService(Intent(context, BunkerForegroundService::class.java))
         }
@@ -102,8 +103,7 @@ class BunkerForegroundService : Service() {
             lastHeartbeatMs = System.currentTimeMillis()
             if (pubkeys.isNotEmpty()) pubkeysCsv = pubkeys
             if (relay.isNotEmpty()) relayUrl = relay
-            if (unlockAlerted && isPersistent(context)) {
-                unlockAlerted = false
+            if (isPersistent(context) && unlockAlerted.compareAndSet(true, false)) {
                 showServingState(context.applicationContext, serving = true)
             }
         }
@@ -145,8 +145,8 @@ class BunkerForegroundService : Service() {
                 builder.setContentTitle("Signet bunker is serving")
                     .setContentText("Signing requests are handled while Signet is closed")
             } else {
-                builder.setContentTitle("Signet is locked — not signing")
-                    .setContentText("Tap to unlock Signet so it can sign for your family again")
+                builder.setContentTitle("Signet isn't signing right now")
+                    .setContentText("Tap to open and unlock Signet so it can sign for your family again")
             }
             return builder.build()
         }
@@ -162,8 +162,8 @@ class BunkerForegroundService : Service() {
             nm.notify(
                 NOTIF_UNLOCK_ID,
                 Notification.Builder(context, CHANNEL_ALERTS)
-                    .setContentTitle("Signet needs unlocking")
-                    .setContentText("Tap to unlock Signet so it can sign for your family again")
+                    .setContentTitle("Signet isn't signing")
+                    .setContentText("Tap to open and unlock Signet so it can sign for your family again")
                     .setSmallIcon(R.drawable.ic_stat_signet)
                     .setContentIntent(launchIntent(context))
                     .setAutoCancel(true)
@@ -194,11 +194,9 @@ class BunkerForegroundService : Service() {
                 }
                 val stale = !heartbeatFresh()
                 if (enabled) {
-                    if (stale && !unlockAlerted) {
-                        unlockAlerted = true
+                    if (stale && unlockAlerted.compareAndSet(false, true)) {
                         showServingState(this@BunkerForegroundService, serving = false)
-                    } else if (!stale && unlockAlerted) {
-                        unlockAlerted = false
+                    } else if (!stale && unlockAlerted.compareAndSet(true, false)) {
                         showServingState(this@BunkerForegroundService, serving = true)
                     }
                 }
@@ -216,8 +214,7 @@ class BunkerForegroundService : Service() {
         super.onCreate()
         val serving = heartbeatFresh()
         startForeground(NOTIF_FGS_ID, fgsNotification(this, serving))
-        if (!serving && isPersistent(this) && !unlockAlerted) {
-            unlockAlerted = true
+        if (!serving && isPersistent(this) && unlockAlerted.compareAndSet(false, true)) {
             postUnlockAlert(this)
         }
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager

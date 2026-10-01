@@ -5023,10 +5023,14 @@ export function App() {
   }, [encryptionKey]);
 
   // Native: liveness heartbeat to the foreground service while serving.
-  // A stale heartbeat (>90s) flips the service into fallback-poll mode.
+  // A stale heartbeat (>90s) flips the service into fallback-poll mode and
+  // the "isn't signing" notification. Only sent while the serve socket is
+  // open: a parked page (app swiped away) never gets the `resume` kick
+  // below, so a dead socket must surface as a stale heartbeat instead.
   useEffect(() => {
     if (!isNativeApp() || !backgroundServing || !encryptionKey) return;
     const beat = () => {
+      if (bunkerServeStatusRef.current.phase !== 'open') return;
       void SignetNative.serviceHeartbeat({ pubkeysCsv: bunkerServePubkeysCsv, relayUrl: bunkerServeRelayUrl }).catch(() => {});
     };
     beat();
