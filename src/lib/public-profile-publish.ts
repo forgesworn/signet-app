@@ -437,6 +437,31 @@ export function adoptPublishedIntoCard(
   return name ? { config: next, name } : { config: next };
 }
 
+/**
+ * Name-only rename of a kind-0: for a profile Signet does NOT manage (never
+ * enabled), a rename must not publish any card field. With a usable base (a
+ * non-empty plain object) it sets `display_name`, sets `name` only when the
+ * base has no non-empty `name` (a handle is never overwritten), and keeps
+ * every other key and the tags verbatim. With no usable base (absent, not an
+ * object, or an empty tombstone) it is just `{ name, display_name }` with no
+ * tags. Returns `null` when the name sanitises to nothing.
+ */
+export function renameOnlyKindZero(
+  base: { content: string; tags: string[][] } | undefined,
+  newName: string,
+): { content: string; tags: string[][] } | null {
+  const display = sanitiseText(newName, CAP_DISPLAY_NAME).trim();
+  if (!display) return null;
+  const handle = sanitiseText(newName, CAP_NAME).trim();
+  const obj = base ? parseObject(base.content) : null;
+  if (!base || !obj || Object.keys(obj).length === 0) {
+    return { content: JSON.stringify({ name: handle, display_name: display }), tags: [] };
+  }
+  obj.display_name = display;
+  if (typeof obj.name !== 'string' || obj.name.trim() === '') obj.name = handle;
+  return { content: JSON.stringify(obj), tags: base.tags.map(t => [...t]) };
+}
+
 // ─── Publish / Retract / Fetch ─────────────────────────────────────────────
 
 export interface PublishResult {

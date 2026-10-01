@@ -321,7 +321,7 @@ import { LeadAddStaff } from './pages/LeadAddStaff';
 import { LeadManageDelegates } from './pages/LeadManageDelegates';
 import { useProRoleAnchor } from './hooks/useProRoleAnchor';
 import { deriveAndStoreProPersona } from './hooks/useIdentity';
-import { proModeBlockedReason } from './lib/professional/pro-persona';
+import { proModeBlockedReason, publishProNameOnly } from './lib/professional/pro-persona';
 import { PRO_ROSTER } from './lib/professional/kinds';
 import type { RosterMember } from './lib/professional/role-anchor';
 import { useNavigation } from './hooks/useNavigation';
@@ -10010,11 +10010,17 @@ export function App() {
             if (!identity || !encryptionKey || !effectiveProBackend) return;
             await updateDisplayName('professional-persona', name);
             if (proPersonaPubkey) {
-              // Same lossless path as every other slot: three-way merge onto
-              // the relay's kind-0 (keeps picture/about/tags set elsewhere)
-              // and the slot's stored base is updated. The name override is
-              // needed because `identity` in this closure predates the save.
-              await publishPersonaProfile('professional-persona', undefined, { displayNameOverride: name });
+              if (identity.professionalPersona?.publicProfile?.enabled === true) {
+                // Published through Signet: the lossless path (three-way merge,
+                // base updated). The name override is needed because `identity`
+                // in this closure predates the save.
+                const r = await publishPersonaProfile('professional-persona', undefined, { displayNameOverride: name });
+                if (!r.ok) throw new Error(r.message || 'Could not publish the name.');
+              } else {
+                // Not published through Signet: name only, no card fields, and
+                // neither the stored base nor the publication state is touched.
+                await publishProNameOnly(proPersonaPubkey, name, effectiveProBackend, syncRelays.read, preferences.relayUrl ?? DEFAULT_RELAY_URL);
+              }
             }
           }}
         />

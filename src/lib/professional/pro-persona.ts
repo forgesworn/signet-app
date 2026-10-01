@@ -7,6 +7,10 @@
 // of any other sibling's pubkey.
 
 import { deriveExtraPersona } from '../signet';
+import type { SigningBackend } from '../signing-backend';
+import { publishEvent } from '../relay-service';
+import { fetchExistingProfile } from '../existing-profile';
+import { renameOnlyKindZero } from '../public-profile-publish';
 
 /** The canonical nsec-tree path token for the Professional Persona. */
 const PRO_PERSONA_DERIVATION_TOKEN = 'professional';
@@ -67,4 +71,38 @@ export function proModeBlockedReason(
     );
   }
   return null;
+}
+
+/**
+ * Pro rename for a Pro profile that is NOT published through Signet's card
+ * (`publicProfile.enabled` is not true): publish the NAME only. Looks up the
+ * latest kind-0 and renames within it (every other key and tag kept verbatim);
+ * with none usable it publishes `{ name, display_name }`. Never touches card
+ * fields, the stored base or the publication state. Throws on publish failure.
+ */
+export async function publishProNameOnly(
+  proPublicKey: string,
+  displayName: string,
+  proBackend: SigningBackend,
+  lookupRelays: string[],
+  relayUrl?: string,
+): Promise<void> {
+  let found: Awaited<ReturnType<typeof fetchExistingProfile>> = null;
+  try {
+    found = await fetchExistingProfile(proPublicKey, relayUrl ? [relayUrl, ...lookupRelays] : lookupRelays);
+  } catch { /* publish name-only */ }
+  const base = found && found !== 'unreachable' ? found.event : undefined;
+  const renamed = renameOnlyKindZero(base, displayName);
+  if (!renamed) return;
+  const now = Math.floor(Date.now() / 1000);
+  const event = await proBackend.signEvent({
+    kind: 0,
+    pubkey: proPublicKey,
+    // A replaceable event only replaces an OLDER one.
+    created_at: base ? Math.max(now, base.created_at + 1) : now,
+    tags: renamed.tags,
+    content: renamed.content,
+  });
+  const result = await publishEvent(event, relayUrl ? { relays: [relayUrl] } : undefined);
+  if (!result.ok) throw new Error(result.message || 'Could not publish the name.');
 }
