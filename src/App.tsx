@@ -178,7 +178,7 @@ import { PersonaAdvanced } from './pages/PersonaAdvanced';
 import { ActivateRealIdentity } from './pages/ActivateRealIdentity';
 import { RequireRealIdentity } from './components/RequireRealIdentity';
 import { resolveActivationBackupStep } from './lib/activation-backup-step';
-import { isNaturalPersonActive, isDependantNaturalPersonActive } from './lib/identity-display';
+import { isNaturalPersonActive, isDependantNaturalPersonActive, hasPublicNostrProfile } from './lib/identity-display';
 import { dependantGateReason } from './lib/real-identity-gate-reasons';
 import { toRecoveryWords } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
@@ -2126,6 +2126,9 @@ export function App() {
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
     ?? contactsIdentityLists[0]?.ownerIdentityPubkey ?? '';
   const [contactCardSearch, setContactCardSearch] = useState('');
+  // Carousel contacts card "Import following": open the panel on arrival.
+  const [contactsOpenFollows, setContactsOpenFollows] = useState(false);
+  useEffect(() => { if (page !== 'contacts') setContactsOpenFollows(false); }, [page]);
   const [contactsIdentityChoice, setContactsIdentityChoice] = useState<string | null>(null);
   useEffect(() => { setContactsIdentityChoice(null); }, [contactsScope.directoryId, defaultContactsIdentity]);
   const contactsListIdentity = contactsIdentityChoice ?? defaultContactsIdentity;
@@ -2268,9 +2271,17 @@ export function App() {
    * mutators are bound to the scope's directory, so a stale dependant scope
    * hides the offer rather than writing into the wrong directory.
    */
-  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+  const followsPendingFor = (slotTarget: string): string | undefined => {
     if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
-    if (contactsScope.directoryId !== 'owner' || contactsV2.loading) return undefined;
+    if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
+    if (contactsScope.directoryId !== 'owner') return 'Open this from your own card to import follows.';
+    if (contactsV2.loading) return 'Loading your contacts…';
+    return undefined;
+  };
+
+  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+    if (followsPendingFor(slotTarget)) return undefined;
+    if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
     if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
     return {
       onImportFollows: () => runFollowsImport({
@@ -10484,7 +10495,9 @@ export function App() {
             : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
           if (!ownSlot) return {};
           const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
-          return handlers ? { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows } : {};
+          if (handlers) return { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows };
+          const pending = followsPendingFor(slotTarget);
+          return pending ? { followsPending: pending } : {};
         })()}
         onMatchExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async (found) => {
           // Writes card + state + base in one save and publishes nothing: the
@@ -11212,7 +11225,31 @@ export function App() {
         </section>}
         {isPairedChild && <h2>Contacts saved on this device</h2>}
         <ContactsRolodex
+          {...(() => {
+            // Owner scope only; never a dependant scope or a paired-child install.
+            if (!identity || isPairedChild || childDirect || contactsScope.directoryId !== 'owner' || !contactsWriteIdentity) return {};
+            const pk = contactsWriteIdentity;
+            const slot = pk === identity.naturalPerson.publicKey ? { target: 'natural-person', s: identity.naturalPerson }
+              : pk === identity.persona.publicKey ? { target: 'persona', s: identity.persona }
+              : pk === identity.professionalPersona?.publicKey ? { target: 'professional-persona', s: identity.professionalPersona }
+              : (() => { const x = identity.extraPersonas?.find(e => e.publicKey === pk); return x ? { target: pk, s: x } : undefined; })();
+            if (!slot) return {};
+            const name = slot.s.displayName || 'this persona';
+            const handlers = followsHandlersFor(slot.target, pk, name);
+            // Only the loading wait is shown; "open from your own card" never is.
+            const pending = followsPendingFor(slot.target);
+            const loadingReason = pending && contactsV2.loading ? pending : undefined;
+            if (!handlers && !loadingReason) return {};
+            return {
+              onImportFollows: handlers?.onImportFollows,
+              onUnlinkFollows: handlers?.onUnlinkFollows,
+              followsPersonaName: name,
+              followsLast: slot.s.followsImport,
+              followsDisabledReason: loadingReason,
+            };
+          })()}
           initialSearch={contactCardSearch}
+          initialFollowsOpen={contactsOpenFollows}
           contacts={contactsListIdentity === 'all' ? contactsV2.effective : contactsV2.effective.filter(c => contactBelongsToList(c, contactsListIdentity))}
           lists={contactsIdentityLists}
           pendingLinks={contactsV2.records.reduce((n, r) => n + (r.appIntroductions?.filter(i => i.status === 'pending').length ?? 0), 0)}
@@ -12612,6 +12649,7 @@ export function App() {
           name={resolved.displayName} available={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild) && !contactsV2.loading}
           contacts={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild)
             ? contactsV2.effective.filter(contact => contactBelongsToList(contact, resolved.publicKey)) : []}
+          followsAvailable={!resolved.isDependant && !isPairedChild && !childDirect && hasPublicNostrProfile(identity, resolved.publicKey)}
           onOpen={async (action, query) => {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
@@ -12619,6 +12657,7 @@ export function App() {
             setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
+            setContactsOpenFollows(action === 'follows');
             navigateTo(action === 'new' ? 'contact-new' : 'contacts');
           }} />}
         row={carousel.row}
@@ -12641,6 +12680,9 @@ export function App() {
           // 'transition-ceremony') read activeDependant synchronously on
           // render; React batches both state updates into the same flush.
           if (opts?.dependantId) setActiveDependantId(opts.dependantId);
+          // An owner slot's Advanced page must not inherit a dependant scope
+          // left over from an earlier visit (it hid the follows panel).
+          else if (p === 'persona-advanced' && opts?.slotTarget) setActiveDependantId(null);
           if (opts?.slotTarget) {
             setPendingPersonaAdvancedTarget({
               slotTarget: opts.slotTarget,

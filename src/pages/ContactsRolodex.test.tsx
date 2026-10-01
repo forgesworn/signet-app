@@ -82,4 +82,33 @@ describe('ContactsRolodex', () => {
     renderRolodex([], { subjectName: malicious });
     expect(screen.getByText("EveJoe's contacts")).toBeDefined();
   });
+
+  describe('Import following', () => {
+    const handlers = { onImportFollows: async () => ({ status: 'unreachable' as const }), onUnlinkFollows: async () => 0 };
+
+    it('is absent without props', () => {
+      renderRolodex([contact({ contactId: 'a' })]);
+      expect(screen.queryByRole('button', { name: 'Import following' })).toBeNull();
+    });
+
+    it('sits directly below the add-contact button and toggles the panel', () => {
+      renderRolodex([contact({ contactId: 'a' })], { ...handlers, followsPersonaName: 'Alex' });
+      const add = screen.getByRole('button', { name: 'New contact' });
+      const btn = screen.getByRole('button', { name: 'Import following' });
+      expect(add.nextElementSibling).toBe(btn);
+      expect(screen.queryByText('Nostr follows')).toBeNull();
+      fireEvent.click(btn);
+      expect(screen.getByText('Nostr follows')).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Import who this account follows' })).toBeDefined();
+      fireEvent.click(btn);
+      expect(screen.queryByText('Nostr follows')).toBeNull();
+    });
+
+    it('shows the disabled reason with Import disabled', () => {
+      renderRolodex([contact({ contactId: 'a' })], { followsDisabledReason: 'Loading your contacts…' });
+      fireEvent.click(screen.getByRole('button', { name: 'Import following' }));
+      expect(screen.getByText('Loading your contacts…')).toBeDefined();
+      expect((screen.getByRole('button', { name: 'Import who this account follows' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
 });

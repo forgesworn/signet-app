@@ -1,14 +1,18 @@
 import { useState } from 'react';
 import type { EffectiveContact } from '../types';
-export function ContactsCard({ name, contacts, available, onOpen }: {
+import { IMPORT_FOLLOWING_LABEL } from '../lib/contacts-v2-copy';
+export type ContactsCardAction = 'view' | 'new' | 'follows';
+export function ContactsCard({ name, contacts, available, followsAvailable = false, onOpen }: {
   name: string; contacts: readonly EffectiveContact[]; available: boolean;
-  onOpen(action: 'view' | 'new', query: string): Promise<void>;
+  /** "Import following" — only for an owner persona with a public Nostr profile. */
+  followsAvailable?: boolean;
+  onOpen(action: ContactsCardAction, query: string): Promise<void>;
 }) {
   const [query, setQuery] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const visible = contacts.filter(contact => !contact.blocked && !contact.archived && contact.lifecycle === 'active');
   const recent = visible.filter(contact => !query || contact.displayName.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
     .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3);
-  const open = async (action: 'view' | 'new') => {
+  const open = async (action: ContactsCardAction) => {
     if (busy) return;
     setBusy(true); setError('');
     try { await onOpen(action, query); } catch { setError('Could not open these contacts.'); }
@@ -24,5 +28,6 @@ export function ContactsCard({ name, contacts, available, onOpen }: {
     {error && <p role="alert">{error}</p>}
     <button className="btn btn-primary" disabled={busy} onClick={() => void open('view')}>View contacts</button>
     <button className="btn btn-secondary" disabled={busy} onClick={() => void open('new')}>Add contact</button>
+    {followsAvailable && <button className="btn btn-secondary" disabled={busy} onClick={() => void open('follows')}>{IMPORT_FOLLOWING_LABEL}</button>}
   </div>;
 }
