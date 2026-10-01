@@ -58,10 +58,15 @@ interface Props {
   /** When locked and user clicks +X, notify app of the pending minutes so it can
    *  track it across unlock and reopen the panel after. */
   onRequestUnlockWithPendingArm: (minutes: number) => void;
+  /** When locked and user taps Always on: unlock first, then turn it on. */
+  onRequestUnlockForAlwaysOn: () => void;
   /** True inside the native (Android APK) shell — gates the always-on row. */
   isNative: boolean;
   /** Native always-on background serving currently armed. */
   backgroundServing: boolean;
+  /** The user turned always-on on (the stored preference), whether or not
+   *  it is serving right now — off-but-wanted shows amber. */
+  alwaysOnWanted: boolean;
   /** Arm/disarm native always-on background serving. */
   onSetBackgroundServing: (on: boolean) => Promise<void>;
   /** "Family asks" — parked-approval + petition notices (C4/C5). Absent/empty renders no section. */
@@ -91,8 +96,8 @@ export function BunkerPanel({
   onClose, bunkerAllowed, onGoToSecurity,
   stayAwakeUntil, onArmStayAwake, onCloseStayAwake, wakeLockSupported,
   pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
-  hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm,
-  isNative, backgroundServing, onSetBackgroundServing,
+  hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
+  isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing,
   escalationNotices, onDismissEscalation, resolveEscalationIdentityName,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
   childAsks, childAskAlwaysAvailable, onChildAskDecide,
@@ -227,34 +232,39 @@ export function BunkerPanel({
     </div>
   );
 
-  // Native-only always-on toggle. Disabled while locked (v1: the app must be
-  // unlocked to arm background serving); the +X row below it keeps its own
-  // locked flow via onRequestUnlockWithPendingArm.
+  // Native-only always-on toggle. Green = serving; amber = turned on but
+  // needs reactivating (locked, or stopped); grey = off. While locked a tap
+  // asks for the unlock first (same flow as the +X row) and turns it on.
+  const needsReactivating = alwaysOnWanted && !backgroundServing;
+  const alwaysOnColour = backgroundServing ? 'var(--success)' : needsReactivating ? 'var(--warning)' : null;
   const alwaysOnRow = isNative ? (
     <div style={{ marginTop: 8 }}>
       <button
         type="button"
-        disabled={locked}
-        onClick={() => { void onSetBackgroundServing(!backgroundServing); }}
+        onClick={() => {
+          if (locked) { onRequestUnlockForAlwaysOn(); return; }
+          void onSetBackgroundServing(!backgroundServing);
+        }}
         aria-pressed={backgroundServing}
         style={{
           width: '100%',
           padding: '8px 12px',
-          fontSize: 15,
+          fontSize: 16,
           fontWeight: 600,
-          border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--border)',
+          border: `1px solid ${alwaysOnColour ?? 'var(--border)'}`,
           borderRadius: 4,
-          cursor: locked ? 'not-allowed' : 'pointer',
-          opacity: locked ? 0.5 : 1,
+          cursor: 'pointer',
           background: 'var(--bg-card)',
-          color: backgroundServing ? 'var(--success)' : 'var(--text-primary)',
+          color: alwaysOnColour ?? 'var(--text-secondary)',
         }}
       >
-        {backgroundServing ? 'Always on — serving in background ✓' : 'Always on (background)'}
+        {backgroundServing ? 'Always on — serving in background ✓'
+          : needsReactivating ? 'Always on — tap to switch back on'
+          : 'Always on (background)'}
       </button>
       {locked && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, textAlign: 'center' }}>
-          Unlock to turn on always-on serving.
+          You'll be asked to unlock first.
         </div>
       )}
     </div>
