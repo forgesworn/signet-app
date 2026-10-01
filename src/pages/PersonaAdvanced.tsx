@@ -78,6 +78,12 @@ export interface PersonaAdvancedProps {
   onImportFollows?: () => Promise<FollowsImportOutcome>;
   /** Take contacts off this slot's list after a refresh found they are no longer followed. */
   onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
+  /**
+   * Set (instead of the two handlers) on an owner slot that would offer the
+   * follows import but cannot yet — contacts still loading, or the scope is not
+   * the owner's. The panel renders disabled with this as the reason.
+   */
+  followsPending?: string;
 
   // — User-side actions —
   onSwitchPrimary?: (target: 'natural-person' | 'persona') => Promise<void>;
@@ -324,6 +330,15 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
               last={slot.followsImport}
               onImport={props.onImportFollows}
               onUnlink={props.onUnlinkFollows}
+            />
+          )}
+          {!isDep && !(props.onImportFollows && props.onUnlinkFollows) && props.followsPending && (
+            <FollowsImportPanel
+              personaName={slot.displayName || 'this persona'}
+              last={slot.followsImport}
+              onImport={async () => ({ status: 'unreachable' })}
+              onUnlink={async () => 0}
+              disabledReason={props.followsPending}
             />
           )}
 

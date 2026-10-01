@@ -2263,9 +2263,17 @@ export function App() {
    * mutators are bound to the scope's directory, so a stale dependant scope
    * hides the offer rather than writing into the wrong directory.
    */
-  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+  const followsPendingFor = (slotTarget: string): string | undefined => {
     if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
-    if (contactsScope.directoryId !== 'owner' || contactsV2.loading) return undefined;
+    if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
+    if (contactsScope.directoryId !== 'owner') return 'Open this from your own card to import follows.';
+    if (contactsV2.loading) return 'Loading your contacts…';
+    return undefined;
+  };
+
+  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+    if (followsPendingFor(slotTarget)) return undefined;
+    if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
     if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
     return {
       onImportFollows: () => runFollowsImport({
@@ -10387,7 +10395,9 @@ export function App() {
             : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
           if (!ownSlot) return {};
           const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
-          return handlers ? { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows } : {};
+          if (handlers) return { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows };
+          const pending = followsPendingFor(slotTarget);
+          return pending ? { followsPending: pending } : {};
         })()}
         onMatchExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async (found) => {
           // Writes card + state + base in one save and publishes nothing: the
@@ -12544,6 +12554,9 @@ export function App() {
           // 'transition-ceremony') read activeDependant synchronously on
           // render; React batches both state updates into the same flush.
           if (opts?.dependantId) setActiveDependantId(opts.dependantId);
+          // An owner slot's Advanced page must not inherit a dependant scope
+          // left over from an earlier visit (it hid the follows panel).
+          else if (p === 'persona-advanced' && opts?.slotTarget) setActiveDependantId(null);
           if (opts?.slotTarget) {
             setPendingPersonaAdvancedTarget({
               slotTarget: opts.slotTarget,
