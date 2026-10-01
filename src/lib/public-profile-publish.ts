@@ -424,7 +424,7 @@ export interface PublishResult {
 
 /** What the optional lossless-publish inputs of `publishPublicProfile` carry. */
 export interface PublishMergeInput {
-  /** The slot's stored `publicProfileBase`. Absent => today's plain build, no fetch. */
+  /** The slot's stored `publicProfileBase`. Absent => the fetched kind-0 (if usable) stands in for it. */
   storedBase?: PublicProfileBase;
   /** Extra relays to look the current kind-0 up on (the user's read relays). */
   lookupRelays?: string[];
@@ -453,10 +453,12 @@ export async function publishPublicProfile(
    */
   lastPublishedContentHash?: string,
   /**
-   * Lossless-publish inputs. With a stored base the function looks up the
-   * relay's current kind-0 itself (multi-relay, author-pinned, signature-
-   * verified) and three-way merges onto the newer of that and the base — see
-   * `mergeKindZeroContent`. Without one it behaves exactly as before.
+   * Lossless-publish inputs. The function looks up the relay's current kind-0
+   * itself (multi-relay, author-pinned, signature-verified) and three-way
+   * merges onto the newer of that and the stored base — see
+   * `mergeKindZeroContent`. With no stored base the fetched kind-0 serves as
+   * both comparison and content base; with no usable fetched kind-0 either, it
+   * is the plain card build.
    */
   merge?: PublishMergeInput,
 ): Promise<PublishResult> {
@@ -470,38 +472,45 @@ export async function publishPublicProfile(
   let tags: string[][] = [];
   let merged = false;
   const storedBase = merge?.storedBase;
+  // Look the relay's CURRENT kind-0 up (best-effort; unreachable or nothing
+  // found both read as "no fetched profile").
+  let fetchedEvent: { content: string; tags: string[][]; created_at: number } | null = null;
+  try {
+    const fetched = await fetchExistingProfile(
+      backend.activePublicKeyHex,
+      [relayUrl, ...(merge?.lookupRelays ?? [])],
+    );
+    if (fetched && fetched !== 'unreachable') fetchedEvent = fetched.event;
+  } catch { /* publish from what we have */ }
+
+  // Comparison base = the stored base; with none, the fetched kind-0 stands in
+  // (so fields where the card equals the relay keep their raw value, and the
+  // card wins only where it differs). Content base = the NEWER (by created_at,
+  // tie: stored) of the fetched kind-0 and the stored base. With neither usable
+  // the result is today's plain build.
+  let comparison: string | undefined;
+  let contentBase: { content: string; tags: string[][] } | undefined;
+  let baseCreatedAt = 0;
   if (storedBase) {
-    // Content base = the NEWER (by created_at, tie: stored) of the freshly
-    // fetched kind-0 and the stored base. An unreachable lookup, or one that
-    // finds nothing, leaves the stored base — still lossless relative to what
-    // we last knew.
-    let contentBase: { content: string; tags: string[][] } = { content: storedBase.content, tags: storedBase.tags };
-    let baseCreatedAt = storedBase.createdAt;
-    try {
-      const fetched = await fetchExistingProfile(
-        backend.activePublicKeyHex,
-        [relayUrl, ...(merge?.lookupRelays ?? [])],
-      );
-      if (fetched && fetched !== 'unreachable' && fetched.event.created_at > storedBase.createdAt) {
-        contentBase = { content: fetched.event.content, tags: fetched.event.tags };
-        baseCreatedAt = fetched.event.created_at;
-      }
-    } catch { /* lookup is best-effort — publish from the stored base */ }
-    const result = mergeKindZeroContent({
-      comparisonContent: storedBase.content,
-      contentBase,
-      config,
-      fallbackDisplayName,
-    });
-    content = result.content;
-    tags = result.tags;
-    merged = result.merged;
-    // A replaceable event only replaces an OLDER one: stay strictly newer than
-    // whatever we merged onto, even if its author's clock ran ahead of ours.
-    created_at = Math.max(created_at, baseCreatedAt + 1);
-  } else {
-    content = buildKindZeroContent(config, fallbackDisplayName);
+    comparison = storedBase.content;
+    contentBase = { content: storedBase.content, tags: storedBase.tags };
+    baseCreatedAt = storedBase.createdAt;
+    if (fetchedEvent && fetchedEvent.created_at > storedBase.createdAt) {
+      contentBase = { content: fetchedEvent.content, tags: fetchedEvent.tags };
+      baseCreatedAt = fetchedEvent.created_at;
+    }
+  } else if (fetchedEvent) {
+    comparison = fetchedEvent.content;
+    contentBase = { content: fetchedEvent.content, tags: fetchedEvent.tags };
+    baseCreatedAt = fetchedEvent.created_at;
   }
+  const result = mergeKindZeroContent({ comparisonContent: comparison, contentBase, config, fallbackDisplayName });
+  content = result.content;
+  tags = result.tags;
+  merged = result.merged;
+  // A replaceable event only replaces an OLDER one: stay strictly newer than
+  // whatever we merged onto, even if its author's clock ran ahead of ours.
+  if (contentBase) created_at = Math.max(created_at, baseCreatedAt + 1);
   const contentHash = bytesToHex(sha256(new TextEncoder().encode(content)));
 
   // §5.3.3 short-circuit. Hash the canonical content string; if it matches

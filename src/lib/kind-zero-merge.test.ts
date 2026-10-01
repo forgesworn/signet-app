@@ -284,13 +284,32 @@ describe('publishPublicProfile — lossless publish', () => {
     vi.mocked(publishEvent).mockClear();
   });
 
-  it('with no stored base: today\'s plain build, empty tags, and NO lookup', async () => {
-    const config = cfg({ about: 'plain' });
-    const res = await publishPublicProfile(config, undefined, 'Alice', backend(), 'wss://r.example');
-    expect(fetchExistingProfile).not.toHaveBeenCalled();
-    expect(signed[0].tags).toEqual([]);
-    expect(signed[0].content).toBe(buildKindZeroContent(config, 'Alice'));
-    expect(res.merged).toBe(false);
+  it('no stored base and nothing usable on the relay: today\'s plain build, empty tags', async () => {
+    for (const looked of [null, 'unreachable', { event: { id: 'f'.repeat(64), created_at: 9, content: '{}', tags: [['t', 'x']] } }, { event: { id: 'f'.repeat(64), created_at: 9, content: '[1]', tags: [] } }]) {
+      existingMock.result = looked;
+      signed = [];
+      const config = cfg({ about: 'plain' });
+      const res = await publishPublicProfile(config, undefined, 'Alice', backend(), 'wss://r.example');
+      expect(signed[0].tags).toEqual([]);
+      expect(signed[0].content).toBe(buildKindZeroContent(config, 'Alice'));
+      expect(res.merged).toBe(false);
+    }
+  });
+
+  it('no stored base but a usable relay kind-0: it is both comparison and content base', async () => {
+    const relay = { name: 'handle_x', display_name: 'Casey', about: 'a\nb', bot: true, x_custom: 1 };
+    existingMock.result = { event: { id: 'f'.repeat(64), created_at: 5000, content: JSON.stringify(relay), tags: [['i', 'github:m', 'proof']] }, profile: {}, base: undefined, relay: 'wss://r.example' };
+    // Card: about equals the relay's (raw kept), name renamed.
+    const res = await publishPublicProfile({ displayName: 'Casey B', about: 'a\nb' }, undefined, 'Casey B', backend(), 'wss://r.example');
+    const obj = JSON.parse(signed[0].content);
+    expect(obj.name).toBe('handle_x');
+    expect(obj.display_name).toBe('Casey B');
+    expect(obj.about).toBe('a\nb');
+    expect(obj.bot).toBe(true);
+    expect(obj.x_custom).toBe(1);
+    expect(signed[0].tags).toEqual([['i', 'github:m', 'proof']]);
+    expect(signed[0].created_at).toBeGreaterThan(5000);
+    expect(res.merged).toBe(true);
   });
 
   it('merges onto the stored base when the lookup finds nothing or is unreachable', async () => {
