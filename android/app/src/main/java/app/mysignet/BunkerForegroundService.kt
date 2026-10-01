@@ -27,8 +27,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Foreground service for always-on bunker serving (GrapheneOS-first: no
  * FCM). Three duties:
  *  1. Keep the process + WebView alive (FGS + partial wake lock) so the
- *     JS NIP-46 server keeps signing with the screen off — and, once the
- *     activity is swiped away, as a parked page (see MainActivity).
+ *     JS NIP-46 server keeps signing with the screen off (MainActivity also
+ *     keeps the page from being frozen). Swiping the app away ends the page;
+ *     that is reported at once (pageClosed).
  *  2. When nothing is serving (boot, process restart, locked, relay socket
  *     not open — JS heartbeat stale), say so: the ongoing notification changes and a one-off
  *     "tap to unlock" alert is posted. Nothing signs before an unlock; no
@@ -115,6 +116,21 @@ class BunkerForegroundService : Service() {
             System.currentTimeMillis() - lastHeartbeatMs <= HEARTBEAT_STALE_MS
 
         /** Always-on is set and an unlocked page is serving right now. */
+        /** The persistent always-on setting is on. */
+        @JvmStatic fun isAlwaysOn(context: Context): Boolean = isPersistent(context)
+
+        /**
+         * The serving page has gone (app swiped away). Nothing signs until
+         * the app is opened and unlocked again; say so straight away.
+         */
+        @JvmStatic fun pageClosed(context: Context) {
+            lastHeartbeatMs = 0
+            unlockAlerted.set(true)
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIF_FGS_ID, fgsNotification(context, serving = false))
+            postUnlockAlert(context, "Signet stopped signing for your family", "Tap to turn it back on")
+        }
+
         @JvmStatic fun isServingPersistently(context: Context): Boolean = isPersistent(context) && heartbeatFresh()
 
         /** Ongoing notification + unlock alert for the current state. */
@@ -151,7 +167,11 @@ class BunkerForegroundService : Service() {
             return builder.build()
         }
 
-        private fun postUnlockAlert(context: Context) {
+        private fun postUnlockAlert(
+            context: Context,
+            title: String = "Signet isn't signing",
+            text: String = "Tap to open and unlock Signet so it can sign for your family again",
+        ) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_ALERTS, "Signing requests", NotificationManager.IMPORTANCE_HIGH).apply {
@@ -162,8 +182,8 @@ class BunkerForegroundService : Service() {
             nm.notify(
                 NOTIF_UNLOCK_ID,
                 Notification.Builder(context, CHANNEL_ALERTS)
-                    .setContentTitle("Signet isn't signing")
-                    .setContentText("Tap to open and unlock Signet so it can sign for your family again")
+                    .setContentTitle(title)
+                    .setContentText(text)
                     .setSmallIcon(R.drawable.ic_stat_signet)
                     .setContentIntent(launchIntent(context))
                     .setAutoCancel(true)

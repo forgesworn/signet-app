@@ -72,11 +72,6 @@ class SignetNativePlugin : Plugin() {
         super.handleOnDestroy()
     }
 
-    /** Called when this page is parked (MainActivity): it can no longer ask anyone. */
-    fun detachNip55() {
-        Nip55Requests.detach(deliverToPage, withdrawFromPage)
-    }
-
     @PluginMethod
     fun nip55Pending(call: PluginCall) {
         val requests = com.getcapacitor.JSArray()
@@ -258,22 +253,8 @@ class SignetNativePlugin : Plugin() {
         call.resolve()
     }
 
-    /**
-     * An unlocked page takes over serving: a page parked from an earlier,
-     * swiped-away activity stops, so one request never gets two answers.
-     */
-    @PluginMethod
-    fun claimServing(call: PluginCall) {
-        if (MainActivity.isParked(bridge)) { call.resolve(); return }
-        activity.runOnUiThread {
-            MainActivity.releaseParked()
-            call.resolve()
-        }
-    }
-
     @PluginMethod
     fun serviceHeartbeat(call: PluginCall) {
-        MainActivity.noteServing(bridge)
         BunkerForegroundService.heartbeat(
             context,
             call.getString("pubkeysCsv") ?: "",

@@ -556,11 +556,10 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const handledEventIdsRef = useRef<Set<string>>(new Set());
   const HANDLED_EVENT_IDS_CAP = 1000;
 
-  // Android only: a page parked after the app was swiped away keeps serving
-  // until a newer page unlocks and takes over (MainActivity). The newer page
-  // looks back further (see the REQ `since`) to pick up what the parked page
-  // could only queue, and skips what it already answered — recorded per
-  // inbound event id in storage both pages share (bunker-answered-store).
+  // Android only: a page that unlocks looks back further (see the REQ
+  // `since`) to answer what arrived while nothing was serving, and skips what
+  // an earlier page already answered — recorded per inbound event id in
+  // storage that outlives the page (bunker-answered-store).
   const shareAnswered = isNativeApp();
   const inboundEventByRequestRef = useRef<Map<string, string>>(new Map());
 
@@ -1733,7 +1732,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
           kinds: [24133],
           '#p': pubkeys,
           // Native looks back 5 min (the request freshness bound) so a page
-          // taking over from a parked one sees what that page only queued.
+          // that unlocks answers what arrived while nothing was serving.
           since: Math.floor(Date.now() / 1000) - (shareAnswered ? 300 : 60),
         };
         try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }

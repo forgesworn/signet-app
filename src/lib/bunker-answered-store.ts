@@ -1,9 +1,8 @@
-// NIP-46 request events this install has already answered, shared between
-// pages. On Android a page parked after the app was swiped away keeps
-// serving (MainActivity); when a newer page unlocks it takes over and looks
-// back over the last few minutes, so it must skip what the parked page
-// already answered — and still pick up what that page could only queue
-// (an approval nobody could see). Same origin ⇒ same localStorage.
+// NIP-46 request events this install has already answered, kept across
+// page loads. On Android a page that unlocks looks back over the last few
+// minutes, to answer what arrived while nothing was serving (locked, swiped
+// away, rebooted — the "isn't signing" notification brought the user back);
+// it must skip what an earlier page already answered.
 //
 // Only event ids and times are kept: routing metadata, no request content.
 

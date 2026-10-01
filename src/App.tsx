@@ -4973,8 +4973,7 @@ export function App() {
     const timer = setTimeout(() => {
       setStayAwakeUntil(null);
       // Native always-on serving outlives a short window: ending the window
-      // must not lock a page that is serving in the background (screen off
-      // or swiped away and parked).
+      // must not lock a page that is serving in the background.
       if (document.visibilityState === 'hidden' && !backgroundServingRef.current) {
         requestLockRef.current();
       } else {
@@ -5018,18 +5017,11 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey, preferences.backgroundBunkerEnabled]);
 
-  // Native: an unlocked page takes over from a page left serving after the
-  // app was swiped away (MainActivity parks it while always-on is set).
-  useEffect(() => {
-    if (!isNativeApp() || !encryptionKey) return;
-    void SignetNative.claimServing().catch(() => {});
-  }, [encryptionKey]);
-
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode and
   // the "isn't signing" notification. Only sent while the serve socket is
-  // open: a parked page (app swiped away) never gets the `resume` kick
-  // below, so a dead socket must surface as a stale heartbeat instead.
+  // open: a backgrounded page never gets the `resume` kick below, so a dead
+  // socket must surface as a stale heartbeat instead.
   useEffect(() => {
     if (!isNativeApp() || !backgroundServing || !encryptionKey) return;
     const beat = () => {
@@ -5039,7 +5031,9 @@ export function App() {
     beat();
     const t = setInterval(beat, 20_000);
     return () => clearInterval(t);
-  }, [backgroundServing, encryptionKey, bunkerServePubkeysCsv, bunkerServeRelayUrl]);
+    // phase: beat as soon as the socket opens, so the service shows
+    // "serving" without a 20 s lag after unlock.
+  }, [backgroundServing, encryptionKey, bunkerServePubkeysCsv, bunkerServeRelayUrl, bunkerServeStatus.phase]);
 
   // Native: on app resume, kick the serve socket if it isn't open — Android
   // can kill a socket without delivering onclose to the WebView.
