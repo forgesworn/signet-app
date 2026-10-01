@@ -3664,6 +3664,9 @@ export function App() {
           title: `${who} needs an approval`,
           body: entry.description,
           smallIcon: 'ic_stat_signet',
+          // Shown now, not scheduled: without this the plugin opens Android's
+          // "Alarms & reminders" settings over whatever app is in front.
+          isExactNotification: false,
         }],
       }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
     },
@@ -4074,6 +4077,7 @@ export function App() {
         title: `${name} is waiting for a sign-in approval`,
         body: 'Open Signet to review it.',
         smallIcon: 'ic_stat_signet',
+        isExactNotification: false,
       }],
     }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
   }, [resolveEscalationIdentityName]);
@@ -4174,6 +4178,9 @@ export function App() {
           title: CHILD_ASK_COPY.notificationTitle(p.dependantName),
           body: p.ask.targetLabel,
           smallIcon: 'ic_stat_signet',
+          // Shown now, not scheduled: without this the plugin opens Android's
+          // "Alarms & reminders" settings over whatever app is in front.
+          isExactNotification: false,
         }],
       }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
     },
