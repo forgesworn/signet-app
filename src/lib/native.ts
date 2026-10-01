@@ -25,6 +25,11 @@ export interface SignetNativePlugin {
   startTemporaryBunkerService(opts: { pubkeysCsv: string; relayUrl: string; durationMs: number }): Promise<void>;
   stopTemporaryBunkerService(): Promise<void>;
   returnToPreviousApp(): Promise<void>;
+  /**
+   * This page has unlocked: stop any page parked from an earlier, swiped-away
+   * activity (always-on serving) so one request never gets two answers.
+   */
+  claimServing(): Promise<void>;
   /** Liveness ping: JS bunker is serving; also refreshes fallback-poll config. */
   serviceHeartbeat(opts: { pubkeysCsv: string; relayUrl: string }): Promise<void>;
   isBatteryExempt(): Promise<{ exempt: boolean }>;

@@ -14,7 +14,7 @@ class BootReceiver : BroadcastReceiver() {
                 if (prefs.getBoolean("enabled", false)) {
                     val pubkeys = prefs.getString("pubkeysCsv", "") ?: ""
                     val relay = prefs.getString("relayUrl", "") ?: ""
-                    if (relay.isNotEmpty()) BunkerForegroundService.start(context, pubkeys, relay)
+                    if (relay.isNotEmpty()) BunkerForegroundService.start(context, pubkeys, relay, fromBoot = true)
                 }
             }
         }

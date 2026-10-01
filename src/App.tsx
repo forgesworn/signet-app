@@ -5015,6 +5015,13 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey, preferences.backgroundBunkerEnabled]);
 
+  // Native: an unlocked page takes over from a page left serving after the
+  // app was swiped away (MainActivity parks it while always-on is set).
+  useEffect(() => {
+    if (!isNativeApp() || !encryptionKey) return;
+    void SignetNative.claimServing().catch(() => {});
+  }, [encryptionKey]);
+
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode.
   useEffect(() => {
