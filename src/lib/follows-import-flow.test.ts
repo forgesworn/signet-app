@@ -16,7 +16,7 @@ function list(n: number, over: Partial<FollowList> = {}): FollowList {
 
 function deps(over: Partial<FollowsImportDeps> = {}) {
   const recogniseContacts = vi.fn(async (entries: { pubkey: string }[], _owner?: string, _method?: string, _caption?: string) => ({
-    added: entries.length, linked: 0, unchanged: 0, covered: entries.length, trimmed: false, requested: entries.length,
+    added: entries.length, linked: 0, unchanged: 0, skippedRemoved: 0, covered: entries.length, trimmed: false, requested: entries.length,
   }));
   const recordImport = vi.fn(async () => undefined);
   const base: FollowsImportDeps = {
@@ -87,7 +87,7 @@ describe('runFollowsImport', () => {
   it('reports the size-line trim the hook applied', async () => {
     const { d, recordImport } = deps({
       fetchList: async () => list(1000),
-      recogniseContacts: async () => ({ added: 930, linked: 0, unchanged: 0, covered: 930, trimmed: true, requested: 1000 }),
+      recogniseContacts: async () => ({ added: 930, linked: 0, unchanged: 0, skippedRemoved: 0, covered: 930, trimmed: true, requested: 1000 }),
     });
     const out = await runFollowsImport(d);
     expect(out).toMatchObject({ covered: 930, trimmedNotice: expect.stringContaining('Signet imported the 930 most recent') });
@@ -97,11 +97,11 @@ describe('runFollowsImport', () => {
   it('records nothing when the backup had no room for even one', async () => {
     const { d, recordImport } = deps({
       fetchList: async () => list(50),
-      recogniseContacts: async () => ({ added: 0, linked: 0, unchanged: 0, covered: 0, trimmed: true, requested: 50 }),
+      recogniseContacts: async () => ({ added: 0, linked: 0, unchanged: 0, skippedRemoved: 0, covered: 0, trimmed: true, requested: 50 }),
     });
     const out = await runFollowsImport(d);
     expect(recordImport).not.toHaveBeenCalled();
-    expect(out).toMatchObject({ status: 'done', covered: 0, trimmedNotice: expect.stringContaining("couldn't import any") });
+    expect(out).toMatchObject({ status: 'done', covered: 0, trimmedNotice: "Alex follows 50 accounts, but there's no room left in your contacts backup to add them." });
   });
 
   it('offers to take unfollowed contacts off the list, comparing against the WHOLE newest list', async () => {

@@ -261,6 +261,25 @@ describe('toWire', () => {
 });
 
 describe('parsePayload', () => {
+  it('round-trips a 2000-emoji about (4000 UTF-16 units) and truncates, never drops, an over-long one', () => {
+    const exactly = '😀'.repeat(2000);
+    const wire = toWire(makeIdentity({ extraPersonas: [makeExtra({ about: exactly })] }));
+    const back = parsePayload(JSON.stringify(wire));
+    expect(back?.personas[0].profile?.about).toBe(exactly);
+
+    const tooLong = '😀'.repeat(2500);
+    const raw = JSON.stringify(toWire(makeIdentity({ extraPersonas: [makeExtra({ about: tooLong })] })));
+    const parsed = parsePayload(raw);
+    expect(parsed?.personas[0].profile?.about).toBe(exactly);
+    // A remote value over the cap is truncated on receipt, never read as "cleared".
+    const injected = JSON.stringify({
+      v: 1,
+      personas: [{ derivationName: 'persona-1', publicKey: P1_PUB, displayName: 'Persona One', updatedAt: 500, profile: { about: tooLong } }],
+      tombstones: [],
+    });
+    expect(parsePayload(injected)?.personas[0].profile?.about).toBe(exactly);
+  });
+
   function validRaw(overrides: Record<string, unknown> = {}): string {
     return JSON.stringify({
       v: 1,

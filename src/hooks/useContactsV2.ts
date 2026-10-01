@@ -334,7 +334,7 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
         now: Date.now(), wholeLog,
       });
       const summary: FollowsImportResult = {
-        added: plan.added, linked: plan.linked, unchanged: plan.unchanged,
+        added: plan.added, linked: plan.linked, unchanged: plan.unchanged, skippedRemoved: plan.skippedRemoved,
         covered: plan.covered, trimmed: plan.trimmed, requested: entries.length,
       };
       if (plan.ops.length === 0) return summary;

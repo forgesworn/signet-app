@@ -25,7 +25,7 @@ function renderPage(identity: SignetIdentity, extra: Record<string, unknown> = {
 }
 
 const done = (over: Partial<Extract<FollowsImportOutcome, { status: 'done' }>> = {}): FollowsImportOutcome => ({
-  status: 'done', total: 12, createdAt: 1, added: 9, linked: 1, unchanged: 2, covered: 12, trimmedNotice: null,
+  status: 'done', total: 12, createdAt: 1, added: 9, linked: 1, unchanged: 2, skippedRemoved: 0, covered: 12, trimmedNotice: null,
   unfollowed: [], unfollowedKept: 0, ...over,
 });
 
@@ -68,6 +68,12 @@ describe('PersonaAdvanced — Nostr follows block', () => {
 });
 
 describe('FollowsImportPanel', () => {
+  it('says how many were skipped because the user removed them', async () => {
+    render(<FollowsImportPanel personaName="Alex" onImport={async () => done({ skippedRemoved: 3 })} onUnlink={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Import who this account follows' }));
+    await screen.findByText(/3 skipped — you removed them/);
+  });
+
   it('shows the size notice when the import was trimmed', async () => {
     const notice = "Alex follows 1500 accounts. Signet imported the 940 most recent — that's all it can back up alongside your other contacts.";
     render(<FollowsImportPanel personaName="Alex" onImport={async () => done({ trimmedNotice: notice, total: 1500, covered: 940 })} onUnlink={vi.fn()} />);

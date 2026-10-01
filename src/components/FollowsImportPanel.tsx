@@ -27,6 +27,7 @@ function summaryLine(o: Extract<FollowsImportOutcome, { status: 'done' }>): stri
   parts.push(`Added ${o.added}`);
   if (o.linked > 0) parts.push(`${o.linked} you already had, now on this list`);
   if (o.unchanged > 0) parts.push(`${o.unchanged} already there`);
+  if (o.skippedRemoved > 0) parts.push(`${o.skippedRemoved} skipped — you removed them`);
   return parts.join(' · ');
 }
 

@@ -7,8 +7,6 @@
 // of any other sibling's pubkey.
 
 import { deriveExtraPersona } from '../signet';
-import type { SigningBackend } from '../signing-backend';
-import { publishEvent } from '../relay-service';
 
 /** The canonical nsec-tree path token for the Professional Persona. */
 const PRO_PERSONA_DERIVATION_TOKEN = 'professional';
@@ -69,24 +67,4 @@ export function proModeBlockedReason(
     );
   }
   return null;
-}
-
-/**
- * Publish a kind-0 metadata event for the Professional Persona.
- * Signed by the proBackend. Spec §4.5.4 — "re-publishes kind-0 on name save".
- */
-export async function publishProKind0(
-  proPublicKey: string,
-  displayName: string,
-  proBackend: SigningBackend,
-): Promise<void> {
-  const now = Math.floor(Date.now() / 1000);
-  const event = await proBackend.signEvent({
-    kind: 0,
-    pubkey: proPublicKey,
-    created_at: now,
-    tags: [],
-    content: JSON.stringify({ name: displayName }),
-  });
-  await publishEvent(event);
 }

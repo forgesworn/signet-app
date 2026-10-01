@@ -30,7 +30,7 @@ async function importAccount(props: { followsHandlersFor?: (pubkey: string, name
 describe('Personas — offer to import the follows after an nsec import', () => {
   it('offers it for the new persona, runs the same flow on Import, and goes away on Not now', async () => {
     const onImportFollows = vi.fn(async () => ({
-      status: 'done' as const, total: 4, createdAt: 1, added: 4, linked: 0, unchanged: 0, covered: 4, trimmedNotice: null, unfollowed: [], unfollowedKept: 0,
+      status: 'done' as const, total: 4, createdAt: 1, added: 4, linked: 0, unchanged: 0, skippedRemoved: 0, covered: 4, trimmedNotice: null, unfollowed: [], unfollowedKept: 0,
     }));
     const followsHandlersFor = vi.fn(() => ({ onImportFollows, onUnlinkFollows: vi.fn() }));
     await importAccount({ followsHandlersFor });

@@ -27,6 +27,7 @@ import type { UnsignedEvent } from 'signet-protocol';
 import { RelayClient } from 'signet-protocol';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { safeImageOrLinkUrl } from './public-profile-publish';
+import { clampAbout } from './about-cap';
 import { isValidRelayUrl } from './relay-url';
 
 const INVENTORY_D_TAG = 'signet:persona-inventory';
@@ -43,7 +44,6 @@ const NIP05_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
 // can't ever publish (or vice versa).
 const CAP_NAME = 50;
 const CAP_DISPLAY_NAME_PROFILE = 100;
-const CAP_ABOUT = 2000;
 const CAP_PICTURE_URL = 500;
 const CAP_BANNER_URL = 500;
 const CAP_NIP05 = 100;
@@ -506,8 +506,8 @@ function publicProfileFieldsFor(
   if (typeof p.displayName === 'string' && p.displayName.length > 0 && p.displayName.length <= CAP_DISPLAY_NAME_PROFILE) {
     out.displayName = p.displayName;
   }
-  if (typeof p.about === 'string' && p.about.length > 0 && p.about.length <= CAP_ABOUT) {
-    out.about = p.about;
+  if (typeof p.about === 'string' && p.about.length > 0) {
+    out.about = clampAbout(p.about);
   }
   if (typeof p.pictureUrl === 'string' && p.pictureUrl.length > 0 && p.pictureUrl.length <= CAP_PICTURE_URL && safeImageOrLinkUrl(p.pictureUrl)) {
     out.pictureUrl = p.pictureUrl;
@@ -554,8 +554,9 @@ function readOptionalPublicProfile(
   if (typeof r.displayName === 'string' && r.displayName.length > 0 && r.displayName.length <= CAP_DISPLAY_NAME_PROFILE) {
     out.displayName = sanitiseDisplayName(r.displayName);
   }
-  if (typeof r.about === 'string' && r.about.length > 0 && r.about.length <= CAP_ABOUT) {
-    out.about = Array.from(sanitiseAbout(r.about)).slice(0, CAP_ABOUT).join('');
+  // Truncated (code points), never dropped: a drop would read as "cleared".
+  if (typeof r.about === 'string' && r.about.length > 0) {
+    out.about = clampAbout(sanitiseAbout(r.about));
   }
   if (typeof r.pictureUrl === 'string' && r.pictureUrl.length > 0 && r.pictureUrl.length <= CAP_PICTURE_URL && safeImageOrLinkUrl(r.pictureUrl)) {
     out.pictureUrl = r.pictureUrl;

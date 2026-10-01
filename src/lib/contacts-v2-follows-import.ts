@@ -6,8 +6,9 @@
  *   - a contact that already carries the key and is not removed: `link-list`
  *     to the persona's list only if it is not already an active member
  *     (otherwise nothing at all). Tier, name and notes are never touched.
- *   - a removed contact carrying the key: revived the way `recogniseContact`
- *     revives it — an `add` that reuses its own name and tier.
+ *   - a removed contact carrying the key: SKIPPED and counted in
+ *     `skippedRemoved` — the user removed them on purpose, and a follow list
+ *     must never bring them back.
  *   - no contact: `add` (tier `ken`) + `add-identity` (`direct`, `unverified`).
  *   Plus a `record-origin` (`import`, captioned) only for a contact that got a
  *   new `add` or `link-list`, and only while it has room for another origin
@@ -42,12 +43,14 @@ export interface FollowImportEntry {
 export interface FollowImportPlan {
   /** Stamped, contiguous clocks, ready to validate and save. Empty = nothing to do. */
   ops: ContactOperation[];
-  /** New contacts created (a revived contact counts here). */
+  /** New contacts created. */
   added: number;
   /** Existing contacts newly linked to the list. */
   linked: number;
   /** Follows that needed nothing (already in the list). */
   unchanged: number;
+  /** Follows left alone because the user had removed that contact (never revived). */
+  skippedRemoved: number;
   /** Follows the plan covers (after any trim). Fewer than the input means the size line cut the oldest. */
   covered: number;
   /** True when the size line trimmed the plan. */
@@ -55,7 +58,7 @@ export interface FollowImportPlan {
 }
 
 /** What a batch import did, for the screen that asked for it. */
-export type FollowsImportResult = Pick<FollowImportPlan, 'added' | 'linked' | 'unchanged' | 'covered' | 'trimmed'> & {
+export type FollowsImportResult = Pick<FollowImportPlan, 'added' | 'linked' | 'unchanged' | 'skippedRemoved' | 'covered' | 'trimmed'> & {
   /** Follows handed in, before the size line. */
   requested: number;
 };
@@ -129,6 +132,7 @@ export function planFollowsImport(args: {
   });
 
   let unchanged = 0;
+  const skippedIdx = new Set<number>();
   const groups: Group[] = [];
   entries.forEach((entry, entryIndex) => {
     const existing = byKey.get(entry.pubkey);
@@ -140,11 +144,9 @@ export function planFollowsImport(args: {
       kind = 'linked';
       if ((existing.origins?.length ?? 0) < 64) ops.push(origin(existing.contactId));
     } else if (existing) {
-      ops = [make(existing.contactId, 'add', {
-        type: existing.type, displayName: existing.displayName, tier: existing.tier ?? 'ken', ownerIdentityPubkey: owner,
-      })];
-      kind = 'added';
-      if ((existing.origins?.length ?? 0) < 64) ops.push(origin(existing.contactId));
+      // Removed on purpose: never revived by an import.
+      skippedIdx.add(entryIndex);
+      return;
     } else {
       const contactId = newId();
       ops = [
@@ -197,16 +199,17 @@ export function planFollowsImport(args: {
     ops,
     added: kept.filter(g => g.kind === 'added').length,
     linked: kept.filter(g => g.kind === 'linked').length,
-    unchanged: trimmed ? countUnchangedFrom(entries, groups, firstKeptEntry) : unchanged,
+    unchanged: trimmed ? countUnchangedFrom(entries, groups, skippedIdx, firstKeptEntry) : unchanged,
+    skippedRemoved: trimmed ? [...skippedIdx].filter(i => i >= firstKeptEntry).length : skippedIdx.size,
     covered: trimmed ? entries.length - firstKeptEntry : entries.length,
     trimmed,
   };
 }
 
 /** Unchanged follows that sit inside the covered (most recent) part of the list. */
-function countUnchangedFrom(entries: FollowImportEntry[], groups: Group[], firstKeptEntry: number): number {
+function countUnchangedFrom(entries: FollowImportEntry[], groups: Group[], skipped: Set<number>, firstKeptEntry: number): number {
   const withOps = new Set(groups.map(g => g.entryIndex));
   let n = 0;
-  for (let i = firstKeptEntry; i < entries.length; i += 1) if (!withOps.has(i)) n += 1;
+  for (let i = firstKeptEntry; i < entries.length; i += 1) if (!withOps.has(i) && !skipped.has(i)) n += 1;
   return n;
 }

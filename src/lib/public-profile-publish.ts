@@ -40,6 +40,7 @@ import { isValidRelayUrl } from './relay-url';
 import { isPrivateOrInternalHost } from './safe-url';
 import type { PersonaPublicProfile, PublicProfileBase, PublicProfileConfig } from '../types';
 import { fetchExistingProfile } from './existing-profile';
+import { CAP_ABOUT } from './about-cap';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -52,7 +53,6 @@ const NIP05_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
 /** Per-field caps. See design doc Appendix A. */
 const CAP_NAME = 50;
 const CAP_DISPLAY_NAME = 100;
-const CAP_ABOUT = 2000;
 const CAP_PICTURE_URL = 500;
 const CAP_BANNER_URL = 500;
 const CAP_NIP05 = 100;
@@ -397,6 +397,44 @@ export function mergeKindZeroContent(args: {
   }
 
   return { content: JSON.stringify(obj), tags, merged: true };
+}
+
+/**
+ * After a three-way merge the published kind-0 can carry values the card never
+ * had. This brings the card in line, ADDITIVELY: a field is adopted only when
+ * the published content has the key, non-empty, it passes the same parser as
+ * any inbound kind-0, and it differs from the card. Anything else (key absent,
+ * empty, unparseable, equal) leaves the card exactly as it was — the relay
+ * content lacking a key must never clear a card field.
+ *
+ * The display name is returned separately as `name` (never folded into
+ * `config`) and only when `adoptName` is set; the natural-person slot passes
+ * false, because a legal name must never be written from relay content.
+ */
+export function adoptPublishedIntoCard(
+  config: PublicProfileConfig,
+  publishedContent: string,
+  opts: { adoptName: boolean },
+): { config: PublicProfileConfig; name?: string } {
+  const published = parseKindZeroContent(publishedContent);
+  if (!published) return { config };
+  const next: PublicProfileConfig = { ...config };
+  if (published.about && published.about !== config.about) next.about = published.about;
+  if (published.pictureUrl && published.pictureUrl !== config.pictureUrl) {
+    next.pictureUrl = published.pictureUrl;
+    next.pictureBlossomHash = undefined;
+  }
+  if (published.bannerUrl && published.bannerUrl !== config.bannerUrl) {
+    next.bannerUrl = published.bannerUrl;
+    next.bannerBlossomHash = undefined;
+  }
+  if (published.nip05 && published.nip05 !== config.nip05) next.nip05 = published.nip05;
+  if (published.lud16 && published.lud16 !== config.lud16) next.lud16 = published.lud16;
+  if (published.website && published.website !== config.website) next.website = published.website;
+  const name = opts.adoptName && published.displayName && published.displayName !== config.displayName
+    ? published.displayName
+    : undefined;
+  return name ? { config: next, name } : { config: next };
 }
 
 // ─── Publish / Retract / Fetch ─────────────────────────────────────────────

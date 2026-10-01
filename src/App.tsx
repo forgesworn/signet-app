@@ -183,7 +183,7 @@ import { toRecoveryWords } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
 import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
-import { publishPublicProfile, retractPublicProfile, parseKindZeroContent, toPublicProfileBase } from './lib/public-profile-publish';
+import { publishPublicProfile, retractPublicProfile, adoptPublishedIntoCard, toPublicProfileBase } from './lib/public-profile-publish';
 import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
 import { fetchFollowList, fetchFollowNames } from './lib/nostr-follows';
 import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
@@ -321,7 +321,7 @@ import { LeadAddStaff } from './pages/LeadAddStaff';
 import { LeadManageDelegates } from './pages/LeadManageDelegates';
 import { useProRoleAnchor } from './hooks/useProRoleAnchor';
 import { deriveAndStoreProPersona } from './hooks/useIdentity';
-import { proModeBlockedReason, publishProKind0 } from './lib/professional/pro-persona';
+import { proModeBlockedReason } from './lib/professional/pro-persona';
 import { PRO_ROSTER } from './lib/professional/kinds';
 import type { RosterMember } from './lib/professional/role-anchor';
 import { useNavigation } from './hooks/useNavigation';
@@ -6550,21 +6550,12 @@ export function App() {
     let configToSave = config;
     let nameFromRelay: string | undefined;
     if (result.merged && result.content !== undefined) {
-      const published = parseKindZeroContent(result.content);
-      if (published) {
-        configToSave = {
-          ...config,
-          about: published.about,
-          pictureUrl: published.pictureUrl,
-          pictureBlossomHash: published.pictureUrl === config.pictureUrl ? config.pictureBlossomHash : undefined,
-          bannerUrl: published.bannerUrl,
-          bannerBlossomHash: published.bannerUrl === config.bannerUrl ? config.bannerBlossomHash : undefined,
-          nip05: published.nip05,
-          lud16: published.lud16,
-          website: published.website,
-        };
-        if (published.displayName && published.displayName !== effectiveName) nameFromRelay = published.displayName;
-      }
+      // Additive only (see `adoptPublishedIntoCard`): a key the relay content
+      // lacks never clears a card field. The natural-person legal name is
+      // never taken from the relay.
+      const adopted = adoptPublishedIntoCard(config, result.content, { adoptName: slotTarget !== 'natural-person' });
+      configToSave = adopted.config;
+      nameFromRelay = adopted.name;
     }
 
     // Pass the full slot config so the persisted slot fields align with the
@@ -10019,7 +10010,11 @@ export function App() {
             if (!identity || !encryptionKey || !effectiveProBackend) return;
             await updateDisplayName('professional-persona', name);
             if (proPersonaPubkey) {
-              await publishProKind0(proPersonaPubkey, name, effectiveProBackend);
+              // Same lossless path as every other slot: three-way merge onto
+              // the relay's kind-0 (keeps picture/about/tags set elsewhere)
+              // and the slot's stored base is updated. The name override is
+              // needed because `identity` in this closure predates the save.
+              await publishPersonaProfile('professional-persona', undefined, { displayNameOverride: name });
             }
           }}
         />
@@ -10283,8 +10278,10 @@ export function App() {
           return await publishPersonaProfile(slotTarget, depPubkey);
         }}
         // "Check Nostr for an existing profile": the owner's own slots only —
-        // never a dependant's, never a paired-child install (A42 sibling).
-        onCheckExistingProfile={depPubkey || isPairedChild || childDirect || !identity ? undefined : async () => {
+        // never a dependant's, never a paired-child install (A42 sibling), and
+        // never the natural-person slot (its legal name is never taken from a
+        // relay profile).
+        onCheckExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async () => {
           const ownSlot = slotTarget === 'natural-person' ? identity.naturalPerson
             : slotTarget === 'persona' ? identity.persona
             : slotTarget === 'professional-persona' ? identity.professionalPersona
@@ -10302,7 +10299,7 @@ export function App() {
           const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
           return handlers ? { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows } : {};
         })()}
-        onMatchExistingProfile={depPubkey || isPairedChild || childDirect || !identity ? undefined : async (found) => {
+        onMatchExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async (found) => {
           // Writes card + state + base in one save and publishes nothing: the
           // event is already on the relay. The profile's values replace the
           // card's (the panel says so).

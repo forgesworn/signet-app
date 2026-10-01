@@ -122,18 +122,37 @@ describe('planFollowsImport', () => {
     expect(plan.linked).toBe(1);
   });
 
-  it('revives a removed contact under its own name and tier instead of duplicating it', () => {
+  it('never revives a removed contact: skips it and counts it as skipped', () => {
     const cid = 'c'.repeat(32);
     const base: ContactOperation[] = [
       op({ action: 'add', contactId: cid, value: { type: 'person', displayName: 'Gone Peer', tier: 'kith', ownerIdentityPubkey: OWNER } }),
       op({ action: 'add-identity', contactId: cid, itemId: 'e'.repeat(32), value: { itemId: 'e'.repeat(32), pubkey: pubkeyOf(0), provenance: 'direct', verification: 'unverified' } }),
       op({ action: 'remove', contactId: cid, value: {} }),
     ];
-    const plan = run({ entries: [{ pubkey: pubkeyOf(0), displayName: 'Other Name' }], records: reduce(base), wholeLog: base, baseClock: 1_000_000 });
-    expect(plan.ops.map(o => o.action)).toEqual(['add', 'record-origin']);
+    const plan = run({
+      entries: [{ pubkey: pubkeyOf(0), displayName: 'Other Name' }, entry(5)],
+      records: reduce(base), wholeLog: base, baseClock: 1_000_000,
+    });
+    expect(plan.skippedRemoved).toBe(1);
+    expect(plan.added).toBe(1); // only the new follow
+    expect(plan.unchanged).toBe(0);
+    expect(plan.ops.every(o => o.contactId !== cid)).toBe(true);
     const after = reduce([...base, ...plan.ops]);
-    expect(after).toHaveLength(1);
-    expect(after[0]).toMatchObject({ lifecycle: 'active', displayName: 'Gone Peer', tier: 'kith' });
+    expect(after.find(r => r.contactId === cid)).toMatchObject({ lifecycle: 'removed' });
+    expect(after).toHaveLength(2);
+  });
+
+  it('a follow list of only removed contacts plans nothing', () => {
+    const cid = 'c'.repeat(32);
+    const base: ContactOperation[] = [
+      op({ action: 'add', contactId: cid, value: { type: 'person', displayName: 'Gone Peer', tier: 'ken', ownerIdentityPubkey: OWNER } }),
+      op({ action: 'add-identity', contactId: cid, itemId: 'e'.repeat(32), value: { itemId: 'e'.repeat(32), pubkey: pubkeyOf(0), provenance: 'direct', verification: 'unverified' } }),
+      op({ action: 'remove', contactId: cid, value: {} }),
+    ];
+    const plan = run({ entries: [entry(0)], records: reduce(base), wholeLog: base });
+    expect(plan.ops).toEqual([]);
+    expect(plan.skippedRemoved).toBe(1);
+    expect(plan.trimmed).toBe(false);
   });
 
   it('files two keys of one contact once, and a repeated key once', () => {

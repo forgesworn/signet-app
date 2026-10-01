@@ -604,7 +604,7 @@ function PublishBlock({
           >
             {publishLabel}
           </button>
-          {onCheckExistingProfile && onMatchExistingProfile && (
+          {slotKind !== 'natural-person' && onCheckExistingProfile && onMatchExistingProfile && (
             <button className="btn btn-secondary" onClick={() => { void runCheck(); }} disabled={busy || checking || matching}>
               {checking ? 'Checking Nostr…' : 'Check Nostr for an existing profile'}
             </button>

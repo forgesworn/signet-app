@@ -70,6 +70,24 @@ describe('PersonaAdvanced — check Nostr for an existing profile', () => {
   });
 });
 
+describe('PersonaAdvanced — natural-person slot', () => {
+  it('never offers to match an existing Nostr profile (the legal name is never taken from a relay)', () => {
+    render(
+      <PersonaAdvanced
+        slotTarget="natural-person"
+        identity={identityWith()}
+        dependants={[]}
+        onPublishProfile={vi.fn(async () => ({ ok: true }))}
+        onDisablePublicProfile={vi.fn(async () => {})}
+        onBack={() => {}}
+        onCheckExistingProfile={vi.fn()}
+        onMatchExistingProfile={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Check Nostr for an existing profile' })).toBeNull();
+  });
+});
+
 describe('PersonaAdvanced — Disable copy for a profile adopted from Nostr', () => {
   const published = { enabled: true, lastEventId: 'e'.repeat(64), lastPublishedAt: 1, lastPublishedRelay: 'wss://relay.example' };
 

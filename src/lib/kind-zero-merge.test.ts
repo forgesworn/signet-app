@@ -13,6 +13,7 @@ vi.mock('./existing-profile', () => ({
 import { publishEvent } from './relay-service';
 import { fetchExistingProfile } from './existing-profile';
 import {
+  adoptPublishedIntoCard,
   buildKindZeroContent,
   parseKindZeroContent,
   mergeKindZeroContent,
@@ -360,5 +361,44 @@ describe('publishPublicProfile — lossless publish', () => {
     expect(res.message).toBe('no changes to publish');
     expect(signed).toHaveLength(0);
     expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('adoptPublishedIntoCard (card follows the published profile, additively)', () => {
+  const card = cfg({ about: 'my bio', pictureUrl: 'https://img.example/a.png', pictureBlossomHash: 'f'.repeat(64), nip05: 'me@example.com', website: 'https://example.com' });
+
+  it('never clears a card field because the published content lacks the key', () => {
+    const { config, name } = adoptPublishedIntoCard(card, JSON.stringify({ name: 'Alice' }), { adoptName: true });
+    expect(config).toEqual(card);
+    expect(name).toBeUndefined();
+  });
+
+  it('ignores empty and unparseable values; adopts present, valid, different ones', () => {
+    const published = JSON.stringify({
+      about: '', picture: 'javascript:alert(1)', nip05: 'bad nip05',
+      banner: 'https://img.example/b.png', lud16: 'pay@example.com', website: 'https://other.example',
+    });
+    const { config } = adoptPublishedIntoCard(card, published, { adoptName: true });
+    expect(config).toMatchObject({
+      about: 'my bio', pictureUrl: card.pictureUrl, pictureBlossomHash: card.pictureBlossomHash, nip05: 'me@example.com',
+      bannerUrl: 'https://img.example/b.png', lud16: 'pay@example.com', website: 'https://other.example',
+    });
+  });
+
+  it('drops the blossom hash only when the picture URL actually changes', () => {
+    const { config } = adoptPublishedIntoCard(card, JSON.stringify({ picture: 'https://img.example/new.png' }), { adoptName: true });
+    expect(config.pictureUrl).toBe('https://img.example/new.png');
+    expect(config.pictureBlossomHash).toBeUndefined();
+  });
+
+  it('never returns a name for the natural-person slot (adoptName: false)', () => {
+    const published = JSON.stringify({ display_name: 'Someone Else', about: 'new bio' });
+    const np = adoptPublishedIntoCard(cfg({ displayName: 'Legal Name' }), published, { adoptName: false });
+    expect(np.name).toBeUndefined();
+    expect(np.config.displayName).toBe('Legal Name');
+    expect(np.config.about).toBe('new bio');
+    const other = adoptPublishedIntoCard(cfg({ displayName: 'Legal Name' }), published, { adoptName: true });
+    expect(other.name).toBe('Someone Else');
   });
 });

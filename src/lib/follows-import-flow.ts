@@ -58,6 +58,8 @@ export type FollowsImportOutcome =
       added: number;
       linked: number;
       unchanged: number;
+      /** Follows left alone because the user had removed that contact. */
+      skippedRemoved: number;
       /** How many of the most recent follows were covered. */
       covered: number;
       /** Plain-English line to show when not every follow could be imported; `null` when all were. */
@@ -105,10 +107,11 @@ export async function runFollowsImport(deps: FollowsImportDeps): Promise<Follows
     added: summary.added,
     linked: summary.linked,
     unchanged: summary.unchanged,
+    skippedRemoved: summary.skippedRemoved,
     covered,
     trimmedNotice: notAll
       ? (covered === 0
-        ? `${deps.personaName} follows ${list.total} accounts. Signet couldn't import any of them — that's all it can back up alongside your other contacts.`
+        ? `${deps.personaName} follows ${list.total} ${list.total === 1 ? 'account' : 'accounts'}, but there's no room left in your contacts backup to add ${list.total === 1 ? 'it' : 'them'}.`
         : followsTrimmedCopy(deps.personaName, list.total, covered))
       : null,
     unfollowed: unfollow.removable.map(r => ({ contactId: r.contactId, name: r.displayName })),
