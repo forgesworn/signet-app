@@ -10,6 +10,7 @@ import { liftNaturalPersonActive } from '../lib/lift-natural-person-active';
 import { applyRemotePersonasPatch } from '../lib/apply-remote-personas';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import type { Nip05CheckResult } from '../lib/nip05-check';
+import { resolvePublicProfileBase } from '../lib/public-profile-base';
 
 /**
  * Derive the Professional Persona keypair from the identity's mnemonic and
@@ -277,6 +278,10 @@ export function useIdentity(encryptionKey?: string | null) {
       existingEventId?: string;
       existingCreatedAt?: number;
       existingRelay?: string;
+      /** Device-local kind-0 base of the matched profile (see `PublicProfileBase`). */
+      existingBase?: import('../types').PublicProfileBase;
+      /** Hash of the matched content, so a no-op republish short-circuits. */
+      existingContentHash?: string;
     },
   ) => {
     const identity = importFromNsec(nsec, displayName, primaryKeypair);
@@ -303,11 +308,13 @@ export function useIdentity(encryptionKey?: string | null) {
         lastEventId: opts.existingEventId,
         lastPublishedAt: opts.existingCreatedAt,
         lastPublishedRelay: opts.existingRelay,
+        ...(opts.existingContentHash ? { lastPublishedContentHash: opts.existingContentHash } : {}),
       };
+      const baseFields = opts.existingBase ? { publicProfileBase: opts.existingBase } : {};
       if (primaryKeypair === 'natural-person') {
-        identity.naturalPerson = { ...identity.naturalPerson, ...config, publicProfile: state };
+        identity.naturalPerson = { ...identity.naturalPerson, ...config, publicProfile: state, ...baseFields };
       } else {
-        identity.persona = { ...identity.persona, ...config, publicProfile: state };
+        identity.persona = { ...identity.persona, ...config, publicProfile: state, ...baseFields };
       }
     }
 
@@ -564,6 +571,8 @@ export function useIdentity(encryptionKey?: string | null) {
       publicProfileSeed?: {
         config: import('../types').PublicProfileConfig;
         state: import('../types').PersonaPublicProfile;
+        /** Device-local kind-0 base of the matched profile (see `PublicProfileBase`). */
+        base?: import('../types').PublicProfileBase;
       };
     },
   ): Promise<{ added: true; pubkey: string } | { added: false; collision: 'natural-person' | 'persona' | 'professional-persona' | 'extra' | 'extra-imported'; collisionDisplayName?: string }> => {
@@ -613,6 +622,7 @@ export function useIdentity(encryptionKey?: string | null) {
       imported: true,
       ...(opts?.publicProfileSeed?.config ?? {}),
       ...(opts?.publicProfileSeed?.state ? { publicProfile: opts.publicProfileSeed.state } : {}),
+      ...(opts?.publicProfileSeed?.base ? { publicProfileBase: opts.publicProfileSeed.base } : {}),
     };
     const updated: SignetIdentity = {
       ...decrypted,
@@ -837,6 +847,12 @@ export function useIdentity(encryptionKey?: string | null) {
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     config: import('../types').PublicProfileConfig | undefined,
     state: import('../types').PersonaPublicProfile | undefined,
+    /**
+     * The device-local kind-0 base (see `PublicProfileBase`), written in the
+     * same atomic save as `state`. Absent = leave the stored base alone;
+     * `null` = clear it.
+     */
+    base?: import('../types').PublicProfileBase | null,
   ) => {
     if (!activeIdentity) return;
     if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
@@ -884,16 +900,16 @@ export function useIdentity(encryptionKey?: string | null) {
 
     let updated: SignetIdentity;
     if (target === 'natural-person') {
-      updated = { ...decrypted, naturalPerson: { ...decrypted.naturalPerson, ...cfgPatch, ...nip05CheckClear(decrypted.naturalPerson.nip05), publicProfile: ppValue } };
+      updated = { ...decrypted, naturalPerson: { ...decrypted.naturalPerson, ...cfgPatch, ...nip05CheckClear(decrypted.naturalPerson.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(decrypted.naturalPerson.publicProfileBase, base, ppValue) } };
     } else if (target === 'persona') {
-      updated = { ...decrypted, persona: { ...decrypted.persona, ...cfgPatch, ...nip05CheckClear(decrypted.persona.nip05), publicProfile: ppValue } };
+      updated = { ...decrypted, persona: { ...decrypted.persona, ...cfgPatch, ...nip05CheckClear(decrypted.persona.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(decrypted.persona.publicProfileBase, base, ppValue) } };
     } else if (target === 'professional-persona') {
       if (!decrypted.professionalPersona) return;
-      updated = { ...decrypted, professionalPersona: { ...decrypted.professionalPersona, ...cfgPatch, ...nip05CheckClear(decrypted.professionalPersona.nip05), publicProfile: ppValue } };
+      updated = { ...decrypted, professionalPersona: { ...decrypted.professionalPersona, ...cfgPatch, ...nip05CheckClear(decrypted.professionalPersona.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(decrypted.professionalPersona.publicProfileBase, base, ppValue) } };
     } else {
       const extras = (decrypted.extraPersonas ?? []).map(p =>
         p.publicKey === target
-          ? { ...p, ...cfgPatch, ...nip05CheckClear(p.nip05), publicProfile: ppValue, updatedAt: Math.floor(Date.now() / 1000) }
+          ? { ...p, ...cfgPatch, ...nip05CheckClear(p.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(p.publicProfileBase, base, ppValue), updatedAt: Math.floor(Date.now() / 1000) }
           : p,
       );
       updated = { ...decrypted, extraPersonas: extras };
@@ -955,15 +971,15 @@ export function useIdentity(encryptionKey?: string | null) {
 
     let updated: SignetIdentity;
     if (target === 'natural-person') {
-      updated = { ...decrypted, naturalPerson: { ...decrypted.naturalPerson, publicProfile: undefined } };
+      updated = { ...decrypted, naturalPerson: { ...decrypted.naturalPerson, publicProfile: undefined, publicProfileBase: undefined } };
     } else if (target === 'persona') {
-      updated = { ...decrypted, persona: { ...decrypted.persona, publicProfile: undefined } };
+      updated = { ...decrypted, persona: { ...decrypted.persona, publicProfile: undefined, publicProfileBase: undefined } };
     } else if (target === 'professional-persona') {
       if (!decrypted.professionalPersona) return;
-      updated = { ...decrypted, professionalPersona: { ...decrypted.professionalPersona, publicProfile: undefined } };
+      updated = { ...decrypted, professionalPersona: { ...decrypted.professionalPersona, publicProfile: undefined, publicProfileBase: undefined } };
     } else {
       const extras = (decrypted.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, publicProfile: undefined } : p,
+        p.publicKey === target ? { ...p, publicProfile: undefined, publicProfileBase: undefined } : p,
       );
       updated = { ...decrypted, extraPersonas: extras };
     }

@@ -16,7 +16,9 @@
 import { useState } from 'react';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
-import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile } from '../types';
+import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase } from '../types';
+import { ExistingProfilePanel } from '../components/ExistingProfilePanel';
+import type { ExistingProfile } from '../lib/existing-profile';
 import { TypedNameConfirm } from '../components/TypedNameConfirm';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
 import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
@@ -55,6 +57,15 @@ export interface PersonaAdvancedProps {
   ) => Promise<{ ok: boolean; message?: string }>;
   onDisablePublicProfile: () => Promise<void>;
   onRepublish?: () => Promise<{ ok: boolean; message?: string }>;
+  /**
+   * "Check Nostr for an existing profile" — runs the multi-relay lookup for
+   * THIS slot's key. Passed only for the owner's own slots on a device that
+   * holds the owner identity (never for dependant slots or a paired-child
+   * install); absent => the button is hidden.
+   */
+  onCheckExistingProfile?: () => Promise<ExistingProfile | null | 'unreachable'>;
+  /** Apply a found profile to this slot ("Match it in Signet"). Writes card + state + base; publishes nothing. */
+  onMatchExistingProfile?: (found: ExistingProfile) => Promise<void>;
 
   // — User-side actions —
   onSwitchPrimary?: (target: 'natural-person' | 'persona') => Promise<void>;
@@ -129,6 +140,8 @@ interface ResolvedSlot {
   publicKey: string;
   displayName: string;
   publicProfile?: PersonaPublicProfile;
+  /** Device-local kind-0 base; `matched` marks a profile adopted from Nostr rather than published by Signet. */
+  publicProfileBase?: PublicProfileBase;
   /** Imported nsec — only meaningful for extras. */
   imported?: boolean;
   hidden?: boolean;
@@ -140,6 +153,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicKey: identity.naturalPerson.publicKey,
       displayName: identity.naturalPerson.displayName,
       publicProfile: identity.naturalPerson.publicProfile,
+      publicProfileBase: identity.naturalPerson.publicProfileBase,
     };
   }
   if (target === 'persona') {
@@ -147,6 +161,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicKey: identity.persona.publicKey,
       displayName: identity.persona.displayName,
       publicProfile: identity.persona.publicProfile,
+      publicProfileBase: identity.persona.publicProfileBase,
     };
   }
   if (target === 'professional-persona') {
@@ -155,6 +170,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicKey: identity.professionalPersona.publicKey,
       displayName: identity.professionalPersona.displayName,
       publicProfile: identity.professionalPersona.publicProfile,
+      publicProfileBase: identity.professionalPersona.publicProfileBase,
     };
   }
   const ep = (identity.extraPersonas ?? []).find(p => p.publicKey === target);
@@ -163,6 +179,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
     publicKey: ep.publicKey,
     displayName: ep.displayName,
     publicProfile: ep.publicProfile,
+    publicProfileBase: ep.publicProfileBase,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -175,6 +192,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
       publicKey: dep.naturalPerson.publicKey,
       displayName: dep.naturalPerson.displayName,
       publicProfile: dep.naturalPerson.publicProfile,
+      publicProfileBase: dep.naturalPerson.publicProfileBase,
     };
   }
   if (target === 'persona') {
@@ -182,6 +200,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
       publicKey: dep.persona.publicKey,
       displayName: dep.persona.displayName,
       publicProfile: dep.persona.publicProfile,
+      publicProfileBase: dep.persona.publicProfileBase,
     };
   }
   const ep = (dep.extraPersonas ?? []).find(p => p.publicKey === target);
@@ -190,6 +209,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
     publicKey: ep.publicKey,
     displayName: ep.displayName,
     publicProfile: ep.publicProfile,
+    publicProfileBase: ep.publicProfileBase,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -370,10 +390,16 @@ function PublishBlock({
   onPublishProfile,
   onDisablePublicProfile,
   onRepublish,
+  onCheckExistingProfile,
+  onMatchExistingProfile,
 }: PublishBlockProps) {
   const enabled = !!slot.publicProfile?.enabled;
   const lastAt = slot.publicProfile?.lastPublishedAt;
   const lastRelay = slot.publicProfile?.lastPublishedRelay;
+  // A profile Signet adopted from Nostr (rather than published itself): the
+  // kind-5 only reaches the one relay it was seen on, so say that plainly.
+  const matchedFromNostr = enabled && !!slot.publicProfileBase?.matched;
+  const retractHost = truncateRelay(lastRelay) || 'the relay';
 
   // First-time NP enable fires the §6.5 typed-name confirm. Subsequent
   // publishes (Republish) and other slot kinds use the single-confirm prompt
@@ -388,6 +414,48 @@ function PublishBlock({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+
+  // "Check Nostr for an existing profile" (slot not published yet).
+  const [checking, setChecking] = useState(false);
+  const [found, setFound] = useState<ExistingProfile | null>(null);
+  const [matching, setMatching] = useState(false);
+
+  async function runCheck() {
+    if (!onCheckExistingProfile) return;
+    setChecking(true);
+    setError('');
+    setInfo('');
+    setFound(null);
+    try {
+      const result = await onCheckExistingProfile();
+      if (result === 'unreachable') {
+        setInfo("Couldn't reach Nostr relays to check. Try again in a moment.");
+      } else if (!result) {
+        setInfo('No public profile found on Nostr for this key.');
+      } else {
+        setFound(result);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not check Nostr.');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function runMatch() {
+    if (!found || !onMatchExistingProfile) return;
+    setMatching(true);
+    setError('');
+    try {
+      await onMatchExistingProfile(found);
+      setFound(null);
+      setInfo('Matched. This persona now shows the profile that is already on Nostr. Nothing was published.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not match the profile.');
+    } finally {
+      setMatching(false);
+    }
+  }
 
   async function runPublish(typedNameValue?: string) {
     setBusy(true);
@@ -415,7 +483,9 @@ function PublishBlock({
     setInfo('');
     try {
       await onDisablePublicProfile();
-      setInfo('Profile disabled. Signet has asked the relay to retract it.');
+      setInfo(matchedFromNostr
+        ? `Profile disabled. This asked ${retractHost} to remove it. Copies on other relays may stay up.`
+        : 'Profile disabled. Signet has asked the relay to retract it.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Disable failed.');
     } finally {
@@ -474,20 +544,43 @@ function PublishBlock({
         )}
       </div>
 
+      {!enabled && found && (
+        <ExistingProfilePanel profile={found.profile}>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '10px 0 0' }}>
+            Matching replaces this card&rsquo;s name, bio and picture with the ones on Nostr. Nothing is published.
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button type="button" className="btn btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => { void runMatch(); }} disabled={matching}>
+              {matching ? 'Matching…' : 'Match it in Signet'}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" style={{ width: 'auto' }} onClick={() => setFound(null)} disabled={matching}>
+              Not now
+            </button>
+          </div>
+        </ExistingProfilePanel>
+      )}
+
       {!enabled && (
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            if (requiresNpTypedName) {
-              setNpTypedName(true);
-            } else {
-              setIntent('publish');
-            }
-          }}
-          disabled={busy}
-        >
-          {publishLabel}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (requiresNpTypedName) {
+                setNpTypedName(true);
+              } else {
+                setIntent('publish');
+              }
+            }}
+            disabled={busy || matching}
+          >
+            {publishLabel}
+          </button>
+          {onCheckExistingProfile && onMatchExistingProfile && (
+            <button className="btn btn-secondary" onClick={() => { void runCheck(); }} disabled={busy || checking || matching}>
+              {checking ? 'Checking Nostr…' : 'Check Nostr for an existing profile'}
+            </button>
+          )}
+        </div>
       )}
 
       {enabled && (
@@ -542,7 +635,9 @@ function PublishBlock({
       {intent === 'disable' && (
         <ConfirmModal
           heading="Make this profile private again?"
-          body="Signet will ask Nostr relays to delete this public profile and stop publishing updates. Some relays may keep a copy — Signet can't force them to forget."
+          body={matchedFromNostr
+            ? `Signet will stop publishing updates. This asks ${retractHost} to remove it. Copies on other relays may stay up.`
+            : "Signet will ask Nostr relays to delete this public profile and stop publishing updates. Some relays may keep a copy — Signet can't force them to forget."}
           confirmLabel={busy ? 'Disabling…' : 'Disable'}
           confirmKind="danger"
           busy={busy}

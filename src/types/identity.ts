@@ -1,4 +1,4 @@
-import type { PersonaPublicProfile } from './public-profile';
+import type { PersonaPublicProfile, PublicProfileBase } from './public-profile';
 import type { Nip05CheckResult } from '../lib/nip05-check';
 
 /**
@@ -64,6 +64,12 @@ export interface SlotPublicationFields {
   nip05CheckResult?: Nip05CheckResult;
   /** Device-local: ms epoch of that lookup. Never synced. */
   nip05CheckedAt?: number;
+  /**
+   * Device-local: the kind-0 Signet last knew of on the relay (published or
+   * matched on import). Comparison base for the lossless three-way publish
+   * merge. Never synced, never on kind-0; set/cleared with `publicProfile`.
+   */
+  publicProfileBase?: PublicProfileBase;
 }
 
 /** A single persona (beyond the primary natural-person and default persona) */

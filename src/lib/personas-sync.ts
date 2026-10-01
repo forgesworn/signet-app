@@ -53,7 +53,9 @@ const DERIVATION_NAME_RE = /^persona-\d+$/;
 const NIP05_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
 
 const CAP_DISPLAY_NAME = 100;
-const CAP_ABOUT = 500;
+// Matches public-profile-publish.ts's CAP_ABOUT — a longer kind-0 `about`
+// must survive this rail rather than be silently dropped on parse.
+const CAP_ABOUT = 2000;
 const CAP_PICTURE_URL = 500;
 const CAP_BANNER_URL = 500;
 const CAP_NIP05 = 100;

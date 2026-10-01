@@ -201,6 +201,18 @@ describe('toWire', () => {
     expect(JSON.stringify(wire)).not.toMatch(/nip05CheckedAt/);
   });
 
+  it('never carries publicProfileBase on the wire (device-local only)', () => {
+    const identity = makeIdentity({
+      extraPersonas: [makeExtra({
+        about: 'hello',
+        publicProfileBase: { eventId: 'e'.repeat(64), createdAt: 5, content: '{"secret_unknown_key":1}', tags: [['t', 'x']], matched: true },
+      })],
+    });
+    const wire = toWire(identity);
+    expect(wire.personas[0].profile).toEqual({ about: 'hello' });
+    expect(JSON.stringify(wire)).not.toMatch(/publicProfileBase|secret_unknown_key|eventId/);
+  });
+
   it('carries hidden only when explicitly set on the local record', () => {
     const identity = makeIdentity({
       extraPersonas: [makeExtra({ hidden: true }), makeExtra({ publicKey: P2_PUB, derivationName: 'persona-2' })],
@@ -517,6 +529,25 @@ describe('mergePersonas', () => {
     expect(result.extraPersonas[0].nip05).toBe('alice@a.com');
     expect(result.extraPersonas[0].nip05CheckResult).toBe('match');
     expect(result.extraPersonas[0].nip05CheckedAt).toBe(1_700_000_000_000);
+  });
+
+  it('preserves the local publicProfileBase across a remote-wins merge (device-local, never synced)', () => {
+    const base = { eventId: 'e'.repeat(64), createdAt: 5, content: '{"bot":true}', tags: [['t', 'x']] };
+    const local = [makeExtra({ about: 'old about', publicProfileBase: base, updatedAt: 100 })];
+    const remote: SyncedPersonasPayload = {
+      v: 1,
+      personas: [{
+        derivationName: 'persona-1',
+        publicKey: P1_PUB,
+        displayName: 'Persona One Renamed',
+        updatedAt: 200,
+        profile: { about: 'new about from another device' },
+      }],
+      tombstones: [],
+    };
+    const result = mergePersonas(baseInput({ local, remote, remoteCreatedAt: 200, localRecordAt: 100 }));
+    expect(result.extraPersonas[0].about).toBe('new about from another device');
+    expect(result.extraPersonas[0].publicProfileBase).toEqual(base);
   });
 
   it('accepts a keyless remote persona only when deviceHeldKeys is true', () => {

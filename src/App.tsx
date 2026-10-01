@@ -183,7 +183,8 @@ import { toRecoveryWords } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
 import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
-import { publishPublicProfile, retractPublicProfile, contentHashFor } from './lib/public-profile-publish';
+import { publishPublicProfile, retractPublicProfile, parseKindZeroContent, toPublicProfileBase } from './lib/public-profile-publish';
+import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
 import { MyDocuments } from './pages/MyDocuments';
@@ -5389,6 +5390,8 @@ export function App() {
       existingEventId?: string;
       existingCreatedAt?: number;
       existingRelay?: string;
+      existingBase?: import('./types').PublicProfileBase;
+      existingContentHash?: string;
     },
   ) => {
     const key = generateEncryptionKey();
@@ -6379,6 +6382,7 @@ export function App() {
           lud16?: string;
           website?: string;
 	          publicProfile?: import('./types').PersonaPublicProfile;
+	          publicProfileBase?: import('./types').PublicProfileBase;
 	        }
 	      | undefined;
 	    const resolveOwnerSlot = (source: SignetIdentity) => {
@@ -6472,17 +6476,21 @@ export function App() {
         backend,
         relayUrl,
         priorHash,
+        // Lossless publish: with a stored base the publisher looks up the
+        // relay's current kind-0 and three-way merges onto it; without one it
+        // is the plain card build, as before.
+        { storedBase: slot.publicProfileBase, lookupRelays: syncRelays.read },
       );
     } finally {
       if (owned) backend.destroy();
     }
     if (!result.ok) return { ok: false, message: result.message };
 
-    // Compute the hash of the content we just emitted so the next publish
-    // can short-circuit cleanly when nothing changed. Re-derives from the
-    // same `config` the publisher consumed so the candidate-hash on the
-    // next publish is comparing apples to apples.
-    const publishedContentHash = contentHashFor(config, fallbackDisplayName);
+    // The hash of what was ACTUALLY sent (after a merge it is not the plain
+    // card build) so the next publish can short-circuit when nothing changed.
+    // The §5.3.3 "no changes" short-circuit returns no content: the stored
+    // hash and base are still the truth then.
+    const publishedContentHash = result.contentHash ?? priorHash;
 
     const newState: import('./types').PersonaPublicProfile = {
       enabled: true,
@@ -6491,17 +6499,61 @@ export function App() {
       lastPublishedRelay: result.relayUrl,
       lastPublishedContentHash: publishedContentHash,
     };
+
+    // The base the NEXT publish compares against is the event just published,
+    // written in the same atomic save as the state. `null` clears a base that
+    // is too big to store (the next publish is then the plain card build).
+    // Absent (the "no changes" short-circuit) leaves the stored base alone.
+    let newBase: import('./types').PublicProfileBase | null | undefined;
+    if (result.content !== undefined) {
+      newBase = toPublicProfileBase({
+        id: result.eventId,
+        created_at: result.createdAt,
+        content: result.content,
+        tags: result.tags ?? [],
+      }) ?? null;
+    }
+
+    // After a three-way merge the published kind-0 can carry values the card
+    // never had (an edit made on another client, kept because Signet did not
+    // touch that field). Bring the card in line with what is now public, or
+    // the next publish would read those fields as "edited in Signet" and
+    // overwrite them with the stale card value.
+    let configToSave = config;
+    let nameFromRelay: string | undefined;
+    if (result.merged && result.content !== undefined) {
+      const published = parseKindZeroContent(result.content);
+      if (published) {
+        configToSave = {
+          ...config,
+          about: published.about,
+          pictureUrl: published.pictureUrl,
+          pictureBlossomHash: published.pictureUrl === config.pictureUrl ? config.pictureBlossomHash : undefined,
+          bannerUrl: published.bannerUrl,
+          bannerBlossomHash: published.bannerUrl === config.bannerUrl ? config.bannerBlossomHash : undefined,
+          nip05: published.nip05,
+          lud16: published.lud16,
+          website: published.website,
+        };
+        if (published.displayName && published.displayName !== effectiveName) nameFromRelay = published.displayName;
+      }
+    }
+
     // Pass the full slot config so the persisted slot fields align with the
     // config we just emitted. Earlier revisions passed `config: undefined`,
     // which the hook interprets as "clear all 8 slot config fields" — that
     // wiped about/picture/banner/etc. on every publish.
     if (depPubkey) {
-      await setDependantPersonaPublicProfile(depPubkey, slotTarget, config, newState);
+      await setDependantPersonaPublicProfile(depPubkey, slotTarget, configToSave, newState, newBase);
     } else {
-      await setPersonaPublicProfile(slotTarget, config, newState);
+      await setPersonaPublicProfile(slotTarget, configToSave, newState, newBase);
+      // Same reasoning for the name: if the merge kept a name changed
+      // elsewhere, the card follows it. Owner slots only — a dependant's
+      // name is the guardian's to set.
+      if (nameFromRelay) await updateDisplayName(slotTarget, nameFromRelay);
     }
     return { ok: true };
-	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect]);
+	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect]);
 
   /**
    * Phase 2F shared retract helper. Mirror of `publishPersonaProfile`:
@@ -9990,11 +10042,18 @@ export function App() {
             if (!key) throw new Error('Authentication required');
             await updateDisplayName(target, name);
           }}
-          onImportNostrAccount={isPairedChild ? undefined : async (nsec, displayName) => {
+          onImportNostrAccount={isPairedChild ? undefined : async (nsec, displayName, match) => {
             const key = encryptionKey || await requestAuth();
             if (!key) throw new Error('Authentication required');
-            return addImportedPersona(nsec, displayName, key);
+            // "Match it in Signet": the card, the state of the kind-0 that is
+            // ALREADY on the relay (nothing is published) and the device-local
+            // base the lossless publish merges against.
+            const seed = match ? buildMatchSeed(match, displayName) : undefined;
+            return addImportedPersona(nsec, displayName, key, seed ? {
+              publicProfileSeed: { config: seed.config, state: seed.state, base: seed.base },
+            } : undefined);
           }}
+          onLookupExistingProfile={isPairedChild ? undefined : (pubkey) => fetchExistingProfile(pubkey, syncRelays.read)}
           startEditPersona={pendingPersonaFocus}
           onConsumeFocus={() => setPendingPersonaFocus(null)}
         />
@@ -10193,6 +10252,30 @@ export function App() {
           // §5.3.3 content-hash short-circuit means a no-op republish
           // returns ok=true without a relay round-trip.
           return await publishPersonaProfile(slotTarget, depPubkey);
+        }}
+        // "Check Nostr for an existing profile": the owner's own slots only —
+        // never a dependant's, never a paired-child install (A42 sibling).
+        onCheckExistingProfile={depPubkey || isPairedChild || childDirect || !identity ? undefined : async () => {
+          const ownSlot = slotTarget === 'natural-person' ? identity.naturalPerson
+            : slotTarget === 'persona' ? identity.persona
+            : slotTarget === 'professional-persona' ? identity.professionalPersona
+            : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
+          if (!ownSlot) return null;
+          return fetchExistingProfile(ownSlot.publicKey, syncRelays.read);
+        }}
+        onMatchExistingProfile={depPubkey || isPairedChild || childDirect || !identity ? undefined : async (found) => {
+          // Writes card + state + base in one save and publishes nothing: the
+          // event is already on the relay. The profile's values replace the
+          // card's (the panel says so).
+          const seed = buildMatchSeed(found, found.profile.displayName || '');
+          await setPersonaPublicProfile(slotTarget, seed.config, seed.state, seed.base ?? null);
+          if (seed.config.displayName) {
+            const current = slotTarget === 'natural-person' ? identity.naturalPerson.displayName
+              : slotTarget === 'persona' ? identity.persona.displayName
+              : slotTarget === 'professional-persona' ? identity.professionalPersona?.displayName
+              : identity.extraPersonas?.find(p => p.publicKey === slotTarget)?.displayName;
+            if (current !== seed.config.displayName) await updateDisplayName(slotTarget, seed.config.displayName);
+          }
         }}
         onSwitchPrimary={async (target) => {
           const key = encryptionKey || await requestAuth();

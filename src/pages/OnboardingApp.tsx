@@ -1,12 +1,12 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { validateMnemonic, decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
 import { fetchRestoreProfile, type RestoredProfile } from '../lib/profile-restore';
-import { fetchPublicProfile } from '../lib/public-profile-publish';
+import { fetchExistingProfile, buildMatchSeed, type ExistingProfile } from '../lib/existing-profile';
+import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/ExistingProfilePanel';
 import { isNativeApp } from '../lib/native';
-import type { PublicProfileConfig } from '../types';
+import type { PublicProfileBase, PublicProfileConfig } from '../types';
 import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import { BrandMark } from '../components/BrandMark';
-import { Icon } from '../components/Icon';
 
 interface Props {
   onImport: (mnemonic: string, displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean, guardianPubkey?: string) => Promise<void>;
@@ -27,7 +27,7 @@ interface Props {
     nsec: string,
     displayName: string,
     primaryKeypair: 'natural-person' | 'persona',
-    opts?: { publishProfile?: boolean; existingProfile?: Partial<PublicProfileConfig>; existingEventId?: string; existingCreatedAt?: number; existingRelay?: string },
+    opts?: { publishProfile?: boolean; existingProfile?: Partial<PublicProfileConfig>; existingEventId?: string; existingCreatedAt?: number; existingRelay?: string; existingBase?: PublicProfileBase; existingContentHash?: string },
   ) => Promise<void>;
   onConnectHeartwood: (bunkerUri: string, displayName: string) => Promise<void>;
   onConnectNip07: (displayName: string) => Promise<void>;
@@ -73,12 +73,13 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   // NP slot for "real name") is removed — every nsec import lands in the
   // persona slot now. See per-persona public-profile design §4.2.1.
   const [nsecStep, setNsecStep] = useState<'nsec' | 'fetching' | 'confirm'>('nsec');
-  const [nsecExistingProfile, setNsecExistingProfile] = useState<Partial<PublicProfileConfig> | null>(null);
-  const [nsecExistingEventId, setNsecExistingEventId] = useState<string | undefined>(undefined);
-  const [nsecExistingCreatedAt, setNsecExistingCreatedAt] = useState<number | undefined>(undefined);
+  // The kind-0 this key already has public, found by the multi-relay lookup.
+  const [nsecExisting, setNsecExisting] = useState<ExistingProfile | null>(null);
+  // "Match it in Signet" (default) vs "Keep it private in Signet".
+  const [nsecChoice, setNsecChoice] = useState<ExistingProfileChoice>('match');
+  // The lookup reached no relay at all — said quietly, never as "nothing there".
+  const [nsecLookupUnreachable, setNsecLookupUnreachable] = useState(false);
   const [nsecPublishProfile, setNsecPublishProfile] = useState(false);
-  const [nsecPicturePreviewShown, setNsecPicturePreviewShown] = useState(false);
-  const [nsecConfiguredRelay, setNsecConfiguredRelay] = useState<string | null>(null);
   const [heartwoodStep, setHeartwoodStep] = useState<HeartwoodStep>('uri');
   const [bunkerUri, setBunkerUri] = useState('');
   const [heartwoodConnecting, setHeartwoodConnecting] = useState(false);
@@ -210,40 +211,39 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
     }
     setError('');
     setNsecStep('fetching');
-    setNsecPicturePreviewShown(false);
 
-    // Resolve the relay to query. For first-time users we don't have a
-    // preferences record yet — fall back to the production default.
-    // (Keep this in sync with src/lib/relay-service.ts.)
+    // First-time users have no preferences record, so the relay set is the
+    // production default plus the public lookup relays (inside
+    // `fetchExistingProfile`). (Keep the default in sync with
+    // src/lib/relay-service.ts.)
     const productionRelay = 'wss://relay.trotters.cc';
     // In the Capacitor APK the WebView origin IS localhost — that must not
     // select the dev relay. Only a real browser tab on a dev server does.
+    // A dev server looks ONLY at the dev relay: no external lookups in dev/e2e.
     const devRelay = typeof window !== 'undefined' && window.location?.hostname === 'localhost' && !isNativeApp()
       ? 'ws://localhost:7777' : null;
-    const relayUrl = devRelay ?? productionRelay;
-    setNsecConfiguredRelay(relayUrl);
 
-    let found: { event: import('signet-protocol').NostrEvent; profile: Partial<PublicProfileConfig> } | null = null;
+    let found: ExistingProfile | null | 'unreachable' = null;
     try {
-      found = await fetchPublicProfile(pubkey, relayUrl, 2000);
+      found = devRelay
+        ? await fetchExistingProfile(pubkey, [devRelay], undefined, { includeLookupRelays: false })
+        : await fetchExistingProfile(pubkey, [productionRelay]);
     } catch {
-      found = null;
+      found = 'unreachable';
     }
 
-    if (found) {
-      setNsecExistingProfile(found.profile);
-      setNsecExistingEventId(found.event.id);
-      setNsecExistingCreatedAt(found.event.created_at);
+    setNsecLookupUnreachable(found === 'unreachable');
+    if (found && found !== 'unreachable') {
+      setNsecExisting(found);
+      setNsecChoice('match');
       // Pre-fill display name from kind-0. parseKindZeroContent merges the
       // raw `name` field into `displayName` when no `display_name` exists,
       // so we only need to read displayName here.
       const seedName = found.profile.displayName || '';
       if (seedName) setDisplayName(seedName);
-      setNsecPublishProfile(true);  // default-on when kind-0 was found
+      setNsecPublishProfile(true);
     } else {
-      setNsecExistingProfile(null);
-      setNsecExistingEventId(undefined);
-      setNsecExistingCreatedAt(undefined);
+      setNsecExisting(null);
       setNsecPublishProfile(false);  // default-off when no kind-0
     }
     setNsecStep('confirm');
@@ -251,19 +251,24 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
 
   const handleNsecComplete = async () => {
     if (!displayName.trim() || nsecImporting) return;
-    // Always persona slot. Pass through whatever existing-kind-0 metadata we
-    // found so the parent can seed publicProfile state correctly.
-    const opts = nsecPublishProfile && nsecExistingProfile
-      ? {
-          publishProfile: true,
-          existingProfile: nsecExistingProfile,
-          existingEventId: nsecExistingEventId,
-          existingCreatedAt: nsecExistingCreatedAt,
-          existingRelay: nsecConfiguredRelay ?? undefined,
-        }
-      : nsecPublishProfile
-      ? { publishProfile: true }  // wants to publish, but no kind-0 found yet
-      : undefined;
+    // Always persona slot. When the key is already public and the user chose
+    // "Match it", seed the slot from the found kind-0 (nothing is published —
+    // the event is already on the relay) plus the device-local base.
+    let opts: Parameters<typeof onImportNsec>[3];
+    if (nsecExisting && nsecChoice === 'match') {
+      const seed = buildMatchSeed(nsecExisting, displayName);
+      opts = {
+        publishProfile: true,
+        existingProfile: { ...nsecExisting.profile, displayName: seed.config.displayName },
+        existingEventId: nsecExisting.event.id,
+        existingCreatedAt: nsecExisting.event.created_at,
+        existingRelay: nsecExisting.relay,
+        existingBase: seed.base,
+        existingContentHash: seed.state.lastPublishedContentHash,
+      };
+    } else if (!nsecExisting && nsecPublishProfile) {
+      opts = { publishProfile: true };  // wants to publish, but no kind-0 found yet
+    }
     setNsecImporting(true);
     setError('');
     try {
@@ -720,9 +725,9 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
       if (nsecStep === 'fetching') {
         return (
           <div className="page fade-in" role="main">
-            <h1 style={{ marginBottom: 8 }}>Looking for your profile…</h1>
+            <h1 style={{ marginBottom: 8 }}>Looking for an existing Nostr profile…</h1>
             <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>
-              Checking Nostr for your existing profile.
+              Checking Nostr relays for a profile this key already has.
             </p>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: 'var(--bg-secondary)', borderRadius: 'var(--radius)' }}>
               <span
@@ -745,66 +750,33 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
       }
 
       if (nsecStep === 'confirm') {
-        const found = !!nsecExistingProfile;
-        const previewUrl = nsecExistingProfile?.pictureUrl;
-        const previewHostname = previewUrl ? (() => {
-          try { return new URL(previewUrl).hostname; } catch { return previewUrl; }
-        })() : '';
+        const found = !!nsecExisting;
         return (
           <div className="page fade-in" role="main">
             <h1 style={{ marginBottom: 8 }}>{found ? 'Welcome back to Nostr' : 'Importing your Nostr account'}</h1>
-            {found ? (
+            {found && nsecExisting ? (
               <>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: 12 }}>
-                  We found your existing profile:
-                </p>
-                <div className="card section" style={{ marginBottom: 16 }}>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
-                    <div
-                      style={{
-                        width: 56, height: 56, borderRadius: '50%',
-                        background: 'var(--bg-secondary)',
-                        border: '1px solid var(--border)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        overflow: 'hidden',
-                        flexShrink: 0,
-                      }}
-                    >
-                      {previewUrl && nsecPicturePreviewShown ? (
-                        <img src={previewUrl} alt="Your profile picture" referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)' }}>{previewUrl ? <Icon name="key" size={14} /> : '—'}</span>
-                      )}
-                    </div>
-                    <div>
-                      {/* PublicProfileConfig collapses `name` + `display_name` into a single
-                          `displayName`. parseKindZeroContent prefers `display_name`,
-                          falls back to `name` — so the field below is the unified handle. */}
-                      <div style={{ fontWeight: 600 }}>{nsecExistingProfile?.displayName || 'Unnamed'}</div>
-                    </div>
-                  </div>
-                  {nsecExistingProfile?.about && (
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                      {nsecExistingProfile.about.slice(0, 200)}{(nsecExistingProfile.about.length > 200) ? '…' : ''}
-                    </p>
-                  )}
-                  {previewUrl && !nsecPicturePreviewShown && (
-                    <div style={{ marginTop: 10, padding: '8px 10px', background: 'var(--accent-light)', borderRadius: 'var(--radius-sm)', fontSize: '0.78rem', color: 'var(--accent-text)' }}>
-                      Profile picture is hosted at <strong>{previewHostname}</strong>. We'll fetch it only after you tap below.
-                      <div style={{ marginTop: 6 }}>
-                        <button className="btn btn-ghost btn-sm" onClick={() => setNsecPicturePreviewShown(true)}>Show picture</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <ExistingProfilePanel
+                  profile={nsecExisting.profile}
+                  choice={nsecChoice}
+                  onChoice={setNsecChoice}
+                  disabled={nsecImporting}
+                />
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>
                   Your followers, posts, and follows are preserved — they're tied to your key, not to any one client.
                 </p>
               </>
             ) : (
-              <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
-                Pick a display name for your new Persona. You can change it anytime.
-              </p>
+              <>
+                <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
+                  Pick a display name for your new Persona. You can change it anytime.
+                </p>
+                {nsecLookupUnreachable && (
+                  <p role="status" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 16 }}>
+                    Couldn&rsquo;t reach Nostr relays to look for an existing profile. You can check again later from the persona&rsquo;s Advanced page.
+                  </p>
+                )}
+              </>
             )}
 
             <div className="card section" style={{ marginBottom: 16, background: 'var(--bg-secondary)' }}>
@@ -832,23 +804,23 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               style={{ marginTop: 4, marginBottom: 14 }}
             />
 
-            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.85rem', marginBottom: 16, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={nsecPublishProfile}
-                onChange={e => setNsecPublishProfile(e.target.checked)}
-                style={{ marginTop: 3 }}
-              />
-              <span>
-                {found ? 'Keep publishing my profile from Signet (recommended)' : 'Publish a public Nostr profile for this persona'}
-                <br />
-                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                  {found
-                    ? `If you uncheck this, Signet won't touch your kind-0 — your existing profile stays as it was.`
-                    : `You can turn this on later in Settings. Off by default.`}
+            {!found && (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.85rem', marginBottom: 16, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={nsecPublishProfile}
+                  onChange={e => setNsecPublishProfile(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  Publish a public Nostr profile for this persona
+                  <br />
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                    You can turn this on later in Settings. Off by default.
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            )}
 
             {error && (
               <div style={{ padding: 8, background: 'var(--danger-light)', borderRadius: 'var(--radius-sm)', marginBottom: 12, color: 'var(--danger)', fontSize: '0.9rem' }}>

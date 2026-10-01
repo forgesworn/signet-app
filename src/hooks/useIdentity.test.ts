@@ -524,3 +524,63 @@ describe('useIdentity — addPersona device derivation (§11.1.8 D4)', () => {
     expect(persisted?.extraPersonas?.[0].privateKey).toBe('6'.repeat(64));
   }, 20_000);
 });
+
+describe('useIdentity — publicProfileBase (device-local kind-0 comparison base)', () => {
+  const base = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, content: '{"name":"a","bot":true}', tags: [['t', 'x']] };
+  const state = { enabled: true, lastEventId: 'e'.repeat(64), lastPublishedAt: 1_700_000_000, lastPublishedRelay: 'wss://r.example' };
+
+  async function setup() {
+    mockCreate.mockReturnValue(makeFakeIdentity());
+    const hook = renderHook(() => useIdentity('test-key'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    await act(async () => { await hook.result.current.create('Test User', 'natural-person', false); });
+    return hook;
+  }
+
+  it('is written with the state and survives a plain card save that passes no base', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous', about: 'a' }, state, base);
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toEqual(base);
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous', about: 'b' }, state);
+    });
+    expect(result.current.identity?.persona.about).toBe('b');
+    expect(result.current.identity?.persona.publicProfileBase).toEqual(base);
+  }, 60_000);
+
+  it('an explicit null clears it', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, base);
+    });
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, null);
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toBeUndefined();
+  }, 60_000);
+
+  it('removing the state removes the base with it', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, base);
+    });
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, undefined);
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toBeUndefined();
+  }, 60_000);
+
+  it('clearPersonaPublicProfile (Disable / retract) drops the base so a re-enable rebuilds from the card', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, base);
+    });
+    await act(async () => {
+      await result.current.clearPersonaPublicProfile('persona');
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toBeUndefined();
+    expect(result.current.identity?.persona.publicProfile).toBeUndefined();
+  }, 60_000);
+});

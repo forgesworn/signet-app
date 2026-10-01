@@ -26,6 +26,8 @@
  *   parseKindZeroContent  — pure helper, validates + sanitises an inbound kind-0 content blob
  *   safeImageOrLinkUrl    — URL scheme allowlist (https: / http: only)
  *   contentHashFor        — pure helper, returns a stable content hash for §5.3.3 idempotency
+ *   mergeKindZeroContent  — pure three-way merge: Signet's edits onto the relay's kind-0, losslessly
+ *   toPublicProfileBase   — pure helper, the device-local "last known relay kind-0" record
  */
 
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
@@ -36,7 +38,8 @@ import type { SigningBackend } from './signing-backend';
 import { verifiedAuthoredEvents } from './event-verify';
 import { isValidRelayUrl } from './relay-url';
 import { isPrivateOrInternalHost } from './safe-url';
-import type { PersonaPublicProfile, PublicProfileConfig } from '../types';
+import type { PersonaPublicProfile, PublicProfileBase, PublicProfileConfig } from '../types';
+import { fetchExistingProfile } from './existing-profile';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -49,7 +52,7 @@ const NIP05_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
 /** Per-field caps. See design doc Appendix A. */
 const CAP_NAME = 50;
 const CAP_DISPLAY_NAME = 100;
-const CAP_ABOUT = 500;
+const CAP_ABOUT = 2000;
 const CAP_PICTURE_URL = 500;
 const CAP_BANNER_URL = 500;
 const CAP_NIP05 = 100;
@@ -90,13 +93,29 @@ export function safeImageOrLinkUrl(raw: string): URL | null {
 }
 
 /**
- * Strip control / bidi characters from a string and cap length. Mirrors the
- * sanitise helper in persona-inventory-sync.ts so inbound kind-0 strings get
- * the same treatment as inventory-rail strings.
+ * Strip control / bidi characters and cap length (in CODE POINTS, so the cap
+ * never lands mid-surrogate-pair). Mirrors the sanitise helper in
+ * persona-inventory-sync.ts so inbound kind-0 strings get the same treatment
+ * as inventory-rail strings.
+ *
+ * U+200C (ZWNJ) and U+200D (ZWJ) are NOT stripped: emoji sequences and some
+ * scripts need them to render at all. U+200B, the directional marks U+200E/F
+ * and the bidi embedding / override / isolate ranges still go.
+ *
+ * `multiline` (the `about` field only) keeps `\n` and `\t` and normalises
+ * `\r\n` / `\r` to `\n`, as `sanitizeNote` does; every other field is a single
+ * line and loses all control characters.
  */
-function sanitiseText(value: string, maxLen: number): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069]", "g"), "").slice(0, maxLen);
+// eslint-disable-next-line no-control-regex
+const STRIP_SINGLE_LINE = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+// eslint-disable-next-line no-control-regex
+const STRIP_MULTI_LINE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+
+function sanitiseText(value: string, maxLen: number, multiline = false): string {
+  const input = multiline ? value.replace(/\r\n?/g, '\n') : value;
+  const stripped = input.replace(multiline ? STRIP_MULTI_LINE : STRIP_SINGLE_LINE, '');
+  if (stripped.length <= maxLen) return stripped;
+  return Array.from(stripped).slice(0, maxLen).join('');
 }
 
 /**
@@ -130,8 +149,8 @@ export function buildKindZeroContent(
   if (displayName) out.display_name = displayName;
 
   if (config.about && config.about.length > 0) {
-    const ab = sanitiseText(config.about, CAP_ABOUT);
-    if (ab) out.about = ab;
+    const ab = sanitiseText(config.about, CAP_ABOUT, true);
+    if (ab.trim()) out.about = ab;
   }
 
   if (config.pictureUrl && config.pictureUrl.length > 0 && config.pictureUrl.length <= CAP_PICTURE_URL) {
@@ -188,8 +207,8 @@ export function parseKindZeroContent(
     if (v) out.displayName = v;
   }
   if (typeof r.about === 'string') {
-    const v = sanitiseText(r.about, CAP_ABOUT);
-    if (v) out.about = v;
+    const v = sanitiseText(r.about, CAP_ABOUT, true);
+    if (v.trim()) out.about = v;
   }
   if (typeof r.picture === 'string' && r.picture.length <= CAP_PICTURE_URL && safeImageOrLinkUrl(r.picture)) {
     out.pictureUrl = r.picture;
@@ -225,6 +244,161 @@ export function contentHashFor(
   return bytesToHex(sha256(new TextEncoder().encode(content)));
 }
 
+// ─── Stored base + three-way merge ─────────────────────────────────────────
+
+/** A stored base is kept only while it is small enough to live on a slot. */
+const MAX_BASE_CONTENT_CHARS = 65536;
+const MAX_BASE_TAG_CHARS = 65536;
+
+/**
+ * Build the device-local `PublicProfileBase` for a kind-0 event, or
+ * `undefined` when it is too big to store (content over 64 KiB, or tags over
+ * 64 KiB in total). Without a base the next publish falls back to the plain
+ * build from the card — see `mergeKindZeroContent`.
+ */
+export function toPublicProfileBase(
+  event: { id: string; created_at: number; content: string; tags: string[][] },
+  matched = false,
+): PublicProfileBase | undefined {
+  if (typeof event.content !== 'string' || event.content.length > MAX_BASE_CONTENT_CHARS) return undefined;
+  if (!Array.isArray(event.tags)) return undefined;
+  let tagChars = 0;
+  const tags: string[][] = [];
+  for (const t of event.tags) {
+    if (!Array.isArray(t)) return undefined;
+    const row = t.map(v => String(v));
+    for (const v of row) tagChars += v.length;
+    if (tagChars > MAX_BASE_TAG_CHARS) return undefined;
+    tags.push(row);
+  }
+  return {
+    eventId: event.id,
+    createdAt: event.created_at,
+    content: event.content,
+    tags,
+    ...(matched ? { matched: true as const } : {}),
+  };
+}
+
+function parseObject(raw: string): Record<string, unknown> | null {
+  let obj: unknown;
+  try { obj = JSON.parse(raw); } catch { return null; }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
+  return obj as Record<string, unknown>;
+}
+
+export interface KindZeroMergeResult {
+  content: string;
+  tags: string[][];
+  /** True when the output was built from a relay kind-0 (three-way merge);
+   *  false when the plain card build was used. */
+  merged: boolean;
+}
+
+/**
+ * THREE-WAY merge of Signet's card onto the relay's kind-0, so publishing from
+ * Signet never destroys what Signet does not manage (`bot`, `birthday`,
+ * `lud06`, unknown keys, tags, a distinct `name` handle, bio line breaks).
+ *
+ * Two different inputs, deliberately not conflated:
+ *   - `comparisonContent` — the slot's STORED base content (what Signet last
+ *     knew of the relay version). A field counts as "edited in Signet" iff the
+ *     card value differs from what `parseKindZeroContent` reads from it.
+ *   - `contentBase` — the NEWER of the freshly fetched kind-0 and the stored
+ *     base. The output starts from this object and its tags, verbatim. So an
+ *     edit made elsewhere after the match is kept unless the same field was
+ *     ALSO edited in Signet, in which case Signet wins for that field only.
+ *
+ * Falls back to today's plain build (`buildKindZeroContent`, `tags: []`) when
+ * there is no comparison content, when either JSON is not a plain object, or
+ * when the content base is an empty object (a tombstone — publishing from it
+ * would silently drop every un-edited card field).
+ *
+ * Per Signet-managed field (about, picture, banner, nip05, lud16, website):
+ * not edited -> the content base's raw value is left alone (present, absent,
+ * or shaped however it is); edited and empty -> the key is deleted; edited and
+ * non-empty -> the sanitised / validated Signet value is set (a value that
+ * fails validation leaves the raw value alone rather than guess). Display
+ * name: not edited -> `name` and `display_name` stay raw; edited -> set
+ * `display_name`, and set `name` ONLY when the content base has no non-empty
+ * `name` (a handle is never overwritten). Deprecated `displayName` /
+ * `username` keys are never touched.
+ *
+ * When nothing is edited the content base string is returned VERBATIM, which
+ * keeps key order / whitespace and lets the content-hash short-circuit hold.
+ */
+export function mergeKindZeroContent(args: {
+  comparisonContent: string | undefined;
+  contentBase: { content: string; tags: string[][] } | undefined;
+  config: PublicProfileConfig;
+  fallbackDisplayName: string;
+}): KindZeroMergeResult {
+  const { comparisonContent, contentBase, config, fallbackDisplayName } = args;
+  const legacy = (): KindZeroMergeResult => ({
+    content: buildKindZeroContent(config, fallbackDisplayName),
+    tags: [],
+    merged: false,
+  });
+  if (comparisonContent === undefined || !contentBase) return legacy();
+  const compared = parseKindZeroContent(comparisonContent);
+  if (!compared) return legacy();
+  const obj = parseObject(contentBase.content);
+  if (!obj || Object.keys(obj).length === 0) return legacy();
+
+  // Both sides go through the same sanitiser before comparing, so a CRLF
+  // paste, a cap or a trailing newline cannot make an untouched value read as
+  // "edited" and overwrite it.
+  const edited = {
+    about: sanitiseText(config.about ?? '', CAP_ABOUT, true).trim() !== (compared.about ?? '').trim(),
+    picture: (config.pictureUrl ?? '') !== (compared.pictureUrl ?? ''),
+    banner: (config.bannerUrl ?? '') !== (compared.bannerUrl ?? ''),
+    nip05: (config.nip05 ?? '') !== (compared.nip05 ?? ''),
+    lud16: (config.lud16 ?? '') !== (compared.lud16 ?? ''),
+    website: (config.website ?? '') !== (compared.website ?? ''),
+  };
+  const rawName = config.displayName || fallbackDisplayName || '';
+  const nameEdited = sanitiseText(rawName, CAP_DISPLAY_NAME).trim() !== (compared.displayName ?? '');
+
+  const tags = contentBase.tags.map(t => [...t]);
+  const anyEdit = nameEdited || Object.values(edited).some(Boolean);
+  if (!anyEdit) return { content: contentBase.content, tags, merged: true };
+
+  const setOrDelete = (key: string, edit: boolean, value: string | undefined, valid: boolean) => {
+    if (!edit) return;
+    if (!value) { delete obj[key]; return; }
+    if (valid) obj[key] = value;
+  };
+
+  if (edited.about) {
+    const ab = sanitiseText(config.about ?? '', CAP_ABOUT, true);
+    setOrDelete('about', true, ab.trim() ? ab : undefined, true);
+  }
+  const pic = config.pictureUrl ?? '';
+  setOrDelete('picture', edited.picture, pic, pic.length <= CAP_PICTURE_URL && safeImageOrLinkUrl(pic) !== null);
+  const ban = config.bannerUrl ?? '';
+  setOrDelete('banner', edited.banner, ban, ban.length <= CAP_BANNER_URL && safeImageOrLinkUrl(ban) !== null);
+  const n05 = config.nip05 ?? '';
+  setOrDelete('nip05', edited.nip05, n05, n05.length <= CAP_NIP05 && NIP05_RE.test(n05));
+  const l16 = config.lud16 ?? '';
+  setOrDelete('lud16', edited.lud16, l16, l16.length <= CAP_LUD16 && NIP05_RE.test(l16));
+  const web = config.website ?? '';
+  setOrDelete('website', edited.website, web, web.length <= CAP_WEBSITE && safeImageOrLinkUrl(web) !== null);
+
+  if (nameEdited) {
+    const display = sanitiseText(rawName, CAP_DISPLAY_NAME).trim();
+    if (display) {
+      obj.display_name = display;
+      const existingHandle = obj.name;
+      if (typeof existingHandle !== 'string' || existingHandle.trim() === '') {
+        const handle = sanitiseText(rawName, CAP_NAME).trim();
+        if (handle) obj.name = handle;
+      }
+    }
+  }
+
+  return { content: JSON.stringify(obj), tags, merged: true };
+}
+
 // ─── Publish / Retract / Fetch ─────────────────────────────────────────────
 
 export interface PublishResult {
@@ -233,6 +407,27 @@ export interface PublishResult {
   relayUrl: string;
   createdAt: number;
   message?: string;
+  /**
+   * Exactly what was published (set on a real publish only — absent on the
+   * §5.3.3 "no changes" short-circuit, where the caller's stored base and hash
+   * are still the truth). The caller stores a `PublicProfileBase` from these
+   * and `contentHash`, because after a three-way merge the published content
+   * is NOT `buildKindZeroContent(config)` and the hash must be of what was sent.
+   */
+  content?: string;
+  tags?: string[][];
+  /** SHA-256 hex of `content`. */
+  contentHash?: string;
+  /** True when the content came from the three-way merge (a relay kind-0 was carried forward). */
+  merged?: boolean;
+}
+
+/** What the optional lossless-publish inputs of `publishPublicProfile` carry. */
+export interface PublishMergeInput {
+  /** The slot's stored `publicProfileBase`. Absent => today's plain build, no fetch. */
+  storedBase?: PublicProfileBase;
+  /** Extra relays to look the current kind-0 up on (the user's read relays). */
+  lookupRelays?: string[];
 }
 
 /**
@@ -257,14 +452,57 @@ export async function publishPublicProfile(
    * absence falls through to a real publish.
    */
   lastPublishedContentHash?: string,
+  /**
+   * Lossless-publish inputs. With a stored base the function looks up the
+   * relay's current kind-0 itself (multi-relay, author-pinned, signature-
+   * verified) and three-way merges onto the newer of that and the base — see
+   * `mergeKindZeroContent`. Without one it behaves exactly as before.
+   */
+  merge?: PublishMergeInput,
 ): Promise<PublishResult> {
   if (!isValidRelayUrl(relayUrl)) {
     return { ok: false, eventId: '', relayUrl, createdAt: 0, message: 'no relay configured' };
   }
   const now = Math.floor(Date.now() / 1000);
-  const created_at = Math.max(now, (state?.lastPublishedAt ?? 0) + 1);
+  let created_at = Math.max(now, (state?.lastPublishedAt ?? 0) + 1);
 
-  const content = buildKindZeroContent(config, fallbackDisplayName);
+  let content: string;
+  let tags: string[][] = [];
+  let merged = false;
+  const storedBase = merge?.storedBase;
+  if (storedBase) {
+    // Content base = the NEWER (by created_at, tie: stored) of the freshly
+    // fetched kind-0 and the stored base. An unreachable lookup, or one that
+    // finds nothing, leaves the stored base — still lossless relative to what
+    // we last knew.
+    let contentBase: { content: string; tags: string[][] } = { content: storedBase.content, tags: storedBase.tags };
+    let baseCreatedAt = storedBase.createdAt;
+    try {
+      const fetched = await fetchExistingProfile(
+        backend.activePublicKeyHex,
+        [relayUrl, ...(merge?.lookupRelays ?? [])],
+      );
+      if (fetched && fetched !== 'unreachable' && fetched.event.created_at > storedBase.createdAt) {
+        contentBase = { content: fetched.event.content, tags: fetched.event.tags };
+        baseCreatedAt = fetched.event.created_at;
+      }
+    } catch { /* lookup is best-effort — publish from the stored base */ }
+    const result = mergeKindZeroContent({
+      comparisonContent: storedBase.content,
+      contentBase,
+      config,
+      fallbackDisplayName,
+    });
+    content = result.content;
+    tags = result.tags;
+    merged = result.merged;
+    // A replaceable event only replaces an OLDER one: stay strictly newer than
+    // whatever we merged onto, even if its author's clock ran ahead of ours.
+    created_at = Math.max(created_at, baseCreatedAt + 1);
+  } else {
+    content = buildKindZeroContent(config, fallbackDisplayName);
+  }
+  const contentHash = bytesToHex(sha256(new TextEncoder().encode(content)));
 
   // §5.3.3 short-circuit. Hash the canonical content string; if it matches
   // the caller's last-published hash, skip the relay round-trip. We still
@@ -272,8 +510,7 @@ export async function publishPublicProfile(
   // we don't overwrite eventId/lastPublishedAt (those carry the prior
   // published state). The message is the surfaced "no changes" copy.
   if (lastPublishedContentHash && state?.lastEventId && state?.lastPublishedAt) {
-    const candidateHash = bytesToHex(sha256(new TextEncoder().encode(content)));
-    if (candidateHash === lastPublishedContentHash) {
+    if (contentHash === lastPublishedContentHash) {
       return {
         ok: true,
         eventId: state.lastEventId,
@@ -288,7 +525,7 @@ export async function publishPublicProfile(
     pubkey: backend.activePublicKeyHex,
     kind: KIND_PROFILE,
     created_at,
-    tags: [],
+    tags,
     content,
   };
 
@@ -315,7 +552,7 @@ export async function publishPublicProfile(
         message: result.message || 'relay rejected',
       };
     }
-    return { ok: true, eventId: signed.id, relayUrl, createdAt: created_at };
+    return { ok: true, eventId: signed.id, relayUrl, createdAt: created_at, content, tags, contentHash, merged };
   } catch (err) {
     return {
       ok: false, eventId: signed.id, relayUrl, createdAt: created_at,

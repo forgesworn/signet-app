@@ -372,6 +372,10 @@ function preserveLocalSlotState<T extends {
   // allowlists that never include these two fields).
   nip05CheckResult?: import('./nip05-check').Nip05CheckResult;
   nip05CheckedAt?: number;
+  // Lossless-publish addition — the device-local record of the kind-0 this
+  // device last published / matched. Never on any wire (every wire builder
+  // is an explicit allowlist that omits it), so the overlay must carry it.
+  publicProfileBase?: import('../types').PublicProfileBase;
 }>(remote: T, local: T | undefined): T {
   if (!local) return remote;
   return {
@@ -387,6 +391,7 @@ function preserveLocalSlotState<T extends {
     website: local.website,
     nip05CheckResult: local.nip05CheckResult,
     nip05CheckedAt: local.nip05CheckedAt,
+    publicProfileBase: local.publicProfileBase,
     // Audit pass 4 additions:
     // - avatar* fields are per-device encrypted-Blossom mirrors of bunker
     //   endpoints — never propagate cross-device. Every sync was
