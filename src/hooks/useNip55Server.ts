@@ -76,6 +76,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   const gateRef = useRef(gate);
   gateRef.current = gate;
   const [queue, setQueue] = useState<Waiting[]>([]);
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
   const [grants, setGrants] = useState<Nip55Grants>(() => loadNip55Grants());
   const routesRef = useRef(routes);
   routesRef.current = routes;
@@ -311,6 +313,21 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
   }, [take, remember, respond, now]);
 
+  /**
+   * The person turned the unlock down. What was held for it cannot be
+   * answered without the keys, and the apps that asked are each waiting on
+   * a screen of their own: refuse them now, rather than leave them to the
+   * shell's five-minute timeout. Nothing is refused while unlocked.
+   */
+  const refuseHeld = useCallback(() => {
+    if (!lockedRef.current) return;
+    const held = queueRef.current;
+    if (held.length === 0) return;
+    queueRef.current = [];
+    setQueue([]);
+    for (const item of held) void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
+  }, [respond]);
+
   const forget = useCallback((pkg: string) => {
     setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });
   }, []);
@@ -337,5 +354,5 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     };
   }, [queue, locked, grants, activePubkey, routes]);
 
-  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget };
+  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld };
 }

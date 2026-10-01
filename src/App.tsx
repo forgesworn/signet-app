@@ -457,6 +457,8 @@ export function App() {
   stayAwakeUntilRef.current = stayAwakeUntil;
   /** End of the window during which a hidden app keeps its key for the phone apps it serves (NIP-55). */
   const phoneAppsUntilRef = useRef<number | null>(null);
+  /** Refuses the NIP-55 requests held for an unlock; set once the NIP-55 server below is up. */
+  const refuseHeldNip55Ref = useRef<() => void>(() => {});
 
   // Native always-on serving (#APK): while true, the bunker serves with the
   // screen off — the foreground service + partial wake lock keep the WebView
@@ -530,6 +532,14 @@ export function App() {
     authResolverRef.current?.(null);
     authResolverRef.current = null;
   }, []);
+  // The person said no to the unlock itself. An app on this phone that
+  // brought us up to unlock gets its answer now, a refusal, and is put back
+  // in front, instead of waiting minutes on us. Not on the navigation-away
+  // cancel below: that is the app moving, not the person declining.
+  const handleAuthPromptDeclined = useCallback(() => {
+    handleAuthPromptCancel();
+    refuseHeldNip55Ref.current();
+  }, [handleAuthPromptCancel]);
   const openAndroidApp = useCallback(() => {
     window.open(ANDROID_APP_URL, '_blank', 'noopener');
   }, []);
@@ -3814,6 +3824,7 @@ export function App() {
     onNeedsUnlock: () => { setAuthPromptContext(undefined); setShowAuthPrompt(true); },
     onServed: () => { phoneAppsUntilRef.current = Date.now() + PHONE_APPS_WINDOW_MS; },
   });
+  refuseHeldNip55Ref.current = nip55.refuseHeld;
   // The remembered NIP-55 decisions, as the Connected Sites page lists them; grants keep milliseconds, the page reads seconds.
   const phoneApps = useMemo<PhoneApp[]>(() => Object.entries(nip55.grants)
     .map(([packageName, g]) => ({ packageName, label: g.label ?? null, pubkey: g.pubkey, allowAlways: g.allowAlways, denyAlways: g.denyAlways, grantedAt: Math.floor(g.grantedAt / 1000) }))
@@ -9480,12 +9491,12 @@ export function App() {
   const authOverlay = showAuthPrompt ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: Z.overlay, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={(e) => { if (e.target === e.currentTarget) handleAuthPromptCancel(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) handleAuthPromptDeclined(); }}
     >
       <div style={{ width: '100%', maxWidth: 400 }}>
         <AuthScreen
           onUnlock={handleAuthPromptUnlock}
-          onCancel={handleAuthPromptCancel}
+          onCancel={handleAuthPromptDeclined}
           purposeContext={authPromptContext}
         />
       </div>

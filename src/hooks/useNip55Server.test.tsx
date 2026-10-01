@@ -319,6 +319,30 @@ describe('useNip55Server', () => {
     expect(respond).not.toHaveBeenCalled();
   });
 
+  it('declining the unlock refuses what was held for it at once, by intent back to the app', async () => {
+    const onNeedsUnlock = vi.fn();
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [], locked: true, activePubkey: pubkey, onNeedsUnlock }));
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const first = request();
+    const second = request();
+    await act(async () => { listeners.nip55Request[0](first); listeners.nip55Request[0](second); });
+    await waitFor(() => expect(result.current.waiting).toBe(2));
+    await act(async () => { result.current.refuseHeld(); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+    expect(respond.mock.calls.map(c => c[0])).toEqual([{ id: first.id, status: 'rejected' }, { id: second.id, status: 'rejected' }]);
+    expect(result.current.waiting).toBe(0);
+  });
+
+  it('refusing held requests does nothing once unlocked', async () => {
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request()); });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    await act(async () => { result.current.refuseHeld(); });
+    expect(result.current.pending).not.toBeNull();
+    expect(respond).not.toHaveBeenCalled();
+  });
+
   it('a request held through the PIN is dropped when withdrawn before the unlock', async () => {
     const onNeedsUnlock = vi.fn();
     const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey, onNeedsUnlock }), { initialProps: { locked: true } });
