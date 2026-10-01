@@ -166,6 +166,10 @@ export interface ResolvedIdentity {
   avatarHash?: string;
   avatarBlossomUrl?: string;
   avatarKey?: string;
+  /** Public kind-0 picture URL from the slot (untrusted — render only via
+   *  `safeImageOrLinkUrl`). Used by the user's OWN cards when there is no
+   *  encrypted in-app avatar. */
+  pictureUrl?: string;
   /** Slot target for per-persona mutations (matches the setter union):
    *  'natural-person' | 'persona' | <extra pubkey hex>. '' for non-persona rows. */
   slotTarget?: string;
@@ -271,6 +275,7 @@ export function resolveActiveIdentity(row: CarouselRow): ResolvedIdentity {
         avatarHash: row.identity.naturalPerson.avatarHash,
         avatarBlossomUrl: row.identity.naturalPerson.avatarBlossomUrl,
         avatarKey: row.identity.naturalPerson.avatarKey,
+        pictureUrl: row.identity.naturalPerson.pictureUrl,
         slotTarget: 'natural-person',
         contactAvatarKey: row.identity.naturalPerson.contactAvatarKey,
         contactAvatarStale: row.identity.naturalPerson.contactAvatarStale,
@@ -288,6 +293,7 @@ export function resolveActiveIdentity(row: CarouselRow): ResolvedIdentity {
         avatarHash: row.identity.persona.avatarHash,
         avatarBlossomUrl: row.identity.persona.avatarBlossomUrl,
         avatarKey: row.identity.persona.avatarKey,
+        pictureUrl: row.identity.persona.pictureUrl,
         slotTarget: 'persona',
         contactAvatarKey: row.identity.persona.contactAvatarKey,
         contactAvatarStale: row.identity.persona.contactAvatarStale,
@@ -306,6 +312,7 @@ export function resolveActiveIdentity(row: CarouselRow): ResolvedIdentity {
         avatarHash: ep.avatarHash,
         avatarBlossomUrl: ep.avatarBlossomUrl,
         avatarKey: ep.avatarKey,
+        pictureUrl: ep.pictureUrl,
         slotTarget: ep.publicKey,
         contactAvatarKey: ep.contactAvatarKey,
         contactAvatarStale: ep.contactAvatarStale,
@@ -326,6 +333,7 @@ export function resolveActiveIdentity(row: CarouselRow): ResolvedIdentity {
         avatarHash: slot.avatarHash,
         avatarBlossomUrl: slot.avatarBlossomUrl,
         avatarKey: slot.avatarKey,
+        pictureUrl: slot.pictureUrl,
         slotTarget,
         contactAvatarKey: slot.contactAvatarKey,
         contactAvatarStale: slot.contactAvatarStale,
@@ -346,6 +354,7 @@ export function resolveActiveIdentity(row: CarouselRow): ResolvedIdentity {
         avatarHash: row.dependant.persona.avatarHash,
         avatarBlossomUrl: row.dependant.persona.avatarBlossomUrl,
         avatarKey: row.dependant.persona.avatarKey,
+        pictureUrl: row.dependant.persona.pictureUrl,
         slotTarget: 'persona',
         contactAvatarKey: row.dependant.persona.contactAvatarKey,
         contactAvatarStale: row.dependant.persona.contactAvatarStale,
@@ -367,6 +376,7 @@ export function resolveActiveIdentity(row: CarouselRow): ResolvedIdentity {
         avatarHash: ep.avatarHash,
         avatarBlossomUrl: ep.avatarBlossomUrl,
         avatarKey: ep.avatarKey,
+        pictureUrl: ep.pictureUrl,
         slotTarget: ep.publicKey,
         contactAvatarKey: ep.contactAvatarKey,
         contactAvatarStale: ep.contactAvatarStale,
@@ -419,6 +429,7 @@ export function resolveAuthSelectionIdentity(
         avatarHash: identity.naturalPerson.avatarHash,
         avatarBlossomUrl: identity.naturalPerson.avatarBlossomUrl,
         avatarKey: identity.naturalPerson.avatarKey,
+        pictureUrl: identity.naturalPerson.pictureUrl,
         slotTarget: 'natural-person',
         contactAvatarKey: identity.naturalPerson.contactAvatarKey,
         contactAvatarStale: identity.naturalPerson.contactAvatarStale,
@@ -436,6 +447,7 @@ export function resolveAuthSelectionIdentity(
         avatarHash: identity.persona.avatarHash,
         avatarBlossomUrl: identity.persona.avatarBlossomUrl,
         avatarKey: identity.persona.avatarKey,
+        pictureUrl: identity.persona.pictureUrl,
         slotTarget: 'persona',
         contactAvatarKey: identity.persona.contactAvatarKey,
         contactAvatarStale: identity.persona.contactAvatarStale,
@@ -454,6 +466,7 @@ export function resolveAuthSelectionIdentity(
       avatarHash: ep.avatarHash,
       avatarBlossomUrl: ep.avatarBlossomUrl,
       avatarKey: ep.avatarKey,
+      pictureUrl: ep.pictureUrl,
       slotTarget: ep.publicKey,
       contactAvatarKey: ep.contactAvatarKey,
       contactAvatarStale: ep.contactAvatarStale,
@@ -475,6 +488,7 @@ export function resolveAuthSelectionIdentity(
       avatarHash: dep.naturalPerson.avatarHash,
       avatarBlossomUrl: dep.naturalPerson.avatarBlossomUrl,
       avatarKey: dep.naturalPerson.avatarKey,
+      pictureUrl: dep.naturalPerson.pictureUrl,
       slotTarget: 'natural-person',
       contactAvatarKey: dep.naturalPerson.contactAvatarKey,
       contactAvatarStale: dep.naturalPerson.contactAvatarStale,
@@ -493,6 +507,7 @@ export function resolveAuthSelectionIdentity(
       avatarHash: dep.persona.avatarHash,
       avatarBlossomUrl: dep.persona.avatarBlossomUrl,
       avatarKey: dep.persona.avatarKey,
+      pictureUrl: dep.persona.pictureUrl,
       slotTarget: 'persona',
       contactAvatarKey: dep.persona.contactAvatarKey,
       contactAvatarStale: dep.persona.contactAvatarStale,
@@ -512,6 +527,7 @@ export function resolveAuthSelectionIdentity(
     avatarHash: ep.avatarHash,
     avatarBlossomUrl: ep.avatarBlossomUrl,
     avatarKey: ep.avatarKey,
+    pictureUrl: ep.pictureUrl,
     slotTarget: ep.publicKey,
     contactAvatarKey: ep.contactAvatarKey,
     contactAvatarStale: ep.contactAvatarStale,

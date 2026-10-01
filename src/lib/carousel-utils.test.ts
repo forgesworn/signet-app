@@ -473,6 +473,18 @@ describe('resolveActiveIdentity — contact-avatar fields', () => {
   });
 });
 
+describe('resolveActiveIdentity — pictureUrl', () => {
+  it('copies the slot pictureUrl for persona and extra-persona rows', () => {
+    const identity: any = {
+      naturalPerson: { publicKey: 'a'.repeat(64), displayName: 'Me' },
+      persona: { publicKey: 'b'.repeat(64), displayName: 'P', pictureUrl: 'https://example.com/p.jpg' },
+      extraPersonas: [{ publicKey: 'c'.repeat(64), displayName: 'X', pictureUrl: 'https://example.com/x.jpg' }],
+    };
+    expect(resolveActiveIdentity({ type: 'persona', identity }).pictureUrl).toBe('https://example.com/p.jpg');
+    expect(resolveActiveIdentity({ type: 'extra-persona', identity, personaIndex: 0 }).pictureUrl).toBe('https://example.com/x.jpg');
+  });
+});
+
 describe('findRowForDependant', () => {
   it('finds the row for a single dependant after persona+NP', () => {
     // [persona(0), natural-person(1), dep1(2), add]

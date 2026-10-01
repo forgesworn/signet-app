@@ -6,6 +6,7 @@ import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
 import { initialFromName, colourFromPubkey } from '../lib/avatar';
 import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
+import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
 
@@ -91,7 +92,19 @@ export function IdentityCard({ row, resolved, badge, childMode, childDormant, ch
     avatarBlossomUrl: resolved.avatarBlossomUrl,
     avatarKey: resolved.avatarKey,
   });
-  const effectivePhotoUrl = photoUrl ?? internalAvatarUrl;
+
+  // Public kind-0 picture (e.g. adopted by "Match it in Signet") — the last
+  // resort when the slot has no decrypted in-app avatar. Untrusted URL: only
+  // https (or loopback http) survives `safeImageOrLinkUrl`. A load failure is
+  // remembered per-URL, so a changed URL gets a fresh attempt.
+  const publicPictureHref = resolved.pictureUrl
+    ? safeImageOrLinkUrl(resolved.pictureUrl)?.href ?? null
+    : null;
+  const [failedPictureHref, setFailedPictureHref] = useState<string | null>(null);
+  const publicPictureUrl =
+    publicPictureHref && publicPictureHref !== failedPictureHref ? publicPictureHref : null;
+  const effectivePhotoUrl = photoUrl ?? internalAvatarUrl ?? publicPictureUrl;
+  const showingPublicPicture = !photoUrl && !internalAvatarUrl && !!publicPictureUrl;
 
   // ── Blur / tap-to-reveal state ──────────────────────────────────────────
   // `revealed` is local to this card instance — resets naturally on
@@ -211,6 +224,10 @@ export function IdentityCard({ row, resolved, badge, childMode, childDormant, ch
                 <img
                   src={effectivePhotoUrl}
                   alt={`${resolved.displayName ?? 'Identity'}'s image`}
+                  {...(showingPublicPicture ? {
+                    referrerPolicy: 'no-referrer' as const,
+                    onError: () => setFailedPictureHref(publicPictureUrl),
+                  } : {})}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
               ) : (
