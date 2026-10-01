@@ -69,6 +69,23 @@ class Nip55WireTest {
         assertEquals("rejected", got?.status)
     }
 
+    @Test fun `a frozen page is up but not answering, until it resumes or a new page attaches`() {
+        val deliver: (Nip55Incoming) -> Unit = {}
+        val withdraw: (String) -> Unit = {}
+        Nip55Requests.attach(deliver, withdraw)
+        assertTrue(Nip55Requests.pageAnswering)
+        Nip55Requests.pageFrozen(true)
+        assertTrue(Nip55Requests.pageUp)
+        assertFalse(Nip55Requests.pageAnswering)
+        Nip55Requests.pageFrozen(false)
+        assertTrue(Nip55Requests.pageAnswering)
+        Nip55Requests.pageFrozen(true)
+        Nip55Requests.attach(deliver, withdraw)
+        assertTrue(Nip55Requests.pageAnswering)
+        Nip55Requests.detach(deliver, withdraw)
+        assertFalse(Nip55Requests.pageAnswering)
+    }
+
     @Test fun `ask gives up on silence and clears the request`() {
         val request = Nip55Incoming.fromProvider("slow", "x", null, "sign_event", arrayOf("{}"))
         assertNull(Nip55Requests.ask(request, 50))

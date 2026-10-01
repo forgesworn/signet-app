@@ -38,6 +38,8 @@ export interface SignetNativePlugin {
   nip55Pending(): Promise<{ requests: NativeNip55Request[] }>;
   /** The answer to one request. `deferred` tells a provider query to make the app ask by intent. */
   nip55Respond(opts: Nip55Response): Promise<void>;
+  /** The page is frozen (Page Lifecycle `freeze`) or running again (`resume`): a frozen page cannot answer a provider query. */
+  nip55PageFrozen(opts: { frozen: boolean }): Promise<void>;
   addListener(eventName: 'nip55Request', listener: (request: NativeNip55Request) => void): Promise<PluginListenerHandle>;
   /** A request's caller went away (task swiped, or the shell's own timeout fired); drop it unanswered. */
   addListener(eventName: 'nip55Withdrawn', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>;

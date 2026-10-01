@@ -9,6 +9,7 @@ const listeners: Record<string, Array<(r: unknown) => void>> = {};
 type Answer = { id: string; status: string; event?: string; result?: string };
 const respond = vi.fn(async (_answer: Answer) => {});
 const pendingFromShell = vi.fn(async () => ({ requests: [] as unknown[] }));
+const pageFrozen = vi.fn(async (_opts: { frozen: boolean }) => {});
 vi.mock('../lib/native', () => ({
   isNativeApp: () => true,
   SignetNative: {
@@ -18,6 +19,7 @@ vi.mock('../lib/native', () => ({
     }),
     nip55Pending: () => pendingFromShell(),
     nip55Respond: (answer: Answer) => respond(answer),
+    nip55PageFrozen: (opts: { frozen: boolean }) => pageFrozen(opts),
     returnToPreviousApp: vi.fn(async () => {}),
   },
 }));
@@ -38,6 +40,18 @@ function request(over: Record<string, unknown> = {}) {
 
 describe('useNip55Server', () => {
   beforeEach(() => { for (const k of Object.keys(listeners)) delete listeners[k]; respond.mockClear(); pendingFromShell.mockClear(); localStorage.clear(); });
+
+  it('tells the shell when the page is frozen and resumed, and stops once unmounted', async () => {
+    pageFrozen.mockClear();
+    const { unmount } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    document.dispatchEvent(new Event('freeze'));
+    expect(pageFrozen).toHaveBeenLastCalledWith({ frozen: true });
+    document.dispatchEvent(new Event('resume'));
+    expect(pageFrozen).toHaveBeenLastCalledWith({ frozen: false });
+    unmount();
+    document.dispatchEvent(new Event('freeze'));
+    expect(pageFrozen).toHaveBeenCalledTimes(2);
+  });
 
   it('asks, then signs with the owner backend on approval and answers the shell', async () => {
     const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));

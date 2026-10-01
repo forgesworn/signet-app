@@ -79,6 +79,13 @@ class SignetNativePlugin : Plugin() {
         call.resolve(JSObject().put("requests", requests))
     }
 
+    /** The page's Page Lifecycle `freeze` / `resume`; see Nip55Requests.pageAnswering. */
+    @PluginMethod
+    fun nip55PageFrozen(call: PluginCall) {
+        Nip55Requests.pageFrozen(call.getBoolean("frozen") ?: false)
+        call.resolve()
+    }
+
     @PluginMethod
     fun nip55Respond(call: PluginCall) {
         Nip55Requests.answer(

@@ -10,8 +10,8 @@ import android.net.Uri
  * The silent path: `content://app.mysignet.SIGN_EVENT` and its siblings,
  * for an app the person has already told this phone to allow always.
  *
- * A query is answered on the spot when the page is up and remembers a
- * grant that covers it; otherwise the answer is null, which NIP-55 defines
+ * A query is answered on the spot when the page is up, not frozen, and
+ * remembers a grant that covers it; otherwise the answer is null, which NIP-55 defines
  * as "ask by intent", and the app comes back through [Nip55SignerActivity]
  * where a person can decide. A caller the person refused for good gets a
  * `rejected` row so it stops asking.
@@ -23,7 +23,7 @@ class Nip55SignerProvider : ContentProvider() {
         val ctx = context ?: return null
         val method = Nip55Wire.methodOf(uri.authority ?: return null, ctx.packageName) ?: return null
         if (method == "ping") return MatrixCursor(arrayOf(Nip55Wire.EXTRA_RESULT)).apply { addRow(arrayOf("pong")) }
-        if (!Nip55Requests.pageUp) return null
+        if (!Nip55Requests.pageAnswering) return null
         val request = Nip55Incoming.fromProvider(Nip55Requests.newId(), callingPackage, Nip55Wire.labelOf(ctx.packageManager, callingPackage), method, projection)
         val answer = Nip55Requests.ask(request, TIMEOUT_MS) ?: return null
         if (answer.deferred) return null

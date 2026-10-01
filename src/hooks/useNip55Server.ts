@@ -206,6 +206,24 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     return () => { cancelled = true; void withdrawHandle?.remove(); void handle?.remove(); };
   }, [enabled, handleRequest, withdraw]);
 
+  // Chromium freezes this page about 60 s after it is hidden. A provider
+  // query pushed to a frozen page blocked the calling app for the shell's
+  // whole 15 s timeout before it fell back to the intent. Telling the shell
+  // lets it send the app to the intent at once; the intent brings this app
+  // forward, which thaws the page, and the hide-lock decides as it would have.
+  useEffect(() => {
+    if (!enabled || !isNativeApp()) return;
+    const report = (frozen: boolean) => () => { void SignetNative.nip55PageFrozen({ frozen }).catch(() => {}); };
+    const onFreeze = report(true);
+    const onResume = report(false);
+    document.addEventListener('freeze', onFreeze);
+    document.addEventListener('resume', onResume);
+    return () => {
+      document.removeEventListener('freeze', onFreeze);
+      document.removeEventListener('resume', onResume);
+    };
+  }, [enabled]);
+
   // A request held through an unlock was never planned against the keys:
   // once they are there, one the person already allowed always is answered
   // without a screen, as it would have been had the app been open.
