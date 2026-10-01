@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { barTabsFor, isBarHiddenPage, activeTabForPage, isOrphanedApprovalPage } from './app-nav';
+import { barTabsFor, isBarHiddenPage, activeTabForPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './app-nav';
 
 describe('barTabsFor', () => {
   it('a direct-paired child install shows the Bunker tab (it is the child\'s bunker)', () => {
@@ -82,5 +82,35 @@ describe('isOrphanedApprovalPage', () => {
   });
   it('never flags ordinary pages', () => {
     expect(isOrphanedApprovalPage('home', { hasAuthRequest: false, hasRelayAuthAck: false })).toBe(false);
+  });
+});
+
+describe('homeTapAction', () => {
+  it('first tap from another page goes to the front of the current card', () => {
+    expect(homeTapAction({ onHome: false, row: 3, col: 0 })).toBe('front');
+    expect(homeTapAction({ onHome: false, row: 0, col: 3 })).toBe('front');
+  });
+  it('first tap from a card column (QR, contacts, settings, camera) goes to its front', () => {
+    expect(homeTapAction({ onHome: true, row: 2, col: 3 })).toBe('front');
+    expect(homeTapAction({ onHome: true, row: 2, col: 4 })).toBe('front');
+  });
+  it('a tap on a card front goes to the top card', () => {
+    expect(homeTapAction({ onHome: true, row: 2, col: 0 })).toBe('top');
+  });
+  it('does nothing on the top card front', () => {
+    expect(homeTapAction({ onHome: true, row: 0, col: 0 })).toBe('none');
+  });
+});
+
+describe('bunkerTint', () => {
+  it('is serving whenever serving, wanted or not', () => {
+    expect(bunkerTint({ serving: true, alwaysOnWanted: false })).toBe('serving');
+    expect(bunkerTint({ serving: true, alwaysOnWanted: true })).toBe('serving');
+  });
+  it('is wanted when always-on is on but not serving', () => {
+    expect(bunkerTint({ serving: false, alwaysOnWanted: true })).toBe('wanted');
+  });
+  it('is off otherwise', () => {
+    expect(bunkerTint({ serving: false, alwaysOnWanted: false })).toBe('off');
   });
 });
