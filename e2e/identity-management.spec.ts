@@ -43,7 +43,9 @@ test(`import, recognise, open, reload and sign with the same Nostr identity (${s
   await dialog.getByPlaceholder('What should we call this persona?').fill('Daily Nostr');
   await dialog.getByRole('checkbox').check();
   await dialog.getByRole('button', { name: 'Import', exact: true }).click();
-  await expect(dialog).toBeHidden();
+  // The import first looks for an existing kind-0 on several relays (up to 4 s
+  // when they can't be reached), then derives and saves the persona.
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
 
   await page.screenshot({ path: testInfo.outputPath('identities.png'), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
