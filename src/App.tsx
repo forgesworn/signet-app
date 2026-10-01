@@ -223,7 +223,8 @@ import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, h
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
-import { routeNativeUrl } from './lib/native-url';
+import { routeNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
 // adapter, the projection builders, the three grant hooks and the pure
@@ -261,7 +262,7 @@ import {
   CONTACTS_GRANT_DISCONNECT_FAILED_COPY, CONTACTS_GRANT_FORGET_FAILED_COPY,
   GRANTS_BACKUP_TOO_LARGE_COPY, GRANTS_SKIPPED_REMOTE_COPY, CONTACTS_GRANT_APPROVE_TITLE,
   CONTACTS_GRANT_CAPABILITIES_INVALID_COPY, CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
-  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_APPROVE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
+  CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_APPROVE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
 } from './lib/contacts-v2-copy';
 import {
   saveContactGrantV2, getContactGrantV2, listContactGrantsV2, updateContactGrantV2,
@@ -2697,11 +2698,16 @@ export function App() {
 
   /** Surfaced on the connected-apps list when a revoke or forget fails. */
   const [contactsGrantActionError, setContactsGrantActionError] = useState<string | null>(null);
-  /** M7: set when a pairing code is scanned on a paired-child install, which
-   *  has no v2 grant surface at all (R-8). Dismissable; never auto-cleared,
-   *  so a scan the user has walked away from is still explained when they
-   *  come back. */
-  const [contactsGrantPairedChildNotice, setContactsGrantPairedChildNotice] = useState(false);
+  /** M7: the pairing request that reached a paired-child install, which has no
+   *  v2 grant surface at all (R-8). Shown as a code the guardian's own My
+   *  Signet scans (`ContactsGrantChildCode`). A newer request replaces it;
+   *  dismissable; otherwise not auto-cleared, so a request the user walked
+   *  away from is still there when they come back (the code itself stops
+   *  being shown once the request goes stale). */
+  const [contactsGrantPairedChildRequest, setContactsGrantPairedChildRequest] = useState<PairingRequestV2 | null>(null);
+  /** Set when a mysignet.app App Link opened the app carrying nothing it can
+   *  act on. Only ever set from `handleNativeUrl`, never on a plain launch. */
+  const [nativeLinkNothingToOpen, setNativeLinkNothingToOpen] = useState(false);
   /** Inline confirm/busy state for the connected-apps rows — mirrors
    *  `CompanionApps`' own confirm toggle rather than a `window.confirm`. */
   const [contactsGrantConfirmId, setContactsGrantConfirmId] = useState<string | null>(null);
@@ -8586,7 +8592,7 @@ export function App() {
         // publishes no projections and accepts no proposals, so approving one
         // would mint a grant that can never do anything. M7: fail closed WITH
         // a reason rather than silently doing nothing.
-        if (isPairedChild) { setContactsGrantPairedChildNotice(true); break; }
+        if (isPairedChild) { setContactsGrantPairedChildRequest(action.request); break; }
         setPendingContactsGrantV2(action.request);
         navigateTo('contacts-grant-approve');
         break;
@@ -8974,6 +8980,12 @@ export function App() {
         return;
       }
       case 'none':
+        // An App Link that carries nothing actionable says so, rather than
+        // opening the app as if nothing had happened. Reached only for a URL
+        // the OS (or `getLaunchUrl`) actually delivered, and only after the
+        // exact-string dedupe above, so the replayed cold-start event cannot
+        // double-fire it; a plain launcher start never calls this at all.
+        if (isUnactionableMysignetLink(url, action)) setNativeLinkNothingToOpen(true);
         return;
     }
   }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeNostrConnectUrl, isPairedChild]);
@@ -9043,7 +9055,7 @@ export function App() {
     if (!heldContactsGrantV2) return;
     if (prefsLoading || dependantsLoading) return;
     setHeldContactsGrantV2(null);
-    if (isPairedChild) { setContactsGrantPairedChildNotice(true); return; }
+    if (isPairedChild) { setContactsGrantPairedChildRequest(heldContactsGrantV2); return; }
     setPendingContactsGrantV2(heldContactsGrantV2);
     navigateReplace('contacts-grant-approve');
   }, [heldContactsGrantV2, prefsLoading, dependantsLoading, isPairedChild, navigateReplace]);
@@ -9058,7 +9070,7 @@ export function App() {
   useEffect(() => {
     if (!pendingContactsGrantV2 || prefsLoading || !isPairedChild) return;
     setPendingContactsGrantV2(null);
-    setContactsGrantPairedChildNotice(true);
+    setContactsGrantPairedChildRequest(pendingContactsGrantV2);
   }, [pendingContactsGrantV2, prefsLoading, isPairedChild]);
 
   // Loading
@@ -9372,10 +9384,16 @@ export function App() {
       </button>
     </div>
   ) : null;
-  const contactsGrantPairedChildBanner = contactsGrantPairedChildNotice ? (
-    <div style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{ flex: 1 }}>{CONTACTS_GRANT_PAIRED_CHILD_COPY}</span>
-      <button onClick={() => setContactsGrantPairedChildNotice(false)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>
+  const contactsGrantPairedChildBanner = contactsGrantPairedChildRequest ? (
+    <ContactsGrantChildCode
+      request={contactsGrantPairedChildRequest}
+      onDismiss={() => setContactsGrantPairedChildRequest(null)}
+    />
+  ) : null;
+  const nativeLinkNothingToOpenBanner = nativeLinkNothingToOpen ? (
+    <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+      <span>{NATIVE_LINK_NOTHING_TO_OPEN_COPY}</span>
+      <button onClick={() => setNativeLinkNothingToOpen(false)} className="btn btn-ghost" style={{ fontSize: 13, padding: '4px 12px' }}>
         {CONTACTS_GRANT_DISMISS_LABEL}
       </button>
     </div>
@@ -9443,10 +9461,10 @@ export function App() {
   ) : null;
   const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || addDependantRefusedBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{addDependantRefusedBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</>
   ) : null;
 

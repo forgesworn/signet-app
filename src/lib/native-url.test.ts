@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { routeNativeUrl } from './native-url';
+import { routeNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './native-url';
 import { buildPairingUriV2 } from '@forgesworn/signet-contacts/wire';
 
 // A verified https App Link (root path) or the signet-grant:// scheme lands
@@ -156,5 +156,38 @@ describe('routeNativeUrl', () => {
     expect(routeNativeUrl('')).toEqual({ type: 'none' });
     expect(routeNativeUrl('not a url')).toEqual({ type: 'none' });
     expect(routeNativeUrl('x'.repeat(10_000))).toEqual({ type: 'none' });
+  });
+});
+
+describe('isUnactionableMysignetLink', () => {
+  const check = (url: string) => isUnactionableMysignetLink(url, routeNativeUrl(url));
+
+  it('is true for a mysignet.app link nothing acted on', () => {
+    expect(check('https://mysignet.app/')).toBe(true);
+    expect(check('https://www.mysignet.app/')).toBe(true);
+    expect(check('https://mysignet.app/pair?app=nothex')).toBe(true);
+    expect(check('https://mysignet.app/?pair=1&v=2&app=nothex')).toBe(true);
+  });
+
+  it('is false for every link that was routed to something', () => {
+    expect(check(`https://mysignet.app/pair?${pairQuery()}`)).toBe(false);
+    expect(check(v2Uri())).toBe(false);
+    expect(check(`https://mysignet.app/pair?${v2Query()}`)).toBe(false);
+    expect(check(signInUrl({}))).toBe(false);
+    expect(check('https://mysignet.app/?verify=abc')).toBe(false);
+  });
+
+  it('is false for a foreign host, a custom-scheme link or garbage', () => {
+    expect(check('https://evil.example/')).toBe(false);
+    expect(check(signInUrl({}, 'https://evil.example/'))).toBe(false);
+    expect(check('https://evil.example/?pair=1&app=' + 'a'.repeat(64))).toBe(false);
+    expect(check('signet-grant://pair?v=2&app=nothex&name=Flock')).toBe(false);
+    expect(check('http://mysignet.app/')).toBe(false);
+    expect(check('')).toBe(false);
+    expect(check('not a url')).toBe(false);
+  });
+
+  it('has plain copy', () => {
+    expect(NATIVE_LINK_NOTHING_TO_OPEN_COPY).toMatch(/didn't contain a request/);
   });
 });

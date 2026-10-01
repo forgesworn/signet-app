@@ -63,7 +63,11 @@ export function ContactsGrantApprove({ request, directories, replacesOptionKeys 
   const dependants = useMemo(() => directories.filter((d) => d.directoryId !== 'owner'), [directories]);
   const owner = directories.find((d) => d.directoryId === 'owner');
 
-  const defaultDirectory = request.directory === 'dependant' && dependants[0]
+  // An app asking for a dependant's contacts cannot say WHICH dependant, so
+  // with more than one there is no safe default: the guardian must choose.
+  const defaultDirectory = request.directory === 'dependant' && dependants.length > 1
+    ? ''
+    : request.directory === 'dependant' && dependants[0]
     ? optionKey(dependants[0])
     : owner ? optionKey(owner) : directories[0] ? optionKey(directories[0]) : '';
 
@@ -226,7 +230,7 @@ export function ContactsGrantApprove({ request, directories, replacesOptionKeys 
           </p>
         )}
 
-        <button className="btn btn-primary" onClick={approve} disabled={busy || !capabilities.some(availableCapability)}>
+        <button className="btn btn-primary" onClick={approve} disabled={busy || !selectedDirectory || !capabilities.some(availableCapability)}>
           {busy ? 'Connecting…' : 'Approve'}
         </button>
         <button className="btn btn-ghost" onClick={onDeny} disabled={busy} style={{ marginTop: 8 }}>

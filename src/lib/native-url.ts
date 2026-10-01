@@ -18,7 +18,8 @@
 // request) so App.tsx can feed the same query string to the same
 // `consumeVerifyUrl` / `consumeAddDependantUrl` / `consumeNostrConnectUrl`
 // callbacks the web mount effects use. A plain `https://mysignet.app/` with
-// no query, or any non-root path, is `none`.
+// no query, or any non-root path, is `none` (App.tsx tells the user so via
+// `isUnactionableMysignetLink`).
 import { parsePairingRequest, type PairingRequest } from './companion-pair';
 import {
   isContactsPairingV2, parseContactsPairingRequestV2, type PairingRequestV2,
@@ -40,6 +41,28 @@ function isMysignetRoot(raw: string): boolean {
   try {
     const u = new URL(raw);
     return u.protocol === 'https:' && MYSIGNET_HOSTS.has(u.hostname.toLowerCase()) && u.pathname === '/';
+  } catch {
+    return false;
+  }
+}
+
+/** Shown when a mysignet.app link opens the app but carries nothing it can act on. */
+export const NATIVE_LINK_NOTHING_TO_OPEN_COPY =
+  "That link didn't contain a request My Signet can open.";
+
+/**
+ * True only for an https link on one of our own hosts that `routeNativeUrl`
+ * classified as `none` — i.e. an App Link the OS handed us (bare
+ * `https://mysignet.app/`, or a /pair link whose request did not parse) that
+ * nothing acted on. A foreign host, a `signet-grant://` scheme link, or a link
+ * that WAS routed (including every pairing/sign-in/carrier case) never counts,
+ * so the notice cannot misfire for a link handled elsewhere.
+ */
+export function isUnactionableMysignetLink(url: string, action: NativeUrlAction): boolean {
+  if (action.type !== 'none' || typeof url !== 'string') return false;
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === 'https:' && MYSIGNET_HOSTS.has(u.hostname.toLowerCase());
   } catch {
     return false;
   }
