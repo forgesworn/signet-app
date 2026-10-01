@@ -20,6 +20,8 @@ export interface SignetNativePlugin {
   /** BiometricPrompt → unwrap → return the exact same 64-hex string. */
   biometricUnlock(): Promise<{ secret: string }>;
   biometricClear(): Promise<void>;
+  /** Whether the stored key also opens with the phone's own PIN, pattern or password. */
+  biometricDeviceCredential(): Promise<{ allowed: boolean }>;
   startBunkerService(opts: { pubkeysCsv: string; relayUrl: string }): Promise<void>;
   stopBunkerService(): Promise<void>;
   startTemporaryBunkerService(opts: { pubkeysCsv: string; relayUrl: string; durationMs: number }): Promise<void>;

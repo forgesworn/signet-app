@@ -274,6 +274,13 @@ class SignetNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun biometricDeviceCredential(call: PluginCall) {
+        val allowed = prefs().getString(PREF_WRAPPED, null) != null &&
+            BiometricPolicy.deviceCredentialForStoredKey(Build.VERSION.SDK_INT, prefs().getBoolean(PREF_DEVICE_CREDENTIAL, false))
+        call.resolve(JSObject().put("allowed", allowed))
+    }
+
+    @PluginMethod
     fun biometricClear(call: PluginCall) {
         try { keystore().deleteEntry(KEY_ALIAS) } catch (_: Throwable) {}
         prefs().edit().remove(PREF_WRAPPED).remove(PREF_DEVICE_CREDENTIAL).apply()
