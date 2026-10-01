@@ -245,12 +245,12 @@ export function BunkerPanel({
           padding: '8px 12px',
           fontSize: 16,
           fontWeight: 600,
-          // Off reads as tappable (accent outline), not as a disabled grey.
-          border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--accent)',
+          // Off is amber (needs a tap), on is green — never a disabled grey.
+          border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--warning)',
           borderRadius: 4,
           cursor: 'pointer',
           background: 'var(--bg-card)',
-          color: backgroundServing ? 'var(--success)' : 'var(--accent-text)',
+          color: backgroundServing ? 'var(--success)' : 'var(--warning)',
         }}
       >
         {backgroundServing ? 'Always on — serving in background ✓' : 'Always on (background)'}
