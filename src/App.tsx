@@ -330,6 +330,7 @@ import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLoc
 import { BunkerPanel } from './components/BunkerPanel';
 import { isBarHiddenPage, isOrphanedApprovalPage } from './lib/app-nav';
 import { stayAwakeUntil as computeStayAwakeUntil } from './lib/stay-awake';
+import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn } from './lib/bunker-restore';
 
 /**
  * How long the key stays after the app is hidden once a phone app has been
@@ -596,7 +597,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -4796,7 +4797,38 @@ export function App() {
   }, []);
   const closeStayAwake = useCallback(() => {
     setStayAwakeUntil(null);
-  }, []);
+    // The user's explicit Stop: forget the stored end too.
+    if (isNativeApp()) void setStayAwakeEndsAt(null).catch(() => {});
+  }, [setStayAwakeEndsAt]);
+
+  // Native: keep the open window's wall-clock end on the device, so a
+  // swipe-away, process death or reboot can resume it on the next unlock.
+  // Only a window being OPEN is mirrored here — a null `stayAwakeUntil` is
+  // also the state of a fresh page before the restore below has run, so
+  // clearing happens only where the window really ends (Stop, expiry).
+  useEffect(() => {
+    if (!isNativeApp() || stayAwakeUntil === null) return;
+    void setStayAwakeEndsAt(stayAwakeUntil).catch(() => {});
+  }, [stayAwakeUntil, setStayAwakeEndsAt]);
+
+  // Native: on unlock, resume a window that was still running when the page
+  // went away — same end, never extended, so the countdown shows what is
+  // left. One check per unlock, once preferences have loaded.
+  const stayAwakeRestoredForKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!encryptionKey) { stayAwakeRestoredForKeyRef.current = null; return; }
+    if (!isNativeApp() || prefsLoading) return;
+    if (stayAwakeRestoredForKeyRef.current === encryptionKey) return;
+    stayAwakeRestoredForKeyRef.current = encryptionKey;
+    const stored = preferences.stayAwakeEndsAt;
+    const end = resolveStayAwakeOnUnlock(stored, Date.now());
+    if (end === null) {
+      if (stored !== undefined) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      return;
+    }
+    setStayAwakeUntil(prev => mergeRestoredStayAwake(prev, end));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey, prefsLoading]);
 
   // Native always-on background serving: arm = permissions + battery
   // exemption + foreground service; disarm = stop service. The preference
@@ -4804,9 +4836,20 @@ export function App() {
   // unlock effect below.
   const bunkerServePubkeysCsv = bunkerRoutes.map(r => r.pubkey).join(',');
   const bunkerServeRelayUrl = nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL;
+  const alwaysOnArmInFlightRef = useRef(false);
   const handleSetBackgroundServing = useCallback(async (on: boolean) => {
     if (!isNativeApp()) return;
-    if (on) {
+    if (!on) {
+      void setBackgroundBunkerEnabled(false);
+      try { await SignetNative.stopBunkerService(); } catch { /* already stopped */ }
+      setBackgroundServing(false);
+      return;
+    }
+    // One arm at a time: the unlock re-arm below and the user's toggle can
+    // both fire while the permission/exemption awaits are pending.
+    if (alwaysOnArmInFlightRef.current) return;
+    alwaysOnArmInFlightRef.current = true;
+    try {
       try {
         await LocalNotifications.requestPermissions();
         await LocalNotifications.createChannel({
@@ -4826,10 +4869,8 @@ export function App() {
       } catch { return; }
       setBackgroundServing(true);
       void setBackgroundBunkerEnabled(true);
-    } else {
-      try { await SignetNative.stopBunkerService(); } catch { /* already stopped */ }
-      setBackgroundServing(false);
-      void setBackgroundBunkerEnabled(false);
+    } finally {
+      alwaysOnArmInFlightRef.current = false;
     }
   }, [bunkerServePubkeysCsv, bunkerServeRelayUrl, setBackgroundBunkerEnabled]);
 
@@ -4969,9 +5010,14 @@ export function App() {
   useEffect(() => {
     if (stayAwakeUntil === null) return;
     const ms = stayAwakeUntil - Date.now();
-    if (ms <= 0) { setStayAwakeUntil(null); return; }
+    if (ms <= 0) {
+      setStayAwakeUntil(null);
+      if (isNativeApp()) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      return;
+    }
     const timer = setTimeout(() => {
       setStayAwakeUntil(null);
+      if (isNativeApp()) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
       // Native always-on serving outlives a short window: ending the window
       // must not lock a page that is serving in the background.
       if (document.visibilityState === 'hidden' && !backgroundServingRef.current) {
@@ -4981,7 +5027,7 @@ export function App() {
       }
     }, ms);
     return () => clearTimeout(timer);
-  }, [stayAwakeUntil, resetInactivityTimer]);
+  }, [stayAwakeUntil, resetInactivityTimer, setStayAwakeEndsAt]);
 
   // When the window ends (expiry or Close now), resume normal auto-lock by
   // re-arming the inactivity timer from this moment.
@@ -5008,14 +5054,24 @@ export function App() {
     }).catch(() => {});
   }, [encryptionKey, stayAwakeUntil, backgroundServing, bunkerServePubkeysCsv, bunkerServeRelayUrl]);
 
-  // Native: re-arm background serving on unlock when the preference is set.
+  // Native: re-arm background serving after an unlock when the preference is
+  // set — after a swipe-away, process death or reboot the page starts with
+  // serving off and nothing else turns it back on. Waits for preferences and
+  // for the serve routes, which arrive a render or more after the key: an arm
+  // with no pubkeys stores an empty set for the boot receiver and the
+  // fallback poll. Re-evaluated whenever any of those change.
   useEffect(() => {
-    if (!isNativeApp() || !encryptionKey) return;
-    if (preferences.backgroundBunkerEnabled && !backgroundServing) {
-      void handleSetBackgroundServing(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encryptionKey, preferences.backgroundBunkerEnabled]);
+    if (!shouldRearmAlwaysOn({
+      native: isNativeApp(),
+      unlocked: !!encryptionKey,
+      prefsLoading,
+      enabledPref: preferences.backgroundBunkerEnabled,
+      serving: backgroundServing,
+      inFlight: alwaysOnArmInFlightRef.current,
+      servePubkeyCount: bunkerRoutes.length,
+    })) return;
+    void handleSetBackgroundServing(true);
+  }, [encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
 
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode and

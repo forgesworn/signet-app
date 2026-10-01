@@ -127,6 +127,14 @@ export interface AppPreferences {
    * always-on posture is sticky across app kills.
    */
   backgroundBunkerEnabled?: boolean;
+  /**
+   * Native-only, device-local: wall-clock end (Date.now() ms, so it survives a
+   * reboot) of the stay-awake window open when the page last ran. On unlock a
+   * future end is resumed as-is — never extended — and a past one cleared.
+   * Cleared by expiry and by Stop; NOT by swipe-away, process death, reboot
+   * or the hide/idle auto-locks. Not a portable setting (never synced).
+   */
+  stayAwakeEndsAt?: number;
   /** Blur identity names/avatars in the carousel until tapped to reveal.
    *  Default OFF (opt-in). Absent = off; only an explicit `true` blurs. */
   blurIdentityNames?: boolean;

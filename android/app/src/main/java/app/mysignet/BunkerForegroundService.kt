@@ -104,6 +104,17 @@ class BunkerForegroundService : Service() {
             lastHeartbeatMs = System.currentTimeMillis()
             if (pubkeys.isNotEmpty()) pubkeysCsv = pubkeys
             if (relay.isNotEmpty()) relayUrl = relay
+            // Keep the boot receiver's copy current: the set the service was
+            // started with can predate the serve routes, and after a reboot
+            // the fallback poll has only what is stored here.
+            if (isPersistent(context) && (pubkeys.isNotEmpty() || relay.isNotEmpty())) {
+                val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val edit = prefs.edit()
+                var changed = false
+                if (pubkeys.isNotEmpty() && prefs.getString("pubkeysCsv", "") != pubkeys) { edit.putString("pubkeysCsv", pubkeys); changed = true }
+                if (relay.isNotEmpty() && prefs.getString("relayUrl", "") != relay) { edit.putString("relayUrl", relay); changed = true }
+                if (changed) edit.apply()
+            }
             if (isPersistent(context) && unlockAlerted.compareAndSet(true, false)) {
                 showServingState(context.applicationContext, serving = true)
             }
