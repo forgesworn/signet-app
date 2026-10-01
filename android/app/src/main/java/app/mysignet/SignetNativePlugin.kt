@@ -146,25 +146,51 @@ class SignetNativePlugin : Plugin() {
             // hung forever ("Setting up…"). Wrap so any failure rejects the
             // call instead of hanging.
             try {
-                val prompt = BiometricPrompt(
-                    activity as androidx.fragment.app.FragmentActivity,
-                    executor,
-                    object : BiometricPrompt.AuthenticationCallback() {
-                        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                            val c = result.cryptoObject?.cipher
-                            if (c == null) { call.reject("no cipher") } else {
-                                try { onSuccess(c) } catch (t: Throwable) { call.reject("crypto: ${t.message}") }
-                            }
-                        }
-                        override fun onAuthenticationError(code: Int, msg: CharSequence) {
-                            call.reject("biometric: $msg")
-                        }
-                    }
-                )
-                prompt.authenticate(promptInfo(title), BiometricPrompt.CryptoObject(cipher))
+                val host = activity as androidx.fragment.app.FragmentActivity
+                // A NIP-55 request can reach a locked app whose page is still
+                // running in the background, and the page asks for the unlock
+                // before the activity is back in front. BiometricPrompt started
+                // on a stopped activity does nothing at all, no prompt and no
+                // callback ("Called after onSaveInstanceState()"), which left
+                // the unlock screen on "Waiting for biometric..." for good.
+                // Start it once the activity is resumed; if the activity goes
+                // first, say so.
+                whenResumed(host.lifecycle, { promptBiometric(call, host, executor, cipher, title, onSuccess) }) {
+                    call.reject("biometric: the app closed before it could ask")
+                }
             } catch (t: Throwable) {
                 call.reject("biometric-prompt: ${t.message}")
             }
+        }
+    }
+
+    private fun promptBiometric(
+        call: PluginCall,
+        host: androidx.fragment.app.FragmentActivity,
+        executor: java.util.concurrent.Executor,
+        cipher: Cipher,
+        title: String,
+        onSuccess: (Cipher) -> Unit,
+    ) {
+        try {
+            val prompt = BiometricPrompt(
+                host,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        val c = result.cryptoObject?.cipher
+                        if (c == null) { call.reject("no cipher") } else {
+                            try { onSuccess(c) } catch (t: Throwable) { call.reject("crypto: ${t.message}") }
+                        }
+                    }
+                    override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                        call.reject("biometric: $msg")
+                    }
+                }
+            )
+            prompt.authenticate(promptInfo(title), BiometricPrompt.CryptoObject(cipher))
+        } catch (t: Throwable) {
+            call.reject("biometric-prompt: ${t.message}")
         }
     }
 
