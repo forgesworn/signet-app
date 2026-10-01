@@ -956,6 +956,41 @@ export function useIdentity(encryptionKey?: string | null) {
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**
+   * Record that a Nostr follow list was imported into one of the user's
+   * persona slots. Device-local — never synced (every wire builder is an
+   * explicit allowlist that omits it) and never touches `updatedAt`, so it
+   * cannot win or lose a sync merge. `target` semantics mirror
+   * `setSlotNip05Check`.
+   */
+  const setSlotFollowsImport = useCallback(async (
+    target: 'natural-person' | 'persona' | 'professional-persona' | string,
+    state: import('../types').FollowsImportState,
+  ) => {
+    if (!activeIdentity) return;
+    if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
+    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, encryptionKey);
+    if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
+    const patch = { followsImport: state };
+
+    let updated: SignetIdentity;
+    if (target === 'natural-person') {
+      updated = { ...decrypted, naturalPerson: { ...decrypted.naturalPerson, ...patch } };
+    } else if (target === 'persona') {
+      updated = { ...decrypted, persona: { ...decrypted.persona, ...patch } };
+    } else if (target === 'professional-persona') {
+      if (!decrypted.professionalPersona) return;
+      updated = { ...decrypted, professionalPersona: { ...decrypted.professionalPersona, ...patch } };
+    } else {
+      const extras = (decrypted.extraPersonas ?? []).map(p =>
+        p.publicKey === target ? { ...p, ...patch } : p,
+      );
+      updated = { ...decrypted, extraPersonas: extras };
+    }
+    await db.saveIdentityEncrypted(updated, encryptionKey);
+    await loadAll();
+  }, [activeIdentity, loadAll, encryptionKey]);
+
+  /**
    * Remove the public-profile state from a persona slot. Used after a
    * successful retraction publish to wipe the local state machine cleanly.
    * Doesn't touch the relay — caller is responsible for the kind-5 +
@@ -1075,7 +1110,7 @@ export function useIdentity(encryptionKey?: string | null) {
     await loadAll();
   }, [activeIdentity, loadAll, encryptionKey]);
 
-  return { identity: activeIdentity, identities, loading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, remove, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, reload: loadAll };
+  return { identity: activeIdentity, identities, loading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, remove, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: loadAll };
 }
 
 /**

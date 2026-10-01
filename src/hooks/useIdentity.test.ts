@@ -334,6 +334,23 @@ describe('useIdentity — setSlotNip05Check / setPersonaPublicProfile clear-on-c
     expect(result.current.identity?.naturalPerson.nip05CheckedAt).toBe(1_700_000_000_000);
   }, 20_000);
 
+  it('setSlotFollowsImport persists the import record on the target slot, device-locally', async () => {
+    mockCreate.mockReturnValue(makeFakeIdentity());
+    const { result } = renderHook(() => useIdentity('test-key'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.create('Test User', 'natural-person', false);
+    });
+    const state = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 };
+    await act(async () => {
+      await result.current.setSlotFollowsImport('persona', state);
+    });
+
+    expect(result.current.identity?.persona.followsImport).toEqual(state);
+    expect(result.current.identity?.naturalPerson.followsImport).toBeUndefined();
+  }, 20_000);
+
   it('setPersonaPublicProfile preserves the check result when nip05 is unchanged', async () => {
     mockCreate.mockReturnValue(makeFakeIdentity());
     const { result } = renderHook(() => useIdentity('test-key'));

@@ -70,6 +70,20 @@ export interface SlotPublicationFields {
    * merge. Never synced, never on kind-0; set/cleared with `publicProfile`.
    */
   publicProfileBase?: PublicProfileBase;
+  /**
+   * Device-local: the last Nostr follow list (kind 3) imported into this
+   * persona's contacts. `eventId`/`createdAt` (unix s) name the kind 3 it came
+   * from; `importedAt` is ms epoch; `count` is how many accounts that list
+   * followed. Never synced, never on any wire, never published.
+   */
+  followsImport?: FollowsImportState;
+}
+
+export interface FollowsImportState {
+  eventId: string;
+  createdAt: number;
+  importedAt: number;
+  count: number;
 }
 
 /** A single persona (beyond the primary natural-person and default persona) */

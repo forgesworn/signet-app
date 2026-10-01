@@ -6,6 +6,8 @@ import { resolveRealIdentityRow } from '../lib/real-identity-row';
 import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/ExistingProfilePanel';
 import { decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
 import type { ExistingProfile } from '../lib/existing-profile';
+import { FollowsImportPanel } from '../components/FollowsImportPanel';
+import type { FollowsHandlers } from '../lib/follows-import-flow';
 /* Avatar Set/Change/Remove moved to the carousel SettingsCard.
    This page now renders names + add/import only. The avatar fields on each
    slot are still edited via `useIdentity.setPersonaAvatar` — just from a
@@ -55,6 +57,12 @@ interface Props {
    */
   onLookupExistingProfile?: (pubkey: string) => Promise<ExistingProfile | null | 'unreachable'>;
   /**
+   * Handlers for "Import who this account follows" for one persona (by its
+   * pubkey / slot target and name). When it returns handlers, a successful
+   * nsec import ends with the offer; absent or undefined => no offer.
+   */
+  followsHandlersFor?: (pubkey: string, name: string) => FollowsHandlers | undefined;
+  /**
    * Paired-child surface: the kid's app is running this Personas page over a
    * dep identity their guardian set up. In this mode editing UI is suppressed
    * (read-only §6.6.11 framing). Defaults to false (user's own surface).
@@ -89,6 +97,7 @@ export function Personas({
   onConsumeFocus,
   onImportNostrAccount,
   onLookupExistingProfile,
+  followsHandlersFor,
   pairedChildView = false,
   onActivateRealIdentity,
   onOpenRealIdentityAdvanced,
@@ -120,6 +129,8 @@ export function Personas({
   const [importLookedUpFor, setImportLookedUpFor] = useState('');
   // Quiet note shown on the page after an import whose lookup couldn't reach any relay.
   const [importNote, setImportNote] = useState('');
+  // Offered after a successful import: read the new persona's Nostr follows.
+  const [followsOffer, setFollowsOffer] = useState<{ pubkey: string; name: string } | null>(null);
 
   function resetImportLookup() {
     setImportLooking(false);
@@ -190,6 +201,7 @@ export function Personas({
       }
       if (result.added) {
         // Success — reset + close modal.
+        setFollowsOffer({ pubkey: result.pubkey, name: importDisplayName.trim() });
         setImportingNostr(false);
         setImportNsecInput('');
         setImportDisplayName('');
@@ -381,8 +393,21 @@ export function Personas({
     );
   }
 
+  const followsOfferHandlers = followsOffer && followsHandlersFor
+    ? followsHandlersFor(followsOffer.pubkey, followsOffer.name)
+    : undefined;
+
   return (
     <div className="fade-in" role="main">
+      {followsOffer && followsOfferHandlers && (
+        <FollowsImportPanel
+          variant="offer"
+          personaName={followsOffer.name}
+          onImport={followsOfferHandlers.onImportFollows}
+          onUnlink={followsOfferHandlers.onUnlinkFollows}
+          onNotNow={() => setFollowsOffer(null)}
+        />
+      )}
       {importNote && (
         <div role="status" className="block" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
           {importNote}

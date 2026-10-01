@@ -213,6 +213,18 @@ describe('toWire', () => {
     expect(JSON.stringify(wire)).not.toMatch(/publicProfileBase|secret_unknown_key|eventId/);
   });
 
+  it('never carries followsImport on the wire (device-local only)', () => {
+    const identity = makeIdentity({
+      extraPersonas: [makeExtra({
+        about: 'hello',
+        followsImport: { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 },
+      })],
+    });
+    const wire = toWire(identity);
+    expect(wire.personas[0].profile).toEqual({ about: 'hello' });
+    expect(JSON.stringify(wire)).not.toMatch(/followsImport|importedAt|"count"/);
+  });
+
   it('carries hidden only when explicitly set on the local record', () => {
     const identity = makeIdentity({
       extraPersonas: [makeExtra({ hidden: true }), makeExtra({ publicKey: P2_PUB, derivationName: 'persona-2' })],
@@ -548,6 +560,25 @@ describe('mergePersonas', () => {
     const result = mergePersonas(baseInput({ local, remote, remoteCreatedAt: 200, localRecordAt: 100 }));
     expect(result.extraPersonas[0].about).toBe('new about from another device');
     expect(result.extraPersonas[0].publicProfileBase).toEqual(base);
+  });
+
+  it('preserves the local followsImport across a remote-wins merge (device-local, never synced)', () => {
+    const followsImport = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 };
+    const local = [makeExtra({ about: 'old about', followsImport, updatedAt: 100 })];
+    const remote: SyncedPersonasPayload = {
+      v: 1,
+      personas: [{
+        derivationName: 'persona-1',
+        publicKey: P1_PUB,
+        displayName: 'Persona One Renamed',
+        updatedAt: 200,
+        profile: { about: 'new about from another device' },
+      }],
+      tombstones: [],
+    };
+    const result = mergePersonas(baseInput({ local, remote, remoteCreatedAt: 200, localRecordAt: 100 }));
+    expect(result.extraPersonas[0].about).toBe('new about from another device');
+    expect(result.extraPersonas[0].followsImport).toEqual(followsImport);
   });
 
   it('accepts a keyless remote persona only when deviceHeldKeys is true', () => {

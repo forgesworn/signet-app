@@ -287,6 +287,29 @@ describe('mergeInventory clears stale NIP-05 check result on nip05 change (revie
     expect(savedIdentity.naturalPerson.about).toBe('new');
     expect(savedIdentity.naturalPerson.publicProfileBase).toEqual(base);
   });
+
+  it("preserves a stored followsImport (device-local follow import) when the wire carries new config", async () => {
+    const base = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 };
+    const stored = {
+      id: DEP_PUB,
+      mnemonic: '',
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Kid NP', about: 'old', followsImport: base },
+      persona: { publicKey: '', privateKey: '', displayName: '' },
+      extraPersonas: [],
+      primaryKeypair: 'natural-person',
+    } as unknown as SignetIdentity;
+    mockLoadId.mockResolvedValue(stored);
+    const payload: PersonaInventoryPayload = {
+      v: 1,
+      revision: 1,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Kid NP', publicProfile: { enabled: true, displayName: 'Kid NP', about: 'new' } },
+      extraPersonas: [],
+    };
+    await mergeInventory(payload, DEP_PUB, 'test-key');
+    const savedIdentity = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(savedIdentity.naturalPerson.about).toBe('new');
+    expect(savedIdentity.naturalPerson.followsImport).toEqual(base);
+  });
 });
 
 describe('mergeInventory omits a dormant real identity (spec §7.6)', () => {

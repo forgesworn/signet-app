@@ -185,6 +185,8 @@ import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
 import { publishPublicProfile, retractPublicProfile, parseKindZeroContent, toPublicProfileBase } from './lib/public-profile-publish';
 import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
+import { fetchFollowList, fetchFollowNames } from './lib/nostr-follows';
+import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
 import { MyDocuments } from './pages/MyDocuments';
@@ -544,7 +546,7 @@ export function App() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -2212,6 +2214,32 @@ export function App() {
     context: contactsEffectiveContext,
     onMutated: bumpContactsV2,
   });
+
+  /**
+   * "Import who this account follows" for one of the OWNER's personas. Owner
+   * personas only, and only while the contacts hook is scoped to the owner's
+   * directory and has finished loading — never a dependant's slot, never a
+   * paired-child install, and a dormant real identity gets nothing. The hook's
+   * mutators are bound to the scope's directory, so a stale dependant scope
+   * hides the offer rather than writing into the wrong directory.
+   */
+  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+    if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
+    if (contactsScope.directoryId !== 'owner' || contactsV2.loading) return undefined;
+    if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
+    return {
+      onImportFollows: () => runFollowsImport({
+        personaPubkey,
+        personaName,
+        records: contactsV2.records,
+        fetchList: (pubkey) => fetchFollowList(pubkey, syncRelays.read),
+        fetchNames: (pubkeys) => fetchFollowNames(pubkeys, syncRelays.read),
+        recogniseContacts: contactsV2.recogniseContacts,
+        recordImport: (state) => setSlotFollowsImport(slotTarget, state),
+      }),
+      onUnlinkFollows: (contactIds) => contactsV2.unlinkContactsFromList(contactIds, personaPubkey),
+    };
+  };
 
   const botSession = useRef({ key: encryptionKey, owner: identity?.naturalPerson.publicKey, mode: preferences.signingMode });
   botSession.current = { key: encryptionKey, owner: identity?.naturalPerson.publicKey, mode: preferences.signingMode };
@@ -10054,6 +10082,7 @@ export function App() {
             } : undefined);
           }}
           onLookupExistingProfile={isPairedChild ? undefined : (pubkey) => fetchExistingProfile(pubkey, syncRelays.read)}
+          followsHandlersFor={(pubkey, name) => followsHandlersFor(pubkey, pubkey, name)}
           startEditPersona={pendingPersonaFocus}
           onConsumeFocus={() => setPendingPersonaFocus(null)}
         />
@@ -10263,6 +10292,16 @@ export function App() {
           if (!ownSlot) return null;
           return fetchExistingProfile(ownSlot.publicKey, syncRelays.read);
         }}
+        {...(() => {
+          if (depPubkey) return {};
+          const ownSlot = slotTarget === 'natural-person' ? identity.naturalPerson
+            : slotTarget === 'persona' ? identity.persona
+            : slotTarget === 'professional-persona' ? identity.professionalPersona
+            : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
+          if (!ownSlot) return {};
+          const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
+          return handlers ? { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows } : {};
+        })()}
         onMatchExistingProfile={depPubkey || isPairedChild || childDirect || !identity ? undefined : async (found) => {
           // Writes card + state + base in one save and publishes nothing: the
           // event is already on the relay. The profile's values replace the

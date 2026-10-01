@@ -603,6 +603,27 @@ describe('mergeDependantWithLocal', () => {
     expect(merged.extraPersonas![0].publicProfileBase).toEqual(base);
   });
 
+  it('preserves local followsImport across sync (device-local, never synced)', () => {
+    const followsImport = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 };
+    const extraKey = '8'.repeat(64);
+    const local = makeDerivedDep({
+      naturalPerson: { publicKey: DEP0_NP_PUB, privateKey: 'a'.repeat(64), displayName: 'Child', followsImport },
+      extraPersonas: [{
+        publicKey: extraKey, privateKey: 'e'.repeat(64), displayName: 'BenGamer1',
+        derivationName: 'dependant-0-persona-1', followsImport,
+      }],
+    });
+    const remote = makeDerivedDep({
+      naturalPerson: { publicKey: DEP0_NP_PUB, privateKey: 'a'.repeat(64), displayName: 'Child' },
+      extraPersonas: [{
+        publicKey: extraKey, privateKey: 'e'.repeat(64), displayName: 'BenGamer1', derivationName: 'dependant-0-persona-1',
+      }],
+    });
+    const merged = mergeDependantWithLocal(remote, local);
+    expect(merged.naturalPerson.followsImport).toEqual(followsImport);
+    expect(merged.extraPersonas![0].followsImport).toEqual(followsImport);
+  });
+
   it('takes wire-eligible fields from remote (displayName, autonomyStage)', () => {
     const local = makeDerivedDep({ displayName: 'OldName', autonomyStage: 'full-control' });
     const remote = makeDerivedDep({ displayName: 'NewName', autonomyStage: 'request-approve' });

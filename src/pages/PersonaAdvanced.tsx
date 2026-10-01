@@ -16,8 +16,10 @@
 import { useState } from 'react';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
-import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase } from '../types';
+import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase, FollowsImportState } from '../types';
 import { ExistingProfilePanel } from '../components/ExistingProfilePanel';
+import { FollowsImportPanel } from '../components/FollowsImportPanel';
+import type { FollowsImportOutcome } from '../lib/follows-import-flow';
 import type { ExistingProfile } from '../lib/existing-profile';
 import { TypedNameConfirm } from '../components/TypedNameConfirm';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
@@ -66,6 +68,16 @@ export interface PersonaAdvancedProps {
   onCheckExistingProfile?: () => Promise<ExistingProfile | null | 'unreachable'>;
   /** Apply a found profile to this slot ("Match it in Signet"). Writes card + state + base; publishes nothing. */
   onMatchExistingProfile?: (found: ExistingProfile) => Promise<void>;
+  /**
+   * "Import who this account follows" — read this slot's Nostr follow list
+   * (kind 3) into the owner's contacts. Passed (with `onUnlinkFollows`) only
+   * for the owner's own slots on a device that holds the owner identity and is
+   * scoped to the owner's contacts — never a dependant's slot, never a
+   * paired-child install; absent => the block is hidden.
+   */
+  onImportFollows?: () => Promise<FollowsImportOutcome>;
+  /** Take contacts off this slot's list after a refresh found they are no longer followed. */
+  onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
 
   // — User-side actions —
   onSwitchPrimary?: (target: 'natural-person' | 'persona') => Promise<void>;
@@ -142,6 +154,8 @@ interface ResolvedSlot {
   publicProfile?: PersonaPublicProfile;
   /** Device-local kind-0 base; `matched` marks a profile adopted from Nostr rather than published by Signet. */
   publicProfileBase?: PublicProfileBase;
+  /** Device-local record of the last Nostr follow list imported into this persona's contacts. */
+  followsImport?: FollowsImportState;
   /** Imported nsec — only meaningful for extras. */
   imported?: boolean;
   hidden?: boolean;
@@ -154,6 +168,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       displayName: identity.naturalPerson.displayName,
       publicProfile: identity.naturalPerson.publicProfile,
       publicProfileBase: identity.naturalPerson.publicProfileBase,
+      followsImport: identity.naturalPerson.followsImport,
     };
   }
   if (target === 'persona') {
@@ -162,6 +177,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       displayName: identity.persona.displayName,
       publicProfile: identity.persona.publicProfile,
       publicProfileBase: identity.persona.publicProfileBase,
+      followsImport: identity.persona.followsImport,
     };
   }
   if (target === 'professional-persona') {
@@ -171,6 +187,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       displayName: identity.professionalPersona.displayName,
       publicProfile: identity.professionalPersona.publicProfile,
       publicProfileBase: identity.professionalPersona.publicProfileBase,
+      followsImport: identity.professionalPersona.followsImport,
     };
   }
   const ep = (identity.extraPersonas ?? []).find(p => p.publicKey === target);
@@ -180,6 +197,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
     displayName: ep.displayName,
     publicProfile: ep.publicProfile,
     publicProfileBase: ep.publicProfileBase,
+    followsImport: ep.followsImport,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -297,6 +315,17 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
       ) : (
         <>
           <PublishBlock {...props} slotKind={slotKind} slot={slot} subjectName={subjectName} />
+
+          {/* Nostr follows — the owner's own slots only (the callbacks are
+              withheld for dependants and paired-child installs). */}
+          {!isDep && props.onImportFollows && props.onUnlinkFollows && (
+            <FollowsImportPanel
+              personaName={slot.displayName || 'this persona'}
+              last={slot.followsImport}
+              onImport={props.onImportFollows}
+              onUnlink={props.onUnlinkFollows}
+            />
+          )}
 
           <KeysBlock pubkey={slot.publicKey} />
         </>

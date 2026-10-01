@@ -61,17 +61,120 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /** Query one relay; `null` means it could not be reached (or timed out). */
-async function queryRelay(url: string, filter: NostrFilter, timeoutMs: number): Promise<NostrEvent[] | null> {
+async function queryRelay(url: string, filter: NostrFilter | NostrFilter[], timeoutMs: number): Promise<NostrEvent[] | null> {
   let relay: RelayClient | null = null;
   try {
     relay = new RelayClient(url);
     await withTimeout(relay.connect(), timeoutMs);
-    return await withTimeout(relay.fetch([filter], timeoutMs), timeoutMs);
+    return await withTimeout(relay.fetch(Array.isArray(filter) ? filter : [filter], timeoutMs), timeoutMs);
   } catch {
     return null;
   } finally {
     try { relay?.disconnect(); } catch { /* already gone */ }
   }
+}
+
+/**
+ * The relay set for a lookup: the caller's own relays plus the public lookup
+ * relays, validated and deduped. `callerRelays` is the subset the caller
+ * supplied, so a result can prefer a relay the user actually uses.
+ */
+export function resolveLookupRelays(
+  relays: string[],
+  includeLookupRelays: boolean = true,
+): { all: string[]; callerRelays: string[] } {
+  const callerRelays: string[] = [];
+  const all: string[] = [];
+  const add = (url: string, caller: boolean) => {
+    if (typeof url !== 'string' || !isValidRelayUrl(url) || all.includes(url)) return;
+    all.push(url);
+    if (caller) callerRelays.push(url);
+  };
+  for (const url of relays) add(url, true);
+  if (includeLookupRelays) for (const url of PROFILE_LOOKUP_RELAYS) add(url, false);
+  return { all, callerRelays };
+}
+
+/** One event seen on the relays, with where it was seen. */
+export interface GatheredEvent {
+  event: NostrEvent;
+  seenOn: string[];
+}
+
+/**
+ * The shared multi-relay fan-out behind every "what does Nostr say about
+ * these keys" lookup (a profile, a follow list, a batch of names).
+ *
+ * Queries every relay in the lookup set with `filters`, then keeps only
+ * events of one of `kinds` whose `pubkey` is in `authors` (the author pin —
+ * a relay may answer with anything), deduped by id with the relays each was
+ * seen on. It does NOT verify signatures: callers pick a winner per author
+ * with `pickNewestVerified`, so a signature is checked only on the events
+ * that could actually win.
+ *
+ * `null` means no relay could be reached at all; an empty result means at
+ * least one answered and none had anything usable.
+ *
+ * `budgetMs` (optional) caps each relay's WHOLE exchange (connect + fetch) —
+ * a relay still working when it expires counts as unreachable and its
+ * partial answer is dropped, while relays that finished keep theirs.
+ */
+export async function gatherAuthoredEvents(args: {
+  filters: NostrFilter[];
+  kinds: readonly number[];
+  authors: ReadonlySet<string>;
+  relays: string[];
+  timeoutMs: number;
+  includeLookupRelays?: boolean;
+  budgetMs?: number;
+}): Promise<{ events: GatheredEvent[]; callerRelays: string[] } | null> {
+  const { all, callerRelays } = resolveLookupRelays(args.relays, args.includeLookupRelays !== false);
+  if (all.length === 0) return null;
+
+  const results = await Promise.all(all.map(async (url) => {
+    const query = queryRelay(url, args.filters, args.timeoutMs);
+    if (args.budgetMs === undefined) return { url, events: await query };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), args.budgetMs); });
+    try {
+      return { url, events: await Promise.race([query, expired]) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+
+  const reached = results.filter(r => r.events !== null);
+  if (reached.length === 0) return null;
+
+  // Dedupe by id across relays, remembering where each id was seen.
+  const byId = new Map<string, GatheredEvent>();
+  for (const { url, events } of reached) {
+    for (const ev of events ?? []) {
+      if (!ev || typeof ev.id !== 'string' || !args.kinds.includes(ev.kind)) continue;
+      if (typeof ev.pubkey !== 'string' || !args.authors.has(ev.pubkey.toLowerCase())) continue;
+      const existing = byId.get(ev.id);
+      if (existing) existing.seenOn.push(url);
+      else byId.set(ev.id, { event: ev, seenOn: [url] });
+    }
+  }
+  return { events: Array.from(byId.values()), callerRelays };
+}
+
+/**
+ * The newest SIGNATURE-VALID event among `candidates` (all by `author`):
+ * newest `created_at` wins, tie: lowest id. Candidates are tried newest-first
+ * and only until one verifies, so a forged event can never be the "newest"
+ * that hides the genuine one, and a batch of authors costs about one
+ * signature check each rather than one per event seen.
+ */
+export function pickNewestVerified(candidates: GatheredEvent[], author: string): GatheredEvent | null {
+  const ordered = [...candidates].sort((a, b) =>
+    b.event.created_at - a.event.created_at || (a.event.id < b.event.id ? -1 : a.event.id > b.event.id ? 1 : 0),
+  );
+  for (const c of ordered) {
+    try { if (verifiedAuthoredEvents([c.event], author).length === 1) return c; } catch { /* unverifiable: skip */ }
+  }
+  return null;
 }
 
 /**
@@ -94,51 +197,21 @@ export async function fetchExistingProfile(
   if (typeof pubkey !== 'string' || !HEX64.test(pubkey)) return null;
   const author = pubkey.toLowerCase();
 
-  const callerRelays: string[] = [];
-  const all: string[] = [];
-  const add = (url: string, caller: boolean) => {
-    if (typeof url !== 'string' || !isValidRelayUrl(url) || all.includes(url)) return;
-    all.push(url);
-    if (caller) callerRelays.push(url);
-  };
-  for (const url of relays) add(url, true);
-  if (opts?.includeLookupRelays !== false) for (const url of PROFILE_LOOKUP_RELAYS) add(url, false);
-  if (all.length === 0) return 'unreachable';
-
   const filter = { kinds: [0], authors: [author], limit: 5 } as NostrFilter;
-  const results = await Promise.all(all.map(async (url) => ({ url, events: await queryRelay(url, filter, timeoutMs) })));
-
-  const reached = results.filter(r => r.events !== null);
-  if (reached.length === 0) return 'unreachable';
-
-  // Dedupe by id across relays, remembering where each id was seen.
-  const byId = new Map<string, { event: NostrEvent; seenOn: string[] }>();
-  for (const { url, events } of reached) {
-    for (const ev of events ?? []) {
-      if (!ev || typeof ev.id !== 'string' || ev.kind !== 0) continue;
-      if (typeof ev.pubkey !== 'string' || ev.pubkey.toLowerCase() !== author) continue;
-      const existing = byId.get(ev.id);
-      if (existing) existing.seenOn.push(url);
-      else byId.set(ev.id, { event: ev, seenOn: [url] });
-    }
-  }
-
-  // Signature check AFTER the author pin and BEFORE the sort, so a forged
-  // event can never be the "newest" that hides the genuine one.
-  const candidates = Array.from(byId.values()).filter(c => {
-    try { return verifiedAuthoredEvents([c.event], author).length === 1; } catch { return false; }
+  const gathered = await gatherAuthoredEvents({
+    filters: [filter], kinds: [0], authors: new Set([author]), relays, timeoutMs,
+    includeLookupRelays: opts?.includeLookupRelays,
   });
-  if (candidates.length === 0) return null;
+  if (!gathered) return 'unreachable';
 
-  // Newest created_at wins; tie: lowest id.
-  candidates.sort((a, b) =>
-    b.event.created_at - a.event.created_at || (a.event.id < b.event.id ? -1 : a.event.id > b.event.id ? 1 : 0),
-  );
-  const winner = candidates[0];
+  // Signature check AFTER the author pin and BEFORE the sort's winner is
+  // taken, so a forged event can never be the "newest" that hides the genuine one.
+  const winner = pickNewestVerified(gathered.events, author);
+  if (!winner) return null;
   const profile = parseKindZeroContent(winner.event.content);
   if (!profile) return null;
 
-  const relay = winner.seenOn.find(u => callerRelays.includes(u)) ?? winner.seenOn[0];
+  const relay = winner.seenOn.find(u => gathered.callerRelays.includes(u)) ?? winner.seenOn[0];
   return { event: winner.event, profile, base: toPublicProfileBase(winner.event), relay };
 }
 
