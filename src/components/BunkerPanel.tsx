@@ -243,13 +243,14 @@ export function BunkerPanel({
         style={{
           width: '100%',
           padding: '8px 12px',
-          fontSize: 15,
+          fontSize: 16,
           fontWeight: 600,
-          border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--border)',
+          // Off reads as tappable (accent outline), not as a disabled grey.
+          border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--accent)',
           borderRadius: 4,
           cursor: 'pointer',
           background: 'var(--bg-card)',
-          color: backgroundServing ? 'var(--success)' : 'var(--text-primary)',
+          color: backgroundServing ? 'var(--success)' : 'var(--accent-text)',
         }}
       >
         {backgroundServing ? 'Always on — serving in background ✓' : 'Always on (background)'}
