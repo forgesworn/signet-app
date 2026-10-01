@@ -11125,6 +11125,29 @@ export function App() {
         </section>}
         {isPairedChild && <h2>Contacts saved on this device</h2>}
         <ContactsRolodex
+          {...(() => {
+            // Owner scope only; never a dependant scope or a paired-child install.
+            if (!identity || isPairedChild || childDirect || contactsScope.directoryId !== 'owner' || !contactsWriteIdentity) return {};
+            const pk = contactsWriteIdentity;
+            const slot = pk === identity.naturalPerson.publicKey ? { target: 'natural-person', s: identity.naturalPerson }
+              : pk === identity.persona.publicKey ? { target: 'persona', s: identity.persona }
+              : pk === identity.professionalPersona?.publicKey ? { target: 'professional-persona', s: identity.professionalPersona }
+              : (() => { const x = identity.extraPersonas?.find(e => e.publicKey === pk); return x ? { target: pk, s: x } : undefined; })();
+            if (!slot) return {};
+            const name = slot.s.displayName || 'this persona';
+            const handlers = followsHandlersFor(slot.target, pk, name);
+            // Only the loading wait is shown; "open from your own card" never is.
+            const pending = followsPendingFor(slot.target);
+            const loadingReason = pending && contactsV2.loading ? pending : undefined;
+            if (!handlers && !loadingReason) return {};
+            return {
+              onImportFollows: handlers?.onImportFollows,
+              onUnlinkFollows: handlers?.onUnlinkFollows,
+              followsPersonaName: name,
+              followsLast: slot.s.followsImport,
+              followsDisabledReason: loadingReason,
+            };
+          })()}
           initialSearch={contactCardSearch}
           contacts={contactsListIdentity === 'all' ? contactsV2.effective : contactsV2.effective.filter(c => contactBelongsToList(c, contactsListIdentity))}
           lists={contactsIdentityLists}

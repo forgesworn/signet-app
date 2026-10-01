@@ -279,6 +279,7 @@ export const ROLODEX_NO_MATCHES_TITLE = 'No matches';
 export const ROLODEX_EMPTY_TITLE = 'No contacts yet';
 export const ROLODEX_EMPTY_TEXT = 'Add someone to see them here.';
 export const NEW_CONTACT_LABEL = 'New contact';
+export const IMPORT_FOLLOWING_LABEL = 'Import following';
 export const RECOGNISE_PUBLIC_KEY_LABEL = 'Recognise a public key';
 export const SEARCH_CONTACTS_LABEL = 'Search contacts';
 
