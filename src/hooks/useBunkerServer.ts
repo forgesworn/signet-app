@@ -472,7 +472,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const subIdRef = useRef<string | null>(null);
   // Keep only encrypted, signed replies. A relay OK retires them; a reconnect
   // republishes the same event (and never signs the user action a second time).
-  const responseOutboxRef = useRef<Map<string, { event: NostrEvent; expiresAt: number; sentOn?: WebSocket }>>(new Map());
+  const responseOutboxRef = useRef<Map<string, { event: NostrEvent; expiresAt: number; sentOn?: WebSocket; inboundEventId?: string }>>(new Map());
   const responseGenerationRef = useRef(0);
   const liveConnectionConfigRef = useRef({ enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce });
   liveConnectionConfigRef.current = { enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce };
@@ -488,6 +488,9 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       try {
         entry.sentOn = ws;
         ws.send(JSON.stringify(['EVENT', entry.event]));
+        // Recorded only once it has gone out: an answer still queued on a
+        // page that is then released must be answered by the next page.
+        if (entry.inboundEventId) markAnswered(entry.inboundEventId);
       }
       catch {
         // Retain the event for the next socket; close triggers normal backoff.
@@ -579,15 +582,13 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         devLog('[bunker-serve] response buffer full');
         return;
       }
-      responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000 });
+      let inboundEventId: string | undefined;
       if (shareAnswered) {
         const key = `${clientPubkey}:${requestId}`;
-        const inbound = inboundEventByRequestRef.current.get(key);
-        if (inbound) {
-          inboundEventByRequestRef.current.delete(key);
-          markAnswered(inbound);
-        }
+        inboundEventId = inboundEventByRequestRef.current.get(key);
+        inboundEventByRequestRef.current.delete(key);
       }
+      responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000, inboundEventId });
       flushResponses();
     },
     [flushResponses, shareAnswered],
@@ -664,6 +665,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         if (!live || live.handleBotEvent !== route.handleBotEvent || socket?.readyState !== WebSocket.OPEN
           || response.pubkey !== route.pubkey || response.kind !== 24133) return false;
         socket.send(JSON.stringify(['EVENT', response]));
+        if (shareAnswered) markAnswered(event.id);
         return true;
       });
       return;
