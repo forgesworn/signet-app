@@ -329,7 +329,7 @@ import type { RosterMember } from './lib/professional/role-anchor';
 import { useNavigation } from './hooks/useNavigation';
 import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLock';
 import { BunkerPanel } from './components/BunkerPanel';
-import { isBarHiddenPage, isOrphanedApprovalPage } from './lib/app-nav';
+import { isBarHiddenPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './lib/app-nav';
 import { stayAwakeUntil as computeStayAwakeUntil } from './lib/stay-awake';
 import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, shouldPromptUnlockForAlwaysOn } from './lib/bunker-restore';
 
@@ -12913,7 +12913,18 @@ export function App() {
         isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child'}
         childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
+        bunkerTint={bunkerTint({
+          serving: backgroundServing || stayAwakeUntil !== null,
+          alwaysOnWanted: isNativeApp() && preferences.backgroundBunkerEnabled === true,
+        })}
         onNavigate={(target) => {
+          if (target === 'home') {
+            // Child mode is left only through the guardian's unlock, so a
+            // second tap goes to the top of whichever ring is showing.
+            const action = homeTapAction({ onHome: page === 'home', row: carousel.row, col: carousel.col });
+            if (action === 'front') carousel.navigateToCell(carousel.row, 0);
+            else if (action === 'top') carousel.navigateToCell(0, 0);
+          }
           void (async () => {
             if (target === 'contacts') setContactCardSearch('');
             if (target === 'contacts' && page === 'home' && !isPairedChild) {
