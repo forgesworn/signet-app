@@ -98,13 +98,16 @@ describe('useChildActivityPublisher (child)', () => {
 
   it('A55: after a seed timeout it merges with its last published record instead of overwriting it', async () => {
     const f = fake();
+    const noted: ConnectedChildApp[] = [];
     const { rerender } = renderHook((p: { apps: ConnectedChildApp[] }) => useChildActivityPublisher({
-      record: record(), unpaired: false, connectedApps: p.apps, noteConnectedApp: () => {}, transport: f.t,
+      record: record(), unpaired: false, connectedApps: p.apps, noteConnectedApp: (a) => noted.push(a), transport: f.t,
     }), { initialProps: { apps: [] as ConnectedChildApp[] } });
     await advance(CONNECTED_APPS_SEED_WAIT_MS); // the read-back did not arrive in time
-    // The old record arrives late (slow relay): it is still merged.
+    // The old record arrives late (slow relay): it is still merged. Opening it
+    // is real async crypto, so wait until it has been absorbed before the change.
     const own = await buildConnectedAppsEvent([app(1), { ...app(2), lastUsed: 99 }], client.priv, rail.pub, 500);
-    await act(async () => { f.subs[0].onEvent(own); await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { f.subs[0].onEvent(own); });
+    await act(async () => { await vi.waitFor(() => expect(noted).toHaveLength(2)); });
     rerender({ apps: [app(2)] });
     await advance(CONNECTED_APPS_DEBOUNCE_MS);
     await act(async () => { await vi.waitFor(() => expect(f.published).toHaveLength(1)); });
