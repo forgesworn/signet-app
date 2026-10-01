@@ -26,7 +26,7 @@ const panelProps = {
   onClose: vi.fn(), bunkerAllowed: true, stayAwakeUntil: null, onGoToSecurity: vi.fn(), onArmStayAwake: vi.fn(), onCloseStayAwake: vi.fn(),
   wakeLockSupported: false, pendingApprovals: [], onApproveOnce: vi.fn(), onApproveAlways: vi.fn(), onDeny: vi.fn(),
   dependantNameFor: () => undefined, hasDependants: true, serveStatus: { state: 'idle' } as never, locked: false,
-  onRequestUnlockWithPendingArm: vi.fn(), isNative: false, backgroundServing: false, onSetBackgroundServing: vi.fn(async () => {}),
+  onRequestUnlockWithPendingArm: vi.fn(), onRequestUnlockForAlwaysOn: vi.fn(), isNative: false, backgroundServing: false, onSetBackgroundServing: vi.fn(async () => {}),
 };
 
 describe('A36: the card shows the re-derived target first, the child\'s label second', () => {

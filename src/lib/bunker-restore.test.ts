@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, type RearmAlwaysOnInput } from './bunker-restore';
+import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, shouldPromptUnlockForAlwaysOn, type RearmAlwaysOnInput } from './bunker-restore';
 
 describe('resolveStayAwakeOnUnlock', () => {
   const now = 1_790_000_000_000;
@@ -54,5 +54,34 @@ describe('shouldRearmAlwaysOn', () => {
   });
   it('never on the web', () => {
     expect(shouldRearmAlwaysOn({ ...ready, native: false })).toBe(false);
+  });
+});
+
+describe('shouldPromptUnlockForAlwaysOn', () => {
+  const base = {
+    native: true, loading: false, hasIdentity: true, authSetUp: true,
+    unlocked: false, promptOpen: false, enabledPref: true, pairedChild: false,
+  };
+
+  it('asks for the unlock when always-on is set and the page is locked', () => {
+    expect(shouldPromptUnlockForAlwaysOn(base)).toBe(true);
+  });
+
+  it('does not ask when always-on is off or unset', () => {
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, enabledPref: false })).toBe(false);
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, enabledPref: undefined })).toBe(false);
+  });
+
+  it('does not ask on the web, while loading, unlocked, or with a prompt already open', () => {
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, native: false })).toBe(false);
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, loading: true })).toBe(false);
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, unlocked: true })).toBe(false);
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, promptOpen: true })).toBe(false);
+  });
+
+  it('does not ask without an identity, without auth set up, or on a paired-child install', () => {
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, hasIdentity: false })).toBe(false);
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, authSetUp: false })).toBe(false);
+    expect(shouldPromptUnlockForAlwaysOn({ ...base, pairedChild: true })).toBe(false);
   });
 });

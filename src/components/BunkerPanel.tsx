@@ -58,6 +58,8 @@ interface Props {
   /** When locked and user clicks +X, notify app of the pending minutes so it can
    *  track it across unlock and reopen the panel after. */
   onRequestUnlockWithPendingArm: (minutes: number) => void;
+  /** When locked and user taps Always on: unlock first, then turn it on. */
+  onRequestUnlockForAlwaysOn: () => void;
   /** True inside the native (Android APK) shell — gates the always-on row. */
   isNative: boolean;
   /** Native always-on background serving currently armed. */
@@ -91,7 +93,7 @@ export function BunkerPanel({
   onClose, bunkerAllowed, onGoToSecurity,
   stayAwakeUntil, onArmStayAwake, onCloseStayAwake, wakeLockSupported,
   pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
-  hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm,
+  hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
   isNative, backgroundServing, onSetBackgroundServing,
   escalationNotices, onDismissEscalation, resolveEscalationIdentityName,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
@@ -227,15 +229,16 @@ export function BunkerPanel({
     </div>
   );
 
-  // Native-only always-on toggle. Disabled while locked (v1: the app must be
-  // unlocked to arm background serving); the +X row below it keeps its own
-  // locked flow via onRequestUnlockWithPendingArm.
+  // Native-only always-on toggle. While locked a tap asks for the unlock
+  // first (same flow as the +X row) and turns always-on on once it lands.
   const alwaysOnRow = isNative ? (
     <div style={{ marginTop: 8 }}>
       <button
         type="button"
-        disabled={locked}
-        onClick={() => { void onSetBackgroundServing(!backgroundServing); }}
+        onClick={() => {
+          if (locked) { onRequestUnlockForAlwaysOn(); return; }
+          void onSetBackgroundServing(!backgroundServing);
+        }}
         aria-pressed={backgroundServing}
         style={{
           width: '100%',
@@ -244,8 +247,7 @@ export function BunkerPanel({
           fontWeight: 600,
           border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--border)',
           borderRadius: 4,
-          cursor: locked ? 'not-allowed' : 'pointer',
-          opacity: locked ? 0.5 : 1,
+          cursor: 'pointer',
           background: 'var(--bg-card)',
           color: backgroundServing ? 'var(--success)' : 'var(--text-primary)',
         }}
@@ -254,7 +256,7 @@ export function BunkerPanel({
       </button>
       {locked && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, textAlign: 'center' }}>
-          Unlock to turn on always-on serving.
+          You'll be asked to unlock first.
         </div>
       )}
     </div>

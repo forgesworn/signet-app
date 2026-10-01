@@ -51,3 +51,33 @@ export function shouldRearmAlwaysOn(i: RearmAlwaysOnInput): boolean {
     && !i.inFlight
     && i.servePubkeyCount > 0;
 }
+
+export interface PromptUnlockForAlwaysOnInput {
+  native: boolean;
+  /** Identity or preferences still loading. */
+  loading: boolean;
+  hasIdentity: boolean;
+  authSetUp: boolean;
+  /** A key is in memory, or an auth setup is already pending. */
+  unlocked: boolean;
+  promptOpen: boolean;
+  /** `AppPreferences.backgroundBunkerEnabled` */
+  enabledPref: boolean | undefined;
+  pairedChild: boolean;
+}
+
+/**
+ * Ask for the unlock on open when always-on is set but the page is locked:
+ * serving needs the key, and without a prompt always-on stays silently off.
+ * A paired-child install has its own auto-prompt.
+ */
+export function shouldPromptUnlockForAlwaysOn(i: PromptUnlockForAlwaysOnInput): boolean {
+  return i.native
+    && !i.loading
+    && i.hasIdentity
+    && i.authSetUp
+    && !i.unlocked
+    && !i.promptOpen
+    && i.enabledPref === true
+    && !i.pairedChild;
+}

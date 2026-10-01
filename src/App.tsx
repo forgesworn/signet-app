@@ -330,7 +330,7 @@ import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLoc
 import { BunkerPanel } from './components/BunkerPanel';
 import { isBarHiddenPage, isOrphanedApprovalPage } from './lib/app-nav';
 import { stayAwakeUntil as computeStayAwakeUntil } from './lib/stay-awake';
-import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn } from './lib/bunker-restore';
+import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, shouldPromptUnlockForAlwaysOn } from './lib/bunker-restore';
 
 /**
  * How long the key stays after the app is hidden once a phone app has been
@@ -471,6 +471,8 @@ export function App() {
   // Bunker panel pending arm — set when user clicks +X while locked and requests unlock.
   // After successful unlock, the panel reopens and arms with this value.
   const [pendingBunkerArm, setPendingBunkerArm] = useState<number | null>(null);
+  // Always-on tapped while locked: turned on once the unlock lands.
+  const [pendingAlwaysOnArm, setPendingAlwaysOnArm] = useState(false);
 
   // On-demand auth prompt — shown as an overlay when a signing operation needs the encryption key
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
@@ -526,6 +528,8 @@ export function App() {
   }, [pendingBunkerArm]);
 
   const handleAuthPromptCancel = useCallback(() => {
+    setPendingBunkerArm(null);
+    setPendingAlwaysOnArm(false);
     setShowAuthPrompt(false);
     setAuthPromptContext(undefined);
     authResolverRef.current?.(null);
@@ -4885,6 +4889,15 @@ export function App() {
     requestAuth();
   }, [requestAuth]);
 
+  // Always-on tapped while locked: same unlock-first flow as +X. The pref is
+  // only set once the unlock lands, so a cancelled PIN never leaves always-on
+  // armed for a later unlock; the re-arm effect below then waits for routes.
+  const handleBunkerPendingAlwaysOn = useCallback(() => {
+    setPendingAlwaysOnArm(true);
+    setBunkerPanelOpen(false);
+    requestAuth();
+  }, [requestAuth]);
+
   // Screen stays on while a stay-awake window is open (foreground only).
   useScreenWakeLock(stayAwakeUntil !== null);
 
@@ -5072,6 +5085,34 @@ export function App() {
     })) return;
     void handleSetBackgroundServing(true);
   }, [encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+
+  useEffect(() => {
+    if (!encryptionKey || !pendingAlwaysOnArm) return;
+    setPendingAlwaysOnArm(false);
+    setBunkerPanelOpen(true);
+    void setBackgroundBunkerEnabled(true);
+  }, [encryptionKey, pendingAlwaysOnArm, setBackgroundBunkerEnabled]);
+
+  // Native: always-on is set but this page is locked (opened from the
+  // "stopped signing" notification, after a swipe-away or a reboot). Serving
+  // needs the key, so ask for the unlock straight away rather than leaving
+  // always-on silently off. Once per page; a cancel is left alone.
+  const alwaysOnUnlockPromptRef = useRef(false);
+  useEffect(() => {
+    if (alwaysOnUnlockPromptRef.current) return;
+    if (!shouldPromptUnlockForAlwaysOn({
+      native: isNativeApp(),
+      loading: identityLoading || prefsLoading,
+      hasIdentity: !!identity,
+      authSetUp: isAuthSetUp(),
+      unlocked: !!encryptionKey || !!pendingEncryptionKey,
+      promptOpen: showAuthPrompt,
+      enabledPref: preferences.backgroundBunkerEnabled,
+      pairedChild: preferences.signingMode === 'paired-child',
+    })) return;
+    alwaysOnUnlockPromptRef.current = true;
+    void requestAuth();
+  }, [identityLoading, prefsLoading, identity, encryptionKey, pendingEncryptionKey, showAuthPrompt, preferences.backgroundBunkerEnabled, preferences.signingMode, requestAuth]);
 
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode and
@@ -12858,6 +12899,7 @@ export function App() {
           serveStatus={bunkerServeStatus}
           locked={!encryptionKey}
           onRequestUnlockWithPendingArm={handleBunkerPendingArm}
+          onRequestUnlockForAlwaysOn={handleBunkerPendingAlwaysOn}
           isNative={isNativeApp()}
           backgroundServing={backgroundServing}
           onSetBackgroundServing={handleSetBackgroundServing}
