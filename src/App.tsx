@@ -4972,7 +4972,10 @@ export function App() {
     if (ms <= 0) { setStayAwakeUntil(null); return; }
     const timer = setTimeout(() => {
       setStayAwakeUntil(null);
-      if (document.visibilityState === 'hidden') {
+      // Native always-on serving outlives a short window: ending the window
+      // must not lock a page that is serving in the background (screen off
+      // or swiped away and parked).
+      if (document.visibilityState === 'hidden' && !backgroundServingRef.current) {
         requestLockRef.current();
       } else {
         resetInactivityTimer();
