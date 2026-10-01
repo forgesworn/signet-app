@@ -127,6 +127,7 @@ import { isNativeApp, SignetNative } from './lib/native';
 import { BunkerApprovalModal } from './components/BunkerApprovalModal';
 import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
+import { phoneAppsKeyExpired } from './lib/phone-apps-window';
 import { usePreferences } from './hooks/usePreferences';
 import { useDocuments } from './hooks/useDocuments';
 import { useCredentials } from './hooks/useCredentials';
@@ -457,6 +458,33 @@ export function App() {
   stayAwakeUntilRef.current = stayAwakeUntil;
   /** End of the window during which a hidden app keeps its key for the phone apps it serves (NIP-55). */
   const phoneAppsUntilRef = useRef<number | null>(null);
+  /** The phone-apps key was found expired and its lock asked for; cleared once the lock has rendered. */
+  const phoneAppsLockPendingRef = useRef(false);
+  /** When the app was last hidden; null while it has been visible since. */
+  const hiddenAtRef = useRef<number | null>(null);
+  /**
+   * Whether the key held for phone apps has outlived its window. By the wall
+   * clock, not a timer: a timer stops with the page when Chromium freezes it
+   * (see src/lib/phone-apps-window.ts). Asked on visibility, on resume, and
+   * before every NIP-55 request.
+   */
+  const phoneAppsKeyExpiredNow = useCallback(() => !!encryptionKeyRef.current && phoneAppsKeyExpired({
+    now: Date.now(),
+    hiddenAt: hiddenAtRef.current,
+    until: phoneAppsUntilRef.current,
+    exempt: backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
+    lockPending: phoneAppsLockPendingRef.current,
+  }), []);
+  /**
+   * Drops the key at once. No publish flush first, unlike the other
+   * auto-locks: this runs just before a NIP-55 answer, which must not be
+   * made with a key whose window has ended.
+   */
+  const lockExpiredPhoneAppsKey = useCallback(() => {
+    phoneAppsLockPendingRef.current = true;
+    phoneAppsUntilRef.current = null;
+    setEncryptionKey(null);
+  }, []);
   /** Refuses the NIP-55 requests held for an unlock; set once the NIP-55 server below is up. */
   const refuseHeldNip55Ref = useRef<() => void>(() => {});
 
@@ -775,6 +803,7 @@ export function App() {
   // PWA update refs (avoid stale closures in effects)
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
+  if (!encryptionKey) phoneAppsLockPendingRef.current = false;
   const needRefreshRef = useRef(needRefresh);
   needRefreshRef.current = needRefresh;
 
@@ -3823,6 +3852,8 @@ export function App() {
     activePubkey: activePubkey ?? null,
     onNeedsUnlock: () => { setAuthPromptContext(undefined); setShowAuthPrompt(true); },
     onServed: () => { phoneAppsUntilRef.current = Date.now() + PHONE_APPS_WINDOW_MS; },
+    keyExpired: phoneAppsKeyExpiredNow,
+    onKeyExpired: lockExpiredPhoneAppsKey,
   });
   refuseHeldNip55Ref.current = nip55.refuseHeld;
   // The remembered NIP-55 decisions, as the Connected Sites page lists them; grants keep milliseconds, the page reads seconds.
@@ -4886,7 +4917,6 @@ export function App() {
     void requestAuth();
   }, [identityLoading, prefsLoading, identity, preferences.signingMode, pendingEncryptionKey, encryptionKey, showAuthPrompt, requestAuth]);
 
-  const hiddenAtRef = useRef<number | null>(null);
   // Attach activity listeners when authenticated
   useEffect(() => {
     if (!encryptionKey) return;
@@ -4953,11 +4983,20 @@ export function App() {
           requestHideLock();
         }
       } else {
+        // Back in front, perhaps thawed from a freeze that stopped the timer
+        // ending the phone-apps window: if the window ran out meanwhile, lock
+        // now, as the timer would have. `hiddenAt` is left set so a NIP-55
+        // request handled before the lock renders sees the same verdict.
+        if (phoneAppsKeyExpiredNow()) { lockExpiredPhoneAppsKey(); return; }
         hiddenAtRef.current = null;
         if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
       }
     };
+    // A frozen page that is thawed while still hidden gets a `resume` and no
+    // visibilitychange.
+    const handleResume = () => { if (phoneAppsKeyExpiredNow()) lockExpiredPhoneAppsKey(); };
     document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener('resume', handleResume);
     // A dependency change while hidden (the approve handler moving to the
     // code page, an inbound auth request) re-runs this effect, and the
     // cleanup below has just cancelled the grace timer. No visibilitychange
@@ -4968,10 +5007,11 @@ export function App() {
     return () => {
       events.forEach(ev => window.removeEventListener(ev, handler));
       document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('resume', handleResume);
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       if (graceTimer) clearTimeout(graceTimer);
     };
-  }, [encryptionKey, resetInactivityTimer, pendingVerifyRequest, pendingAuthRequest, page]);
+  }, [encryptionKey, resetInactivityTimer, pendingVerifyRequest, pendingAuthRequest, page, phoneAppsKeyExpiredNow, lockExpiredPhoneAppsKey]);
 
   // Stay-awake window expiry: when the deadline passes, end the window and
   // restore the normal security posture at once — a hidden app locks NOW

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { nip19 } from 'nostr-tools';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -317,6 +318,64 @@ describe('useNip55Server', () => {
     expect(respond).not.toHaveBeenCalled();
     await act(async () => { result.current.approveOnce(handle); });
     expect(respond).not.toHaveBeenCalled();
+  });
+
+  describe('a request after the phone-apps window has ended', () => {
+    const allowAlways = () => localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+
+    it('by intent: drops the key first, then asks for the unlock instead of signing silently', async () => {
+      allowAlways();
+      const onKeyExpired = vi.fn();
+      const onNeedsUnlock = vi.fn();
+      const onServed = vi.fn();
+      // As in the app: dropping the key locks it on the next render.
+      const { result } = renderHook(() => {
+        const [locked, setLocked] = useState(false);
+        return useNip55Server({
+          enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey,
+          keyExpired: () => !locked, onKeyExpired: () => { onKeyExpired(); setLocked(true); }, onNeedsUnlock, onServed,
+        });
+      });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(onNeedsUnlock).toHaveBeenCalledTimes(1));
+      expect(onKeyExpired).toHaveBeenCalledTimes(1);
+      expect(onKeyExpired.mock.invocationCallOrder[0]).toBeLessThan(onNeedsUnlock.mock.invocationCallOrder[0]);
+      expect(result.current.waiting).toBe(1);
+      expect(respond).not.toHaveBeenCalled();
+      expect(onServed).not.toHaveBeenCalled();
+    });
+
+    it('by provider: drops the key and sends the app to the intent, never answering with it', async () => {
+      allowAlways();
+      const onKeyExpired = vi.fn();
+      renderHook(() => {
+        const [locked, setLocked] = useState(false);
+        return useNip55Server({
+          enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey,
+          keyExpired: () => !locked, onKeyExpired: () => { onKeyExpired(); setLocked(true); },
+        });
+      });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(onKeyExpired).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'deferred' });
+    });
+
+    it('inside the window an app allowed always is still answered without a screen', async () => {
+      allowAlways();
+      const onKeyExpired = vi.fn();
+      renderHook(() => useNip55Server({
+        enabled: true, routes: [route], locked: false, activePubkey: pubkey,
+        keyExpired: () => false, onKeyExpired,
+      }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok' });
+      expect(onKeyExpired).not.toHaveBeenCalled();
+    });
   });
 
   it('declining the unlock refuses what was held for it at once, by intent back to the app', async () => {

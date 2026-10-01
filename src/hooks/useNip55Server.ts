@@ -48,6 +48,14 @@ interface Options {
   locked: boolean;
   activePubkey: string | null;
   onNeedsUnlock?: () => void;
+  /**
+   * Whether the key held for phone apps has outlived its window (see
+   * src/lib/phone-apps-window.ts). Asked before EVERY request, provider and
+   * intent alike; when it says yes, `onKeyExpired` drops the key and the
+   * request is handled as if locked, so nothing is answered with it.
+   */
+  keyExpired?: () => boolean;
+  onKeyExpired?: () => void;
   /** Called each time a phone app is about to be served (a key, a signature, a cipher), before the answer goes back. */
   onServed?: () => void;
   /** Test seam. */
@@ -72,7 +80,11 @@ interface Waiting {
   pubkey: string | null;
 }
 
-export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, now = () => Date.now(), gate }: Options) {
+export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = () => Date.now(), gate }: Options) {
+  const keyExpiredRef = useRef(keyExpired);
+  keyExpiredRef.current = keyExpired;
+  const onKeyExpiredRef = useRef(onKeyExpired);
+  onKeyExpiredRef.current = onKeyExpired;
   const gateRef = useRef(gate);
   gateRef.current = gate;
   const [queue, setQueue] = useState<Waiting[]>([]);
@@ -161,6 +173,13 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   const handleRequest = useCallback(async (raw: NativeNip55Request) => {
     if (!raw || typeof raw.id !== 'string' || seen.current.has(raw.id)) return;
     seen.current.add(raw.id);
+    // The window the key was held for may have ended while the page was
+    // frozen. Drop the key first; until the lock renders, this request and
+    // anything after it are treated as locked.
+    if (!lockedRef.current && keyExpiredRef.current?.()) {
+      lockedRef.current = true;
+      onKeyExpiredRef.current?.();
+    }
     const parsed = parseNip55Request(raw);
     const pkg = raw.callerPackage ?? '';
     const grant = pkg ? grantsRef.current[pkg] : undefined;
