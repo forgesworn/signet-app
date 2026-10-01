@@ -93,4 +93,28 @@ class Nip55WireTest {
     }
 
     private fun assertEquals(expected: Any?, actual: Any?, message: String) = assertEquals(message, expected, actual)
+
+    @Test fun `a result echoes the caller's own id, never the signer's internal one`() {
+        val ok = Nip55Wire.resultExtras("caller-7", "app.mysignet", Nip55Answer("ok", "sig", """{"id":"e"}"""))
+        assertEquals("caller-7", ok[Nip55Wire.EXTRA_ID])
+        assertEquals("sig", ok[Nip55Wire.EXTRA_RESULT])
+        assertEquals("sig", ok[Nip55Wire.EXTRA_SIGNATURE])
+        assertEquals("""{"id":"e"}""", ok[Nip55Wire.EXTRA_EVENT])
+        assertEquals("app.mysignet", ok[Nip55Wire.EXTRA_PACKAGE])
+        assertNull(ok[Nip55Wire.EXTRA_REJECTED])
+    }
+
+    @Test fun `a refusal or a timeout echoes the caller's id too`() {
+        for (answer in listOf(Nip55Answer("rejected", null, null), null)) {
+            val r = Nip55Wire.resultExtras("caller-8", "app.mysignet", answer)
+            assertEquals("caller-8", r[Nip55Wire.EXTRA_ID])
+            assertEquals(true, r[Nip55Wire.EXTRA_REJECTED])
+            assertNull(r[Nip55Wire.EXTRA_RESULT])
+        }
+    }
+
+    @Test fun `a caller that sent no id gets none back`() {
+        assertFalse(Nip55Wire.resultExtras(null, "app.mysignet", Nip55Answer("ok", "x", null)).containsKey(Nip55Wire.EXTRA_ID))
+        assertFalse(Nip55Wire.resultExtras("", "app.mysignet", null).containsKey(Nip55Wire.EXTRA_ID))
+    }
 }
