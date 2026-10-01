@@ -64,6 +64,9 @@ interface Props {
   isNative: boolean;
   /** Native always-on background serving currently armed. */
   backgroundServing: boolean;
+  /** The user turned always-on on (the stored preference), whether or not
+   *  it is serving right now — off-but-wanted shows amber. */
+  alwaysOnWanted: boolean;
   /** Arm/disarm native always-on background serving. */
   onSetBackgroundServing: (on: boolean) => Promise<void>;
   /** "Family asks" — parked-approval + petition notices (C4/C5). Absent/empty renders no section. */
@@ -94,7 +97,7 @@ export function BunkerPanel({
   stayAwakeUntil, onArmStayAwake, onCloseStayAwake, wakeLockSupported,
   pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
   hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
-  isNative, backgroundServing, onSetBackgroundServing,
+  isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing,
   escalationNotices, onDismissEscalation, resolveEscalationIdentityName,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
   childAsks, childAskAlwaysAvailable, onChildAskDecide,
@@ -229,8 +232,11 @@ export function BunkerPanel({
     </div>
   );
 
-  // Native-only always-on toggle. While locked a tap asks for the unlock
-  // first (same flow as the +X row) and turns always-on on once it lands.
+  // Native-only always-on toggle. Green = serving; amber = turned on but
+  // needs reactivating (locked, or stopped); grey = off. While locked a tap
+  // asks for the unlock first (same flow as the +X row) and turns it on.
+  const needsReactivating = alwaysOnWanted && !backgroundServing;
+  const alwaysOnColour = backgroundServing ? 'var(--success)' : needsReactivating ? 'var(--warning)' : null;
   const alwaysOnRow = isNative ? (
     <div style={{ marginTop: 8 }}>
       <button
@@ -245,15 +251,16 @@ export function BunkerPanel({
           padding: '8px 12px',
           fontSize: 16,
           fontWeight: 600,
-          // Off is amber (needs a tap), on is green — never a disabled grey.
-          border: backgroundServing ? '1px solid var(--success)' : '1px solid var(--warning)',
+          border: `1px solid ${alwaysOnColour ?? 'var(--border)'}`,
           borderRadius: 4,
           cursor: 'pointer',
           background: 'var(--bg-card)',
-          color: backgroundServing ? 'var(--success)' : 'var(--warning)',
+          color: alwaysOnColour ?? 'var(--text-secondary)',
         }}
       >
-        {backgroundServing ? 'Always on — serving in background ✓' : 'Always on (background)'}
+        {backgroundServing ? 'Always on — serving in background ✓'
+          : needsReactivating ? 'Always on — tap to switch back on'
+          : 'Always on (background)'}
       </button>
       {locked && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, textAlign: 'center' }}>

@@ -12900,6 +12900,7 @@ export function App() {
           locked={!encryptionKey}
           onRequestUnlockWithPendingArm={handleBunkerPendingArm}
           onRequestUnlockForAlwaysOn={handleBunkerPendingAlwaysOn}
+          alwaysOnWanted={preferences.backgroundBunkerEnabled === true}
           isNative={isNativeApp()}
           backgroundServing={backgroundServing}
           onSetBackgroundServing={handleSetBackgroundServing}
