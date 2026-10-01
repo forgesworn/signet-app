@@ -75,7 +75,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   const [nsecStep, setNsecStep] = useState<'nsec' | 'fetching' | 'confirm'>('nsec');
   // The kind-0 this key already has public, found by the multi-relay lookup.
   const [nsecExisting, setNsecExisting] = useState<ExistingProfile | null>(null);
-  // "Match it in Signet" (default) vs "Keep it private in Signet".
+  // "Match it in My Signet" (default) vs "Keep it private in My Signet".
   const [nsecChoice, setNsecChoice] = useState<ExistingProfileChoice>('match');
   // The lookup reached no relay at all — said quietly, never as "nothing there".
   const [nsecLookupUnreachable, setNsecLookupUnreachable] = useState(false);

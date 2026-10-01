@@ -436,11 +436,14 @@ export function useIdentity(encryptionKey?: string | null) {
     target: 'natural-person' | 'persona' | string,
     name: string,
     nameCredentialId?: string,
+    /** The key from an on-demand unlock this render's closure predates. */
+    overrideEncryptionKey?: string,
   ) => {
     if (!activeIdentity) return;
-    if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
+    const key = overrideEncryptionKey || encryptionKey;
+    if (!key) throw new Error('Cannot save identity without encryption key');
     // Fresh-decrypt — see switchPrimary / addPersona for rationale.
-    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, encryptionKey);
+    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, key);
     if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
 
     let updated: SignetIdentity;
@@ -484,7 +487,7 @@ export function useIdentity(encryptionKey?: string | null) {
       updated = { ...decrypted, extraPersonas: extras };
     }
 
-    await db.saveIdentityEncrypted(updated, encryptionKey);
+    await db.saveIdentityEncrypted(updated, key);
     await loadAll();
   }, [activeIdentity, loadAll, encryptionKey]);
 
@@ -853,10 +856,13 @@ export function useIdentity(encryptionKey?: string | null) {
      * `null` = clear it.
      */
     base?: import('../types').PublicProfileBase | null,
+    /** The key from an on-demand unlock this render's closure predates. */
+    overrideEncryptionKey?: string,
   ) => {
     if (!activeIdentity) return;
-    if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
-    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, encryptionKey);
+    const key = overrideEncryptionKey || encryptionKey;
+    if (!key) throw new Error('Cannot save identity without encryption key');
+    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, key);
     if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
 
     // Build slot-config patch — explicit undefined for each key to ensure
@@ -915,7 +921,7 @@ export function useIdentity(encryptionKey?: string | null) {
       updated = { ...decrypted, extraPersonas: extras };
     }
 
-    await db.saveIdentityEncrypted(updated, encryptionKey);
+    await db.saveIdentityEncrypted(updated, key);
     await loadAll();
   }, [activeIdentity, loadAll, encryptionKey]);
 

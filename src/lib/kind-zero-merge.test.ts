@@ -42,7 +42,7 @@ const AMETHYST = {
 const BASE_CONTENT = JSON.stringify(AMETHYST);
 const BASE_TAGS = [['i', 'github:alice', 'proof'], ['client', 'amethyst']];
 
-/** The card exactly as "Match it in Signet" seeds it. */
+/** The card exactly as "Match it in My Signet" seeds it. */
 function matchedCard(over: Partial<PublicProfileConfig> = {}): PublicProfileConfig {
   const p = parseKindZeroContent(BASE_CONTENT)!;
   return { displayName: p.displayName!, about: p.about, pictureUrl: p.pictureUrl, nip05: p.nip05, website: p.website, ...over };

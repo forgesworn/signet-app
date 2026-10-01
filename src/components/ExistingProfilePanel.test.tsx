@@ -20,12 +20,12 @@ describe('ExistingProfilePanel', () => {
     expect(screen.queryByRole('button', { name: 'Show picture' })).toBeNull();
   });
 
-  it('defaults to "Match it in Signet" and explains that keeping it private cannot unpublish it', () => {
+  it('defaults to "Match it in My Signet" and explains that keeping it private cannot unpublish it', () => {
     const onChoice = vi.fn();
     render(<ExistingProfilePanel profile={profile} choice="match" onChoice={onChoice} />);
-    expect((screen.getByRole('radio', { name: /Match it in Signet/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: /Match it in My Signet/ }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText(/Signet can.t take it back off Nostr/)).toBeDefined();
-    fireEvent.click(screen.getByRole('radio', { name: /Keep it private in Signet/ }));
+    fireEvent.click(screen.getByRole('radio', { name: /Keep it private in My Signet/ }));
     expect(onChoice).toHaveBeenCalledWith('private');
   });
 });

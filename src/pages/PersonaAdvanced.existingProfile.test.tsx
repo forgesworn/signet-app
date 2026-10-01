@@ -48,7 +48,7 @@ describe('PersonaAdvanced — check Nostr for an existing profile', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check Nostr for an existing profile' }));
     await screen.findByText('This account is already public on Nostr as Bob.');
     expect(screen.getByText(/replaces this card.s name, bio and picture/)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Match it in Signet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Match it in My Signet' }));
     await waitFor(() => expect(onMatch).toHaveBeenCalledWith(found));
     expect(onPublish).not.toHaveBeenCalled();
   });

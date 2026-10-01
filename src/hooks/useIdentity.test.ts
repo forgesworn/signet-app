@@ -95,6 +95,36 @@ describe('useIdentity — lock clears decrypted state synchronously (M9)', () =>
   });
 });
 
+// The persona Advanced page is reachable while locked; its actions unlock on
+// demand and hand the fresh key through, because the closure they call still
+// holds the null key ("Match it in Signet" threw "Cannot save identity
+// without encryption key" on 2026-10-01).
+describe('useIdentity — saves with an on-demand unlock key while locked', () => {
+  const KEY = 'test-encryption-key-min-8';
+
+  it('setPersonaPublicProfile and updateDisplayName accept an override key', async () => {
+    const identity = makeFakeIdentity();
+    await db.saveIdentityEncrypted(identity, KEY);
+    await db.savePreferences({ id: 'current', theme: 'system', activeAccountId: identity.id });
+
+    const { result } = renderHook(() => useIdentity(null));
+    await waitFor(() => expect(result.current.identity?.id).toBe(identity.id));
+
+    await act(async () => {
+      await expect(result.current.setPersonaPublicProfile('persona', { displayName: 'x', about: 'nope' }, undefined))
+        .rejects.toThrow('Cannot save identity without encryption key');
+    });
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'x', about: 'from nostr' }, undefined, undefined, KEY);
+      await result.current.updateDisplayName('persona', 'Nostr Name', undefined, KEY);
+    });
+
+    const saved = await db.loadIdentityDecrypted(identity.id, KEY);
+    expect(saved?.persona.about).toBe('from nostr');
+    expect(saved?.persona.displayName).toBe('Nostr Name');
+  }, 20_000);
+});
+
 describe('useIdentity — create', () => {
   it('saves identity to DB and sets as active', async () => {
     mockCreate.mockReturnValue(makeFakeIdentity());

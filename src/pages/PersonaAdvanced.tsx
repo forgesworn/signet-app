@@ -66,7 +66,7 @@ export interface PersonaAdvancedProps {
    * install); absent => the button is hidden.
    */
   onCheckExistingProfile?: () => Promise<ExistingProfile | null | 'unreachable'>;
-  /** Apply a found profile to this slot ("Match it in Signet"). Writes card + state + base; publishes nothing. */
+  /** Apply a found profile to this slot ("Match it in My Signet"). Writes card + state + base; publishes nothing. */
   onMatchExistingProfile?: (found: ExistingProfile) => Promise<void>;
   /**
    * "Import who this account follows" — read this slot's Nostr follow list
@@ -580,7 +580,7 @@ function PublishBlock({
           </p>
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <button type="button" className="btn btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => { void runMatch(); }} disabled={matching}>
-              {matching ? 'Matching…' : 'Match it in Signet'}
+              {matching ? 'Matching…' : 'Match it in My Signet'}
             </button>
             <button type="button" className="btn btn-ghost btn-sm" style={{ width: 'auto' }} onClick={() => setFound(null)} disabled={matching}>
               Not now

@@ -59,7 +59,7 @@ export function ExistingProfilePanel({ profile, choice, onChoice, children, disa
 
       {pictureUrl && !showPicture && (
         <div style={{ marginTop: 10, padding: '8px 10px', background: 'var(--accent-light)', borderRadius: 'var(--radius-sm)', fontSize: '0.78rem', color: 'var(--accent-text)' }}>
-          The picture is hosted at <strong>{pictureHost}</strong>. Signet fetches it only after you tap.
+          The picture is hosted at <strong>{pictureHost}</strong>. My Signet fetches it only after you tap.
           <div style={{ marginTop: 6 }}>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowPicture(true)}>Show picture</button>
           </div>
@@ -67,7 +67,7 @@ export function ExistingProfilePanel({ profile, choice, onChoice, children, disa
       )}
 
       {onChoice && choice && (
-        <div role="radiogroup" aria-label="What should Signet do with it?" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div role="radiogroup" aria-label="What should My Signet do with it?" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.88rem', cursor: 'pointer' }}>
             <input
               type="radio"
@@ -78,10 +78,10 @@ export function ExistingProfilePanel({ profile, choice, onChoice, children, disa
               style={{ marginTop: 3 }}
             />
             <span>
-              <strong>Match it in Signet</strong>
+              <strong>Match it in My Signet</strong>
               <br />
               <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                Signet takes this name, bio and picture for the persona. Nothing is published unless you edit and publish later.
+                My Signet takes this name, bio and picture for the persona. Nothing is published unless you edit and publish later.
               </span>
             </span>
           </label>
@@ -95,10 +95,10 @@ export function ExistingProfilePanel({ profile, choice, onChoice, children, disa
               style={{ marginTop: 3 }}
             />
             <span>
-              <strong>Keep it private in Signet</strong>
+              <strong>Keep it private in My Signet</strong>
               <br />
               <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                It&rsquo;s already public &mdash; Signet can&rsquo;t take it back off Nostr.
+                It&rsquo;s already public &mdash; My Signet can&rsquo;t take it back off Nostr.
               </span>
             </span>
           </label>

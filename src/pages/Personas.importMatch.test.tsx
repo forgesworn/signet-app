@@ -37,19 +37,19 @@ describe('Personas — import an existing Nostr account: match an existing profi
     await screen.findByText('This account is already public on Nostr as Bob.');
     expect(onImport).not.toHaveBeenCalled(); // matching never imports behind the user's back
     expect((screen.getByPlaceholderText('What should we call this persona?') as HTMLInputElement).value).toBe('Bob');
-    expect((screen.getByRole('radio', { name: /Match it in Signet/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: /Match it in My Signet/ }) as HTMLInputElement).checked).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await waitFor(() => expect(onImport).toHaveBeenCalledTimes(1));
     expect(onImport).toHaveBeenCalledWith(nsec, 'Bob', found);
   });
 
-  it('"Keep it private in Signet" imports without the match', async () => {
+  it('"Keep it private in My Signet" imports without the match', async () => {
     const onImport = vi.fn(async () => ({ added: true as const, pubkey: 'c'.repeat(64) }));
     await openAndFill({ lookup: async () => found, onImport });
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await screen.findByText('This account is already public on Nostr as Bob.');
-    fireEvent.click(screen.getByRole('radio', { name: /Keep it private in Signet/ }));
+    fireEvent.click(screen.getByRole('radio', { name: /Keep it private in My Signet/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     await waitFor(() => expect(onImport).toHaveBeenCalledWith(nsec, 'Bob', undefined));
   });

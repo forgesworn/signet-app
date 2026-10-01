@@ -10102,12 +10102,12 @@ export function App() {
           onUpdateName={async (target, name) => {
             const key = encryptionKey || await requestAuth();
             if (!key) throw new Error('Authentication required');
-            await updateDisplayName(target, name);
+            await updateDisplayName(target, name, undefined, key);
           }}
           onImportNostrAccount={isPairedChild ? undefined : async (nsec, displayName, match) => {
             const key = encryptionKey || await requestAuth();
             if (!key) throw new Error('Authentication required');
-            // "Match it in Signet": the card, the state of the kind-0 that is
+            // "Match it in My Signet": the card, the state of the kind-0 that is
             // ALREADY on the relay (nothing is published) and the device-local
             // base the lossless publish merges against.
             const seed = match ? buildMatchSeed(match, displayName) : undefined;
@@ -10341,15 +10341,19 @@ export function App() {
         onMatchExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async (found) => {
           // Writes card + state + base in one save and publishes nothing: the
           // event is already on the relay. The profile's values replace the
-          // card's (the panel says so).
+          // card's (the panel says so). The page is reachable while locked,
+          // so unlock on demand and hand the key through: this render's
+          // hooks still close over the null key.
+          const key = encryptionKey || await requestAuth();
+          if (!key) throw new Error('Authentication required');
           const seed = buildMatchSeed(found, found.profile.displayName || '');
-          await setPersonaPublicProfile(slotTarget, seed.config, seed.state, seed.base ?? null);
+          await setPersonaPublicProfile(slotTarget, seed.config, seed.state, seed.base ?? null, key);
           if (seed.config.displayName) {
             const current = slotTarget === 'natural-person' ? identity.naturalPerson.displayName
               : slotTarget === 'persona' ? identity.persona.displayName
               : slotTarget === 'professional-persona' ? identity.professionalPersona?.displayName
               : identity.extraPersonas?.find(p => p.publicKey === slotTarget)?.displayName;
-            if (current !== seed.config.displayName) await updateDisplayName(slotTarget, seed.config.displayName);
+            if (current !== seed.config.displayName) await updateDisplayName(slotTarget, seed.config.displayName, undefined, key);
           }
         }}
         onSwitchPrimary={async (target) => {
@@ -12581,7 +12585,7 @@ export function App() {
         onUpdateOwnPersonaName={async (target, name) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
-          await updateDisplayName(target, name);
+          await updateDisplayName(target, name, undefined, key);
         }}
         onSaveDepPersonaConfig={async (depPubkey, target, config) => {
           const dep = dependants.find(d => d.id === depPubkey);

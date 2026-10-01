@@ -216,7 +216,7 @@ export async function fetchExistingProfile(
 }
 
 /**
- * What "Match it in Signet" writes to a slot: the profile's values as the
+ * What "Match it in My Signet" writes to a slot: the profile's values as the
  * card, the publication state of the event that is ALREADY on the relay (so
  * nothing is published), and the event itself as the device-local base the
  * lossless publish merges against. `displayName` is the name the user settled
