@@ -17,6 +17,9 @@ import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
 import type { IQBreakdownItem } from '../lib/badge-fetch';
 
+/** A Home walk longer than this many single-card slides jumps instead. */
+const MAX_JUMP_STEPS = 4;
+
 interface CarouselProps {
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
   renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, publicCard: ReactNode) => ReactNode;
@@ -620,23 +623,36 @@ export function Carousel(props: CarouselProps) {
     animateTo(axis, direction, target.row, target.col, dx, dy);
   }, [animating, resolveTarget, handleSnapBack, animateTo]);
 
-  // Home tap: slide to the requested cell — vertically when the row changes,
-  // otherwise horizontally the short way round the column loop.
+  // Home tap: walk to the requested cell one ordinary swipe at a time —
+  // columns first (the short way round the loop), then rows — so it reads
+  // as the same slide a finger makes. A long walk just jumps.
+  const jumpTargetRef = useRef<{ row: number; col: CarouselColumn } | null>(null);
   const jumpSeq = props.jumpTo?.seq;
   useEffect(() => {
     const jump = props.jumpTo;
-    if (!jump || animating) return;
-    const targetRow = clampIndex(jump.row, rows.length);
-    if (targetRow === row && jump.col === col) return;
-    if (targetRow !== row) {
-      animateTo('v', targetRow < row ? 1 : -1, targetRow, jump.col, 0, 0);
-    } else {
-      const forward = wrapIndex(jump.col - col, CAROUSEL_COLUMNS.length);
-      animateTo('h', forward <= CAROUSEL_COLUMNS.length / 2 ? -1 : 1, row, jump.col, 0, 0);
+    if (!jump) return;
+    const target = { row: clampIndex(jump.row, rows.length), col: jump.col };
+    const colSteps = Math.min(wrapIndex(target.col - col, CAROUSEL_COLUMNS.length), wrapIndex(col - target.col, CAROUSEL_COLUMNS.length));
+    if (colSteps + Math.abs(target.row - row) > MAX_JUMP_STEPS) {
+      jumpTargetRef.current = null;
+      onCommit(target.row, target.col);
+      return;
     }
-    // Fires once per request: only a new seq starts a slide.
+    jumpTargetRef.current = target;
+    // Only a new seq starts a walk; the step effect below drives it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpSeq]);
+  useEffect(() => {
+    const target = jumpTargetRef.current;
+    if (!target || animating) return;
+    if (target.row === row && target.col === col) { jumpTargetRef.current = null; return; }
+    if (target.col !== col) {
+      const forward = wrapIndex(target.col - col, CAROUSEL_COLUMNS.length);
+      if (forward <= CAROUSEL_COLUMNS.length / 2) handleSwipe('h', -1, 60, 0);
+      else handleSwipe('h', 1, -60, 0);
+    } else if (target.row < row) handleSwipe('v', 1, 0, -60);
+    else handleSwipe('v', -1, 0, 60);
+  }, [row, col, animating, jumpSeq, handleSwipe]);
 
   const handleTap = useCallback(() => {
     // A gesture that locked an axis (mounting a neighbour) but ended under the
