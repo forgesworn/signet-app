@@ -239,5 +239,7 @@ describe('dependant persona allocation after deletion', () => {
     expect(stored.extraPersonas?.[0].derivationName).toBe('dependant-0-persona-3');
     expect(originalKeys).not.toContain(stored.extraPersonas?.[0].publicKey);
     expect(stored.extraPersonaTombstones).toHaveLength(3);
-  });
+    // Six derivations and a dozen encrypted writes: about six seconds on an
+    // idle machine, past the 15 s default when the full suite shares the CPU.
+  }, 60_000);
 });

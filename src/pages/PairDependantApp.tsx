@@ -343,6 +343,18 @@ export function PairDependantApp({
     body = (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 24 }}>
         <QRCode data={uri} size={260} />
+        <label htmlFor="dependant-app-pairing-code" style={{ fontSize: '0.85rem' }}>
+          Using an app on this phone? Copy this code and paste it there.
+        </label>
+        <input
+          id="dependant-app-pairing-code"
+          aria-label="Dependant app pairing code"
+          value={uri}
+          readOnly
+          autoComplete="off"
+          onFocus={(event) => event.currentTarget.select()}
+          style={{ width: '100%', fontSize: '0.8rem' }}
+        />
         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
           This code refreshes in {mm}:{ss}
         </div>
