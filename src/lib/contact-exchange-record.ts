@@ -1,11 +1,12 @@
 import type { ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
+import { sanitizeDisplayName } from './text-sanitize';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { contactVerificationWords } from '@forgesworn/signet-contacts';
 import type { ContactExchangeState } from '@forgesworn/signet-contacts';
 import { contactsMutationQueue } from './contacts-v2-queue';
-import { applyOperations, validateOperation } from './contacts-v2-reducer';
+import { applyOperations, validateOperation, CAP_NAME } from './contacts-v2-reducer';
 import { resolveEffective } from './contacts-v2-effective';
 import { buildOperation } from './contacts-v2-mutations';
 import type { MutationActor } from './contacts-v2-mutations';
@@ -47,6 +48,13 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     const records = applyOperations(ops);
     const existing = [...records.values()].find(r => r.identities.some(i => i.pubkey === peer));
     if (existing && resolveEffective(existing, { activeGuardianPubkeys: [], defaultChildCeiling: 'ken', directoryIsDependant: args.directoryId !== 'owner' }).blocked) throw new Error('Contact is blocked');
+    // The requester scanned an invite whose public caption is the inviter's own
+    // name; the origin already carries it (validated, control/bidi-stripped).
+    // Only for a link the user scanned or opened, never an app handover; and only
+    // when it fits the reducer's UTF-16 cap, else the default name applies.
+    const rawName = e.role === 'requester' && e.origin?.method === 'link' && e.origin.caption
+      ? sanitizeDisplayName(e.origin.caption, CAP_NAME) : '';
+    const scannedName = rawName && rawName.length <= CAP_NAME ? rawName : undefined;
     const contactId = existing?.contactId ?? id(seed + ':contact');
     let clock = frontierOf(ops).maxClock + 1;
     const now = e.reveal.createdAt * 1000;
@@ -58,7 +66,7 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     };
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
-      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? peer.slice(0, 12) + '…',
+      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? scannedName ?? peer.slice(0, 12) + '…',
         tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
     } else if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,

@@ -47,6 +47,7 @@ import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
 import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
 import { ContactInvites } from './pages/ContactInvites';
+import { ContactInviteSend } from './pages/ContactInviteSend';
 import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/signet-contacts';
 import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
@@ -224,7 +225,7 @@ import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, h
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
-import { routeNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
@@ -2577,11 +2578,22 @@ export function App() {
     const value = new URLSearchParams(window.location.hash.slice(1)).get('contact-invite');
     return value && value.length <= 8192 ? value : undefined;
   });
+  // The persona whose camera card scanned the invite; the send screen defaults to it.
+  const [pendingInviteSender, setPendingInviteSender] = useState<string | undefined>(undefined);
+  const sendPageOpenRef = useRef(false);
+  useEffect(() => {
+    // Leaving the send page by any route (back, Done, Cancel, other navigation)
+    // retires the invite and the scanning persona, so neither can leak into a later invite.
+    if (page === 'contact-invite-send') { sendPageOpenRef.current = true; return; }
+    if (!sendPageOpenRef.current) return;
+    sendPageOpenRef.current = false;
+    setPendingContactInvite(undefined); setPendingInviteSender(undefined);
+  }, [page]);
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
     // D6: a paired-child install asks the guardian instead of connecting.
-    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invites');
+    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
   }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId]);
 
   // C1: `useContactsV2`'s own mount-time `reload()` and the cold
@@ -8722,6 +8734,11 @@ export function App() {
         // D6: a paired-child install offers "Ask {guardian} to connect"
         // instead of connecting directly — see the navigation effect below.
         setPendingContactInvite(JSON.stringify(action.invite));
+        {
+          const scanRow = carousel.rows[carousel.row];
+          setPendingInviteSender(scanRow && (scanRow.type === 'persona' || scanRow.type === 'extra-persona' || scanRow.type === 'natural-person')
+            ? carousel.activeIdentity.publicKey : undefined);
+        }
         break;
       case 'verify':
         setPendingVerifyRequest(action.request);
@@ -8777,7 +8794,7 @@ export function App() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, resolveSigningSelection, preferences.signingMode, isPairedChild]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;
@@ -9117,8 +9134,8 @@ export function App() {
   const handleNativeUrl = useCallback((url: string) => {
     if (!url || lastNativeUrlRef.current === url) return;
     lastNativeUrlRef.current = url;
-    const contactInvite = parseContactInviteLink(url);
-    if (contactInvite) { setPendingContactInvite(JSON.stringify(contactInvite)); return; }
+    const contactInvite = contactInviteFromNativeUrl(url);
+    if (contactInvite) { setPendingContactInvite(contactInvite); setPendingInviteSender(undefined); return; }
     const action = routeNativeUrl(url);
     switch (action.type) {
       case 'companion-pair':
@@ -10445,6 +10462,59 @@ export function App() {
     ));
   }
 
+  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
+  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
+  // revocation can't be blocked by an unreachable relay), then best-effort
+  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
+  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
+  // recipient who cached the old key can't follow the new pointer. Recipients
+  // who already fetched the blob keep it — no clawback, by design.
+  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
+    const key = encryptionKey || await requestAuth();
+    if (!key) throw new Error('Authentication required');
+
+    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
+    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
+    let slot: { publicKey: string; privateKey: string } | undefined;
+    if (depPubkey) {
+      const all = await loadFreshDependants(key);
+      const dep = all.find(d => d.id === depPubkey);
+      if (!dep) return;
+      slot = target === 'natural-person' ? dep.naturalPerson
+        : target === 'persona' ? dep.persona
+        : dep.extraPersonas?.find(e => e.publicKey === target);
+    } else {
+      if (!identity) return;
+      const decrypted = await loadIdentityDecrypted(identity.id, key);
+      if (!decrypted) return;
+      slot = target === 'natural-person' ? decrypted.naturalPerson
+        : target === 'persona' ? decrypted.persona
+        : decrypted.extraPersonas?.find(e => e.publicKey === target);
+    }
+    if (!slot) return;
+
+    // Clear FIRST — local revocation must not be blockable by relay state
+    // (or by the absence of a local/routed signing key).
+    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
+    else await clearPersonaContactAvatar(target);
+
+    // Best-effort retract of the published pointer. Router-sourced fallback
+    // is a SHARED, CACHED route — only a locally-constructed backend
+    // (ownedStop) may be destroy()'d below.
+    const ownedStop = !!slot.privateKey;
+    const stopBackend: DecryptingSigningBackend | null = ownedStop
+      ? new LocalSigningBackend(slot.privateKey)
+      // A42: never an ungated router route on a direct child.
+      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
+    if (stopBackend) {
+      try {
+        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
+      } finally {
+        if (ownedStop) stopBackend.destroy();
+      }
+    }
+  };
+
   if (page === 'persona-advanced' && identity && pendingPersonaAdvancedTarget) {
     const { slotTarget, depPubkey } = pendingPersonaAdvancedTarget;
     return renderSettingsPage('persona-advanced', 'Advanced', (
@@ -10531,6 +10601,7 @@ export function App() {
         // the signer, and a dep slot never offers the guardian's words at all.
         onShowMnemonic={depPubkey || preferences.signingMode === 'bunker' ? undefined : () => navigateTo('settings-security')}
         mnemonicOnSigner={!depPubkey && preferences.signingMode === 'bunker'}
+        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
         onHidePersona={async (pubkey) => {
           // Soft-delete (preserves derivation slot). Distinct from delete.
           // Both branches set `ExtraPersona.hidden = true` — that's the
@@ -11152,6 +11223,32 @@ export function App() {
           : <p role="alert">This invite is invalid or has expired.</p>}
       </Layout>
     );
+  }
+
+  // Scanned invite: choose the sending persona and send the request.
+  if (page === 'contact-invite-send' && pendingContactInvite && !isPairedChild) {
+    const invite = parseContactInviteLink(pendingContactInvite, Math.floor(Date.now() / 1000));
+    const finish = () => { setPendingContactInvite(undefined); setPendingInviteSender(undefined); navigateReplace('home'); };
+    const sendPersonas = contactsIdentityLists.map(l => ({ pubkey: l.ownerIdentityPubkey, label: l.label }));
+    const ownPubkeys = [...new Set([...sendPersonas.map(p => p.pubkey),
+      ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])];
+    return <Layout title="Send a contact request" showBack onBack={finish} {...guardianLayoutProps}>
+      {invite
+        ? <ContactInviteSend key={pendingContactInvite} invite={invite} personas={sendPersonas}
+          defaultPersona={pendingInviteSender && sendPersonas.some(p => p.pubkey === pendingInviteSender) ? pendingInviteSender : contactsWriteIdentity}
+          ownPubkeys={ownPubkeys}
+          onSend={async persona => {
+            setContactsIdentityChoice(persona);
+            const sentAt = Math.floor(Date.now() / 1000);
+            await ownerInviteService.request(persona, invite, sentAt);
+            await ownerInviteService.flush(sentAt);
+          }}
+          onDone={finish} onCancel={finish} />
+        : <div style={{ padding: 16 }}>
+          <p role="alert">This invite is invalid or has expired.</p>
+          <button className="btn btn-secondary" onClick={finish}>Back</button>
+        </div>}
+    </Layout>;
   }
 
   // Contacts list
@@ -12492,62 +12589,6 @@ export function App() {
     return contactKey;
   };
 
-  const handleEnableContactAvatarShare = (target: string, depPubkey?: string): Promise<string | null> =>
-    pushContactAvatar({ target, depPubkey, requireExisting: false });
-
-  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
-  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
-  // revocation can't be blocked by an unreachable relay), then best-effort
-  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
-  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
-  // recipient who cached the old key can't follow the new pointer. Recipients
-  // who already fetched the blob keep it — no clawback, by design.
-  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
-    const key = encryptionKey || await requestAuth();
-    if (!key) throw new Error('Authentication required');
-
-    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
-    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
-    let slot: { publicKey: string; privateKey: string } | undefined;
-    if (depPubkey) {
-      const all = await loadFreshDependants(key);
-      const dep = all.find(d => d.id === depPubkey);
-      if (!dep) return;
-      slot = target === 'natural-person' ? dep.naturalPerson
-        : target === 'persona' ? dep.persona
-        : dep.extraPersonas?.find(e => e.publicKey === target);
-    } else {
-      if (!identity) return;
-      const decrypted = await loadIdentityDecrypted(identity.id, key);
-      if (!decrypted) return;
-      slot = target === 'natural-person' ? decrypted.naturalPerson
-        : target === 'persona' ? decrypted.persona
-        : decrypted.extraPersonas?.find(e => e.publicKey === target);
-    }
-    if (!slot) return;
-
-    // Clear FIRST — local revocation must not be blockable by relay state
-    // (or by the absence of a local/routed signing key).
-    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
-    else await clearPersonaContactAvatar(target);
-
-    // Best-effort retract of the published pointer. Router-sourced fallback
-    // is a SHARED, CACHED route — only a locally-constructed backend
-    // (ownedStop) may be destroy()'d below.
-    const ownedStop = !!slot.privateKey;
-    const stopBackend: DecryptingSigningBackend | null = ownedStop
-      ? new LocalSigningBackend(slot.privateKey)
-      // A42: never an ungated router route on a direct child.
-      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
-    if (stopBackend) {
-      try {
-        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
-      } finally {
-        if (ownedStop) stopBackend.destroy();
-      }
-    }
-  };
-
   // Home (default) — card-swipe wallet carousel
   return (
     <>
@@ -12618,11 +12659,12 @@ export function App() {
           </div> : null;
         })}
       <Carousel
-        renderInviteCard={(_row, resolved, publicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
+        renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
-            name={resolved.displayName} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} publicCard={publicCard}
+            resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
+            locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
             onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
-          : publicCard}
+          : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           onSignIn={async (selection, request, valid) => {
             const key = encryptionKey, root = identity.naturalPerson.publicKey, mode = preferences.signingMode;
@@ -12901,14 +12943,6 @@ export function App() {
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });
         }}
-        // Contact-share avatar ENABLE. Gated on the paired-child surface for
-        // the same reasons as the in-app avatar handlers above (local writes
-        // get clobbered by the next persona-inventory sync; Blossom NIP-98
-        // auth would pop an unsolicited sign request to the guardian's bunker).
-        onEnableContactAvatarShare={isPairedChild ? undefined : handleEnableContactAvatarShare}
-        // Contact-share avatar STOP (G1 coarse revocation). Gated on the
-        // paired-child surface for the same reasons as enable above.
-        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
       >
         {pendingAuthRequest && page === 'home' && identity && (() => {
           // Display from the scan-time selection snapshot, not the live carousel

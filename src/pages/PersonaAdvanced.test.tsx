@@ -89,3 +89,33 @@ describe('PersonaAdvanced remove-dependant (T2)', () => {
     expect(screen.getByRole('button', { name: 'Remove Sam' })).not.toBeDisabled();
   });
 });
+
+describe('PersonaAdvanced stop sharing picture', () => {
+  const withKey = () => ({ ...dep(), persona: { ...dep().persona, contactAvatarKey: 'k'.repeat(64) } });
+  it('is hidden without a contact key, and without the handler', () => {
+    renderPage({ onStopContactAvatarShare: vi.fn(async () => {}) });
+    expect(screen.queryByRole('button', { name: 'Stop sharing my picture with contacts' })).toBeNull();
+    renderPage({ dependants: [withKey()] });
+    expect(screen.queryByRole('button', { name: 'Stop sharing my picture with contacts' })).toBeNull();
+  });
+  it('calls the handler for a dependant slot, with a busy state', async () => {
+    let finish!: () => void;
+    const stop = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    renderPage({ dependants: [withKey()], onStopContactAvatarShare: stop });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop sharing my picture with contacts' }));
+    expect(stop).toHaveBeenCalledWith('persona', dep().id);
+    expect(screen.getByRole('button', { name: 'Stopping…' })).toBeDisabled();
+    finish();
+    await screen.findByRole('button', { name: 'Stop sharing my picture with contacts' });
+  });
+  it('shows an inline error when stopping fails, and for an owner slot', async () => {
+    const ownerWithKey = { ...identity, persona: { ...identity.persona, contactAvatarKey: 'k'.repeat(64) } };
+    const stop = vi.fn(async () => { throw new Error('x'); });
+    render(<PersonaAdvanced slotTarget="persona" identity={ownerWithKey} dependants={[]}
+      onPublishProfile={vi.fn(async () => ({ ok: true }))} onDisablePublicProfile={vi.fn(async () => {})}
+      onStopContactAvatarShare={stop} onBack={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop sharing my picture with contacts' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not stop sharing. Try again.');
+    expect(stop).toHaveBeenCalledWith('persona', undefined);
+  });
+});

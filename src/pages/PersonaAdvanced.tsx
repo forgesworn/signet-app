@@ -111,6 +111,12 @@ export interface PersonaAdvancedProps {
    * context for the slot they're hiding.
    */
   onRetractExtraPersonaProfile?: (pubkey: string) => Promise<void>;
+  /**
+   * Stop sharing this slot's picture with contacts (G1 coarse revocation):
+   * clears the contact key locally, then best-effort retracts the published
+   * pointer. Absent on a paired-child install.
+   */
+  onStopContactAvatarShare?: (target: string, depId?: string) => Promise<void>;
   onDeletePersona?: (pubkey: string) => Promise<void>;
   onShowImportedNsec?: () => void;
 
@@ -165,6 +171,8 @@ interface ResolvedSlot {
   /** Imported nsec — only meaningful for extras. */
   imported?: boolean;
   hidden?: boolean;
+  /** Present while this slot shares its picture with contacts (the AES key contacts hold). */
+  contactAvatarKey?: string;
 }
 
 function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot | undefined {
@@ -175,6 +183,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicProfile: identity.naturalPerson.publicProfile,
       publicProfileBase: identity.naturalPerson.publicProfileBase,
       followsImport: identity.naturalPerson.followsImport,
+      contactAvatarKey: identity.naturalPerson.contactAvatarKey,
     };
   }
   if (target === 'persona') {
@@ -184,6 +193,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicProfile: identity.persona.publicProfile,
       publicProfileBase: identity.persona.publicProfileBase,
       followsImport: identity.persona.followsImport,
+      contactAvatarKey: identity.persona.contactAvatarKey,
     };
   }
   if (target === 'professional-persona') {
@@ -204,6 +214,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
     publicProfile: ep.publicProfile,
     publicProfileBase: ep.publicProfileBase,
     followsImport: ep.followsImport,
+    contactAvatarKey: ep.contactAvatarKey,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -217,6 +228,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
       displayName: dep.naturalPerson.displayName,
       publicProfile: dep.naturalPerson.publicProfile,
       publicProfileBase: dep.naturalPerson.publicProfileBase,
+      contactAvatarKey: dep.naturalPerson.contactAvatarKey,
     };
   }
   if (target === 'persona') {
@@ -225,6 +237,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
       displayName: dep.persona.displayName,
       publicProfile: dep.persona.publicProfile,
       publicProfileBase: dep.persona.publicProfileBase,
+      contactAvatarKey: dep.persona.contactAvatarKey,
     };
   }
   const ep = (dep.extraPersonas ?? []).find(p => p.publicKey === target);
@@ -234,6 +247,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
     displayName: ep.displayName,
     publicProfile: ep.publicProfile,
     publicProfileBase: ep.publicProfileBase,
+    contactAvatarKey: ep.contactAvatarKey,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -354,6 +368,11 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
       {/* Backup / seed phrase — user NP only. */}
       {slotKind === 'natural-person' && (props.onShowMnemonic || props.mnemonicOnSigner) && (
         <BackupBlock onShowMnemonic={props.mnemonicOnSigner ? undefined : props.onShowMnemonic} />
+      )}
+
+      {/* Stop sharing the picture with contacts — only while a share key exists. */}
+      {slot.contactAvatarKey && slotKind !== 'professional-persona' && props.onStopContactAvatarShare && (
+        <StopAvatarShareBlock onStop={() => props.onStopContactAvatarShare!(slotTarget, depPubkey)} />
       )}
 
       {/* Imported nsec note — extras (user + dep) only, if imported. */}
@@ -746,6 +765,30 @@ function PrimaryKeypairBlock({
       <button className="btn btn-secondary" onClick={() => { void handleSwitch(); }} disabled={busy}>
         {busy ? 'Switching…' : `Switch primary to ${switchToLabel}`}
       </button>
+    </div>
+  );
+}
+
+function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const stop = async () => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try { await onStop(); }
+    catch { setError('Could not stop sharing. Try again.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="card section">
+      <div className="section-title">Picture shared with contacts</div>
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+        Contacts who already have your picture keep it. Stopping means they no longer see updates.
+      </p>
+      <button className="btn btn-secondary" disabled={busy} onClick={() => void stop()}>
+        {busy ? 'Stopping…' : 'Stop sharing my picture with contacts'}
+      </button>
+      {error && <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.85rem', marginTop: 8 }}>{error}</p>}
     </div>
   );
 }

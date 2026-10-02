@@ -444,7 +444,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
             <ul style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 6, paddingLeft: 18, lineHeight: 1.5 }}>
               <li>pair a dependant's phone</li>
               <li>pair your desktop signet-app</li>
-              <li>pair companion apps (MatchPass, or any other app using NIP-46)</li>
+              <li>pair companion apps (any app using NIP-46)</li>
               <li>pair a third-party app that acts as a dependant</li>
             </ul>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 0 }}>

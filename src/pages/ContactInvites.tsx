@@ -1,7 +1,7 @@
 import { parsePubkeyInput } from '../lib/pubkey-input';
 import { contactExchangeKey } from '../lib/contact-exchange-key';
 import { QRCode } from '../components/QRCode';
-import { contactInviteLink, parseContactInviteLink } from '../lib/contact-invite-link';
+import { contactInviteLink, contactInviteOrigin, parseContactInviteLink } from '../lib/contact-invite-link';
 import { useEffect, useRef, useState } from 'react';
 import { contactVerificationWords } from '@forgesworn/signet-contacts';
 import type { ContactExchangeState } from '@forgesworn/signet-contacts';
@@ -66,11 +66,11 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
     <ul>{invites.map(invite => <li key={invite.id} style={{ marginBlock: 12 }}>
       <strong>{invite.name}</strong> · {invite.invite.expiresAt && invite.invite.expiresAt <= now() ? 'Expired' : invite.mode === 'single-use' && state?.arrivals.some(a => a.inviteId === invite.id) ? 'Used' : invite.enabled ? 'On' : 'Off'} · {state?.arrivals.filter(a => a.inviteId === invite.id).length ?? 0} requests
       <div><button className="btn btn-secondary" disabled={busy} onClick={() => void run(async () => {
-        const link = contactInviteLink(invite.invite, window.location.origin);
+        const link = contactInviteLink(invite.invite, contactInviteOrigin());
         await navigator.clipboard.writeText(link); setNotice('Invite link copied.');
       })}>Copy invite link</button>
       <button className="btn btn-secondary" onClick={() => setQrInvite(qrInvite === invite.id ? null : invite.id)}>Show invite QR</button>
-      {qrInvite === invite.id && <QRCode data={contactInviteLink(invite.invite, window.location.origin)} size={260} />}
+      {qrInvite === invite.id && <QRCode data={contactInviteLink(invite.invite, contactInviteOrigin())} size={260} />}
       <button className="btn btn-ghost" disabled={busy} onClick={() => void run(() => service.setEnabled(invite.id, !invite.enabled, now()))}>{invite.enabled ? 'Switch off' : 'Switch on'}</button></div>
     </li>)}</ul>
     <h3>Received an invite?</h3>
