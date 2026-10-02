@@ -16,17 +16,19 @@
  * win and hide the real record. Nothing is ever fetched from a URL inside the
  * profile (no images).
  *
- * Each relay uses its own short-lived `RelayClient`, not the app's persistent
- * relay pool: the indexers are queried once and must not linger in that pool.
+ * Each relay gets its own short-lived socket (`fetchFromRelay`), not the app's
+ * persistent relay pool: the indexers are queried once and must not linger in
+ * that pool. It is not `signet-protocol`'s `RelayClient`, which drops any event
+ * with more than 100 tags (a real follow list has far more).
  */
 
 import type { NostrEvent, NostrFilter } from 'signet-protocol';
-import { RelayClient } from 'signet-protocol';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { PersonaPublicProfile, PublicProfileBase, PublicProfileConfig } from '../types';
 import { isValidRelayUrl } from './relay-url';
 import { verifiedAuthoredEvents } from './event-verify';
+import { fetchFromRelay } from './lookup-relay';
 import { parseKindZeroContent, toPublicProfileBase } from './public-profile-publish';
 
 /** Public relays that commonly carry profiles for keys that never touched ours. */
@@ -50,28 +52,9 @@ export interface ExistingProfile {
   relay: string;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timeout')), ms);
-    p.then(
-      v => { clearTimeout(timer); resolve(v); },
-      e => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
-
 /** Query one relay; `null` means it could not be reached (or timed out). */
 async function queryRelay(url: string, filter: NostrFilter | NostrFilter[], timeoutMs: number): Promise<NostrEvent[] | null> {
-  let relay: RelayClient | null = null;
-  try {
-    relay = new RelayClient(url);
-    await withTimeout(relay.connect(), timeoutMs);
-    return await withTimeout(relay.fetch(Array.isArray(filter) ? filter : [filter], timeoutMs), timeoutMs);
-  } catch {
-    return null;
-  } finally {
-    try { relay?.disconnect(); } catch { /* already gone */ }
-  }
+  return fetchFromRelay(url, Array.isArray(filter) ? filter : [filter], timeoutMs);
 }
 
 /**

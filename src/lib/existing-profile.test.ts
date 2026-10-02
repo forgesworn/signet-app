@@ -10,23 +10,14 @@ const relayMock = vi.hoisted(() => ({
   hangs: new Set<string>(),
   queried: [] as string[],
 }));
-vi.mock('signet-protocol', async () => {
-  const actual = await vi.importActual<typeof import('signet-protocol')>('signet-protocol');
-  return {
-    ...actual,
-    RelayClient: class MockRelayClient {
-      url: string;
-      constructor(url: string) { this.url = url; }
-      async connect(): Promise<void> {
-        relayMock.queried.push(this.url);
-        if (relayMock.connectThrows.has(this.url)) throw new Error('connect failed');
-        if (relayMock.hangs.has(this.url)) await new Promise(() => {});
-      }
-      async fetch(): Promise<unknown[]> { return relayMock.fetchReturns[this.url] ?? []; }
-      disconnect(): void {}
-    },
-  };
-});
+vi.mock('./lookup-relay', () => ({
+  fetchFromRelay: async (url: string, timeoutMs: number): Promise<unknown[] | null> => {
+    relayMock.queried.push(url);
+    if (relayMock.connectThrows.has(url)) return null;
+    if (relayMock.hangs.has(url)) return new Promise(resolve => setTimeout(() => resolve(null), timeoutMs));
+    return relayMock.fetchReturns[url] ?? [];
+  },
+}));
 
 import { fetchExistingProfile, buildMatchSeed, PROFILE_LOOKUP_RELAYS } from './existing-profile';
 
