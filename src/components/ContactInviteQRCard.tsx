@@ -4,13 +4,14 @@ import type { StoredContactInvite } from '../lib/contact-invite-store';
 import { contactInviteLink, contactInviteOrigin } from '../lib/contact-invite-link';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import type { QRCardSlots } from './QRCard';
+import { QR_SHARE_NAME_PREFIX, QR_TAB_PREFIX } from '../lib/qr-card-prefs';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import { MiniIdBadge } from './MiniIdBadge';
 import { QRCode } from './QRCode';
 
 type Tab = 'mysignet' | 'npub';
-const tabKey = (pubkey: string) => `signet:qr-tab:${pubkey}`;
-const nameKey = (pubkey: string) => `signet:qr-share-name:${pubkey}`;
+const tabKey = (pubkey: string) => `${QR_TAB_PREFIX}${pubkey}`;
+const nameKey = (pubkey: string) => `${QR_SHARE_NAME_PREFIX}${pubkey}`;
 const NAME_MAX = 100;
 
 function readShareName(pubkey: string): boolean {
@@ -25,6 +26,30 @@ function readTab(pubkey: string): Tab {
 }
 function writeTab(pubkey: string, tab: Tab): void {
   try { localStorage.setItem(tabKey(pubkey), tab); } catch { /* storage unavailable: the choice just isn't remembered */ }
+}
+
+const liveStanding = (i: StoredContactInvite, identityPubkey: string, caption: string | undefined, now: number) =>
+  i.identityPubkey === identityPubkey && i.enabled && i.mode === 'standing'
+  && (i.invite.expiresAt === undefined || i.invite.expiresAt > now) && (caption ? i.invite.caption === caption : !i.invite.caption);
+
+// Two card mounts (the carousel pre-mounts neighbours) share one creation per
+// service + persona + caption, and re-read the vault first so a matching invite
+// made a moment earlier is reused rather than duplicated.
+const inFlight = new WeakMap<ContactInviteService, Map<string, Promise<StoredContactInvite>>>();
+export function ensureStandingInvite(service: ContactInviteService, identityPubkey: string, relays: string[], caption: string | undefined): Promise<StoredContactInvite> {
+  let byKey = inFlight.get(service);
+  if (!byKey) { byKey = new Map(); inFlight.set(service, byKey); }
+  const key = `${identityPubkey}|${caption ?? ''}`;
+  const running = byKey.get(key);
+  if (running) return running;
+  const map = byKey;
+  const promise = (async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const existing = (await service.read()).invites.find(i => liveStanding(i, identityPubkey, caption, now));
+    return existing ?? service.create(identityPubkey, 'My contact card', relays, 'standing', now, undefined, caption);
+  })().finally(() => { map.delete(key); });
+  map.set(key, promise);
+  return promise;
 }
 
 /**
@@ -71,15 +96,13 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
     return () => { cancelled = true; };
   }, [service, identityPubkey, version, locked, retry]);
   const ready = !locked && loaded?.service === service && loaded.key === identityPubkey;
-  const invites = ready ? loaded.rows.filter(i => i.enabled && i.mode === 'standing'
-    && (i.invite.expiresAt === undefined || i.invite.expiresAt > now)
-    && (withName ? i.invite.caption === caption : !i.invite.caption)) : [];
+  const invites = ready ? loaded.rows.filter(i => liveStanding(i, identityPubkey, withName ? caption : undefined, now)) : [];
   const invite = invites.find(i => i.id === selected) ?? invites[0];
   const requests = ready ? loaded.requests : 0;
 
   const create = () => {
     setBusy(true); setCreateFailed(false);
-    void service.create(identityPubkey, 'My contact card', relays, 'standing', Math.floor(Date.now() / 1000), undefined, withName ? caption : undefined)
+    void ensureStandingInvite(service, identityPubkey, relays, withName ? caption : undefined)
       .then(row => {
         setLoaded(old => ({ service, key: identityPubkey, rows: [...(old?.service === service && old.key === identityPubkey ? old.rows : []), row], requests: old?.requests ?? 0 }));
         setSelected(row.id);
@@ -109,7 +132,7 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
       <button type="button" className="btn btn-secondary" onClick={onRequestUnlock}>Unlock</button>
     </div>}
     {requests > 0 && <button type="button" className="qr-requests" onClick={onManage}>● {requests} {requests === 1 ? 'request' : 'requests'} waiting ›</button>}
-    <button type="button" className="btn btn-ghost" onClick={onManage}>Manage invites</button>
+    <button type="button" className="btn btn-ghost" onClick={locked ? onRequestUnlock : onManage}>Manage invites</button>
   </>;
 
   const publicCard = renderPublicCard({ tabs, footer });

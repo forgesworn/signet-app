@@ -96,3 +96,11 @@ it('keeps an existing contact’s own name rather than the caption', async () =>
   await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('Someone else'), isCurrent: () => true });
   expect(await nameOf(contactId)).toBe('Friend');
 });
+it('falls back to the short key when the caption exceeds the reducer cap in UTF-16 units, and for app handovers', async () => {
+  const emoji = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('\u{1F600}'.repeat(60)), isCurrent: () => true });
+  expect(await nameOf(emoji)).toBe(peer.slice(0, 12) + '…');
+  await purgeAllUserData();
+  const app = { ...link('Bob'), origin: { ...link('Bob').origin, method: 'app' as const } };
+  const viaApp = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: app, isCurrent: () => true });
+  expect(await nameOf(viaApp)).toBe(peer.slice(0, 12) + '…');
+});

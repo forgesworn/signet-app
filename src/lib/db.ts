@@ -1,4 +1,5 @@
 import { ensureContactsDeviceId } from './contacts-v2-ids';
+import { clearQrCardPrefs } from './qr-card-prefs';
 // IndexedDB storage for MySignet family app
 
 import { openDB, unwrap, type IDBPDatabase } from 'idb';
@@ -2383,6 +2384,7 @@ export async function deleteProPersonaRecord(): Promise<void> {
  * Called during identity deletion to ensure no orphaned PII remains.
  */
 export async function purgeAllUserData(): Promise<void> {
+  clearQrCardPrefs();
   const db = await getDB();
   await db.clear('identity');
   await db.clear('contacts');

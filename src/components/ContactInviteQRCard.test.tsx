@@ -184,4 +184,39 @@ describe('carousel contact invite card', () => {
       expect(screen.getByText('Your npub only')).toBeTruthy();
     });
   });
+
+  it('while locked, Manage invites asks to unlock instead of opening the invites page', () => {
+    const onManage = vi.fn(), onRequestUnlock = vi.fn();
+    render(<ContactInviteQRCard {...base} service={asService({ read: vi.fn() })} identityPubkey={A} resolved={resolved(A)} locked onManage={onManage} onRequestUnlock={onRequestUnlock} />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Manage invites' })[0]);
+    expect(onManage).not.toHaveBeenCalled();
+    expect(onRequestUnlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('two mounts share one creation, and a matching invite made meanwhile is reused', async () => {
+    const reads: ReturnType<typeof vault>[] = [vault([]), vault([]), vault([invite(A, 'Made elsewhere', 'Alice')])];
+    let n = 0;
+    const create = vi.fn(async () => { await Promise.resolve(); return invite(A, 'My contact card', 'Alice'); });
+    const service = asService({ read: vi.fn(async () => reads[Math.min(n++, 2)]), create });
+    render(<>
+      <ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />
+      <ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />
+    </>);
+    await waitFor(() => expect(screen.getAllByTestId('qr').length).toBeGreaterThan(0));
+    await waitFor(() => expect(create.mock.calls.length).toBeLessThanOrEqual(1));
+    expect(create.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('does not create when the vault already holds a matching invite at creation time', async () => {
+    const { ensureStandingInvite } = await import('./ContactInviteQRCard');
+    const existing = invite(A, 'Made elsewhere', 'Alice');
+    const create = vi.fn();
+    const service = asService({ read: vi.fn(async () => vault([existing])), create });
+    expect(await ensureStandingInvite(service, A, [], 'Alice')).toBe(existing);
+    expect(create).not.toHaveBeenCalled();
+    const slow = asService({ read: vi.fn(async () => vault([])), create: vi.fn(async () => existing) });
+    const [x, y] = await Promise.all([ensureStandingInvite(slow, A, [], 'Alice'), ensureStandingInvite(slow, A, [], 'Alice')]);
+    expect(x).toBe(y);
+    expect((slow as unknown as { create: ReturnType<typeof vi.fn> }).create).toHaveBeenCalledTimes(1);
+  });
 });
