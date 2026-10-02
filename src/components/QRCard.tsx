@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, type ReactNode } from 'react';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { MiniIdBadge } from './MiniIdBadge';
 import { QRCode } from './QRCode';
@@ -9,7 +9,10 @@ import { Icon } from './Icon';
 const KEY_NAME = 'name';
 const KEY_SHARE = 'share-avatar';
 
-interface Props {
+/** Optional slots a host can fill: a tab switch under the header, a footer row. */
+export interface QRCardSlots { tabs?: ReactNode; footer?: ReactNode }
+
+interface Props extends QRCardSlots {
   resolved: ResolvedIdentity;
   badge: { tier: number; score: number; vouchCount: number } | null;
   /**
@@ -38,7 +41,7 @@ function hasPrivateAvatar(r: ResolvedIdentity): boolean {
   return !!(r.avatarHash && r.avatarBlossomUrl && r.avatarKey);
 }
 
-export function QRCard({ resolved, badge, onEnableContactAvatarShare, onStopContactAvatarShare }: Props) {
+export function QRCard({ resolved, badge, onEnableContactAvatarShare, onStopContactAvatarShare, tabs, footer }: Props) {
   const tier = badge?.tier ?? 1;
   const [customFields, setCustomFields] = useState<CustomField[]>(() => buildCustomFields(resolved));
   // Stable contact-share key once enabled (seeded from the slot if already set).
@@ -148,18 +151,24 @@ export function QRCard({ resolved, badge, onEnableContactAvatarShare, onStopCont
     }
   }, [onStopContactAvatarShare, resolved.slotTarget, resolved.dependantId]);
 
+  // Anything beyond the bare npub is the MySignet-only JSON form.
+  const mySignetOnly = qrData !== npub;
+
   const showStale = !!(resolved.contactAvatarKey && resolved.contactAvatarStale);
 
   return (
-    <div className="qr-view">
+    <div className={`qr-view${tabs ? ' qr-tabbed' : ''}`}>
       <div>
         <MiniIdBadge resolved={resolved} />
-        <div className="qr-sharing">Tap to choose what your QR shares</div>
+        {!tabs && <div className="qr-sharing">Tap to choose what your QR shares</div>}
       </div>
+      {tabs}
 
       <div className="qr-box">
         <QRCode data={qrData} size={230} />
       </div>
+
+      <div className="qr-caption">{mySignetOnly ? 'Only MySignet can read this version.' : 'Works in any Nostr app.'}</div>
 
       <div className="qr-tier-line">
         &#128737; {tierDisplay} &middot; {isVerified ? 'Verified' : 'Unverified'}
@@ -176,7 +185,7 @@ export function QRCard({ resolved, badge, onEnableContactAvatarShare, onStopCont
           className={`qr-pill${nameField?.checked ? ' active' : ''}`}
           onClick={toggleName}
         >
-          {nameField?.checked ? '✓ ' : ''}Display Name
+          {nameField?.checked ? '✓ ' : ''}Add my name
         </button>
 
         {privateAvatar && (
@@ -221,16 +230,18 @@ export function QRCard({ resolved, badge, onEnableContactAvatarShare, onStopCont
       {!privateAvatar && publicAvatar && (
         <div className="qr-share-note">Your profile picture is public — contacts always see it.</div>
       )}
+      {footer && <div className="qr-footer">{footer}</div>}
     </div>
   );
 }
 
 function buildCustomFields(resolved: ResolvedIdentity): CustomField[] {
   const fields: CustomField[] = [
-    // Display Name defaults ON — every user's QR now carries npub + name. The
-    // qrData memo still omits the name when no REAL name is set, so a
-    // nameless QR never advertises the 'Persona' fallback.
-    { key: KEY_NAME, label: 'Display Name', description: resolved.displayName, checked: true },
+    // "Add my name" defaults OFF: the bare npub is what every Nostr app reads,
+    // and adding a name switches the QR to the MySignet-only form. The qrData
+    // memo still omits the name when no REAL name is set, so a nameless QR
+    // never advertises the 'Persona' fallback.
+    { key: KEY_NAME, label: 'Display Name', description: resolved.displayName, checked: false },
   ];
   // "Share my avatar" only when a PRIVATE (encrypted) avatar exists. Public
   // kind-0 pictures need no key — contacts resolve them automatically.

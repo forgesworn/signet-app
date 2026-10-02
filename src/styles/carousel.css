@@ -967,3 +967,82 @@
   color: var(--accent-text);
   line-height: 1.4;
 }
+
+/* ─── QR card tabs (MySignet / Nostr npub) — one frame for both tabs ─── */
+.qr-view.qr-tabbed {
+  justify-content: flex-start;
+  gap: 12px;
+}
+.qr-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.qr-tab {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 2px solid transparent;
+  padding: 6px 16px;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.qr-tab.active {
+  color: var(--accent);
+  background: var(--accent-light);
+  border-color: var(--accent);
+}
+.qr-caption {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-align: center;
+  min-height: 2.4em;
+}
+.qr-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 64px;
+}
+.qr-invite-select {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.qr-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+.qr-unlock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.qr-requests {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
