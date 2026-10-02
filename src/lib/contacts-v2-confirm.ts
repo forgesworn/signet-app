@@ -179,7 +179,7 @@ export function planTierMove(tier: 'kith' | 'kin'): ConfirmStep[] {
   return [{ op: 'set-tier', tier }];
 }
 
-export type MismatchChoice = 'use-new' | 'keep-both' | 'old-not-theirs' | 'cancel';
+export type MismatchChoice = 'use-new' | 'keep-both' | 'old-not-theirs' | 'not-sure' | 'cancel';
 
 /**
  * The mismatch outcomes. `scannedHex` is null on the read-out path (nothing
@@ -191,7 +191,7 @@ export function planMismatch(args: {
   scannedHex: string | null;
 }): ConfirmStep[] {
   const { choice, old, scannedHex } = args;
-  if (choice === 'cancel') return [];
+  if (choice === 'cancel' || choice === 'not-sure') return [];
   const addNew: ConfirmStep[] = scannedHex
     ? [
       { op: 'add-identity', pubkey: scannedHex.toLowerCase(), verification: 'proven' },
@@ -205,6 +205,18 @@ export function planMismatch(args: {
   // not consulted). Once removed, the stray key no longer aliases this
   // contact, so the user can file it as a separate contact and block that.
   return [...addNew, { op: 'remove-item', itemId: old.itemId }];
+}
+
+/**
+ * Append one line to a contact's existing note (newline-separated). The `note`
+ * operation replaces the whole note, so this builds the full new text. Returns
+ * null when it would exceed `cap`: the caller then writes nothing rather than
+ * truncating the user's own note or the new line.
+ */
+export function appendNoteLine(existing: string | undefined, line: string, cap: number): string | null {
+  const base = (existing ?? '').trimEnd();
+  const next = base ? `${base}\n${line}` : line;
+  return next.length <= cap ? next : null;
 }
 
 /** The slice of `useContactsV2` the executor needs, so it can be driven without React. */

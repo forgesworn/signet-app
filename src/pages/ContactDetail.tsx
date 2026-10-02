@@ -285,6 +285,7 @@ export function ContactDetail(props: Props) {
               ownPubkeys={props.ownPubkeys ?? []}
               canSetTier={rights.canSetTier}
               onApply={props.onApplyConfirmation}
+              onSetNote={rights.canEditNote ? props.onSetNote : undefined}
               onStartExchange={props.onStartExchange}
               onClose={() => setConfirming(null)}
             />

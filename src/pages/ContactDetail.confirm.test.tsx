@@ -227,6 +227,86 @@ describe('Confirm it\'s them on ContactDetail', () => {
       for (const fn of Object.values(ops)) expect(fn).not.toHaveBeenCalled();
     });
 
+    describe('not sure', () => {
+      const SURE = { name: "I'm not sure — leave it as it is" };
+      const noWrites = (ops: Record<string, ReturnType<typeof vi.fn>>) => {
+        for (const fn of Object.values(ops)) expect(fn).not.toHaveBeenCalled();
+      };
+
+      it('shows the option and that nothing is sent to them, on a scanned mismatch', async () => {
+        await mismatch();
+        expect(screen.getByRole('button', SURE)).toBeTruthy();
+        expect(screen.getByText("Nothing is sent to them — they can't tell whether it matched or what you choose.")).toBeTruthy();
+      });
+
+      it('shows the same on the read-out mismatch', async () => {
+        setup(contact());
+        open();
+        fireEvent.click(screen.getByRole('button', { name: 'Read it out on a call' }));
+        fireEvent.click(screen.getByRole('button', { name: "It didn't match" }));
+        await screen.findByText("This isn't the key you have for Dave.");
+        expect(screen.getByRole('button', SURE)).toBeTruthy();
+        expect(screen.getByText(/Nothing is sent to them/)).toBeTruthy();
+      });
+
+      it('ticked by default: appends one dated line to the existing note and writes nothing else', async () => {
+        const onSetNote = vi.fn(async () => {});
+        const { ops } = setup(contact({ notes: 'Met at the fair.' }), { onSetNote });
+        open(); scan(npubOf(NEW));
+        await screen.findByText("This isn't the key you have for Dave.");
+        fireEvent.click(screen.getByRole('button', SURE));
+        const box = screen.getByRole('checkbox', { name: 'Add a private note to Dave' }) as HTMLInputElement;
+        expect(box.checked).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+        await screen.findByText(/Left as it is/);
+        expect(onSetNote).toHaveBeenCalledTimes(1);
+        const written = (onSetNote.mock.calls[0] as unknown as [string])[0];
+        const lines = written.split('\n');
+        expect(lines[0]).toBe('Met at the fair.');
+        expect(lines).toHaveLength(2);
+        expect(lines[1]).toMatch(/^Showed me a different key on \d{1,2} \w+ \d{4} \(npub1.{4,}…\w+\) — not confirmed\.$/);
+        noWrites(ops);
+      });
+
+      it('read-out path appends the line without a key', async () => {
+        const onSetNote = vi.fn(async () => {});
+        setup(contact(), { onSetNote });
+        open();
+        fireEvent.click(screen.getByRole('button', { name: 'Read it out on a call' }));
+        fireEvent.click(screen.getByRole('button', { name: "It didn't match" }));
+        await screen.findByText("This isn't the key you have for Dave.");
+        fireEvent.click(screen.getByRole('button', SURE));
+        fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+        await screen.findByText(/Left as it is/);
+        expect((onSetNote.mock.calls[0] as unknown as [string])[0])
+          .toMatch(/^Read out a different key on \d{1,2} \w+ \d{4} — not confirmed\.$/);
+      });
+
+      it('unticked writes nothing at all', async () => {
+        const onSetNote = vi.fn(async () => {});
+        const { ops } = setup(contact({ notes: 'Hi' }), { onSetNote });
+        open(); scan(npubOf(NEW));
+        await screen.findByText("This isn't the key you have for Dave.");
+        fireEvent.click(screen.getByRole('button', SURE));
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Add a private note to Dave' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+        await screen.findByText(/Left as it is/);
+        expect(onSetNote).not.toHaveBeenCalled();
+        noWrites(ops);
+      });
+
+      it('refuses to append past the note cap and keeps the note untouched', async () => {
+        const onSetNote = vi.fn(async () => {});
+        setup(contact({ notes: 'x'.repeat(1990) }), { onSetNote });
+        open(); scan(npubOf(NEW));
+        await screen.findByText("This isn't the key you have for Dave.");
+        fireEvent.click(screen.getByRole('button', SURE));
+        fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+        await screen.findByText(/too long to add to/);
+        expect(onSetNote).not.toHaveBeenCalled();
+      });
+    });
+
     it('a write the queue refuses as a merge names the other contact and offers only Back', async () => {
       const { ops } = await mismatch();
       ops.addIdentity.mockRejectedValueOnce(new ConfirmMergeRefusedError({ contactId: 'c9', displayName: 'Bob', state: 'deleted' }));
@@ -315,6 +395,18 @@ describe('Confirm it\'s them on ContactDetail', () => {
       expect(ops.removeItem).toHaveBeenCalledWith('c1', ITEM);
       expect(ops.addIdentity).not.toHaveBeenCalled();
     });
+  });
+
+  it('states the recognise rule before the options, and again on the scan and read-out screens', () => {
+    setup(contact());
+    open();
+    expect(screen.getByText(/Only confirm someone you recognise — in person, or on a video call/)).toBeTruthy();
+    expect(screen.getByText(/If you've never met them, a scan only shows the key this person holds/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Scan their QR code' }));
+    expect(screen.getByText('Only confirm someone you recognise.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read it out on a call' }));
+    expect(screen.getByText('Only do this with someone you recognise.')).toBeTruthy();
   });
 
   it('They have My Signet hands over to the invite exchange unchanged', () => {

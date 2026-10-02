@@ -671,6 +671,11 @@ export function confirmedLine(method: keyof typeof CONFIRM_METHOD_LABELS, checke
 export function confirmIntroCopy(contactName: string): string {
   return `How would you like to confirm this is ${safeName(contactName)}'s key? Confirming only checks the key. Your classification of ${safeName(contactName)} stays as it is unless you choose to change it.`;
 }
+export const CONFIRM_RECOGNISE_RULE =
+  "Only confirm someone you recognise — in person, or on a video call where you can see it's them. "
+  + "If you've never met them, a scan only shows the key this person holds, not that they're who they say.";
+export const CONFIRM_SCAN_RECOGNISE_HINT = 'Only confirm someone you recognise.';
+export const CONFIRM_READOUT_RECOGNISE_HINT = 'Only do this with someone you recognise.';
 export const CONFIRM_SCAN_LABEL = 'Scan their QR code';
 export const CONFIRM_SCAN_HINT =
   "In person, or on a video call if you can see it is them. Any Nostr app's profile QR works, and so does a My Signet card.";
@@ -715,6 +720,22 @@ export const CONFIRM_OLD_NOT_THEIRS_LABEL = "The old key isn't theirs";
 export const CONFIRM_OLD_NOT_THEIRS_HINT = 'Remove the old key from this contact.';
 export const CONFIRM_OLD_NOT_THEIRS_HINT_SCANNED = 'Add the key you scanned as confirmed and remove the old key.';
 export const CONFIRM_CANCEL_LABEL = 'Cancel';
+export const CONFIRM_NOT_SURE_LABEL = "I'm not sure — leave it as it is";
+export const CONFIRM_NOT_SURE_HINT = 'Change nothing. You can try again whenever you like.';
+export const CONFIRM_NOT_SENT_COPY = "Nothing is sent to them — they can't tell whether it matched or what you choose.";
+export const CONFIRM_NOT_SURE_DONE_COPY = 'Left as it is. Nothing about this contact or their keys has changed.';
+export function confirmNotSureNoteLabel(contactName: string): string {
+  return `Add a private note to ${safeName(contactName)}`;
+}
+export const CONFIRM_NOTE_TOO_LONG_COPY =
+  "This contact's note is too long to add to. Untick the box, or shorten the note first.";
+/** One dated line for the contact's note: what was shown, and that it was not confirmed. */
+export function confirmNotSureNoteLine(shortKey: string | null, at: number): string {
+  const date = new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return shortKey
+    ? `Showed me a different key on ${date} (${shortKey}) — not confirmed.`
+    : `Read out a different key on ${date} — not confirmed.`;
+}
 export const CONFIRM_READOUT_MISMATCH_EXPLAINER =
   "The key you have may not be theirs, or you may have read the wrong account. Nothing is changed until you choose.";
 

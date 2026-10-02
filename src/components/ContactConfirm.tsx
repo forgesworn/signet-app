@@ -4,8 +4,10 @@ import { contactDisplayName } from '../lib/contacts-v2-name';
 import { QRScanner } from './QRScanner';
 import { useCamera } from '../hooks/useCamera';
 import { shortNpub } from '../lib/signet';
+import { shortNpub as shortNpubForNote } from '../lib/nostr-follows';
+import { NOTE_MAX } from '../lib/contacts-v2-detail';
 import {
-  ConfirmMergeRefusedError, decideScan, npubReadoutGroups, planMatch, planMismatch, planTierMove, scannedKeyToHex,
+  ConfirmMergeRefusedError, appendNoteLine, decideScan, npubReadoutGroups, planMatch, planMismatch, planTierMove, scannedKeyToHex,
   shouldOfferTierMove, type ConfirmStep, type MismatchChoice, type ScanDecision,
 } from '../lib/contacts-v2-confirm';
 import {
@@ -18,7 +20,9 @@ import {
   CONFIRM_SCAN_TITLE, CONFIRM_SCAN_UNREADABLE_COPY, CONFIRM_USE_NEW_HINT, CONFIRM_USE_NEW_LABEL,
   CONTACT_ACTION_FAILED_COPY, confirmBelongsToOtherCopy, confirmIntroCopy, confirmMismatchTitleCopy,
   confirmOtherKeyOfThisCopy, confirmOwnKeyCopy, confirmReadoutPromptCopy, confirmTierPromptCopy,
-  confirmedDoneCopy, tierChipLabel,
+  confirmedDoneCopy, tierChipLabel, confirmNotSureNoteLabel, confirmNotSureNoteLine,
+  CONFIRM_NOT_SENT_COPY, CONFIRM_NOT_SURE_DONE_COPY, CONFIRM_NOT_SURE_HINT, CONFIRM_NOT_SURE_LABEL,
+  CONFIRM_NOTE_TOO_LONG_COPY, CONFIRM_READOUT_RECOGNISE_HINT, CONFIRM_RECOGNISE_RULE, CONFIRM_SCAN_RECOGNISE_HINT,
 } from '../lib/contacts-v2-copy';
 
 interface Props {
@@ -33,6 +37,8 @@ interface Props {
   ownPubkeys: string[];
   canSetTier: boolean;
   onApply: (steps: ConfirmStep[]) => Promise<void>;
+  /** Replace the contact's note (the `note` operation). Absent where the actor cannot edit notes: "not sure" then offers no note. */
+  onSetNote?: (note: string) => Promise<void>;
   /** Start the existing My Signet invite exchange. Absent where invites are not available. */
   onStartExchange?: () => void;
   onClose: () => void;
@@ -44,6 +50,7 @@ type Stage =
   | { name: 'readout' }
   | { name: 'tier' }
   | { name: 'mismatch'; scannedHex: string | null }
+  | { name: 'not-sure'; scannedHex: string | null }
   | { name: 'notice'; decision: Exclude<ScanDecision, { kind: 'match' | 'mismatch' }> }
   | { name: 'done'; message: string };
 
@@ -51,12 +58,13 @@ type Stage =
  * "Confirm it's them": check that a key really belongs to the person named.
  * The tier is a separate question and is only ever offered, never forced.
  */
-export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownPubkeys, canSetTier, onApply, onStartExchange, onClose }: Props) {
+export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownPubkeys, canSetTier, onApply, onSetNote, onStartExchange, onClose }: Props) {
   const shownName = contactDisplayName(contact);
   const [stage, setStage] = useState<Stage>({ name: 'choose' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [scanError, setScanError] = useState('');
+  const [addNote, setAddNote] = useState(true);
   const handling = useRef(false);
   const { hasPermission, error: cameraError, requestPermission } = useCamera();
 
@@ -113,6 +121,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
   if (stage.name === 'choose') {
     return shell(
       <>
+        <p className="field-hint">{CONFIRM_RECOGNISE_RULE}</p>
         <p className="field-hint">{confirmIntroCopy(shownName)}</p>
         <button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => {
           setScanError(''); setStage({ name: 'scan' });
@@ -135,6 +144,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
       <>
         <h3>{CONFIRM_SCAN_TITLE}</h3>
         <p className="field-hint">{CONFIRM_SCAN_PROMPT}</p>
+        <p className="field-hint">{CONFIRM_SCAN_RECOGNISE_HINT}</p>
         {cameraError && <p role="alert" className="field-hint" style={{ color: 'var(--danger)' }}>{cameraError}</p>}
         {scanError && <p role="alert" className="field-hint" style={{ color: 'var(--danger)' }}>{scanError}</p>}
         {alert}
@@ -153,6 +163,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
       <>
         <h3>{CONFIRM_READOUT_TITLE}</h3>
         <p className="field-hint">{confirmReadoutPromptCopy(shownName)}</p>
+        <p className="field-hint">{CONFIRM_READOUT_RECOGNISE_HINT}</p>
         <p className="row-sub">{shortNpub(identity.pubkey)}</p>
         <p className="field-hint">{CONFIRM_READOUT_GROUPS_LABEL}</p>
         <p className="mono" aria-label={CONFIRM_READOUT_GROUPS_LABEL}
@@ -191,12 +202,14 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
     const { scannedHex } = stage;
     const choose = (choice: MismatchChoice) => {
       if (choice === 'cancel') { setError(''); setStage({ name: 'choose' }); return; }
+      if (choice === 'not-sure') { setError(''); setAddNote(true); setStage({ name: 'not-sure', scannedHex }); return; }
       void apply(planMismatch({ choice, old: identity, scannedHex }), { name: 'done', message: CONFIRM_SAVED_COPY });
     };
     return shell(
       <>
         <h3>{confirmMismatchTitleCopy(shownName)}</h3>
         <p className="field-hint">{scannedHex ? CONFIRM_MISMATCH_EXPLAINER : CONFIRM_READOUT_MISMATCH_EXPLAINER}</p>
+        <p className="field-hint">{CONFIRM_NOT_SENT_COPY}</p>
         {alert}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {scannedHex && <>
@@ -207,8 +220,45 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
           </>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => choose('old-not-theirs')}>{CONFIRM_OLD_NOT_THEIRS_LABEL}</button>
           <p className="field-hint">{scannedHex ? CONFIRM_OLD_NOT_THEIRS_HINT_SCANNED : CONFIRM_OLD_NOT_THEIRS_HINT}</p>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => choose('not-sure')}>{CONFIRM_NOT_SURE_LABEL}</button>
+          <p className="field-hint">{CONFIRM_NOT_SURE_HINT}</p>
           <button className="btn btn-ghost" disabled={busy} onClick={() => choose('cancel')}>{CONFIRM_CANCEL_LABEL}</button>
         </div>
+      </>,
+    );
+  }
+
+  if (stage.name === 'not-sure') {
+    const { scannedHex } = stage;
+    const finish = async () => {
+      if (addNote && onSetNote) {
+        const line = confirmNotSureNoteLine(scannedHex ? shortNpubForNote(scannedHex) : null, Date.now());
+        const next = appendNoteLine(contact.notes, line, NOTE_MAX);
+        if (next === null) { setError(CONFIRM_NOTE_TOO_LONG_COPY); return; }
+        setBusy(true);
+        setError('');
+        try {
+          await onSetNote(next);
+        } catch {
+          setError(CONTACT_ACTION_FAILED_COPY);
+          return;
+        } finally {
+          setBusy(false);
+        }
+      }
+      setStage({ name: 'done', message: CONFIRM_NOT_SURE_DONE_COPY });
+    };
+    return shell(
+      <>
+        <p role="status">{CONFIRM_NOT_SURE_DONE_COPY}</p>
+        {onSetNote && (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="checkbox" checked={addNote} disabled={busy} onChange={e => { setAddNote(e.target.checked); setError(''); }} />
+            <span>{confirmNotSureNoteLabel(shownName)}</span>
+          </label>
+        )}
+        {alert}
+        <button className="btn btn-primary" disabled={busy} onClick={() => void finish()}>{CONFIRM_DONE_LABEL}</button>
       </>,
     );
   }
