@@ -49,6 +49,12 @@ function observeRefusals(job: PrivateVaultJob, note: (err: unknown) => void): Pr
 export const PRIVATE_VAULT_PAUSE_CAP_MS = 5 * 60_000;
 
 /**
+ * Once every dataset verifies, a full cycle at this interval picks up another
+ * device's edits. Unchanged heads hit the key-leg cache: no device request.
+ */
+export const PRIVATE_VAULT_IDLE_POLL_MS = 300_000;
+
+/**
  * Which datasets a cycle visits. `full`: all (unlock, reconnect, relay change,
  * approveToken, `online`). `change`: those not verified this session or whose
  * local snapshot no longer hashes to the revision they verified. `retry`: those
@@ -194,9 +200,10 @@ export function usePrivateVaults(options: {
         } else {
           emit({ ...latest, phase: 'idle' });
           // Held part-way: no timer — the un-pause kicks the next cycle. All
-          // verified: nothing to retry, so no timer — edits and `online` kick.
+          // verified: a slow full poll for other devices' edits.
           if (!held && dirty) schedule(1000);
           else if (!held && failures) schedule(Math.min(300000, 30000 * 2 ** Math.min(failures, 4)), 'retry');
+          else if (!held) schedule(PRIVATE_VAULT_IDLE_POLL_MS, 'full');
         }
       }
     };

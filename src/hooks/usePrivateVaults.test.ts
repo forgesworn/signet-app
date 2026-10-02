@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 const sync = vi.hoisted(() => vi.fn());
 vi.mock('../lib/private-vault-sync', () => ({ syncPrivateVaultDataset: sync }));
-import { usePrivateVaults, legacyVaultWriteAllowed, PRIVATE_VAULT_PAUSE_CAP_MS } from './usePrivateVaults';
+import { usePrivateVaults, legacyVaultWriteAllowed, PRIVATE_VAULT_PAUSE_CAP_MS, PRIVATE_VAULT_IDLE_POLL_MS } from './usePrivateVaults';
 import { VaultApprovalError } from '../lib/vault-approval';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import { vaultContentHash } from 'signet-protocol/experimental';
@@ -23,11 +23,12 @@ it('retries without another edit and never re-enables legacy writes after verifi
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(false);
-  // All verified: no timer polls again on its own…
-  await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000); });
+  // All verified: the next run is the idle poll, not a 30 s backoff…
+  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_IDLE_POLL_MS - 5000); });
   expect(sync).toHaveBeenCalledTimes(2);
-  // …but a full cycle (here `online`) still runs and can fail.
-  await act(async () => { window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(1500); });
+  // …and it is a full cycle, so it re-reads a verified dataset and can fail.
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(sync).toHaveBeenCalledTimes(3);
   expect(result.current.datasets['signet:vault:profiles'].state).toBe('unavailable');
   expect(result.current.datasets['signet:vault:profiles'].canonical).toBe(true);
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(false);
@@ -202,7 +203,7 @@ const verifiedSync = async (args: { adapter: { snapshot(): Promise<string> } }) 
 const ran = () => sync.mock.calls.map(([args]) => (args as { adapter: { dataset: VaultDataset } }).adapter.dataset);
 const three: VaultDataset[] = ['profiles', 'credentials', 'settings'];
 
-it('a change cycle syncs only the dataset whose local data moved, and nothing polls once all verify', async () => {
+it('a change cycle syncs only the dataset whose local data moved', async () => {
   vi.useFakeTimers();
   sync.mockImplementation(verifiedSync);
   const { jobs, edit } = trackedJobs(three);
@@ -210,7 +211,7 @@ it('a change cycle syncs only the dataset whose local data moved, and nothing po
   const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
   await act(async () => { await vi.advanceTimersByTimeAsync(100); });
   expect(ran()).toEqual(three);
-  await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(sync).toHaveBeenCalledTimes(3);
   edit('settings', 'v1');
   props = { ...props, changeToken: 'edited' };
@@ -299,5 +300,18 @@ it('a full cycle held part-way still visits its unreached datasets after the pau
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
   // Verified and unchanged, but the full cycle never reached them.
   expect(ran().slice(4)).toEqual(['credentials', 'settings']);
+  unmount();
+});
+
+it('once every dataset verifies, the idle poll is a full cycle', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(verifiedSync);
+  const { jobs } = trackedJobs(three);
+  const { unmount } = renderHook(() => usePrivateVaults({ ...opts(), jobs: async () => jobs }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_IDLE_POLL_MS - 1000); });
+  expect(sync).toHaveBeenCalledTimes(3);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(ran().slice(3)).toEqual(three);
   unmount();
 });
