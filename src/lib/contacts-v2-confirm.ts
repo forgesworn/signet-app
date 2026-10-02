@@ -171,8 +171,8 @@ export function planMismatch(args: {
   if (choice === 'use-new') return scannedHex ? [...addNew, { op: 'remove-item', itemId: old.itemId }] : [];
   // old-not-theirs. There is deliberately no "also block the old key": the
   // reducer reads ANY active block as blocking the whole contact (scope is
-  // not consulted), and a separate blocked record for the stray key would be
-  // merged back into this contact because the key is in its identity history.
+  // not consulted). Once removed, the stray key no longer aliases this
+  // contact, so the user can file it as a separate contact and block that.
   return [...addNew, { op: 'remove-item', itemId: old.itemId }];
 }
 
