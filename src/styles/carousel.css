@@ -276,6 +276,27 @@
   color: var(--text-muted);
   letter-spacing: 0.02em;
 }
+.card-hint:empty { display: none; }
+.card-swipe-hints {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.card-swipe-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 4px 2px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.card-swipe-hint:active { color: var(--text-primary); }
+.card-swipe-label { font-size: 0.95rem; font-weight: 600; }
+.card-swipe-arrow { font-size: 1.6rem; line-height: 1; }
 .card-hint-child {
   font-size: 0.82rem;
   color: var(--warning);

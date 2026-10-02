@@ -305,7 +305,6 @@ function renderCard(
           key={identityCardKey(row)}
           resolved={resolved}
           badge={props.badge}
-          onNavigateDeepPage={props.onNavigateDeepPage}
           onEnableContactAvatarShare={props.onEnableContactAvatarShare}
           onStopContactAvatarShare={props.onStopContactAvatarShare}
         />

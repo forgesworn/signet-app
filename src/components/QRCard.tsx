@@ -12,8 +12,6 @@ const KEY_SHARE = 'share-avatar';
 interface Props {
   resolved: ResolvedIdentity;
   badge: { tier: number; score: number; vouchCount: number } | null;
-  /** Navigate to a deep page (e.g. MatchPass → venue-entry). */
-  onNavigateDeepPage?: (page: string, opts?: { dependantId?: string; slotTarget?: string }) => void;
   /**
    * Enable / refresh contact-share avatar for this slot. Returns the stable
    * contact-share key to embed in the QR, or null (public-only / failed).
@@ -40,7 +38,7 @@ function hasPrivateAvatar(r: ResolvedIdentity): boolean {
   return !!(r.avatarHash && r.avatarBlossomUrl && r.avatarKey);
 }
 
-export function QRCard({ resolved, badge, onNavigateDeepPage, onEnableContactAvatarShare, onStopContactAvatarShare }: Props) {
+export function QRCard({ resolved, badge, onEnableContactAvatarShare, onStopContactAvatarShare }: Props) {
   const tier = badge?.tier ?? 1;
   const [customFields, setCustomFields] = useState<CustomField[]>(() => buildCustomFields(resolved));
   // Stable contact-share key once enabled (seeded from the slot if already set).
@@ -206,14 +204,6 @@ export function QRCard({ resolved, badge, onNavigateDeepPage, onEnableContactAva
           </span>
         )}
 
-        {/* MatchPass stays a SEPARATE mode chip → venue-entry boarding pass. */}
-        <button
-          type="button"
-          className="qr-pill mode"
-          onClick={() => onNavigateDeepPage?.('venue-entry')}
-        >
-          &#127941; MatchPass
-        </button>
       </div>
 
       {/* Inline share status / affordances — relocated from the retired back face. */}
