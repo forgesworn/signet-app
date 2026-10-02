@@ -11174,6 +11174,7 @@ export function App() {
           onRecordCheck={contactsListIdentity === 'all' ? undefined : check => contactsV2.recordCheck(record.contactId, check)}
           onApplyConfirmation={contactsListIdentity === 'all' || isPairedChild ? undefined : steps => applyConfirmSteps(steps, record.contactId, contactsV2)}
           confirmContacts={contactsV2.effective}
+          confirmKeyHolderIds={contactsV2.keyHolderIds}
           ownPubkeys={[...new Set([...contactsIdentityLists.map(l => l.ownerIdentityPubkey),
             ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])]}
           onStartExchange={contactsScope.directoryId && !isPairedChild ? () => navigateTo('contact-invites') : undefined}

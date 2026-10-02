@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { nip19 } from 'nostr-tools';
 import {
-  applyConfirmSteps, decideScan, isConfirmed, isContactConfirmed, newestCheckFor, npubReadoutGroups,
+  ConfirmMergeRefusedError, applyConfirmSteps, confirmMergeRefusal, decideScan, isConfirmed, keyHolderIds, isContactConfirmed, newestCheckFor, npubReadoutGroups,
   planMatch, planMismatch, planTierMove, scannedKeyToHex, shouldOfferTierMove, verificationUpgrade,
   type ConfirmOps, type ConfirmStep,
 } from './contacts-v2-confirm';
@@ -99,10 +99,30 @@ describe('decideScan', () => {
   });
   it('names a different contact that already holds the scanned key', () => {
     expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({})] }))
-      .toEqual({ kind: 'belongs-to-other', contactId: 'c-erin', displayName: 'Erin' });
+      .toEqual({ kind: 'belongs-to-other', contactId: 'c-erin', displayName: 'Erin', state: 'active' });
   });
-  it('ignores a removed contact that once held the key', () => {
-    expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({ lifecycle: 'removed' })] })).toEqual({ kind: 'mismatch' });
+  it('names a deleted or archived contact that still holds the key (the reducer would merge into it)', () => {
+    expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({ lifecycle: 'removed' })] }))
+      .toEqual({ kind: 'belongs-to-other', contactId: 'c-erin', displayName: 'Erin', state: 'deleted' });
+    expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({ lifecycle: 'removed', archived: true })] }))
+      .toEqual({ kind: 'belongs-to-other', contactId: 'c-erin', displayName: 'Erin', state: 'archived' });
+  });
+  it('prefers a live holder over a deleted one', () => {
+    const contacts = [other({ contactId: 'c-bob', displayName: 'Bob', lifecycle: 'removed' }), other({})];
+    expect(decideScan({ ...base, scannedHex: NEW, contacts })).toMatchObject({ contactId: 'c-erin', state: 'active' });
+  });
+  it('names a contact the key was once removed from, through the key history', () => {
+    const contacts = [other({ identities: [] })];
+    expect(decideScan({ ...base, scannedHex: NEW, contacts })).toEqual({ kind: 'mismatch' });
+    expect(decideScan({ ...base, scannedHex: NEW, contacts, formerHolderIds: ['c-erin'] }))
+      .toEqual({ kind: 'belongs-to-other', contactId: 'c-erin', displayName: 'Erin', state: 'removed-key' });
+    expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({ identities: [], lifecycle: 'removed' })], formerHolderIds: ['c-erin'] }))
+      .toMatchObject({ kind: 'belongs-to-other', state: 'deleted' });
+    // Through a merged id, and never the contact being confirmed itself.
+    expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({ identities: [], mergedContactIds: ['c-old'] })], formerHolderIds: ['c-old'] }))
+      .toMatchObject({ contactId: 'c-erin', state: 'removed-key' });
+    expect(decideScan({ ...base, scannedHex: NEW, contacts: [other({ contactId: 'c-dave', identities: [] })], formerHolderIds: ['c-dave'] }))
+      .toEqual({ kind: 'mismatch' });
   });
   it('recognises the user own key and a sibling key of the same contact', () => {
     expect(decideScan({ ...base, scannedHex: OWNER })).toEqual({ kind: 'own-key' });
@@ -170,7 +190,16 @@ function harness() {
     log.push(op);
   };
   const ops: ConfirmOps = {
-    async addIdentity(c, v) { const itemId = id(); write(c, 'add-identity', { ...v, itemId }, itemId); return itemId; },
+    async addIdentity(c, v, opts) {
+      const itemId = id();
+      if (opts?.refuseMerge) {
+        const op = { ...buildOperation({ directoryId: 'owner', contactId: c, action: 'add-identity', value: { ...v, itemId }, clock: n + 1, actor, now: 1, operationId: id(), itemId }), ownerIdentityPubkey: OWNER };
+        const refusal = confirmMergeRefusal(log, [op], c);
+        if (refusal) throw new ConfirmMergeRefusedError(refusal);
+      }
+      write(c, 'add-identity', { ...v, itemId }, itemId);
+      return itemId;
+    },
     async recordCheck(c, v) { write(c, 'record-check', { ...v, id: id(), ownerIdentityPubkey: OWNER }); },
     async updateIdentity(c, v) { write(c, 'update-identity', v, v.itemId); },
     async removeItem(c, itemId) { write(c, 'remove-item', { itemId }, itemId); },
@@ -254,5 +283,63 @@ describe('applyConfirmSteps against the real reducer', () => {
     const steps: ConfirmStep[] = planMismatch({ choice: 'use-new', old: ident({ itemId }), scannedHex: NEW  });
     await expect(applyConfirmSteps(steps, contactId, failing)).rejects.toThrow('no owner');
     expect(dave(h).identities.map(i => i.pubkey)).toEqual([OLD, NEW]);
+  });
+});
+
+describe('the merge guard: a confirmation never folds two people together', () => {
+  async function bobDeletedAndAlice(h: ReturnType<typeof harness>) {
+    const bob = await h.addContact({ type: 'person', displayName: 'Bob', tier: 'ken' });
+    await h.ops.addIdentity(bob, { pubkey: NEW, provenance: 'direct', verification: 'unverified' });
+    h.write(bob, 'remove', {});
+    const alice = await h.addContact({ type: 'person', displayName: 'Alice', tier: 'ken' });
+    const itemId = await h.ops.addIdentity(alice, { pubkey: OLD, provenance: 'direct', verification: 'unverified' });
+    return { bob, alice, itemId };
+  }
+
+  for (const choice of ['use-new', 'keep-both', 'old-not-theirs'] as const) {
+    it(`${choice}: refuses a key held by a deleted contact and writes nothing`, async () => {
+      const h = harness();
+      const { bob, alice, itemId } = await bobDeletedAndAlice(h);
+      const before = h.log.length;
+      const err = await applyConfirmSteps(planMismatch({ choice, old: ident({ itemId }), scannedHex: NEW }), alice, h.ops)
+        .catch(e => e);
+      expect(err).toBeInstanceOf(ConfirmMergeRefusedError);
+      expect((err as ConfirmMergeRefusedError).refusal).toEqual({ contactId: bob, displayName: 'Bob', state: 'deleted' });
+      expect(h.log).toHaveLength(before);
+      expect(h.records().map(r => [r.displayName, r.lifecycle])).toEqual([['Bob', 'removed'], ['Alice', 'active']]);
+    });
+  }
+
+  it('the key history names a contact the key was removed from', async () => {
+    const h = harness();
+    const erin = await h.addContact({ type: 'person', displayName: 'Erin', tier: 'ken' });
+    const stray = await h.ops.addIdentity(erin, { pubkey: NEW, provenance: 'direct', verification: 'unverified' });
+    await h.ops.removeItem(erin, stray);
+    expect(keyHolderIds(h.log, NEW.toUpperCase())).toEqual([erin]);
+    expect(keyHolderIds(h.log, OTHER_KEY)).toEqual([]);
+  });
+
+  it('allows a confirmation on a contact that is already a legitimate merge', async () => {
+    const h = harness();
+    const { contactId, itemId } = await seedDave(h);
+    const twin = await h.addContact({ type: 'person', displayName: 'Dave', tier: 'ken' });
+    await h.ops.addIdentity(twin, { pubkey: OLD, provenance: 'direct', verification: 'unverified' });
+    expect(dave(h).mergedContactIds).toEqual([twin]);
+    await applyConfirmSteps(planMismatch({ choice: 'keep-both', old: ident({ itemId }), scannedHex: NEW }), contactId, h.ops);
+    expect(dave(h).identities.map(i => i.pubkey)).toEqual([OLD, NEW]);
+  });
+
+  it('confirmMergeRefusal is null for a safe write and names the contact a write would merge with', () => {
+    const h = harness();
+    const at = (contactId: string, pubkey: string) => ({ ...buildOperation({ directoryId: 'owner', contactId, action: 'add-identity',
+      value: { itemId: '9'.repeat(32), pubkey, provenance: 'direct', verification: 'proven' }, clock: 99,
+      actor: { actorPubkey: OWNER, actorRole: 'owner', actorDeviceId: 'd'.repeat(32) }, now: 1, operationId: 'f'.repeat(32), itemId: '9'.repeat(32) }) });
+    return (async () => {
+      const erin = await h.addContact({ type: 'person', displayName: 'Erin', tier: 'ken' });
+      await h.ops.addIdentity(erin, { pubkey: NEW, provenance: 'direct', verification: 'unverified' });
+      const { contactId } = await seedDave(h);
+      expect(confirmMergeRefusal(h.log, [at(contactId, OTHER_KEY)], contactId)).toBeNull();
+      expect(confirmMergeRefusal(h.log, [at(contactId, NEW)], contactId)).toEqual({ contactId: erin, displayName: 'Erin', state: 'active' });
+    })();
   });
 });

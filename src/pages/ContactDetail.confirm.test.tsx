@@ -6,7 +6,7 @@ import { ContactDetail } from './ContactDetail';
 import type { ContactIdentity, EffectiveContact, SignetIdentity } from '../types';
 import { resolveActorRights } from '../lib/contacts-v2-rights';
 import { detailSections } from '../lib/contacts-v2-detail';
-import { applyConfirmSteps, type ConfirmOps } from '../lib/contacts-v2-confirm';
+import { ConfirmMergeRefusedError, applyConfirmSteps, type ConfirmOps } from '../lib/contacts-v2-confirm';
 import { encodeNpub } from '../lib/signet';
 import { hexToBytes } from '@noble/hashes/utils.js';
 
@@ -199,7 +199,7 @@ describe('Confirm it\'s them on ContactDetail', () => {
       expect(ops.addIdentity).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole('button', { name: 'Use the new key' }));
       await screen.findByText('Saved.');
-      expect(ops.addIdentity).toHaveBeenCalledWith('c1', { pubkey: NEW, provenance: 'direct', verification: 'proven' });
+      expect(ops.addIdentity).toHaveBeenCalledWith('c1', { pubkey: NEW, provenance: 'direct', verification: 'proven' }, { refuseMerge: true });
       expect(ops.recordCheck).toHaveBeenCalledWith('c1', { identityPubkey: NEW, method: 'in-person', checkedAt: 1234 });
       expect(ops.removeItem).toHaveBeenCalledWith('c1', ITEM);
     });
@@ -208,7 +208,7 @@ describe('Confirm it\'s them on ContactDetail', () => {
       const { ops } = await mismatch();
       fireEvent.click(screen.getByRole('button', { name: 'Keep both' }));
       await screen.findByText('Saved.');
-      expect(ops.addIdentity).toHaveBeenCalledWith('c1', { pubkey: NEW, provenance: 'direct', verification: 'proven' });
+      expect(ops.addIdentity).toHaveBeenCalledWith('c1', { pubkey: NEW, provenance: 'direct', verification: 'proven' }, { refuseMerge: true });
       expect(ops.removeItem).not.toHaveBeenCalled();
     });
 
@@ -227,6 +227,16 @@ describe('Confirm it\'s them on ContactDetail', () => {
       for (const fn of Object.values(ops)) expect(fn).not.toHaveBeenCalled();
     });
 
+    it('a write the queue refuses as a merge names the other contact and offers only Back', async () => {
+      const { ops } = await mismatch();
+      ops.addIdentity.mockRejectedValueOnce(new ConfirmMergeRefusedError({ contactId: 'c9', displayName: 'Bob', state: 'deleted' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Keep both' }));
+      expect(await screen.findByText(/That key belongs to Bob, a contact you deleted/)).toBeDefined();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(flow().getAllByRole('button').map(b => b.textContent)).toEqual(['Back']);
+      expect(ops.removeItem).not.toHaveBeenCalled();
+    });
+
     it('a failed write shows the error copy and keeps the choices', async () => {
       const { ops } = await mismatch();
       ops.addIdentity.mockRejectedValueOnce(new Error('boom'));
@@ -243,6 +253,25 @@ describe('Confirm it\'s them on ContactDetail', () => {
     expect(await screen.findByText(/already belongs to Erin/)).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Use the new key' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Keep both' })).toBeNull();
+    for (const fn of Object.values(ops)) expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('names a deleted contact that holds the scanned key, and offers only Back', async () => {
+    const bob = contact({ contactId: 'c2', displayName: 'Bob', lifecycle: 'removed', identities: [ident({ itemId: '6'.repeat(32), pubkey: NEW })] });
+    const { ops } = setup(contact(), { confirmContacts: [contact(), bob] });
+    open(); scan(npubOf(NEW));
+    expect(await screen.findByText(/That key belongs to Bob, a contact you deleted/)).toBeDefined();
+    expect(flow().getAllByRole('button').map(b => b.textContent)).toEqual(['Back']);
+    for (const fn of Object.values(ops)) expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('names a contact the scanned key was once removed from', async () => {
+    const erin = contact({ contactId: 'c2', displayName: 'Erin', identities: [] });
+    const keyHolders = vi.fn(() => ['c2']);
+    const { ops } = setup(contact(), { confirmContacts: [contact(), erin], confirmKeyHolderIds: keyHolders });
+    open(); scan(npubOf(NEW));
+    expect(await screen.findByText(/That key was once on Erin/)).toBeDefined();
+    expect(keyHolders).toHaveBeenCalledWith(NEW);
     for (const fn of Object.values(ops)) expect(fn).not.toHaveBeenCalled();
   });
 

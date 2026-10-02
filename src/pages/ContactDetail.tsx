@@ -41,6 +41,8 @@ interface Props {
   onApplyConfirmation?: (steps: ConfirmStep[]) => Promise<void>;
   /** Every contact in this directory, so a scanned key that belongs to someone else is named. */
   confirmContacts?: EffectiveContact[];
+  /** Every contact id a key was ever added to, so a key since removed from someone is still named. */
+  confirmKeyHolderIds?: (pubkey: string) => string[];
   /** The user's own public keys, so scanning one's own key is not read as a mismatch. */
   ownPubkeys?: string[];
   /** Start the My Signet invite exchange (the "They have My Signet" route). */
@@ -277,6 +279,7 @@ export function ContactDetail(props: Props) {
               contact={contact}
               identity={confirming}
               contacts={props.confirmContacts ?? [contact]}
+              keyHolderIds={props.confirmKeyHolderIds}
               ownPubkeys={props.ownPubkeys ?? []}
               canSetTier={rights.canSetTier}
               onApply={props.onApplyConfirmation}

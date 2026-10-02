@@ -4,7 +4,7 @@ import { QRScanner } from './QRScanner';
 import { useCamera } from '../hooks/useCamera';
 import { shortNpub } from '../lib/signet';
 import {
-  decideScan, npubReadoutGroups, planMatch, planMismatch, planTierMove, scannedKeyToHex,
+  ConfirmMergeRefusedError, decideScan, npubReadoutGroups, planMatch, planMismatch, planTierMove, scannedKeyToHex,
   shouldOfferTierMove, type ConfirmStep, type MismatchChoice, type ScanDecision,
 } from '../lib/contacts-v2-confirm';
 import {
@@ -24,8 +24,10 @@ interface Props {
   contact: EffectiveContact;
   /** The identity being confirmed — a snapshot, so the flow survives the old key being removed. */
   identity: ContactIdentity;
-  /** Every contact in the same directory, so a key that belongs to someone else is named. */
+  /** Every contact in the same directory, deleted and archived ones included, so a key that belongs to someone else is named. */
   contacts: EffectiveContact[];
+  /** Every contact id a key was ever added to (`keyHolderIds`), so a key since removed from someone is still caught. */
+  keyHolderIds?: (pubkey: string) => string[];
   /** The user's own public keys. */
   ownPubkeys: string[];
   canSetTier: boolean;
@@ -48,7 +50,7 @@ type Stage =
  * "Confirm it's them": check that a key really belongs to the person named.
  * The tier is a separate question and is only ever offered, never forced.
  */
-export function ContactConfirm({ contact, identity, contacts, ownPubkeys, canSetTier, onApply, onStartExchange, onClose }: Props) {
+export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownPubkeys, canSetTier, onApply, onStartExchange, onClose }: Props) {
   const [stage, setStage] = useState<Stage>({ name: 'choose' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -62,8 +64,14 @@ export function ContactConfirm({ contact, identity, contacts, ownPubkeys, canSet
     try {
       await onApply(steps);
       setStage(next);
-    } catch {
-      setError(CONTACT_ACTION_FAILED_COPY);
+    } catch (err) {
+      // The queued write found the key would merge this contact with another
+      // one and wrote nothing: say whose it is, exactly as an up-front catch would.
+      if (err instanceof ConfirmMergeRefusedError) {
+        setStage({ name: 'notice', decision: { kind: 'belongs-to-other', ...err.refusal } });
+      } else {
+        setError(CONTACT_ACTION_FAILED_COPY);
+      }
     } finally {
       setBusy(false);
     }
@@ -80,7 +88,9 @@ export function ContactConfirm({ contact, identity, contacts, ownPubkeys, canSet
     handling.current = true;
     setScanError('');
     try {
-      const decision = decideScan({ record: contact, identity, scannedHex, contacts, ownPubkeys });
+      const decision = decideScan({
+        record: contact, identity, scannedHex, contacts, ownPubkeys, formerHolderIds: keyHolderIds?.(scannedHex),
+      });
       if (decision.kind === 'match') {
         await apply(planMatch({ identity, method: 'in-person' }), afterMatch());
       } else if (decision.kind === 'mismatch') {
@@ -203,7 +213,7 @@ export function ContactConfirm({ contact, identity, contacts, ownPubkeys, canSet
 
   if (stage.name === 'notice') {
     const d = stage.decision;
-    const text = d.kind === 'belongs-to-other' ? confirmBelongsToOtherCopy(d.displayName)
+    const text = d.kind === 'belongs-to-other' ? confirmBelongsToOtherCopy(d.displayName, d.state)
       : d.kind === 'own-key' ? confirmOwnKeyCopy(contact.displayName)
         : confirmOtherKeyOfThisCopy(contact.displayName);
     return shell(

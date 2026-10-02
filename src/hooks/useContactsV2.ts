@@ -57,6 +57,7 @@ import { resolveEffectiveDirectory, type EffectiveContext } from '../lib/contact
 import { contactsMutationQueue, type SerialQueue } from '../lib/contacts-v2-queue';
 import { contactBelongsToList } from '../lib/contacts-v2-membership';
 import { planFollowsImport, type FollowImportEntry, type FollowsImportResult } from '../lib/contacts-v2-follows-import';
+import { ConfirmMergeRefusedError, confirmMergeRefusal, keyHolderIds } from '../lib/contacts-v2-key-holders';
 export type { FollowsImportResult };
 
 export interface UseContactsV2Options {
@@ -107,7 +108,15 @@ export interface UseContactsV2Result {
   updateCheck: (contactId: string, check: Omit<ContactCheck, 'ownerIdentityPubkey'>) => Promise<void>;
   removeCheck: (contactId: string, id: string) => Promise<void>;
   setNote: (contactId: string, note: string) => Promise<void>;
-  addIdentity: (contactId: string, v: Omit<AddIdentityValue, 'itemId'>) => Promise<string>;
+  /**
+   * `refuseMerge` (the "Confirm it's them" flow): checked inside the queued
+   * write against the fresh log; if the new key would merge this contact with
+   * any other (a deleted or archived one included), nothing is written and the
+   * call rejects with `ConfirmMergeRefusedError` naming that contact.
+   */
+  addIdentity: (contactId: string, v: Omit<AddIdentityValue, 'itemId'>, opts?: { refuseMerge?: boolean }) => Promise<string>;
+  /** Every contact id the key was ever added to in this directory, from the last loaded log (`keyHolderIds`). */
+  keyHolderIds: (pubkey: string) => string[];
   addContactMethod: (contactId: string, v: Omit<AddMethodValue, 'itemId'>) => Promise<string>;
   updateContactMethod: (contactId: string, v: UpdateMethodValue) => Promise<void>;
   updateIdentity: (contactId: string, v: UpdateIdentityValue) => Promise<void>;
@@ -197,6 +206,7 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     itemId?: string;
     targetOperationId?: string;
     existingCheckOnly?: boolean;
+    refuseMerge?: boolean;
   }): Promise<void> => {
     // Throw, never no-op: a silent return told the caller "done" for a write
     // that never happened, and `addContact` then handed back an id for a
@@ -241,6 +251,13 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
       // than reporting success for a mutation that will never materialise.
       if (!validateOperation(op)) {
         throw new Error(`contacts: cannot ${params.action} — invalid operation`);
+      }
+      // The authoritative merge check: against the log as it is NOW, inside
+      // the queue, before anything is saved. A pure function of the ops, so
+      // it never calls back into this hook's own (non-re-entrant) queue.
+      if (params.refuseMerge) {
+        const refusal = confirmMergeRefusal(currentOps, [op], params.contactId);
+        if (refusal) throw new ConfirmMergeRefusedError(refusal);
       }
       if (currentScope.current.directoryId !== directoryId || currentScope.current.encryptionKey !== encryptionKey) throw new Error('Contacts scope changed.');
       // Creation and its private history must survive or fail together.
@@ -389,11 +406,13 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     });
   }, [directoryId, encryptionKey, actor, opts.ownerIdentityPubkey, publish]);
 
-  const addIdentity = useCallback(async (contactId: string, v: Omit<AddIdentityValue, 'itemId'>): Promise<string> => {
+  const addIdentity = useCallback(async (contactId: string, v: Omit<AddIdentityValue, 'itemId'>, opts?: { refuseMerge?: boolean }): Promise<string> => {
     const itemId = newContactId();
-    await mutate({ contactId, action: 'add-identity', itemId, value: { ...v, itemId } });
+    await mutate({ contactId, action: 'add-identity', itemId, value: { ...v, itemId }, refuseMerge: opts?.refuseMerge });
     return itemId;
   }, [mutate]);
+
+  const holderIds = useCallback((pubkey: string) => keyHolderIds(opsRef.current, pubkey), []);
 
   const addContactMethod = useCallback(async (contactId: string, v: Omit<AddMethodValue, 'itemId'>): Promise<string> => {
     const itemId = newContactId();
@@ -434,6 +453,7 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     }, [mutate, opts.ownerIdentityPubkey]),
     removeCheck: useCallback((contactId, id) => mutate({ contactId, action: 'remove-check', value: { id } }), [mutate]),
     addIdentity,
+    keyHolderIds: holderIds,
     addContactMethod,
     updateContactMethod: useCallback((contactId, v) => mutate({ contactId, action: 'update-method', itemId: v.itemId, value: v }), [mutate]),
     updateIdentity: useCallback((contactId, v) => mutate({ contactId, action: 'update-identity', itemId: v.itemId, value: v }), [mutate]),

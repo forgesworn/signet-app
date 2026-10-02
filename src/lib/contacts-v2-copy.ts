@@ -718,8 +718,27 @@ export const CONFIRM_CANCEL_LABEL = 'Cancel';
 export const CONFIRM_READOUT_MISMATCH_EXPLAINER =
   "The key you have may not be theirs, or you may have read the wrong account. Nothing is changed until you choose.";
 
-export function confirmBelongsToOtherCopy(otherName: string): string {
-  return `That key already belongs to ${safeName(otherName)} in your contacts. Nothing has been changed, and the two contacts have not been merged.`;
+/**
+ * The scanned key is, or was, another contact's. `state` says how: they hold
+ * it now, they are a contact you deleted or archived (who still hold it), or
+ * the key was once removed from them.
+ */
+export function confirmBelongsToOtherCopy(
+  otherName: string,
+  state: 'active' | 'deleted' | 'archived' | 'removed-key' = 'active',
+): string {
+  const name = safeName(otherName) || 'another contact';
+  const unchanged = 'Nothing has been changed, and the two contacts have not been merged.';
+  switch (state) {
+    case 'deleted':
+      return `That key belongs to ${name}, a contact you deleted. ${unchanged}`;
+    case 'archived':
+      return `That key belongs to ${name}, a contact you archived. ${unchanged}`;
+    case 'removed-key':
+      return `That key was once on ${name} in your contacts and was removed from them. ${unchanged}`;
+    default:
+      return `That key already belongs to ${name} in your contacts. ${unchanged}`;
+  }
 }
 export function confirmOwnKeyCopy(contactName: string): string {
   return `That is one of your own keys, not ${safeName(contactName)}'s.`;

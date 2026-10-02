@@ -29,8 +29,13 @@ import { parsePubkeyInput } from './pubkey-input';
 import { encodeNpub, isValidHexKey } from './signet';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { verificationUpgrade } from './contacts-v2-verification';
+import { contactRecordState, type OtherContactState } from './contacts-v2-key-holders';
 
 export { verificationRank, isConfirmed, isContactConfirmed, verificationUpgrade } from './contacts-v2-verification';
+export {
+  ConfirmMergeRefusedError, confirmMergeRefusal, keyHolderIds,
+  type ConfirmRefusal, type OtherContactState,
+} from './contacts-v2-key-holders';
 
 /** The newest recorded check for one key, or null. `owner` narrows to one identity list's own checks. */
 export function newestCheckFor(
@@ -94,29 +99,54 @@ export function scannedKeyToHex(data: string): string | null {
 export type ScanDecision =
   | { kind: 'match' }
   | { kind: 'mismatch' }
-  /** The scanned key already belongs to a DIFFERENT contact. Never merge silently. */
-  | { kind: 'belongs-to-other'; contactId: string; displayName: string }
+  /**
+   * The scanned key already belongs to a DIFFERENT contact — now, or (for a
+   * deleted or archived contact, or a key taken off a contact) at some point.
+   * Never merge silently: the only way on is Back.
+   */
+  | { kind: 'belongs-to-other'; contactId: string; displayName: string; state: OtherContactState }
   /** The scanned key is another key already on THIS contact. */
   | { kind: 'other-key-of-this-contact'; itemId: string }
   | { kind: 'own-key' };
+
+type ScanContact = Pick<EffectiveContact, 'contactId' | 'displayName' | 'identities' | 'lifecycle' | 'archived' | 'mergedContactIds'>;
 
 export function decideScan(args: {
   record: Pick<EffectiveContact, 'contactId' | 'identities'>;
   identity: Pick<ContactIdentity, 'itemId' | 'pubkey'>;
   scannedHex: string;
-  /** Every visible contact in the same directory (the contact itself included). */
-  contacts: Pick<EffectiveContact, 'contactId' | 'displayName' | 'identities' | 'lifecycle'>[];
+  /** Every contact in the same directory, deleted and archived ones included (the contact itself too). */
+  contacts: ScanContact[];
   /** The user's own public keys. */
   ownPubkeys: string[];
+  /**
+   * Every contact id the key was ever added to (`keyHolderIds` over the
+   * directory's operation log), so a key since taken off a contact is still
+   * caught. Absent: only the keys contacts hold now are consulted.
+   */
+  formerHolderIds?: string[];
 }): ScanDecision {
   const scanned = args.scannedHex.toLowerCase();
   if (scanned === args.identity.pubkey.toLowerCase()) return { kind: 'match' };
   if (args.ownPubkeys.some(k => k.toLowerCase() === scanned)) return { kind: 'own-key' };
   const sibling = args.record.identities.find(i => i.pubkey.toLowerCase() === scanned);
   if (sibling) return { kind: 'other-key-of-this-contact', itemId: sibling.itemId };
-  const owner = args.contacts.find(c => c.contactId !== args.record.contactId && c.lifecycle !== 'removed'
-    && c.identities.some(i => i.pubkey.toLowerCase() === scanned));
-  if (owner) return { kind: 'belongs-to-other', contactId: owner.contactId, displayName: owner.displayName };
+  const isSelf = (c: ScanContact) => c.contactId === args.record.contactId
+    || (c.mergedContactIds ?? []).includes(args.record.contactId);
+  const others = args.contacts.filter(c => !isSelf(c));
+  const decision = (c: ScanContact, state: OtherContactState): ScanDecision =>
+    ({ kind: 'belongs-to-other', contactId: c.contactId, displayName: c.displayName, state });
+  // A live contact holding the key now is the most useful thing to name; a
+  // deleted or archived one still holds it too, and the reducer would merge
+  // into it just the same.
+  const holding = others.filter(c => c.identities.some(i => i.pubkey.toLowerCase() === scanned));
+  const live = holding.find(c => c.lifecycle !== 'removed');
+  if (live) return decision(live, 'active');
+  if (holding[0]) return decision(holding[0], contactRecordState(holding[0]));
+  for (const id of args.formerHolderIds ?? []) {
+    const former = others.find(c => c.contactId === id || (c.mergedContactIds ?? []).includes(id));
+    if (former) return decision(former, former.lifecycle === 'removed' ? contactRecordState(former) : 'removed-key');
+  }
   return { kind: 'mismatch' };
 }
 
@@ -178,7 +208,12 @@ export function planMismatch(args: {
 
 /** The slice of `useContactsV2` the executor needs, so it can be driven without React. */
 export interface ConfirmOps {
-  addIdentity(contactId: string, v: Omit<AddIdentityValue, 'itemId'>): Promise<string>;
+  /**
+   * `refuseMerge`: the write is checked inside the contacts queue and rejects
+   * with `ConfirmMergeRefusedError`, writing nothing, if it would merge this
+   * contact with another one.
+   */
+  addIdentity(contactId: string, v: Omit<AddIdentityValue, 'itemId'>, opts?: { refuseMerge?: boolean }): Promise<string>;
   recordCheck(contactId: string, check: Omit<ContactCheck, 'id' | 'ownerIdentityPubkey'>): Promise<void>;
   updateIdentity(contactId: string, v: UpdateIdentityValue): Promise<void>;
   removeItem(contactId: string, itemId: string): Promise<void>;
@@ -195,7 +230,9 @@ export async function applyConfirmSteps(
   for (const step of steps) {
     switch (step.op) {
       case 'add-identity':
-        await ops.addIdentity(contactId, { pubkey: step.pubkey, provenance: 'direct', verification: step.verification });
+        // Always the FIRST step of a plan that adds a key, so a refusal here
+        // means nothing at all was written.
+        await ops.addIdentity(contactId, { pubkey: step.pubkey, provenance: 'direct', verification: step.verification }, { refuseMerge: true });
         break;
       case 'record-check':
         await ops.recordCheck(contactId, { identityPubkey: step.pubkey, method: step.method, checkedAt: now() });
