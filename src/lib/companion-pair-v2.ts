@@ -12,7 +12,7 @@
  * used again after revocation.
  */
 import {
-  buildPairingAckV2, parsePairingRequestV2, randomHex,
+  buildPairingAckV2, buildPairingUriV2, parsePairingRequestV2, randomHex, PAIRING_FRESHNESS_SECONDS,
 } from '@forgesworn/signet-contacts/wire';
 import type {
   Capability, PairingAckV2, PairingRequestV2, PairingRequestV2Result,
@@ -38,6 +38,40 @@ export function parseContactsPairingRequestV2(
   input: string, opts?: { nowSec?: number },
 ): PairingRequestV2Result {
   return parsePairingRequestV2(input, opts);
+}
+
+/**
+ * Rebuild the scannable `signet-grant://pair?v=2&…` URI from an already-parsed
+ * request, so a paired-child phone can show it to the guardian's scanner.
+ * The directory is forced to 'dependant' (see below), so the round trip is
+ * exact for every field except that one. The
+ * scanner re-parses it with `parseContactsPairingRequestV2`, so the result is
+ * the same request provided the original was still fresh. `null` if the SDK
+ * refuses to build it (it validates every field), never a throw.
+ */
+export function pairingUriForRequestV2(request: PairingRequestV2): string | null {
+  try {
+    return buildPairingUriV2({
+      appPubkey: request.appPubkey,
+      appName: request.appName,
+      capabilities: request.capabilities,
+      // Always 'dependant': on the child's phone "my contacts" means the
+      // child's, but the guardian's approve screen reads 'owner' as the
+      // GUARDIAN's own directory and would pre-select it — handing the
+      // child's app the guardian's whole list on one tap.
+      directory: 'dependant',
+      relay: request.rendezvousRelay,
+      nowSec: request.t,
+      challenge: request.challenge,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Unix seconds at which a v2 pairing request stops being accepted by a scanner. */
+export function pairingRequestExpiresAtSec(request: PairingRequestV2): number {
+  return request.t + PAIRING_FRESHNESS_SECONDS;
 }
 
 export async function buildPairingAckV2Content(

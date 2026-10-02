@@ -85,6 +85,23 @@ export function exceedsCheckpointCeiling(opCount: number): boolean {
   return opCount > MAX_CHECKPOINT_OPS;
 }
 
+/**
+ * The line a BULK import must stay under: 75 % of the byte budget one
+ * checkpoint can carry (`MAX_CHUNKS` x one top bucket, about 2 MiB).
+ *
+ * `MAX_CHECKPOINT_OPS` bounds the operation COUNT, but a checkpoint is also
+ * limited by bytes — a log of ordinary operations (about 330 bytes each)
+ * reaches 32 full chunks long before 64 000 of them, and `splitCheckpoint`
+ * then refuses it, so the rail silently stops backing up while
+ * `backupState` still says `'ok'`. A bulk write therefore projects the
+ * checkpoint it would produce (`projectCheckpointBytes`) and stops here, 25 %
+ * short of the true ceiling, so the rest of the log has room to keep growing.
+ */
+export const CHECKPOINT_IMPORT_LINE_BYTES = 1.5 * 1024 * 1024;
+
+/** The same 75 % line, in operations. */
+export const CHECKPOINT_IMPORT_LINE_OPS = Math.floor(MAX_CHECKPOINT_OPS * 0.75);
+
 /** Devices whose outboxes one checkpoint may list. */
 export const MAX_DEVICE_IDS = 16;
 
@@ -394,6 +411,73 @@ export function splitCheckpoint(
     deviceIds: checkpoint.deviceIds,
   };
   return { manifest, chunks };
+}
+
+/** Bytes one operation takes inside a serialised chunk (UTF-8 of its JSON). */
+export function operationWireBytes(operation: ContactOperation): number {
+  return utf8Length(JSON.stringify(operation));
+}
+
+/**
+ * Sequence number assumed when none is given: nine digits, so the projection
+ * never under-counts the header of a long-lived log's chunk.
+ */
+const PROJECTION_SEQ = 999_999_999;
+
+/**
+ * What the rail would publish for a checkpoint made of operations with these
+ * wire sizes: the number of chunks and their total serialised bytes, computed
+ * with the SAME greedy rule as `splitCheckpoint` (close a chunk when the next
+ * operation would push it past `MAX_CHUNK_BODY_BYTES` or `MAX_OPS_PER_PAYLOAD`)
+ * but from sizes alone, so it is linear instead of re-serialising a growing
+ * chunk per operation. A chunk's bytes are its header (the JSON of an empty
+ * chunk, which already counts the `[]`) plus its operations plus one comma
+ * between each pair — the test pins this to the real splitter byte for byte.
+ *
+ * `fits` is false exactly when `splitCheckpoint` would return null: a single
+ * operation too big for a chunk, more than `MAX_CHUNKS` chunks, or more
+ * operations than `MAX_CHECKPOINT_OPS`.
+ */
+export function projectCheckpointFromSizes(
+  sizes: readonly number[],
+  seq: number = PROJECTION_SEQ,
+): { bytes: number; chunks: number; fits: boolean } {
+  if (sizes.length === 0) return { bytes: 0, chunks: 0, fits: true };
+  const header = (index: number): number =>
+    utf8Length(JSON.stringify({ v: 2, kind: 'chunk', seq, index, ops: [] }));
+
+  let bytes = 0;
+  let chunks = 1;
+  let head = header(0);
+  let count = 0;
+  let sum = 0;
+  for (const size of sizes) {
+    // Appending to a chunk with `count` operations adds `size` plus a comma
+    // when it is not the first.
+    const grown = head + sum + size + count;
+    if (count + 1 <= MAX_OPS_PER_PAYLOAD && grown <= MAX_CHUNK_BODY_BYTES) {
+      count += 1;
+      sum += size;
+      continue;
+    }
+    if (count === 0) return { bytes: Infinity, chunks: Infinity, fits: false }; // one operation alone does not fit
+    bytes += head + sum + (count - 1);
+    head = header(chunks);
+    chunks += 1;
+    if (head + size > MAX_CHUNK_BODY_BYTES) return { bytes: Infinity, chunks: Infinity, fits: false };
+    count = 1;
+    sum = size;
+  }
+  bytes += head + sum + (count - 1);
+  return { bytes, chunks, fits: chunks <= MAX_CHUNKS && !exceedsCheckpointCeiling(sizes.length) };
+}
+
+/** `projectCheckpointFromSizes` over real operations. */
+export function projectCheckpointBytes(
+  ops: readonly ContactOperation[],
+  seq?: number,
+): { bytes: number; chunks: number; fits: boolean } {
+  return projectCheckpointFromSizes(ops.map(operationWireBytes), seq);
 }
 
 /**

@@ -8,11 +8,12 @@ const mocks = vi.hoisted(() => ({
     biometricEnroll: vi.fn(async () => ({ ok: true })),
     biometricUnlock: vi.fn(async () => ({ secret: 'a'.repeat(64) })),
     biometricClear: vi.fn(async () => {}),
+    biometricDeviceCredential: vi.fn(async () => ({ allowed: true })),
   },
 }));
 vi.mock('./native', () => mocks);
 
-import { isBiometricAvailable, setupBiometric, authenticateBiometric } from './auth';
+import { isBiometricAvailable, setupBiometric, authenticateBiometric, hasPinFallback, setupPIN, biometricAcceptsDevicePin } from './auth';
 
 describe('auth native branches', () => {
   beforeEach(() => { localStorage.clear(); vi.clearAllMocks(); });
@@ -30,6 +31,21 @@ describe('auth native branches', () => {
     expect(mocks.SignetNative.biometricEnroll).toHaveBeenCalledWith({ secret: key });
     expect(localStorage.getItem('signet-auth-method')).toBe('biometric');
     expect(localStorage.getItem('signet-auth-encrypted-key')).toBe(JSON.stringify({ native: true }));
+  });
+
+  it('a native biometric install has no PIN to fall back to; a PIN install does', async () => {
+    await setupBiometric('a'.repeat(64));
+    expect(hasPinFallback()).toBe(false);
+    await setupPIN('123456', 'a'.repeat(64));
+    expect(hasPinFallback()).toBe(true);
+  });
+
+  it("asks the shell whether the biometric key also opens with the phone's PIN, and says no if it cannot tell", async () => {
+    expect(await biometricAcceptsDevicePin()).toBe(true);
+    mocks.SignetNative.biometricDeviceCredential.mockResolvedValueOnce({ allowed: false });
+    expect(await biometricAcceptsDevicePin()).toBe(false);
+    mocks.SignetNative.biometricDeviceCredential.mockRejectedValueOnce(new Error('older shell'));
+    expect(await biometricAcceptsDevicePin()).toBe(false);
   });
 
   it('authenticateBiometric returns the exact enrolled secret', async () => {

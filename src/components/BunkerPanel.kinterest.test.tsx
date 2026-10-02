@@ -18,7 +18,7 @@ function renderPanel(approve = vi.fn(), deny = vi.fn()) {
     onArmStayAwake={() => {}} onCloseStayAwake={() => {}} wakeLockSupported={false}
     pendingApprovals={[approval(10), approval(20)]} onApproveOnce={approve} onApproveAlways={() => {}} onDeny={deny}
     dependantNameFor={() => undefined} hasDependants={false} serveStatus={{ phase: 'idle', routePubkeys: [], relayUrl: 'wss://example.com' } as never}
-    locked={false} onRequestUnlockWithPendingArm={() => {}} isNative={false} backgroundServing={false} onSetBackgroundServing={async () => {}} />);
+    locked={false} onRequestUnlockWithPendingArm={() => {}} onRequestUnlockForAlwaysOn={() => {}} isNative={false} backgroundServing={false} alwaysOnWanted={false} onSetBackgroundServing={async () => {}} />);
 }
 it.each([['Back button', () => fireEvent.click(screen.getByRole('button', { name: 'Back' }))], ['Escape', () => fireEvent.keyDown(document, { key: 'Escape' })]])('returns from a Kinterest review to the list via %s without answering', (_name, back) => {
   const approve = vi.fn(), deny = vi.fn();
@@ -43,7 +43,7 @@ it('reviews the selected authority handle in full before approve-once, without A
     onArmStayAwake={() => {}} onCloseStayAwake={() => {}} wakeLockSupported={false}
     pendingApprovals={[approval(10), approval(20)]} onApproveOnce={approve} onApproveAlways={always} onDeny={() => {}}
     dependantNameFor={() => undefined} hasDependants={false} serveStatus={{ phase: 'idle', routePubkeys: [], relayUrl: 'wss://example.com' } as never}
-    locked={false} onRequestUnlockWithPendingArm={() => {}} isNative={false} backgroundServing={false} onSetBackgroundServing={async () => {}} />);
+    locked={false} onRequestUnlockWithPendingArm={() => {}} onRequestUnlockForAlwaysOn={() => {}} isNative={false} backgroundServing={false} alwaysOnWanted={false} onSetBackgroundServing={async () => {}} />);
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Always' })).toBeNull();
   fireEvent.click(screen.getAllByRole('button', { name: 'Review authorisation' })[1]);

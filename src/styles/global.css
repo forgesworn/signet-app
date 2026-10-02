@@ -386,8 +386,15 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* `backwards`, never `forwards`/`both`: a forwards-filled animation keeps its
+   final `transform: translateY(0)` applied for the element's whole life, and
+   any non-`none` transform makes the element the containing block for
+   `position: fixed` descendants. Every modal/sheet rendered inside a page
+   wrapped in `.fade-in` then centred itself in the whole (tall) page instead
+   of the viewport, leaving the dialog off-screen under a dimmed page. The
+   end state equals the element's natural style, so nothing needs holding. */
 .fade-in {
-  animation: fadeIn 200ms ease forwards;
+  animation: fadeIn 200ms ease backwards;
 }
 
 @keyframes checkmark {
@@ -591,6 +598,21 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Private-backup approval line (App's topBanners). The sentence keeps the
+   whole row; the buttons wrap beneath it on a narrow screen. */
+.vault-approval-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+.vault-approval-banner-text { flex: 1 1 100%; min-width: 0; }
+.vault-approval-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ─── D9 — page identity strip ─── */
 .page-identity {

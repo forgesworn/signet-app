@@ -201,6 +201,30 @@ describe('toWire', () => {
     expect(JSON.stringify(wire)).not.toMatch(/nip05CheckedAt/);
   });
 
+  it('never carries publicProfileBase on the wire (device-local only)', () => {
+    const identity = makeIdentity({
+      extraPersonas: [makeExtra({
+        about: 'hello',
+        publicProfileBase: { eventId: 'e'.repeat(64), createdAt: 5, content: '{"secret_unknown_key":1}', tags: [['t', 'x']], matched: true },
+      })],
+    });
+    const wire = toWire(identity);
+    expect(wire.personas[0].profile).toEqual({ about: 'hello' });
+    expect(JSON.stringify(wire)).not.toMatch(/publicProfileBase|secret_unknown_key|eventId/);
+  });
+
+  it('never carries followsImport on the wire (device-local only)', () => {
+    const identity = makeIdentity({
+      extraPersonas: [makeExtra({
+        about: 'hello',
+        followsImport: { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 },
+      })],
+    });
+    const wire = toWire(identity);
+    expect(wire.personas[0].profile).toEqual({ about: 'hello' });
+    expect(JSON.stringify(wire)).not.toMatch(/followsImport|importedAt|"count"/);
+  });
+
   it('carries hidden only when explicitly set on the local record', () => {
     const identity = makeIdentity({
       extraPersonas: [makeExtra({ hidden: true }), makeExtra({ publicKey: P2_PUB, derivationName: 'persona-2' })],
@@ -237,6 +261,25 @@ describe('toWire', () => {
 });
 
 describe('parsePayload', () => {
+  it('round-trips a 2000-emoji about (4000 UTF-16 units) and truncates, never drops, an over-long one', () => {
+    const exactly = '😀'.repeat(2000);
+    const wire = toWire(makeIdentity({ extraPersonas: [makeExtra({ about: exactly })] }));
+    const back = parsePayload(JSON.stringify(wire));
+    expect(back?.personas[0].profile?.about).toBe(exactly);
+
+    const tooLong = '😀'.repeat(2500);
+    const raw = JSON.stringify(toWire(makeIdentity({ extraPersonas: [makeExtra({ about: tooLong })] })));
+    const parsed = parsePayload(raw);
+    expect(parsed?.personas[0].profile?.about).toBe(exactly);
+    // A remote value over the cap is truncated on receipt, never read as "cleared".
+    const injected = JSON.stringify({
+      v: 1,
+      personas: [{ derivationName: 'persona-1', publicKey: P1_PUB, displayName: 'Persona One', updatedAt: 500, profile: { about: tooLong } }],
+      tombstones: [],
+    });
+    expect(parsePayload(injected)?.personas[0].profile?.about).toBe(exactly);
+  });
+
   function validRaw(overrides: Record<string, unknown> = {}): string {
     return JSON.stringify({
       v: 1,
@@ -517,6 +560,44 @@ describe('mergePersonas', () => {
     expect(result.extraPersonas[0].nip05).toBe('alice@a.com');
     expect(result.extraPersonas[0].nip05CheckResult).toBe('match');
     expect(result.extraPersonas[0].nip05CheckedAt).toBe(1_700_000_000_000);
+  });
+
+  it('preserves the local publicProfileBase across a remote-wins merge (device-local, never synced)', () => {
+    const base = { eventId: 'e'.repeat(64), createdAt: 5, content: '{"bot":true}', tags: [['t', 'x']] };
+    const local = [makeExtra({ about: 'old about', publicProfileBase: base, updatedAt: 100 })];
+    const remote: SyncedPersonasPayload = {
+      v: 1,
+      personas: [{
+        derivationName: 'persona-1',
+        publicKey: P1_PUB,
+        displayName: 'Persona One Renamed',
+        updatedAt: 200,
+        profile: { about: 'new about from another device' },
+      }],
+      tombstones: [],
+    };
+    const result = mergePersonas(baseInput({ local, remote, remoteCreatedAt: 200, localRecordAt: 100 }));
+    expect(result.extraPersonas[0].about).toBe('new about from another device');
+    expect(result.extraPersonas[0].publicProfileBase).toEqual(base);
+  });
+
+  it('preserves the local followsImport across a remote-wins merge (device-local, never synced)', () => {
+    const followsImport = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 };
+    const local = [makeExtra({ about: 'old about', followsImport, updatedAt: 100 })];
+    const remote: SyncedPersonasPayload = {
+      v: 1,
+      personas: [{
+        derivationName: 'persona-1',
+        publicKey: P1_PUB,
+        displayName: 'Persona One Renamed',
+        updatedAt: 200,
+        profile: { about: 'new about from another device' },
+      }],
+      tombstones: [],
+    };
+    const result = mergePersonas(baseInput({ local, remote, remoteCreatedAt: 200, localRecordAt: 100 }));
+    expect(result.extraPersonas[0].about).toBe('new about from another device');
+    expect(result.extraPersonas[0].followsImport).toEqual(followsImport);
   });
 
   it('accepts a keyless remote persona only when deviceHeldKeys is true', () => {

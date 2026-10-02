@@ -4,10 +4,13 @@ import type { EffectiveContact } from '../types';
 import { ContactAvatar } from '../components/ContactAvatar';
 import { ContactTierChip } from '../components/ContactTierChip';
 import { Icon } from '../components/Icon';
+import { FollowsImportPanel } from '../components/FollowsImportPanel';
+import type { FollowsImportOutcome } from '../lib/follows-import-flow';
+import type { FollowsImportState } from '../types';
 import { useContactAvatar, seedContactAvatarPointer } from '../hooks/useContactAvatar';
 import { fetchContactAvatarPointers } from '../lib/contact-avatar';
 import {
-  KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
+  IMPORT_FOLLOWING_LABEL, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
   ROLODEX_EMPTY_TEXT, ROLODEX_EMPTY_TITLE, ROLODEX_LOADING_COPY, ROLODEX_NO_MATCHES_TITLE,
   SEARCH_CONTACTS_LABEL, rolodexHeadingCopy,
 } from '../lib/contacts-v2-copy';
@@ -38,6 +41,18 @@ interface Props {
   onInvites?: () => void;
   /** Recognise a public key (legacy ken flow) — unchanged in this phase. */
   onAddKen?: () => void;
+  /**
+   * "Import following" for the selected persona (owner scope only). The button
+   * shows when the handlers or `followsDisabledReason` are present; with only a
+   * reason the panel opens with Import disabled.
+   */
+  onImportFollows?: () => Promise<FollowsImportOutcome>;
+  onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
+  followsPersonaName?: string;
+  followsLast?: FollowsImportState;
+  followsDisabledReason?: string;
+  /** Open the Import following panel on arrival (from the carousel card). */
+  initialFollowsOpen?: boolean;
   /** Guardian-only cross-family table. Absent unless the scope allows it. */
   onManageFamily?: () => void;
 }
@@ -88,7 +103,10 @@ function ContactRow({ contact, guardianName, relayUrl, encryptionKey, onTap }: {
 export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, selectedList, onSelectList,
   contacts, loading, guardianName, subjectName, relayUrl, encryptionKey,
   onSelectContact, onNewContact, onAddKen, onManageFamily, onInvites,
+  onImportFollows, onUnlinkFollows, followsPersonaName, followsLast, followsDisabledReason, initialFollowsOpen = false,
 }: Props) {
+  const [followsOpen, setFollowsOpen] = useState(initialFollowsOpen);
+  const showFollows = !!((onImportFollows && onUnlinkFollows) || followsDisabledReason);
   const [filter, setFilter] = useState<ContactsFilter>('all');
   const [query, setQuery] = useState(initialSearch);
   const [inviteFilter, setInviteFilter] = useState('');
@@ -206,6 +224,21 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
 
       <div style={{ flexShrink: 0, padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         <button className="btn btn-secondary" onClick={onNewContact}>{NEW_CONTACT_LABEL}</button>
+        {showFollows && (
+          <button className="btn btn-secondary" aria-expanded={followsOpen} onClick={() => setFollowsOpen(o => !o)}>
+            {IMPORT_FOLLOWING_LABEL}
+          </button>
+        )}
+        {showFollows && followsOpen && (
+          <FollowsImportPanel
+            variant="block"
+            personaName={followsPersonaName || 'this persona'}
+            last={followsLast}
+            onImport={onImportFollows ?? (async () => ({ status: 'unreachable' }))}
+            onUnlink={onUnlinkFollows ?? (async () => 0)}
+            disabledReason={followsDisabledReason}
+          />
+        )}
         {onAddKen && (
           <button className="btn btn-ghost" onClick={onAddKen}>{RECOGNISE_PUBLIC_KEY_LABEL}</button>
         )}

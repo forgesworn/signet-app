@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApprovalPickerChoice, WAITING_FOR_SIGNER_COPY } from '../hooks/useApprovalPickerChoice';
 export { WAITING_FOR_SIGNER_COPY, CHOSEN_UNAVAILABLE_COPY } from '../hooks/useApprovalPickerChoice';
 import type { AuthRequest, LoginRequest } from '../lib/qr-router';
 import type { SignetIdentity, DependantIdentity, ConsumerHint, KeypairToken, OriginPolicy } from '../types';
 import { shortNpub } from '../lib/signet';
+import { authRequestKey } from '../lib/auth-request-settlement';
+import { friendlyApprovalError, friendlySignerMessage } from '../lib/signer-error-copy';
 import { SharePreview } from '../components/SharePreview';
 import { resolveSelectedDisplayName, resolveSelectedToken, resolveSelectedPubkey, resolveSelectedPublicProfile, buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
 import { isNaturalPersonActive } from '../lib/identity-display';
@@ -115,6 +117,8 @@ interface Props {
    * Cancel after a long wait. See `PairedChildApprovalWaiting`.
    */
   isPairedChild?: boolean;
+  /** Paired straight to the Heartwood: the wait is an ask on the guardian's phone. */
+  childDirect?: boolean;
 }
 
 function isLoginRequest(r: AuthRequest | LoginRequest): r is LoginRequest {
@@ -178,6 +182,7 @@ export function ApproveAuth({
   onUserChoice,
   waitingGuardianPubkeys,
   isPairedChild = false,
+  childDirect = false,
 }: Props) {
   const login = isLoginRequest(request);
   const originDisplay = safeOrigin(request.origin);
@@ -295,13 +300,23 @@ export function ApproveAuth({
   const [shareHandle, setShareHandle] = useState(true);
   const [approvingHere, setApproving] = useState(false);
   const approving = approvingHere || externallyApproving;
-  const [error, setError] = useState<string | null>(initialError ?? null);
+  const [error, setError] = useState<string | null>(initialError ? friendlySignerMessage(initialError) : null);
   // An approval can outlive the instance that started it (a lock unmounts
   // the page mid-wait). Its failure then arrives here as a new initialError:
   // show it and make Approve usable again, never a silent reset.
+  // A NEW request replacing the one on screen starts clean: the banner
+  // belonged to the old request. Declared before the initialError effect so a
+  // failure handed over in the same commit still wins.
+  const requestKey = authRequestKey(request);
+  const shownRequestKey = useRef(requestKey);
+  useEffect(() => {
+    if (shownRequestKey.current === requestKey) return;
+    shownRequestKey.current = requestKey;
+    setError(null);
+  }, [requestKey]);
   useEffect(() => {
     if (!initialError) return;
-    setError(initialError);
+    setError(friendlySignerMessage(initialError));
     setApproving(false);
   }, [initialError]);
   const [addingPersona, setAddingPersona] = useState(false);
@@ -536,7 +551,7 @@ export function ApproveAuth({
 
         <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {approving && isPairedChild ? (
-            <PairedChildApprovalWaiting onCancel={onDeny} />
+            <PairedChildApprovalWaiting onCancel={onDeny} direct={childDirect} />
           ) : (
             <>
               <button
@@ -550,7 +565,7 @@ export function ApproveAuth({
                     await onApprove(selection, shareHandle);
                   } catch (e) {
                     setApproving(false);
-                    setError(e instanceof Error ? e.message : (e == null ? 'Failed to approve — please try again' : 'Failed to approve: ' + String(e)));
+                    setError(friendlyApprovalError(e));
                   }
                 }}
               >
@@ -818,7 +833,7 @@ export function ApproveAuth({
 
       <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {approving && isPairedChild ? (
-          <PairedChildApprovalWaiting onCancel={onDeny} />
+          <PairedChildApprovalWaiting onCancel={onDeny} direct={childDirect} />
         ) : (
           <>
             <button
@@ -840,7 +855,7 @@ export function ApproveAuth({
                   await onApprove(selection, shareHandle);
                 } catch (e) {
                   setApproving(false);
-                  setError(e instanceof Error ? e.message : (e == null ? 'Failed to approve — please try again' : 'Failed to approve: ' + String(e)));
+                  setError(friendlyApprovalError(e));
                 }
               }}
             >

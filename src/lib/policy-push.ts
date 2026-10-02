@@ -24,7 +24,8 @@ import {
   type VerdictAction,
   type VerdictResult,
 } from './heartwood-mgmt';
-import { buildCompilerInput, compileSlotPolicies, type CompiledSlot } from './policy-compiler';
+import { buildCompilerInput, compileSlotPolicies, type ChildRuleLike, type CompiledSlot } from './policy-compiler';
+import { withOperatorLock } from './operator-lock';
 
 // ---------------------------------------------------------------------------
 // Push
@@ -43,6 +44,10 @@ export interface PolicyPushInput {
   grants: RememberedGrant[];
   guardianClientPubkey: string | null;
   nowSeconds: number;
+  /** Child-direct rules (all dependants, incl. tombstones); absent ⇒ none. */
+  childRules?: (ChildRuleLike & { dependantId: string })[];
+  /** Approved-once kinds per dependant id (spec §7); absent ⇒ none. */
+  approvedOnceKinds?: Record<string, { kind: number; until: number }[]>;
 }
 
 export interface PolicyPushResult {
@@ -90,6 +95,8 @@ export async function runPolicyPush(io: PolicyPushIo, input: PolicyPushInput): P
       guardianClientPubkey: input.guardianClientPubkey,
       deviceSlots,
       nowSeconds: input.nowSeconds,
+      childRules: input.childRules,
+      approvedOnceKinds: input.approvedOnceKinds,
     }));
   };
 
@@ -144,6 +151,159 @@ export async function runPolicyPush(io: PolicyPushIo, input: PolicyPushInput): P
     }
   }
   return result;
+}
+
+/**
+ * Spec §7: widen ONE child-direct slot's ceiling now, before a verdict is
+ * sent. Compiles the whole family as usual but pushes only the slot that
+ * matches `target` (index + fingerprint). `'ok'` when the device confirmed
+ * (or already had) the compiled policy; `'failed'` when the device could not
+ * be reached, refused, or no longer lists that slot. One refresh-and-retry on
+ * a stale challenge / stale slot, like `runPolicyPush`. Never throws.
+ */
+export async function pushChildDirectCeiling(
+  io: PolicyPushIo,
+  input: PolicyPushInput,
+  target: { slotIndex: number; secretFingerprint: string },
+): Promise<'ok' | 'failed'> {
+  const attempt = async (): Promise<'ok' | 'failed'> => {
+    const deviceSlots = await io.listClients();
+    const compiled = compileSlotPolicies(buildCompilerInput({
+      dependants: input.dependants, grants: input.grants, guardianClientPubkey: input.guardianClientPubkey,
+      deviceSlots, nowSeconds: input.nowSeconds, childRules: input.childRules, approvedOnceKinds: input.approvedOnceKinds,
+    }));
+    const slot = compiled.slots.find(s => s.slotIndex === target.slotIndex
+      && s.secretFingerprint.toLowerCase() === target.secretFingerprint.toLowerCase());
+    if (!slot) return 'failed';
+    if (!slot.changed) return 'ok';
+    await io.updateClientPolicy({ slotIndex: slot.slotIndex, secretFingerprint: slot.secretFingerprint }, slot.policy);
+    return 'ok';
+  };
+  try {
+    return await attempt();
+  } catch (e) {
+    if (!isRefreshAndRetryError(errorMessage(e))) return 'failed';
+    try { return await attempt(); } catch { return 'failed'; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Locked mutation paths (A31, A32)
+// ---------------------------------------------------------------------------
+
+export interface OnceEntry { kind: number; until: number }
+export type OnceMap = Record<string, OnceEntry[]>;
+
+/** `map` with `e` appended to the dependant's list (dependant id lowercased). */
+export function addOnceEntry(map: OnceMap, depId: string, e: OnceEntry): OnceMap {
+  const id = depId.toLowerCase();
+  const next: OnceMap = {};
+  const mine: OnceEntry[] = [];
+  for (const [k, v] of Object.entries(map)) { if (k.toLowerCase() === id) mine.push(...v); else next[k] = v; }
+  next[id] = [...mine, { kind: e.kind, until: e.until }];
+  return next;
+}
+
+/** A32: `map` without ONE entry equal to `e` for that dependant — every other entry stays. */
+export function removeOnceEntry(map: OnceMap, depId: string, e: OnceEntry): OnceMap {
+  const id = depId.toLowerCase();
+  const next: OnceMap = {};
+  let removed = false;
+  for (const [k, v] of Object.entries(map)) {
+    if (k.toLowerCase() !== id || removed) { next[k] = v; continue; }
+    const i = v.findIndex(a => a.kind === e.kind && a.until === e.until);
+    if (i < 0) { next[k] = v; continue; }
+    removed = true;
+    const rest = [...v.slice(0, i), ...v.slice(i + 1)];
+    if (rest.length > 0) next[k] = rest;
+  }
+  return next;
+}
+
+/**
+ * The caller's approved-once state: `get` reads the CURRENT value (a ref, not
+ * a render-time snapshot) and `set` must update what `get` returns before it
+ * resolves anything async. `null` while the stored row is still loading.
+ */
+export interface ApprovedOnceStore {
+  get(): OnceMap | null;
+  set(next: OnceMap): Promise<void> | void;
+}
+
+/** Fresh reads for a push, taken INSIDE the operator lock. */
+export interface FreshPushReads {
+  dependants: DependantIdentity[];
+  grants: RememberedGrant[];
+  guardianClientPubkey: string | null;
+  childRules: (ChildRuleLike & { dependantId: string })[];
+  nowSeconds: number;
+}
+
+/**
+ * Spec §7 + A31/A32: widen one child-direct slot's ceiling now. The optional
+ * `extraOnce` entry is added to the current approved-once state first; then,
+ * inside the operator lock, rules / dependant / approved-once are read FRESH
+ * and the slot is compiled and pushed. On failure ONLY the entry this call
+ * added is removed from the current state — never a restored snapshot, which
+ * would drop an entry a concurrent verdict added meanwhile. Never throws.
+ */
+export async function pushChildCeilingLocked(a: {
+  lockKey: object;
+  io: PolicyPushIo;
+  depId: string;
+  extraOnce?: OnceEntry;
+  store: ApprovedOnceStore;
+  read(): Promise<FreshPushReads>;
+}): Promise<'ok' | 'failed'> {
+  const id = a.depId.toLowerCase();
+  if (a.extraOnce) {
+    const cur = a.store.get();
+    if (cur === null) return 'failed';
+    await a.store.set(addOnceEntry(cur, id, a.extraOnce));
+  }
+  let result: 'ok' | 'failed' = 'failed';
+  try {
+    result = await withOperatorLock(a.lockKey, async () => {
+      const r = await a.read();
+      const dep = r.dependants.find(d => d.id.toLowerCase() === id);
+      const cd = dep?.childDevice;
+      if (!dep || cd?.mode !== 'heartwood-direct') return 'failed';
+      const once = a.store.get();
+      if (once === null) return 'failed';
+      return pushChildDirectCeiling(a.io, {
+        dependants: [dep], grants: r.grants, guardianClientPubkey: r.guardianClientPubkey, nowSeconds: r.nowSeconds,
+        childRules: r.childRules, approvedOnceKinds: once,
+      }, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint });
+    });
+  } catch { result = 'failed'; }
+  if (result !== 'ok' && a.extraOnce) {
+    const cur = a.store.get();
+    if (cur) { try { await a.store.set(removeOnceEntry(cur, id, a.extraOnce)); } catch { /* memory copy already updated */ } }
+  }
+  return result;
+}
+
+/**
+ * A31: the regular family push under the operator lock. `before` (pending
+ * revoke retries) runs first, inside the lock; `read` supplies the push input
+ * from FRESH reads taken inside the lock, or null when an input is still
+ * loading (nothing is pushed). Never throws.
+ */
+export async function runPolicyPushLocked(a: {
+  lockKey: object;
+  io: PolicyPushIo;
+  before?: () => Promise<unknown>;
+  read(): Promise<PolicyPushInput | null>;
+}): Promise<PolicyPushResult | null> {
+  return withOperatorLock(a.lockKey, async () => {
+    if (a.before) { try { await a.before(); } catch { /* retried next run */ } }
+    let input: PolicyPushInput | null;
+    try { input = await a.read(); } catch (e) {
+      return { pushed: 0, unchanged: 0, untouched: 0, warnings: [], errors: [`could not read the family state: ${errorMessage(e)}`] };
+    }
+    if (!input) return null;
+    return runPolicyPush(a.io, input);
+  });
 }
 
 /** One-line summary for settings rows / the panel. */

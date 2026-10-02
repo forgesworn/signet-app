@@ -3,6 +3,11 @@ import type { SignetIdentity, AppPreferences } from '../types';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
 import { resolveRealIdentityRow } from '../lib/real-identity-row';
+import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/ExistingProfilePanel';
+import { decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
+import type { ExistingProfile } from '../lib/existing-profile';
+import { FollowsImportPanel } from '../components/FollowsImportPanel';
+import type { FollowsHandlers } from '../lib/follows-import-flow';
 /* Avatar Set/Change/Remove moved to the carousel SettingsCard.
    This page now renders names + add/import only. The avatar fields on each
    slot are still edited via `useIdentity.setPersonaAvatar` — just from a
@@ -40,10 +45,23 @@ interface Props {
    * backup-confirmation flow. Returns the resulting outcome so the modal
    * can render slot-specific collision errors.
    */
-  onImportNostrAccount?: (nsec: string, displayName: string) => Promise<
+  onImportNostrAccount?: (nsec: string, displayName: string, match?: ExistingProfile) => Promise<
     | { added: true; pubkey: string }
     | { added: false; collision: string; collisionDisplayName?: string }
   >;
+  /**
+   * Look up a kind-0 the imported key already has public (multi-relay; the
+   * caller supplies the relay set). When present, the import dialog runs it
+   * after the nsec decodes and, if one is found, offers to match it. Absent
+   * => the import goes straight through as before.
+   */
+  onLookupExistingProfile?: (pubkey: string) => Promise<ExistingProfile | null | 'unreachable'>;
+  /**
+   * Handlers for "Import who this account follows" for one persona (by its
+   * pubkey / slot target and name). When it returns handlers, a successful
+   * nsec import ends with the offer; absent or undefined => no offer.
+   */
+  followsHandlersFor?: (pubkey: string, name: string) => FollowsHandlers | undefined;
   /**
    * Paired-child surface: the kid's app is running this Personas page over a
    * dep identity their guardian set up. In this mode editing UI is suppressed
@@ -78,6 +96,8 @@ export function Personas({
   startEditPersona,
   onConsumeFocus,
   onImportNostrAccount,
+  onLookupExistingProfile,
+  followsHandlersFor,
   pairedChildView = false,
   onActivateRealIdentity,
   onOpenRealIdentityAdvanced,
@@ -102,6 +122,22 @@ export function Personas({
   const [importBackupConfirmed, setImportBackupConfirmed] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState('');
+  // "Match it" — an existing public kind-0 found for the pasted key.
+  const [importLooking, setImportLooking] = useState(false);
+  const [importMatch, setImportMatch] = useState<ExistingProfile | null>(null);
+  const [importChoice, setImportChoice] = useState<ExistingProfileChoice>('match');
+  const [importLookedUpFor, setImportLookedUpFor] = useState('');
+  // Quiet note shown on the page after an import whose lookup couldn't reach any relay.
+  const [importNote, setImportNote] = useState('');
+  // Offered after a successful import: read the new persona's Nostr follows.
+  const [followsOffer, setFollowsOffer] = useState<{ pubkey: string; name: string } | null>(null);
+
+  function resetImportLookup() {
+    setImportLooking(false);
+    setImportMatch(null);
+    setImportChoice('match');
+    setImportLookedUpFor('');
+  }
 
   function closeImport() {
     setImportingNostr(false);
@@ -109,6 +145,7 @@ export function Personas({
     setImportDisplayName('');
     setImportBackupConfirmed(false);
     setImportError('');
+    resetImportLookup();
   }
 
   async function handleImportNostrSubmit() {
@@ -128,13 +165,48 @@ export function Personas({
     setImportBusy(true);
     setImportError('');
     try {
-      const result = await onImportNostrAccount(importNsecInput.trim(), importDisplayName.trim());
+      const nsec = importNsecInput.trim();
+      let match: ExistingProfile | undefined = importLookedUpFor === nsec && importMatch && importChoice === 'match' ? importMatch : undefined;
+      let unreachable = false;
+      if (onLookupExistingProfile && importLookedUpFor !== nsec) {
+        let pubkey: string;
+        try {
+          pubkey = getPublicKey(bytesToHex(decodeNsec(nsec)));
+        } catch {
+          setImportError("That doesn't look like a valid Nostr private key. Check it starts with 'nsec1' and is complete.");
+          return;
+        }
+        setImportLooking(true);
+        let found: ExistingProfile | null | 'unreachable';
+        try {
+          found = await onLookupExistingProfile(pubkey);
+        } catch {
+          found = 'unreachable';
+        } finally {
+          setImportLooking(false);
+        }
+        setImportLookedUpFor(nsec);
+        if (found && found !== 'unreachable') {
+          // Already public: stop and let the user choose before anything is saved.
+          setImportMatch(found);
+          setImportChoice('match');
+          if (found.profile.displayName) setImportDisplayName(found.profile.displayName);
+          return;
+        }
+        unreachable = found === 'unreachable';
+      }
+      const result = await onImportNostrAccount(nsec, importDisplayName.trim(), match);
+      if (result.added && unreachable) {
+        setImportNote("Couldn't reach Nostr relays to look for an existing profile. You can check later from the persona's Advanced page.");
+      }
       if (result.added) {
         // Success — reset + close modal.
+        setFollowsOffer({ pubkey: result.pubkey, name: importDisplayName.trim() });
         setImportingNostr(false);
         setImportNsecInput('');
         setImportDisplayName('');
         setImportBackupConfirmed(false);
+        resetImportLookup();
       } else {
         const slotName = result.collisionDisplayName ? `"${result.collisionDisplayName}"` : 'an existing slot';
         if (result.collision === 'natural-person') {
@@ -321,8 +393,28 @@ export function Personas({
     );
   }
 
+  const followsOfferHandlers = followsOffer && followsHandlersFor
+    ? followsHandlersFor(followsOffer.pubkey, followsOffer.name)
+    : undefined;
+
   return (
     <div className="fade-in" role="main">
+      {followsOffer && followsOfferHandlers && (
+        <FollowsImportPanel
+          variant="offer"
+          personaName={followsOffer.name}
+          onImport={followsOfferHandlers.onImportFollows}
+          onUnlink={followsOfferHandlers.onUnlinkFollows}
+          onNotNow={() => setFollowsOffer(null)}
+        />
+      )}
+      {importNote && (
+        <div role="status" className="block" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+          {importNote}
+          {' '}
+          <button type="button" className="btn btn-ghost btn-sm" style={{ width: 'auto' }} onClick={() => setImportNote('')}>Dismiss</button>
+        </div>
+      )}
       <div className="block" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
         Each identity has its own public address (npub). Open an identity to use its card, or manage its profile, backup and visibility.
       </div>
@@ -532,13 +624,27 @@ export function Personas({
               rows={2}
               placeholder="nsec1..."
               value={importNsecInput}
-              onChange={e => setImportNsecInput(e.target.value)}
+              onChange={e => { setImportNsecInput(e.target.value); if (importLookedUpFor) resetImportLookup(); }}
               autoComplete="off"
               autoCorrect="off"
               spellCheck={false}
               style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', resize: 'none', marginTop: 4, marginBottom: 12 }}
               disabled={importBusy}
             />
+
+            {importLooking && (
+              <div role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+                Looking for an existing Nostr profile…
+              </div>
+            )}
+            {importMatch && (
+              <ExistingProfilePanel
+                profile={importMatch.profile}
+                choice={importChoice}
+                onChoice={setImportChoice}
+                disabled={importBusy}
+              />
+            )}
 
             <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Display name</label>
             <input
@@ -579,7 +685,7 @@ export function Personas({
                 disabled={importBusy || !importBackupConfirmed || !importNsecInput.trim() || !importDisplayName.trim()}
                 style={{ flex: 1 }}
               >
-                {importBusy ? 'Importing…' : 'Import'}
+                {importLooking ? 'Looking…' : importBusy ? 'Importing…' : 'Import'}
               </button>
             </div>
           </div>

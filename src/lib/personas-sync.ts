@@ -40,6 +40,7 @@ import { isNaturalPersonActive } from './identity-display';
 import { isValidRelayUrl } from './relay-url';
 import { safeImageOrLinkUrl } from './public-profile-publish';
 import { sanitizeDisplayName } from './text-sanitize';
+import { clampAbout } from './about-cap';
 import { readSyncPlaintext, type SyncDecryptCache } from './sync-decrypt-cache';
 import { publishToRelays, fetchNewestFromRelays } from './sync-relays';
 import { sealVaultPayload, openVaultPayloadOrThrow } from './vault-envelope';
@@ -53,7 +54,6 @@ const DERIVATION_NAME_RE = /^persona-\d+$/;
 const NIP05_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
 
 const CAP_DISPLAY_NAME = 100;
-const CAP_ABOUT = 500;
 const CAP_PICTURE_URL = 500;
 const CAP_BANNER_URL = 500;
 const CAP_NIP05 = 100;
@@ -179,7 +179,7 @@ function extractProfileFields(ep: ExtraPersona): Partial<PublicProfileConfig> | 
   const out: Partial<PublicProfileConfig> = {};
   for (const key of PROFILE_FIELD_KEYS) {
     const v = ep[key];
-    if (typeof v === 'string' && v.length > 0) out[key] = v;
+    if (typeof v === 'string' && v.length > 0) out[key] = key === 'about' ? clampAbout(v) : v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -188,8 +188,9 @@ function parseProfileField(raw: unknown): Partial<PublicProfileConfig> | undefin
   if (typeof raw !== 'object' || raw === null) return undefined;
   const r = raw as Record<string, unknown>;
   const out: Partial<PublicProfileConfig> = {};
-  if (typeof r.about === 'string' && r.about.length > 0 && r.about.length <= CAP_ABOUT) {
-    out.about = r.about;
+  // Truncated (code points), never dropped: a drop would read as "cleared".
+  if (typeof r.about === 'string' && r.about.length > 0) {
+    out.about = clampAbout(r.about);
   }
   if (
     typeof r.pictureUrl === 'string' && r.pictureUrl.length > 0 && r.pictureUrl.length <= CAP_PICTURE_URL &&

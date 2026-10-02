@@ -8,9 +8,13 @@ import { CHILD_CONTACT_POLICY_TAG, openChildContactPolicy, type ChildContactPoli
 import { loadChildContactPolicyCache, saveChildContactPolicyCache } from '../lib/child-contact-policy-cache';
 
 /** Short-lived advisory policy; no signing authority or identity keys delivered. */
-export function useChildContactPolicy(options: { enabled: boolean; child: string | null; key: string | null; relayUrl: string }) {
-  const { enabled, child, key, relayUrl } = options;
-  const session = JSON.stringify([enabled, child, key, relayUrl]);
+export function useChildContactPolicy(options: {
+  enabled: boolean; child: string | null; key: string | null; relayUrl: string;
+  /** Bumped on an in-session re-pair (App's `pairedChildBumpCounter`): the record's client key and endpoint change under the same child id. */
+  pairingGeneration?: number;
+}) {
+  const { enabled, child, key, relayUrl, pairingGeneration = 0 } = options;
+  const session = JSON.stringify([enabled, child, key, relayUrl, pairingGeneration]);
   const [state, setState] = useState<{ session: string; view: ChildContactPolicyView } | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {

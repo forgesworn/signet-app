@@ -8,9 +8,12 @@ interface Props {
   tabs: TabDef[];
   activeTab: TabId | null;
   onTab: (tab: TabDef) => void;
+  /** Per-tab colour that wins over the active/inactive colour (the Bunker
+   *  key shows its serving state: grey, amber or green). */
+  tint?: Partial<Record<TabId, string>>;
 }
 
-export function TabBar({ tabs, activeTab, onTab }: Props) {
+export function TabBar({ tabs, activeTab, onTab, tint }: Props) {
   const container: CSSProperties = {
     display: 'flex', borderTop: '1px solid var(--border)', background: 'var(--bg-card)',
     position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: Z.header,
@@ -31,7 +34,7 @@ export function TabBar({ tabs, activeTab, onTab }: Props) {
           gap: 2, padding: '8px 0 6px',
           background: 'none',
           border: 'none', borderRadius: 0, cursor: 'pointer',
-          color: active ? 'var(--accent)' : 'var(--text-secondary)', font: 'inherit',
+          color: tint?.[t.id] ?? (active ? 'var(--accent)' : 'var(--text-secondary)'), font: 'inherit',
         };
         return (
           <button key={t.id} type="button" onClick={() => onTab(t)}

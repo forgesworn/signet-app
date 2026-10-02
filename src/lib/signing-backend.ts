@@ -4,10 +4,12 @@ import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46';
 import { SimplePool } from 'nostr-tools/pool';
-import { generateSecretKey, verifyEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools/pure';
+import { encrypt as nip44EncryptRaw } from 'nostr-tools/nip44';
 import { encrypt as nip04EncryptRaw, decrypt as nip04DecryptRaw } from 'nostr-tools/nip04';
 import { vaultKeyContext } from 'signet-protocol/experimental';
 import { waitForReplySubscription, RELAY_READY_CAP_MS } from './relay-ready';
+import type { VaultPubkeyStore } from './vault-pubkey-cache';
 
 // Re-exported so existing importers of RELAY_READY_CAP_MS from this module
 // keep working — the readiness helper itself now lives in relay-ready.ts,
@@ -54,6 +56,87 @@ export interface DecryptingSigningBackend extends SigningBackend {
    * more requests.
    */
   readonly transportClientPubkeyHex?: string;
+  /**
+   * Remote (NIP-46) signers only: a view whose requests go out with the
+   * given kind-24133 envelope `created_at` (unix seconds) instead of "now".
+   * The child-direct join (§9.2) forces a strictly increasing per-persona
+   * value that the Heartwood echoes in its C5 audit rumor. Use
+   * `withRequestCreatedAt`, which falls back to the backend itself.
+   */
+  stamped?(createdAt: number): StampedSigningCalls;
+}
+
+/** The calls a stamped view carries. */
+export type StampedSigningCalls = Pick<DecryptingSigningBackend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'>;
+
+/** The result of one stamped (child-direct, forwarded-to-the-signer) call. */
+/** `persona`: the backend's `activePublicKeyHex` (which slot answered, A51);
+ *  `createdAt`: the stamp the request went out with (A60). */
+export type StampedCallResult =
+  | { ok: true; persona: string; createdAt: number }
+  | { ok: false; persona: string; createdAt: number; error: unknown };
+const stampedObservers = new Set<(r: StampedCallResult) => void>();
+
+/**
+ * Watch every stamped call's result (the child-direct unpaired signal, §9.4:
+ * a revoked phone's Heartwood answers "unauthorised"). Returns the unsubscribe.
+ */
+export function observeStampedCalls(listener: (r: StampedCallResult) => void): () => void {
+  stampedObservers.add(listener);
+  return () => { stampedObservers.delete(listener); };
+}
+
+function notifyStamped(r: StampedCallResult): void {
+  for (const l of [...stampedObservers]) { try { l(r); } catch { /* observers never break a call */ } }
+}
+
+async function observed<T>(p: Promise<T>, persona: string, createdAt: number): Promise<T> {
+  try { const v = await p; notifyStamped({ ok: true, persona, createdAt }); return v; }
+  catch (error) { notifyStamped({ ok: false, persona, createdAt, error }); throw error; }
+}
+
+/** A view of `backend` that stamps its NIP-46 requests when it can; the backend itself otherwise.
+ *  Either way, observers see each call's result (with the stamp it was given). */
+export function withRequestCreatedAt(backend: DecryptingSigningBackend, createdAt: number): StampedSigningCalls {
+  const calls: StampedSigningCalls = backend.stamped?.(createdAt) ?? backend;
+  if (stampedObservers.size === 0) return calls;
+  const persona = (backend.activePublicKeyHex || '').toLowerCase();
+  return {
+    signEvent: (event) => observed(calls.signEvent(event), persona, createdAt),
+    nip44Encrypt: (peer, plaintext) => observed(calls.nip44Encrypt(peer, plaintext), persona, createdAt),
+    nip44Decrypt: (peer, ciphertext) => observed(calls.nip44Decrypt(peer, ciphertext), persona, createdAt),
+  };
+}
+
+/**
+ * The runtime fields of nostr-tools' BunkerSigner a stamped request needs.
+ * They are TS-private; `sendStamped` checks each one and falls back to the
+ * signer's own `sendRequest` (unstamped) if a nostr-tools upgrade moves them.
+ */
+interface BunkerSignerInternals {
+  isOpen: boolean;
+  subCloser?: unknown;
+  setupSubscription(): void;
+  serial: number;
+  idPrefix: string;
+  conversationKey: Uint8Array;
+  secretKey: Uint8Array;
+  bp: { pubkey: string; relays: string[] };
+  listeners: Record<string, { resolve(v: string): void; reject(e: unknown): void }>;
+  waitingForAuth: Record<string, boolean>;
+  pool: { publish(relays: string[], ev: unknown): Promise<string>[] };
+}
+
+function hasSignerInternals(s: unknown): s is BunkerSignerInternals {
+  if (!s || typeof s !== 'object') return false;
+  const o = s as Record<string, unknown>;
+  const bp = o.bp as Record<string, unknown> | undefined;
+  const pool = o.pool as Record<string, unknown> | undefined;
+  return o.isOpen === true && typeof o.setupSubscription === 'function' && typeof o.serial === 'number'
+    && typeof o.idPrefix === 'string' && o.conversationKey instanceof Uint8Array && o.secretKey instanceof Uint8Array
+    && !!bp && typeof bp.pubkey === 'string' && Array.isArray(bp.relays)
+    && !!o.listeners && typeof o.listeners === 'object' && !!o.waitingForAuth && typeof o.waitingForAuth === 'object'
+    && !!pool && typeof pool.publish === 'function';
 }
 
 export class LocalSigningBackend implements DecryptingSigningBackend {
@@ -195,6 +278,11 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
   bunkerUri: string = '';
   private signer: BunkerSigner | null = null;
   private pool: SimplePool | null = null;
+  /** The client key bytes `BunkerSigner.fromURI` holds by reference for the
+   *  signer's whole life. They must stay intact until the signer is dropped —
+   *  zeroing them earlier makes the next request encrypt with an all-zero key
+   *  ("invalid scalar") — so `releaseTransport` is what wipes them. */
+  private signerKey: Uint8Array | null = null;
   private connectAttempt = 0;
   private clientSecretHex: string;
   /** See DecryptingSigningBackend.transportClientPubkeyHex. */
@@ -229,6 +317,13 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    */
   private vaultPubkeys = new Map<string, { generation: number; pubkey: Promise<string> }>();
   private vaultGeneration = 0;
+  /**
+   * Optional persistent layer under `vaultPubkeys`, set by App per unlock
+   * (vault-pubkey-cache.ts). A miss in memory consults it before asking the
+   * device; a device answer is written back to it. Keyed by the master
+   * (`activePublicKeyHex`) the pubkey was resolved under.
+   */
+  private vaultPubkeyStore: VaultPubkeyStore | null = null;
 
   constructor(clientSecretHex: string) {
     if (!clientSecretHex || !/^[0-9a-f]{64}$/.test(clientSecretHex)) {
@@ -268,6 +363,85 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    */
   async reconnect(bunkerUri: string, timeoutMs: number = 30_000, expectedPubkey?: string, resendConnect: boolean = false): Promise<void> {
     await this.initSigner(bunkerUri, timeoutMs, resendConnect, expectedPubkey);
+  }
+
+  /**
+   * Child-direct pairing (spec §4 step 5): wait for the Heartwood's connect
+   * ACK to OUR `nostrconnect://` request (the guardian mints the slot with
+   * its secret), then pin `get_public_key` to `expectedPubkey` — the offered
+   * persona. On success `bunkerUri` becomes a secret-free `bunker://<pubkey>`
+   * on the same relays, which every later start passes to `reconnect`
+   * (the slot already knows this client pubkey; no secret is needed again).
+   * Returns that URI. Mismatch, timeout or `signal` abort tears down.
+   */
+  async acceptNostrConnect(nostrconnectUri: string, expectedPubkey: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    const attempt = ++this.connectAttempt;
+    const relays = new URL(nostrconnectUri.replace('nostrconnect://', 'https://')).searchParams.getAll('relay');
+    if (relays.length === 0) throw new Error('nostrconnect URI must include at least one relay.');
+    if (signal?.aborted) throw new Error('Connection cancelled');
+    this.releaseTransport();
+    const pool = new SimplePool();
+    const abort = new AbortController();
+    let signer: BunkerSigner | null = null;
+    let clientSk: Uint8Array | null = null;
+    let released = false;
+    let closedSigner: BunkerSigner | null = null;
+    const release = () => {
+      clientSk?.fill(0);
+      // Idempotent, but a signer that arrived after the first release is still closed.
+      if (signer && signer !== closedSigner) { closedSigner = signer; void signer.close().catch(() => { /* best-effort teardown */ }); }
+      if (released) return;
+      released = true;
+      try { pool.destroy(); } catch { /* best-effort teardown */ }
+      if (this.signer === signer) { this.signer = null; this.vaultGeneration++; }
+      if (this.pool === pool) this.pool = null;
+    };
+    // A29: an outer abort retires this attempt and tears its transport down at
+    // once — including while `get_public_key` is still outstanding, which the
+    // abort signal alone would not interrupt.
+    let rejectAborted: (err: Error) => void = () => {};
+    const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+    aborted.catch(() => { /* observed via the race below */ });
+    const onOuterAbort = () => {
+      abort.abort();
+      if (attempt === this.connectAttempt) this.connectAttempt++;
+      this.activePublicKeyHex = '';
+      release();
+      rejectAborted(new Error('Connection cancelled'));
+    };
+    signal?.addEventListener('abort', onOuterAbort);
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    try {
+      clientSk = hexToBytes(this.clientSecretHex);
+      signer = await BunkerSigner.fromURI(clientSk, nostrconnectUri, {
+        pool,
+        skipSwitchRelays: true,
+        onauth() { /* Heartwood auth callback — no action needed in signet */ },
+      }, abort.signal);
+      if (attempt !== this.connectAttempt || signal?.aborted) throw new Error('Connection cancelled');
+      this.pool = pool;
+      this.signer = signer;
+      this.signerKey = clientSk;
+      const pubkey = (await Promise.race([this.request('get_public_key', [], timeoutMs), aborted])).trim().toLowerCase();
+      if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
+      if (pubkey !== expectedPubkey.toLowerCase()) {
+        this.activePublicKeyHex = '';
+        throw new Error(`Bunker pubkey mismatch: expected ${expectedPubkey.slice(0, 8)}… got ${pubkey.slice(0, 8)}…`);
+      }
+      const p = new URLSearchParams();
+      for (const r of relays) p.append('relay', r);
+      this.activePublicKeyHex = pubkey;
+      this.bunkerUri = `bunker://${pubkey}?${p.toString()}`;
+      this.vaultGeneration++;
+      return this.bunkerUri;
+    } catch (err) {
+      if (attempt === this.connectAttempt) this.connectAttempt++;
+      release();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onOuterAbort);
+    }
   }
 
   private async initSigner(bunkerUri: string, timeoutMs: number, sendConnect: boolean, expectedPubkey?: string): Promise<void> {
@@ -370,12 +544,32 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
   private releaseTransport(): void {
     if (this.signer) void this.signer.close().catch(() => { /* best-effort teardown */ });
     try { this.pool?.destroy(); } catch { /* best-effort teardown */ }
+    this.signerKey?.fill(0);
+    this.signerKey = null;
     this.signer = null;
     this.pool = null;
     this.vaultGeneration++;
   }
 
   async signEvent(event: UnsignedEvent): Promise<NostrEvent> {
+    return this.signEventAt(event);
+  }
+
+  stamped(createdAt: number): StampedSigningCalls {
+    return {
+      signEvent: (event) => this.signEventAt(event, createdAt),
+      nip44Encrypt: async (recipientPubkey, plaintext) => {
+        if (!this.signer) throw new Error('Not connected to bunker');
+        return this.request('nip44_encrypt', [recipientPubkey, plaintext], SIGNER_REQUEST_TIMEOUT_MS, createdAt);
+      },
+      nip44Decrypt: async (senderPubkey, ciphertext) => {
+        if (!this.signer) throw new Error('Not connected to bunker');
+        return this.request('nip44_decrypt', [senderPubkey, ciphertext], SIGNER_REQUEST_TIMEOUT_MS, createdAt);
+      },
+    };
+  }
+
+  private async signEventAt(event: UnsignedEvent, requestCreatedAt?: number): Promise<NostrEvent> {
     if (!this.signer) throw new Error('Not connected to bunker');
     const template = {
       kind: event.kind,
@@ -383,7 +577,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       tags: event.tags,
       content: event.content,
     };
-    const resp = await this.request('sign_event', [JSON.stringify(template)], SIGNER_REQUEST_TIMEOUT_MS);
+    const resp = await this.request('sign_event', [JSON.stringify(template)], SIGNER_REQUEST_TIMEOUT_MS, requestCreatedAt);
     const signed = JSON.parse(resp);
     // Same verification BunkerSigner.signEvent performs before trusting a reply.
     if (!verifyEvent(signed)) {
@@ -420,6 +614,11 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     return this.request('nip04_decrypt', [senderPubkey, ciphertext], SIGNER_REQUEST_TIMEOUT_MS);
   }
 
+  /** Attach (or with null, detach) the persistent vault-pubkey layer. */
+  setVaultPubkeyStore(store: VaultPubkeyStore | null): void {
+    this.vaultPubkeyStore = store;
+  }
+
   /**
    * Dedicated vault route on MySignet's own pairing; never registers a
    * persona. Shares the resolved vault PUBKEY across calls for the same
@@ -454,13 +653,27 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     // (rather than after the first has settled) buys nothing once the
     // module is cached — doing it sequentially avoids two in-flight
     // resolutions of the same dynamic import racing each other.
+    const master = this.activePublicKeyHex;
+    const store = this.vaultPubkeyStore;
     const pubkey = await pubkeyPromise;
     const { HeartwoodVaultBackend, heartwoodVaultRequest } = await this.heartwoodVaultModule();
-    return HeartwoodVaultBackend.fromResolvedPubkey(pubkey, context, (method, params, ctx) => {
-      if (!this.signer) return Promise.reject(new Error('Not connected to bunker'));
-      return heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
-        method, params, context: ctx });
-    }, forbidden);
+    // A stale resolution (the device now signs under another key, or the
+    // value turned out to be one of the owner's identity keys) must not be
+    // served again — drop it from both layers so the next call asks the device.
+    const forget = () => {
+      if (this.vaultPubkeys.get(key)?.pubkey === pubkeyPromise) this.vaultPubkeys.delete(key);
+      if (store) void store.drop(master, key);
+    };
+    try {
+      return HeartwoodVaultBackend.fromResolvedPubkey(pubkey, context, (method, params, ctx) => {
+        if (!this.signer) return Promise.reject(new Error('Not connected to bunker'));
+        return heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
+          method, params, context: ctx });
+      }, forbidden, forget);
+    } catch (err) {
+      forget();
+      throw err;
+    }
   }
 
   /**
@@ -471,10 +684,21 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    * and share this one in-flight RPC instead of issuing a second.
    */
   private resolveVaultPubkey(key: string, context: { purpose: string; index: number }, generation: number): Promise<string> {
+    const master = this.activePublicKeyHex;
+    const store = this.vaultPubkeyStore;
     const pubkeyPromise: Promise<string> = (async () => {
+      // Persisted from an earlier unlock: no device round trip, and no
+      // `NPUB AS` card — the device never remembers that approval.
+      const persisted = store ? await store.get(master, key).catch(() => null) : null;
+      if (persisted) return persisted;
       const { heartwoodVaultRequest } = await this.heartwoodVaultModule();
-      return heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
+      const resolved = await heartwoodVaultRequest({ clientSecret: this.clientSecretHex, bunkerUri: this.bunkerUri,
         method: 'get_public_key', params: [], context });
+      // Only an answer from the pairing that is still current is kept.
+      if (store && generation === this.vaultGeneration && master === this.activePublicKeyHex) {
+        void store.put(master, key, resolved);
+      }
+      return resolved;
     })();
     this.vaultPubkeys.set(key, { generation, pubkey: pubkeyPromise });
     pubkeyPromise.then(
@@ -504,9 +728,12 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
    * (heartwood_capabilities, heartwood_derive_persona, …). Returns the
    * response `result` string verbatim; callers parse/validate.
    */
-  async request(method: string, params: string[], timeoutMs?: number): Promise<string> {
+  async request(method: string, params: string[], timeoutMs?: number, requestCreatedAt?: number): Promise<string> {
     if (!this.signer) throw new Error('Not connected to bunker');
-    if (timeoutMs === undefined) return this.signer.sendRequest(method, params);
+    const send = () => (requestCreatedAt === undefined
+      ? this.signer!.sendRequest(method, params)
+      : this.sendStamped(method, params, requestCreatedAt));
+    if (timeoutMs === undefined) return send();
     // BunkerSigner has no request timeout and never forgets a listener whose
     // reply does not come. Its `listeners` map is TS-private but a plain
     // object at runtime, and sendRequest registers the listener synchronously
@@ -517,7 +744,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     const listeners = (this.signer as unknown as { listeners?: unknown }).listeners;
     const map = listeners && typeof listeners === 'object' ? listeners as Record<string, unknown> : null;
     const before = map ? new Set(Object.keys(map)) : null;
-    const pending = this.signer.sendRequest(method, params);
+    const pending = send();
     const ours = map && before ? Object.keys(map).filter((k) => !before.has(k)) : [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -533,6 +760,35 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  /**
+   * `BunkerSigner.sendRequest` with a caller-chosen envelope `created_at`.
+   * Same id scheme, encryption, listener registration (synchronous, before
+   * any await — `request`'s timeout cleanup relies on that) and publish as
+   * nostr-tools; only the timestamp differs. The reply is delivered by the
+   * signer's own subscription through its `listeners` map. Unknown signer
+   * shape ⇒ the plain request (unstamped) rather than no request at all.
+   */
+  private sendStamped(method: string, params: string[], createdAt: number): Promise<string> {
+    const s = this.signer as unknown;
+    if (!hasSignerInternals(s) || !Number.isSafeInteger(createdAt) || createdAt <= 0) {
+      return this.signer!.sendRequest(method, params);
+    }
+    return new Promise<string>((resolve, reject) => {
+      try {
+        if (!s.subCloser) s.setupSubscription();
+        s.serial++;
+        const id = `${s.idPrefix}-${s.serial}`;
+        const content = nip44EncryptRaw(JSON.stringify({ id, method, params }), s.conversationKey);
+        const ev = finalizeEvent({ kind: 24133, tags: [['p', s.bp.pubkey]], content, created_at: createdAt }, s.secretKey);
+        s.listeners[id] = { resolve, reject };
+        s.waitingForAuth[id] = true;
+        Promise.any(s.pool.publish(s.bp.relays, ev)).catch(reject);
+      } catch (err) {
+        reject(err);
+      }
+    });
   }
 
   destroy(): void {

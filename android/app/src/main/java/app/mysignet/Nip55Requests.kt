@@ -33,9 +33,18 @@ object Nip55Requests {
 
     fun newId(): String = UUID.randomUUID().toString()
 
+    /**
+     * The page reported a Page Lifecycle `freeze`: Chromium stops a hidden
+     * page about 60 s after it is hidden, and a request pushed to it then sits
+     * unanswered until something brings the app to the front. Cleared by
+     * `resume`, and by a new page attaching.
+     */
+    @Volatile private var frozen = false
+
     fun attach(deliver: (Nip55Incoming) -> Unit, withdraw: (String) -> Unit) {
         sink = deliver
         withdrawSink = withdraw
+        frozen = false
         Log.i(TAG, "page attached, held=${synchronized(held) { held.size }}")
     }
 
@@ -44,8 +53,20 @@ object Nip55Requests {
         if (withdrawSink === withdraw) withdrawSink = null
     }
 
+    fun pageFrozen(value: Boolean) {
+        frozen = value
+        Log.i(TAG, if (value) "page frozen" else "page resumed")
+    }
+
     /** Whether the page is there to answer right now. */
     val pageUp: Boolean get() = sink != null
+
+    /**
+     * Whether the page can answer a provider query on the spot: up and not
+     * frozen. A frozen page cannot, so the provider says "ask by intent" at
+     * once, and the intent brings the app forward, which thaws it.
+     */
+    val pageAnswering: Boolean get() = sink != null && !frozen
 
     /** Registers a request and sends it on, or holds it for the page to drain. */
     fun submit(request: Nip55Incoming, onAnswer: (Nip55Answer) -> Unit) {

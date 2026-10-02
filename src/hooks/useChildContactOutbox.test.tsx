@@ -52,3 +52,23 @@ it('reloads when version bumps after a new ask is queued', async () => {
   await waitFor(() => expect(hook.result.current).toHaveLength(2));
   hook.unmount();
 });
+
+it('follows an in-session re-pair: re-reads the pairing when the pairing generation bumps', async () => {
+  await pair();
+  const requestFor = (s: ChildRequestScope, id: string): ChildContactRequest => ({ v: 1, id, guardian, endpoint: s.endpoint, client: s.client,
+    persona: s.personas[0], revision: 1, createdAt: now, expiresAt: now + 600,
+    invite: { v: 1, recipient: '6'.repeat(64), secret: '7'.repeat(64), relays: ['wss://invite.example/'] } });
+  await queueChildContactRequest({ scope, key, request: requestFor(scope, 'a'.repeat(32)), fingerprint: 'f'.repeat(64), now, isCurrent: () => true });
+  const hook = renderHook(({ gen }) => useChildContactOutbox({ enabled: true, child: childId, key, guardian, personas: scope.personas, version: 0, pairingGeneration: gen }),
+    { initialProps: { gen: 0 } });
+  await waitFor(() => expect(hook.result.current.map(e => e.request.id)).toEqual(['a'.repeat(32)]));
+  const client2 = new LocalSigningBackend('07'.repeat(32)), endpoint2 = new LocalSigningBackend('06'.repeat(32));
+  await savePairedChild({ bunkerUri: `bunker://${endpoint2.activePublicKeyHex}?relay=wss%3A%2F%2Frelay.example`,
+    clientKeypair: { publicKey: client2.activePublicKeyHex, privateKey: '07'.repeat(32) },
+    dependantPubkey: childId, dependantName: 'Robin', pairedAt: now + 5, hasPaired: true, guardianPubkey: guardian }, key);
+  const scope2: ChildRequestScope = { ...scope, endpoint: endpoint2.activePublicKeyHex, client: client2.activePublicKeyHex };
+  await queueChildContactRequest({ scope: scope2, key, request: requestFor(scope2, 'b'.repeat(32)), fingerprint: 'f'.repeat(64), now, isCurrent: () => true });
+  hook.rerender({ gen: 1 });
+  await waitFor(() => expect(hook.result.current.map(e => e.request.id)).toEqual(['b'.repeat(32)]));
+  hook.unmount();
+});

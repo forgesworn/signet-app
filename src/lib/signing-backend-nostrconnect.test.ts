@@ -1,0 +1,114 @@
+/**
+ * BunkerSigningBackend.acceptNostrConnect — the child-direct handshake
+ * (spec §4 step 5). The signer must answer as the offered persona.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const m = vi.hoisted(() => ({
+  pubkeyReply: '',
+  fromUriCalls: [] as { uri: string; params: Record<string, unknown> }[],
+  fromUriKeys: [] as Uint8Array[],
+  fromUriReject: false,
+  closed: 0,
+  pubkeyHang: false,
+}));
+
+vi.mock('nostr-tools/nip46', () => ({
+  parseBunkerInput: async () => null,
+  BunkerSigner: {
+    fromBunker: () => { throw new Error('not used'); },
+    fromURI: async (sk: Uint8Array, uri: string, params: Record<string, unknown>) => {
+      m.fromUriCalls.push({ uri, params });
+      m.fromUriKeys.push(sk);
+      if (m.fromUriReject) throw new Error('subscription closed before connection was established.');
+      return {
+        sendRequest: async (method: string) => {
+          // The real BunkerSigner keeps `sk` by reference and encrypts every
+          // request with it — an all-zero key is nostr-tools' "invalid scalar".
+          if (sk.every((b) => b === 0)) throw new Error('invalid scalar: out of range');
+          if (method === 'get_public_key') return m.pubkeyHang ? new Promise<string>(() => {}) : m.pubkeyReply;
+          return 'ok';
+        },
+        close: async () => { m.closed += 1; },
+      };
+    },
+  },
+}));
+
+vi.mock('nostr-tools/pool', () => ({
+  SimplePool: class { destroy() { /* no sockets */ } },
+}));
+
+import { BunkerSigningBackend } from './signing-backend';
+
+const PERSONA = 'ab'.repeat(32);
+const NC = `nostrconnect://${'a1'.repeat(32)}?relay=wss%3A%2F%2Fhw1.example&relay=wss%3A%2F%2Fhw2.example&secret=${'cc'.repeat(16)}`;
+
+describe('BunkerSigningBackend.acceptNostrConnect', () => {
+  beforeEach(() => { m.pubkeyReply = ''; m.fromUriCalls = []; m.fromUriKeys = []; m.fromUriReject = false; m.closed = 0; m.pubkeyHang = false; });
+
+  it('pins get_public_key to the persona and stores a secret-free bunker URI for reconnects', async () => {
+    m.pubkeyReply = PERSONA;
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    const uri = await b.acceptNostrConnect(NC, PERSONA, 5_000);
+    expect(b.activePublicKeyHex).toBe(PERSONA);
+    expect(uri).toBe(b.bunkerUri);
+    expect(uri.startsWith(`bunker://${PERSONA}?`)).toBe(true);
+    expect(uri).not.toContain('secret');
+    expect(new URL(uri.replace('bunker://', 'https://')).searchParams.getAll('relay')).toEqual(['wss://hw1.example', 'wss://hw2.example']);
+    expect(m.fromUriCalls[0].uri).toBe(NC);
+    expect(m.fromUriCalls[0].params.skipSwitchRelays).toBe(true);
+  });
+
+  it('keeps the client key intact while the signer lives and wipes it when the transport is dropped', async () => {
+    m.pubkeyReply = PERSONA;
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    await b.acceptNostrConnect(NC, PERSONA, 5_000);
+    const key = m.fromUriKeys[0];
+    expect(Array.from(key).every((x) => x === 0x11)).toBe(true);
+    b.destroy();
+    expect(key.every((x) => x === 0)).toBe(true);
+  });
+
+  it('wipes the client key when the handshake fails after the signer arrived', async () => {
+    m.pubkeyReply = 'cd'.repeat(32);
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    await expect(b.acceptNostrConnect(NC, PERSONA, 5_000)).rejects.toThrow(/mismatch/);
+    expect(m.fromUriKeys[0].every((x) => x === 0)).toBe(true);
+  });
+
+  it('a signer answering as a different pubkey is refused and torn down', async () => {
+    m.pubkeyReply = 'cd'.repeat(32);
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    await expect(b.acceptNostrConnect(NC, PERSONA, 5_000)).rejects.toThrow(/mismatch/);
+    expect(b.activePublicKeyHex).toBe('');
+    expect(m.closed).toBe(1);
+    await expect(b.signEvent({ kind: 1, created_at: 1, tags: [], content: '', pubkey: PERSONA })).rejects.toThrow(/Not connected/);
+  });
+
+  it('propagates a handshake that never completes', async () => {
+    m.fromUriReject = true;
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    await expect(b.acceptNostrConnect(NC, PERSONA, 5_000)).rejects.toThrow();
+  });
+
+  it('A29: an abort while get_public_key is pending rejects at once and tears the backend down', async () => {
+    m.pubkeyHang = true;
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    const ac = new AbortController();
+    const p = b.acceptNostrConnect(NC, PERSONA, 60_000, ac.signal);
+    await new Promise(r => setTimeout(r, 0));
+    ac.abort();
+    await expect(p).rejects.toThrow(/cancelled/i);
+    expect(m.closed).toBe(1);
+    expect(b.activePublicKeyHex).toBe('');
+    await expect(b.signEvent({ kind: 1, created_at: 1, tags: [], content: '', pubkey: PERSONA })).rejects.toThrow(/Not connected/);
+  });
+
+  it('A29: an abort before the handshake starts rejects without connecting', async () => {
+    const b = new BunkerSigningBackend('11'.repeat(32));
+    const ac = new AbortController();
+    ac.abort();
+    await expect(b.acceptNostrConnect(NC, PERSONA, 60_000, ac.signal)).rejects.toThrow(/cancelled/i);
+  });
+});

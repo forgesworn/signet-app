@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { authenticateBiometric, authenticatePIN, getAuthMethod } from '../lib/auth';
+import { authenticateBiometric, authenticatePIN, getAuthMethod, hasPinFallback } from '../lib/auth';
 import { Z } from '../lib/z-index';
 import { BrandMark } from '../components/BrandMark';
 import {
@@ -126,6 +126,10 @@ function accentToBorderTreatment(accent: PurposeAccent): string {
 
 export function AuthScreen({ onUnlock, onCancel, purposeContext }: Props) {
   const method = getAuthMethod();
+  const pinFallback = hasPinFallback();
+  const biometricFailed = pinFallback
+    ? 'Biometric authentication failed. Try again or use your PIN.'
+    : 'Biometric authentication failed. Try again.';
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -179,10 +183,10 @@ export function AuthScreen({ onUnlock, onCancel, purposeContext }: Props) {
       if (key) {
         onUnlock(key);
       } else {
-        setError('Biometric authentication failed. Try again or use your PIN.');
+        setError(biometricFailed);
       }
     } catch {
-      setError('Biometric authentication failed. Try again or use your PIN.');
+      setError(biometricFailed);
     } finally {
       setLoading(false);
     }
@@ -353,15 +357,17 @@ export function AuthScreen({ onUnlock, onCancel, purposeContext }: Props) {
             onClick={() => void triggerBiometric()}
             disabled={loading}
           >
-            {loading ? 'Waiting for biometric...' : 'Unlock with biometrics'}
+            {loading ? 'Waiting for biometric...' : error ? 'Try again' : 'Unlock with biometrics'}
           </button>
-          <button
-            className="btn btn-ghost"
-            style={{ width: '100%' }}
-            onClick={() => { setShowPinFallback(true); setError(''); }}
-          >
-            Use PIN instead
-          </button>
+          {pinFallback && (
+            <button
+              className="btn btn-ghost"
+              style={{ width: '100%' }}
+              onClick={() => { setShowPinFallback(true); setError(''); }}
+            >
+              Use PIN instead
+            </button>
+          )}
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import type { PersonaPublicProfile } from './public-profile';
+import type { PersonaPublicProfile, PublicProfileBase } from './public-profile';
 import type { Nip05CheckResult } from '../lib/nip05-check';
 
 /**
@@ -64,6 +64,26 @@ export interface SlotPublicationFields {
   nip05CheckResult?: Nip05CheckResult;
   /** Device-local: ms epoch of that lookup. Never synced. */
   nip05CheckedAt?: number;
+  /**
+   * Device-local: the kind-0 Signet last knew of on the relay (published or
+   * matched on import). Comparison base for the lossless three-way publish
+   * merge. Never synced, never on kind-0; set/cleared with `publicProfile`.
+   */
+  publicProfileBase?: PublicProfileBase;
+  /**
+   * Device-local: the last Nostr follow list (kind 3) imported into this
+   * persona's contacts. `eventId`/`createdAt` (unix s) name the kind 3 it came
+   * from; `importedAt` is ms epoch; `count` is how many accounts that list
+   * followed. Never synced, never on any wire, never published.
+   */
+  followsImport?: FollowsImportState;
+}
+
+export interface FollowsImportState {
+  eventId: string;
+  createdAt: number;
+  importedAt: number;
+  count: number;
 }
 
 /** A single persona (beyond the primary natural-person and default persona) */

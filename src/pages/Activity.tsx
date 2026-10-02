@@ -17,6 +17,9 @@ import type { AuditEntry } from '../lib/audit-fetch';
 import { groupAuditByDay, summariseAudit } from '../lib/audit-fetch';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import { useAuditLog, type AuditDecryptStrategy } from '../hooks/useAuditLog';
+import { useChildActivity, dependantPersonaPubkeys } from '../hooks/useChildActivity';
+import type { MergedActivityRow } from '../lib/child-activity';
+import { CHILD_ACTIVITY_COPY } from '../lib/child-device-copy';
 import { Icon } from '../components/Icon';
 
 type Viewer = 'guardian' | 'child';
@@ -29,10 +32,17 @@ interface Props {
   onRefresh: () => void;
   /** 'guardian' = "{name}'s activity"; 'child' = "Your activity". */
   viewer?: Viewer;
+  /**
+   * A child's own phone paired straight to the Heartwood (spec §9.2): the
+   * merged timeline (the phone's records joined with the Heartwood's) replaces
+   * `entries` as the list.
+   */
+  merged?: MergedActivityRow[];
 }
 
-export function Activity({ dependant, entries, loading, error, onRefresh, viewer = 'guardian' }: Props) {
+export function Activity({ dependant, entries, loading, error, onRefresh, viewer = 'guardian', merged }: Props) {
   const groups = useMemo(() => groupAuditByDay(entries, new Date()), [entries]);
+  const personaNames = useMemo(() => personaNameMap(dependant), [dependant]);
 
   const headerTitle = viewer === 'child'
     ? 'Your activity'
@@ -56,6 +66,30 @@ export function Activity({ dependant, entries, loading, error, onRefresh, viewer
       </button>
     </div>
   );
+
+  if (merged) {
+    return (
+      <div className="fade-in" role="main">
+        {header}
+        {merged.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-state-icon"><Icon name="clipboard" size={36} /></div>
+            <h3 className="empty-state-title">No activity yet</h3>
+            <p className="empty-state-text">{CHILD_ACTIVITY_COPY.empty(dependant.displayName)}</p>
+          </div>
+        ) : groupMergedByDay(merged).map((g) => (
+          <div key={g.dayLabel} className="section">
+            <div className="section-title" style={{ marginBottom: 6 }}>{g.dayLabel}</div>
+            <div className="card card-flush" style={{ overflow: 'hidden' }}>
+              {g.rows.map((row, ix) => (
+                <MergedRow key={rowKey(row, ix)} row={row} last={ix === g.rows.length - 1} childName={dependant.displayName} personaNames={personaNames} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   // ── Loading state ──────────────────────────────────────────────────────────
   if (loading && entries.length === 0) {
@@ -189,9 +223,22 @@ interface GuardianActivityRouteProps {
   guardianPubkey: string;
   guardianBackend: DecryptingSigningBackend | null;
   relayUrl: string;
+  /** Needed for a child's phone paired straight to the Heartwood (idle while null). */
+  encryptionKey?: string | null;
 }
 
-export function GuardianActivityRoute({ dependant, guardianPubkey, guardianBackend, relayUrl }: GuardianActivityRouteProps) {
+export function GuardianActivityRoute({ dependant, guardianPubkey, guardianBackend, relayUrl, encryptionKey = null }: GuardianActivityRouteProps) {
+  if (dependant.childDevice?.mode === 'heartwood-direct') {
+    return (
+      <ChildDirectActivityRoute
+        dependant={dependant}
+        guardianPubkey={guardianPubkey}
+        guardianBackend={guardianBackend}
+        relayUrl={relayUrl}
+        encryptionKey={encryptionKey}
+      />
+    );
+  }
   return (
     <ActivityRoute
       dependant={dependant}
@@ -200,6 +247,37 @@ export function GuardianActivityRoute({ dependant, guardianPubkey, guardianBacke
       decrypt={guardianBackend ? { kind: 'backend', backend: guardianBackend } : null}
       relayUrl={relayUrl}
       viewer="guardian"
+    />
+  );
+}
+
+/**
+ * A child's own phone paired straight to the Heartwood (spec §9.2): the
+ * Heartwood's C5 records (to the guardian NP, one per persona it signed as)
+ * joined with the phone's own gate decisions (to the rail key).
+ */
+function ChildDirectActivityRoute({ dependant, guardianPubkey, guardianBackend, relayUrl, encryptionKey }: Required<Omit<GuardianActivityRouteProps, 'encryptionKey'>> & { encryptionKey: string | null }) {
+  const dependantIds = useMemo(() => dependantPersonaPubkeys(dependant), [dependant]);
+  const decrypt = useMemo<AuditDecryptStrategy | null>(() => (guardianBackend ? { kind: 'backend', backend: guardianBackend } : null), [guardianBackend]);
+  const { entries, loading, error, refresh } = useAuditLog({
+    dependantId: dependant.id,
+    dependantIds,
+    recipientPubkey: guardianPubkey,
+    expectedSignerPubkey: guardianPubkey,
+    decrypt,
+    relayUrl,
+  });
+  const relays = useMemo(() => [relayUrl], [relayUrl]);
+  const { rows } = useChildActivity({ dependant, relays, encryptionKey, deviceEntries: entries });
+  return (
+    <Activity
+      dependant={dependant}
+      entries={entries}
+      loading={loading}
+      error={error}
+      onRefresh={() => { void refresh(); }}
+      viewer="guardian"
+      merged={rows}
     />
   );
 }
@@ -256,4 +334,68 @@ function formatRelative(createdAt: number): string {
     return `${d}d ago`;
   }
   return new Date(createdAt * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// ── Merged timeline rendering (child-direct) ─────────────────────────────────
+
+function personaNameMap(dep: DependantIdentity): Map<string, string> {
+  const m = new Map<string, string>();
+  const put = (pk: string | undefined, name: string | undefined) => {
+    if (pk && name) m.set(pk.toLowerCase(), name);
+  };
+  put(dep.naturalPerson?.publicKey, dep.naturalPerson?.displayName || dep.displayName);
+  put(dep.persona?.publicKey, dep.persona?.displayName || dep.displayName);
+  for (const x of dep.extraPersonas ?? []) put(x.publicKey, x.displayName);
+  return m;
+}
+
+function rowTime(r: MergedActivityRow): number {
+  return r.device?.createdAt ?? r.entry?.at ?? r.guardian?.requestCreatedAt ?? 0;
+}
+
+function rowKey(r: MergedActivityRow, ix: number): string {
+  return `${r.device?.id ?? ''}|${r.entry ? `${r.entry.persona}:${r.entry.at}:${r.entry.requestCreatedAt ?? ''}:${r.entry.outcome}` : ''}|${r.guardian ? `${r.guardian.persona}:${r.guardian.requestCreatedAt}` : ''}|${ix}`;
+}
+
+function groupMergedByDay(rows: MergedActivityRow[]): Array<{ dayLabel: string; rows: MergedActivityRow[] }> {
+  // Reuse the audit grouping (day labels) by projecting each row to its time.
+  const byId = new Map<string, MergedActivityRow>();
+  const proxies: AuditEntry[] = rows.map((r, ix) => {
+    const id = String(ix);
+    byId.set(id, r);
+    return { id, dependantPubkey: '', createdAt: rowTime(r), outcome: 'approved' };
+  });
+  return groupAuditByDay(proxies, new Date()).map(g => ({ dayLabel: g.dayLabel, rows: g.entries.map(e => byId.get(e.id)!) }));
+}
+
+function mergedSummary(row: MergedActivityRow): string {
+  const kind = row.entry ? row.entry.kind : row.device ? row.device.eventKind ?? null : row.guardian?.kind ?? null;
+  if (kind === null || kind === undefined) return CHILD_ACTIVITY_COPY.crypto;
+  const target = row.entry?.target;
+  const origin = target && target.startsWith('site:') ? target.slice(5) : row.device?.origin;
+  return summariseAudit({ id: '', dependantPubkey: '', createdAt: 0, outcome: 'approved', eventKind: kind, ...(origin ? { origin } : {}) });
+}
+
+function MergedRow({ row, last, childName, personaNames }: { row: MergedActivityRow; last: boolean; childName: string; personaNames: Map<string, string> }) {
+  const persona = row.entry?.persona ?? row.device?.dependantPubkey ?? row.guardian?.persona ?? '';
+  const personaName = personaNames.get(persona) ?? `${persona.slice(0, 8)}…`;
+  const app = row.entry ? row.entry.appLabel : row.byGuardian ? CHILD_ACTIVITY_COPY.signedByYou : CHILD_ACTIVITY_COPY.onHeartwood;
+  const outcome = row.entry
+    ? CHILD_ACTIVITY_COPY.outcome[row.entry.outcome] ?? row.entry.outcome
+    : (row.device?.outcome === 'denied' || row.device?.outcome === 'auto-denied' ? CHILD_ACTIVITY_COPY.outcome.denied : CHILD_ACTIVITY_COPY.outcome.signed);
+  return (
+    <div
+      data-testid="merged-activity-row"
+      style={{ padding: '12px 14px', borderBottom: last ? 'none' : '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 2 }}
+    >
+      <div style={{ fontSize: '0.92rem' }}>{mergedSummary(row)}</div>
+      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+        {CHILD_ACTIVITY_COPY.as(personaName)} · {app} · {outcome}
+      </div>
+      {row.mismatch ? (
+        <div role="alert" style={{ fontSize: '0.8rem', color: 'var(--warning)' }}>{CHILD_ACTIVITY_COPY.mismatch(childName)}</div>
+      ) : null}
+      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{formatRelative(rowTime(row))}</div>
+    </div>
+  );
 }

@@ -63,7 +63,11 @@ import type { AuditEventParams } from '../lib/audit';
 import { parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/persona-bunker-routes';
+import type { ChildRouteGate } from '../lib/child-bunker';
+import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
+import { isNativeApp } from '../lib/native';
+import { markAnswered, wasAnswered } from '../lib/bunker-answered-store';
 
 /**
  * Dev-only diagnostics for the bunker-serve socket lifecycle. Stripped from
@@ -170,6 +174,16 @@ export interface BunkerRoute {
    * per-persona-public-profile design's Phase D depends on it.
    */
   personaSigningBackendByPubkey?: (eventPubkey: string) => DecryptingSigningBackend | null;
+  /**
+   * Child-direct install only (spec §8.2): the child's gate. When present the
+   * route is an owner-persona route of the CHILD's bunker — `backend` is a
+   * local transport key, `signingBackend` the persona's Heartwood route — and
+   * every sign / NIP-44 request is decided by the gate (rules, asks to the
+   * guardian) instead of connected-client rows or the approval queue. The
+   * gate's `requestCreatedAt` is stamped on the forwarded Heartwood request.
+   * NIP-04 is refused. Serving is not time-boxed: the gate is the policy.
+   */
+  childGate?: ChildRouteGate;
 }
 
 /** Shape exposed to the approval modal while a sign_event is waiting. */
@@ -474,7 +488,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const subIdRef = useRef<string | null>(null);
   // Keep only encrypted, signed replies. A relay OK retires them; a reconnect
   // republishes the same event (and never signs the user action a second time).
-  const responseOutboxRef = useRef<Map<string, { event: NostrEvent; expiresAt: number; sentOn?: WebSocket }>>(new Map());
+  const responseOutboxRef = useRef<Map<string, { event: NostrEvent; expiresAt: number; sentOn?: WebSocket; inboundEventId?: string }>>(new Map());
   const responseGenerationRef = useRef(0);
   const liveConnectionConfigRef = useRef({ enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce });
   liveConnectionConfigRef.current = { enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce };
@@ -490,6 +504,9 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       try {
         entry.sentOn = ws;
         ws.send(JSON.stringify(['EVENT', entry.event]));
+        // Recorded only once it has gone out: an answer still queued on a
+        // page that is then released must be answered by the next page.
+        if (entry.inboundEventId) markAnswered(entry.inboundEventId);
       }
       catch {
         // Retain the event for the next socket; close triggers normal backoff.
@@ -556,6 +573,13 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const handledEventIdsRef = useRef<Set<string>>(new Set());
   const HANDLED_EVENT_IDS_CAP = 1000;
 
+  // Android only: a page that unlocks looks back further (see the REQ
+  // `since`) to answer what arrived while nothing was serving, and skips what
+  // an earlier page already answered — recorded per inbound event id in
+  // storage that outlives the page (bunker-answered-store).
+  const shareAnswered = isNativeApp();
+  const inboundEventByRequestRef = useRef<Map<string, string>>(new Map());
+
   /** Publish a response event to the relay the client spoke to us on. */
   const publishResponse = useCallback(
     async (backend: DecryptingSigningBackend, clientPubkey: string, requestId: string, result?: string, error?: string) => {
@@ -574,10 +598,16 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         devLog('[bunker-serve] response buffer full');
         return;
       }
-      responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000 });
+      let inboundEventId: string | undefined;
+      if (shareAnswered) {
+        const key = `${clientPubkey}:${requestId}`;
+        inboundEventId = inboundEventByRequestRef.current.get(key);
+        inboundEventByRequestRef.current.delete(key);
+      }
+      responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000, inboundEventId });
       flushResponses();
     },
-    [flushResponses],
+    [flushResponses, shareAnswered],
   );
 
   /** Dispatch an inbound kind-24133 event to the right handler. */
@@ -639,6 +669,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       const oldest = handled.values().next().value;
       if (oldest !== undefined) handled.delete(oldest);
     }
+    if (shareAnswered && wasAnswered(event.id)) return;
 
     // Bot handlers authorise the verified envelope author from their own fresh
     // encrypted grants before identity decryption. Missing handler means deny;
@@ -650,6 +681,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         if (!live || live.handleBotEvent !== route.handleBotEvent || socket?.readyState !== WebSocket.OPEN
           || response.pubkey !== route.pubkey || response.kind !== 24133) return false;
         socket.send(JSON.stringify(['EVENT', response]));
+        if (shareAnswered) markAnswered(event.id);
         return true;
       });
       return;
@@ -657,6 +689,14 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
 
     const request = await parseInboundRequest(event, route.backend);
     if (!request) return;
+    if (shareAnswered) {
+      const inbound = inboundEventByRequestRef.current;
+      inbound.set(`${request.clientPubkey}:${request.id}`, event.id);
+      if (inbound.size > HANDLED_EVENT_IDS_CAP) {
+        const oldest = inbound.keys().next().value;
+        if (oldest !== undefined) inbound.delete(oldest);
+      }
+    }
 
     // Owner serving is time-boxed. Outside an active owner serve session,
     // decline owner-route requests (third-party apps acting as the user).
@@ -665,7 +705,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     // owner-route method (connect / get_public_key / nip04_* / nip44_* /
     // sign_event).
     const ownerServingActive = isOwnerServingActiveRef.current ? isOwnerServingActiveRef.current() : true;
-    if (!route.dependantId && !ownerServingActive) {
+    if (!route.dependantId && !route.childGate && !ownerServingActive) {
       await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
       return;
     }
@@ -675,6 +715,16 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     // routes enforce the pairing secret on first `connect` and bind
     // the connecting client pubkey — subsequent requests from other
     // clients are rejected.
+    if (request.method === 'connect' && route.childGate) {
+      // The child's bunker ACKs any client; what it may then do is the gate's
+      // call. The metadata label names the app in asks and connected apps.
+      const meta = parseConnectMetadata(request.params[2]);
+      try { route.childGate.onConnect?.(request.clientPubkey.toLowerCase(), { label: meta.label ?? '', ...(meta.origin ? { url: meta.origin } : {}) }); }
+      catch { /* bookkeeping only */ }
+      await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+      return;
+    }
+
     if (request.method === 'connect') {
       if (route.dependantId) {
         // App-route binding flow. Distinct from the device-route
@@ -953,6 +1003,30 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid params');
         return;
       }
+      if (route.childGate) {
+        if (request.method !== 'nip44_encrypt' && request.method !== 'nip44_decrypt') {
+          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'method not supported');
+          return;
+        }
+        const outcome = await route.childGate.authorise({
+          clientPubkey: request.clientPubkey.toLowerCase(), method: request.method, peer: theirPubkey.toLowerCase(),
+        });
+        if (!outcome.ok) {
+          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
+          return;
+        }
+        try {
+          const calls = withRequestCreatedAt(route.signingBackend ?? route.backend, outcome.requestCreatedAt);
+          const result = request.method === 'nip44_encrypt'
+            ? await calls.nip44Encrypt(theirPubkey, payload)
+            : await calls.nip44Decrypt(theirPubkey, payload);
+          await publishResponse(route.backend, request.clientPubkey, request.id, result);
+        } catch {
+          await publishResponse(route.backend, request.clientPubkey, request.id, undefined,
+            request.method === 'nip44_encrypt' ? 'encryption failed' : 'decryption failed');
+        }
+        return;
+      }
       // Owner-route gate (security audit 2026-06-15). NIP-04/NIP-44
       // encrypt/decrypt are SILENT operations — there is no approval prompt
       // for them. Without this
@@ -1170,6 +1244,29 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     // (grant lookup, policy decision) and the resolveApproval grant save.
     const scope = inferScope(template);
     const origin = scope ? inferOrigin(template, scope) : null;
+
+    // The child's bunker: the gate decides, the persona's Heartwood route signs.
+    if (route.childGate) {
+      const signing = route.signingBackend ?? route.backend;
+      if (ownerRoutePubkeyMismatch(signing.activePublicKeyHex, template.pubkey)) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pubkey mismatch');
+        return;
+      }
+      const outcome = await route.childGate.authorise({
+        clientPubkey: request.clientPubkey.toLowerCase(), method: 'sign_event', template,
+      });
+      if (!outcome.ok) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
+        return;
+      }
+      try {
+        const signed = await withRequestCreatedAt(signing, outcome.requestCreatedAt).signEvent(outcome.template ?? template);
+        await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
+      } catch {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+      }
+      return;
+    }
 
     // Guardian-route auto-approve: whole-client "allow always" bit.
     // Dependant routes skip this — they use the per-(scope, origin) grants
@@ -1683,7 +1780,9 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         const filter = {
           kinds: [24133],
           '#p': pubkeys,
-          since: Math.floor(Date.now() / 1000) - 60,
+          // Native looks back 5 min (the request freshness bound) so a page
+          // that unlocks answers what arrived while nothing was serving.
+          since: Math.floor(Date.now() / 1000) - (shareAnswered ? 300 : 60),
         };
         try { ws.send(JSON.stringify(['REQ', subId, filter])); } catch { /* ignore */ }
         devLog(`[bunker-serve] open — REQ sent (#p: ${pubkeys.map(p => p.slice(0, 8)).join(',')})`);

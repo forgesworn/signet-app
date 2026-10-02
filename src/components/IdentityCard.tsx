@@ -8,6 +8,7 @@ import { initialFromName, colourFromPubkey } from '../lib/avatar';
 import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
+import { useCarouselArrows } from './CarouselArrowContext';
 
 export interface IdentityCardProps {
   row: CarouselRow;
@@ -75,6 +76,7 @@ export function IdentityCard({ row, resolved, badge, childMode, childDormant, ch
   const verified = tier >= 2;
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
+  const arrows = useCarouselArrows();
 
   // Guardian name for the dormant notice — falls back to the generic form
   // when the guardian's status-publish carried no name (see `cachedGuardianName`).
@@ -389,8 +391,26 @@ export function IdentityCard({ row, resolved, badge, childMode, childDormant, ch
               )
               : childDormant
                 ? 'Ask your guardian'
-                : '\u2190 QR \u00B7 Camera \u2192'}
+                : null}
           </div>
+          {!isChildCard && !childDormant && (
+            <div className="card-swipe-hints">
+              {/* The scanner is the card to the left, the QR the card to the right
+                  (the horizontal ring wraps), so each icon sits on the side its card is. */}
+              <button type="button" className="card-swipe-hint" aria-label="Scan a QR code"
+                onClick={e => { e.stopPropagation(); arrows?.left(); }}>
+                <span className="card-swipe-arrow" aria-hidden="true">&lsaquo;</span>
+                <Icon name="qrScan" size={30} />
+                <span className="card-swipe-label">Scan</span>
+              </button>
+              <button type="button" className="card-swipe-hint" aria-label="Show my QR code"
+                onClick={e => { e.stopPropagation(); arrows?.right(); }}>
+                <span className="card-swipe-label">My QR</span>
+                <Icon name="qr" size={30} />
+                <span className="card-swipe-arrow" aria-hidden="true">&rsaquo;</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

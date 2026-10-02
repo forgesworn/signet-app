@@ -75,3 +75,28 @@ describe('isDependantNaturalPersonActive', () => {
     })).toBe(false);
   });
 });
+
+import { hasPublicNostrProfile } from './identity-display';
+
+describe('hasPublicNostrProfile', () => {
+  const on = { enabled: true } as const;
+  it('is true only for a slot whose public profile is enabled', () => {
+    const id = makeIdentity({
+      persona: { publicKey: 'b'.repeat(64), privateKey: '', displayName: 'Anon', publicProfile: on },
+      extraPersonas: [
+        { publicKey: 'c'.repeat(64), privateKey: '', displayName: 'Pub', derivationName: 'persona-1', publicProfile: on },
+        { publicKey: 'd'.repeat(64), privateKey: '', displayName: 'Quiet', derivationName: 'persona-2' },
+      ],
+    } as Partial<SignetIdentity>);
+    expect(hasPublicNostrProfile(id, 'b'.repeat(64))).toBe(true);
+    expect(hasPublicNostrProfile(id, 'c'.repeat(64))).toBe(true);
+    expect(hasPublicNostrProfile(id, 'd'.repeat(64))).toBe(false);
+    expect(hasPublicNostrProfile(id, 'e'.repeat(64))).toBe(false);
+    expect(hasPublicNostrProfile(id, '')).toBe(false);
+  });
+  it('never counts a dormant real identity', () => {
+    const np = { publicKey: 'a'.repeat(64), privateKey: '', displayName: 'Real', publicProfile: on };
+    expect(hasPublicNostrProfile(makeIdentity({ naturalPerson: np, naturalPersonActive: false } as Partial<SignetIdentity>), 'a'.repeat(64))).toBe(false);
+    expect(hasPublicNostrProfile(makeIdentity({ naturalPerson: np, naturalPersonActive: true } as Partial<SignetIdentity>), 'a'.repeat(64))).toBe(true);
+  });
+});

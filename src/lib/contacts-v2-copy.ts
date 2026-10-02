@@ -279,6 +279,7 @@ export const ROLODEX_NO_MATCHES_TITLE = 'No matches';
 export const ROLODEX_EMPTY_TITLE = 'No contacts yet';
 export const ROLODEX_EMPTY_TEXT = 'Add someone to see them here.';
 export const NEW_CONTACT_LABEL = 'New contact';
+export const IMPORT_FOLLOWING_LABEL = 'Import following';
 export const RECOGNISE_PUBLIC_KEY_LABEL = 'Recognise a public key';
 export const SEARCH_CONTACTS_LABEL = 'Search contacts';
 
@@ -540,11 +541,38 @@ export const CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY =
 
 /**
  * M7: a paired-child install has no contacts v2 grant surface (R-8), so a
- * pairing code scanned there fails closed — WITH a reason, because a scan
- * that silently does nothing reads as a broken camera.
+ * pairing request that reaches it cannot be approved there. Rather than a
+ * sentence nobody can act on, the child's phone shows the request as a code
+ * the guardian scans with their own My Signet (`ContactsGrantChildCode`).
  */
-export const CONTACTS_GRANT_PAIRED_CHILD_COPY =
-  'Apps are connected to contacts from the guardian device, not this one. Ask them to scan this code.';
+export const CONTACTS_GRANT_CHILD_CODE_TITLE = 'Connect an app to contacts';
+
+export function contactsGrantChildCodeAppLine(appName: string): string {
+  return `${safeName(appName)} wants to connect to contacts.`;
+}
+
+export const CONTACTS_GRANT_CHILD_CODE_EXPLAINER =
+  'Apps are connected to contacts from your guardian, on their own phone, not this one. Ask them to scan this code with My Signet.';
+
+export const CONTACTS_GRANT_CHILD_CODE_QR_LABEL = 'Code for your guardian to scan with My Signet';
+
+export const CONTACTS_GRANT_CHILD_CODE_PAIRING_CODE_COPY =
+  'They will also need the pairing code the app shows, so keep the app open.';
+
+export const CONTACTS_GRANT_CHILD_CODE_EXPIRED_COPY =
+  'This code has expired. Ask the app for a new one.';
+
+export const CONTACTS_GRANT_CHILD_CODE_UNAVAILABLE_COPY =
+  'This request could not be turned into a code. Ask the app for a new one.';
+
+/** `secondsLeft` is whole seconds until the request goes stale (> 0). */
+export function contactsGrantChildCodeExpiryCopy(secondsLeft: number): string {
+  if (secondsLeft < 60) return 'This code works for less than a minute.';
+  const minutes = Math.ceil(secondsLeft / 60);
+  return minutes === 1
+    ? 'This code works for about 1 more minute.'
+    : `This code works for about ${minutes} more minutes.`;
+}
 
 /** B/M5: the dismiss action on that banner. App.tsx is outside the vocabulary
  *  guard's glob but bound by the same rule, so the word lives here. */

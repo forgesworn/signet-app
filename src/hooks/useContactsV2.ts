@@ -54,6 +54,9 @@ import { buildOperation, type MutationActor } from '../lib/contacts-v2-mutations
 import { newContactId, newOperationId } from '../lib/contacts-v2-ids';
 import { resolveEffectiveDirectory, type EffectiveContext } from '../lib/contacts-v2-effective';
 import { contactsMutationQueue, type SerialQueue } from '../lib/contacts-v2-queue';
+import { contactBelongsToList } from '../lib/contacts-v2-membership';
+import { planFollowsImport, type FollowImportEntry, type FollowsImportResult } from '../lib/contacts-v2-follows-import';
+export type { FollowsImportResult };
 
 export interface UseContactsV2Options {
   directoryId: string | null;
@@ -77,6 +80,22 @@ export interface UseContactsV2Result {
   loading: boolean;
   reload: () => Promise<void>;
   recogniseContact: (pubkey: string, displayName: string, ownerIdentityPubkey?: string, originMethod?: ContactOrigin['method']) => Promise<string>;
+  /**
+   * The batch form of `recogniseContact`: every entry is filed under the
+   * persona's list (`ownerIdentityPubkey`) with ONE log read, ONE contiguous
+   * clock range, ONE save and ONE publish signal. Additive only — an existing
+   * contact is at most linked to the list; its tier, name and notes are never
+   * touched. Trimmed to the most recent entries when the backup could not
+   * carry them all. Rejects (writing nothing) if any operation is invalid.
+   */
+  recogniseContacts: (entries: FollowImportEntry[], ownerIdentityPubkey?: string, originMethod?: ContactOrigin['method'], caption?: string) => Promise<FollowsImportResult>;
+  /**
+   * Take many contacts off one persona's list in one write. A contact whose
+   * ONLY list this is is skipped, never unlinked — unlinking a last list
+   * removes the contact, and this is not a way to remove contacts. Returns how
+   * many were unlinked.
+   */
+  unlinkContactsFromList: (contactIds: string[], ownerIdentityPubkey?: string) => Promise<number>;
   addContact: (v: AddContactValue) => Promise<string>;
   renameContact: (contactId: string, displayName: string) => Promise<void>;
   setTier: (contactId: string, tier: ContactTier) => Promise<void>;
@@ -295,6 +314,79 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     });
   }, [directoryId, encryptionKey, actor, opts.ownerIdentityPubkey, publish]);
 
+  const recogniseContacts = useCallback(async (
+    entries: FollowImportEntry[],
+    ownerIdentityPubkey = opts.ownerIdentityPubkey,
+    originMethod: ContactOrigin['method'] = 'import',
+    caption = '',
+  ): Promise<FollowsImportResult> => {
+    if (!directoryId || !encryptionKey || !actor || !ownerIdentityPubkey) throw new Error('Choose an identity list first.');
+    if (!/^[0-9a-f]{64}$/.test(ownerIdentityPubkey)) throw new Error('Invalid contact');
+    return queueRef.current!.run(async () => {
+      // The ONE read: the whole log, because the size line is about the rail's
+      // checkpoint (every directory), and this directory's slice is a filter.
+      const wholeLog = await db.listAllContactOperationsV2(encryptionKey);
+      const current = wholeLog.filter(op => op.directoryId === directoryId);
+      const records = [...applyOperations(current).values()].filter(r => r.directoryId === directoryId);
+      const plan = planFollowsImport({
+        entries, ownerIdentityPubkey, originMethod, caption, directoryId, records, actor,
+        baseClock: nextClock(clockRef.current, frontierOf(current).maxClock) - 1,
+        now: Date.now(), wholeLog,
+      });
+      const summary: FollowsImportResult = {
+        added: plan.added, linked: plan.linked, unchanged: plan.unchanged, skippedRemoved: plan.skippedRemoved,
+        covered: plan.covered, trimmed: plan.trimmed, requested: entries.length,
+      };
+      if (plan.ops.length === 0) return summary;
+      // All or nothing: one invalid operation rejects the whole batch.
+      if (!plan.ops.every(validateOperation)) throw new Error('Invalid contact');
+      if (currentScope.current.directoryId !== directoryId || currentScope.current.encryptionKey !== encryptionKey) throw new Error('Contacts scope changed.');
+      await db.saveContactOperationsV2(plan.ops, encryptionKey);
+      opsRef.current = [...current, ...plan.ops];
+      clockRef.current = frontierOf(opsRef.current).maxClock;
+      try {
+        publish(opsRef.current, directoryId, encryptionKey);
+      } finally {
+        onMutatedRef.current?.();
+      }
+      return summary;
+    });
+  }, [directoryId, encryptionKey, actor, opts.ownerIdentityPubkey, publish]);
+
+  const unlinkContactsFromList = useCallback(async (contactIds: string[], ownerIdentityPubkey = opts.ownerIdentityPubkey): Promise<number> => {
+    if (!directoryId || !encryptionKey || !actor || !ownerIdentityPubkey) throw new Error('Choose an identity list first.');
+    if (!/^[0-9a-f]{64}$/.test(ownerIdentityPubkey)) throw new Error('Invalid contact');
+    return queueRef.current!.run(async () => {
+      const current = await db.listContactOperationsV2(directoryId, encryptionKey);
+      const byId = new Map([...applyOperations(current).values()].map(r => [r.contactId, r]));
+      const clock = nextClock(clockRef.current, frontierOf(current).maxClock);
+      const now = Date.now();
+      const ops: ContactOperation[] = [];
+      for (const id of new Set(contactIds)) {
+        const record = byId.get(id);
+        if (!record || record.lifecycle === 'removed' || !contactBelongsToList(record, ownerIdentityPubkey)) continue;
+        // Its only list: unlinking would remove the contact. Leave it.
+        if (!record.listMemberships?.some(m => m.removedAt === undefined && m.ownerIdentityPubkey !== ownerIdentityPubkey)) continue;
+        ops.push(buildOperation({
+          directoryId, contactId: id, action: 'unlink-list', value: { ownerIdentityPubkey },
+          clock: clock + ops.length, actor, now, operationId: newOperationId(),
+        }));
+      }
+      if (ops.length === 0) return 0;
+      if (!ops.every(validateOperation)) throw new Error('Invalid contact');
+      if (currentScope.current.directoryId !== directoryId || currentScope.current.encryptionKey !== encryptionKey) throw new Error('Contacts scope changed.');
+      await db.saveContactOperationsV2(ops, encryptionKey);
+      opsRef.current = [...current, ...ops];
+      clockRef.current = frontierOf(opsRef.current).maxClock;
+      try {
+        publish(opsRef.current, directoryId, encryptionKey);
+      } finally {
+        onMutatedRef.current?.();
+      }
+      return ops.length;
+    });
+  }, [directoryId, encryptionKey, actor, opts.ownerIdentityPubkey, publish]);
+
   const addIdentity = useCallback(async (contactId: string, v: Omit<AddIdentityValue, 'itemId'>): Promise<string> => {
     const itemId = newContactId();
     await mutate({ contactId, action: 'add-identity', itemId, value: { ...v, itemId } });
@@ -319,6 +411,8 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     reload,
     addContact,
     recogniseContact,
+    recogniseContacts,
+    unlinkContactsFromList,
     renameContact: useCallback((contactId, displayName) => mutate({ contactId, action: 'rename', value: { displayName } }), [mutate]),
     setTier: useCallback((contactId, tier) => mutate({ contactId, action: 'set-tier', value: { tier } }), [mutate]),
     setRoles: useCallback((contactId, roles) => mutate({ contactId, action: 'set-roles', value: { roles } }), [mutate]),

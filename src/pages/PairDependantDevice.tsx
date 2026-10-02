@@ -15,6 +15,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DependantIdentity, DependantBunkerEndpoint } from '../types';
 import { QRCode } from '../components/QRCode';
 import { buildPairingURI, generatePairingSecret } from '../lib/pairing-uri';
+import { usesChildDirectPairing } from '../lib/child-device-pairing';
+import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
+import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
 
 const PAIRING_SECRET_TTL_MS = 5 * 60 * 1000;
 
@@ -51,6 +54,10 @@ interface Props {
   /** Tier 1 auth gate — must resolve before the pairing QR is generated. */
   requestAuth: () => Promise<string | null>;
   onBack: () => void;
+  /** Guardian's signing mode — `'bunker'` + a tree-derived dependant takes the child-direct Heartwood flow. */
+  signingMode?: string;
+  /** Inputs for the child-direct flow (spec §4). Absent ⇒ legacy phone-served QR only. */
+  direct?: Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void };
 }
 
 type Stage =
@@ -60,7 +67,14 @@ type Stage =
   | { kind: 'revoked' }
   | { kind: 'error'; message: string };
 
-export function PairDependantDevice({
+export function PairDependantDevice(props: Props) {
+  if (props.direct && usesChildDirectPairing(props.dependant, props.signingMode)) {
+    return <ChildDirectPairing dependant={props.dependant} direct={props.direct} requestAuth={props.requestAuth} onBack={props.onBack} />;
+  }
+  return <LegacyPairDependantDevice {...props} />;
+}
+
+function LegacyPairDependantDevice({
   dependant,
   relayUrl,
   fallbackRelayUrls,
@@ -329,6 +343,181 @@ export function PairDependantDevice({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Child-direct: the child's phone pairs straight to the Heartwood ────────
+
+function useCountdown(expiresAt: number | null): string {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (expiresAt === null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+  if (expiresAt === null) return '';
+  const left = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+}
+
+const pad = { padding: 24 } as const;
+const muted = { color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.5 } as const;
+const wide = { width: '100%', marginBottom: 8 } as const;
+
+function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
+  dependant: DependantIdentity;
+  direct: NonNullable<Props['direct']>;
+  requestAuth: () => Promise<string | null>;
+  onBack: () => void;
+}) {
+  const { onOpenOperatorImport, ...opts } = direct;
+  const pairing = useChildDevicePairing({ ...opts, dependant });
+  const { state } = pairing;
+  const name = dependant.displayName;
+  const alreadyPaired = dependant.childDevice?.mode === 'heartwood-direct';
+  const [confirmUnpair, setConfirmUnpair] = useState(false);
+  const [unpairError, setUnpairError] = useState<string | null>(null);
+  const [unpairing, setUnpairing] = useState(false);
+  const [unpairedDone, setUnpairedDone] = useState(false);
+  const countdown = useCountdown(state.phase === 'offer' || state.phase === 'confirm' ? state.expiresAt : null);
+
+  const requestAuthRef = useRef(requestAuth);
+  requestAuthRef.current = requestAuth;
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
+  const startRef = useRef(pairing.start);
+  startRef.current = pairing.start;
+
+  const begin = useCallback(async () => {
+    const key = await requestAuthRef.current();
+    if (!key) { onBackRef.current(); return; }
+    startRef.current();
+  }, []);
+
+  // A phone already paired shows its status first; otherwise start at once.
+  useEffect(() => {
+    if (!alreadyPaired) void begin();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dependant.id]);
+
+  const handleUnpair = async () => {
+    setUnpairing(true); setUnpairError(null);
+    try { await pairing.unpair(); setUnpairedDone(true); setConfirmUnpair(false); }
+    catch (e) { setUnpairError(e instanceof Error ? e.message : COPY.errors.unpair); }
+    finally { setUnpairing(false); }
+  };
+
+  if (unpairedDone) {
+    return (
+      <div className="fade-in" style={pad}>
+        <p style={muted}>{COPY.unpaired(name)}</p>
+        <button className="btn btn-primary" onClick={onBack} style={{ ...wide, marginTop: 16 }}>{COPY.done}</button>
+      </div>
+    );
+  }
+
+  if (state.phase === 'idle' && alreadyPaired) {
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.pairedHeading}</h2>
+        <p style={{ ...muted, marginBottom: 20 }}>{COPY.pairedAlready(name)}</p>
+        {unpairError && <p role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{unpairError}</p>}
+        {!confirmUnpair ? (
+          <>
+            <button className="btn" onClick={onBack} style={wide}>{COPY.done}</button>
+            <button className="btn" onClick={() => { void begin(); }} style={wide}>{COPY.pairAgain}</button>
+            <button className="btn" onClick={() => setConfirmUnpair(true)} style={{ ...wide, color: 'var(--text-muted)', fontSize: '0.85rem' }}>{COPY.unpair}</button>
+          </>
+        ) : (
+          <div className="card" style={{ padding: 16, border: '1px solid var(--danger)' }}>
+            <p style={{ fontSize: '0.85rem', lineHeight: 1.5, marginBottom: 12 }}>{COPY.unpairConfirm(name)}</p>
+            <button className="btn btn-danger" disabled={unpairing} onClick={() => { void handleUnpair(); }} style={wide}>
+              {unpairing ? COPY.unpairing : COPY.unpairNow}
+            </button>
+            <button className="btn" disabled={unpairing} onClick={() => setConfirmUnpair(false)} style={{ width: '100%' }}>{COPY.cancel}</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (state.phase === 'idle' || state.phase === 'checking') {
+    return <div className="fade-in" style={{ ...pad, textAlign: 'center' }}><p style={muted}>{COPY.checking}</p></div>;
+  }
+
+  if (state.phase === 'blocked') {
+    const b = COPY.blocked[state.reason];
+    const body = typeof b.body === 'function' ? b.body(name) : b.body;
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{b.heading}</h2>
+        <p style={{ ...muted, marginBottom: 12 }}>{body}</p>
+        {state.reason === 'slots-full' && state.labels && (
+          <ul style={{ ...muted, marginBottom: 16, paddingLeft: 20 }}>
+            {state.labels.map((l, i) => <li key={`${l}-${i}`}>{l.slice(0, 64)}</li>)}
+          </ul>
+        )}
+        {state.reason === 'no-operator-key' && onOpenOperatorImport && (
+          <button className="btn btn-primary" onClick={onOpenOperatorImport} style={wide}>{COPY.blocked['no-operator-key'].action}</button>
+        )}
+        <button className="btn" onClick={onBack} style={{ width: '100%' }}>{COPY.back}</button>
+      </div>
+    );
+  }
+
+  if (state.phase === 'offer') {
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.title(name)}</h2>
+        <p style={{ ...muted, marginBottom: 20 }}>{COPY.offerIntro(name)}</p>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <QRCode data={state.uri} size={260} />
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{COPY.offerExpires(countdown)}</div>
+        </div>
+        <p style={{ ...muted, fontSize: '0.8rem', marginBottom: 20 }}>{COPY.offerNoSecret}</p>
+        <button className="btn" onClick={() => { pairing.cancel(); onBack(); }} style={{ width: '100%' }}>{COPY.cancel}</button>
+      </div>
+    );
+  }
+
+  if (state.phase === 'confirm') {
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.confirmHeading}</h2>
+        <p style={{ ...muted, marginBottom: 20 }}>{COPY.confirmBody(name)}</p>
+        <ol data-testid="pair-check-words" style={{ fontSize: '1.4rem', fontWeight: 600, lineHeight: 1.6, marginBottom: 24, paddingLeft: 28 }}>
+          {state.words.map((w, i) => <li key={i}>{w}</li>)}
+        </ol>
+        <button className="btn btn-primary" onClick={() => { void pairing.confirmMatch(); }} style={wide}>{COPY.confirmMatch}</button>
+        <button className="btn" onClick={() => pairing.rejectMatch()} style={{ width: '100%' }}>{COPY.confirmNoMatch}</button>
+      </div>
+    );
+  }
+
+  if (state.phase === 'minting') {
+    return <div className="fade-in" style={{ ...pad, textAlign: 'center' }}><p style={muted}>{COPY.minting}</p></div>;
+  }
+
+  if (state.phase === 'paired') {
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.pairedHeading}</h2>
+        <p style={{ ...muted, marginBottom: 12 }}>{COPY.pairedBody(name)}</p>
+        {state.warning && <p role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{state.warning}</p>}
+        <button className="btn btn-primary" onClick={onBack} style={{ width: '100%' }}>{COPY.done}</button>
+      </div>
+    );
+  }
+
+  const message = state.phase === 'aborted'
+    ? (state.reason === 'mismatch' ? COPY.abortedMismatch : COPY.abortedTwoRequests)
+    : state.phase === 'expired' ? COPY.expired : state.message;
+  return (
+    <div className="fade-in" style={pad}>
+      <p role="alert" style={{ ...muted, color: state.phase === 'error' ? 'var(--danger)' : muted.color, marginBottom: 16 }}>{message}</p>
+      <button className="btn btn-primary" onClick={() => { void begin(); }} style={wide}>{COPY.newCode}</button>
+      <button className="btn" onClick={onBack} style={{ width: '100%' }}>{COPY.back}</button>
     </div>
   );
 }

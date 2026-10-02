@@ -100,7 +100,7 @@ export function inferScope(template: UnsignedEvent): Scope | null {
  * otherwise an attacker can plant `javascript:` / `data:` pseudo-schemes
  * in a tag and end up with `null` or arbitrary junk as the grant key.
  */
-function safeOriginForGrant(raw: string): string | null {
+export function safeOriginForGrant(raw: string): string | null {
   try {
     const u = new URL(raw);
     if (u.protocol === 'https:') return u.origin;

@@ -12,6 +12,7 @@ import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import { nextDependantIndex } from '../lib/heartwood-dependant-create';
 import type { DerivedKeypair, ExtraPersonaDeviceDerive } from '../lib/heartwood-dependant-create';
 import type { Nip05CheckResult } from '../lib/nip05-check';
+import { resolvePublicProfileBase } from '../lib/public-profile-base';
 import { nextDependantPersonaName, dependantPersonaTombstones, applyDependantPersonaTombstones } from '../lib/dependant-persona-allocation';
 import { createSerialQueue } from '../lib/contacts-v2-queue';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
@@ -323,6 +324,8 @@ export function useDependants(
     target: 'natural-person' | 'persona' | string,
     config: import('../types').PublicProfileConfig | undefined,
     state: import('../types').PersonaPublicProfile | undefined,
+    /** Device-local kind-0 base, written with `state`. Absent = keep; `null` = clear. */
+    base?: import('../types').PublicProfileBase | null,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
     const dep = dependants.find(d => d.id === depPubkey);
@@ -369,14 +372,14 @@ export function useDependants(
     let updated: DependantIdentity;
     let personaPubkey: string;
     if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...cfgPatch, ...nip05CheckClear(dep.naturalPerson.nip05), publicProfile: ppValue } };
+      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...cfgPatch, ...nip05CheckClear(dep.naturalPerson.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(dep.naturalPerson.publicProfileBase, base, ppValue) } };
       personaPubkey = dep.naturalPerson.publicKey;
     } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...cfgPatch, ...nip05CheckClear(dep.persona.nip05), publicProfile: ppValue } };
+      updated = { ...dep, persona: { ...dep.persona, ...cfgPatch, ...nip05CheckClear(dep.persona.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(dep.persona.publicProfileBase, base, ppValue) } };
       personaPubkey = dep.persona.publicKey;
     } else {
       const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, ...cfgPatch, ...nip05CheckClear(p.nip05), publicProfile: ppValue } : p,
+        p.publicKey === target ? { ...p, ...cfgPatch, ...nip05CheckClear(p.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(p.publicProfileBase, base, ppValue) } : p,
       );
       updated = { ...dep, extraPersonas: extras };
       personaPubkey = target;
@@ -450,12 +453,12 @@ export function useDependants(
     if (!dep) return;
     let updated: DependantIdentity;
     if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, publicProfile: undefined } };
+      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, publicProfile: undefined, publicProfileBase: undefined } };
     } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, publicProfile: undefined } };
+      updated = { ...dep, persona: { ...dep.persona, publicProfile: undefined, publicProfileBase: undefined } };
     } else {
       const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, publicProfile: undefined } : p,
+        p.publicKey === target ? { ...p, publicProfile: undefined, publicProfileBase: undefined } : p,
       );
       updated = { ...dep, extraPersonas: extras };
     }

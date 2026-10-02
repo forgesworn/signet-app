@@ -18,6 +18,8 @@ import android.os.Looper
  */
 class Nip55SignerActivity : Activity() {
     private var requestId: String? = null
+    /** The caller's own NIP-55 `id`, echoed on whatever result goes back. Separate from [requestId], which is ours. */
+    private var callerId: String? = null
     private val timeout = Handler(Looper.getMainLooper())
     private val giveUp = Runnable { requestId?.let { Nip55Requests.cancel(it) }; finishRejected() }
 
@@ -37,6 +39,7 @@ class Nip55SignerActivity : Activity() {
     private fun handle(intent: Intent?) {
         val id = Nip55Requests.newId()
         requestId = id
+        callerId = intent?.getStringExtra(Nip55Wire.EXTRA_ID)
         val request = Nip55Incoming.fromIntent(
             id = id,
             callerPackage = callingPackage,
@@ -64,19 +67,20 @@ class Nip55SignerActivity : Activity() {
         android.util.Log.i("Nip55", "deliver ${request.id} ${answer.status}")
         timeout.removeCallbacks(giveUp)
         if (!answer.ok) { finishRejected(); return }
-        val data = Intent().apply {
-            putExtra(Nip55Wire.EXTRA_ID, request.id)
-            putExtra(Nip55Wire.EXTRA_PACKAGE, packageName)
-            answer.result?.let { putExtra(Nip55Wire.EXTRA_RESULT, it); putExtra(Nip55Wire.EXTRA_SIGNATURE, it) }
-            answer.event?.let { putExtra(Nip55Wire.EXTRA_EVENT, it) }
-        }
-        setResult(RESULT_OK, data)
+        setResult(RESULT_OK, resultIntent(answer))
         finish()
     }
 
     private fun finishRejected() {
-        setResult(RESULT_CANCELED, Intent().putExtra(Nip55Wire.EXTRA_REJECTED, true))
+        setResult(RESULT_CANCELED, resultIntent(null))
         finish()
+    }
+
+    private fun resultIntent(answer: Nip55Answer?): Intent = Intent().apply {
+        for ((key, value) in Nip55Wire.resultExtras(callerId, packageName, answer)) when (value) {
+            is Boolean -> putExtra(key, value)
+            else -> putExtra(key, value.toString())
+        }
     }
 
     override fun onDestroy() {

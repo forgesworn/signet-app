@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { nip19 } from 'nostr-tools';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -9,6 +10,7 @@ const listeners: Record<string, Array<(r: unknown) => void>> = {};
 type Answer = { id: string; status: string; event?: string; result?: string };
 const respond = vi.fn(async (_answer: Answer) => {});
 const pendingFromShell = vi.fn(async () => ({ requests: [] as unknown[] }));
+const pageFrozen = vi.fn(async (_opts: { frozen: boolean }) => {});
 vi.mock('../lib/native', () => ({
   isNativeApp: () => true,
   SignetNative: {
@@ -18,6 +20,7 @@ vi.mock('../lib/native', () => ({
     }),
     nip55Pending: () => pendingFromShell(),
     nip55Respond: (answer: Answer) => respond(answer),
+    nip55PageFrozen: (opts: { frozen: boolean }) => pageFrozen(opts),
     returnToPreviousApp: vi.fn(async () => {}),
   },
 }));
@@ -38,6 +41,18 @@ function request(over: Record<string, unknown> = {}) {
 
 describe('useNip55Server', () => {
   beforeEach(() => { for (const k of Object.keys(listeners)) delete listeners[k]; respond.mockClear(); pendingFromShell.mockClear(); localStorage.clear(); });
+
+  it('tells the shell when the page is frozen and resumed, and stops once unmounted', async () => {
+    pageFrozen.mockClear();
+    const { unmount } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    document.dispatchEvent(new Event('freeze'));
+    expect(pageFrozen).toHaveBeenLastCalledWith({ frozen: true });
+    document.dispatchEvent(new Event('resume'));
+    expect(pageFrozen).toHaveBeenLastCalledWith({ frozen: false });
+    unmount();
+    document.dispatchEvent(new Event('freeze'));
+    expect(pageFrozen).toHaveBeenCalledTimes(2);
+  });
 
   it('asks, then signs with the owner backend on approval and answers the shell', async () => {
     const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
@@ -156,6 +171,125 @@ describe('useNip55Server', () => {
     expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok' });
   });
 
+  it('a request held through an unlock defaults to a key that has a route, not an unrouted active key', async () => {
+    const otherSk = generateSecretKey();
+    const unrouted = getPublicKey(otherSk);
+    const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: unrouted }), { initialProps: { locked: true } });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null })); });
+    await waitFor(() => expect(result.current.waiting).toBe(1));
+    rerender({ locked: false });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    expect(result.current.pending!.pubkey).toBe(pubkey);
+  });
+
+  it('a held request whose remembered key has no route falls to a routed one', async () => {
+    const unrouted = getPublicKey(generateSecretKey());
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: unrouted, allowAlways: false, denyAlways: false, grantedAt: 1 } }));
+    const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: null }), { initialProps: { locked: true } });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null })); });
+    await waitFor(() => expect(result.current.waiting).toBe(1));
+    rerender({ locked: false });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    expect(result.current.pending!.pubkey).toBe(pubkey);
+  });
+
+  describe('held through an unlock', () => {
+    const sk2 = generateSecretKey();
+    const pubkey2 = getPublicKey(sk2);
+    const route2: BunkerRoute = { pubkey: pubkey2, backend: new LocalSigningBackend(bytesToHex(sk2)) };
+    const hold = async (raw: ReturnType<typeof request>, opts: { routes: BunkerRoute[]; active: string | null }) => {
+      const view = renderHook(({ locked, routes }) => useNip55Server({ enabled: true, routes: locked ? [] : routes, locked, activePubkey: opts.active }),
+        { initialProps: { locked: true, routes: opts.routes } });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](raw); });
+      await waitFor(() => expect(view.result.current.waiting).toBe(1));
+      view.rerender({ locked: false, routes: opts.routes });
+      return view;
+    };
+
+    it('a sign_event naming a key shows and signs with exactly that key, not the default', async () => {
+      const { result } = await hold(request({ currentUser: pubkey2 }), { routes: [route, route2], active: pubkey });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      expect(result.current.pending!.pubkey).toBe(pubkey2);
+      expect(result.current.pending!.named).toBe(true);
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(respond.mock.calls[0][0].event!).pubkey).toBe(pubkey2);
+    });
+
+    it('approving a named request with another key is refused, and nothing is remembered', async () => {
+      const { result } = await hold(request({ currentUser: pubkey2 }), { routes: [route, route2], active: pubkey });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle, pubkey); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
+    });
+
+    it.each(['approveOnce', 'approveAlways'] as const)('%s with a key that has no owner route is refused, and nothing is remembered', async (approve) => {
+      const unrouted = getPublicKey(generateSecretKey());
+      const { result } = await hold(request(), { routes: [route], active: pubkey });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current[approve](result.current.pending!.handle, unrouted); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(respond.mock.calls[0][0].event).toBeUndefined();
+      expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
+      expect(localStorage.getItem('signet.nip55.grants') ?? '{}').not.toContain(unrouted);
+    });
+
+    it.each(['approveOnce', 'approveAlways'] as const)('%s for a key routed when the request was fixed but gone by approval is refused, and nothing is remembered', async (approve) => {
+      const view = await hold(request({ type: 'get_public_key', payload: null }), { routes: [route2, route], active: pubkey2 });
+      await waitFor(() => expect(view.result.current.pending).not.toBeNull());
+      expect(view.result.current.pending!.pubkey).toBe(pubkey2);
+      // The device route for the shown key drops away before the person taps.
+      view.rerender({ locked: false, routes: [route] });
+      await act(async () => { view.result.current[approve](view.result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(view.result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
+      expect(localStorage.getItem('signet.nip55.grants') ?? '{}').not.toContain(pubkey2);
+    });
+
+    it('a named key with no route after the unlock is refused, never shown', async () => {
+      const { result } = await hold(request({ type: 'nip44_encrypt', payload: 'hi', peerPubkey: pubkey, currentUser: pubkey2 }), { routes: [route], active: pubkey });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(result.current.pending).toBeNull();
+      expect(result.current.waiting).toBe(0);
+    });
+
+    it('the default is fixed once shown: more keys arriving later do not switch it', async () => {
+      const view = await hold(request({ type: 'get_public_key', payload: null }), { routes: [route2], active: pubkey });
+      await waitFor(() => expect(view.result.current.pending).not.toBeNull());
+      expect(view.result.current.pending!.pubkey).toBe(pubkey2);
+      // The active key's route arrives (Heartwood reconnects).
+      view.rerender({ locked: false, routes: [route2, route] });
+      await waitFor(() => expect(view.result.current.pending).not.toBeNull());
+      expect(view.result.current.pending!.pubkey).toBe(pubkey2);
+    });
+
+    it('allow always for a routed key still forwards silently after the unlock', async () => {
+      localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: pubkey2, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+      const { result } = await hold(request(), { routes: [route, route2], active: pubkey });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('ok');
+      expect(JSON.parse(respond.mock.calls[0][0].event!).pubkey).toBe(pubkey2);
+      expect(result.current.pending).toBeNull();
+    });
+
+    it('allow always for a key with no route asks instead, with a routed key', async () => {
+      const unrouted = getPublicKey(generateSecretKey());
+      localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: unrouted, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+      const { result } = await hold(request(), { routes: [route], active: null });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      expect(result.current.pending!.pubkey).toBe(pubkey);
+      expect(respond).not.toHaveBeenCalled();
+    });
+  });
+
   it('a key the app names that this phone does not hold is refused, never substituted', async () => {
     renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
     await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
@@ -186,6 +320,88 @@ describe('useNip55Server', () => {
     expect(respond).not.toHaveBeenCalled();
   });
 
+  describe('a request after the phone-apps window has ended', () => {
+    const allowAlways = () => localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+
+    it('by intent: drops the key first, then asks for the unlock instead of signing silently', async () => {
+      allowAlways();
+      const onKeyExpired = vi.fn();
+      const onNeedsUnlock = vi.fn();
+      const onServed = vi.fn();
+      // As in the app: dropping the key locks it on the next render.
+      const { result } = renderHook(() => {
+        const [locked, setLocked] = useState(false);
+        return useNip55Server({
+          enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey,
+          keyExpired: () => !locked, onKeyExpired: () => { onKeyExpired(); setLocked(true); }, onNeedsUnlock, onServed,
+        });
+      });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(onNeedsUnlock).toHaveBeenCalledTimes(1));
+      expect(onKeyExpired).toHaveBeenCalledTimes(1);
+      expect(onKeyExpired.mock.invocationCallOrder[0]).toBeLessThan(onNeedsUnlock.mock.invocationCallOrder[0]);
+      expect(result.current.waiting).toBe(1);
+      expect(respond).not.toHaveBeenCalled();
+      expect(onServed).not.toHaveBeenCalled();
+    });
+
+    it('by provider: drops the key and sends the app to the intent, never answering with it', async () => {
+      allowAlways();
+      const onKeyExpired = vi.fn();
+      renderHook(() => {
+        const [locked, setLocked] = useState(false);
+        return useNip55Server({
+          enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey,
+          keyExpired: () => !locked, onKeyExpired: () => { onKeyExpired(); setLocked(true); },
+        });
+      });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(onKeyExpired).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'deferred' });
+    });
+
+    it('inside the window an app allowed always is still answered without a screen', async () => {
+      allowAlways();
+      const onKeyExpired = vi.fn();
+      renderHook(() => useNip55Server({
+        enabled: true, routes: [route], locked: false, activePubkey: pubkey,
+        keyExpired: () => false, onKeyExpired,
+      }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok' });
+      expect(onKeyExpired).not.toHaveBeenCalled();
+    });
+  });
+
+  it('declining the unlock refuses what was held for it at once, by intent back to the app', async () => {
+    const onNeedsUnlock = vi.fn();
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [], locked: true, activePubkey: pubkey, onNeedsUnlock }));
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const first = request();
+    const second = request();
+    await act(async () => { listeners.nip55Request[0](first); listeners.nip55Request[0](second); });
+    await waitFor(() => expect(result.current.waiting).toBe(2));
+    await act(async () => { result.current.refuseHeld(); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+    expect(respond.mock.calls.map(c => c[0])).toEqual([{ id: first.id, status: 'rejected' }, { id: second.id, status: 'rejected' }]);
+    expect(result.current.waiting).toBe(0);
+  });
+
+  it('refusing held requests does nothing once unlocked', async () => {
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request()); });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    await act(async () => { result.current.refuseHeld(); });
+    expect(result.current.pending).not.toBeNull();
+    expect(respond).not.toHaveBeenCalled();
+  });
+
   it('a request held through the PIN is dropped when withdrawn before the unlock', async () => {
     const onNeedsUnlock = vi.fn();
     const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey, onNeedsUnlock }), { initialProps: { locked: true } });
@@ -206,5 +422,42 @@ describe('useNip55Server', () => {
     await act(async () => { listeners.nip55Request[0](raw); });
     expect(result.current.pending).toBeNull();
     expect(respond).not.toHaveBeenCalled();
+  });
+
+  describe('child-direct gate (spec §8.3)', () => {
+    it('an unknown app is decided by the gate, not the local screen, and signs the gate\'s template', async () => {
+      const gate = vi.fn(async (req: { template?: { kind: number } }) => ({ ok: true as const, requestCreatedAt: 1_900_000_000, template: { ...req.template!, pubkey } as never }));
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ callerLabel: 'Kithmoot' })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(result.current.pending).toBeNull();
+      expect(gate).toHaveBeenCalledWith(expect.objectContaining({ persona: pubkey, appId: 'nip55:dev.forgesworn.kithmoot', appLabel: 'Kithmoot', method: 'sign_event', wait: true }));
+      const answer = respond.mock.calls[0][0];
+      expect(answer.status).toBe('ok');
+      expect(verifyEvent(JSON.parse(answer.event!))).toBe(true);
+    });
+
+    it('a content-provider request never waits: an ask is rejected at once', async () => {
+      const gate = vi.fn(async () => ({ ok: false as const, error: 'asked' as const }));
+      renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(gate).toHaveBeenCalledWith(expect.objectContaining({ wait: false }));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+    });
+
+    it('a gate refusal is rejected; get_public_key does not go through the gate', async () => {
+      const gate = vi.fn(async () => ({ ok: false as const, error: 'denied' as const }));
+      renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      gate.mockClear();
+      await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null, viaProvider: true })); });
+      expect(gate).not.toHaveBeenCalled();
+    });
   });
 });

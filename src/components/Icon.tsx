@@ -29,6 +29,8 @@ export type IconName =
   | 'landmark'
   | 'grid'
   | 'scan'
+  | 'qr'
+  | 'qrScan'
   | 'download';
 
 const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
@@ -142,6 +144,32 @@ const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
       <circle cx="6.5" cy="17.5" r="1.5" fill="currentColor" stroke="none" />
       <circle cx="12" cy="17.5" r="1.5" fill="currentColor" stroke="none" />
       <circle cx="17.5" cy="17.5" r="1.5" fill="currentColor" stroke="none" />
+    </>
+  ),
+  // A QR code: three finder squares and a scatter of modules.
+  qr: (
+    <>
+      <rect x="3.5" y="3.5" width="6" height="6" rx="1" />
+      <rect x="14.5" y="3.5" width="6" height="6" rx="1" />
+      <rect x="3.5" y="14.5" width="6" height="6" rx="1" />
+      <rect x="5.75" y="5.75" width="1.5" height="1.5" fill="currentColor" stroke="none" />
+      <rect x="16.75" y="5.75" width="1.5" height="1.5" fill="currentColor" stroke="none" />
+      <rect x="5.75" y="16.75" width="1.5" height="1.5" fill="currentColor" stroke="none" />
+      <path d="M14.5 14.5h2.5v2.5M20.5 14.5v0M14.5 20.5h0M18 18v2.5h2.5" />
+    </>
+  ),
+  // Scanning a QR: viewfinder corners over a small code, cut by a red scan line.
+  qrScan: (
+    <>
+      <path d="M3 7.5V5a2 2 0 0 1 2-2h2.5" />
+      <path d="M16.5 3H19a2 2 0 0 1 2 2v2.5" />
+      <path d="M21 16.5V19a2 2 0 0 1-2 2h-2.5" />
+      <path d="M7.5 21H5a2 2 0 0 1-2-2v-2.5" />
+      <rect x="7" y="7" width="3.5" height="3.5" rx="0.5" />
+      <rect x="13.5" y="7" width="3.5" height="3.5" rx="0.5" />
+      <rect x="7" y="13.5" width="3.5" height="3.5" rx="0.5" />
+      <path d="M14 14h3v3" />
+      <path d="M2 12h20" stroke="var(--danger)" strokeWidth={2} />
     </>
   ),
   scan: (

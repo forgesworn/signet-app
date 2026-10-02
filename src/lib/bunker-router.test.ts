@@ -171,6 +171,19 @@ describe('BunkerBackendRouter', () => {
     expect(a!.activePublicKeyHex).toBe(PK_B);
   });
 
+  it('A48: setRouteDecorator wraps derived routes, never the primary', async () => {
+    const primary = connectedPrimary();
+    const router = (await BunkerBackendRouter.create(primary, SECRET))!;
+    const seen: string[] = [];
+    const wrapped = { tag: 'wrapped' } as never;
+    router.setRouteDecorator((pk, route) => { seen.push(pk); return pk === PK_B ? wrapped : route; });
+    expect(router.backendFor(PK_B)).toBe(wrapped);
+    expect(router.backendFor(PK_A)).toBe(primary);
+    expect(seen).toEqual([PK_B]);
+    router.setRouteDecorator(null);
+    expect(router.backendFor(PK_B)).not.toBe(wrapped);
+  });
+
   it('backendFor() fails soft on empty/invalid pubkeys', async () => {
     const router = (await BunkerBackendRouter.create(connectedPrimary(), SECRET))!;
     expect(router.backendFor('')).toBeNull();
@@ -446,6 +459,35 @@ describe('createRouterWithRetry', () => {
     // Backoff grows, then holds at the last step.
     expect(h.sleeps).toEqual([10, 20, 40, 40]);
     expect(h.states).toEqual(['probing', 'retrying', 'retrying', 'retrying', 'retrying', 'ready']);
+  });
+
+  it('assumeHeartwood: a direct child builds the router without probing (its strict slot is refused heartwood_capabilities)', async () => {
+    const request = vi.fn(async () => { throw 'unauthorised'; });
+    const primary = primaryWith(request);
+    const states: RouterProbeState[] = [];
+    const router = await createRouterWithRetry({
+      primary, clientSecretHex: SECRET, isCurrent: () => true, assumeHeartwood: true, onState: (s) => states.push(s),
+    });
+    expect(router).not.toBeNull();
+    expect(request).not.toHaveBeenCalled();
+    expect(states).toEqual(['ready']);
+    expect(router!.capabilities.methods).toContain('sign_event');
+    expect(router!.backendFor(PK_A)).toBe(primary);
+    expect(router!.backendFor(PK_B)).not.toBeNull();
+  });
+
+  it('assumeHeartwood: no router while the primary is not connected', async () => {
+    const primary = fakeInner({ activePublicKeyHex: '', bunkerUri: BASE_URI, request: vi.fn() });
+    expect(await createRouterWithRetry({ primary, clientSecretHex: SECRET, isCurrent: () => true, assumeHeartwood: true })).toBeNull();
+  });
+
+  it('assumeHeartwood: a superseded probe reports nothing', async () => {
+    const states: RouterProbeState[] = [];
+    const router = await createRouterWithRetry({
+      primary: primaryWith(vi.fn()), clientSecretHex: SECRET, isCurrent: () => false, assumeHeartwood: true, onState: (s) => states.push(s),
+    });
+    expect(states).toEqual([]);
+    expect(router).toBeNull();
   });
 
   it('retries "not connected" failures (primary mid-reconnect) rather than giving up', async () => {

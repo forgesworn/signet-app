@@ -327,3 +327,119 @@ it('edits an existing check without resurrecting a removed check or rebinding an
   await act(async () => { await expect(result.current.updateCheck(contactId, check)).rejects.toThrow('no longer available'); });
   expect(result.current.records[0].checks).toEqual([]);
 }, TIMEOUT);
+
+describe('recogniseContacts (batch follows import)', () => {
+  const list = GUARDIAN;
+  const key = (i: number) => 'f' + i.toString(16).padStart(63, '0');
+  const batch = (n: number, from = 1) => Array.from({ length: n }, (_, i) => ({ pubkey: key(from + i), displayName: `Peer ${from + i}` }));
+  const mount = (onMutated?: () => void) => renderHook(() => useContactsV2({
+    directoryId: DIR, encryptionKey: KEY, actor, context, ownerIdentityPubkey: list, onMutated,
+  }));
+
+  it('writes the whole batch with one save, one publish signal and one contiguous clock range', async () => {
+    const onMutated = vi.fn();
+    const { result } = mount(onMutated);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const save = vi.spyOn(db, 'saveContactOperationsV2');
+    const readAll = vi.spyOn(db, 'listAllContactOperationsV2');
+    let summary!: Awaited<ReturnType<typeof result.current.recogniseContacts>>;
+    await act(async () => { summary = await result.current.recogniseContacts(batch(25), list, 'import', 'Nostr follows'); });
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(readAll).toHaveBeenCalledTimes(1);
+    expect(onMutated).toHaveBeenCalledTimes(1);
+    const ops = save.mock.calls[0][0];
+    expect(ops).toHaveLength(75);
+    expect(ops.map(o => o.logicalClock)).toEqual(Array.from({ length: 75 }, (_, i) => i + 1));
+    expect(summary).toMatchObject({ added: 25, linked: 0, unchanged: 0, covered: 25, trimmed: false, requested: 25 });
+    expect(result.current.records).toHaveLength(25);
+    expect(result.current.records.every(r => r.tier === 'ken' && r.identities[0].verification === 'unverified')).toBe(true);
+    expect(result.current.records[0].origins).toEqual([expect.objectContaining({ method: 'import', caption: 'Nostr follows', ownerIdentityPubkey: list })]);
+    save.mockRestore();
+    readAll.mockRestore();
+  }, TIMEOUT);
+
+  it('only links a contact that already exists on another list; tier, name and notes stay put', async () => {
+    const { result } = mount();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let id = '';
+    await act(async () => {
+      id = await result.current.recogniseContact(key(1), 'Original Name', OTHER_GUARDIAN, 'qr');
+      await result.current.setTier(id, 'kin');
+      await result.current.setNote(id, 'a private note');
+    });
+    const save = vi.spyOn(db, 'saveContactOperationsV2');
+    await act(async () => { await result.current.recogniseContacts([{ pubkey: key(1), displayName: 'Nostr Name' }], list, 'import', 'Nostr follows'); });
+    expect(save.mock.calls[0][0].map(o => o.action)).toEqual(['link-list', 'record-origin']);
+    const rec = result.current.records.find(r => r.contactId === id)!;
+    expect(result.current.records).toHaveLength(1);
+    expect([rec.displayName, rec.tier, rec.notes]).toEqual(['Original Name', 'kin', 'a private note']);
+    expect(rec.listMemberships?.map(m => m.ownerIdentityPubkey)).toEqual([OTHER_GUARDIAN, list]);
+    save.mockRestore();
+  }, TIMEOUT);
+
+  it('is idempotent: running the same import again writes nothing and does not signal a publish', async () => {
+    const onMutated = vi.fn();
+    const { result } = mount(onMutated);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.recogniseContacts(batch(5), list, 'import', 'Nostr follows'); });
+    onMutated.mockClear();
+    const save = vi.spyOn(db, 'saveContactOperationsV2');
+    let summary!: Awaited<ReturnType<typeof result.current.recogniseContacts>>;
+    await act(async () => { summary = await result.current.recogniseContacts(batch(5), list, 'import', 'Nostr follows'); });
+    expect(save).not.toHaveBeenCalled();
+    expect(onMutated).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ added: 0, linked: 0, unchanged: 5 });
+    expect(await db.listContactOperationsV2(DIR, KEY)).toHaveLength(15);
+    save.mockRestore();
+  }, TIMEOUT);
+
+  it('adds only the new follows on a refresh', async () => {
+    const { result } = mount();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.recogniseContacts(batch(3), list, 'import', 'Nostr follows'); });
+    await act(async () => { await result.current.recogniseContacts(batch(5), list, 'import', 'Nostr follows'); });
+    expect(result.current.records).toHaveLength(5);
+    expect(await db.listContactOperationsV2(DIR, KEY)).toHaveLength(15);
+  }, TIMEOUT);
+
+  it('rejects the whole batch, writing nothing, when the list identity is not valid', async () => {
+    const { result } = mount();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const save = vi.spyOn(db, 'saveContactOperationsV2');
+    await act(async () => { await expect(result.current.recogniseContacts(batch(3), 'not-a-key', 'import', 'x')).rejects.toThrow(); });
+    expect(save).not.toHaveBeenCalled();
+    expect(await db.listContactOperationsV2(DIR, KEY)).toHaveLength(0);
+    save.mockRestore();
+  }, TIMEOUT);
+});
+
+describe('unlinkContactsFromList (batch)', () => {
+  const list = GUARDIAN;
+  const key = (i: number) => 'f' + i.toString(16).padStart(63, '0');
+
+  it('takes contacts off the list in one write, but never removes a contact whose only list this is', async () => {
+    const { result } = renderHook(() => useContactsV2({ directoryId: DIR, encryptionKey: KEY, actor, context, ownerIdentityPubkey: list }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let shared = '';
+    let solo = '';
+    await act(async () => {
+      shared = await result.current.recogniseContact(key(1), 'Shared Peer', OTHER_GUARDIAN);
+      await result.current.recogniseContact(key(1), 'Shared Peer', list);
+      solo = await result.current.recogniseContact(key(2), 'Solo Peer', list);
+    });
+    const save = vi.spyOn(db, 'saveContactOperationsV2');
+    let n = -1;
+    await act(async () => { n = await result.current.unlinkContactsFromList([shared, solo, 'e'.repeat(32)], list); });
+    expect(n).toBe(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0].map(o => [o.action, o.contactId])).toEqual([['unlink-list', shared]]);
+    const sharedRec = result.current.records.find(r => r.contactId === shared)!;
+    const soloRec = result.current.records.find(r => r.contactId === solo)!;
+    expect(sharedRec.lifecycle).toBe('active');
+    expect(sharedRec.listMemberships?.filter(m => m.removedAt === undefined).map(m => m.ownerIdentityPubkey)).toEqual([OTHER_GUARDIAN]);
+    expect(soloRec.lifecycle).toBe('active');
+    expect(soloRec.listMemberships?.some(m => m.ownerIdentityPubkey === list && m.removedAt === undefined)).toBe(true);
+    save.mockRestore();
+  }, TIMEOUT);
+});

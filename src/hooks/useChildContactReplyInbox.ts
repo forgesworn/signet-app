@@ -41,10 +41,14 @@ export async function loadChildContactReplyReceipts(scope: ChildRequestScope, ke
   return parseInbox(JSON.parse(raw), scope).receipts;
 }
 
-export function useChildContactReplyInbox(options: { enabled: boolean; child: string | null; key: string | null; relayUrl: string; guardian: string | null; personas: string[] }) {
-  const { enabled, child, key, relayUrl, guardian } = options;
+export function useChildContactReplyInbox(options: {
+  enabled: boolean; child: string | null; key: string | null; relayUrl: string; guardian: string | null; personas: string[];
+  /** Bumped on an in-session re-pair (App's `pairedChildBumpCounter`): the record's client key and endpoint change under the same child id. */
+  pairingGeneration?: number;
+}) {
+  const { enabled, child, key, relayUrl, guardian, pairingGeneration = 0 } = options;
   const personas = JSON.stringify([...options.personas].sort());
-  const session = JSON.stringify([enabled, child, key, relayUrl, guardian, personas]);
+  const session = JSON.stringify([enabled, child, key, relayUrl, guardian, personas, pairingGeneration]);
   const latest = useRef(session); latest.current = session;
   const [receipts, setReceipts] = useState<ChildContactReplyReceipt[]>([]);
   useEffect(() => {

@@ -12,10 +12,12 @@ import type { UnsignedEvent } from 'signet-protocol';
 import { describeEventTemplate } from '../lib/nip46-server';
 import { isNativeApp, SignetNative, type Nip55Response } from '../lib/native';
 import {
-  describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
-  type NativeNip55Request, type Nip55Grants, type Nip55Method, type ParsedNip55,
+  defaultNip55Pubkey, describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
+  type NativeNip55Request, type Nip55Grant, type Nip55Grants, type Nip55Method, type Nip55Plan, type ParsedNip55,
 } from '../lib/nip55';
 import type { BunkerRoute } from './useBunkerServer';
+import type { ChildGateOutcome } from '../lib/child-bunker';
+import { withRequestCreatedAt } from '../lib/signing-backend';
 
 export interface PendingNip55 {
   handle: number;
@@ -29,6 +31,11 @@ export interface PendingNip55 {
   peer?: string;
   /** The key the request will be answered with unless the person picks another. */
   pubkey: string | null;
+  /**
+   * The app named this key (`current_user`): it is answered with exactly
+   * this key or not at all, never another the person picks or a default.
+   */
+  named: boolean;
   permissions: string[];
   /** Whether this app has been seen before. */
   existing: boolean;
@@ -41,10 +48,29 @@ interface Options {
   locked: boolean;
   activePubkey: string | null;
   onNeedsUnlock?: () => void;
+  /**
+   * Whether the key held for phone apps has outlived its window (see
+   * src/lib/phone-apps-window.ts). Asked before EVERY request, provider and
+   * intent alike; when it says yes, `onKeyExpired` drops the key and the
+   * request is handled as if locked, so nothing is answered with it.
+   */
+  keyExpired?: () => boolean;
+  onKeyExpired?: () => void;
   /** Called each time a phone app is about to be served (a key, a signature, a cipher), before the answer goes back. */
   onServed?: () => void;
   /** Test seam. */
   now?: () => number;
+  /**
+   * Child-direct install (spec §8.3): every sign / NIP-44 request goes
+   * through the child's gate (appId `nip55:<package>`) instead of the local
+   * approval screen; the gate's created_at is stamped on the forwarded
+   * Heartwood request. A content-provider request never waits: if the gate
+   * has to ask, it is rejected and the ask stays live.
+   */
+  gate?: (req: {
+    persona: string; appId: string; appLabel: string; method: 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
+    template?: UnsignedEvent; peer?: string; wait: boolean;
+  }) => Promise<ChildGateOutcome>;
 }
 
 interface Waiting {
@@ -54,8 +80,16 @@ interface Waiting {
   pubkey: string | null;
 }
 
-export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, now = () => Date.now() }: Options) {
+export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = () => Date.now(), gate }: Options) {
+  const keyExpiredRef = useRef(keyExpired);
+  keyExpiredRef.current = keyExpired;
+  const onKeyExpiredRef = useRef(onKeyExpired);
+  onKeyExpiredRef.current = onKeyExpired;
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
   const [queue, setQueue] = useState<Waiting[]>([]);
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
   const [grants, setGrants] = useState<Nip55Grants>(() => loadNip55Grants());
   const routesRef = useRef(routes);
   routesRef.current = routes;
@@ -84,7 +118,23 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const byIntent = !raw.viaProvider;
     const route = routesRef.current.find(r => !r.dependantId && r.pubkey.toLowerCase() === pubkey);
     if (!route) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
-    const backend = route.signingBackend ?? route.backend;
+    let backend: Pick<typeof route.backend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'> = route.signingBackend ?? route.backend;
+    let template = parsed.template ? { ...parsed.template, pubkey } as UnsignedEvent : undefined;
+    const g = gateRef.current;
+    if (g && parsed.method !== 'get_public_key') {
+      const pkg = raw.callerPackage ?? '';
+      if (!pkg) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
+      let outcome: ChildGateOutcome;
+      try {
+        outcome = await g({
+          persona: pubkey, appId: `nip55:${pkg}`, appLabel: raw.callerLabel ?? pkg, method: parsed.method,
+          ...(template ? { template } : {}), ...(parsed.peer ? { peer: parsed.peer } : {}), wait: byIntent,
+        });
+      } catch { outcome = { ok: false, error: 'denied' }; }
+      if (!outcome.ok) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
+      backend = withRequestCreatedAt(route.signingBackend ?? route.backend, outcome.requestCreatedAt);
+      if (outcome.template) template = outcome.template;
+    }
     onServedRef.current?.();
     try {
       switch (parsed.method) {
@@ -92,8 +142,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
           await respond({ id: raw.id, status: 'ok', result: npubOf(pubkey) }, byIntent);
           return;
         case 'sign_event': {
-          const template = { ...parsed.template!, pubkey } as UnsignedEvent;
-          const signed = await backend.signEvent(template);
+          const signed = await backend.signEvent(template!);
           await respond({ id: raw.id, status: 'ok', result: signed.sig, event: JSON.stringify(signed) }, byIntent);
           return;
         }
@@ -109,19 +158,40 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     }
   }, [respond]);
 
+  /**
+   * `planNip55`, except that on a gated (child-direct) install a sign / NIP-44
+   * request never shows the local approval screen and a provider request is
+   * not deferred: it goes to `execute`, where the gate decides.
+   */
+  const planFor = useCallback((parsed: ParsedNip55 | null, viaProvider: boolean, grant: Nip55Grant | undefined, owned: string[], active: string | null): Nip55Plan => {
+    const gated = !!gateRef.current && !!parsed && parsed.method !== 'get_public_key' && owned.length > 0;
+    const plan = planNip55(parsed, gated ? false : viaProvider, grant, owned, active);
+    if (gated && plan.kind === 'ask') return plan.pubkey ? { kind: 'forward', pubkey: plan.pubkey } : { kind: 'reject', reason: 'no-identity' };
+    return plan;
+  }, []);
+
   const handleRequest = useCallback(async (raw: NativeNip55Request) => {
     if (!raw || typeof raw.id !== 'string' || seen.current.has(raw.id)) return;
     seen.current.add(raw.id);
+    // The window the key was held for may have ended while the page was
+    // frozen. Drop the key first; until the lock renders, this request and
+    // anything after it are treated as locked.
+    if (!lockedRef.current && keyExpiredRef.current?.()) {
+      lockedRef.current = true;
+      onKeyExpiredRef.current?.();
+    }
     const parsed = parseNip55Request(raw);
     const pkg = raw.callerPackage ?? '';
     const grant = pkg ? grantsRef.current[pkg] : undefined;
     const owned = lockedRef.current ? [] : routesRef.current.filter(r => !r.dependantId).map(r => r.pubkey);
-    const plan = planNip55(parsed, raw.viaProvider, grant, owned, activeRef.current);
+    const plan = planFor(parsed, raw.viaProvider, grant, owned, activeRef.current);
     // Locked and asked by intent: the plan says "no identity" only because
     // the keys are not decrypted yet. Hold the request and ask for the PIN.
     if (!raw.viaProvider && lockedRef.current && parsed && plan.kind === 'reject' && plan.reason === 'no-identity') {
       onNeedsUnlockRef.current?.();
-      setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed, pubkey: grant?.pubkey ?? null }]);
+      // A key the app named is kept; otherwise there is no key yet, and one
+      // is picked once the routes that exist after the unlock are known.
+      setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed, pubkey: parsed.currentUser ?? null }]);
       return;
     }
     switch (plan.kind) {
@@ -157,6 +227,24 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     return () => { cancelled = true; void withdrawHandle?.remove(); void handle?.remove(); };
   }, [enabled, handleRequest, withdraw]);
 
+  // Chromium freezes this page about 60 s after it is hidden. A provider
+  // query pushed to a frozen page blocked the calling app for the shell's
+  // whole 15 s timeout before it fell back to the intent. Telling the shell
+  // lets it send the app to the intent at once; the intent brings this app
+  // forward, which thaws the page, and the hide-lock decides as it would have.
+  useEffect(() => {
+    if (!enabled || !isNativeApp()) return;
+    const report = (frozen: boolean) => () => { void SignetNative.nip55PageFrozen({ frozen }).catch(() => {}); };
+    const onFreeze = report(true);
+    const onResume = report(false);
+    document.addEventListener('freeze', onFreeze);
+    document.addEventListener('resume', onResume);
+    return () => {
+      document.removeEventListener('freeze', onFreeze);
+      document.removeEventListener('resume', onResume);
+    };
+  }, [enabled]);
+
   // A request held through an unlock was never planned against the keys:
   // once they are there, one the person already allowed always is answered
   // without a screen, as it would have been had the app been open.
@@ -167,14 +255,26 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // there is nothing to judge against, and "no key" would be a false refusal.
     if (owned.length === 0) return;
     const settled: number[] = [];
+    // A held request still waiting for the person gets its key now, once:
+    // the key the app named, else the default against these routes. Fixed
+    // here, it cannot switch under the person when more keys arrive later.
+    const keyed = new Map<number, string>();
     for (const item of queue) {
       const grant = item.raw.callerPackage ? grants[item.raw.callerPackage] : undefined;
-      const plan = planNip55(item.parsed, item.raw.viaProvider, grant, owned, activePubkey);
+      const plan = planFor(item.parsed, item.raw.viaProvider, grant, owned, activePubkey);
       if (plan.kind === 'forward') { settled.push(item.handle); void execute(item.raw, item.parsed, plan.pubkey); }
       else if (plan.kind === 'reject') { settled.push(item.handle); void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); }
+      else if (plan.kind === 'ask' && item.pubkey === null) {
+        const key = plan.pubkey ?? defaultNip55Pubkey(owned, grant, activePubkey);
+        if (key) keyed.set(item.handle, key);
+      }
     }
-    if (settled.length) setQueue(q => q.filter(w => !settled.includes(w.handle)));
-  }, [locked, queue, routes, grants, activePubkey, execute, respond]);
+    if (settled.length || keyed.size) {
+      setQueue(q => q
+        .filter(w => !settled.includes(w.handle))
+        .map(w => (w.pubkey === null && keyed.has(w.handle) ? { ...w, pubkey: keyed.get(w.handle)! } : w)));
+    }
+  }, [locked, queue, routes, grants, activePubkey, execute, respond, planFor]);
 
   const remember = useCallback((pkg: string, grant: Nip55Grants[string]) => {
     setGrants(g => { const next = { ...g, [pkg]: grant }; saveNip55Grants(next); return next; });
@@ -186,26 +286,39 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     return item;
   }, [queue]);
 
+  /**
+   * The key an approval may answer with, or null: one of the owner routes,
+   * and, when the app named a key, exactly that one — a signature by a key
+   * the app did not ask for is refused, never substituted.
+   */
+  const approvedKey = useCallback((item: Waiting, pubkey?: string): string | null => {
+    const key = (pubkey ?? item.pubkey)?.toLowerCase();
+    if (!key) return null;
+    if (item.parsed.currentUser && item.parsed.currentUser !== key) return null;
+    if (!routesRef.current.some(r => !r.dependantId && r.pubkey.toLowerCase() === key)) return null;
+    return key;
+  }, []);
+
   const approveOnce = useCallback((handle: number, pubkey?: string) => {
     const item = take(handle);
     if (!item) return;
-    const key = (pubkey ?? item.pubkey)?.toLowerCase();
-    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }); return; }
+    const key = approvedKey(item, pubkey);
+    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) {
       const prior = grantsRef.current[item.raw.callerPackage];
       remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? prior?.label });
     }
     void execute(item.raw, item.parsed, key);
-  }, [take, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, execute, now]);
 
   const approveAlways = useCallback((handle: number, pubkey?: string) => {
     const item = take(handle);
     if (!item) return;
-    const key = (pubkey ?? item.pubkey)?.toLowerCase();
-    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }); return; }
+    const key = approvedKey(item, pubkey);
+    if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
     void execute(item.raw, item.parsed, key);
-  }, [take, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, execute, now]);
 
   const deny = useCallback((handle: number) => {
     const item = take(handle);
@@ -218,6 +331,21 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     if (item.raw.callerPackage) remember(item.raw.callerPackage, { pubkey: item.pubkey ?? activeRef.current ?? '0'.repeat(64), allowAlways: false, denyAlways: true, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
     void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
   }, [take, remember, respond, now]);
+
+  /**
+   * The person turned the unlock down. What was held for it cannot be
+   * answered without the keys, and the apps that asked are each waiting on
+   * a screen of their own: refuse them now, rather than leave them to the
+   * shell's five-minute timeout. Nothing is refused while unlocked.
+   */
+  const refuseHeld = useCallback(() => {
+    if (!lockedRef.current) return;
+    const held = queueRef.current;
+    if (held.length === 0) return;
+    queueRef.current = [];
+    setQueue([]);
+    for (const item of held) void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
+  }, [respond]);
 
   const forget = useCallback((pkg: string) => {
     setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });
@@ -236,12 +364,14 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       description: describeNip55(item.parsed, describeEventTemplate),
       template: item.parsed.template,
       peer: item.parsed.peer,
-      // A request held through an unlock has no key yet; the active one is the default.
-      pubkey: item.pubkey ?? activePubkey,
+      // A request held through an unlock gets its key fixed by the effect
+      // above; for the one render before that, the same default it will pick.
+      pubkey: item.pubkey ?? defaultNip55Pubkey(routes.filter(r => !r.dependantId).map(r => r.pubkey), pkg ? grants[pkg] : undefined, activePubkey),
+      named: !!item.parsed.currentUser,
       permissions: item.parsed.permissions,
       existing: !!(pkg && grants[pkg]),
     };
-  }, [queue, locked, grants, activePubkey]);
+  }, [queue, locked, grants, activePubkey, routes]);
 
-  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget };
+  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld };
 }

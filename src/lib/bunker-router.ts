@@ -1,5 +1,5 @@
 import { BunkerSigningBackend, BunkerRequestTimeoutError } from './signing-backend';
-import type { DecryptingSigningBackend } from './signing-backend';
+import type { DecryptingSigningBackend, StampedSigningCalls } from './signing-backend';
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -20,6 +20,9 @@ export interface HeartwoodCapabilities {
 }
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
+
+/** The methods a child-direct slot's compiled policy grants (see `assumeHeartwood`). */
+const ASSUMED_CHILD_METHODS: readonly string[] = ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'];
 
 /** Parse a heartwood_capabilities result payload (string-wrapped JSON). */
 export function parseHeartwoodCapabilities(raw: string): HeartwoodCapabilities | null {
@@ -135,6 +138,18 @@ export class RoutedBunkerSigningBackend implements DecryptingSigningBackend {
     return inner.nip44Decrypt(senderPubkey, ciphertext);
   }
 
+  stamped(createdAt: number): StampedSigningCalls {
+    return {
+      signEvent: async (event) => {
+        const requested = typeof event.pubkey === 'string' ? event.pubkey.trim().toLowerCase() : '';
+        if (requested && requested !== this.activePublicKeyHex) throw new Error('Cannot sign event for a different pubkey.');
+        return (await this.ensure()).stamped(createdAt).signEvent(event);
+      },
+      nip44Encrypt: async (recipientPubkey, plaintext) => (await this.ensure()).stamped(createdAt).nip44Encrypt(recipientPubkey, plaintext),
+      nip44Decrypt: async (senderPubkey, ciphertext) => (await this.ensure()).stamped(createdAt).nip44Decrypt(senderPubkey, ciphertext),
+    };
+  }
+
   async nip04Encrypt(recipientPubkey: string, plaintext: string): Promise<string> {
     const inner = await this.ensure();
     return inner.nip04Encrypt(recipientPubkey, plaintext);
@@ -221,6 +236,9 @@ export interface ProbeWithRetryOptions {
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
   makeBackend?: MakeBackend;
+  /** A child paired straight to the Heartwood: skip the capabilities probe
+   *  (its strict slot is refused it) and build the router at once. */
+  assumeHeartwood?: boolean;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -236,6 +254,11 @@ export async function createRouterWithRetry(opts: ProbeWithRetryOptions): Promis
   const sleep = opts.sleep ?? defaultSleep;
   const alive = () => opts.isCurrent() && !!opts.primary.activePublicKeyHex;
   const report = (s: RouterProbeState) => { if (opts.isCurrent()) opts.onState?.(s); };
+  if (opts.assumeHeartwood) {
+    if (!alive()) return null;
+    report('ready');
+    return BunkerBackendRouter.assumeHeartwood(opts.primary, opts.clientSecretHex, opts.makeBackend);
+  }
   let errorReplies = 0;
   let timeouts = 0;
   let attempt = 0;
@@ -322,6 +345,9 @@ export function routedSignerUnavailableMessage(input: {
  * destroy() tears down the routes it created but never the primary (App.tsx
  * owns that lifecycle).
  */
+/** A48: wraps a derived route (see `BunkerBackendRouter.setRouteDecorator`). */
+export type RouteDecorator = (slotPubkeyHex: string, route: DecryptingSigningBackend) => DecryptingSigningBackend;
+
 export class BunkerBackendRouter {
   readonly primary: BunkerSigningBackend;
   readonly capabilities: HeartwoodCapabilities;
@@ -329,6 +355,7 @@ export class BunkerBackendRouter {
   private readonly makeBackend: MakeBackend;
   private readonly routes = new Map<string, RoutedBunkerSigningBackend>();
   private destroyed = false;
+  private decorator: RouteDecorator | null = null;
 
   private constructor(primary: BunkerSigningBackend, clientSecretHex: string, capabilities: HeartwoodCapabilities, makeBackend: MakeBackend) {
     this.primary = primary;
@@ -337,9 +364,30 @@ export class BunkerBackendRouter {
     this.makeBackend = makeBackend;
   }
 
+  /** The NIP-46 client pubkey of the pairing this router rides (A27: the child's
+   *  ceremony runs only once this equals the stored record's client key). */
+  get primaryClientPubkeyHex(): string {
+    return this.primary.transportClientPubkeyHex;
+  }
+
   static async create(primary: BunkerSigningBackend, clientSecretHex: string, makeBackend: MakeBackend = defaultMakeBackend): Promise<BunkerBackendRouter | null> {
     const outcome = await BunkerBackendRouter.probe(primary, clientSecretHex, makeBackend);
     return outcome.kind === 'router' ? outcome.router : null;
+  }
+
+  /**
+   * A router for a slot already known to be on a Heartwood, without asking.
+   * A child paired straight to the device (`heartwood-direct`) rides a strict,
+   * identity-bound slot, and the firmware answers `heartwood_capabilities` on
+   * such a slot with `unauthorised` — so the probe can never succeed there and
+   * would leave the child with no routes at all. The pairing itself proved the
+   * device (the guardian minted the slot over the operator channel and read
+   * its bound identity back), and nothing reads `capabilities` beyond the
+   * probe's own accept check, so the methods below just restate the slot's
+   * fixed child policy.
+   */
+  static assumeHeartwood(primary: BunkerSigningBackend, clientSecretHex: string, makeBackend: MakeBackend = defaultMakeBackend): BunkerBackendRouter {
+    return new BunkerBackendRouter(primary, clientSecretHex, { version: 0, methods: [...ASSUMED_CHILD_METHODS] }, makeBackend);
   }
 
   /**
@@ -375,6 +423,16 @@ export class BunkerBackendRouter {
     return { kind: 'router', router: new BunkerBackendRouter(primary, clientSecretHex, caps, makeBackend) };
   }
 
+  /**
+   * A48: a view applied to every derived route `backendFor` hands out (never
+   * the primary). The guardian install uses it to stamp and record signings
+   * made as a direct-paired child's persona. Called on every lookup, so the
+   * decorator decides per call and keeps its own cache.
+   */
+  setRouteDecorator(fn: RouteDecorator | null): void {
+    this.decorator = fn;
+  }
+
   backendFor(slotPubkeyHex: string | undefined | null): DecryptingSigningBackend | null {
     if (this.destroyed) return null;
     const pk = (slotPubkeyHex || '').trim().toLowerCase();
@@ -398,7 +456,7 @@ export class BunkerBackendRouter {
       route = new RoutedBunkerSigningBackend(this.clientSecretHex, uri, pk, this.makeBackend);
       this.routes.set(pk, route);
     }
-    return route;
+    return this.decorator ? this.decorator(pk, route) : route;
   }
 
   destroy(): void {
@@ -419,8 +477,19 @@ export function resolveNpBunkerBackend(
   primary: BunkerSigningBackend | null,
   router: BunkerBackendRouter | null,
   npPubkeyHex: string | undefined | null,
+  opts?: SlotResolveOptions,
 ): DecryptingSigningBackend | null {
-  return resolveSlotBunkerBackend(primary, router, npPubkeyHex);
+  return resolveSlotBunkerBackend(primary, router, npPubkeyHex, opts);
+}
+
+export interface SlotResolveOptions {
+  /**
+   * Slot pubkeys that must never be addressed on this install (A26: the
+   * dormant real-identity slot of a child paired straight to the Heartwood).
+   * A withheld slot resolves to `null` BEFORE the router is consulted, so no
+   * route is ever minted for it.
+   */
+  withheld?: readonly string[];
 }
 
 /**
@@ -444,9 +513,11 @@ export function resolveNpBunkerBackend(
  * - slot pubkey unknown (an nsec-imported / NIP-07 identity and a paired-child
  *   stub all have an empty persona pubkey) → `null`. Never the primary: on a
  *   family bunker that is the master.
- * - primary bound to the slot itself (legacy NP-only `bunker://`; paired-child,
- *   where the identity IS the dependant the guardian phone serves) → the
- *   primary.
+ * - slot listed in `opts.withheld` → `null`, and the router is never asked.
+ * - primary bound to the slot itself (legacy NP-only `bunker://`; a legacy
+ *   phone-paired child, where the guardian phone serves the dependant pubkey;
+ *   a child paired straight to the Heartwood, where the primary is the bound
+ *   PERSONA, not the dependant's dormant real-identity slot) → the primary.
  * - primary bound to some OTHER pubkey → the router's route for that slot;
  *   `null` when there is no usable router (capabilities probe pending or
  *   failed). Never the master.
@@ -455,6 +526,7 @@ export function resolveSlotBunkerBackend(
   primary: BunkerSigningBackend | null,
   router: BunkerBackendRouter | null,
   slotPubkeyHex: string | undefined | null,
+  opts?: SlotResolveOptions,
 ): DecryptingSigningBackend | null {
   if (!primary) return null;
   const primaryPk = (primary.activePublicKeyHex || '').trim().toLowerCase();
@@ -467,6 +539,7 @@ export function resolveSlotBunkerBackend(
   // so collapsing an unknown slot onto it would hand out exactly the key this
   // resolver exists to withhold.
   if (!slot) return null;
+  if (opts?.withheld?.some(w => w.trim().toLowerCase() === slot)) return null;
   if (primaryPk === slot) return primary;
   return router?.backendFor(slot) ?? null;
 }

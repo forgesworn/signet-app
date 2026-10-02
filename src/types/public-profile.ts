@@ -24,6 +24,31 @@ export interface PersonaPublicProfile {
 }
 
 /**
+ * Device-local record of the kind-0 Signet last knew of on the relay: the
+ * event as it was published (or matched on import), kept verbatim so the next
+ * publish can carry forward everything Signet does not manage (unknown keys,
+ * tags, a distinct `name` handle, bio line breaks). It is the COMPARISON base
+ * of the three-way merge in `mergeKindZeroContent`. Never synced, never on
+ * kind-0 itself (mirrors `nip05CheckResult`).
+ */
+export interface PublicProfileBase {
+  /** Event id — 64-char lowercase hex. */
+  eventId: string;
+  /** Unix seconds — the event's `created_at`. */
+  createdAt: number;
+  /** Raw kind-0 `content` string, verbatim. */
+  content: string;
+  /** The event's tags, verbatim. */
+  tags: string[][];
+  /**
+   * True when this base was adopted from a profile that was already public on
+   * Nostr when the user matched it in Signet (not published by Signet). Only
+   * drives the "this asks <relay> to remove it" copy on Disable.
+   */
+  matched?: true;
+}
+
+/**
  * Shape-only view of kind-0 config fields as they sit on a keypair slot.
  * Consumed by buildKindZeroContent (ignores Blossom hashes, and ignores
  * the two NIP-05-check fields below) and the persona-inventory sync rail

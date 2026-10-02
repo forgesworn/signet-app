@@ -44,6 +44,12 @@ interface UseAuditLogParams {
   /** The dependant we're showing activity for — primary signing pubkey. */
   dependantId: string;
   /**
+   * Every pubkey whose records belong to this dependant (a direct-paired
+   * child's Heartwood writes one record per persona it signed as). Defaults
+   * to `[dependantId]`.
+   */
+  dependantIds?: string[];
+  /**
    * Pubkey that audit gift-wraps are addressed to. Guardian pubkey
    * for guardian-mode; the dep's NIP-46 client pubkey for child-mode
    * (the second wrap in the dual-address publish).
@@ -76,6 +82,7 @@ interface UseAuditLogReturn {
 
 export function useAuditLog({
   dependantId,
+  dependantIds,
   recipientPubkey,
   expectedSignerPubkey,
   decrypt,
@@ -89,6 +96,9 @@ export function useAuditLog({
   // a fresh one (e.g. user hits Refresh while the first call is still in
   // flight). Without this guard the entries flicker.
   const fetchGen = useRef(0);
+  const dependantIdsKey = dependantIds && dependantIds.length > 0
+    ? [...new Set(dependantIds.map(d => d.toLowerCase()))].sort().join(',')
+    : '';
 
   const fetchOnce = useCallback(async () => {
     const myGen = ++fetchGen.current;
@@ -122,6 +132,7 @@ export function useAuditLog({
 
     setLoading(true);
     setError(null);
+    const wanted = new Set((dependantIdsKey ? dependantIdsKey.split(',') : [dependantId.toLowerCase()]));
 
     const relay = new RelayClient(relayUrl);
     try {
@@ -143,7 +154,7 @@ export function useAuditLog({
         if (!rumor) continue;
         const entry = parseAuditRumor(rumor);
         if (!entry) continue;
-        if (entry.dependantPubkey !== dependantId.toLowerCase()) continue;
+        if (!wanted.has(entry.dependantPubkey)) continue;
         parsed.push(entry);
       }
 
@@ -159,7 +170,7 @@ export function useAuditLog({
       if (myGen === fetchGen.current) setLoading(false);
       relay.disconnect();
     }
-  }, [dependantId, recipientPubkey, expectedSignerPubkey, decrypt, relayUrl]);
+  }, [dependantId, dependantIdsKey, recipientPubkey, expectedSignerPubkey, decrypt, relayUrl]);
 
   // Fetch on mount and whenever any of the inputs change.
   useEffect(() => {

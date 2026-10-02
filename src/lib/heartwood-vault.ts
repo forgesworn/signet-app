@@ -9,6 +9,7 @@ import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { isValidRelayUrl } from './relay-url';
 import { waitForReplySubscription, RELAY_READY_CAP_MS } from './relay-ready';
+import { VaultApprovalError, isSignerRefusalMessage } from './vault-approval';
 
 type Context = { purpose: string; index: number };
 export type VaultRpc = (method: string, params: string[], context: Context) => Promise<string>;
@@ -51,9 +52,14 @@ export async function heartwoodVaultRequest(args: {
           try {
             const reply = JSON.parse(decrypt(event.content, conversation));
             if (reply?.id !== id) return;
-            if (reply.error) finish(undefined, new Error('The signer refused the vault request'));
+            // Only the device's own verdict (denied, card timed out, busy,
+            // not authorised) is a refusal; an operational error such as
+            // "decryption failed" stays an ordinary, retryable failure.
+            if (reply.error) finish(undefined, isSignerRefusalMessage(reply.error)
+              ? new VaultApprovalError('The signer refused the vault request')
+              : new Error('The signer could not complete the vault request'));
             else if (typeof reply.result === 'string' && reply.result !== 'auth_url') finish(reply.result);
-            else finish(undefined, new Error('The signer requires approval for this vault request'));
+            else finish(undefined, new VaultApprovalError('The signer requires approval for this vault request'));
           } catch { /* Ignore malformed/foreign replies; timeout remains armed. */ }
         },
       });
@@ -77,7 +83,8 @@ export async function heartwoodVaultRequest(args: {
 export class HeartwoodVaultBackend implements DecryptingSigningBackend {
   readonly type = 'bunker' as const;
   private destroyed = false;
-  private constructor(readonly activePublicKeyHex: string, private readonly context: Context, private readonly rpc: VaultRpc) {}
+  private constructor(readonly activePublicKeyHex: string, private readonly context: Context, private readonly rpc: VaultRpc,
+    private readonly onKeyMismatch?: () => void) {}
 
   static async create(dataset: VaultDataset, rotation: number, rpc: VaultRpc, identityPubkeys: readonly string[]): Promise<HeartwoodVaultBackend> {
     const context = vaultKeyContext(dataset, rotation);
@@ -92,10 +99,15 @@ export class HeartwoodVaultBackend implements DecryptingSigningBackend {
    * resolved pubkey across calls (BunkerSigningBackend.vaultBackend) must
    * still re-check exclusion on every call, hit or miss, since an identity
    * added after the pubkey was first resolved would otherwise go unchecked.
+   *
+   * `onKeyMismatch` fires when the signer signs a control event under a
+   * different pubkey than `pubkey` — the resolved (possibly persisted) value
+   * is then stale and the caller must drop it and ask the device again.
    */
-  static fromResolvedPubkey(pubkey: string, context: Context, rpc: VaultRpc, identityPubkeys: readonly string[]): HeartwoodVaultBackend {
+  static fromResolvedPubkey(pubkey: string, context: Context, rpc: VaultRpc, identityPubkeys: readonly string[],
+    onKeyMismatch?: () => void): HeartwoodVaultBackend {
     if (!/^[0-9a-f]{64}$/.test(pubkey) || identityPubkeys.includes(pubkey)) throw new Error('Signer did not resolve a dedicated vault key');
-    return new HeartwoodVaultBackend(pubkey, context, rpc);
+    return new HeartwoodVaultBackend(pubkey, context, rpc, onKeyMismatch);
   }
   private request(method: string, params: string[]): Promise<string> {
     if (this.destroyed) return Promise.reject(new Error('Vault backend destroyed'));
@@ -105,6 +117,10 @@ export class HeartwoodVaultBackend implements DecryptingSigningBackend {
     if (event.pubkey !== this.activePublicKeyHex || event.kind !== 30078
       || new TextEncoder().encode(event.content).length > 12288) throw new Error('Invalid vault control event');
     const signed = JSON.parse(await this.request('sign_event', [JSON.stringify(event)])) as NostrEvent;
+    if (typeof signed?.pubkey === 'string' && signed.pubkey !== event.pubkey && verifyEvent(signed)) {
+      this.onKeyMismatch?.();
+      throw new Error('Vault key changed on the signer');
+    }
     if (signed.pubkey !== event.pubkey || signed.kind !== event.kind || signed.content !== event.content
       || signed.created_at !== event.created_at || JSON.stringify(signed.tags) !== JSON.stringify(event.tags)
       || !verifyEvent(signed)) throw new Error('Invalid vault control signature');

@@ -10,10 +10,12 @@ import { loadChildContactDirectoryCache, saveChildContactDirectoryCache } from '
 /** Separate read-only state. A directory is never folded into local operations. */
 export function useChildContactDirectory(options: {
   enabled: boolean; child: string | null; key: string | null; relayUrl: string; availablePersonas: string[];
+  /** Bumped on an in-session re-pair (App's `pairedChildBumpCounter`): the record's client key and endpoint change under the same child id. */
+  pairingGeneration?: number;
 }) {
-  const { enabled, child, key, relayUrl } = options;
+  const { enabled, child, key, relayUrl, pairingGeneration = 0 } = options;
   const personas = JSON.stringify([...options.availablePersonas].sort());
-  const session = JSON.stringify([enabled, child, key, relayUrl, personas]);
+  const session = JSON.stringify([enabled, child, key, relayUrl, personas, pairingGeneration]);
   const latest = useRef(session); latest.current = session;
   const [state, setState] = useState<{ session: string; view: ChildContactDirectory } | null>(null);
   const [, tick] = useState(0);

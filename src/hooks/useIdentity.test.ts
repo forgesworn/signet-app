@@ -95,6 +95,36 @@ describe('useIdentity — lock clears decrypted state synchronously (M9)', () =>
   });
 });
 
+// The persona Advanced page is reachable while locked; its actions unlock on
+// demand and hand the fresh key through, because the closure they call still
+// holds the null key ("Match it in Signet" threw "Cannot save identity
+// without encryption key" on 2026-10-01).
+describe('useIdentity — saves with an on-demand unlock key while locked', () => {
+  const KEY = 'test-encryption-key-min-8';
+
+  it('setPersonaPublicProfile and updateDisplayName accept an override key', async () => {
+    const identity = makeFakeIdentity();
+    await db.saveIdentityEncrypted(identity, KEY);
+    await db.savePreferences({ id: 'current', theme: 'system', activeAccountId: identity.id });
+
+    const { result } = renderHook(() => useIdentity(null));
+    await waitFor(() => expect(result.current.identity?.id).toBe(identity.id));
+
+    await act(async () => {
+      await expect(result.current.setPersonaPublicProfile('persona', { displayName: 'x', about: 'nope' }, undefined))
+        .rejects.toThrow('Cannot save identity without encryption key');
+    });
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'x', about: 'from nostr' }, undefined, undefined, KEY);
+      await result.current.updateDisplayName('persona', 'Nostr Name', undefined, KEY);
+    });
+
+    const saved = await db.loadIdentityDecrypted(identity.id, KEY);
+    expect(saved?.persona.about).toBe('from nostr');
+    expect(saved?.persona.displayName).toBe('Nostr Name');
+  }, 20_000);
+});
+
 describe('useIdentity — create', () => {
   it('saves identity to DB and sets as active', async () => {
     mockCreate.mockReturnValue(makeFakeIdentity());
@@ -334,6 +364,23 @@ describe('useIdentity — setSlotNip05Check / setPersonaPublicProfile clear-on-c
     expect(result.current.identity?.naturalPerson.nip05CheckedAt).toBe(1_700_000_000_000);
   }, 20_000);
 
+  it('setSlotFollowsImport persists the import record on the target slot, device-locally', async () => {
+    mockCreate.mockReturnValue(makeFakeIdentity());
+    const { result } = renderHook(() => useIdentity('test-key'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.create('Test User', 'natural-person', false);
+    });
+    const state = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, importedAt: 1_700_000_100_000, count: 321 };
+    await act(async () => {
+      await result.current.setSlotFollowsImport('persona', state);
+    });
+
+    expect(result.current.identity?.persona.followsImport).toEqual(state);
+    expect(result.current.identity?.naturalPerson.followsImport).toBeUndefined();
+  }, 20_000);
+
   it('setPersonaPublicProfile preserves the check result when nip05 is unchanged', async () => {
     mockCreate.mockReturnValue(makeFakeIdentity());
     const { result } = renderHook(() => useIdentity('test-key'));
@@ -523,4 +570,64 @@ describe('useIdentity — addPersona device derivation (§11.1.8 D4)', () => {
     const persisted = await db.loadIdentityDecrypted(NP_PUBKEY, KEY);
     expect(persisted?.extraPersonas?.[0].privateKey).toBe('6'.repeat(64));
   }, 20_000);
+});
+
+describe('useIdentity — publicProfileBase (device-local kind-0 comparison base)', () => {
+  const base = { eventId: 'e'.repeat(64), createdAt: 1_700_000_000, content: '{"name":"a","bot":true}', tags: [['t', 'x']] };
+  const state = { enabled: true, lastEventId: 'e'.repeat(64), lastPublishedAt: 1_700_000_000, lastPublishedRelay: 'wss://r.example' };
+
+  async function setup() {
+    mockCreate.mockReturnValue(makeFakeIdentity());
+    const hook = renderHook(() => useIdentity('test-key'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    await act(async () => { await hook.result.current.create('Test User', 'natural-person', false); });
+    return hook;
+  }
+
+  it('is written with the state and survives a plain card save that passes no base', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous', about: 'a' }, state, base);
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toEqual(base);
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous', about: 'b' }, state);
+    });
+    expect(result.current.identity?.persona.about).toBe('b');
+    expect(result.current.identity?.persona.publicProfileBase).toEqual(base);
+  }, 60_000);
+
+  it('an explicit null clears it', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, base);
+    });
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, null);
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toBeUndefined();
+  }, 60_000);
+
+  it('removing the state removes the base with it', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, base);
+    });
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, undefined);
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toBeUndefined();
+  }, 60_000);
+
+  it('clearPersonaPublicProfile (Disable / retract) drops the base so a re-enable rebuilds from the card', async () => {
+    const { result } = await setup();
+    await act(async () => {
+      await result.current.setPersonaPublicProfile('persona', { displayName: 'Anonymous' }, state, base);
+    });
+    await act(async () => {
+      await result.current.clearPersonaPublicProfile('persona');
+    });
+    expect(result.current.identity?.persona.publicProfileBase).toBeUndefined();
+    expect(result.current.identity?.persona.publicProfile).toBeUndefined();
+  }, 60_000);
 });

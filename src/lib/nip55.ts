@@ -222,6 +222,21 @@ export function planNip55(
   return { kind: 'ask', pubkey: identity };
 }
 
+/**
+ * The key an approval screen starts on when the request named none: what the
+ * person chose for this app before, else the active key, else the first key
+ * there is, and always one of `ownedPubkeys`, since a key with no owner route
+ * cannot answer. Lowercase, or null when nothing is owned.
+ */
+export function defaultNip55Pubkey(ownedPubkeys: string[], grant: Nip55Grant | undefined, activePubkey: string | null): string | null {
+  const owned = ownedPubkeys.map(p => p.toLowerCase());
+  const remembered = grant?.pubkey.toLowerCase();
+  if (remembered && owned.includes(remembered)) return remembered;
+  const active = activePubkey?.toLowerCase();
+  if (active && owned.includes(active)) return active;
+  return owned[0] ?? null;
+}
+
 /** A line for the approval screen. */
 export function describeNip55(parsed: ParsedNip55, describeTemplate: (t: UnsignedEvent) => string): string {
   switch (parsed.method) {

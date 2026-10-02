@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
@@ -36,6 +39,8 @@ class SignetNativePlugin : Plugin() {
         private const val KEY_ALIAS = "signet-biometric-unlock"
         private const val PREFS = "signet_native_auth"
         private const val PREF_WRAPPED = "wrapped_master_key" // base64(iv || gcm-ct)
+        /** The stored key also opens with the device credential (see BiometricPolicy). */
+        private const val PREF_DEVICE_CREDENTIAL = "wrapped_key_device_credential"
         private const val GCM_TAG_BITS = 128
     }
 
@@ -79,6 +84,13 @@ class SignetNativePlugin : Plugin() {
         call.resolve(JSObject().put("requests", requests))
     }
 
+    /** The page's Page Lifecycle `freeze` / `resume`; see Nip55Requests.pageAnswering. */
+    @PluginMethod
+    fun nip55PageFrozen(call: PluginCall) {
+        Nip55Requests.pageFrozen(call.getBoolean("frozen") ?: false)
+        call.resolve()
+    }
+
     @PluginMethod
     fun nip55Respond(call: PluginCall) {
         Nip55Requests.answer(
@@ -104,17 +116,18 @@ class SignetNativePlugin : Plugin() {
     private fun keystore(): KeyStore =
         KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
-    private fun generateKey(): SecretKey {
+    private fun generateKey(deviceCredential: Boolean): SecretKey {
         val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         kg.init(
             KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
-                // Auth-per-use, bound to Class-3 (strong) biometrics only.
+                // Auth-per-use, Class-3 (strong) biometrics, and the device
+                // credential as well where BiometricPolicy allows it.
                 .setUserAuthenticationRequired(true)
-                .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
-                .setInvalidatedByBiometricEnrollment(true)
+                .setUserAuthenticationParameters(0, BiometricPolicy.keyAuthenticators(deviceCredential))
+                .setInvalidatedByBiometricEnrollment(!deviceCredential)
                 .build()
         )
         return kg.generateKey()
@@ -122,14 +135,20 @@ class SignetNativePlugin : Plugin() {
 
     private fun getKey(): SecretKey? = keystore().getKey(KEY_ALIAS, null) as? SecretKey
 
-    private fun promptInfo(title: String): BiometricPrompt.PromptInfo =
+    private fun prefs() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    private fun promptInfo(title: String, deviceCredential: Boolean): BiometricPrompt.PromptInfo =
         BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
-            .setAllowedAuthenticators(BIOMETRIC_STRONG)
-            .setNegativeButtonText("Cancel")
+            .setAllowedAuthenticators(BiometricPolicy.promptAuthenticators(deviceCredential))
+            .apply {
+                // The system prompt offers the phone's PIN itself; a negative
+                // button is not allowed alongside the device credential.
+                if (!deviceCredential) setNegativeButtonText("Cancel")
+            }
             .build()
 
-    private fun runBiometric(call: PluginCall, cipher: Cipher, title: String, onSuccess: (Cipher) -> Unit) {
+    private fun runBiometric(call: PluginCall, cipher: Cipher, title: String, deviceCredential: Boolean, onSuccess: (Cipher) -> Unit) {
         val executor = ContextCompat.getMainExecutor(context)
         activity.runOnUiThread {
             // Everything here runs on the UI thread AFTER the plugin method's
@@ -139,25 +158,70 @@ class SignetNativePlugin : Plugin() {
             // hung forever ("Setting up…"). Wrap so any failure rejects the
             // call instead of hanging.
             try {
-                val prompt = BiometricPrompt(
-                    activity as androidx.fragment.app.FragmentActivity,
-                    executor,
-                    object : BiometricPrompt.AuthenticationCallback() {
-                        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                            val c = result.cryptoObject?.cipher
-                            if (c == null) { call.reject("no cipher") } else {
-                                try { onSuccess(c) } catch (t: Throwable) { call.reject("crypto: ${t.message}") }
-                            }
-                        }
-                        override fun onAuthenticationError(code: Int, msg: CharSequence) {
-                            call.reject("biometric: $msg")
-                        }
-                    }
-                )
-                prompt.authenticate(promptInfo(title), BiometricPrompt.CryptoObject(cipher))
+                val host = activity as androidx.fragment.app.FragmentActivity
+                // A NIP-55 request can reach a locked app whose page is still
+                // running in the background, and the page asks for the unlock
+                // before the activity is back in front. BiometricPrompt started
+                // on a stopped activity does nothing at all, no prompt and no
+                // callback ("Called after onSaveInstanceState()"), which left
+                // the unlock screen on "Waiting for biometric..." for good.
+                // Start it once the activity is resumed; if the activity goes
+                // first, say so.
+                whenResumed(host.lifecycle, { promptBiometric(call, host, executor, cipher, title, deviceCredential, onSuccess) }) {
+                    call.reject("biometric: the app closed before it could ask")
+                }
             } catch (t: Throwable) {
                 call.reject("biometric-prompt: ${t.message}")
             }
+        }
+    }
+
+    private fun promptBiometric(
+        call: PluginCall,
+        host: androidx.fragment.app.FragmentActivity,
+        executor: java.util.concurrent.Executor,
+        cipher: Cipher,
+        title: String,
+        deviceCredential: Boolean,
+        onSuccess: (Cipher) -> Unit,
+    ) {
+        val once = SettleOnce()
+        val watchdog = Handler(Looper.getMainLooper())
+        var prompt: BiometricPrompt? = null
+        // Whatever else goes wrong, the call settles: a prompt that neither
+        // answers nor fails is cancelled after BiometricPolicy.PROMPT_WATCHDOG_MS
+        // and the page offers to try again.
+        val giveUp = Runnable {
+            if (once.claim()) {
+                try { prompt?.cancelAuthentication() } catch (_: Throwable) {}
+                call.reject("biometric: timed out")
+            }
+        }
+        try {
+            prompt = BiometricPrompt(
+                host,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        if (!once.claim()) return
+                        watchdog.removeCallbacks(giveUp)
+                        val c = result.cryptoObject?.cipher
+                        if (c == null) { call.reject("no cipher") } else {
+                            try { onSuccess(c) } catch (t: Throwable) { call.reject("crypto: ${t.message}") }
+                        }
+                    }
+                    override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                        if (!once.claim()) return
+                        watchdog.removeCallbacks(giveUp)
+                        call.reject("biometric: $msg")
+                    }
+                }
+            )
+            watchdog.postDelayed(giveUp, BiometricPolicy.PROMPT_WATCHDOG_MS)
+            prompt.authenticate(promptInfo(title, deviceCredential), BiometricPrompt.CryptoObject(cipher))
+        } catch (t: Throwable) {
+            watchdog.removeCallbacks(giveUp)
+            if (once.claim()) call.reject("biometric-prompt: ${t.message}")
         }
     }
 
@@ -168,14 +232,17 @@ class SignetNativePlugin : Plugin() {
         if (secret.isNullOrEmpty() || secret.length != 64) { call.reject("bad secret"); return }
         try {
             keystore().deleteEntry(KEY_ALIAS) // fresh key per enrollment
-            val key = generateKey()
+            val deviceCredential = BiometricPolicy.deviceCredentialForNewKey(Build.VERSION.SDK_INT)
+            val key = generateKey(deviceCredential)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key)
-            runBiometric(call, cipher, "Confirm to secure your Signet") { c ->
+            runBiometric(call, cipher, "Confirm to secure your Signet", deviceCredential) { c ->
                 val ct = c.doFinal(secret.toByteArray(Charsets.UTF_8))
                 val blob = Base64.encodeToString(c.iv + ct, Base64.NO_WRAP)
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .edit().putString(PREF_WRAPPED, blob).apply()
+                prefs().edit()
+                    .putString(PREF_WRAPPED, blob)
+                    .putBoolean(PREF_DEVICE_CREDENTIAL, deviceCredential)
+                    .apply()
                 call.resolve(JSObject().put("ok", true))
             }
         } catch (t: Throwable) {
@@ -187,15 +254,17 @@ class SignetNativePlugin : Plugin() {
     @PluginMethod
     fun biometricUnlock(call: PluginCall) {
         try {
-            val blob = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(PREF_WRAPPED, null) ?: run { call.reject("not enrolled"); return }
+            val blob = prefs().getString(PREF_WRAPPED, null) ?: run { call.reject("not enrolled"); return }
             val raw = Base64.decode(blob, Base64.NO_WRAP)
             val iv = raw.copyOfRange(0, 12)
             val ct = raw.copyOfRange(12, raw.size)
             val key = getKey() ?: run { call.reject("keystore key missing"); return }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-            runBiometric(call, cipher, "Unlock your Signet") { c ->
+            val deviceCredential = BiometricPolicy.deviceCredentialForStoredKey(
+                Build.VERSION.SDK_INT, prefs().getBoolean(PREF_DEVICE_CREDENTIAL, false),
+            )
+            runBiometric(call, cipher, "Unlock your Signet", deviceCredential) { c ->
                 val secret = String(c.doFinal(ct), Charsets.UTF_8)
                 call.resolve(JSObject().put("secret", secret))
             }
@@ -205,9 +274,16 @@ class SignetNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun biometricDeviceCredential(call: PluginCall) {
+        val allowed = prefs().getString(PREF_WRAPPED, null) != null &&
+            BiometricPolicy.deviceCredentialForStoredKey(Build.VERSION.SDK_INT, prefs().getBoolean(PREF_DEVICE_CREDENTIAL, false))
+        call.resolve(JSObject().put("allowed", allowed))
+    }
+
+    @PluginMethod
     fun biometricClear(call: PluginCall) {
         try { keystore().deleteEntry(KEY_ALIAS) } catch (_: Throwable) {}
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(PREF_WRAPPED).apply()
+        prefs().edit().remove(PREF_WRAPPED).remove(PREF_DEVICE_CREDENTIAL).apply()
         call.resolve()
     }
 
@@ -256,6 +332,7 @@ class SignetNativePlugin : Plugin() {
     @PluginMethod
     fun serviceHeartbeat(call: PluginCall) {
         BunkerForegroundService.heartbeat(
+            context,
             call.getString("pubkeysCsv") ?: "",
             call.getString("relayUrl") ?: ""
         )

@@ -1,4 +1,5 @@
 import { ensureContactsDeviceId } from './contacts-v2-ids';
+import { clearQrCardPrefs } from './qr-card-prefs';
 // IndexedDB storage for MySignet family app
 
 import { openDB, unwrap, type IDBPDatabase } from 'idb';
@@ -6,10 +7,12 @@ import type { SignetIdentity, Contact, ChildSettings, AppPreferences, IdentityDo
 import { TRUSTED_APP_PAIRING_CAP, COMPANION_GRANT_CAP } from '../types';
 import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
-import type { AppGrantV2 } from '../types';
+import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
+import { isValidRelayUrl } from './relay-url';
+import type { ChildRulesPayload } from './child-rules-wire';
 import { liftDependantPublicProfileConfig } from './lift-public-profile-config';
 import { liftChildSettings } from './lift-child-settings';
 import { mergeChildContactSettings, portableChildContactSettings } from './child-contact-settings';
@@ -18,11 +21,12 @@ import { validateOperation, validateRecord } from './contacts-v2-reducer';
 import { createSerialQueue } from './contacts-v2-queue';
 import { portableSettingsValues } from './portable-settings';
 import { privateVaultQueue } from './private-vault-queue';
+import { parseGuardianActingEntry, pruneGuardianActing, type GuardianActingEntry } from './guardian-acting';
 
 export { encryptSecret, decryptSecret } from './crypto-store';
 
 const DB_NAME = 'my-signet';
-const DB_VERSION = 25;
+const DB_VERSION = 26;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -313,6 +317,13 @@ function getDB(): Promise<IDBPDatabase> {
         if (oldVersion < 25 && !db.objectStoreNames.contains('privateVaultState')) {
           db.createObjectStore('privateVaultState', { keyPath: 'id' });
         }
+        // Version 26: childRules — guardian rules for a dependant's own phone
+        // (child-direct Heartwood pairing). Body encrypted; id / dependantId /
+        // updatedAt stay clear so the by-dependant index works locked.
+        if (oldVersion < 26 && !db.objectStoreNames.contains('childRules')) {
+          const rules = db.createObjectStore('childRules', { keyPath: 'id' });
+          rules.createIndex('by-dependant', 'dependantId');
+        }
       },
     });
   }
@@ -347,6 +358,9 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== BUNKER_SECRET_KEY &&
     r.id !== PRO_PERSONA_KEY &&
     r.id !== HEARTWOOD_OPERATOR_KEY &&
+    r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
+    !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
+    !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
     !r.id.startsWith(DEPENDANT_PREFIX),
   );
 }
@@ -553,7 +567,10 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === BUNKER_SECRET_KEY) continue;
     if (identity.id === PRO_PERSONA_KEY) continue;
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
+    if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
+    if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
+    if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_DIRECT_ROW_PREFIX)) continue;
     if (!identity.encrypted) {
       await db.delete('identity', identity.id);
       removed++;
@@ -1113,6 +1130,95 @@ export async function deleteContactGrantV2(grantId: string): Promise<void> {
     const db = await getDB();
     await db.delete('contactGrantsV2', grantId);
   });
+}
+
+// --- Child rules (db v26) ---
+// Routing-clear: id, dependantId, updatedAt. Everything else is encrypted.
+
+type StoredChildRule = {
+  id: string; dependantId: string; updatedAt: number;
+  encrypted: true; encryptedData: string;
+};
+
+// A52: every row is PBKDF2-600k sealed, so decrypted rules are memoised per
+// encryption key. An entry is valid only for the exact ciphertext it was read
+// from (a write re-seals with a fresh salt, so any other writer invalidates it
+// by construction); writes through this module update it directly.
+let childRuleMemo: { key: string; byId: Map<string, { data: string; rule: ChildRule }> } | null = null;
+function childRuleMemoFor(encryptionKey: string): Map<string, { data: string; rule: ChildRule }> {
+  if (!childRuleMemo || childRuleMemo.key !== encryptionKey) childRuleMemo = { key: encryptionKey, byId: new Map() };
+  return childRuleMemo.byId;
+}
+/** Drop the decrypted child-rule memo (on lock, and on purge). */
+export function forgetChildRuleCache(): void {
+  childRuleMemo = null;
+}
+
+export async function saveChildRule(rule: ChildRule, encryptionKey: string): Promise<void> {
+  const db = await getDB();
+  const { id, dependantId, updatedAt, ...sensitive } = rule;
+  const dep = dependantId.toLowerCase();
+  const encryptedData = await encryptSecret(JSON.stringify(sensitive), encryptionKey);
+  const row: StoredChildRule = { id, dependantId: dep, updatedAt, encrypted: true, encryptedData };
+  await db.put('childRules', row);
+  const memo = childRuleMemoFor(encryptionKey);
+  const decoded = decodeChildRule(row, sensitive);
+  if (decoded) memo.set(id, { data: encryptedData, rule: decoded });
+  else memo.delete(id);
+}
+
+function decodeChildRule(r: StoredChildRule, b: Partial<ChildRule>): ChildRule | undefined {
+  if (typeof b.persona !== 'string' || typeof b.scope !== 'string' || typeof b.target !== 'string') return undefined;
+  if (b.decision !== 'allow' && b.decision !== 'deny') return undefined;
+  return {
+    id: r.id, dependantId: r.dependantId, updatedAt: r.updatedAt,
+    persona: b.persona, scope: b.scope, target: b.target as ChildRule['target'], decision: b.decision,
+    createdAt: typeof b.createdAt === 'number' ? b.createdAt : r.updatedAt,
+    ...(b.schedule ? { schedule: b.schedule } : {}),
+    ...(typeof b.label === 'string' ? { label: b.label } : {}),
+    ...(typeof b.expiresAt === 'number' ? { expiresAt: b.expiresAt } : {}),
+    ...(typeof b.tombstonedAt === 'number' ? { tombstonedAt: b.tombstonedAt } : {}),
+    ...(typeof b.lastUsedAt === 'number' ? { lastUsedAt: b.lastUsedAt } : {}),
+  };
+}
+
+async function decryptChildRule(row: unknown, encryptionKey: string): Promise<ChildRule | undefined> {
+  const r = row as StoredChildRule | undefined;
+  if (!r || r.encrypted !== true || typeof r.encryptedData !== 'string') return undefined;
+  const memo = childRuleMemoFor(encryptionKey);
+  const hit = memo.get(r.id);
+  if (hit && hit.data === r.encryptedData) return { ...hit.rule };
+  try {
+    const rule = decodeChildRule(r, JSON.parse(await decryptSecret(r.encryptedData, encryptionKey)) as Partial<ChildRule>);
+    if (rule) memo.set(r.id, { data: r.encryptedData, rule });
+    return rule ? { ...rule } : undefined;
+  } catch {
+    // Wrong key or corrupt row: a missing rule, never a thrown load.
+    return undefined;
+  }
+}
+
+/** Includes tombstoned rows (they propagate over sync). */
+export async function listChildRules(dependantId: string, encryptionKey: string): Promise<ChildRule[]> {
+  const db = await getDB();
+  const rows = await db.getAllFromIndex('childRules', 'by-dependant', dependantId.toLowerCase());
+  const rules = await Promise.all(rows.map(r => decryptChildRule(r, encryptionKey)));
+  return rules.filter((r): r is ChildRule => r !== undefined);
+}
+
+export async function listAllChildRules(encryptionKey: string): Promise<ChildRule[]> {
+  const db = await getDB();
+  const rows = await db.getAll('childRules');
+  const rules = await Promise.all(rows.map(r => decryptChildRule(r, encryptionKey)));
+  return rules.filter((r): r is ChildRule => r !== undefined);
+}
+
+/** Soft-delete: keeps the row so the tombstone reaches other devices. */
+export async function tombstoneChildRule(id: string, encryptionKey: string, nowMs: number): Promise<void> {
+  const db = await getDB();
+  const rule = await decryptChildRule(await db.get('childRules', id), encryptionKey);
+  if (!rule) return;
+  await saveChildRule({ ...rule, tombstonedAt: nowMs, updatedAt: nowMs }, encryptionKey);
 }
 
 // --- Sync decrypt cache (v21, family-bunker §11.1.10) ---
@@ -1690,8 +1796,18 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
           : undefined,
       }
     : undefined;
+  const db = await getDB();
+  // A25: `childDevice` is set only by the pairing flow and cleared only by
+  // `clearChildDevice`. A generic save (mutators, sync merges) whose object
+  // lacks it keeps the stored one.
+  let childDevice = dependant.childDevice;
+  if (childDevice === undefined) {
+    const existing = await db.get('identity', DEPENDANT_PREFIX + dependant.id) as { childDevice?: DependantIdentity['childDevice'] } | undefined;
+    if (existing?.childDevice) childDevice = existing.childDevice;
+  }
   const stored = {
     ...dependant,
+    ...(childDevice ? { childDevice } : {}),
     id: DEPENDANT_PREFIX + dependant.id,
     naturalPerson: { ...dependant.naturalPerson, privateKey: encNpPriv, avatarKey: encNpAvatarKey, contactAvatarKey: encNpContactAvatarKey },
     persona: { ...dependant.persona, privateKey: encPersonaPriv, avatarKey: encPersonaAvatarKey, contactAvatarKey: encPersonaContactAvatarKey },
@@ -1700,8 +1816,25 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
     appBunkerEndpoint: encAppEndpoint,
     encrypted: true,
   };
-  const db = await getDB();
   await db.put('identity', stored);
+}
+
+/**
+ * A25: the one path that removes a dependant's `childDevice` (unpair). Also
+ * drops `bunkerEndpoint.authorizedClientPubkey` when it names that phone.
+ * Touches only clear routing fields, so no key is needed.
+ */
+export async function clearChildDevice(dependantId: string): Promise<void> {
+  const db = await getDB();
+  const key = DEPENDANT_PREFIX + dependantId;
+  const row = await db.get('identity', key) as (Record<string, unknown> & { childDevice?: { clientPubkey?: string }; bunkerEndpoint?: { authorizedClientPubkey?: string } }) | undefined;
+  if (!row || !row.childDevice) return;
+  const { childDevice, ...rest } = row;
+  const ep = rest.bunkerEndpoint;
+  const next = ep && ep.authorizedClientPubkey && ep.authorizedClientPubkey === childDevice.clientPubkey
+    ? { ...rest, bunkerEndpoint: { ...ep, authorizedClientPubkey: undefined } }
+    : rest;
+  await db.put('identity', next);
 }
 
 export async function getDependants(guardianPubkey: string, encryptionKey?: string): Promise<DependantIdentity[]> {
@@ -2149,6 +2282,54 @@ export async function deleteHeartwoodOperator(): Promise<void> {
   await db.delete('identity', HEARTWOOD_OPERATOR_KEY);
 }
 
+// --- Heartwood vault pubkeys (encrypted) ---
+// One `identity`-store row keyed 'heartwoodVaultPubkeys': the vault pubkeys a
+// paired Heartwood resolved for `get_public_key` + a `signet:vault:*` context,
+// keyed `${purpose}:${index}` and pinned to the master pubkey they were
+// resolved under. Public data, but encrypted like `bunkerSecret` anyway — the
+// set of vault keys links this install to its backups on a relay. Cached so an
+// unlock does not re-send a context `get_public_key`, which the device answers
+// with an `NPUB AS` card it never remembers. See `vault-pubkey-cache.ts`.
+
+const HEARTWOOD_VAULT_PUBKEYS_KEY = 'heartwoodVaultPubkeys';
+
+export interface HeartwoodVaultPubkeys {
+  masterPubkey: string;
+  entries: Record<string, string>;
+}
+
+function isHeartwoodVaultPubkeys(value: unknown): value is HeartwoodVaultPubkeys {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as { masterPubkey?: unknown; entries?: unknown };
+  if (typeof v.masterPubkey !== 'string' || !/^[0-9a-f]{64}$/.test(v.masterPubkey)) return false;
+  if (!v.entries || typeof v.entries !== 'object' || Array.isArray(v.entries)) return false;
+  return Object.values(v.entries as Record<string, unknown>).every(pk => typeof pk === 'string' && /^[0-9a-f]{64}$/.test(pk));
+}
+
+export async function saveHeartwoodVaultPubkeys(record: HeartwoodVaultPubkeys, encryptionKey: string): Promise<void> {
+  const encrypted = await encryptSecret(JSON.stringify(record), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: HEARTWOOD_VAULT_PUBKEYS_KEY, secret: encrypted });
+}
+
+/** Returns null when nothing is stored, the key is wrong, or the payload is malformed. */
+export async function loadHeartwoodVaultPubkeys(encryptionKey: string): Promise<HeartwoodVaultPubkeys | null> {
+  const db = await getDB();
+  const record = await db.get('identity', HEARTWOOD_VAULT_PUBKEYS_KEY);
+  if (!record || !record.secret) return null;
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(record.secret, encryptionKey));
+    return isHeartwoodVaultPubkeys(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteHeartwoodVaultPubkeys(): Promise<void> {
+  const db = await getDB();
+  await db.delete('identity', HEARTWOOD_VAULT_PUBKEYS_KEY);
+}
+
 // --- Professional Persona Private Key (encrypted) ---
 // Stored with key 'professionalPersona' in the identity store.
 // Same AES-256-GCM pattern as the mnemonic and bunkerSecret.
@@ -2203,6 +2384,7 @@ export async function deleteProPersonaRecord(): Promise<void> {
  * Called during identity deletion to ensure no orphaned PII remains.
  */
 export async function purgeAllUserData(): Promise<void> {
+  clearQrCardPrefs();
   const db = await getDB();
   await db.clear('identity');
   await db.clear('contacts');
@@ -2271,6 +2453,10 @@ export async function purgeAllUserData(): Promise<void> {
   // inside the task would race the purge's own connection.
   if (db.objectStoreNames.contains('contactGrantsV2')) {
     await grantWriteQueue.run(() => db.clear('contactGrantsV2'));
+  }
+  if (db.objectStoreNames.contains('childRules')) {
+    forgetChildRuleCache();
+    await db.clear('childRules');
   }
 }
 
@@ -2380,6 +2566,7 @@ export async function savePairedChild(record: Omit<PairedChildRecord, 'id' | 'en
   if (record.guardianPubkey !== undefined && !HEX64.test(record.guardianPubkey)) {
     throw new Error('Invalid guardianPubkey');
   }
+  const direct = directPairingFields(record);
   const encryptedUri = await encryptSecret(record.bunkerUri, encryptionKey);
   const encryptedPriv = await encryptSecret(record.clientKeypair.privateKey, encryptionKey);
   const dependantPubkey = record.dependantPubkey.toLowerCase();
@@ -2397,9 +2584,98 @@ export async function savePairedChild(record: Omit<PairedChildRecord, 'id' | 'en
     hasPaired: record.hasPaired ?? false,
     encrypted: true,
     ...(record.guardianPubkey ? { guardianPubkey: record.guardianPubkey.toLowerCase() } : {}),
+    ...direct,
   };
   const db = await getDB();
   await db.put('pairedChild', stored);
+}
+
+const STRICT_HEX64 = /^[0-9a-f]{64}$/;
+const APPROVAL_STATES: readonly string[] = ['approved', 'waiting', 'failed'];
+
+/**
+ * Validate the child-direct fields (all routing metadata, stored in clear).
+ * A legacy record (no `mode`, or `'phone'`) carries none of them.
+ */
+function directPairingFields(record: Omit<PairedChildRecord, 'id' | 'encrypted'>): Partial<PairedChildRecord> {
+  if (record.mode === undefined || record.mode === 'phone') return record.mode ? { mode: 'phone' } : {};
+  if (record.mode !== 'heartwood-direct') throw new Error('Invalid pairing mode');
+  const { railPubkey, personaPubkey, hwRelays, railRelay } = record;
+  if (!railPubkey || !STRICT_HEX64.test(railPubkey) || !personaPubkey || !STRICT_HEX64.test(personaPubkey)) {
+    throw new Error('Invalid direct pairing keys');
+  }
+  if (!Array.isArray(hwRelays) || hwRelays.length === 0 || hwRelays.length > 8 || !hwRelays.every(r => isValidRelayUrl(r))
+    || !railRelay || !isValidRelayUrl(railRelay)) {
+    throw new Error('Invalid direct pairing relays');
+  }
+  const personas = (record.personas ?? []).filter(p => STRICT_HEX64.test(p.pubkey)).slice(0, 32)
+    .map(p => ({ pubkey: p.pubkey, name: p.name.slice(0, 100), role: p.role }));
+  return {
+    mode: 'heartwood-direct', railPubkey, personaPubkey, hwRelays: [...hwRelays], railRelay, personas,
+    ...(record.identityApprovals ? { identityApprovals: cleanApprovals(record.identityApprovals) } : {}),
+  };
+}
+
+function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 'waiting' | 'failed'> {
+  const out: Record<string, 'approved' | 'waiting' | 'failed'> = {};
+  for (const [k, v] of Object.entries(a)) {
+    if (STRICT_HEX64.test(k) && APPROVAL_STATES.includes(v)) out[k] = v as 'approved' | 'waiting' | 'failed';
+  }
+  return out;
+}
+
+/** Persist the identity-approval ceremony state (clear routing metadata). */
+export async function setPairedChildIdentityApprovals(
+  dependantPubkey: string,
+  approvals: Record<string, 'approved' | 'waiting' | 'failed'>,
+): Promise<void> {
+  if (!HEX64.test(dependantPubkey)) return;
+  const db = await getDB();
+  const tx = db.transaction('pairedChild', 'readwrite');
+  const raw = await tx.store.get(dependantPubkey.toLowerCase()) as PairedChildRecord | undefined;
+  if (raw?.mode === 'heartwood-direct') await tx.store.put({ ...raw, identityApprovals: cleanApprovals(approvals) });
+  await tx.done;
+}
+
+// --- Child-direct rules cache (spec §5.2) ---
+//
+// The last guardian → child rules payload, so the child enforces offline.
+// Encrypted identity-store row, one per paired dependant. Absent ⇒ null ⇒
+// the gate fails closed (asks for everything).
+
+const CHILD_RULES_CACHE_PREFIX = 'childRulesCache:';
+/** Guardian-local child-direct rows (approved-once kinds, verdict history, pending revokes). Not identities. */
+const CHILD_DIRECT_ROW_PREFIX = 'childDirect:';
+
+export async function saveChildRulesCache(dependantPubkey: string, payload: ChildRulesPayload, encryptionKey: string): Promise<void> {
+  if (!HEX64.test(dependantPubkey)) throw new Error('Invalid dependantPubkey');
+  const secret = await encryptSecret(JSON.stringify(payload), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: CHILD_RULES_CACHE_PREFIX + dependantPubkey.toLowerCase(), secret });
+}
+
+/** Null when absent, undecryptable, or not a payload for this dependant. */
+export async function loadChildRulesCache(dependantPubkey: string, encryptionKey: string): Promise<ChildRulesPayload | null> {
+  if (!HEX64.test(dependantPubkey)) return null;
+  const db = await getDB();
+  const row = await db.get('identity', CHILD_RULES_CACHE_PREFIX + dependantPubkey.toLowerCase());
+  if (!row || typeof row.secret !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(row.secret, encryptionKey));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const p = parsed as ChildRulesPayload;
+    if (p.v !== 1 || p.dependantId !== dependantPubkey.toLowerCase() || !Array.isArray(p.rules)
+      || !Array.isArray(p.ceilingKinds) || !Array.isArray(p.disconnectedApps) || !Number.isSafeInteger(p.updatedAt)) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearChildRulesCache(dependantPubkey: string): Promise<void> {
+  if (!HEX64.test(dependantPubkey)) return;
+  const db = await getDB();
+  await db.delete('identity', CHILD_RULES_CACHE_PREFIX + dependantPubkey.toLowerCase());
 }
 
 export async function loadPairedChild(dependantPubkey: string, encryptionKey: string): Promise<PairedChildRecord | null> {
@@ -3032,4 +3308,157 @@ export async function getGraceKey(): Promise<GraceKeyRecord | undefined> {
 export async function clearGraceKey(): Promise<void> {
   const db = await getDB();
   await db.delete('graceKey', 'current');
+}
+
+// --- Child-direct guardian-local rows (spec §7; A24) ---
+//
+// Encrypted identity-store rows holding JSON. Each loader type-guards what it
+// decrypts and returns an empty value for anything absent, undecryptable or
+// malformed.
+
+async function saveEncryptedJsonRow(id: string, value: unknown, encryptionKey: string): Promise<void> {
+  const secret = await encryptSecret(JSON.stringify(value), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id, secret });
+}
+
+async function loadEncryptedJsonRow(id: string, encryptionKey: string): Promise<unknown> {
+  const db = await getDB();
+  const row = await db.get('identity', id);
+  if (!row || typeof row.secret !== 'string') return undefined;
+  try { return JSON.parse(await decryptSecret(row.secret, encryptionKey)); } catch { return undefined; }
+}
+
+const CHILD_APPROVED_ONCE_ROW = CHILD_DIRECT_ROW_PREFIX + 'approvedOnce';
+const CHILD_ASK_HISTORY_ROW = CHILD_DIRECT_ROW_PREFIX + 'askHistory';
+const CHILD_PENDING_REVOKES_ROW = CHILD_DIRECT_ROW_PREFIX + 'pendingRevokes';
+
+export type ApprovedOnceKinds = Record<string, { kind: number; until: number }[]>;
+
+/** Approved-once kinds per dependant id (`until` unix seconds). */
+export async function saveChildApprovedOnce(map: ApprovedOnceKinds, encryptionKey: string): Promise<void> {
+  await saveEncryptedJsonRow(CHILD_APPROVED_ONCE_ROW, map, encryptionKey);
+}
+
+export async function loadChildApprovedOnce(encryptionKey: string): Promise<ApprovedOnceKinds> {
+  const raw = await loadEncryptedJsonRow(CHILD_APPROVED_ONCE_ROW, encryptionKey);
+  const out: ApprovedOnceKinds = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [dep, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (!HEX64.test(dep) || !Array.isArray(list)) continue;
+    const ok = list.filter((a): a is { kind: number; until: number } => !!a && typeof a === 'object'
+      && Number.isInteger((a as { kind: unknown }).kind) && (a as { kind: number }).kind >= 0 && (a as { kind: number }).kind <= 65535
+      && Number.isSafeInteger((a as { until: unknown }).until)).map(a => ({ kind: a.kind, until: a.until }));
+    if (ok.length > 0) out[dep] = ok;
+  }
+  return out;
+}
+
+/** Guardian-local verdict history (newest first, capped by the caller). Opaque JSON records. */
+export async function saveChildAskHistory(entries: unknown[], encryptionKey: string): Promise<void> {
+  await saveEncryptedJsonRow(CHILD_ASK_HISTORY_ROW, entries, encryptionKey);
+}
+
+export async function loadChildAskHistory(encryptionKey: string): Promise<unknown[]> {
+  const raw = await loadEncryptedJsonRow(CHILD_ASK_HISTORY_ROW, encryptionKey);
+  return Array.isArray(raw) ? raw : [];
+}
+
+/** A24: a child-direct slot revoke that could not be completed at removal time. */
+export interface PendingChildRevoke { label: string; slotIndex: number; secretFingerprint: string; dependantId: string }
+
+function isPendingChildRevoke(x: unknown): x is PendingChildRevoke {
+  if (!x || typeof x !== 'object') return false;
+  const o = x as Record<string, unknown>;
+  return typeof o.label === 'string' && o.label.length <= 128 && Number.isSafeInteger(o.slotIndex) && (o.slotIndex as number) >= 0
+    && typeof o.secretFingerprint === 'string' && /^[0-9a-f]{1,128}$/i.test(o.secretFingerprint)
+    && typeof o.dependantId === 'string' && o.dependantId.length <= 128;
+}
+
+export async function listPendingChildRevokes(encryptionKey: string): Promise<PendingChildRevoke[]> {
+  const raw = await loadEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, encryptionKey);
+  return Array.isArray(raw) ? raw.filter(isPendingChildRevoke) : [];
+}
+
+/** A38: every read-modify-write of the pending-revoke row runs on one chain, so concurrent writers never lose a record. */
+const pendingRevokeWrites = createSerialQueue();
+
+export function addPendingChildRevoke(rec: PendingChildRevoke, encryptionKey: string): Promise<void> {
+  return pendingRevokeWrites.run(async () => {
+    const list = await listPendingChildRevokes(encryptionKey);
+    if (list.some(r => r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase())) return;
+    await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, [...list, rec], encryptionKey);
+  });
+}
+
+export function removePendingChildRevoke(rec: Pick<PendingChildRevoke, 'slotIndex' | 'secretFingerprint'>, encryptionKey: string): Promise<void> {
+  return pendingRevokeWrites.run(async () => {
+    const list = await listPendingChildRevokes(encryptionKey);
+    const next = list.filter(r => !(r.slotIndex === rec.slotIndex && r.secretFingerprint.toLowerCase() === rec.secretFingerprint.toLowerCase()));
+    if (next.length !== list.length) await saveEncryptedJsonRow(CHILD_PENDING_REVOKES_ROW, next, encryptionKey);
+  });
+}
+
+const GUARDIAN_ACTING_ROW = CHILD_DIRECT_ROW_PREFIX + 'guardianActing';
+
+/** A48: signings this guardian phone made as a direct-paired child's persona (7 days, ≤1000). */
+export async function loadGuardianActing(encryptionKey: string): Promise<GuardianActingEntry[]> {
+  const raw = await loadEncryptedJsonRow(GUARDIAN_ACTING_ROW, encryptionKey);
+  if (!Array.isArray(raw)) return [];
+  return pruneGuardianActing(raw.map(parseGuardianActingEntry).filter((e): e is GuardianActingEntry => e !== null), Math.floor(Date.now() / 1000));
+}
+
+const guardianActingWrites = createSerialQueue();
+
+/** Append one record (serialised read-modify-write; pruned on every write). */
+export function appendGuardianActing(entry: GuardianActingEntry, encryptionKey: string): Promise<void> {
+  return guardianActingWrites.run(async () => {
+    const list = await loadGuardianActing(encryptionKey);
+    const next = pruneGuardianActing([entry, ...list], Math.floor(Date.now() / 1000));
+    await saveEncryptedJsonRow(GUARDIAN_ACTING_ROW, next, encryptionKey);
+  });
+}
+
+const CHILD_TRANSPORT_KEYS_ROW = CHILD_DIRECT_ROW_PREFIX + 'transportKeys';
+
+/** Child phone: the local NIP-46 transport keypair per persona (encrypted identity-store row). */
+export type ChildTransportKeys = Record<string, { publicKey: string; privateKey: string }>;
+
+export async function saveChildTransportKeys(map: ChildTransportKeys, encryptionKey: string): Promise<void> {
+  await saveEncryptedJsonRow(CHILD_TRANSPORT_KEYS_ROW, map, encryptionKey);
+}
+
+/** A45: the transport-keys row exists but will not decrypt/parse. */
+export class ChildTransportKeysUnreadableError extends Error {
+  constructor() {
+    super('Your app connections could not be read on this phone. Lock and unlock to try again.');
+    this.name = 'ChildTransportKeysUnreadableError';
+  }
+}
+
+/**
+ * Malformed entries are dropped; nothing stored ⇒ `{}`. A45: a stored row
+ * that will not decrypt or parse THROWS `ChildTransportKeysUnreadableError`
+ * — the caller must never mint over keys apps have already paired with.
+ */
+export async function loadChildTransportKeys(encryptionKey: string): Promise<ChildTransportKeys> {
+  const db = await getDB();
+  const row = await db.get('identity', CHILD_TRANSPORT_KEYS_ROW);
+  const out: ChildTransportKeys = {};
+  if (!row) return out;
+  let raw: unknown;
+  try {
+    if (typeof row.secret !== 'string') throw new Error('no secret');
+    raw = JSON.parse(await decryptSecret(row.secret, encryptionKey));
+  } catch {
+    throw new ChildTransportKeysUnreadableError();
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [persona, v] of Object.entries(raw as Record<string, unknown>)) {
+    const o = v as { publicKey?: unknown; privateKey?: unknown } | null;
+    if (!HEX64.test(persona) || !o || typeof o.publicKey !== 'string' || typeof o.privateKey !== 'string') continue;
+    if (!HEX64.test(o.publicKey) || !HEX64.test(o.privateKey)) continue;
+    out[persona] = { publicKey: o.publicKey, privateKey: o.privateKey };
+  }
+  return out;
 }

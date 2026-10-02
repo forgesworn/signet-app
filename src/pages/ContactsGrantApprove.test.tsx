@@ -129,6 +129,23 @@ describe('ContactsGrantApprove', () => {
     expect(onDeny).toHaveBeenCalledTimes(1);
   });
 
+  it('makes the guardian choose when a dependant request could mean more than one child', async () => {
+    // The request cannot say WHICH dependant; pre-selecting the first would
+    // hand one child's app another child's contacts on a single tap.
+    const { onApprove } = setup({
+      request: { ...REQUEST, directory: 'dependant' },
+      directories: [...DIRECTORIES, { directoryId: `dependant:${'c'.repeat(64)}`, label: 'Sam' }],
+    });
+    const approve = screen.getByRole('button', { name: /^Approve/ });
+    expect(approve).toBeDisabled();
+    await userEvent.click(screen.getByRole('radio', { name: 'Sam' }));
+    expect(approve).toBeEnabled();
+    await userEvent.click(approve);
+    await waitFor(() => expect(onApprove).toHaveBeenCalledWith(expect.objectContaining({
+      directoryId: `dependant:${'c'.repeat(64)}`,
+    })));
+  });
+
   it('moves the default onto a dependant when the roster arrives late (B/I2)', async () => {
     // On a mount-carrier entry the first render can happen before
     // `useDependants` has resolved, so an app that asked for a child's

@@ -46,3 +46,19 @@ export function isDependantNaturalPersonActive(
 export function shouldBlurIdentity(prefs: AppPreferences): boolean {
   return prefs.blurIdentityNames === true;
 }
+
+/**
+ * True when the owner slot with this pubkey has a public Nostr profile —
+ * published from Signet or matched on import (both set `publicProfile.enabled`).
+ * A dormant real identity never counts.
+ */
+export function hasPublicNostrProfile(identity: SignetIdentity, pubkey: string): boolean {
+  if (!pubkey) return false;
+  if (pubkey === identity.naturalPerson.publicKey) {
+    return isNaturalPersonActive(identity) && identity.naturalPerson.publicProfile?.enabled === true;
+  }
+  const slot = pubkey === identity.persona.publicKey ? identity.persona
+    : pubkey === identity.professionalPersona?.publicKey ? identity.professionalPersona
+    : identity.extraPersonas?.find(p => p.publicKey === pubkey);
+  return slot?.publicProfile?.enabled === true;
+}

@@ -5,6 +5,8 @@ import {
 } from './companion-pair-v2';
 import { buildPairingUriV2, parsePairingAckV2, projectionTag, proposalTag } from '@forgesworn/signet-contacts/wire';
 import { LocalSigningBackend } from './signing-backend';
+import { routeQR } from './qr-router';
+import { pairingUriForRequestV2, pairingRequestExpiresAtSec } from './companion-pair-v2';
 
 const NOW = 1_700_000_000;
 const APP = 'a'.repeat(64);
@@ -74,5 +76,49 @@ describe('buildPairingAckV2Content', () => {
     expect(ack?.grantId).toBe(grantId);
     expect(ack?.railPubkey).toBe(rail.publicKey);
     expect(ack?.grantedCapabilities).toEqual(['signet.contacts.read:directory']);
+  });
+});
+
+describe('pairingUriForRequestV2 (paired-child hand-off code)', () => {
+  const fresh = () => Math.floor(Date.now() / 1000);
+
+  it('round-trips through the guardian home scanner, always as a dependant request', () => {
+    for (const directory of ['owner', 'dependant'] as const) {
+      const original = parseContactsPairingRequestV2(buildPairingUriV2({
+        appPubkey: APP, appName: 'Flock & Co \u00e9',
+        capabilities: ['signet.contacts.read:directory', 'signet.contacts.blocks.read', 'signet.contacts.propose:add-ken'],
+        directory, relay: 'wss://relay.example.com', nowSec: fresh(), challenge: CHALLENGE,
+      })).request;
+      expect(original).not.toBeNull();
+
+      const rebuilt = pairingUriForRequestV2(original!);
+      expect(rebuilt).not.toBeNull();
+
+      // The exact entry point the guardian's home-screen scanner uses.
+      const action = routeQR(rebuilt!);
+      expect(action.type).toBe('contacts-pair-v2');
+      if (action.type !== 'contacts-pair-v2') throw new Error('unreachable');
+      // 'owner' on the child's phone means the CHILD's contacts; the guardian
+      // would read it as their own, so the code always says 'dependant'.
+      expect(action.request).toEqual({ ...original, directory: 'dependant' });
+      // Spell the load-bearing fields out so a failure names the one that drifted.
+      expect(action.request.appPubkey).toBe(original!.appPubkey);
+      expect(action.request.challenge).toBe(original!.challenge);
+      expect(action.request.capabilities).toEqual(original!.capabilities);
+      expect(action.request.directory).toBe('dependant');
+      expect(action.request.rendezvousRelay).toBe(original!.rendezvousRelay);
+      expect(action.request.t).toBe(original!.t);
+      expect(action.request.appName).toBe(original!.appName);
+    }
+  });
+
+  it('returns null rather than throwing when the SDK refuses to build', () => {
+    const request = parseContactsPairingRequestV2(uri(), { nowSec: NOW }).request!;
+    expect(pairingUriForRequestV2({ ...request, rendezvousRelay: 'not a relay' })).toBeNull();
+  });
+
+  it('expires at t + the SDK freshness window (300 s)', () => {
+    const request = parseContactsPairingRequestV2(uri(), { nowSec: NOW }).request!;
+    expect(pairingRequestExpiresAtSec(request)).toBe(NOW + 300);
   });
 });

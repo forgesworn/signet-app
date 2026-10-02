@@ -48,6 +48,7 @@ import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
 import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
 import { ContactInvites } from './pages/ContactInvites';
+import { ContactInviteSend } from './pages/ContactInviteSend';
 import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/signet-contacts';
 import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
@@ -114,8 +115,13 @@ import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hoo
 import { useEscalations } from './hooks/useEscalations';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
-import { resolveApproval as mgmtResolveApproval } from './lib/heartwood-mgmt';
-import { submitVerdict, resolveVerdictAvailability, type PanelVerdictAction } from './lib/policy-push';
+import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
+import { ChildPermissions, ChildPermissionsGuardianRoute } from './pages/ChildPermissions';
+import { blockAppRules } from './lib/child-permissions';
+import { tombstonesForRemovedDependant } from './lib/child-rules';
+import { CHILD_PERMISSIONS_COPY } from './lib/child-device-copy';
+import { submitVerdict, resolveVerdictAvailability, pushChildCeilingLocked, removeOnceEntry, type OnceEntry, type PanelVerdictAction } from './lib/policy-push';
+import { withOperatorLock } from './lib/operator-lock';
 import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
@@ -123,6 +129,7 @@ import { isNativeApp, SignetNative } from './lib/native';
 import { BunkerApprovalModal } from './components/BunkerApprovalModal';
 import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
+import { phoneAppsKeyExpired } from './lib/phone-apps-window';
 import { usePreferences } from './hooks/usePreferences';
 import { useDocuments } from './hooks/useDocuments';
 import { useCredentials } from './hooks/useCredentials';
@@ -148,7 +155,11 @@ import { ApproveAddDependant } from './pages/ApproveAddDependant';
 import { ImportDependant } from './pages/ImportDependant';
 import { OnboardingApp } from './pages/OnboardingApp';
 import { Onboarding } from './pages/Onboarding';
-import { PairChildOnboarding } from './pages/PairChildOnboarding';
+import { PairChildOnboarding, type DirectPairControl } from './pages/PairChildOnboarding';
+import { runChildDirectPairing, pairedChildSignerPubkey } from './lib/child-direct-pairing';
+import type { ChildPairOffer } from './lib/child-pair-wire';
+import { useChildDeviceLink } from './hooks/useChildDeviceLink';
+import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
 import { getPublicKey } from 'nostr-tools/pure';
 import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
@@ -169,13 +180,16 @@ import { PersonaAdvanced } from './pages/PersonaAdvanced';
 import { ActivateRealIdentity } from './pages/ActivateRealIdentity';
 import { RequireRealIdentity } from './components/RequireRealIdentity';
 import { resolveActivationBackupStep } from './lib/activation-backup-step';
-import { isNaturalPersonActive, isDependantNaturalPersonActive } from './lib/identity-display';
+import { isNaturalPersonActive, isDependantNaturalPersonActive, hasPublicNostrProfile } from './lib/identity-display';
 import { dependantGateReason } from './lib/real-identity-gate-reasons';
 import { toRecoveryWords } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
 import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
-import { publishPublicProfile, retractPublicProfile, contentHashFor } from './lib/public-profile-publish';
+import { publishPublicProfile, retractPublicProfile, adoptPublishedIntoCard, toPublicProfileBase } from './lib/public-profile-publish';
+import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
+import { fetchFollowList, fetchFollowNames } from './lib/nostr-follows';
+import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
 import { MyDocuments } from './pages/MyDocuments';
@@ -201,6 +215,7 @@ import { BadgeEmbed } from './pages/BadgeEmbed';
 import { VouchSomeone } from './pages/VouchSomeone';
 import { TransitionCeremony } from './pages/TransitionCeremony';
 import { PairDependantDevice } from './pages/PairDependantDevice';
+import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { parseHeartwoodIdentities, pickOwnerIdentities } from './lib/heartwood-identities';
@@ -211,7 +226,8 @@ import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, h
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
-import { routeNativeUrl } from './lib/native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
 // adapter, the projection builders, the three grant hooks and the pure
@@ -249,7 +265,7 @@ import {
   CONTACTS_GRANT_DISCONNECT_FAILED_COPY, CONTACTS_GRANT_FORGET_FAILED_COPY,
   GRANTS_BACKUP_TOO_LARGE_COPY, GRANTS_SKIPPED_REMOTE_COPY, CONTACTS_GRANT_APPROVE_TITLE,
   CONTACTS_GRANT_CAPABILITIES_INVALID_COPY, CONTACTS_GRANT_FIRST_UPDATE_FAILED_COPY,
-  CONTACTS_GRANT_PAIRED_CHILD_COPY, CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_APPROVE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
+  CONTACTS_GRANT_DISMISS_LABEL, CONTACTS_GRANT_CODE_TITLE, CONTACTS_GRANT_CODE_LOCKED_COPY, CONTACTS_GRANT_APPROVE_LOCKED_COPY, CONTACTS_GRANT_CODE_UNLOCK_LABEL,
 } from './lib/contacts-v2-copy';
 import {
   saveContactGrantV2, getContactGrantV2, listContactGrantsV2, updateContactGrantV2,
@@ -258,14 +274,34 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { resolveSyncRelays } from './lib/sync-relays';
-import { deleteHeartwoodOperator } from './lib/db';
+import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, listChildRules, tombstoneChildRule, type ApprovedOnceKinds } from './lib/db';
+import type { ChildRule } from './types/child-rules';
+import { useChildRulesSync } from './hooks/useChildRulesSync';
+import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
+import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
+import { buildUnpairedNotice } from './lib/child-activity';
+import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
+import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
+import { createSerialQueue } from './lib/contacts-v2-queue';
+import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
+import { CHILD_ASK_COPY, CHILD_SIDE_COPY } from './lib/child-device-copy';
+import { revokeChildDeviceSlot } from './lib/child-device-pairing';
+import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
+import { PrivateVaultApprovalBanner } from './components/PrivateVaultApprovalBanner';
 import { contactToKindredEntry } from './lib/kindred-adapter';
 import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
+import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import type { RouterProbeState } from './lib/bunker-router';
+import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
+import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
+import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
+import { guardianActingBackend } from './lib/guardian-acting';
+import { dependantPersonaPubkeys } from './hooks/useChildActivity';
+import type { RouterProbeState, RouteDecorator } from './lib/bunker-router';
 import { awaitRoutedBackend, acquireRoutedBackend, ROUTED_APPROVAL_WAIT_MS } from './lib/await-routed-backend';
 import { handOffAuthCallback, shouldRedirectDenial } from './lib/auth-redirect-handoff';
 import { AuthRequestSettlement, authRequestKey, requestObjectKey } from './lib/auth-request-settlement';
@@ -289,14 +325,15 @@ import { LeadAddStaff } from './pages/LeadAddStaff';
 import { LeadManageDelegates } from './pages/LeadManageDelegates';
 import { useProRoleAnchor } from './hooks/useProRoleAnchor';
 import { deriveAndStoreProPersona } from './hooks/useIdentity';
-import { proModeBlockedReason, publishProKind0 } from './lib/professional/pro-persona';
+import { proModeBlockedReason, publishProNameOnly } from './lib/professional/pro-persona';
 import { PRO_ROSTER } from './lib/professional/kinds';
 import type { RosterMember } from './lib/professional/role-anchor';
 import { useNavigation } from './hooks/useNavigation';
 import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLock';
 import { BunkerPanel } from './components/BunkerPanel';
-import { isBarHiddenPage, isOrphanedApprovalPage } from './lib/app-nav';
+import { isBarHiddenPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './lib/app-nav';
 import { stayAwakeUntil as computeStayAwakeUntil } from './lib/stay-awake';
+import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, shouldPromptUnlockForAlwaysOn } from './lib/bunker-restore';
 
 /**
  * How long the key stays after the app is hidden once a phone app has been
@@ -314,7 +351,7 @@ import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
 import type { PurposeContext } from './lib/auth-purposes';
-import { loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
+import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
 import { deriveDependantOnDevice, deriveExtraPersonaOnDevice } from './lib/heartwood-dependant-create';
@@ -323,7 +360,7 @@ import type { PairedChildMeta } from './lib/db';
 import type { VerifyRequest, VerifyResponse } from './lib/presentation';
 import { buildVerifyResponse, sendResponseViaBroadcast, parseVerifyRequest } from './lib/presentation';
 import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } from './lib/pick-credential';
-import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, publishAuthResponseToRelay, getLastAuthPublishError } from './lib/relay-publish';
+import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError } from './lib/relay-publish';
 import type { AuthResponse } from './lib/relay-publish';
 import { publishAuditEvent } from './lib/audit';
 import { resolveAuditVisibility } from './lib/audit-visibility';
@@ -331,7 +368,7 @@ import { markRecentRestore, hasRecentRestore, clearRecentRestore } from './lib/r
 import { buildConnectedClientFromNostrConnect, parseNostrConnectURI, sendConnectResponse } from './lib/nip46';
 import { parseCallback, buildCallbackRedirect } from './lib/nostrconnect-callback';
 import { checkAutonomy } from './lib/autonomy-gate';
-import { setRelays as setRelayServiceRelays, getRelayUrl as getRelayServiceUrl, connectRelay, DEFAULT_RELAY_URL, defaultRelays, fetchEvents } from './lib/relay-service';
+import { setRelays as setRelayServiceRelays, getRelayUrl as getRelayServiceUrl, connectRelay, DEFAULT_RELAY_URL, defaultRelays, fetchEvents, publishEvent, subscribeEvents } from './lib/relay-service';
 import { buildPhoneBunkerUrl, buildAuthFlowBunkerUrl } from './lib/bunker-url';
 import { runtimeBunkerUriForBackend, storedBunkerUriForGuardianNaturalPerson } from './lib/bunker-handoff';
 import { buildPairingURI, generatePairingSecret } from './lib/pairing-uri';
@@ -424,6 +461,35 @@ export function App() {
   stayAwakeUntilRef.current = stayAwakeUntil;
   /** End of the window during which a hidden app keeps its key for the phone apps it serves (NIP-55). */
   const phoneAppsUntilRef = useRef<number | null>(null);
+  /** The phone-apps key was found expired and its lock asked for; cleared once the lock has rendered. */
+  const phoneAppsLockPendingRef = useRef(false);
+  /** When the app was last hidden; null while it has been visible since. */
+  const hiddenAtRef = useRef<number | null>(null);
+  /**
+   * Whether the key held for phone apps has outlived its window. By the wall
+   * clock, not a timer: a timer stops with the page when Chromium freezes it
+   * (see src/lib/phone-apps-window.ts). Asked on visibility, on resume, and
+   * before every NIP-55 request.
+   */
+  const phoneAppsKeyExpiredNow = useCallback(() => !!encryptionKeyRef.current && phoneAppsKeyExpired({
+    now: Date.now(),
+    hiddenAt: hiddenAtRef.current,
+    until: phoneAppsUntilRef.current,
+    exempt: backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
+    lockPending: phoneAppsLockPendingRef.current,
+  }), []);
+  /**
+   * Drops the key at once. No publish flush first, unlike the other
+   * auto-locks: this runs just before a NIP-55 answer, which must not be
+   * made with a key whose window has ended.
+   */
+  const lockExpiredPhoneAppsKey = useCallback(() => {
+    phoneAppsLockPendingRef.current = true;
+    phoneAppsUntilRef.current = null;
+    setEncryptionKey(null);
+  }, []);
+  /** Refuses the NIP-55 requests held for an unlock; set once the NIP-55 server below is up. */
+  const refuseHeldNip55Ref = useRef<() => void>(() => {});
 
   // Native always-on serving (#APK): while true, the bunker serves with the
   // screen off — the foreground service + partial wake lock keep the WebView
@@ -437,6 +503,8 @@ export function App() {
   // Bunker panel pending arm — set when user clicks +X while locked and requests unlock.
   // After successful unlock, the panel reopens and arms with this value.
   const [pendingBunkerArm, setPendingBunkerArm] = useState<number | null>(null);
+  // Always-on tapped while locked: turned on once the unlock lands.
+  const [pendingAlwaysOnArm, setPendingAlwaysOnArm] = useState(false);
 
   // On-demand auth prompt — shown as an overlay when a signing operation needs the encryption key
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
@@ -492,11 +560,21 @@ export function App() {
   }, [pendingBunkerArm]);
 
   const handleAuthPromptCancel = useCallback(() => {
+    setPendingBunkerArm(null);
+    setPendingAlwaysOnArm(false);
     setShowAuthPrompt(false);
     setAuthPromptContext(undefined);
     authResolverRef.current?.(null);
     authResolverRef.current = null;
   }, []);
+  // The person said no to the unlock itself. An app on this phone that
+  // brought us up to unlock gets its answer now, a refusal, and is put back
+  // in front, instead of waiting minutes on us. Not on the navigation-away
+  // cancel below: that is the app moving, not the person declining.
+  const handleAuthPromptDeclined = useCallback(() => {
+    handleAuthPromptCancel();
+    refuseHeldNip55Ref.current();
+  }, [handleAuthPromptCancel]);
   const openAndroidApp = useCallback(() => {
     window.open(ANDROID_APP_URL, '_blank', 'noopener');
   }, []);
@@ -514,7 +592,7 @@ export function App() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -563,7 +641,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -732,6 +810,7 @@ export function App() {
   // PWA update refs (avoid stale closures in effects)
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
+  if (!encryptionKey) phoneAppsLockPendingRef.current = false;
   const needRefreshRef = useRef(needRefresh);
   needRefreshRef.current = needRefresh;
 
@@ -1015,6 +1094,15 @@ export function App() {
   useEffect(() => {
     if (!pendingAuthRequest) setPickerInitialError(null);
   }, [pendingAuthRequest]);
+  // ...and when a NEW request replaces the one on screen: the error belonged
+  // to the old request, and nothing else would clear it while one stays up.
+  const pickerErrorRequestKey = pendingAuthRequest ? authRequestKey(pendingAuthRequest) : null;
+  const lastPickerErrorRequestKey = useRef(pickerErrorRequestKey);
+  useEffect(() => {
+    if (lastPickerErrorRequestKey.current === pickerErrorRequestKey) return;
+    lastPickerErrorRequestKey.current = pickerErrorRequestKey;
+    setPickerInitialError(null);
+  }, [pickerErrorRequestKey]);
   // Live view of the request an in-flight approval belongs to. An approval
   // that awaited an unlock or a signer reconnect re-checks this before it
   // delivers anything, so a request denied, replaced or finished meanwhile
@@ -1078,6 +1166,8 @@ export function App() {
   const [pendingPostUrl, setPendingPostUrl] = useState<string | null>(null);
   /** Pending third-party-initiated add-dependant request. */
   const [pendingAddDependantRequest, setPendingAddDependantRequest] = useState<AddDependantRequest | null>(null);
+  /** A41: an add-dependant request that reached a child's phone (shown, then answered `denied`). */
+  const [addDependantRefused, setAddDependantRefused] = useState<AddDependantRequest | null>(null);
   /** Current request's entry in the developer auth-request log. */
   const currentLogEntryRef = useRef<AuthRequestLogEntry | null>(null);
 
@@ -1161,11 +1251,11 @@ export function App() {
   // Every router-install site goes through here: bumps the generation, probes
   // with retry/backoff for as long as this generation is current and the
   // primary stays connected, and installs the router only if still current.
-  const startRouterProbe = useCallback((primary: BunkerSigningBackend, clientSecretHex: string) => {
+  const startRouterProbe = useCallback((primary: BunkerSigningBackend, clientSecretHex: string, assumeHeartwood = false) => {
     const gen = ++bunkerRouterGenRef.current;
     const isCurrent = () => bunkerRouterGenRef.current === gen;
     void createRouterWithRetry({
-      primary, clientSecretHex, isCurrent,
+      primary, clientSecretHex, isCurrent, assumeHeartwood,
       onState: (state) => { if (isCurrent()) setRouterProbeState(state); },
     }).then((router) => {
       if (!isCurrent()) {
@@ -1185,15 +1275,64 @@ export function App() {
   // hardware finding) — so no NP-signing seam may use `bunkerBackend`
   // directly. Null until the primary has connected (nothing may queue
   // requests at a not-yet-known identity); collapses to the primary for
-  // legacy NP-only bunkers and the paired-child install (identity == the
-  // served dependant); on a family bunker it is the router's NP route, or
-  // null while the capabilities probe is still pending / has failed (never
-  // the master). `signerStatus` is a dependency because the primary's pubkey
-  // only becomes known on connect.
+  // legacy NP-only bunkers and a legacy phone-paired child (identity == the
+  // dependant the guardian phone serves); on a family bunker it is the
+  // router's NP route, or null while the capabilities probe is still pending
+  // / has failed (never the master). On a child paired straight to the
+  // Heartwood the primary is the bound PERSONA and the NP is the dependant's
+  // dormant real identity: withheld (A26) ⇒ null until it is activated.
+  // `signerStatus` is a dependency because the primary's pubkey only becomes
+  // known on connect.
+  // The whole decrypted paired-child record, for the child-direct link (rules
+  // rail, identity-approvals ceremony, the child's bunker). Cleared with the
+  // keypair on lock (loaded further down).
+  const [pairedChildRecord, setPairedChildRecord] = useState<import('./types').PairedChildRecord | null>(null);
+  // A child's phone paired straight to the Heartwood (spec §8).
+  const childDirect = isDirectChildInstall({ signingMode: preferences.signingMode, record: pairedChildRecord, identity });
+  // A26: slots nothing may address on this install (the dependant's dormant
+  // real identity on a direct child). Every slot resolver below gets it, so no
+  // router route is ever requested for it.
+  const withheldSlotsCsv = childDirectWithheldSlots({ signingMode: preferences.signingMode, record: pairedChildRecord, identity }).join(',');
+  const slotResolveOpts = useMemo(() => ({ withheld: withheldSlotsCsv ? withheldSlotsCsv.split(',') : [] }), [withheldSlotsCsv]);
+  // A48: the guardian's own phone signing as one of a direct-paired child's
+  // personas (any feature, through the routed Heartwood backend) is stamped
+  // and recorded locally, so the merged timeline shows the Heartwood's record
+  // as "Signed by you" instead of "not reported by their phone". Applied at the
+  // router, before any memo below asks it for a backend.
+  const guardianActingPersonasCsv = isPairedChild ? '' : [...new Set(dependants
+    .filter(d => d.childDevice?.mode === 'heartwood-direct')
+    .flatMap(dependantPersonaPubkeys))].sort().join(',');
+  const guardianActingRef = useRef<{ personas: Set<string>; key: string | null }>({ personas: new Set(), key: null });
+  guardianActingRef.current = { personas: new Set(guardianActingPersonasCsv ? guardianActingPersonasCsv.split(',') : []), key: encryptionKey };
+  const guardianActingWrappersRef = useRef(new WeakMap<object, DecryptingSigningBackend>());
+  const guardianActingDecorator = useCallback<RouteDecorator>((pk, route) => {
+    if (!guardianActingRef.current.personas.has(pk)) return route;
+    const cache = guardianActingWrappersRef.current;
+    let wrapped = cache.get(route);
+    if (!wrapped) {
+      wrapped = guardianActingBackend(route, pk, {
+        stamp: (p) => reserveRequestCreatedAt(p),
+        record: (e) => {
+          const key = guardianActingRef.current.key;
+          if (key) void appendGuardianActing(e, key).catch(() => { /* bookkeeping only */ });
+        },
+      });
+      cache.set(route, wrapped);
+    }
+    return wrapped;
+  }, []);
+  bunkerRouter?.setRouteDecorator(isPairedChild ? null : guardianActingDecorator);
+  // A41: on a direct child every NP seam (Venue Entry, Blossom, audit, the
+  // legacy fallbacks) signs through the child's gate as appId `mysignet` once
+  // the real identity is active. `childGateRef` is read at call time.
   const npBunkerBackend = useMemo<DecryptingSigningBackend | null>(
-    () => resolveNpBunkerBackend(bunkerBackend, bunkerRouter, identity?.naturalPerson.publicKey),
+    () => childOwnActsBackend({
+      childDirect,
+      backend: resolveNpBunkerBackend(bunkerBackend, bunkerRouter, identity?.naturalPerson.publicKey, slotResolveOpts),
+      authorise: (req) => childGateRef.current.authorise(req),
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: primary pubkey lands on connect
-    [bunkerBackend, bunkerRouter, signerStatus, identity?.naturalPerson.publicKey],
+    [childDirect, bunkerBackend, bunkerRouter, signerStatus, identity?.naturalPerson.publicKey, slotResolveOpts],
   );
 
   /**
@@ -1203,9 +1342,13 @@ export function App() {
    * route rather than the master pairing.
    */
   const personaBunkerBackend = useMemo<DecryptingSigningBackend | null>(
-    () => resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, identity?.persona.publicKey),
+    () => childOwnActsBackend({
+      childDirect,
+      backend: resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, identity?.persona.publicKey, slotResolveOpts),
+      authorise: (req) => childGateRef.current.authorise(req),
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: primary pubkey lands on connect
-    [bunkerBackend, bunkerRouter, signerStatus, identity?.persona.publicKey],
+    [childDirect, bunkerBackend, bunkerRouter, signerStatus, identity?.persona.publicKey, slotResolveOpts],
   );
 
   // Migration-wizard pending connection (family-bunker §11.1.2). Holds a
@@ -1476,7 +1619,8 @@ export function App() {
   // Publishes on mutation (debounced), fetches + merges on unlock.
   // Bunker > NIP-07 > local NP backend, in priority order.
   const { remoteState: contactsRemoteState } = useContactsSync({
-    identity,
+    // §8: the five guardian-self rails are off on every paired-child install.
+    identity: legacyRailIdentity(preferences.signingMode, identity),
     npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
     relays: syncRelays,
     encryptionKey,
@@ -1491,7 +1635,7 @@ export function App() {
   // Ken cross-device sync (kindred integration).
   // Mirrors useContactsSync — fetch+merge on unlock, debounced publish on mutation.
   useKensSync({
-    identity,
+    identity: legacyRailIdentity(preferences.signingMode, identity),
     npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     encryptionKey,
@@ -1521,7 +1665,7 @@ export function App() {
   // dependant should still sync in keyless rather than being skipped.
   const { remoteState: dependantsRemoteState } = useDependantsSync({
     publishEnabled: legacyPrivateWrite('profiles'),
-    identity,
+    identity: legacyRailIdentity(preferences.signingMode, identity),
     npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
     relays: syncRelays,
     encryptionKey,
@@ -1541,7 +1685,7 @@ export function App() {
   // the credential had been earned locally.
   const { remoteState: credentialsRemoteState } = useCredentialsSync({
     publishEnabled: legacyPrivateWrite('credentials'),
-    identity,
+    identity: legacyRailIdentity(preferences.signingMode, identity),
     npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
     relays: syncRelays,
     encryptionKey,
@@ -1571,12 +1715,114 @@ export function App() {
   }, [encryptionKey, reloadGrants]);
   const { remoteState: grantsRemoteState } = useGrantsSync({
     publishEnabled: legacyPrivateWrite('settings'),
-    identity,
+    identity: legacyRailIdentity(preferences.signingMode, identity),
     npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
     relays: syncRelays,
     encryptionKey,
     grants: grantsForSync,
     onRemoteMerged: reloadGrants,
+  });
+
+  // Child-direct rules (spec §5): guardian source of truth, all dependants,
+  // INCLUDING tombstones. Null while loading — the policy push and the
+  // guardian→child rules publisher both wait for it. Guardian installs only.
+  const [childRules, setChildRules] = useState<ChildRule[] | null>(null);
+  const reloadChildRules = useCallback(async () => {
+    if (!encryptionKey || isPairedChild) { setChildRules(null); return; }
+    const key = encryptionKey;
+    try {
+      const rows = await listAllChildRules(key);
+      if (encryptionKeyRef.current === key) setChildRules(rows);
+    } catch {
+      // A22: a failed read is "unknown", never "none" — null keeps the push
+      // and the publisher waiting rather than compiling an empty rule set.
+      if (encryptionKeyRef.current === key) setChildRules(null);
+    }
+  }, [encryptionKey, isPairedChild]);
+  useEffect(() => { void reloadChildRules(); }, [reloadChildRules]);
+  // Spec §7: kinds a guardian allowed ONCE for a child's phone, widening its
+  // Heartwood ceiling for 10 minutes. Memory + an encrypted row; expired
+  // entries drop on load and whenever the state is next written.
+  // A38: null while the stored row is loading — the policy push waits for it.
+  const [approvedOnceKinds, setApprovedOnceKinds] = useState<ApprovedOnceKinds | null>(null);
+  const approvedOnceRef = useRef<ApprovedOnceKinds | null>(null);
+  const approvedOnceSaveQueue = useMemo(() => createSerialQueue(), []);
+  useEffect(() => {
+    approvedOnceRef.current = null;
+    setApprovedOnceKinds(null);
+    if (!encryptionKey || isPairedChild) return;
+    let cancelled = false;
+    const settle = (m: ApprovedOnceKinds) => {
+      if (cancelled) return;
+      const nowS = Math.floor(Date.now() / 1000);
+      const live: ApprovedOnceKinds = {};
+      for (const [k, v] of Object.entries(m)) { const l = v.filter(a => a.until > nowS); if (l.length) live[k] = l; }
+      approvedOnceRef.current = live;
+      setApprovedOnceKinds(live);
+    };
+    loadChildApprovedOnce(encryptionKey).then(settle).catch(() => settle({}));
+    return () => { cancelled = true; };
+  }, [encryptionKey, isPairedChild]);
+  // The ref is updated synchronously (A31/A32 read it as the CURRENT state);
+  // saves run on one chain and always write the latest ref, so an older save
+  // can never land over a newer one.
+  const writeApprovedOnce = useCallback(async (next: ApprovedOnceKinds) => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const live: ApprovedOnceKinds = {};
+    for (const [k, v] of Object.entries(next)) { const l = v.filter(a => a.until > nowS); if (l.length) live[k] = l; }
+    approvedOnceRef.current = live;
+    setApprovedOnceKinds(live);
+    const key = encryptionKey;
+    if (!key) return;
+    try {
+      await approvedOnceSaveQueue.run(async () => {
+        const latest = approvedOnceRef.current;
+        if (latest && encryptionKeyRef.current === key) await saveChildApprovedOnce(latest, key);
+      });
+    } catch { /* memory copy still widens this session */ }
+  }, [encryptionKey, approvedOnceSaveQueue]);
+  const approvedOnceStore = useMemo(() => ({
+    get: () => approvedOnceRef.current,
+    set: (next: ApprovedOnceKinds) => writeApprovedOnce(next),
+  }), [writeApprovedOnce]);
+
+  // A25: a phone minted before grants had loaded is seeded from legacy grants
+  // on the next rules load, then its `seedPending` flag clears.
+  const seedingRef = useRef(false);
+  useEffect(() => {
+    if (!encryptionKey || isPairedChild || childRules === null || grantsForSync === null || seedingRef.current) return;
+    const work = pendingRuleSeeds(dependants, childRules, grantsForSync, Date.now());
+    if (work.length === 0) return;
+    const key = encryptionKey;
+    seedingRef.current = true;
+    void (async () => {
+      try {
+        for (const { dep, seed } of work) {
+          for (const r of seed) await saveChildRule(r, key);
+          const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+          if (fresh?.childDevice) await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, seedPending: undefined } }, key);
+        }
+        await reloadChildRules();
+        await reloadDependants();
+      } catch { /* retried on the next change */ } finally { seedingRef.current = false; }
+    })();
+  }, [encryptionKey, isPairedChild, childRules, grantsForSync, dependants, loadFreshDependants, reloadChildRules, reloadDependants]);
+
+  useChildRulesSync({
+    publishEnabled: !isPairedChild && legacyPrivateWrite('settings'),
+    identity: isPairedChild ? null : identity,
+    npBackend: npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null,
+    relays: syncRelays,
+    encryptionKey: isPairedChild ? null : encryptionKey,
+    rules: childRules,
+    onMerged: (merged) => {
+      const key = encryptionKey;
+      if (!key) return;
+      void (async () => {
+        for (const r of merged) { try { await saveChildRule(r, key); } catch { /* next fetch retries */ } }
+        await reloadChildRules();
+      })();
+    },
   });
 
   // Guardian-side per-dependant status publisher. Signals each
@@ -1623,6 +1869,7 @@ export function App() {
     encryptionKey,
     dependantPubkey: preferences.activeAccountId ?? identity?.id ?? null,
     enabled: preferences.signingMode === 'paired-child' && !!encryptionKey,
+    pairingGeneration: pairedChildBumpCounter,
     onInventoryMerged: async () => {
       // Reload identity from IDB so the updated persona rows propagate
       // into React state and the carousel re-renders.
@@ -1633,6 +1880,7 @@ export function App() {
   const pairedContactPolicy = useChildContactPolicy({
     enabled: isPairedChild && !!encryptionKey, child: preferences.activeAccountId ?? identity?.id ?? null,
     key: encryptionKey, relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+    pairingGeneration: pairedChildBumpCounter,
   });
   useChildContactPolicyPublisher({
     enabled: !isPairedChild && !!identity && !!encryptionKey,
@@ -1765,15 +2013,18 @@ export function App() {
   useEffect(() => {
     if (preferences.signingMode !== 'paired-child') {
       setPairedChildClientKeypair(null);
+      setPairedChildRecord(null);
       return;
     }
     if (!encryptionKey || !identity?.id) {
       setPairedChildClientKeypair(null);
+      setPairedChildRecord(null);
       return;
     }
     let cancelled = false;
     loadPairedChild(identity.id, encryptionKey).then(record => {
       if (cancelled) return;
+      setPairedChildRecord(record);
       if (!record) {
         setPairedChildClientKeypair(null);
         return;
@@ -1787,9 +2038,80 @@ export function App() {
     }).catch(() => {
       if (cancelled) return;
       setPairedChildClientKeypair(null);
+      setPairedChildRecord(null);
     });
     return () => { cancelled = true; };
-  }, [preferences.signingMode, encryptionKey, identity?.id]);
+  }, [preferences.signingMode, encryptionKey, identity?.id, pairedChildBumpCounter]);
+
+  // Child-direct Heartwood pairing (spec §4 step 6, §5.2): rules cache + rail,
+  // identity-approvals ceremony. Inert for a legacy phone pairing.
+  const childLinkInventory = useMemo(() => {
+    if (!identity || pairedChildRecord?.mode !== 'heartwood-direct') return [];
+    const out: { pubkey: string; name: string }[] = [];
+    if (identity.persona.publicKey) out.push({ pubkey: identity.persona.publicKey, name: identity.persona.displayName || identity.naturalPerson.displayName });
+    if (isNaturalPersonActive(identity) && identity.naturalPerson.publicKey) {
+      out.push({ pubkey: identity.naturalPerson.publicKey, name: identity.naturalPerson.displayName });
+    }
+    for (const x of identity.extraPersonas ?? []) if (!x.hidden && x.publicKey) out.push({ pubkey: x.publicKey, name: x.displayName });
+    return out;
+  }, [identity, pairedChildRecord?.mode]);
+  const childDeviceLink = useChildDeviceLink({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    encryptionKey,
+    router: preferences.signingMode === 'paired-child' ? bunkerRouter : null,
+    inventoryPersonas: childLinkInventory,
+    withheldSlots: slotResolveOpts.withheld,
+    onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}); },
+  });
+
+  // The child's gate (spec §8): the one choke point for sign-in, the child's
+  // NIP-46 server, NIP-55 and the app's own acts on a direct-paired child.
+  // Activity goes to `childActivitySinkRef` (Task 12 hooks the activity rail
+  // in there); connected apps accumulate in `childGate.connectedApps`.
+  const childActivitySinkRef = useRef<(e: import('./lib/child-activity').ChildActivityEntry) => void>(() => {});
+  const childGate = useChildGate({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    rules: childDeviceLink.rules,
+    relays: pairedChildRecord?.railRelay ? [pairedChildRecord.railRelay] : [],
+    unpaired: childDeviceLink.unpaired,
+    onActivity: (e) => childActivitySinkRef.current(e),
+  });
+  const childGateRef = useRef(childGate);
+  childGateRef.current = childGate;
+  // Child → guardian rails (spec §9.1, §9.2): every gate decision, and the
+  // connected-apps record, on the rail relay.
+  const childActivityPublisher = useChildActivityPublisher({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    unpaired: childDeviceLink.unpaired,
+    connectedApps: childGate.connectedApps,
+    noteConnectedApp: childGate.noteConnectedApp,
+  });
+  childActivitySinkRef.current = childActivityPublisher.report;
+
+  // A51: the personas the guardian allows on this phone (rules payload `personas`).
+  const childAllowedInventory = useMemo(
+    () => childAllowedPersonas(childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey),
+    [childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey],
+  );
+  // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
+  const childBunkerPersonasCsv = childDirect
+    ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childAllowedInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')
+    : '';
+  const [childTransportKeys, setChildTransportKeys] = useState<Record<string, { publicKey: string; privateKey: string }>>({});
+  // A45: a stored row that will not decrypt is surfaced, never minted over.
+  const [childTransportKeysUnreadable, setChildTransportKeysUnreadable] = useState(false);
+  useEffect(() => {
+    if (!childBunkerPersonasCsv || !encryptionKey) { setChildTransportKeys({}); setChildTransportKeysUnreadable(false); return; }
+    let cancelled = false;
+    loadOrCreateTransportKeys(childBunkerPersonasCsv.split(','), encryptionKey)
+      .then((keys) => { if (!cancelled) { setChildTransportKeys(keys); setChildTransportKeysUnreadable(false); } })
+      .catch((e) => {
+        if (cancelled) return;
+        setChildTransportKeys({});
+        setChildTransportKeysUnreadable(e instanceof ChildTransportKeysUnreadableError);
+      });
+    return () => { cancelled = true; };
+  }, [childBunkerPersonasCsv, encryptionKey]);
 
   // Which contacts directory this surface acts in, and as what role.
   const contactsScope = useMemo(() => resolveContactsScope({
@@ -1806,6 +2128,9 @@ export function App() {
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
     ?? contactsIdentityLists[0]?.ownerIdentityPubkey ?? '';
   const [contactCardSearch, setContactCardSearch] = useState('');
+  // Carousel contacts card "Import following": open the panel on arrival.
+  const [contactsOpenFollows, setContactsOpenFollows] = useState(false);
+  useEffect(() => { if (page !== 'contacts') setContactsOpenFollows(false); }, [page]);
   const [contactsIdentityChoice, setContactsIdentityChoice] = useState<string | null>(null);
   useEffect(() => { setContactsIdentityChoice(null); }, [contactsScope.directoryId, defaultContactsIdentity]);
   const contactsListIdentity = contactsIdentityChoice ?? defaultContactsIdentity;
@@ -1815,6 +2140,7 @@ export function App() {
     child: preferences.activeAccountId ?? identity?.id ?? null,
     key: encryptionKey, relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     availablePersonas: identity ? childDirectoryPersonas(identity) : [],
+    pairingGeneration: pairedChildBumpCounter,
   });
   const pairedContactReplies = useChildContactReplyInbox({
     enabled: isPairedChild && !!encryptionKey,
@@ -1823,6 +2149,7 @@ export function App() {
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     guardian: pairedChildClientKeypair?.guardianPubkey ?? null,
     personas: identity ? childDirectoryPersonas(identity) : [],
+    pairingGeneration: pairedChildBumpCounter,
   });
 
   // D4 (child): the child's own request history — the durable outbox
@@ -1836,6 +2163,7 @@ export function App() {
     guardian: pairedChildClientKeypair?.guardianPubkey ?? null,
     personas: identity ? childDirectoryPersonas(identity) : [],
     version: childAskVersion,
+    pairingGeneration: pairedChildBumpCounter,
   });
   const childContactHistory = useMemo(() => childContactRequestHistory(childContactOutbox, pairedContactReplies),
     [childContactOutbox, pairedContactReplies]);
@@ -1937,6 +2265,40 @@ export function App() {
     onMutated: bumpContactsV2,
   });
 
+  /**
+   * "Import who this account follows" for one of the OWNER's personas. Owner
+   * personas only, and only while the contacts hook is scoped to the owner's
+   * directory and has finished loading — never a dependant's slot, never a
+   * paired-child install, and a dormant real identity gets nothing. The hook's
+   * mutators are bound to the scope's directory, so a stale dependant scope
+   * hides the offer rather than writing into the wrong directory.
+   */
+  const followsPendingFor = (slotTarget: string): string | undefined => {
+    if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
+    if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
+    if (contactsScope.directoryId !== 'owner') return 'Open this from your own card to import follows.';
+    if (contactsV2.loading) return 'Loading your contacts…';
+    return undefined;
+  };
+
+  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+    if (followsPendingFor(slotTarget)) return undefined;
+    if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
+    if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
+    return {
+      onImportFollows: () => runFollowsImport({
+        personaPubkey,
+        personaName,
+        records: contactsV2.records,
+        fetchList: (pubkey) => fetchFollowList(pubkey, syncRelays.read),
+        fetchNames: (pubkeys) => fetchFollowNames(pubkeys, syncRelays.read),
+        recogniseContacts: contactsV2.recogniseContacts,
+        recordImport: (state) => setSlotFollowsImport(slotTarget, state),
+      }),
+      onUnlinkFollows: (contactIds) => contactsV2.unlinkContactsFromList(contactIds, personaPubkey),
+    };
+  };
+
   const botSession = useRef({ key: encryptionKey, owner: identity?.naturalPerson.publicKey, mode: preferences.signingMode });
   botSession.current = { key: encryptionKey, owner: identity?.naturalPerson.publicKey, mode: preferences.signingMode };
   const makeBotAppSigner = useCallback(async (botPubkey: string, valid: () => boolean) => {
@@ -1945,8 +2307,8 @@ export function App() {
     if (!identity || !root || !key || mode === 'paired-child' || !current()) throw new Error('Unlock to use this bot.');
     return createBotSigningBackend({ identityId: identity.id, ownerRoot: root, botPubkey, encryptionKey: key, mode: mode ?? 'local',
       isCurrent: current, routed: target => mode === 'nip07' ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
-        : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target) });
-  }, [identity?.id, identity?.naturalPerson.publicKey, encryptionKey, preferences.signingMode, nip07Backend, bunkerBackend, bunkerRouter]);
+        : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) });
+  }, [identity?.id, identity?.naturalPerson.publicKey, encryptionKey, preferences.signingMode, nip07Backend, bunkerBackend, bunkerRouter, slotResolveOpts]);
   const botAppServer = useBotAppServer({ root: !isPairedChild ? identity?.naturalPerson.publicKey ?? null : null,
     encryptionKey, version: botsVersion, signer: makeBotAppSigner });
   const makeBotOwnershipService = useCallback((valid: () => boolean) => {
@@ -1960,12 +2322,12 @@ export function App() {
         if (!fresh || !current() || owner === root) throw new Error('Select an owned persona.');
         const signer = contactInviteSigner(owner, { identity: fresh, mode: mode ?? 'local', isCurrent: current,
           routed: target => mode === 'nip07' ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
-            : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target) });
+            : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) });
         return signer.signEvent(event);
       },
       publish: event => publishToRelays(event, syncRelays.write),
     });
-  }, [identity, encryptionKey, preferences.signingMode, nip07Backend, bunkerBackend, bunkerRouter, syncRelays]);
+  }, [identity, encryptionKey, preferences.signingMode, nip07Backend, bunkerBackend, bunkerRouter, syncRelays, slotResolveOpts]);
   useBotOwnership({ root: !isPairedChild ? identity?.naturalPerson.publicKey ?? null : null,
     encryptionKey, session: preferences.signingMode ?? 'local', service: makeBotOwnershipService });
 
@@ -2123,10 +2485,10 @@ export function App() {
           imported: 'derivationPath' in fresh && /^imported-(?!view-)/.test(fresh.derivationPath),
           routed: target => preferences.signingMode === 'nip07'
             ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
-            : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target) });
+            : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) });
       },
     });
-  }, [encryptionKey, identity, inviteBudget, inviteAutomaticAttempts, preferences.signingMode, preferences.contactsDeviceId, nip07Backend, bunkerBackend, bunkerRouter, bumpContactsV2, contactsV2.reload, isPairedChild, loadFreshDependants, guardianChildInScope, syncRelays.write]);
+  }, [encryptionKey, identity, inviteBudget, inviteAutomaticAttempts, preferences.signingMode, preferences.contactsDeviceId, nip07Backend, bunkerBackend, bunkerRouter, slotResolveOpts, bumpContactsV2, contactsV2.reload, isPairedChild, loadFreshDependants, guardianChildInScope, syncRelays.write]);
   const ownerInviteService = useMemo(() => makeInviteService('owner', () => true), [makeInviteService]);
   const inviteService = useMemo(() => makeInviteService(contactsScope.directoryId ?? 'owner', () => true), [makeInviteService, contactsScope.directoryId]);
   const guardianChildService = useCallback((child: string, peer: string, request: ChildContactRequest) =>
@@ -2217,11 +2579,22 @@ export function App() {
     const value = new URLSearchParams(window.location.hash.slice(1)).get('contact-invite');
     return value && value.length <= 8192 ? value : undefined;
   });
+  // The persona whose camera card scanned the invite; the send screen defaults to it.
+  const [pendingInviteSender, setPendingInviteSender] = useState<string | undefined>(undefined);
+  const sendPageOpenRef = useRef(false);
+  useEffect(() => {
+    // Leaving the send page by any route (back, Done, Cancel, other navigation)
+    // retires the invite and the scanning persona, so neither can leak into a later invite.
+    if (page === 'contact-invite-send') { sendPageOpenRef.current = true; return; }
+    if (!sendPageOpenRef.current) return;
+    sendPageOpenRef.current = false;
+    setPendingContactInvite(undefined); setPendingInviteSender(undefined);
+  }, [page]);
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
     // D6: a paired-child install asks the guardian instead of connecting.
-    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invites');
+    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
   }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId]);
 
   // C1: `useContactsV2`'s own mount-time `reload()` and the cold
@@ -2393,11 +2766,16 @@ export function App() {
 
   /** Surfaced on the connected-apps list when a revoke or forget fails. */
   const [contactsGrantActionError, setContactsGrantActionError] = useState<string | null>(null);
-  /** M7: set when a pairing code is scanned on a paired-child install, which
-   *  has no v2 grant surface at all (R-8). Dismissable; never auto-cleared,
-   *  so a scan the user has walked away from is still explained when they
-   *  come back. */
-  const [contactsGrantPairedChildNotice, setContactsGrantPairedChildNotice] = useState(false);
+  /** M7: the pairing request that reached a paired-child install, which has no
+   *  v2 grant surface at all (R-8). Shown as a code the guardian's own My
+   *  Signet scans (`ContactsGrantChildCode`). A newer request replaces it;
+   *  dismissable; otherwise not auto-cleared, so a request the user walked
+   *  away from is still there when they come back (the code itself stops
+   *  being shown once the request goes stale). */
+  const [contactsGrantPairedChildRequest, setContactsGrantPairedChildRequest] = useState<PairingRequestV2 | null>(null);
+  /** Set when a mysignet.app App Link opened the app carrying nothing it can
+   *  act on. Only ever set from `handleNativeUrl`, never on a plain launch. */
+  const [nativeLinkNothingToOpen, setNativeLinkNothingToOpen] = useState(false);
   /** Inline confirm/busy state for the connected-apps rows — mirrors
    *  `CompanionApps`' own confirm toggle rather than a `window.confirm`. */
   const [contactsGrantConfirmId, setContactsGrantConfirmId] = useState<string | null>(null);
@@ -3169,7 +3547,42 @@ export function App() {
   //   the NP pubkey still resolves after a reload.
   const naturalPersonServingBackend = npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson ?? null;
 
+  // The child's bunker (spec §8.2): one gated route per persona — local
+  // transport key, the persona's Heartwood route for signing, the gate for
+  // every decision. The NP is never listed while dormant (A26).
+  const childBunkerRoutes = useMemo<BunkerRoute[]>(() => {
+    if (!childDirect || !encryptionKey || signerStatus !== 'connected') return [];
+    const labelFor = (client: string) => childGateRef.current.connectedApps.find(a => a.appId === client)?.label
+      || `App ${client.slice(0, 8)}`;
+    return buildChildDirectRoutes({
+      personas: childBunkerPersonasCsv ? childBunkerPersonasCsv.split(',') : [],
+      transportKeys: childTransportKeys,
+      signingBackendFor: (persona) => resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, persona, slotResolveOpts),
+      gateFor: (persona) => ({
+        authorise: (req) => childGateRef.current.authorise({
+          persona, appId: req.clientPubkey, appLabel: labelFor(req.clientPubkey), method: req.method,
+          ...(req.template ? { template: req.template } : {}), ...(req.peer ? { peer: req.peer } : {}),
+        }),
+        onConnect: (client, meta) => {
+          const now = Math.floor(Date.now() / 1000);
+          childGateRef.current.noteConnectedApp({
+            appId: client, kind: 'nip46', label: meta.label || `App ${client.slice(0, 8)}`,
+            ...(meta.url ? { url: meta.url } : {}), persona, firstSeen: now, lastUsed: now,
+          });
+        },
+      }),
+    }, (priv) => new LocalSigningBackend(priv));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- signerStatus: the persona routes need a connected primary
+  }, [childDirect, encryptionKey, signerStatus, childBunkerPersonasCsv, childTransportKeys, bunkerBackend, bunkerRouter, slotResolveOpts]);
+  const childBunkerRoutesRef = useRef(childBunkerRoutes);
+  childBunkerRoutesRef.current = childBunkerRoutes;
+  // A45: each rebuild (lock, unpair, a new persona, a reconnect) retires the
+  // previous routes' LOCAL transport backends (their key reference dropped).
+  useEffect(() => () => { for (const r of childBunkerRoutes) { try { r.backend.destroy(); } catch { /* already gone */ } } }, [childBunkerRoutes]);
+
   const bunkerRoutes = useMemo(() => {
+    // A direct-paired child serves only its own gated persona routes.
+    if (childDirect) return childBunkerRoutes;
     const routes: BunkerRoute[] = [];
     // Owner-persona routes (NP + default Persona + extra personas +
     // Professional). The "Sign in with Signet" redirect-flow auto-pair
@@ -3197,7 +3610,8 @@ export function App() {
     // Dependant routes — only once the user is unlocked (private keys must
     // be decrypted for LocalSigningBackend construction to succeed).
     if (encryptionKey) {
-      for (const dep of dependants) {
+      // A19: a phone paired straight to the Heartwood gets no route here.
+      for (const dep of phoneServedDependants(dependants)) {
         const slots = resolveDependantRouteSlots(dep);
         const endpoint = dep.bunkerEndpoint;
         const guarded = (backend: LocalSigningBackend, routeKind: 'device' | 'app') => contactPolicySigningBackend(backend, async (peer, signer) => {
@@ -3282,7 +3696,7 @@ export function App() {
     }
     return routes;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bunkerBackendForServer, naturalPersonServingBackend, npActive, dependants, encryptionKey, backends, identity, nostrConnectTransientRoute]);
+  }, [bunkerBackendForServer, naturalPersonServingBackend, npActive, dependants, encryptionKey, backends, identity, nostrConnectTransientRoute, childDirect, childBunkerRoutes]);
   // Subscription is live for dependant reachability (guardian approval must
   // work whenever the app is open) OR while an owner serve session is armed.
   // Owner-route requests are additionally gated per-request on the session
@@ -3297,7 +3711,11 @@ export function App() {
     // Subscription live when dependant routes exist (guardian approval must
     // work whenever the app is open) OR while an owner serve session is armed.
     // Owner-route requests are gated per-request via isOwnerServingActive.
-    enabled: bunkerServerEnabled && !!encryptionKey && (hasDependantRoutes || stayAwakeUntil !== null || backgroundServing),
+    // A direct-paired child's bunker is on whenever it has routes (§8.2): the
+    // gate is its policy, not a time-boxed owner-serve window.
+    enabled: childDirect
+      ? (!!encryptionKey && childBunkerRoutes.length > 0)
+      : bunkerServerEnabled && !!encryptionKey && (hasDependantRoutes || stayAwakeUntil !== null || backgroundServing),
     // Owner serving is time-boxed (stay-awake) or always-on (native background):
     // read live (via ref) at request time.
     isOwnerServingActive: () => backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
@@ -3348,6 +3766,9 @@ export function App() {
           title: `${who} needs an approval`,
           body: entry.description,
           smallIcon: 'ic_stat_signet',
+          // Shown now, not scheduled: without this the plugin opens Android's
+          // "Alarms & reminders" settings over whatever app is in front.
+          isExactNotification: false,
         }],
       }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
     },
@@ -3467,14 +3888,31 @@ export function App() {
   // anything Amber-shaped), served by the same owner-persona backends the
   // NIP-46 server signs with, decided by the table in src/lib/nip55.ts.
   // Native only; the web bundle never registers a listener.
+  // On a direct-paired child the NIP-55 routes are the personas themselves
+  // (the child's NIP-46 routes are keyed by their LOCAL transport keys), and
+  // every sign / NIP-44 request goes through the child's gate (§8.3).
+  const nip55Routes = useMemo<BunkerRoute[]>(() => (childDirect
+    ? childBunkerRoutes.filter(r => r.signingBackend).map(r => ({ pubkey: r.signingBackend!.activePublicKeyHex, backend: r.signingBackend! }))
+    : bunkerRoutes), [childDirect, childBunkerRoutes, bunkerRoutes]);
+  const nip55Gate = useMemo(() => (childDirect
+    ? (req: Parameters<NonNullable<Parameters<typeof useNip55Server>[0]['gate']>>[0]) => {
+      const now = Math.floor(Date.now() / 1000);
+      childGateRef.current.noteConnectedApp({ appId: req.appId, kind: 'nip55', label: req.appLabel, persona: req.persona, firstSeen: now, lastUsed: now });
+      return childGateRef.current.authorise(req);
+    }
+    : undefined), [childDirect]);
   const nip55 = useNip55Server({
     enabled: isNativeApp(),
-    routes: bunkerRoutes,
+    routes: nip55Routes,
+    gate: nip55Gate,
     locked: !encryptionKey,
     activePubkey: activePubkey ?? null,
     onNeedsUnlock: () => { setAuthPromptContext(undefined); setShowAuthPrompt(true); },
     onServed: () => { phoneAppsUntilRef.current = Date.now() + PHONE_APPS_WINDOW_MS; },
+    keyExpired: phoneAppsKeyExpiredNow,
+    onKeyExpired: lockExpiredPhoneAppsKey,
   });
+  refuseHeldNip55Ref.current = nip55.refuseHeld;
   // The remembered NIP-55 decisions, as the Connected Sites page lists them; grants keep milliseconds, the page reads seconds.
   const phoneApps = useMemo<PhoneApp[]>(() => Object.entries(nip55.grants)
     .map(([packageName, g]) => ({ packageName, label: g.label ?? null, pubkey: g.pubkey, allowAlways: g.allowAlways, denyAlways: g.denyAlways, grantedAt: Math.floor(g.grantedAt / 1000) }))
@@ -3490,9 +3928,11 @@ export function App() {
     }
     for (const ep of identity.extraPersonas ?? []) if (ep.publicKey) out.push({ pubkey: ep.publicKey.toLowerCase(), label: ep.displayName });
     if (identity.professionalPersona?.publicKey) out.push({ pubkey: identity.professionalPersona.publicKey.toLowerCase(), label: identity.professionalPersona.displayName || 'Professional' });
-    const owned = new Set(bunkerRoutes.filter(r => !r.dependantId).map(r => r.pubkey.toLowerCase()));
+    // The same routes the NIP-55 server signs with (on a direct-paired child
+    // these are the personas, not the NIP-46 transport keys).
+    const owned = new Set(nip55Routes.filter(r => !r.dependantId).map(r => r.pubkey.toLowerCase()));
     return out.filter((id, i) => owned.has(id.pubkey) && out.findIndex(o => o.pubkey === id.pubkey) === i);
-  }, [identity, npActive, bunkerRoutes]);
+  }, [identity, npActive, nip55Routes]);
   const bunkerServeStatusRef = useRef(bunkerServeStatus);
   bunkerServeStatusRef.current = bunkerServeStatus;
 
@@ -3663,7 +4103,17 @@ export function App() {
   }, []);
 
   const npBackend = rawNpBackend;
-  const activeBackend = rawActiveBackend;
+  // A direct-paired child: the app's own acts go through the child's gate
+  // (appId `mysignet`, spec §8.4), stamped for the activity join.
+  const activeBackend = useMemo<SigningBackend | null>(() => {
+    if (!childDirect || !rawActiveBackend) return rawActiveBackend;
+    const inner = rawActiveBackend as DecryptingSigningBackend;
+    const persona = inner.activePublicKeyHex;
+    return gatedSigningBackend(inner, (req) => childGateRef.current.authorise({
+      persona, appId: 'mysignet', appLabel: 'My Signet', method: req.method,
+      ...(req.template ? { template: req.template } : {}), ...(req.peer ? { peer: req.peer } : {}),
+    }));
+  }, [childDirect, rawActiveBackend]);
 
   /**
    * Guardian's NIP-44 decrypt backend, kept independent of dependant
@@ -3691,7 +4141,11 @@ export function App() {
   // the same "Heartwood-connected guardian surface" shape as the rest of
   // the bunker UI: mnemonic gone (Heartwood connect deletes it), a bunker
   // signer connected, unlocked, and not currently viewing as a dependant.
-  const escalationsEnabled = !identity?.mnemonic && !!bunkerBackend && !!encryptionKey && !activeDependant;
+  // A41: never on a paired-child install.
+  const escalationsEnabled = escalationsAvailable({
+    signingMode: preferences.signingMode, hasMnemonic: !!identity?.mnemonic,
+    bunkerConnected: !!bunkerBackend, unlocked: !!encryptionKey, viewingDependant: !!activeDependant,
+  });
 
   // Resolve an escalation notice's `identityPubkey` (the dependant slot the
   // parked/petitioned request would sign as) to a display name. Checks the
@@ -3728,6 +4182,7 @@ export function App() {
         title: `${name} is waiting for a sign-in approval`,
         body: 'Open Signet to review it.',
         smallIcon: 'ic_stat_signet',
+        isExactNotification: false,
       }],
     }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
   }, [resolveEscalationIdentityName]);
@@ -3759,7 +4214,107 @@ export function App() {
     signingMode: preferences.signingMode,
     dependants,
     grants: grantsForSync,
+    childRules: isPairedChild ? [] : childRules,
+    approvedOnceKinds: isPairedChild ? {} : approvedOnceKinds,
+    // A31: the push compiles from reads taken inside the operator lock.
+    getApprovedOnce: isPairedChild ? undefined : approvedOnceStore.get,
+    loadChildRules: isPairedChild || !encryptionKey ? undefined : () => listAllChildRules(encryptionKey),
   });
+
+  // Guardian → child rules rail for every dependant whose own phone is
+  // paired straight to the Heartwood (spec §5.2), on the rail relay.
+  useChildRulesPublisher({
+    enabled: !!encryptionKey && !isPairedChild && approvedOnceKinds !== null,
+    dependants,
+    childRules,
+    approvedOnceKinds: approvedOnceKinds ?? undefined,
+    relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+  });
+
+  // Spec §7 guardian half: widen one child phone's Heartwood ceiling now,
+  // before a verdict is sent. A31/A32: under the operator lock, compiled from
+  // fresh reads (the rule an "Always" just wrote is not in React state yet);
+  // a failure removes only the approved-once entry this call added.
+  const pushChildCeiling = useCallback(async (depId: string, extraOnce?: OnceEntry): Promise<'ok' | 'failed'> => {
+    const c = heartwoodOperator.client;
+    const key = encryptionKey;
+    if (!c || !c.isOpen || !key) return 'failed';
+    return pushChildCeilingLocked({
+      lockKey: c,
+      io: { listClients: () => mgmtListClients(c), updateClientPolicy: (slot, policy) => mgmtUpdateClientPolicy(c, slot, policy) },
+      depId,
+      extraOnce,
+      store: approvedOnceStore,
+      read: async () => ({
+        dependants: await loadFreshDependants(key),
+        grants: grantsForSync ?? [],
+        guardianClientPubkey: policyPush.guardianClientPubkey,
+        childRules: await listAllChildRules(key),
+        nowSeconds: Math.floor(Date.now() / 1000),
+      }),
+    });
+  }, [heartwoodOperator.client, encryptionKey, approvedOnceStore, loadFreshDependants, grantsForSync, policyPush.guardianClientPubkey]);
+  // A34: a `once` whose verdict never reached the child gives its entry back (A32 path).
+  const dropChildOnce = useCallback(async (depId: string, entry: OnceEntry) => {
+    const cur = approvedOnceRef.current;
+    if (cur) await writeApprovedOnce(removeOnceEntry(cur, depId, entry));
+  }, [writeApprovedOnce]);
+
+  // Native: a child's fresh request raises the same "needs an approval"
+  // notification as a phone-served one, in its own id range.
+  const notifiedChildAsksRef = useRef<Map<string, number>>(new Map());
+  const childAskRelays = useMemo(() => [preferences.relayUrl ?? DEFAULT_RELAY_URL], [preferences.relayUrl]);
+  const childAsks = useChildAsks({
+    dependants: isPairedChild ? [] : dependants,
+    relays: childAskRelays,
+    encryptionKey: isPairedChild ? null : encryptionKey,
+    approvedOnceKinds: approvedOnceKinds ?? undefined,
+    pushCeiling: pushChildCeiling,
+    dropOnce: dropChildOnce,
+    onRulesChanged: () => { void reloadChildRules(); },
+    onNewAsk: (p: PendingChildAsk) => {
+      if (!isNativeApp() || document.visibilityState === 'visible') return;
+      const id = 0x40000000 + (parseInt(p.ask.id.slice(0, 7), 16) % 0x10000000);
+      notifiedChildAsksRef.current.set(p.ask.id, id);
+      void LocalNotifications.schedule({
+        notifications: [{
+          id,
+          channelId: 'signet-requests',
+          title: CHILD_ASK_COPY.notificationTitle(p.dependantName),
+          body: p.ask.targetLabel,
+          smallIcon: 'ic_stat_signet',
+          // Shown now, not scheduled: without this the plugin opens Android's
+          // "Alarms & reminders" settings over whatever app is in front.
+          isExactNotification: false,
+        }],
+      }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
+    },
+  });
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    const tracked = notifiedChildAsksRef.current;
+    if (tracked.size === 0) return;
+    const live = new Set(childAsks.asks.map(a => a.ask.id));
+    const toCancel: number[] = [];
+    tracked.forEach((nid, askId) => { if (!live.has(askId)) { toCancel.push(nid); tracked.delete(askId); } });
+    if (toCancel.length > 0) {
+      void LocalNotifications.cancel({ notifications: toCancel.map((id) => ({ id })) }).catch(() => { /* already dismissed */ });
+    }
+  }, [childAsks.asks]);
+  // A37: asks the guardian put off with "Later" leave the sheet (they stay in
+  // the Bunker panel until they expire); a new ask raises the sheet again.
+  const [laterChildAskIds, setLaterChildAskIds] = useState<ReadonlySet<string>>(() => new Set());
+  const sheetChildAsks = useMemo(() => childAsks.asks.filter(a => !laterChildAskIds.has(a.ask.id)), [childAsks.asks, laterChildAskIds]);
+  const putOffChildAsks = useCallback((ids: string[]) => {
+    setLaterChildAskIds(prev => {
+      const live = new Set(childAsks.asks.map(a => a.ask.id));
+      const next = new Set([...prev].filter(id => live.has(id)));
+      for (const id of ids) next.add(id);
+      return next;
+    });
+  }, [childAsks.asks]);
+  const childAskAlwaysAvailable = useCallback((depId: string) =>
+    dependants.find(d => d.id.toLowerCase() === depId.toLowerCase())?.autonomyStage !== 'full-control', [dependants]);
 
   // C4 verdict leg — `resolve_approval` for a parked "Family asks" row.
   // Single stale-challenge retry lives in `submitVerdict`. Requires the
@@ -3910,6 +4465,8 @@ export function App() {
       // encrypted rows stay in IDB — only the derived key is forgotten, so a
       // locked device can't read the cached sync plaintexts.
       forgetSyncCacheKeys();
+      // A52: and the decrypted child-rule memo.
+      forgetChildRuleCache();
       // The Heartwood operator client (kind-24134) is stopped by
       // useHeartwoodOperator's own effect on the same encryptionKey flip.
       if (nip07Backend) {
@@ -3931,9 +4488,13 @@ export function App() {
     // the guardian selects a different dependant (or switches back).
     // Include encrypted flag so the dedup guard doesn't match across
     // encrypted (public-only) and decrypted (full key material) states.
-    const targetId = activeDependant
-      ? `dep:${activeDependant.id}:${activeDependant.primaryKeypair}`
-      : `${identity.id}:${identity.encrypted ? 'enc' : 'dec'}`;
+    // A re-pair (pairedChildBumpCounter) is a new target too — bug 5.
+    const targetId = backendsTargetId({
+      identityId: identity.id,
+      identityEncrypted: !!identity.encrypted,
+      activeDependant: activeDependant ?? null,
+      pairingGeneration: pairedChildBumpCounter,
+    });
 
     // Already created for this target
     if (backendsIdentityId.current === targetId) return;
@@ -4139,6 +4700,9 @@ export function App() {
             setSignerStatus(null);
             return;
           }
+          // Direct mode pins the bound PERSONA, legacy the dependant pubkey.
+          const expectedSigner = pairedChildSignerPubkey(record);
+          if (!expectedSigner) { setSignerStatus('unavailable'); return; }
           const bunker = new BunkerSigningBackend(record.clientKeypair.privateKey);
           setBunkerBackend(bunker);
           try {
@@ -4151,7 +4715,7 @@ export function App() {
               // Signer's activePublicKeyHex is set by connect. Verify
               // against the dependant pubkey from the pairing URI —
               // defence against a MITM relay subbing a different identity.
-              if (bunker.activePublicKeyHex.toLowerCase() !== record.dependantPubkey.toLowerCase()) {
+              if (bunker.activePublicKeyHex.toLowerCase() !== expectedSigner.toLowerCase()) {
                 bunker.destroy();
                 setSignerStatus('unavailable');
                 return;
@@ -4165,7 +4729,7 @@ export function App() {
               // Subsequent unlocks — client pubkey already bound server-
               // side, `reconnect` skips the handshake and only fetches
               // the dependant pubkey for local verification.
-              await bunker.reconnect(record.bunkerUri, 30_000, record.dependantPubkey);
+              await bunker.reconnect(record.bunkerUri, 30_000, expectedSigner);
               setSignerStatus('connected');
             }
             // Probe for Heartwood per-slot routing on the family device
@@ -4176,7 +4740,7 @@ export function App() {
             // null and the dormant copy is unchanged. Generation-guarded
             // exactly like the Heartwood branch above so a stale resolution
             // can't revive a superseded router.
-            startRouterProbe(bunker, record.clientKeypair.privateKey);
+            startRouterProbe(bunker, record.clientKeypair.privateKey, record.mode === 'heartwood-direct');
           } catch {
             setSignerStatus('unavailable');
           }
@@ -4331,7 +4895,38 @@ export function App() {
   }, []);
   const closeStayAwake = useCallback(() => {
     setStayAwakeUntil(null);
-  }, []);
+    // The user's explicit Stop: forget the stored end too.
+    if (isNativeApp()) void setStayAwakeEndsAt(null).catch(() => {});
+  }, [setStayAwakeEndsAt]);
+
+  // Native: keep the open window's wall-clock end on the device, so a
+  // swipe-away, process death or reboot can resume it on the next unlock.
+  // Only a window being OPEN is mirrored here — a null `stayAwakeUntil` is
+  // also the state of a fresh page before the restore below has run, so
+  // clearing happens only where the window really ends (Stop, expiry).
+  useEffect(() => {
+    if (!isNativeApp() || stayAwakeUntil === null) return;
+    void setStayAwakeEndsAt(stayAwakeUntil).catch(() => {});
+  }, [stayAwakeUntil, setStayAwakeEndsAt]);
+
+  // Native: on unlock, resume a window that was still running when the page
+  // went away — same end, never extended, so the countdown shows what is
+  // left. One check per unlock, once preferences have loaded.
+  const stayAwakeRestoredForKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!encryptionKey) { stayAwakeRestoredForKeyRef.current = null; return; }
+    if (!isNativeApp() || prefsLoading) return;
+    if (stayAwakeRestoredForKeyRef.current === encryptionKey) return;
+    stayAwakeRestoredForKeyRef.current = encryptionKey;
+    const stored = preferences.stayAwakeEndsAt;
+    const end = resolveStayAwakeOnUnlock(stored, Date.now());
+    if (end === null) {
+      if (stored !== undefined) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      return;
+    }
+    setStayAwakeUntil(prev => mergeRestoredStayAwake(prev, end));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey, prefsLoading]);
 
   // Native always-on background serving: arm = permissions + battery
   // exemption + foreground service; disarm = stop service. The preference
@@ -4339,9 +4934,20 @@ export function App() {
   // unlock effect below.
   const bunkerServePubkeysCsv = bunkerRoutes.map(r => r.pubkey).join(',');
   const bunkerServeRelayUrl = nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL;
+  const alwaysOnArmInFlightRef = useRef(false);
   const handleSetBackgroundServing = useCallback(async (on: boolean) => {
     if (!isNativeApp()) return;
-    if (on) {
+    if (!on) {
+      void setBackgroundBunkerEnabled(false);
+      try { await SignetNative.stopBunkerService(); } catch { /* already stopped */ }
+      setBackgroundServing(false);
+      return;
+    }
+    // One arm at a time: the unlock re-arm below and the user's toggle can
+    // both fire while the permission/exemption awaits are pending.
+    if (alwaysOnArmInFlightRef.current) return;
+    alwaysOnArmInFlightRef.current = true;
+    try {
       try {
         await LocalNotifications.requestPermissions();
         await LocalNotifications.createChannel({
@@ -4361,10 +4967,8 @@ export function App() {
       } catch { return; }
       setBackgroundServing(true);
       void setBackgroundBunkerEnabled(true);
-    } else {
-      try { await SignetNative.stopBunkerService(); } catch { /* already stopped */ }
-      setBackgroundServing(false);
-      void setBackgroundBunkerEnabled(false);
+    } finally {
+      alwaysOnArmInFlightRef.current = false;
     }
   }, [bunkerServePubkeysCsv, bunkerServeRelayUrl, setBackgroundBunkerEnabled]);
 
@@ -4375,6 +4979,15 @@ export function App() {
   // After unlock succeeds, panel reopens and arms with the pending time.
   const handleBunkerPendingArm = useCallback((minutes: number) => {
     setPendingBunkerArm(minutes);
+    setBunkerPanelOpen(false);
+    requestAuth();
+  }, [requestAuth]);
+
+  // Always-on tapped while locked: same unlock-first flow as +X. The pref is
+  // only set once the unlock lands, so a cancelled PIN never leaves always-on
+  // armed for a later unlock; the re-arm effect below then waits for routes.
+  const handleBunkerPendingAlwaysOn = useCallback(() => {
+    setPendingAlwaysOnArm(true);
     setBunkerPanelOpen(false);
     requestAuth();
   }, [requestAuth]);
@@ -4410,7 +5023,6 @@ export function App() {
     void requestAuth();
   }, [identityLoading, prefsLoading, identity, preferences.signingMode, pendingEncryptionKey, encryptionKey, showAuthPrompt, requestAuth]);
 
-  const hiddenAtRef = useRef<number | null>(null);
   // Attach activity listeners when authenticated
   useEffect(() => {
     if (!encryptionKey) return;
@@ -4477,11 +5089,20 @@ export function App() {
           requestHideLock();
         }
       } else {
+        // Back in front, perhaps thawed from a freeze that stopped the timer
+        // ending the phone-apps window: if the window ran out meanwhile, lock
+        // now, as the timer would have. `hiddenAt` is left set so a NIP-55
+        // request handled before the lock renders sees the same verdict.
+        if (phoneAppsKeyExpiredNow()) { lockExpiredPhoneAppsKey(); return; }
         hiddenAtRef.current = null;
         if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
       }
     };
+    // A frozen page that is thawed while still hidden gets a `resume` and no
+    // visibilitychange.
+    const handleResume = () => { if (phoneAppsKeyExpiredNow()) lockExpiredPhoneAppsKey(); };
     document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener('resume', handleResume);
     // A dependency change while hidden (the approve handler moving to the
     // code page, an inbound auth request) re-runs this effect, and the
     // cleanup below has just cancelled the grace timer. No visibilitychange
@@ -4492,10 +5113,11 @@ export function App() {
     return () => {
       events.forEach(ev => window.removeEventListener(ev, handler));
       document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('resume', handleResume);
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       if (graceTimer) clearTimeout(graceTimer);
     };
-  }, [encryptionKey, resetInactivityTimer, pendingVerifyRequest, pendingAuthRequest, page]);
+  }, [encryptionKey, resetInactivityTimer, pendingVerifyRequest, pendingAuthRequest, page, phoneAppsKeyExpiredNow, lockExpiredPhoneAppsKey]);
 
   // Stay-awake window expiry: when the deadline passes, end the window and
   // restore the normal security posture at once — a hidden app locks NOW
@@ -4504,17 +5126,24 @@ export function App() {
   useEffect(() => {
     if (stayAwakeUntil === null) return;
     const ms = stayAwakeUntil - Date.now();
-    if (ms <= 0) { setStayAwakeUntil(null); return; }
+    if (ms <= 0) {
+      setStayAwakeUntil(null);
+      if (isNativeApp()) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      return;
+    }
     const timer = setTimeout(() => {
       setStayAwakeUntil(null);
-      if (document.visibilityState === 'hidden') {
+      if (isNativeApp()) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      // Native always-on serving outlives a short window: ending the window
+      // must not lock a page that is serving in the background.
+      if (document.visibilityState === 'hidden' && !backgroundServingRef.current) {
         requestLockRef.current();
       } else {
         resetInactivityTimer();
       }
     }, ms);
     return () => clearTimeout(timer);
-  }, [stayAwakeUntil, resetInactivityTimer]);
+  }, [stayAwakeUntil, resetInactivityTimer, setStayAwakeEndsAt]);
 
   // When the window ends (expiry or Close now), resume normal auto-lock by
   // re-arming the inactivity timer from this moment.
@@ -4541,26 +5170,70 @@ export function App() {
     }).catch(() => {});
   }, [encryptionKey, stayAwakeUntil, backgroundServing, bunkerServePubkeysCsv, bunkerServeRelayUrl]);
 
-  // Native: re-arm background serving on unlock when the preference is set.
+  // Native: re-arm background serving after an unlock when the preference is
+  // set — after a swipe-away, process death or reboot the page starts with
+  // serving off and nothing else turns it back on. Waits for preferences and
+  // for the serve routes, which arrive a render or more after the key: an arm
+  // with no pubkeys stores an empty set for the boot receiver and the
+  // fallback poll. Re-evaluated whenever any of those change.
   useEffect(() => {
-    if (!isNativeApp() || !encryptionKey) return;
-    if (preferences.backgroundBunkerEnabled && !backgroundServing) {
-      void handleSetBackgroundServing(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encryptionKey, preferences.backgroundBunkerEnabled]);
+    if (!shouldRearmAlwaysOn({
+      native: isNativeApp(),
+      unlocked: !!encryptionKey,
+      prefsLoading,
+      enabledPref: preferences.backgroundBunkerEnabled,
+      serving: backgroundServing,
+      inFlight: alwaysOnArmInFlightRef.current,
+      servePubkeyCount: bunkerRoutes.length,
+    })) return;
+    void handleSetBackgroundServing(true);
+  }, [encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+
+  useEffect(() => {
+    if (!encryptionKey || !pendingAlwaysOnArm) return;
+    setPendingAlwaysOnArm(false);
+    setBunkerPanelOpen(true);
+    void setBackgroundBunkerEnabled(true);
+  }, [encryptionKey, pendingAlwaysOnArm, setBackgroundBunkerEnabled]);
+
+  // Native: always-on is set but this page is locked (opened from the
+  // "stopped signing" notification, after a swipe-away or a reboot). Serving
+  // needs the key, so ask for the unlock straight away rather than leaving
+  // always-on silently off. Once per page; a cancel is left alone.
+  const alwaysOnUnlockPromptRef = useRef(false);
+  useEffect(() => {
+    if (alwaysOnUnlockPromptRef.current) return;
+    if (!shouldPromptUnlockForAlwaysOn({
+      native: isNativeApp(),
+      loading: identityLoading || prefsLoading,
+      hasIdentity: !!identity,
+      authSetUp: isAuthSetUp(),
+      unlocked: !!encryptionKey || !!pendingEncryptionKey,
+      promptOpen: showAuthPrompt,
+      enabledPref: preferences.backgroundBunkerEnabled,
+      pairedChild: preferences.signingMode === 'paired-child',
+    })) return;
+    alwaysOnUnlockPromptRef.current = true;
+    void requestAuth();
+  }, [identityLoading, prefsLoading, identity, encryptionKey, pendingEncryptionKey, showAuthPrompt, preferences.backgroundBunkerEnabled, preferences.signingMode, requestAuth]);
 
   // Native: liveness heartbeat to the foreground service while serving.
-  // A stale heartbeat (>90s) flips the service into fallback-poll mode.
+  // A stale heartbeat (>90s) flips the service into fallback-poll mode and
+  // the "isn't signing" notification. Only sent while the serve socket is
+  // open: a backgrounded page never gets the `resume` kick below, so a dead
+  // socket must surface as a stale heartbeat instead.
   useEffect(() => {
     if (!isNativeApp() || !backgroundServing || !encryptionKey) return;
     const beat = () => {
+      if (bunkerServeStatusRef.current.phase !== 'open') return;
       void SignetNative.serviceHeartbeat({ pubkeysCsv: bunkerServePubkeysCsv, relayUrl: bunkerServeRelayUrl }).catch(() => {});
     };
     beat();
     const t = setInterval(beat, 20_000);
     return () => clearInterval(t);
-  }, [backgroundServing, encryptionKey, bunkerServePubkeysCsv, bunkerServeRelayUrl]);
+    // phase: beat as soon as the socket opens, so the service shows
+    // "serving" without a 20 s lag after unlock.
+  }, [backgroundServing, encryptionKey, bunkerServePubkeysCsv, bunkerServeRelayUrl, bunkerServeStatus.phase]);
 
   // Native: on app resume, kick the serve socket if it isn't open — Android
   // can kill a socket without delivering onclose to the WebView.
@@ -4706,7 +5379,7 @@ export function App() {
   // simpler — no carousel context, no consumer hint, just a single page.
   useEffect(() => {
     if (!pendingAddDependantRequest) return;
-    if (page === 'approve-add-dependant') return; // already there
+    if (page === 'approve-add-dependant' && addDependantRequestAllowed(preferences.signingMode)) return; // already there
     if (!encryptionKey) {
       // No identity / not unlocked yet. If auth is set up, prompt the user.
       // Otherwise wait — the !identity onboarding branch will eventually
@@ -4723,8 +5396,16 @@ export function App() {
       });
       return;
     }
+    // A41: a child's phone never becomes a guardian. Unlocked ⇒ preferences
+    // are loaded, so the signing mode is the real one here.
+    if (!addDependantRequestAllowed(preferences.signingMode)) {
+      setAddDependantRefused(pendingAddDependantRequest);
+      setPendingAddDependantRequest(null);
+      if (page === 'approve-add-dependant') navigateReplace('home');
+      return;
+    }
     navigateReplace('approve-add-dependant');
-  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace]);
+  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
@@ -4958,6 +5639,8 @@ export function App() {
       existingEventId?: string;
       existingCreatedAt?: number;
       existingRelay?: string;
+      existingBase?: import('./types').PublicProfileBase;
+      existingContentHash?: string;
     },
   ) => {
     const key = generateEncryptionKey();
@@ -5098,6 +5781,101 @@ export function App() {
     setPairedChildBumpCounter(n => n + 1);
   }, [encryptionKey, identity, bunkerBackend]);
 
+  /**
+   * Child-direct Heartwood pairing, child side (spec §4 steps 2 and 5; A2,
+   * A3, A23). Runs the whole pairing — a FRESH client keypair every attempt,
+   * nostrconnect on the Heartwood relays, request on the rail relay, check
+   * words, guardian reply, handshake pinned to the offered persona — and
+   * persists only on success. The handshake backend is torn down afterwards;
+   * the paired-child signer effect reconnects from the stored secret-free
+   * `bunker://<persona>` and starts the router probe as usual.
+   *
+   * `repair` updates the existing install in place (same dependant, new
+   * client keypair and slot); otherwise a fresh stub identity is written and
+   * SetupAuth follows.
+   */
+  const handlePairChildDirect = useCallback(async (offer: ChildPairOffer, ctl: DirectPairControl, repair: boolean) => {
+    if (repair) {
+      if (!encryptionKey || !identity) throw new Error('Please unlock first.');
+      if (offer.dependant !== identity.id.toLowerCase()) throw new Error('This code is for a different account.');
+    }
+    const result = await runChildDirectPairing(offer, {
+      publish: (ev, relays) => publishEvent(ev, { relays }),
+      subscribe: (filters, relays, onEvent) => subscribeEvents(filters, relays, onEvent),
+      handshake: async (clientPriv, ncUri, expected, timeoutMs, signal) => {
+        const b = new BunkerSigningBackend(clientPriv);
+        try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
+        finally { b.destroy(); }
+      },
+      nowS: () => Math.floor(Date.now() / 1000),
+    }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal });
+
+    const now = Math.floor(Date.now() / 1000);
+    const personaName = result.personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
+    const record = {
+      bunkerUri: result.bunkerUri,
+      clientKeypair: result.clientKeypair,
+      dependantPubkey: offer.dependant,
+      dependantName: offer.name,
+      pairedAt: now,
+      guardianPubkey: offer.guardian,
+      hasPaired: true,
+      mode: 'heartwood-direct' as const,
+      railPubkey: offer.rail,
+      personaPubkey: offer.persona,
+      hwRelays: offer.hwRelays,
+      railRelay: offer.relay,
+      personas: result.personas,
+    };
+
+    if (repair && encryptionKey && identity) {
+      await saveIdentityEncrypted({
+        ...identity,
+        persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
+        // A50: a stale stub that put the bound persona in the NP slot is cleared.
+        ...(identity.naturalPerson.publicKey.toLowerCase() === offer.persona
+          ? { naturalPerson: { ...identity.naturalPerson, publicKey: '' }, naturalPersonActive: false } : {}),
+        primaryKeypair: 'persona',
+      }, encryptionKey);
+      // A27: retire the old pairing's router and backends BEFORE the new
+      // record is used — bump the generation so an in-flight probe for the
+      // old client cannot install itself afterwards.
+      bunkerRouterGenRef.current++;
+      setBunkerRouter((prev) => { prev?.destroy(); return null; });
+      setRouterProbeState(null);
+      if (bunkerBackend) {
+        bunkerBackend.destroy();
+        setBunkerBackend(null);
+      }
+      setSignerStatus(null);
+      await savePairedChild(record, encryptionKey);
+      await savePreferences(childDirectRelayPreferences(await getPreferences(), offer.relay)); // A56
+      await reloadPreferences();
+      await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
+      await setBackgroundBunkerEnabled(true).catch(() => { /* the toggle stays available */ });
+      await reloadIdentity();
+      setPairedChildBumpCounter(n => n + 1);
+      return;
+    }
+
+    const key = generateEncryptionKey();
+    // A50: the stub never puts the bound persona in the real-identity slot.
+    const identityRecord = childDirectStubIdentity(offer, result.personas, now);
+    await saveIdentityEncrypted(identityRecord, key);
+    await savePreferences({
+      // A56: every guardian→child rail is read on the offer's relay.
+      ...childDirectRelayPreferences(await getPreferences(), offer.relay),
+      activeAccountId: offer.dependant,
+      signingMode: 'paired-child',
+      // §8: the child's bunker keeps its games signed in with the screen off
+      // — on by default after a direct pairing (APK; ignored on the web).
+      backgroundBunkerEnabled: true,
+    });
+    await reloadPreferences();
+    await savePairedChild(record, key);
+    setPendingEncryptionKey(key);
+  }, [encryptionKey, identity, bunkerBackend, reloadIdentity, reloadPreferences, setBackgroundBunkerEnabled]);
+
   const handleDeleteIdentity = useCallback(async () => {
     // Proof-of-presence gate: the most destructive action in the app must cost
     // an unlock. Falls through only if no PIN/biometric was ever set up.
@@ -5122,7 +5900,9 @@ export function App() {
     // timeout / reject). Without this the relay would keep the kind-0
     // forever after local wipe, leaving the user's public profile online
     // with no way for them to reach it.
-    if (identity) {
+    // A42: a direct child signs nothing here — its slots live on the family
+    // Heartwood behind the gate, and the guardian manages their profiles.
+    if (identity && !childDirect) {
       const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
       const retractions: Array<Promise<unknown>> = [];
 
@@ -5188,7 +5968,7 @@ export function App() {
     clearAuthData();
     setEncryptionKey(null);
     window.location.reload();
-  }, [requestFreshAuth, identity, dependants, preferences.relayUrl, bunkerRouter, tombstoneGrantsFor]);
+  }, [requestFreshAuth, identity, dependants, preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, childDirect]);
 
   const handleConnectSigner = useCallback(async (bunkerUri: string) => {
     if (!encryptionKey) return;
@@ -5411,6 +6191,19 @@ export function App() {
     if (result.state === 'cancelled') return 'Backup key change interrupted. Check its status after unlocking.';
     return 'The key change is unfinished. Existing backups are retained. Use Resume key change to try again; a signed handover may also finish during sync.';
   };
+  // Persist resolved Heartwood vault pubkeys across unlocks (vault-pubkey-cache.ts):
+  // one store per unlock key, detached on lock. Bunker mode only — no other
+  // backend resolves vault keys on a device.
+  useEffect(() => {
+    if (!bunkerBackend) return;
+    bunkerBackend.setVaultPubkeyStore(encryptionKey && preferences.signingMode === 'bunker'
+      ? createVaultPubkeyStore(encryptionKey) : null);
+    return () => bunkerBackend.setVaultPubkeyStore(null);
+  }, [bunkerBackend, encryptionKey, preferences.signingMode]);
+  // Bumped by the "Approve on Heartwood" line: one explicit re-run after the
+  // device refused (usePrivateVaults stops retrying on its own).
+  const [privateVaultApproveToken, setPrivateVaultApproveToken] = useState(0);
+  const [privateVaultApprovalDismissed, setPrivateVaultApprovalDismissed] = useState(false);
   usePrivateVaults({
     sessionKey: identity && encryptionKey ? privateVaultSession : null,
     ownerPubkey: identity?.naturalPerson.publicKey ?? null,
@@ -5427,6 +6220,12 @@ export function App() {
       identity ? profilesChangeWire(identity) : null,
       dependants.map(dependantChangeWire), credentials?.map(c => c.id), grantsForSync,
       portableSettingsValues(preferences), [...childSettingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)]),
+    approveToken: privateVaultApproveToken,
+    // A sign-in gets the Heartwood first: while one is on screen or being
+    // signed, no new vault request goes to the device (its cards would queue
+    // ahead of, or beside, the sign-in's own). Bunker mode only — local-key
+    // vault work never touches a device.
+    paused: preferences.signingMode === 'bunker' && (pendingAuthRequest !== null || authApprovalInFlightKey !== null),
     relays: syncRelays,
     jobs: isCurrent => privateVaultJobs({ identity: identity!, encryptionKey: encryptionKey!,
       deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent }),
@@ -5443,6 +6242,7 @@ export function App() {
     if (!encryptionKey) {
       setPersonasSkippedDismissed(false);
       setRestoreNoBackupDismissed(false);
+      setPrivateVaultApprovalDismissed(false);
       restoredThisSessionRef.current = false;
       // M5: the family-contacts Tier-1 gate is per-unlock, not per-session —
       // a lock must force the next visit back through requestAuth.
@@ -5668,6 +6468,8 @@ export function App() {
 
     // Delete bunker secret
     await deleteBunkerSecret();
+    // Vault pubkeys resolved on the device we just walked away from.
+    try { await deleteHeartwoodVaultPubkeys(); } catch { /* a stale row only ever misses under another master */ }
 
     // The operator key manages the device we just walked away from — drop
     // it too (stops the kind-24134 client and deletes the encrypted row).
@@ -5748,12 +6550,50 @@ export function App() {
     retractions.push(...await tombstoneGrantsFor((g) => g.directoryId === depDirectoryId, true));
     bumpContactsGrantSet();
 
+    // A60: its child rules are tombstoned, so the removal reaches the rules
+    // self-rail (and nothing is left to feed the ceiling or the rail).
+    if (encryptionKey) {
+      try {
+        const dead = tombstonesForRemovedDependant(await listChildRules(dep.id, encryptionKey), dep.id, Date.now());
+        for (const r of dead) await saveChildRule(r, encryptionKey);
+        if (dead.length > 0) void reloadChildRules();
+      } catch { /* best effort — the rules of a removed dependant are inert */ }
+    }
+
+    // A9: the child's own phone loses its Heartwood slot with the dependant —
+    // best effort, inside the same 5 s budget (§9.4 "The whole phone").
+    // A24: a revoke that fails (or cannot be tried without the operator key) is
+    // remembered and retried by the policy push; never swept by label.
+    const operatorClient = heartwoodOperator.client;
+    const cd = dep.childDevice;
+    if (cd?.mode === 'heartwood-direct') {
+      const key = encryptionKey;
+      const remember = async () => {
+        if (!key) return;
+        try {
+          await addPendingChildRevoke({ label: cd.slotLabel, slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint, dependantId: dep.id }, key);
+        } catch { /* nothing more we can do on this device */ }
+      };
+      // §9.4: the unpaired notice goes out before the revoke (best effort).
+      const railPriv = dep.bunkerEndpoint?.privateKey ?? '';
+      const noticeRelay = cd.railRelay ?? preferences.relayUrl ?? DEFAULT_RELAY_URL;
+      const notice = (async () => {
+        try {
+          if (/^[0-9a-f]{64}$/.test(railPriv) && /^[0-9a-f]{64}$/.test(cd.clientPubkey) && isValidRelayUrl(noticeRelay)) {
+            await publishEvent(buildUnpairedNotice(railPriv, cd.clientPubkey), { relays: [noticeRelay] });
+          }
+        } catch { /* the Heartwood's "unauthorised" still tells the phone */ }
+      })();
+      // A31: the revoke is a slot mutation — it waits its turn on the operator lock.
+      retractions.push(notice.then(() => (operatorClient ? withOperatorLock(operatorClient, () => revokeChildDeviceSlot(operatorClient, dep)).catch(remember) : remember())));
+    }
+
     if (retractions.length === 0) return;
     await Promise.race([
       Promise.allSettled(retractions),
       new Promise(resolve => setTimeout(resolve, 5_000)),
     ]).catch(() => { /* non-fatal */ });
-  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet]);
+  }, [preferences.relayUrl, bunkerRouter, tombstoneGrantsFor, bumpContactsGrantSet, heartwoodOperator.client, encryptionKey, reloadChildRules]);
 
   /**
    * Phase 2F shared publish helper. Resolves the per-slot signing backend
@@ -5772,6 +6612,8 @@ export function App() {
     opts?: { displayNameOverride?: string },
   ): Promise<{ ok: boolean; message?: string }> => {
     if (!identity) return { ok: false, message: 'No identity loaded.' };
+    // A42: never from a direct child's phone.
+    if (childDirect) return { ok: false, message: CHILD_SIDE_COPY.guardianManages };
     const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
 
 	    // Resolve the slot config + state + signing key.
@@ -5789,6 +6631,7 @@ export function App() {
           lud16?: string;
           website?: string;
 	          publicProfile?: import('./types').PersonaPublicProfile;
+	          publicProfileBase?: import('./types').PublicProfileBase;
 	        }
 	      | undefined;
 	    const resolveOwnerSlot = (source: SignetIdentity) => {
@@ -5882,17 +6725,21 @@ export function App() {
         backend,
         relayUrl,
         priorHash,
+        // Lossless publish: with a stored base the publisher looks up the
+        // relay's current kind-0 and three-way merges onto it; without one it
+        // is the plain card build, as before.
+        { storedBase: slot.publicProfileBase, lookupRelays: syncRelays.read },
       );
     } finally {
       if (owned) backend.destroy();
     }
     if (!result.ok) return { ok: false, message: result.message };
 
-    // Compute the hash of the content we just emitted so the next publish
-    // can short-circuit cleanly when nothing changed. Re-derives from the
-    // same `config` the publisher consumed so the candidate-hash on the
-    // next publish is comparing apples to apples.
-    const publishedContentHash = contentHashFor(config, fallbackDisplayName);
+    // The hash of what was ACTUALLY sent (after a merge it is not the plain
+    // card build) so the next publish can short-circuit when nothing changed.
+    // The §5.3.3 "no changes" short-circuit returns no content: the stored
+    // hash and base are still the truth then.
+    const publishedContentHash = result.contentHash ?? priorHash;
 
     const newState: import('./types').PersonaPublicProfile = {
       enabled: true,
@@ -5901,17 +6748,52 @@ export function App() {
       lastPublishedRelay: result.relayUrl,
       lastPublishedContentHash: publishedContentHash,
     };
+
+    // The base the NEXT publish compares against is the event just published,
+    // written in the same atomic save as the state. `null` clears a base that
+    // is too big to store (the next publish is then the plain card build).
+    // Absent (the "no changes" short-circuit) leaves the stored base alone.
+    let newBase: import('./types').PublicProfileBase | null | undefined;
+    if (result.content !== undefined) {
+      newBase = toPublicProfileBase({
+        id: result.eventId,
+        created_at: result.createdAt,
+        content: result.content,
+        tags: result.tags ?? [],
+      }) ?? null;
+    }
+
+    // After a three-way merge the published kind-0 can carry values the card
+    // never had (an edit made on another client, kept because Signet did not
+    // touch that field). Bring the card in line with what is now public, or
+    // the next publish would read those fields as "edited in Signet" and
+    // overwrite them with the stale card value.
+    let configToSave = config;
+    let nameFromRelay: string | undefined;
+    if (result.merged && result.content !== undefined) {
+      // Additive only (see `adoptPublishedIntoCard`): a key the relay content
+      // lacks never clears a card field. The natural-person legal name is
+      // never taken from the relay.
+      const adopted = adoptPublishedIntoCard(config, result.content, { adoptName: slotTarget !== 'natural-person' });
+      configToSave = adopted.config;
+      nameFromRelay = adopted.name;
+    }
+
     // Pass the full slot config so the persisted slot fields align with the
     // config we just emitted. Earlier revisions passed `config: undefined`,
     // which the hook interprets as "clear all 8 slot config fields" — that
     // wiped about/picture/banner/etc. on every publish.
     if (depPubkey) {
-      await setDependantPersonaPublicProfile(depPubkey, slotTarget, config, newState);
+      await setDependantPersonaPublicProfile(depPubkey, slotTarget, configToSave, newState, newBase);
     } else {
-      await setPersonaPublicProfile(slotTarget, config, newState);
+      await setPersonaPublicProfile(slotTarget, configToSave, newState, newBase);
+      // Same reasoning for the name: if the merge kept a name changed
+      // elsewhere, the card follows it. Owner slots only — a dependant's
+      // name is the guardian's to set.
+      if (nameFromRelay) await updateDisplayName(slotTarget, nameFromRelay);
     }
     return { ok: true };
-	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState]);
+	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect]);
 
   /**
    * Phase 2F shared retract helper. Mirror of `publishPersonaProfile`:
@@ -5930,6 +6812,7 @@ export function App() {
     depPubkey: string | undefined,
   ): Promise<void> => {
     if (!identity) return;
+    if (childDirect) return; // A42
     let slot:
       | { publicKey: string; privateKey: string; publicProfile?: import('./types').PersonaPublicProfile }
       | undefined;
@@ -5979,7 +6862,7 @@ export function App() {
     } else {
       await clearPersonaPublicProfile(slotTarget);
     }
-  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter]);
+  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter, childDirect]);
 
   const handleRetryConnect = useCallback(async () => {
     if (!encryptionKey) return;
@@ -6006,13 +6889,15 @@ export function App() {
         setSignerStatus(null);
         return;
       }
+      const expectedSigner = pairedChildSignerPubkey(record);
+      if (!expectedSigner) { setSignerStatus('unavailable'); return; }
       if (bunkerBackend) bunkerBackend.destroy();
       const bunker = new BunkerSigningBackend(record.clientKeypair.privateKey);
       setBunkerBackend(bunker);
       try {
         if (!record.hasPaired) {
           await bunker.connect(record.bunkerUri, 30_000);
-          if (bunker.activePublicKeyHex.toLowerCase() !== record.dependantPubkey.toLowerCase()) {
+          if (bunker.activePublicKeyHex.toLowerCase() !== expectedSigner.toLowerCase()) {
             bunker.destroy();
             setSignerStatus('unavailable');
             return;
@@ -6020,9 +6905,12 @@ export function App() {
           await markPairedChildConnected(dependantPubkey, encryptionKey).catch(() => { /* retry next unlock */ });
           setSignerStatus('connected');
         } else {
-          await bunker.reconnect(record.bunkerUri, 30_000, record.dependantPubkey);
+          await bunker.reconnect(record.bunkerUri, 30_000, expectedSigner);
           setSignerStatus('connected');
         }
+        // Direct mode needs the per-persona router (identity ceremony); the
+        // legacy phone pairing keeps its existing retry behaviour.
+        if (record.mode === 'heartwood-direct') startRouterProbe(bunker, record.clientKeypair.privateKey, true);
       } catch {
         setSignerStatus('unavailable');
       }
@@ -6332,6 +7220,64 @@ export function App() {
       }
     }
 
+    // A40: a direct-paired child answers from the persona's LOCAL transport
+    // key; the app is then served by that persona's existing gated route.
+    // Nothing here touches the Heartwood router, and no ungated route is
+    // installed.
+    if (childDirect) {
+      const route = sel.source === 'guardian'
+        ? childConnectRoute(childBunkerRoutesRef.current, resolveSelectedPubkey(sel, identity, dependants))
+        : null;
+      if (!route?.signingBackend) throw new Error(CHILD_SIDE_COPY.connectNotServed);
+      const persona = route.signingBackend.activePublicKeyHex.toLowerCase();
+      const relayCandidates = (connectRequest.relayUrls?.length ? connectRequest.relayUrls : [connectRequest.relayUrl])
+        .filter((relay, idx, arr) => relay.length > 0 && arr.indexOf(relay) === idx);
+      const delivery = await deliverChildNostrConnect({
+        route,
+        relayCandidates,
+        stillOpen: connectStillOpen,
+        claim: () => connectStillPending() && connectSettlementRef.current.claimDelivery(connectKey),
+        unclaim: () => connectSettlementRef.current.unclaimDelivery(connectKey),
+        finishDelivery: () => connectSettlementRef.current.finishDelivery(connectKey),
+        arm: (routePubkey, relayUrl) => armNostrConnectServe(routePubkey, relayUrl,
+          relayCandidates.length > 1 ? NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS : NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS),
+        send: (backend, relayUrl, beforePublish) => sendConnectResponse(connectRequest, backend, relayUrl, async () => {
+          if (!beforePublish()) throw new ConnectWithdrawnError();
+        }),
+        onConnected: () => {
+          const now = Math.floor(Date.now() / 1000);
+          childGateRef.current.noteConnectedApp({
+            appId: connectRequest.clientPubkey.toLowerCase(), kind: 'nip46',
+            label: connectRequest.appName || `App ${connectRequest.clientPubkey.slice(0, 8)}`,
+            ...(connectRequest.appUrl ? { url: connectRequest.appUrl } : {}), persona, firstSeen: now, lastUsed: now,
+          });
+        },
+      });
+      if (delivery.status === 'withdrawn' || delivery.status === 'cancelled') return;
+      if (delivery.status === 'failed') {
+        const attempts = delivery.failures.length > 0 ? delivery.failures.join(' | ') : 'no valid relay candidates';
+        throw new Error(`Could not complete NostrConnect pairing. Tried ${delivery.failures.length} relay${delivery.failures.length === 1 ? '' : 's'}: ${attempts}`);
+      }
+      const callback = pendingConnectCallback;
+      setTimeout(() => {
+        if (pendingConnectRequestRef.current !== connectRequest) return;
+        const cameByIntent = connectCameByIntentRef.current;
+        connectCameByIntentRef.current = false;
+        setPendingConnectRequest(null);
+        setPendingConnectSelection(null);
+        setPendingConnectCallback(null);
+        alignCarouselToApprovedSelection(sel);
+        if (cameByIntent) {
+          navigateReplace('home');
+          void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
+          return;
+        }
+        if (callback) { window.location.href = buildCallbackRedirect(callback, 'approved'); return; }
+        navigateReplace('home');
+      }, 1500);
+      return;
+    }
+
     let selectedBackend: SigningBackend;
     let tempBackend: LocalSigningBackend | null = null;
     let tempBackendRetainedForRoute = false;
@@ -6536,7 +7482,7 @@ export function App() {
     } finally {
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
     }
-  }, [pendingConnectRequest, pendingConnectCallback, identity, dependants, activeDependant, backends, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, signerStatus, navigateReplace, requestFreshAuth, requestAuth, encryptionKey, alignCarouselToApprovedSelection, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, routedApprovalUnavailableMessage, acquireApprovalRoute, clearNostrConnectTransientRouteByToken, setPendingConnectRequest]);
+  }, [childDirect, pendingConnectRequest, pendingConnectCallback, identity, dependants, activeDependant, backends, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, signerStatus, navigateReplace, requestFreshAuth, requestAuth, encryptionKey, alignCarouselToApprovedSelection, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, routedApprovalUnavailableMessage, acquireApprovalRoute, clearNostrConnectTransientRouteByToken, setPendingConnectRequest]);
 
   // One answer per connect request, as for sign-in: starts the in-flight
   // approval synchronously, dismisses a request already answered, and reopens
@@ -6948,6 +7894,26 @@ export function App() {
       }
     }
 
+    // A direct-paired child: Sign in with Signet goes through the child's gate
+    // (target site:<origin>, spec §8.1). The wait for a guardian answer shows
+    // as the "Asking your guardian…" panel on the approval screen.
+    if (childDirect && selection.source === 'guardian') {
+      const inner = selectedBackend as DecryptingSigningBackend;
+      const persona = inner.activePublicKeyHex;
+      const origin = request.origin;
+      let siteLabel = urlAuthSiteName;
+      if (!siteLabel) { try { siteLabel = new URL(origin).hostname; } catch { siteLabel = origin.slice(0, 64); } }
+      const label = siteLabel;
+      selectedBackend = childSignInBackend({
+        inner, origin, siteLabel: label,
+        authorise: (req) => childGateRef.current.authorise(req),
+        touch: (appId) => {
+          const now = Math.floor(Date.now() / 1000);
+          childGateRef.current.noteConnectedApp({ appId, kind: 'site', label, url: origin, persona, firstSeen: now, lastUsed: now });
+        },
+      });
+    }
+
     try {
       // The resolution above may have awaited an unlock or a reconnect.
       assertApprovalStillPending(request);
@@ -7043,10 +8009,12 @@ export function App() {
         // Pubkey of a transient serving route this approval installed, so a
         // delivery lost to a Deny can tear it down again.
         let installedRouteToken: number | null = null;
-        const remoteBunkerUri = await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+        // A44: a direct child hands no bunker (nothing would serve it).
+        const remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         // Denied/withdrawn while signing: arm nothing, deliver nothing.
         if (!authDeliveryStillOpen(request)) return;
-        if (remoteBunkerUri) {
+        const handoff = signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: bunkerServerEnabled });
+        if (handoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
           // signer — no dependence on this app (a phone) staying open, which is
@@ -7054,8 +8022,8 @@ export function App() {
           // because the bunker gates every signature with a per-sign approval on
           // the device: the consumer can request a signature but cannot produce
           // one without the user physically approving it on the bunker.
-          bunkerUri = remoteBunkerUri;
-        } else if (bunkerServerEnabled) {
+          bunkerUri = handoff.uri;
+        } else if (handoff.kind === 'in-page') {
           // A handoff must point to a live listener for the approved persona.
           const routeBackend = requireNostrConnectRouteBackend(selectedBackend);
           tempBackendRetainedForRoute = tempBackend === routeBackend;
@@ -7150,11 +8118,20 @@ export function App() {
           ? [relayUrl, userRelay]
           : [relayUrl];
 
+        // The gift-wrap is built ONCE and the same event goes to every target
+        // relay, and to every retry: the seal is a NIP-44 encrypt plus a
+        // kind-13 sign, each a device round trip (and possibly a card) on a
+        // Heartwood. Only a wrap that failed is attempted again on retry.
+        let wrappedResponse: import('signet-protocol').NostrEvent | null = null;
+
         /** Publish (or re-publish on retry) and update ack state accordingly. */
         const doPublish = async () => {
-          const results = await Promise.all(
-            targetRelays.map(url => publishAuthResponseToRelay(capturedResponse, url, capturedBackend, sessionPubkey)),
-          );
+          if (!wrappedResponse) {
+            wrappedResponse = await wrapAuthResponse(capturedResponse, capturedBackend, sessionPubkey);
+          }
+          const results = wrappedResponse
+            ? await publishWrappedToRelays(wrappedResponse, targetRelays)
+            : targetRelays.map(() => false);
           // Consumer-relay acceptance is the only outcome that delivers the
           // response to the consumer's listener; see comment block above.
           const ok = results[0] === true;
@@ -7254,8 +8231,10 @@ export function App() {
         // Absent that, the consumer gets the plain auth-only EphemeralSigner
         // callback, same as before redirect-bunker shipped.
         let bunkerUri: string | undefined;
-        const remoteBunkerUri = await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
-        if (remoteBunkerUri) {
+        // A44: never on a direct child.
+        const remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+        const sameTabHandoff = signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: false });
+        if (sameTabHandoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
           // signer instead of through this app's NIP-46 server. Safe because the
@@ -7397,7 +8376,7 @@ export function App() {
       // The temporary serving route owns its backend until expiry or lock.
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
     }
-  }, [pendingAuthRequest, identity, dependants, activeDependant, authorizeSite, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
+  }, [pendingAuthRequest, identity, dependants, activeDependant, childDirect, authorizeSite, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
 
   // One answer per request: starts the in-flight approval synchronously so a
   // Deny/Back tapped while signing is a no-op, refuses a request that has
@@ -7525,6 +8504,7 @@ export function App() {
   ): Promise<void> => {
     const req = pendingAddDependantRequest;
     if (!req) throw new Error('No pending add-dependant request');
+    if (!addDependantRequestAllowed(preferences.signingMode)) throw new Error(CHILD_SIDE_COPY.addDependantRefused);
     // Encryption-key absence means the app got into an inconsistent state
     // (the page should only render when a key is present). Surface as an
     // in-app error rather than redirect — leaking state via a `create_failed`
@@ -7638,6 +8618,7 @@ export function App() {
     }
   }, [
     pendingAddDependantRequest,
+    preferences.signingMode,
     encryptionKey,
     addDependant,
     dependantDeviceDerive,
@@ -7782,6 +8763,11 @@ export function App() {
         // D6: a paired-child install offers "Ask {guardian} to connect"
         // instead of connecting directly — see the navigation effect below.
         setPendingContactInvite(JSON.stringify(action.invite));
+        {
+          const scanRow = carousel.rows[carousel.row];
+          setPendingInviteSender(scanRow && (scanRow.type === 'persona' || scanRow.type === 'extra-persona' || scanRow.type === 'natural-person')
+            ? carousel.activeIdentity.publicKey : undefined);
+        }
         break;
       case 'verify':
         setPendingVerifyRequest(action.request);
@@ -7819,7 +8805,7 @@ export function App() {
         // publishes no projections and accepts no proposals, so approving one
         // would mint a grant that can never do anything. M7: fail closed WITH
         // a reason rather than silently doing nothing.
-        if (isPairedChild) { setContactsGrantPairedChildNotice(true); break; }
+        if (isPairedChild) { setContactsGrantPairedChildRequest(action.request); break; }
         setPendingContactsGrantV2(action.request);
         navigateTo('contacts-grant-approve');
         break;
@@ -7837,7 +8823,7 @@ export function App() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, resolveSigningSelection, preferences.signingMode, isPairedChild]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;
@@ -8177,8 +9163,8 @@ export function App() {
   const handleNativeUrl = useCallback((url: string) => {
     if (!url || lastNativeUrlRef.current === url) return;
     lastNativeUrlRef.current = url;
-    const contactInvite = parseContactInviteLink(url);
-    if (contactInvite) { setPendingContactInvite(JSON.stringify(contactInvite)); return; }
+    const contactInvite = contactInviteFromNativeUrl(url);
+    if (contactInvite) { setPendingContactInvite(contactInvite); setPendingInviteSender(undefined); return; }
     const action = routeNativeUrl(url);
     switch (action.type) {
       case 'companion-pair':
@@ -8207,6 +9193,12 @@ export function App() {
         return;
       }
       case 'none':
+        // An App Link that carries nothing actionable says so, rather than
+        // opening the app as if nothing had happened. Reached only for a URL
+        // the OS (or `getLaunchUrl`) actually delivered, and only after the
+        // exact-string dedupe above, so the replayed cold-start event cannot
+        // double-fire it; a plain launcher start never calls this at all.
+        if (isUnactionableMysignetLink(url, action)) setNativeLinkNothingToOpen(true);
         return;
     }
   }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeNostrConnectUrl, isPairedChild]);
@@ -8276,7 +9268,7 @@ export function App() {
     if (!heldContactsGrantV2) return;
     if (prefsLoading || dependantsLoading) return;
     setHeldContactsGrantV2(null);
-    if (isPairedChild) { setContactsGrantPairedChildNotice(true); return; }
+    if (isPairedChild) { setContactsGrantPairedChildRequest(heldContactsGrantV2); return; }
     setPendingContactsGrantV2(heldContactsGrantV2);
     navigateReplace('contacts-grant-approve');
   }, [heldContactsGrantV2, prefsLoading, dependantsLoading, isPairedChild, navigateReplace]);
@@ -8291,7 +9283,7 @@ export function App() {
   useEffect(() => {
     if (!pendingContactsGrantV2 || prefsLoading || !isPairedChild) return;
     setPendingContactsGrantV2(null);
-    setContactsGrantPairedChildNotice(true);
+    setContactsGrantPairedChildRequest(pendingContactsGrantV2);
   }, [pendingContactsGrantV2, prefsLoading, isPairedChild]);
 
   // Loading
@@ -8354,6 +9346,10 @@ export function App() {
         <PairChildOnboarding
           onConfirm={async (parsed, rawUri) => {
             await handlePairChild(parsed, rawUri);
+            setPairChildFlow(false);
+          }}
+          onStartDirect={async (offer, ctl) => {
+            await handlePairChildDirect(offer, ctl, false);
             setPairChildFlow(false);
           }}
           onCancel={() => setPairChildFlow(false)}
@@ -8507,6 +9503,17 @@ export function App() {
     </div>
   ) : null;
 
+  // The device refused a private-backup request (denied, card timed out or
+  // busy), so the vault jobs stopped retrying for this unlock rather than put
+  // the same cards back up. One quiet line; the button runs them once more.
+  const privateVaultApprovalBanner = (!isPairedChild && privateVaultSupported
+    && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed) ? (
+    <PrivateVaultApprovalBanner
+      onApprove={() => setPrivateVaultApproveToken(t => t + 1)}
+      onDismiss={() => setPrivateVaultApprovalDismissed(true)}
+    />
+  ) : null;
+
   // R6: the v2 contacts log has either outgrown what the rail can carry
   // ('too-large') or has a relay round trip stuck with no leg left that
   // could succeed ('stalled', Task 6 review ruling). Distinct from a missing
@@ -8574,10 +9581,32 @@ export function App() {
    * the person holding the phone has no way to learn that the guardian device
    * is the one that can do this.
    */
-  const contactsGrantPairedChildBanner = contactsGrantPairedChildNotice ? (
-    <div style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-      <span style={{ flex: 1 }}>{CONTACTS_GRANT_PAIRED_CHILD_COPY}</span>
-      <button onClick={() => setContactsGrantPairedChildNotice(false)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>
+  const addDependantRefusedBanner = addDependantRefused ? (
+    <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ flex: 1 }}>{CHILD_SIDE_COPY.addDependantRefused}</span>
+      <button
+        onClick={() => {
+          const req = addDependantRefused;
+          setAddDependantRefused(null);
+          const errUrl = buildAddDependantErrorUrl(req.callback, 'denied');
+          if (errUrl) window.location.href = errUrl;
+        }}
+        className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}
+      >
+        OK
+      </button>
+    </div>
+  ) : null;
+  const contactsGrantPairedChildBanner = contactsGrantPairedChildRequest ? (
+    <ContactsGrantChildCode
+      request={contactsGrantPairedChildRequest}
+      onDismiss={() => setContactsGrantPairedChildRequest(null)}
+    />
+  ) : null;
+  const nativeLinkNothingToOpenBanner = nativeLinkNothingToOpen ? (
+    <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+      <span>{NATIVE_LINK_NOTHING_TO_OPEN_COPY}</span>
+      <button onClick={() => setNativeLinkNothingToOpen(false)} className="btn btn-ghost" style={{ fontSize: 13, padding: '4px 12px' }}>
         {CONTACTS_GRANT_DISMISS_LABEL}
       </button>
     </div>
@@ -8626,24 +9655,42 @@ export function App() {
     health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
-  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner
-    || personasSkippedBanner || restoreNoBackupBanner) ? (
-    <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}
-      {personasSkippedBanner}{restoreNoBackupBanner}</>
+  // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
+  const childApprovalsBanner = (childDeviceLink.unpaired || childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
+    <>
+      {childDeviceLink.unpaired ? (
+        <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{CHILD_SIDE_COPY.unpaired}</span>
+          <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigateTo('paired-child-repair')}>{CHILD_SIDE_COPY.pairAgain}</button>
+        </div>
+      ) : null}
+      {childDirect && childTransportKeysUnreadable ? (
+        <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
+      ) : null}
+      {!childDeviceLink.unpaired && childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
+        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
+      ) : null}
+    </>
+  ) : null;
+  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
+    || contactsBackupTooLargeBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner
+    || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
+    <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}
+      {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</>
   ) : null;
 
   // On-demand auth prompt overlay — rendered on any page that triggers requestAuth
   const authOverlay = showAuthPrompt ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: Z.overlay, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={(e) => { if (e.target === e.currentTarget) handleAuthPromptCancel(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) handleAuthPromptDeclined(); }}
     >
       <div style={{ width: '100%', maxWidth: 400 }}>
         <AuthScreen
           onUnlock={handleAuthPromptUnlock}
-          onCancel={handleAuthPromptCancel}
+          onCancel={handleAuthPromptDeclined}
           purposeContext={authPromptContext}
         />
       </div>
@@ -8662,6 +9709,14 @@ export function App() {
           onApproveOnce={bunkerApproveOnce}
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
+        />
+      ) : sheetChildAsks.length > 0 && !showAuthPrompt ? (
+        // A dependant's own phone asking (child-direct, spec §7).
+        <ChildAskApprovalModal
+          asks={sheetChildAsks}
+          alwaysAvailableFor={childAskAlwaysAvailable}
+          onDecide={childAsks.decide}
+          onLater={putOffChildAsks}
         />
       ) : null);
 
@@ -8933,6 +9988,7 @@ export function App() {
             onPairDevice={() => navigateTo('pair-dependant-device')}
             onPairApp={() => navigateTo('pair-dependant-app')}
             onViewActivity={() => navigateTo('activity')}
+            onOpenPermissions={() => navigateTo('child-permissions')}
             appPairings={activeDependant.appBunkerEndpoint?.pairings ?? []}
             onRevokeAppPairing={async (clientPubkey) => {
               const key = encryptionKey || await requestAuth();
@@ -9038,6 +10094,7 @@ export function App() {
           navigateTo(target);
         }}
         showPairedChildSwitcher={preferences.signingMode === 'paired-child' && pairedChildMetas.length > 1}
+        showChildPermissions={childDirect}
         connectedSiteCount={authorizedSites.length}
         dependantsCount={dependants.length}
         companionGrantCount={companionGrantCount}
@@ -9191,7 +10248,17 @@ export function App() {
             if (!identity || !encryptionKey || !effectiveProBackend) return;
             await updateDisplayName('professional-persona', name);
             if (proPersonaPubkey) {
-              await publishProKind0(proPersonaPubkey, name, effectiveProBackend);
+              if (identity.professionalPersona?.publicProfile?.enabled === true) {
+                // Published through Signet: the lossless path (three-way merge,
+                // base updated). The name override is needed because `identity`
+                // in this closure predates the save.
+                const r = await publishPersonaProfile('professional-persona', undefined, { displayNameOverride: name });
+                if (!r.ok) throw new Error(r.message || 'Could not publish the name.');
+              } else {
+                // Not published through Signet: name only, no card fields, and
+                // neither the stored base nor the publication state is touched.
+                await publishProNameOnly(proPersonaPubkey, name, effectiveProBackend, syncRelays.read, preferences.relayUrl ?? DEFAULT_RELAY_URL);
+              }
             }
           }}
         />
@@ -9240,13 +10307,21 @@ export function App() {
           onUpdateName={async (target, name) => {
             const key = encryptionKey || await requestAuth();
             if (!key) throw new Error('Authentication required');
-            await updateDisplayName(target, name);
+            await updateDisplayName(target, name, undefined, key);
           }}
-          onImportNostrAccount={isPairedChild ? undefined : async (nsec, displayName) => {
+          onImportNostrAccount={isPairedChild ? undefined : async (nsec, displayName, match) => {
             const key = encryptionKey || await requestAuth();
             if (!key) throw new Error('Authentication required');
-            return addImportedPersona(nsec, displayName, key);
+            // "Match it in My Signet": the card, the state of the kind-0 that is
+            // ALREADY on the relay (nothing is published) and the device-local
+            // base the lossless publish merges against.
+            const seed = match ? buildMatchSeed(match, displayName) : undefined;
+            return addImportedPersona(nsec, displayName, key, seed ? {
+              publicProfileSeed: { config: seed.config, state: seed.state, base: seed.base },
+            } : undefined);
           }}
+          onLookupExistingProfile={isPairedChild ? undefined : (pubkey) => fetchExistingProfile(pubkey, syncRelays.read)}
+          followsHandlersFor={(pubkey, name) => followsHandlersFor(pubkey, pubkey, name)}
           startEditPersona={pendingPersonaFocus}
           onConsumeFocus={() => setPendingPersonaFocus(null)}
         />
@@ -9416,6 +10491,59 @@ export function App() {
     ));
   }
 
+  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
+  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
+  // revocation can't be blocked by an unreachable relay), then best-effort
+  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
+  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
+  // recipient who cached the old key can't follow the new pointer. Recipients
+  // who already fetched the blob keep it — no clawback, by design.
+  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
+    const key = encryptionKey || await requestAuth();
+    if (!key) throw new Error('Authentication required');
+
+    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
+    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
+    let slot: { publicKey: string; privateKey: string } | undefined;
+    if (depPubkey) {
+      const all = await loadFreshDependants(key);
+      const dep = all.find(d => d.id === depPubkey);
+      if (!dep) return;
+      slot = target === 'natural-person' ? dep.naturalPerson
+        : target === 'persona' ? dep.persona
+        : dep.extraPersonas?.find(e => e.publicKey === target);
+    } else {
+      if (!identity) return;
+      const decrypted = await loadIdentityDecrypted(identity.id, key);
+      if (!decrypted) return;
+      slot = target === 'natural-person' ? decrypted.naturalPerson
+        : target === 'persona' ? decrypted.persona
+        : decrypted.extraPersonas?.find(e => e.publicKey === target);
+    }
+    if (!slot) return;
+
+    // Clear FIRST — local revocation must not be blockable by relay state
+    // (or by the absence of a local/routed signing key).
+    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
+    else await clearPersonaContactAvatar(target);
+
+    // Best-effort retract of the published pointer. Router-sourced fallback
+    // is a SHARED, CACHED route — only a locally-constructed backend
+    // (ownedStop) may be destroy()'d below.
+    const ownedStop = !!slot.privateKey;
+    const stopBackend: DecryptingSigningBackend | null = ownedStop
+      ? new LocalSigningBackend(slot.privateKey)
+      // A42: never an ungated router route on a direct child.
+      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
+    if (stopBackend) {
+      try {
+        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
+      } finally {
+        if (ownedStop) stopBackend.destroy();
+      }
+    }
+  };
+
   if (page === 'persona-advanced' && identity && pendingPersonaAdvancedTarget) {
     const { slotTarget, depPubkey } = pendingPersonaAdvancedTarget;
     return renderSettingsPage('persona-advanced', 'Advanced', (
@@ -9446,6 +10574,48 @@ export function App() {
           // returns ok=true without a relay round-trip.
           return await publishPersonaProfile(slotTarget, depPubkey);
         }}
+        // "Check Nostr for an existing profile": the owner's own slots only —
+        // never a dependant's, never a paired-child install (A42 sibling), and
+        // never the natural-person slot (its legal name is never taken from a
+        // relay profile).
+        onCheckExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async () => {
+          const ownSlot = slotTarget === 'natural-person' ? identity.naturalPerson
+            : slotTarget === 'persona' ? identity.persona
+            : slotTarget === 'professional-persona' ? identity.professionalPersona
+            : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
+          if (!ownSlot) return null;
+          return fetchExistingProfile(ownSlot.publicKey, syncRelays.read);
+        }}
+        {...(() => {
+          if (depPubkey) return {};
+          const ownSlot = slotTarget === 'natural-person' ? identity.naturalPerson
+            : slotTarget === 'persona' ? identity.persona
+            : slotTarget === 'professional-persona' ? identity.professionalPersona
+            : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
+          if (!ownSlot) return {};
+          const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
+          if (handlers) return { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows };
+          const pending = followsPendingFor(slotTarget);
+          return pending ? { followsPending: pending } : {};
+        })()}
+        onMatchExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async (found) => {
+          // Writes card + state + base in one save and publishes nothing: the
+          // event is already on the relay. The profile's values replace the
+          // card's (the panel says so). The page is reachable while locked,
+          // so unlock on demand and hand the key through: this render's
+          // hooks still close over the null key.
+          const key = encryptionKey || await requestAuth();
+          if (!key) throw new Error('Authentication required');
+          const seed = buildMatchSeed(found, found.profile.displayName || '');
+          await setPersonaPublicProfile(slotTarget, seed.config, seed.state, seed.base ?? null, key);
+          if (seed.config.displayName) {
+            const current = slotTarget === 'natural-person' ? identity.naturalPerson.displayName
+              : slotTarget === 'persona' ? identity.persona.displayName
+              : slotTarget === 'professional-persona' ? identity.professionalPersona?.displayName
+              : identity.extraPersonas?.find(p => p.publicKey === slotTarget)?.displayName;
+            if (current !== seed.config.displayName) await updateDisplayName(slotTarget, seed.config.displayName, undefined, key);
+          }
+        }}
         onSwitchPrimary={async (target) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
@@ -9460,6 +10630,7 @@ export function App() {
         // the signer, and a dep slot never offers the guardian's words at all.
         onShowMnemonic={depPubkey || preferences.signingMode === 'bunker' ? undefined : () => navigateTo('settings-security')}
         mnemonicOnSigner={!depPubkey && preferences.signingMode === 'bunker'}
+        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
         onHidePersona={async (pubkey) => {
           // Soft-delete (preserves derivation slot). Distinct from delete.
           // Both branches set `ExtraPersona.hidden = true` — that's the
@@ -9490,6 +10661,8 @@ export function App() {
           } catch { /* §6.10 best-effort */ }
         }}
         onDeletePersona={async (pubkey) => {
+          // A42: a child's personas are the guardian's to remove.
+          if (childDirect) throw new Error(CHILD_SIDE_COPY.guardianManages);
           // §9 Q8: 5s race budget for retract-before-purge, then hard-delete.
           // Resolve the extra to check for a published profile we should
           // try to retract first.
@@ -10081,6 +11254,32 @@ export function App() {
     );
   }
 
+  // Scanned invite: choose the sending persona and send the request.
+  if (page === 'contact-invite-send' && pendingContactInvite && !isPairedChild) {
+    const invite = parseContactInviteLink(pendingContactInvite, Math.floor(Date.now() / 1000));
+    const finish = () => { setPendingContactInvite(undefined); setPendingInviteSender(undefined); navigateReplace('home'); };
+    const sendPersonas = contactsIdentityLists.map(l => ({ pubkey: l.ownerIdentityPubkey, label: l.label }));
+    const ownPubkeys = [...new Set([...sendPersonas.map(p => p.pubkey),
+      ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])];
+    return <Layout title="Send a contact request" showBack onBack={finish} {...guardianLayoutProps}>
+      {invite
+        ? <ContactInviteSend key={pendingContactInvite} invite={invite} personas={sendPersonas}
+          defaultPersona={pendingInviteSender && sendPersonas.some(p => p.pubkey === pendingInviteSender) ? pendingInviteSender : contactsWriteIdentity}
+          ownPubkeys={ownPubkeys}
+          onSend={async persona => {
+            setContactsIdentityChoice(persona);
+            const sentAt = Math.floor(Date.now() / 1000);
+            await ownerInviteService.request(persona, invite, sentAt);
+            await ownerInviteService.flush(sentAt);
+          }}
+          onDone={finish} onCancel={finish} />
+        : <div style={{ padding: 16 }}>
+          <p role="alert">This invite is invalid or has expired.</p>
+          <button className="btn btn-secondary" onClick={finish}>Back</button>
+        </div>}
+    </Layout>;
+  }
+
   // Contacts list
   if (page === 'contact-invites' && contactsScope.directoryId && !isPairedChild) {
     return <Layout title="Contact invites" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
@@ -10152,7 +11351,31 @@ export function App() {
         </section>}
         {isPairedChild && <h2>Contacts saved on this device</h2>}
         <ContactsRolodex
+          {...(() => {
+            // Owner scope only; never a dependant scope or a paired-child install.
+            if (!identity || isPairedChild || childDirect || contactsScope.directoryId !== 'owner' || !contactsWriteIdentity) return {};
+            const pk = contactsWriteIdentity;
+            const slot = pk === identity.naturalPerson.publicKey ? { target: 'natural-person', s: identity.naturalPerson }
+              : pk === identity.persona.publicKey ? { target: 'persona', s: identity.persona }
+              : pk === identity.professionalPersona?.publicKey ? { target: 'professional-persona', s: identity.professionalPersona }
+              : (() => { const x = identity.extraPersonas?.find(e => e.publicKey === pk); return x ? { target: pk, s: x } : undefined; })();
+            if (!slot) return {};
+            const name = slot.s.displayName || 'this persona';
+            const handlers = followsHandlersFor(slot.target, pk, name);
+            // Only the loading wait is shown; "open from your own card" never is.
+            const pending = followsPendingFor(slot.target);
+            const loadingReason = pending && contactsV2.loading ? pending : undefined;
+            if (!handlers && !loadingReason) return {};
+            return {
+              onImportFollows: handlers?.onImportFollows,
+              onUnlinkFollows: handlers?.onUnlinkFollows,
+              followsPersonaName: name,
+              followsLast: slot.s.followsImport,
+              followsDisabledReason: loadingReason,
+            };
+          })()}
           initialSearch={contactCardSearch}
+          initialFollowsOpen={contactsOpenFollows}
           contacts={contactsListIdentity === 'all' ? contactsV2.effective : contactsV2.effective.filter(c => contactBelongsToList(c, contactsListIdentity))}
           lists={contactsIdentityLists}
           pendingLinks={contactsV2.records.reduce((n, r) => n + (r.appIntroductions?.filter(i => i.status === 'pending').length ?? 0), 0)}
@@ -10432,6 +11655,7 @@ export function App() {
       onDeny: handleDenyAuth,
       initialError: pickerInitialError ?? undefined,
       isPairedChild,
+      childDirect,
       // A paired-child install cannot activate the owner's real identity.
       onActivateRealIdentity: preferences.signingMode === 'paired-child' ? undefined : () => {
         setActivationReturnTo('approve-auth');
@@ -10464,7 +11688,7 @@ export function App() {
   }
 
   // Approve third-party Add Dependant
-  if (page === 'approve-add-dependant' && pendingAddDependantRequest && identity) {
+  if (page === 'approve-add-dependant' && pendingAddDependantRequest && identity && addDependantRequestAllowed(preferences.signingMode)) {
     const props = {
       request: pendingAddDependantRequest,
       canAutoPair: bunkerServerEnabled,
@@ -10906,6 +12130,37 @@ export function App() {
     );
   }
 
+  // The child-direct pairing hook's options (spec §4, §9.4): the pairing page
+  // and the Permissions page (Unpair) share them.
+  const childDirectPairingOpts = (): (Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void }) | undefined => (identity ? {
+    operator: heartwoodOperator.client,
+    operatorStatus: heartwoodOperator.status,
+    operatorStatusError: heartwoodOperator.statusError,
+    guardianNpPubkey: identity.naturalPerson.publicKey,
+    railRelay: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+    hwRelays: heartwoodOperator.credential?.relays ?? [],
+    encryptionKey,
+    grants: grantsForSync,
+    // Merge ONLY the pairing fields onto a fresh read, so a concurrent
+    // edit to the dependant is never overwritten by this snapshot.
+    onDependantUpdated: async (dep) => {
+      const key = encryptionKey || await requestAuth();
+      if (!key) throw new Error('Authentication required');
+      const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+      if (!fresh) throw new Error('Dependant not found');
+      await saveDependant({ ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice }, key);
+      await reloadDependants();
+    },
+    onRulesChanged: () => { void reloadChildRules(); },
+    readDependant: async (id) => {
+      const key = encryptionKey || await requestAuth();
+      if (!key) return null;
+      return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
+    },
+    clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
+    onOpenOperatorImport: () => navigateTo('settings-advanced'),
+  } : undefined);
+
   // Pair a device — guardian-side QR for phone-as-family-bunker
   if (page === 'pair-dependant-device' && activeDependant) {
     return (
@@ -10944,6 +12199,92 @@ export function App() {
           onOpenSecuritySettings={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-security'); }}
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
+          signingMode={preferences.signingMode}
+          direct={childDirectPairingOpts()}
+        />
+      </Layout>
+    );
+  }
+
+  // Permissions for a child's own phone paired straight to the Heartwood
+  // (spec §9.3, §9.4). Guardian: manage; the child: the same page, read-only.
+  if (page === 'child-permissions' && activeDependant && !isPairedChild && activeDependant.childDevice?.mode === 'heartwood-direct') {
+    const dep = activeDependant;
+    const pairingOpts = childDirectPairingOpts();
+    return (
+      <Layout title={CHILD_PERMISSIONS_COPY.title(dep.displayName)} showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
+        {authOverlay}{nip55Overlay}
+        {bunkerApprovalOverlay}
+        {topBanners}
+        {pairingOpts && (
+          <ChildPermissionsGuardianRoute
+            dependant={dep}
+            childRules={childRules}
+            approvedOnce={Object.entries(approvedOnceKinds ?? {}).filter(([k]) => k.toLowerCase() === dep.id.toLowerCase()).flatMap(([, v]) => v)}
+            relays={[preferences.relayUrl ?? DEFAULT_RELAY_URL]}
+            encryptionKey={encryptionKey}
+            pairing={pairingOpts}
+            history={childAsks.history}
+            onRevokeRule={async (rule) => {
+              const key = encryptionKey || await requestAuth();
+              if (!key) throw new Error('Authentication required');
+              // Tombstone → rules self-rail, rules publisher and policy push (ceiling recompile).
+              await tombstoneChildRule(rule.id, key, Date.now());
+              await reloadChildRules();
+            }}
+            onBlockApp={async (app) => {
+              const key = encryptionKey || await requestAuth();
+              if (!key) throw new Error('Authentication required');
+              // A7/A11: a `*`-scope deny rule for the app; `disconnectedApps` derives from it.
+              const out = blockAppRules(dep.id, app, await listChildRules(dep.id, key), Date.now());
+              if (!out) throw new Error('Cannot block this app');
+              for (const r of out) await saveChildRule(r, key);
+              await reloadChildRules();
+            }}
+            onRemovePersona={async (persona) => {
+              const c = heartwoodOperator.client;
+              const cd = dep.childDevice;
+              if (!c || !c.isOpen || !cd) throw new Error('Heartwood unreachable');
+              if (persona.toLowerCase() === cd.boundPersona.toLowerCase()) throw new Error('Unpair to remove this persona');
+              await withOperatorLock(c, () => mgmtRevokeClientIdentity(c, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint }, persona));
+              // A51: the phone stops offering it too — the rules payload's `personas` drops it.
+              const key = encryptionKey || await requestAuth();
+              if (!key) throw new Error('Authentication required');
+              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+              if (fresh?.childDevice) {
+                const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), persona.toLowerCase()])];
+                await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } }, key);
+                await reloadDependants();
+              }
+            }}
+            onOpenStage={() => {
+              setPendingPersonaAdvancedTarget({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id });
+              navigateTo('persona-advanced');
+            }}
+            onUnpaired={() => navigateBack()}
+          />
+        )}
+      </Layout>
+    );
+  }
+  if (page === 'child-permissions' && childDirect && identity) {
+    const payload = childDeviceLink.rules;
+    return (
+      <Layout title={CHILD_PERMISSIONS_COPY.titleChild} showBack onBack={() => navigateBack()}>
+        {authOverlay}{nip55Overlay}
+        {topBanners}
+        <ChildPermissions
+          viewer="child"
+          childName={identity.persona.displayName || identity.naturalPerson.displayName || ''}
+          personas={childAllowedInventory}
+          stage={payload?.stage ?? null}
+          paused={payload?.defaultSchedule?.paused === true}
+          rules={payload?.rules ?? []}
+          ceilingKinds={payload ? payload.ceilingKinds : null}
+          apps={childGate.connectedApps}
+          disconnectedApps={payload?.disconnectedApps ?? []}
+          childAsks={childGate.askHistory}
+          paired={!childDeviceLink.unpaired}
         />
       </Layout>
     );
@@ -11057,6 +12398,7 @@ export function App() {
           guardianPubkey={identity?.naturalPerson.publicKey ?? ''}
           guardianBackend={guardianAuditBackend}
           relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
+          encryptionKey={encryptionKey}
         />
       </Layout>
     );
@@ -11118,6 +12460,10 @@ export function App() {
             // bumped counter and reconnects via the new endpoint.
             navigateReplace('home');
           }}
+          onStartDirect={async (offer, ctl) => {
+            await handlePairChildDirect(offer, ctl, true);
+            navigateReplace('home');
+          }}
           onCancel={() => navigateBack()}
         />
       </Layout>
@@ -11167,6 +12513,8 @@ export function App() {
     plaintext?: Uint8Array;
     requireExisting: boolean;
   }): Promise<string | null> => {
+    // A42: a direct child publishes no avatar pointer (guardian-managed).
+    if (childDirect) return null;
     const key = encryptionKey || await requestAuth();
     if (!key) throw new Error('Authentication required');
 
@@ -11270,61 +12618,6 @@ export function App() {
     return contactKey;
   };
 
-  const handleEnableContactAvatarShare = (target: string, depPubkey?: string): Promise<string | null> =>
-    pushContactAvatar({ target, depPubkey, requireExisting: false });
-
-  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
-  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
-  // revocation can't be blocked by an unreachable relay), then best-effort
-  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
-  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
-  // recipient who cached the old key can't follow the new pointer. Recipients
-  // who already fetched the blob keep it — no clawback, by design.
-  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
-    const key = encryptionKey || await requestAuth();
-    if (!key) throw new Error('Authentication required');
-
-    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
-    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
-    let slot: { publicKey: string; privateKey: string } | undefined;
-    if (depPubkey) {
-      const all = await loadFreshDependants(key);
-      const dep = all.find(d => d.id === depPubkey);
-      if (!dep) return;
-      slot = target === 'natural-person' ? dep.naturalPerson
-        : target === 'persona' ? dep.persona
-        : dep.extraPersonas?.find(e => e.publicKey === target);
-    } else {
-      if (!identity) return;
-      const decrypted = await loadIdentityDecrypted(identity.id, key);
-      if (!decrypted) return;
-      slot = target === 'natural-person' ? decrypted.naturalPerson
-        : target === 'persona' ? decrypted.persona
-        : decrypted.extraPersonas?.find(e => e.publicKey === target);
-    }
-    if (!slot) return;
-
-    // Clear FIRST — local revocation must not be blockable by relay state
-    // (or by the absence of a local/routed signing key).
-    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
-    else await clearPersonaContactAvatar(target);
-
-    // Best-effort retract of the published pointer. Router-sourced fallback
-    // is a SHARED, CACHED route — only a locally-constructed backend
-    // (ownedStop) may be destroy()'d below.
-    const ownedStop = !!slot.privateKey;
-    const stopBackend: DecryptingSigningBackend | null = ownedStop
-      ? new LocalSigningBackend(slot.privateKey)
-      : (bunkerRouter?.backendFor(slot.publicKey) ?? null);
-    if (stopBackend) {
-      try {
-        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
-      } finally {
-        if (ownedStop) stopBackend.destroy();
-      }
-    }
-  };
-
   // Home (default) — card-swipe wallet carousel
   return (
     <>
@@ -11395,11 +12688,12 @@ export function App() {
           </div> : null;
         })}
       <Carousel
-        renderInviteCard={(_row, resolved, publicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
+        renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
-            name={resolved.displayName} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} publicCard={publicCard}
+            resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
+            locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
             onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
-          : publicCard}
+          : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           onSignIn={async (selection, request, valid) => {
             const key = encryptionKey, root = identity.naturalPerson.publicKey, mode = preferences.signingMode;
@@ -11410,7 +12704,7 @@ export function App() {
               signer: selected => createBotSigningBackend({ identityId: identity.id, ownerRoot: root, botPubkey: selected.botPubkey,
                 encryptionKey: key, mode: mode ?? 'local', isCurrent: current,
                 routed: target => mode === 'nip07' ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
-                  : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target) }) });
+                  : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) }) });
           }}
           onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); setActiveDependantId(null); navigateTo('bots'); }}
           onHide={async () => {
@@ -11426,6 +12720,7 @@ export function App() {
           name={resolved.displayName} available={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild) && !contactsV2.loading}
           contacts={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild)
             ? contactsV2.effective.filter(contact => contactBelongsToList(contact, resolved.publicKey)) : []}
+          followsAvailable={!resolved.isDependant && !isPairedChild && !childDirect && hasPublicNostrProfile(identity, resolved.publicKey)}
           onOpen={async (action, query) => {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
@@ -11433,6 +12728,7 @@ export function App() {
             setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
+            setContactsOpenFollows(action === 'follows');
             navigateTo(action === 'new' ? 'contact-new' : 'contacts');
           }} />}
         row={carousel.row}
@@ -11455,6 +12751,9 @@ export function App() {
           // 'transition-ceremony') read activeDependant synchronously on
           // render; React batches both state updates into the same flush.
           if (opts?.dependantId) setActiveDependantId(opts.dependantId);
+          // An owner slot's Advanced page must not inherit a dependant scope
+          // left over from an earlier visit (it hid the follows panel).
+          else if (p === 'persona-advanced' && opts?.slotTarget) setActiveDependantId(null);
           if (opts?.slotTarget) {
             setPendingPersonaAdvancedTarget({
               slotTarget: opts.slotTarget,
@@ -11547,7 +12846,7 @@ export function App() {
         onUpdateOwnPersonaName={async (target, name) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
-          await updateDisplayName(target, name);
+          await updateDisplayName(target, name, undefined, key);
         }}
         onSaveDepPersonaConfig={async (depPubkey, target, config) => {
           const dep = dependants.find(d => d.id === depPubkey);
@@ -11673,14 +12972,6 @@ export function App() {
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });
         }}
-        // Contact-share avatar ENABLE. Gated on the paired-child surface for
-        // the same reasons as the in-app avatar handlers above (local writes
-        // get clobbered by the next persona-inventory sync; Blossom NIP-98
-        // auth would pop an unsolicited sign request to the guardian's bunker).
-        onEnableContactAvatarShare={isPairedChild ? undefined : handleEnableContactAvatarShare}
-        // Contact-share avatar STOP (G1 coarse revocation). Gated on the
-        // paired-child surface for the same reasons as enable above.
-        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
       >
         {pendingAuthRequest && page === 'home' && identity && (() => {
           // Display from the scan-time selection snapshot, not the live carousel
@@ -11709,6 +13000,7 @@ export function App() {
               onApprove={handleApproveFromCarousel}
               onDeny={handleDenyAuth}
               isPairedChild={isPairedChild}
+              childDirect={childDirect}
             />
           );
         })()}
@@ -11724,8 +13016,20 @@ export function App() {
       <AppShell
         page={page}
         isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child'}
+        childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
+        bunkerTint={bunkerTint({
+          serving: backgroundServing || stayAwakeUntil !== null,
+          alwaysOnWanted: isNativeApp() && preferences.backgroundBunkerEnabled === true,
+        })}
         onNavigate={(target) => {
+          if (target === 'home') {
+            // Child mode is left only through the guardian's unlock, so a
+            // second tap goes to the top of whichever ring is showing.
+            const action = homeTapAction({ onHome: page === 'home', row: carousel.row, col: carousel.col });
+            if (action === 'front') carousel.navigateToCell(carousel.row, 0);
+            else if (action === 'top') carousel.navigateToCell(0, 0);
+          }
           void (async () => {
             if (target === 'contacts') setContactCardSearch('');
             if (target === 'contacts' && page === 'home' && !isPairedChild) {
@@ -11762,6 +13066,8 @@ export function App() {
           serveStatus={bunkerServeStatus}
           locked={!encryptionKey}
           onRequestUnlockWithPendingArm={handleBunkerPendingArm}
+          onRequestUnlockForAlwaysOn={handleBunkerPendingAlwaysOn}
+          alwaysOnWanted={preferences.backgroundBunkerEnabled === true}
           isNative={isNativeApp()}
           backgroundServing={backgroundServing}
           onSetBackgroundServing={handleSetBackgroundServing}
@@ -11770,6 +13076,9 @@ export function App() {
           resolveEscalationIdentityName={resolveEscalationIdentityName}
           onEscalationVerdict={handleEscalationVerdict}
           verdictAvailability={verdictAvailability}
+          childAsks={childAsks.asks}
+          childAskAlwaysAvailable={childAskAlwaysAvailable}
+          onChildAskDecide={childAsks.decide}
         />
       )}
     </>

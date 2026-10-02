@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   runPolicyPush,
+  pushChildDirectCeiling,
+  pushChildCeilingLocked,
+  runPolicyPushLocked,
+  addOnceEntry,
+  removeOnceEntry,
+  type OnceMap,
   submitVerdict,
   describeVerdictOutcome,
   describePushResult,
@@ -14,6 +20,7 @@ import type { DeviceClientSlot, DeviceStatus, SlotPolicyUpdate } from './heartwo
 import type { DependantIdentity } from '../types';
 import type { RememberedGrant } from '../types/grants';
 import type { VerdictResult } from './heartwood-mgmt';
+import { childDirectSlotLabel } from './policy-compiler';
 
 const NP = 'a'.repeat(64);
 const PERSONA = 'b'.repeat(64);
@@ -253,5 +260,145 @@ describe('availability + feature flags', () => {
     expect(operatorFeatureFlags(status(null))).toEqual({ canPush: null, canVerdict: null });
     expect(operatorFeatureFlags(status(['client_policy_flags_v1']))).toEqual({ canPush: true, canVerdict: false });
     expect(operatorFeatureFlags(status(['client_policy_flags_v1', 'resolve_approval_v1']))).toEqual({ canPush: true, canVerdict: true });
+  });
+});
+
+describe('pushChildDirectCeiling', () => {
+  const direct = (kinds: number[] = [21235, 21236, 22242]) => slot({ slotIndex: 5, label: childDirectSlotLabel(NP), boundIdentity: PERSONA,
+    secretFingerprint: 'ab'.repeat(32), autoApprove: true, allowedKinds: kinds,
+    allowedMethods: ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'] });
+  const input = (once: { kind: number; until: number }[] = []) => ({
+    dependants: [appDep({ autonomyStage: 'request-approve' })], grants: [], guardianClientPubkey: null, nowSeconds: NOW,
+    childRules: [], approvedOnceKinds: { [NP]: once },
+  });
+  const target = { slotIndex: 5, secretFingerprint: 'ab'.repeat(32) };
+
+  it('pushes only the child slot, with the widened ceiling', async () => {
+    const io = fakeIo(() => [direct(), currentDepSlot()]);
+    expect(await pushChildDirectCeiling(io, input([{ kind: 30311, until: NOW + 600 }]), target)).toBe('ok');
+    expect(io.updates).toHaveLength(1);
+    expect(io.updates[0].slotIndex).toBe(5);
+    expect(io.updates[0].policy.allowedKinds).toContain(30311);
+  });
+  it('already current → ok without a push', async () => {
+    const first = fakeIo(() => [direct([1])]);
+    await pushChildDirectCeiling(first, input(), target);
+    const p = first.updates[0].policy;
+    const io = fakeIo(() => [{ ...direct(p.allowedKinds), ...p, boundIdentity: PERSONA }]);
+    expect(await pushChildDirectCeiling(io, input(), target)).toBe('ok');
+    expect(io.updates).toHaveLength(0);
+  });
+  it('slot missing, unreachable device, or refusal → failed', async () => {
+    expect(await pushChildDirectCeiling(fakeIo(() => []), input(), target)).toBe('failed');
+    expect(await pushChildDirectCeiling({ listClients: async () => { throw new Error('timeout'); }, updateClientPolicy: vi.fn() }, input(), target)).toBe('failed');
+    const refusing = fakeIo(() => [direct()], async () => { throw new Error('denied'); });
+    expect(await pushChildDirectCeiling(refusing, input([{ kind: 30311, until: NOW + 600 }]), target)).toBe('failed');
+  });
+  it('retries once on a stale challenge', async () => {
+    let n = 0;
+    const io = fakeIo(() => [direct()], async () => { if (n++ === 0) throw new Error('stale_management_challenge'); });
+    expect(await pushChildDirectCeiling(io, input([{ kind: 30311, until: NOW + 600 }]), target)).toBe('ok');
+    expect(n).toBe(2);
+  });
+});
+
+describe('A31/A32 — locked ceiling + policy pushes', () => {
+  const FP = 'ab'.repeat(32);
+  const directDep = () => appDep({
+    autonomyStage: 'request-approve',
+    childDevice: { mode: 'heartwood-direct', slotLabel: childDirectSlotLabel(NP), secretFingerprint: FP, slotIndex: 5,
+      clientPubkey: 'c'.repeat(64), boundPersona: PERSONA, pairedAt: 1 },
+  } as Partial<DependantIdentity>);
+
+  /** A device whose slot 5 takes each update_client after `delays.shift()` ms; records every payload in landing order. */
+  function fakeDevice(delays: number[] = []) {
+    let state: DeviceClientSlot = slot({ slotIndex: 5, label: childDirectSlotLabel(NP), boundIdentity: PERSONA, secretFingerprint: FP,
+      autoApprove: true, allowedKinds: [22242], allowedMethods: ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'] });
+    const landed: SlotPolicyUpdate[] = [];
+    const log: string[] = [];
+    const io: PolicyPushIo = {
+      listClients: async () => { log.push('list'); return [{ ...state }]; },
+      updateClientPolicy: async (_s, p) => {
+        log.push('update:start');
+        await new Promise(r => setTimeout(r, delays.shift() ?? 0));
+        state = { ...state, ...p };
+        landed.push(p);
+        log.push('update:end');
+      },
+    };
+    return { io, landed, log, kinds: () => state.allowedKinds };
+  }
+  function memStore(initial: OnceMap = {}) {
+    let map: OnceMap | null = initial;
+    return { get: () => map, set: (n: OnceMap) => { map = n; }, peek: () => map };
+  }
+  const reads = () => async () => ({ dependants: [directDep()], grants: [], guardianClientPubkey: null, childRules: [], nowSeconds: NOW });
+
+  it('two concurrent once verdicts (kinds A, B) on the same dependant end with BOTH kinds on the device', async () => {
+    const lockKey = {};
+    const dev = fakeDevice([40, 0]); // A's update is slow; without a lock B's compile would land first and A's would overwrite it
+    const store = memStore();
+    const [ra, rb] = await Promise.all([
+      pushChildCeilingLocked({ lockKey, io: dev.io, depId: NP, extraOnce: { kind: 30311, until: NOW + 600 }, store, read: reads() }),
+      pushChildCeilingLocked({ lockKey, io: dev.io, depId: NP, extraOnce: { kind: 30312, until: NOW + 600 }, store, read: reads() }),
+    ]);
+    expect([ra, rb]).toEqual(['ok', 'ok']);
+    expect(dev.landed.length).toBeGreaterThanOrEqual(1);
+    const last = dev.landed[dev.landed.length - 1];
+    expect(last.allowedKinds).toEqual(expect.arrayContaining([30311, 30312]));
+    expect(dev.kinds()).toEqual(expect.arrayContaining([30311, 30312]));
+    // Serialised: no list_clients between an update's start and its end.
+    for (let i = 0; i < dev.log.length; i++) if (dev.log[i] === 'update:start') expect(dev.log[i + 1]).toBe('update:end');
+  });
+
+  it('a regular policy push concurrent with a ceiling push never lands a policy missing the approved-once kind', async () => {
+    for (const regularFirst of [true, false]) {
+      const lockKey = {};
+      const dev = fakeDevice([60, 0]); // the first push is slow: unlocked, its stale compile would land last
+      const store = memStore();
+      const regular = () => runPolicyPushLocked({ lockKey, io: dev.io, read: async () => ({
+        dependants: [directDep()], grants: [], guardianClientPubkey: null, nowSeconds: NOW, childRules: [], approvedOnceKinds: store.get() ?? {},
+      }) });
+      const ceiling = () => pushChildCeilingLocked({ lockKey, io: dev.io, depId: NP, extraOnce: { kind: 30311, until: NOW + 600 }, store, read: reads() });
+      const [first, second] = regularFirst ? [regular, ceiling] : [ceiling, regular];
+      const p1 = first(); const p2 = second();
+      await Promise.all([p1, p2]);
+      expect(dev.kinds()).toContain(30311);
+      expect(dev.landed[dev.landed.length - 1].allowedKinds).toContain(30311);
+    }
+  });
+
+  it('a regular push waits (pushes nothing) while an input is still loading', async () => {
+    const dev = fakeDevice();
+    expect(await runPolicyPushLocked({ lockKey: {}, io: dev.io, read: async () => null })).toBeNull();
+    expect(dev.log).toEqual([]);
+  });
+
+  it('A32: a failed ceiling push removes only the entry it added, from the CURRENT state', async () => {
+    const other = { kind: 30312, until: NOW + 500 };
+    const store = memStore({ [NP]: [other], ['9'.repeat(64)]: [{ kind: 1, until: NOW + 100 }] });
+    const refusing: PolicyPushIo = { listClients: fakeDevice().io.listClients, updateClientPolicy: async () => {
+      // Meanwhile another verdict added its own entry.
+      store.set(addOnceEntry(store.get()!, NP, { kind: 30313, until: NOW + 590 }));
+      throw new Error('denied');
+    } };
+    const r = await pushChildCeilingLocked({ lockKey: {}, io: refusing, depId: NP, extraOnce: { kind: 30311, until: NOW + 600 }, store, read: reads() });
+    expect(r).toBe('failed');
+    expect(store.peek()).toEqual({ [NP]: [other, { kind: 30313, until: NOW + 590 }], ['9'.repeat(64)]: [{ kind: 1, until: NOW + 100 }] });
+  });
+
+  it('removeOnceEntry drops exactly one matching entry', () => {
+    const e = { kind: 7, until: 9 };
+    expect(removeOnceEntry({ [NP]: [e, e] }, NP.toUpperCase(), e)).toEqual({ [NP]: [e] });
+    expect(removeOnceEntry({ [NP]: [e] }, NP, e)).toEqual({});
+    expect(removeOnceEntry({ [NP]: [e] }, NP, { kind: 7, until: 10 })).toEqual({ [NP]: [e] });
+  });
+
+  it('approved-once still loading → failed, nothing pushed', async () => {
+    const dev = fakeDevice();
+    const store = { get: () => null, set: vi.fn() };
+    expect(await pushChildCeilingLocked({ lockKey: {}, io: dev.io, depId: NP, extraOnce: { kind: 30311, until: NOW + 600 }, store, read: reads() })).toBe('failed');
+    expect(dev.landed).toHaveLength(0);
+    expect(store.set).not.toHaveBeenCalled();
   });
 });

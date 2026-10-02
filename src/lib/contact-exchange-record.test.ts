@@ -74,3 +74,33 @@ it('copies private invite attribution to the contact once and does not recreate 
   await recordCompletedContactExchange(args);
   expect(applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.origins).toEqual([]);
 });
+const link = (caption?: string) => ({ ...exchange(), origin: { id: 'b'.repeat(32), ownerIdentityPubkey: own,
+  method: 'link' as const, addedAt: 102000, ...(caption ? { caption } : {}) } });
+const nameOf = async (contactId: string) => applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.displayName;
+it('names the new contact after the scanned invite caption, sanitised and capped, else the short key', async () => {
+  const named = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('  Bob‮ at the fair '), isCurrent: () => true });
+  expect(await nameOf(named)).toBe('Bob at the fair');
+  await purgeAllUserData();
+  const long = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('x'.repeat(150)), isCurrent: () => true });
+  expect((await nameOf(long)).length).toBe(100);
+  await purgeAllUserData();
+  const bare = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link(), isCurrent: () => true });
+  expect(await nameOf(bare)).toBe(peer.slice(0, 12) + '…');
+});
+it('keeps an existing contact’s own name rather than the caption', async () => {
+  const contactId = '9'.repeat(32);
+  const make = (action: Parameters<typeof buildOperation>[0]['action'], value: unknown, clock: number) => buildOperation({
+    directoryId: 'owner', contactId, action, value, clock, actor, now: 1000, operationId: clock.toString(16).padStart(32, '0') });
+  await saveContactOperationsV2([make('add', { type: 'person', displayName: 'Friend', tier: 'ken' }, 1),
+    make('add-identity', { itemId: 'a'.repeat(32), pubkey: peer, provenance: 'direct', verification: 'unverified' }, 2)], key);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('Someone else'), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Friend');
+});
+it('falls back to the short key when the caption exceeds the reducer cap in UTF-16 units, and for app handovers', async () => {
+  const emoji = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('\u{1F600}'.repeat(60)), isCurrent: () => true });
+  expect(await nameOf(emoji)).toBe(peer.slice(0, 12) + '…');
+  await purgeAllUserData();
+  const app = { ...link('Bob'), origin: { ...link('Bob').origin, method: 'app' as const } };
+  const viaApp = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: app, isCurrent: () => true });
+  expect(await nameOf(viaApp)).toBe(peer.slice(0, 12) + '…');
+});

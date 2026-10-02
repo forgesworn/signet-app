@@ -16,7 +16,11 @@
 import { useState } from 'react';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
-import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile } from '../types';
+import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase, FollowsImportState } from '../types';
+import { ExistingProfilePanel } from '../components/ExistingProfilePanel';
+import { FollowsImportPanel } from '../components/FollowsImportPanel';
+import type { FollowsImportOutcome } from '../lib/follows-import-flow';
+import type { ExistingProfile } from '../lib/existing-profile';
 import { TypedNameConfirm } from '../components/TypedNameConfirm';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
 import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
@@ -55,6 +59,31 @@ export interface PersonaAdvancedProps {
   ) => Promise<{ ok: boolean; message?: string }>;
   onDisablePublicProfile: () => Promise<void>;
   onRepublish?: () => Promise<{ ok: boolean; message?: string }>;
+  /**
+   * "Check Nostr for an existing profile" — runs the multi-relay lookup for
+   * THIS slot's key. Passed only for the owner's own slots on a device that
+   * holds the owner identity (never for dependant slots or a paired-child
+   * install); absent => the button is hidden.
+   */
+  onCheckExistingProfile?: () => Promise<ExistingProfile | null | 'unreachable'>;
+  /** Apply a found profile to this slot ("Match it in My Signet"). Writes card + state + base; publishes nothing. */
+  onMatchExistingProfile?: (found: ExistingProfile) => Promise<void>;
+  /**
+   * "Import who this account follows" — read this slot's Nostr follow list
+   * (kind 3) into the owner's contacts. Passed (with `onUnlinkFollows`) only
+   * for the owner's own slots on a device that holds the owner identity and is
+   * scoped to the owner's contacts — never a dependant's slot, never a
+   * paired-child install; absent => the block is hidden.
+   */
+  onImportFollows?: () => Promise<FollowsImportOutcome>;
+  /** Take contacts off this slot's list after a refresh found they are no longer followed. */
+  onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
+  /**
+   * Set (instead of the two handlers) on an owner slot that would offer the
+   * follows import but cannot yet — contacts still loading, or the scope is not
+   * the owner's. The panel renders disabled with this as the reason.
+   */
+  followsPending?: string;
 
   // — User-side actions —
   onSwitchPrimary?: (target: 'natural-person' | 'persona') => Promise<void>;
@@ -82,6 +111,12 @@ export interface PersonaAdvancedProps {
    * context for the slot they're hiding.
    */
   onRetractExtraPersonaProfile?: (pubkey: string) => Promise<void>;
+  /**
+   * Stop sharing this slot's picture with contacts (G1 coarse revocation):
+   * clears the contact key locally, then best-effort retracts the published
+   * pointer. Absent on a paired-child install.
+   */
+  onStopContactAvatarShare?: (target: string, depId?: string) => Promise<void>;
   onDeletePersona?: (pubkey: string) => Promise<void>;
   onShowImportedNsec?: () => void;
 
@@ -129,9 +164,15 @@ interface ResolvedSlot {
   publicKey: string;
   displayName: string;
   publicProfile?: PersonaPublicProfile;
+  /** Device-local kind-0 base; `matched` marks a profile adopted from Nostr rather than published by Signet. */
+  publicProfileBase?: PublicProfileBase;
+  /** Device-local record of the last Nostr follow list imported into this persona's contacts. */
+  followsImport?: FollowsImportState;
   /** Imported nsec — only meaningful for extras. */
   imported?: boolean;
   hidden?: boolean;
+  /** Present while this slot shares its picture with contacts (the AES key contacts hold). */
+  contactAvatarKey?: string;
 }
 
 function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot | undefined {
@@ -140,6 +181,9 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicKey: identity.naturalPerson.publicKey,
       displayName: identity.naturalPerson.displayName,
       publicProfile: identity.naturalPerson.publicProfile,
+      publicProfileBase: identity.naturalPerson.publicProfileBase,
+      followsImport: identity.naturalPerson.followsImport,
+      contactAvatarKey: identity.naturalPerson.contactAvatarKey,
     };
   }
   if (target === 'persona') {
@@ -147,6 +191,9 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicKey: identity.persona.publicKey,
       displayName: identity.persona.displayName,
       publicProfile: identity.persona.publicProfile,
+      publicProfileBase: identity.persona.publicProfileBase,
+      followsImport: identity.persona.followsImport,
+      contactAvatarKey: identity.persona.contactAvatarKey,
     };
   }
   if (target === 'professional-persona') {
@@ -155,6 +202,8 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
       publicKey: identity.professionalPersona.publicKey,
       displayName: identity.professionalPersona.displayName,
       publicProfile: identity.professionalPersona.publicProfile,
+      publicProfileBase: identity.professionalPersona.publicProfileBase,
+      followsImport: identity.professionalPersona.followsImport,
     };
   }
   const ep = (identity.extraPersonas ?? []).find(p => p.publicKey === target);
@@ -163,6 +212,9 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
     publicKey: ep.publicKey,
     displayName: ep.displayName,
     publicProfile: ep.publicProfile,
+    publicProfileBase: ep.publicProfileBase,
+    followsImport: ep.followsImport,
+    contactAvatarKey: ep.contactAvatarKey,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -175,6 +227,8 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
       publicKey: dep.naturalPerson.publicKey,
       displayName: dep.naturalPerson.displayName,
       publicProfile: dep.naturalPerson.publicProfile,
+      publicProfileBase: dep.naturalPerson.publicProfileBase,
+      contactAvatarKey: dep.naturalPerson.contactAvatarKey,
     };
   }
   if (target === 'persona') {
@@ -182,6 +236,8 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
       publicKey: dep.persona.publicKey,
       displayName: dep.persona.displayName,
       publicProfile: dep.persona.publicProfile,
+      publicProfileBase: dep.persona.publicProfileBase,
+      contactAvatarKey: dep.persona.contactAvatarKey,
     };
   }
   const ep = (dep.extraPersonas ?? []).find(p => p.publicKey === target);
@@ -190,6 +246,8 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
     publicKey: ep.publicKey,
     displayName: ep.displayName,
     publicProfile: ep.publicProfile,
+    publicProfileBase: ep.publicProfileBase,
+    contactAvatarKey: ep.contactAvatarKey,
     imported: ep.imported,
     hidden: ep.hidden,
   };
@@ -278,6 +336,26 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
         <>
           <PublishBlock {...props} slotKind={slotKind} slot={slot} subjectName={subjectName} />
 
+          {/* Nostr follows — the owner's own slots only (the callbacks are
+              withheld for dependants and paired-child installs). */}
+          {!isDep && props.onImportFollows && props.onUnlinkFollows && (
+            <FollowsImportPanel
+              personaName={slot.displayName || 'this persona'}
+              last={slot.followsImport}
+              onImport={props.onImportFollows}
+              onUnlink={props.onUnlinkFollows}
+            />
+          )}
+          {!isDep && !(props.onImportFollows && props.onUnlinkFollows) && props.followsPending && (
+            <FollowsImportPanel
+              personaName={slot.displayName || 'this persona'}
+              last={slot.followsImport}
+              onImport={async () => ({ status: 'unreachable' })}
+              onUnlink={async () => 0}
+              disabledReason={props.followsPending}
+            />
+          )}
+
           <KeysBlock pubkey={slot.publicKey} />
         </>
       )}
@@ -290,6 +368,11 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
       {/* Backup / seed phrase — user NP only. */}
       {slotKind === 'natural-person' && (props.onShowMnemonic || props.mnemonicOnSigner) && (
         <BackupBlock onShowMnemonic={props.mnemonicOnSigner ? undefined : props.onShowMnemonic} />
+      )}
+
+      {/* Stop sharing the picture with contacts — only while a share key exists. */}
+      {slot.contactAvatarKey && slotKind !== 'professional-persona' && props.onStopContactAvatarShare && (
+        <StopAvatarShareBlock onStop={() => props.onStopContactAvatarShare!(slotTarget, depPubkey)} />
       )}
 
       {/* Imported nsec note — extras (user + dep) only, if imported. */}
@@ -370,10 +453,16 @@ function PublishBlock({
   onPublishProfile,
   onDisablePublicProfile,
   onRepublish,
+  onCheckExistingProfile,
+  onMatchExistingProfile,
 }: PublishBlockProps) {
   const enabled = !!slot.publicProfile?.enabled;
   const lastAt = slot.publicProfile?.lastPublishedAt;
   const lastRelay = slot.publicProfile?.lastPublishedRelay;
+  // A profile Signet adopted from Nostr (rather than published itself): the
+  // kind-5 only reaches the one relay it was seen on, so say that plainly.
+  const matchedFromNostr = enabled && !!slot.publicProfileBase?.matched;
+  const retractHost = truncateRelay(lastRelay) || 'the relay';
 
   // First-time NP enable fires the §6.5 typed-name confirm. Subsequent
   // publishes (Republish) and other slot kinds use the single-confirm prompt
@@ -388,6 +477,48 @@ function PublishBlock({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+
+  // "Check Nostr for an existing profile" (slot not published yet).
+  const [checking, setChecking] = useState(false);
+  const [found, setFound] = useState<ExistingProfile | null>(null);
+  const [matching, setMatching] = useState(false);
+
+  async function runCheck() {
+    if (!onCheckExistingProfile) return;
+    setChecking(true);
+    setError('');
+    setInfo('');
+    setFound(null);
+    try {
+      const result = await onCheckExistingProfile();
+      if (result === 'unreachable') {
+        setInfo("Couldn't reach Nostr relays to check. Try again in a moment.");
+      } else if (!result) {
+        setInfo('No public profile found on Nostr for this key.');
+      } else {
+        setFound(result);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not check Nostr.');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function runMatch() {
+    if (!found || !onMatchExistingProfile) return;
+    setMatching(true);
+    setError('');
+    try {
+      await onMatchExistingProfile(found);
+      setFound(null);
+      setInfo('Matched. This persona now shows the profile that is already on Nostr. Nothing was published.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not match the profile.');
+    } finally {
+      setMatching(false);
+    }
+  }
 
   async function runPublish(typedNameValue?: string) {
     setBusy(true);
@@ -415,7 +546,9 @@ function PublishBlock({
     setInfo('');
     try {
       await onDisablePublicProfile();
-      setInfo('Profile disabled. Signet has asked the relay to retract it.');
+      setInfo(matchedFromNostr
+        ? `Profile disabled. This asked ${retractHost} to remove it. Copies on other relays may stay up.`
+        : 'Profile disabled. Signet has asked the relay to retract it.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Disable failed.');
     } finally {
@@ -474,20 +607,43 @@ function PublishBlock({
         )}
       </div>
 
+      {!enabled && found && (
+        <ExistingProfilePanel profile={found.profile}>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '10px 0 0' }}>
+            Matching replaces this card&rsquo;s name, bio and picture with the ones on Nostr. Nothing is published.
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button type="button" className="btn btn-primary btn-sm" style={{ width: 'auto' }} onClick={() => { void runMatch(); }} disabled={matching}>
+              {matching ? 'Matching…' : 'Match it in My Signet'}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" style={{ width: 'auto' }} onClick={() => setFound(null)} disabled={matching}>
+              Not now
+            </button>
+          </div>
+        </ExistingProfilePanel>
+      )}
+
       {!enabled && (
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            if (requiresNpTypedName) {
-              setNpTypedName(true);
-            } else {
-              setIntent('publish');
-            }
-          }}
-          disabled={busy}
-        >
-          {publishLabel}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (requiresNpTypedName) {
+                setNpTypedName(true);
+              } else {
+                setIntent('publish');
+              }
+            }}
+            disabled={busy || matching}
+          >
+            {publishLabel}
+          </button>
+          {slotKind !== 'natural-person' && onCheckExistingProfile && onMatchExistingProfile && (
+            <button className="btn btn-secondary" onClick={() => { void runCheck(); }} disabled={busy || checking || matching}>
+              {checking ? 'Checking Nostr…' : 'Check Nostr for an existing profile'}
+            </button>
+          )}
+        </div>
       )}
 
       {enabled && (
@@ -542,7 +698,9 @@ function PublishBlock({
       {intent === 'disable' && (
         <ConfirmModal
           heading="Make this profile private again?"
-          body="Signet will ask Nostr relays to delete this public profile and stop publishing updates. Some relays may keep a copy — Signet can't force them to forget."
+          body={matchedFromNostr
+            ? `Signet will stop publishing updates. This asks ${retractHost} to remove it. Copies on other relays may stay up.`
+            : "Signet will ask Nostr relays to delete this public profile and stop publishing updates. Some relays may keep a copy — Signet can't force them to forget."}
           confirmLabel={busy ? 'Disabling…' : 'Disable'}
           confirmKind="danger"
           busy={busy}
@@ -607,6 +765,30 @@ function PrimaryKeypairBlock({
       <button className="btn btn-secondary" onClick={() => { void handleSwitch(); }} disabled={busy}>
         {busy ? 'Switching…' : `Switch primary to ${switchToLabel}`}
       </button>
+    </div>
+  );
+}
+
+function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const stop = async () => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try { await onStop(); }
+    catch { setError('Could not stop sharing. Try again.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="card section">
+      <div className="section-title">Picture shared with contacts</div>
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+        Contacts who already have your picture keep it. Stopping means they no longer see updates.
+      </p>
+      <button className="btn btn-secondary" disabled={busy} onClick={() => void stop()}>
+        {busy ? 'Stopping…' : 'Stop sharing my picture with contacts'}
+      </button>
+      {error && <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.85rem', marginTop: 8 }}>{error}</p>}
     </div>
   );
 }

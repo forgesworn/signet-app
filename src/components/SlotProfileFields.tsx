@@ -144,6 +144,9 @@ function formatRelativeCheckedAt(checkedAtMs: number): string {
   return `checked ${deltaDay} day${deltaDay === 1 ? '' : 's'} ago`;
 }
 
+/** Same cap as the kind-0 publisher (`CAP_ABOUT`) and the sync rails. */
+const ABOUT_MAX = 2000;
+
 /** Pure-function helper — compare two configs after normalising blanks/undefineds. */
 function configsEqual(a: PublicProfileConfig, b: PublicProfileConfig): boolean {
   return (
@@ -507,13 +510,13 @@ export function SlotProfileFields({
           />
         </Field>
 
-        <Field label="About" hint={`A line or two about yourself. Max 500. (${about.length}/500)`}>
+        <Field label="About" hint={`A few lines about yourself. Line breaks are kept. Max ${ABOUT_MAX}. (${about.length}/${ABOUT_MAX})`}>
           <textarea
             className="input"
             rows={3}
             value={about}
             onChange={e => setAbout(e.target.value)}
-            maxLength={500}
+            maxLength={ABOUT_MAX}
             disabled={inputsDisabled}
             style={{ resize: 'vertical', fontFamily: 'inherit' }}
           />

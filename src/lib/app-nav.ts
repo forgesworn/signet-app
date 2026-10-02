@@ -18,8 +18,13 @@ const CONTACTS: TabDef = { id: 'contacts', label: 'Contacts', icon: 'users', pag
 const BUNKER: TabDef = { id: 'bunker', label: 'Bunker', icon: 'key' };
 const SETTINGS: TabDef = { id: 'settings', label: 'Settings', icon: 'settings', page: 'settings' };
 
-/** Owner gets the Bunker tab; a dependant context (acting-as or paired-child) does not. */
-export function barTabsFor(opts: { isDependantContext: boolean }): TabDef[] {
+/**
+ * Owner gets the Bunker tab; a dependant context (acting-as or paired-child)
+ * does not — except a child's phone paired straight to the Heartwood, which
+ * IS the child's bunker (child-direct spec §8).
+ */
+export function barTabsFor(opts: { isDependantContext: boolean; childBunker?: boolean }): TabDef[] {
+  if (opts.childBunker) return [HOME, CONTACTS, BUNKER, SETTINGS];
   return opts.isDependantContext ? [HOME, CONTACTS, SETTINGS] : [HOME, CONTACTS, BUNKER, SETTINGS];
 }
 
@@ -72,4 +77,27 @@ export function isOrphanedApprovalPage(
   if (page === 'approve-auth') return !state.hasAuthRequest;
   if (page === 'relay-auth-ack') return !state.hasRelayAuthAck;
   return false;
+}
+
+export type HomeTapAction = 'front' | 'top' | 'none';
+
+/**
+ * What a Home tap does to the carousel. The first tap returns to the front
+ * of the card you are on (from any page, or from its QR/contacts/settings/
+ * camera column); a tap while already on a card's front goes to the top
+ * card of the ring. Never leaves child mode: that exit needs the guardian's
+ * unlock, so in child mode "top" is the top of the dependant's ring.
+ */
+export function homeTapAction(s: { onHome: boolean; row: number; col: number }): HomeTapAction {
+  if (!s.onHome || s.col !== 0) return 'front';
+  return s.row === 0 ? 'none' : 'top';
+}
+
+export type BunkerTint = 'off' | 'wanted' | 'serving';
+
+/** Bunker tab colour: green while serving (always-on or a stay-awake window),
+ *  amber when always-on is turned on but not serving, grey otherwise. */
+export function bunkerTint(s: { serving: boolean; alwaysOnWanted: boolean }): BunkerTint {
+  if (s.serving) return 'serving';
+  return s.alwaysOnWanted ? 'wanted' : 'off';
 }

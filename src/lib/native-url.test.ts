@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { routeNativeUrl } from './native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './native-url';
+import { contactInviteLink } from './contact-invite-link';
 import { buildPairingUriV2 } from '@forgesworn/signet-contacts/wire';
 
 // A verified https App Link (root path) or the signet-grant:// scheme lands
@@ -156,5 +157,54 @@ describe('routeNativeUrl', () => {
     expect(routeNativeUrl('')).toEqual({ type: 'none' });
     expect(routeNativeUrl('not a url')).toEqual({ type: 'none' });
     expect(routeNativeUrl('x'.repeat(10_000))).toEqual({ type: 'none' });
+  });
+});
+
+describe('isUnactionableMysignetLink', () => {
+  const check = (url: string) => isUnactionableMysignetLink(url, routeNativeUrl(url));
+
+  it('is true for a mysignet.app link nothing acted on', () => {
+    expect(check('https://mysignet.app/')).toBe(true);
+    expect(check('https://www.mysignet.app/')).toBe(true);
+    expect(check('https://mysignet.app/pair?app=nothex')).toBe(true);
+    expect(check('https://mysignet.app/?pair=1&v=2&app=nothex')).toBe(true);
+  });
+
+  it('is false for every link that was routed to something', () => {
+    expect(check(`https://mysignet.app/pair?${pairQuery()}`)).toBe(false);
+    expect(check(v2Uri())).toBe(false);
+    expect(check(`https://mysignet.app/pair?${v2Query()}`)).toBe(false);
+    expect(check(signInUrl({}))).toBe(false);
+    expect(check('https://mysignet.app/?verify=abc')).toBe(false);
+  });
+
+  it('is false for a foreign host, a custom-scheme link or garbage', () => {
+    expect(check('https://evil.example/')).toBe(false);
+    expect(check(signInUrl({}, 'https://evil.example/'))).toBe(false);
+    expect(check('https://evil.example/?pair=1&app=' + 'a'.repeat(64))).toBe(false);
+    expect(check('signet-grant://pair?v=2&app=nothex&name=Flock')).toBe(false);
+    expect(check('http://mysignet.app/')).toBe(false);
+    expect(check('')).toBe(false);
+    expect(check('not a url')).toBe(false);
+  });
+
+  it('has plain copy', () => {
+    expect(NATIVE_LINK_NOTHING_TO_OPEN_COPY).toMatch(/didn't contain a request/);
+  });
+});
+
+describe('contact invite App Link', () => {
+  const invite = { v: 1 as const, recipient: 'a'.repeat(64), secret: 'b'.repeat(64), relays: ['wss://relay.example/'] };
+  const link = contactInviteLink(invite, 'https://mysignet.app');
+  it('feeds the hash invite to the pending-invite state, cold and warm alike', () => {
+    expect(contactInviteFromNativeUrl(link)).toBe(JSON.stringify(invite));
+    // The router itself has no query to act on, so the invite check must come first.
+    expect(routeNativeUrl(link)).toEqual({ type: 'none' });
+  });
+  it('ignores other hosts, other paths, expired and oversized invites', () => {
+    expect(contactInviteFromNativeUrl(contactInviteLink(invite, 'https://evil.example'))).toBeUndefined();
+    expect(contactInviteFromNativeUrl(link.replace('mysignet.app/', 'mysignet.app/about'))).toBeUndefined();
+    expect(contactInviteFromNativeUrl(contactInviteLink({ ...invite, expiresAt: 100 }, 'https://mysignet.app'))).toBeUndefined();
+    expect(contactInviteFromNativeUrl(link + 'x'.repeat(9000))).toBeUndefined();
   });
 });

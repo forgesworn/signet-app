@@ -358,3 +358,51 @@ describe('usePreferences — noteDependantAdded', () => {
     expect(result.current.preferences.backupNudgeSnoozedUntil).toBe(until);
   });
 });
+
+describe('usePreferences — bunker restore fields', () => {
+  it('always-on and the stay-awake end written back to back both survive', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    // Same render's setters, fired without awaiting — the unlock re-arm and a
+    // window armed at the same unlock.
+    await act(async () => {
+      await Promise.all([
+        result.current.setBackgroundBunkerEnabled(true),
+        result.current.setStayAwakeEndsAt(1_790_000_120_000),
+        // The post-unlock reload must not put the old record back.
+        result.current.reloadPreferences(),
+      ]);
+    });
+    const saved = await db.getPreferences();
+    expect(saved.backgroundBunkerEnabled).toBe(true);
+    expect(saved.stayAwakeEndsAt).toBe(1_790_000_120_000);
+    expect(result.current.preferences.backgroundBunkerEnabled).toBe(true);
+    expect(result.current.preferences.stayAwakeEndsAt).toBe(1_790_000_120_000);
+  });
+
+  it('an explicit clear removes the stored end', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.setStayAwakeEndsAt(5_000); });
+    await act(async () => { await result.current.setStayAwakeEndsAt(null); });
+    expect((await db.getPreferences()).stayAwakeEndsAt).toBeUndefined();
+    expect(result.current.preferences.stayAwakeEndsAt).toBeUndefined();
+  });
+
+  it('an expiry clear leaves a later window armed meanwhile', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.setStayAwakeEndsAt(9_000); });
+    await act(async () => { await result.current.setStayAwakeEndsAt(null, { endedBy: 5_000 }); });
+    expect((await db.getPreferences()).stayAwakeEndsAt).toBe(9_000);
+    await act(async () => { await result.current.setStayAwakeEndsAt(null, { endedBy: 9_000 }); });
+    expect((await db.getPreferences()).stayAwakeEndsAt).toBeUndefined();
+  });
+
+  it('the stored end is device-local, not a portable setting', async () => {
+    const { portableSettingsValues } = await import('../lib/portable-settings');
+    const values = portableSettingsValues({ id: 'current', theme: 'system', stayAwakeEndsAt: 1, backgroundBunkerEnabled: true });
+    expect(values).not.toHaveProperty('stayAwakeEndsAt');
+    expect(values).not.toHaveProperty('backgroundBunkerEnabled');
+  });
+});
