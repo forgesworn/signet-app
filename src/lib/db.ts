@@ -1253,6 +1253,16 @@ export async function putSyncCacheEntry(entry: SyncCacheEntry): Promise<void> {
   await db.put('syncCache', entry);
 }
 
+/** Keep the `keep` most recently written rows whose id starts with `prefix`. */
+export async function pruneSyncCacheEntries(prefix: string, keep: number): Promise<void> {
+  const db = await getDB();
+  const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
+  if (await db.count('syncCache', range) <= keep) return;
+  const rows = (await db.getAll('syncCache', range)).sort((a, b) => a.updatedAt - b.updatedAt);
+  const tx = db.transaction('syncCache', 'readwrite');
+  await Promise.all([...rows.slice(0, rows.length - keep).map(row => tx.store.delete(row.id)), tx.done]);
+}
+
 export async function clearSyncCache(): Promise<void> {
   const db = await getDB();
   await db.clear('syncCache');
