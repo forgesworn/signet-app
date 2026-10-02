@@ -14,6 +14,7 @@
  */
 import type { AddIdentityValue, ContactOperation, ContactRecord } from '../types';
 import { applyOperations, validateOperation } from './contacts-v2-reducer';
+import { contactDisplayName } from './contacts-v2-name';
 
 /** How the other contact relates to the key: it holds it now, or the key was taken off it. */
 export type OtherContactState = 'active' | 'deleted' | 'archived' | 'removed-key';
@@ -87,6 +88,6 @@ export function confirmMergeRefusal(
   const newcomers = after ? groupIds(after).filter(id => !known.has(id)) : [];
   if (after && after.contactId === target.contactId && newcomers.length === 0) return null;
   const other = newcomers.map(id => findRecord(before, id)).find(Boolean);
-  if (!other) return { contactId: after?.contactId ?? contactId, displayName: after?.displayName ?? '', state: 'active' };
-  return { contactId: other.contactId, displayName: other.displayName, state: contactRecordState(other) };
+  if (!other) return { contactId: after?.contactId ?? contactId, displayName: after ? contactDisplayName(after) : '', state: 'active' };
+  return { contactId: other.contactId, displayName: contactDisplayName(other), state: contactRecordState(other) };
 }

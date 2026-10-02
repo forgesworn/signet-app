@@ -4,6 +4,7 @@ import { recordCompletedContactExchange, contactPeerAllowed } from './contact-ex
 import { listContactOperationsV2, saveContactOperationsV2, purgeAllUserData } from './db';
 import { applyOperations } from './contacts-v2-reducer';
 import { buildOperation } from './contacts-v2-mutations';
+import { shortNpub } from './nostr-follows';
 const key = 'exchange contact test', own = '1'.repeat(64), peer = '2'.repeat(64);
 const actor = { actorPubkey: own, actorRole: 'owner' as const, actorDeviceId: '3'.repeat(32) };
 function exchange() {
@@ -85,7 +86,7 @@ it('names the new contact after the scanned invite caption, sanitised and capped
   expect((await nameOf(long)).length).toBe(100);
   await purgeAllUserData();
   const bare = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link(), isCurrent: () => true });
-  expect(await nameOf(bare)).toBe(peer.slice(0, 12) + '…');
+  expect(await nameOf(bare)).toBe(shortNpub(peer));
 });
 it('keeps an existing contact’s own name rather than the caption', async () => {
   const contactId = '9'.repeat(32);
@@ -98,11 +99,11 @@ it('keeps an existing contact’s own name rather than the caption', async () =>
 });
 it('falls back to the short key when the caption exceeds the reducer cap in UTF-16 units, and for app handovers', async () => {
   const emoji = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('\u{1F600}'.repeat(60)), isCurrent: () => true });
-  expect(await nameOf(emoji)).toBe(peer.slice(0, 12) + '…');
+  expect(await nameOf(emoji)).toBe(shortNpub(peer));
   await purgeAllUserData();
   const app = { ...link('Bob'), origin: { ...link('Bob').origin, method: 'app' as const } };
   const viaApp = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: app, isCurrent: () => true });
-  expect(await nameOf(viaApp)).toBe(peer.slice(0, 12) + '…');
+  expect(await nameOf(viaApp)).toBe(shortNpub(peer));
 });
 const seedExisting = async (verification: 'unverified' | 'proven' | 'mutual') => {
   const contactId = '9'.repeat(32);

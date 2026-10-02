@@ -29,6 +29,7 @@ import { parsePubkeyInput } from './pubkey-input';
 import { encodeNpub, isValidHexKey } from './signet';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { verificationUpgrade } from './contacts-v2-verification';
+import { contactDisplayName } from './contacts-v2-name';
 import { contactRecordState, type OtherContactState } from './contacts-v2-key-holders';
 
 export { verificationRank, isConfirmed, isContactConfirmed, verificationUpgrade } from './contacts-v2-verification';
@@ -135,7 +136,7 @@ export function decideScan(args: {
     || (c.mergedContactIds ?? []).includes(args.record.contactId);
   const others = args.contacts.filter(c => !isSelf(c));
   const decision = (c: ScanContact, state: OtherContactState): ScanDecision =>
-    ({ kind: 'belongs-to-other', contactId: c.contactId, displayName: c.displayName, state });
+    ({ kind: 'belongs-to-other', contactId: c.contactId, displayName: contactDisplayName(c), state });
   // A live contact holding the key now is the most useful thing to name; a
   // deleted or archived one still holds it too, and the reducer would merge
   // into it just the same.

@@ -1,5 +1,6 @@
 import { useRef, useState, type ReactNode } from 'react';
 import type { ContactIdentity, EffectiveContact } from '../types';
+import { contactDisplayName } from '../lib/contacts-v2-name';
 import { QRScanner } from './QRScanner';
 import { useCamera } from '../hooks/useCamera';
 import { shortNpub } from '../lib/signet';
@@ -51,6 +52,7 @@ type Stage =
  * The tier is a separate question and is only ever offered, never forced.
  */
 export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownPubkeys, canSetTier, onApply, onStartExchange, onClose }: Props) {
+  const shownName = contactDisplayName(contact);
   const [stage, setStage] = useState<Stage>({ name: 'choose' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -78,7 +80,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
   }
 
   function afterMatch(): Stage {
-    return canSetTier && shouldOfferTierMove(contact) ? { name: 'tier' } : { name: 'done', message: confirmedDoneCopy(contact.displayName) };
+    return canSetTier && shouldOfferTierMove(contact) ? { name: 'tier' } : { name: 'done', message: confirmedDoneCopy(shownName) };
   }
 
   async function handleScan(data: string) {
@@ -111,7 +113,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
   if (stage.name === 'choose') {
     return shell(
       <>
-        <p className="field-hint">{confirmIntroCopy(contact.displayName)}</p>
+        <p className="field-hint">{confirmIntroCopy(shownName)}</p>
         <button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => {
           setScanError(''); setStage({ name: 'scan' });
           if (hasPermission === null) void requestPermission();
@@ -150,7 +152,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
     return shell(
       <>
         <h3>{CONFIRM_READOUT_TITLE}</h3>
-        <p className="field-hint">{confirmReadoutPromptCopy(contact.displayName)}</p>
+        <p className="field-hint">{confirmReadoutPromptCopy(shownName)}</p>
         <p className="row-sub">{shortNpub(identity.pubkey)}</p>
         <p className="field-hint">{CONFIRM_READOUT_GROUPS_LABEL}</p>
         <p className="mono" aria-label={CONFIRM_READOUT_GROUPS_LABEL}
@@ -170,7 +172,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
   }
 
   if (stage.name === 'tier') {
-    const name = contact.displayName;
+    const name = shownName;
     const move = (tier: 'kith' | 'kin') => void apply(planTierMove(tier), { name: 'done', message: confirmedDoneCopy(name) });
     return shell(
       <>
@@ -193,7 +195,7 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
     };
     return shell(
       <>
-        <h3>{confirmMismatchTitleCopy(contact.displayName)}</h3>
+        <h3>{confirmMismatchTitleCopy(shownName)}</h3>
         <p className="field-hint">{scannedHex ? CONFIRM_MISMATCH_EXPLAINER : CONFIRM_READOUT_MISMATCH_EXPLAINER}</p>
         {alert}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -214,8 +216,8 @@ export function ContactConfirm({ contact, identity, contacts, keyHolderIds, ownP
   if (stage.name === 'notice') {
     const d = stage.decision;
     const text = d.kind === 'belongs-to-other' ? confirmBelongsToOtherCopy(d.displayName, d.state)
-      : d.kind === 'own-key' ? confirmOwnKeyCopy(contact.displayName)
-        : confirmOtherKeyOfThisCopy(contact.displayName);
+      : d.kind === 'own-key' ? confirmOwnKeyCopy(shownName)
+        : confirmOtherKeyOfThisCopy(shownName);
     return shell(
       <>
         <p role="status">{text}</p>

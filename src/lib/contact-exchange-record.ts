@@ -1,6 +1,7 @@
 import type { ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
 import { sanitizeDisplayName } from './text-sanitize';
+import { shortNpub } from './nostr-follows';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { contactVerificationWords } from '@forgesworn/signet-contacts';
@@ -82,7 +83,7 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     };
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
-      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? scannedName ?? peer.slice(0, 12) + '…',
+      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? scannedName ?? shortNpub(peer.toLowerCase()),
         tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
     } else if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,

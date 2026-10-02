@@ -13,6 +13,7 @@
 import type { ContactRecord, EffectiveContact } from '../types';
 import { NOT_CONFIRMED_FILTER_LABEL } from './contacts-v2-copy';
 import { isContactConfirmed } from './contacts-v2-verification';
+import { contactDisplayName, fullNpub } from './contacts-v2-name';
 
 export type ContactsFilter = 'all' | 'kin' | 'kith' | 'ken' | 'not-confirmed' | 'blocked';
 
@@ -48,7 +49,7 @@ export function isVisibleContact(record: Pick<ContactRecord, 'lifecycle' | 'arch
 }
 
 function haystack(c: EffectiveContact): string {
-  return [c.displayName, ...c.roles, ...c.identities.map(i => i.pubkey)].join(' ').toLowerCase();
+  return [c.displayName, contactDisplayName(c), ...c.roles, ...c.identities.flatMap(i => [i.pubkey, fullNpub(i.pubkey)])].join(' ').toLowerCase();
 }
 
 export function arrangeContactsV2(
@@ -75,6 +76,6 @@ export function arrangeContactsV2(
   // reordering unpredictably.
   return filtered.sort((a, b) => {
     if (a.blocked !== b.blocked) return a.blocked ? 1 : -1;
-    return a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase());
+    return contactDisplayName(a).toLowerCase().localeCompare(contactDisplayName(b).toLowerCase());
   });
 }

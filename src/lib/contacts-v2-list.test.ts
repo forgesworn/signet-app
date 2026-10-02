@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { nip19 } from 'nostr-tools';
 import {
   CONTACT_FILTERS, filterLabel, primaryIdentityPubkey, isKeyless,
   isVisibleContact, arrangeContactsV2,
@@ -108,5 +109,19 @@ describe('arrangeContactsV2', () => {
 
   it('never returns a removed record', () => {
     expect(arrangeContactsV2(all, { filter: 'all', query: 'gone' })).toEqual([]);
+  });
+});
+
+describe('contacts with no real name', () => {
+  const KEY = '66dd41aa' + 'b'.repeat(56);
+  const nameless = () => contact({ contactId: 'n1', displayName: '66dd41aa…', identities: [identity(KEY)] });
+  it('searches by the npub form as well as the hex key', () => {
+    const npub = nip19.npubEncode(KEY);
+    expect(arrangeContactsV2([nameless()], { filter: 'all', query: npub.slice(0, 20) })).toHaveLength(1);
+    expect(arrangeContactsV2([nameless()], { filter: 'all', query: '66dd41aa' })).toHaveLength(1);
+  });
+  it('sorts by the name shown, not the stored hex label', () => {
+    const out = arrangeContactsV2([contact({ contactId: 'z', displayName: 'Zed' }), nameless()], { filter: 'all', query: '' });
+    expect(out.map(c => c.contactId)).toEqual(['n1', 'z']);
   });
 });

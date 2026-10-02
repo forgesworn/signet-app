@@ -126,4 +126,12 @@ describe('ContactsRolodex', () => {
       expect((screen.getByRole('button', { name: 'Import who this account follows' }) as HTMLButtonElement).disabled).toBe(true);
     });
   });
+
+  it('shows a short npub, never a hex prefix, for a contact stored with a hex label', () => {
+    const key = '66dd41aa' + 'b'.repeat(56);
+    renderRolodex([contact({ contactId: 'h1', displayName: '66dd41aa…',
+      identities: [{ itemId: 'i1', pubkey: key, provenance: 'direct', verification: 'unverified', addedAt: 1 } as never] })]);
+    expect(screen.queryByText('66dd41aa…')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Open npub1/ })).toBeTruthy();
+  });
 });

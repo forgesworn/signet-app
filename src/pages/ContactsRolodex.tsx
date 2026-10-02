@@ -1,5 +1,6 @@
 import type { ContactIdentityList } from '../lib/contacts-v2-identity-lists';
 import { useEffect, useState } from 'react';
+import { contactDisplayName } from '../lib/contacts-v2-name';
 import type { EffectiveContact } from '../types';
 import { ContactAvatar } from '../components/ContactAvatar';
 import { ContactTierChip } from '../components/ContactTierChip';
@@ -76,13 +77,14 @@ function ContactRow({ contact, guardianName, relayUrl, encryptionKey, onTap }: {
   relayUrl: string; encryptionKey: string | null; onTap: () => void;
 }) {
   const pubkey = primaryIdentityPubkey(contact);
+  const shownName = contactDisplayName(contact);
   return (
-    <button className="row row-button" onClick={onTap} aria-label={`Open ${contact.displayName}`}>
+    <button className="row row-button" onClick={onTap} aria-label={`Open ${shownName}`}>
       <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
-        <RowAvatar pubkey={pubkey} name={contact.displayName} relayUrl={relayUrl} encryptionKey={encryptionKey} />
+        <RowAvatar pubkey={pubkey} name={shownName} relayUrl={relayUrl} encryptionKey={encryptionKey} />
         <span className="row-main">
           <span className="row-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {contact.displayName}{contact.appIntroductions?.some(i => i.status === 'pending') ? ' · Link needs review' : ''}
+            {shownName}{contact.appIntroductions?.some(i => i.status === 'pending') ? ' · Link needs review' : ''}
           </span>
           {isKeyless(contact) && <span className="row-sub">{KEYLESS_MARKER}</span>}
         </span>

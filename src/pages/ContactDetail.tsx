@@ -1,5 +1,6 @@
 import { uncheckedAppConnection } from '../lib/contact-app-notice';
 import { ContactOrigins } from '../components/ContactOrigins';
+import { contactDisplayName } from '../lib/contacts-v2-name';
 import type { ContactOrigin } from '../lib/contact-origins';
 import { ContactChecks } from '../components/ContactChecks';
 import { ContactConfirm } from '../components/ContactConfirm';
@@ -105,11 +106,12 @@ export function ContactDetail(props: Props) {
   // `noteTouched` track whether THIS instance has typed into the field;
   // the effects below re-seed only while untouched, so a genuine in-progress
   // edit is never clobbered by an incoming prop change.
-  const [name, setName] = useState(contact.displayName);
+  const shownName = contactDisplayName(contact);
+  const [name, setName] = useState(contactDisplayName(contact));
   const [nameTouched, setNameTouched] = useState(false);
   useEffect(() => {
-    if (!nameTouched) setName(contact.displayName);
-  }, [contact.displayName, nameTouched]);
+    if (!nameTouched) setName(shownName);
+  }, [shownName, nameTouched]);
 
   const [roleDraft, setRoleDraft] = useState('');
   const [methodKind, setMethodKind] = useState<ContactMethodKind>('phone');
@@ -206,7 +208,7 @@ export function ContactDetail(props: Props) {
         {actionError?.scope === 'identities' && <p role="alert">{actionError.message}</p>}
       </div>}
       <div className="card section">
-        <h1 style={{ marginBottom: 6 }}>{contact.displayName}</h1>
+        <h1 style={{ marginBottom: 6 }}>{shownName}</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <ContactTierChip
             tier={contact.effectiveTier}
@@ -229,7 +231,7 @@ export function ContactDetail(props: Props) {
             />
             <button
               className="btn btn-ghost btn-sm"
-              disabled={busy || sanitizeDisplayName(name, 100) === contact.displayName}
+              disabled={busy || sanitizeDisplayName(name, 100) === shownName}
               onClick={() => void run('rename', () => props.onRename(sanitizeDisplayName(name, 100)))}
             >
               {SAVE_LABEL}
@@ -411,12 +413,12 @@ export function ContactDetail(props: Props) {
       )}
 
       {contact.sharedContexts?.map((shared, index) => <div className="card section" key={index}>
-        <h2>Shared by {guardianName || shared.guardianPubkey.slice(0, 12)}</h2>
+        <h2>Shared by {guardianName || shortNpub(shared.guardianPubkey)}</h2>
         <p className="field-hint">{new Date(shared.receivedAt).toLocaleDateString()}. These are the sender’s records, not your own checks.</p>
         {shared.tier && <p>Sender’s tier: {shared.tier}</p>}
         {shared.blocked !== undefined && <p>Blocked by sender: {shared.blocked ? 'Yes' : 'No'}</p>}
-        {shared.checkRecords?.map((check, index) => <p key={index}>{check.pubkey.slice(0, 12)}: {check.method} · {new Date(check.checkedAt).toLocaleDateString()}</p>)}
-        {shared.checks?.map(check => <p key={check.pubkey}>{check.pubkey.slice(0, 12)}: {check.verification}{check.verifiedAt !== undefined ? ` · ${new Date(check.verifiedAt).toLocaleDateString()}` : ''}</p>)}
+        {shared.checkRecords?.map((check, index) => <p key={index}>{shortNpub(check.pubkey)}: {check.method} · {new Date(check.checkedAt).toLocaleDateString()}</p>)}
+        {shared.checks?.map(check => <p key={check.pubkey}>{shortNpub(check.pubkey)}: {check.verification}{check.verifiedAt !== undefined ? ` · ${new Date(check.verifiedAt).toLocaleDateString()}` : ''}</p>)}
       </div>)}
       <ContactChecks key={contact.contactId + (props.checkOwnerIdentityPubkey ?? '')}
         checks={(contact.checks ?? []).filter(check => !props.checkOwnerIdentityPubkey || check.ownerIdentityPubkey === props.checkOwnerIdentityPubkey)}
@@ -449,7 +451,7 @@ export function ContactDetail(props: Props) {
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-danger" disabled={busy}
                   onClick={() => void run('block', () => props.onBlock(normaliseBlockReason(blockReason)))}>
-                  {blockConfirmLabel(contact.displayName)}
+                  {blockConfirmLabel(shownName)}
                 </button>
                 <button className="btn btn-secondary" onClick={() => setBlockOpen(false)}>{CANCEL_LABEL}</button>
               </div>
@@ -469,7 +471,7 @@ export function ContactDetail(props: Props) {
           ) : (
             <div className="card" style={{ borderColor: 'var(--danger)' }}>
               <p style={{ marginBottom: 12, fontSize: '0.9rem' }}>
-                {removeContactConfirmCopy(contact.displayName)}
+                {removeContactConfirmCopy(shownName)}
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-danger" style={{ flex: 1 }} disabled={busy}
