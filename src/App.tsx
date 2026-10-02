@@ -2580,9 +2580,6 @@ export function App() {
   });
   // The persona whose camera card scanned the invite; the send screen defaults to it.
   const [pendingInviteSender, setPendingInviteSender] = useState<string | undefined>(undefined);
-  // The invite the send page has already sent: never reopen the page for it, even
-  // after a lock/unlock re-runs the effect below.
-  const sentInviteRef = useRef<string | undefined>(undefined);
   const sendPageOpenRef = useRef(false);
   useEffect(() => {
     // Leaving the send page by any route (back, Done, Cancel, other navigation)
@@ -2590,12 +2587,10 @@ export function App() {
     if (page === 'contact-invite-send') { sendPageOpenRef.current = true; return; }
     if (!sendPageOpenRef.current) return;
     sendPageOpenRef.current = false;
-    sentInviteRef.current = undefined;
     setPendingContactInvite(undefined); setPendingInviteSender(undefined);
   }, [page]);
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
-    if (!isPairedChild && pendingContactInvite === sentInviteRef.current) return;
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
     // D6: a paired-child install asks the guardian instead of connecting.
     navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
@@ -11247,7 +11242,6 @@ export function App() {
             const sentAt = Math.floor(Date.now() / 1000);
             await ownerInviteService.request(persona, invite, sentAt);
             await ownerInviteService.flush(sentAt);
-            sentInviteRef.current = pendingContactInvite;
           }}
           onDone={finish} onCancel={finish} />
         : <div style={{ padding: 16 }}>

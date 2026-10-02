@@ -104,7 +104,7 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
     setBusy(true); setCreateFailed(false);
     void ensureStandingInvite(service, identityPubkey, relays, withName ? caption : undefined)
       .then(row => {
-        setLoaded(old => ({ service, key: identityPubkey, rows: [...(old?.service === service && old.key === identityPubkey ? old.rows : []), row], requests: old?.requests ?? 0 }));
+        setLoaded(old => ({ service, key: identityPubkey, rows: [...(old?.service === service && old.key === identityPubkey ? old.rows : []).filter(r => r.id !== row.id), row], requests: old?.requests ?? 0 }));
         setSelected(row.id);
       })
       .catch(() => setCreateFailed(true))
