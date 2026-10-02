@@ -44,6 +44,7 @@ import type {
   EffectiveContact,
   NoteValue,
   SetLifecycleValue,
+  UpdateIdentityValue,
   UpdateMethodValue,
   VouchValue,
 } from '../types';
@@ -109,6 +110,7 @@ export interface UseContactsV2Result {
   addIdentity: (contactId: string, v: Omit<AddIdentityValue, 'itemId'>) => Promise<string>;
   addContactMethod: (contactId: string, v: Omit<AddMethodValue, 'itemId'>) => Promise<string>;
   updateContactMethod: (contactId: string, v: UpdateMethodValue) => Promise<void>;
+  updateIdentity: (contactId: string, v: UpdateIdentityValue) => Promise<void>;
   removeItem: (contactId: string, itemId: string) => Promise<void>;
   vouch: (contactId: string, v: VouchValue) => Promise<void>;
   revokeVouch: (contactId: string, vouchOperationId: string) => Promise<void>;
@@ -434,6 +436,7 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     addIdentity,
     addContactMethod,
     updateContactMethod: useCallback((contactId, v) => mutate({ contactId, action: 'update-method', itemId: v.itemId, value: v }), [mutate]),
+    updateIdentity: useCallback((contactId, v) => mutate({ contactId, action: 'update-identity', itemId: v.itemId, value: v }), [mutate]),
     removeItem: useCallback((contactId, itemId) => mutate({ contactId, action: 'remove-item', itemId, value: { itemId } }), [mutate]),
     vouch: useCallback((contactId, v) => mutate({ contactId, action: 'vouch', value: v }), [mutate]),
     revokeVouch: useCallback((contactId, vouchOperationId) => mutate({ contactId, action: 'revoke-vouch', value: {}, targetOperationId: vouchOperationId }), [mutate]),

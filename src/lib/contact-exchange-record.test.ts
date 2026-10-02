@@ -104,3 +104,43 @@ it('falls back to the short key when the caption exceeds the reducer cap in UTF-
   const viaApp = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: app, isCurrent: () => true });
   expect(await nameOf(viaApp)).toBe(peer.slice(0, 12) + '…');
 });
+const seedExisting = async (verification: 'unverified' | 'proven' | 'mutual') => {
+  const contactId = '9'.repeat(32);
+  const make = (action: Parameters<typeof buildOperation>[0]['action'], value: unknown, clock: number) => buildOperation({
+    directoryId: 'owner', contactId, action, value, clock, actor, now: 1000, operationId: clock.toString(16).padStart(32, '0') });
+  await saveContactOperationsV2([make('add', { type: 'person', displayName: 'Friend', tier: 'ken' }, 1),
+    make('add-identity', { itemId: 'a'.repeat(32), pubkey: peer, provenance: 'direct', verification }, 2)], key);
+  return contactId;
+};
+const identityOf = async (contactId: string) => applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.identities[0];
+it('words confirmed marks the peer key mutual, once, and moves a ken to kith', async () => {
+  const contactId = await seedExisting('unverified');
+  const args = { directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true };
+  await recordCompletedContactExchange(args);
+  const record = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!;
+  expect(record.identities[0].verification).toBe('mutual');
+  expect(record.checks?.[0]).toMatchObject({ method: 'words', identityPubkey: peer });
+  expect(record.tier).toBe('kith');
+  const count = (await listContactOperationsV2('owner', key)).length;
+  await recordCompletedContactExchange(args);
+  expect(await listContactOperationsV2('owner', key)).toHaveLength(count);
+});
+it('words confirmed on a brand-new contact also marks its key mutual', async () => {
+  const contactId = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
+  expect((await identityOf(contactId)).verification).toBe('mutual');
+});
+it('without words confirmed the key stays unverified and no check is recorded', async () => {
+  const contactId = await seedExisting('unverified');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: exchange(), isCurrent: () => true });
+  expect((await identityOf(contactId)).verification).toBe('unverified');
+  expect(applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.checks ?? []).toHaveLength(0);
+});
+it('a proven key is lifted to mutual, and an already-mutual key gets no further write', async () => {
+  const contactId = await seedExisting('proven');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
+  expect((await identityOf(contactId)).verification).toBe('mutual');
+  await purgeAllUserData();
+  await seedExisting('mutual');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
+  expect((await listContactOperationsV2('owner', key)).filter(op => op.action === 'update-identity')).toHaveLength(0);
+});
