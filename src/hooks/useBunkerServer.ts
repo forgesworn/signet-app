@@ -203,6 +203,8 @@ interface Options {
   /** Resolve a selected dependant profile and child-signed device statement after explicit approval. */
   kinterestChildLabel?: (identityPk: string) => { name: string; avatar?: { hash: string; blossomUrl: string; keyHex: string } } | null;
   kinterestChildConsent?: (template: UnsignedEvent) => Promise<string>;
+  /** The real identity's (natural person) pubkey while it is active; Kinterest authority requests are refused on every other route. */
+  kinterestAuthorityPubkey?: string;
 
   enabled: boolean;
   relayUrl: string;
@@ -413,11 +415,14 @@ async function publishResponseToSocket(
   }
 }
 
-export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel }: Options) {
+export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey }: Options) {
   const kinterestChildLabelRef = useRef(kinterestChildLabel);
   kinterestChildLabelRef.current = kinterestChildLabel;
   const kinterestChildConsentRef = useRef(kinterestChildConsent);
   kinterestChildConsentRef.current = kinterestChildConsent;
+  const kinterestAuthorityPubkeyRef = useRef(kinterestAuthorityPubkey);
+  kinterestAuthorityPubkeyRef.current = kinterestAuthorityPubkey;
+  const isKinterestAuthorityRoute = (pubkey: string) => !!kinterestAuthorityPubkeyRef.current && pubkey.toLowerCase() === kinterestAuthorityPubkeyRef.current.toLowerCase();
   // Keep the onPairingComplete callback in a ref so the inbound handler
   // always sees the latest — callers typically pass inline arrows.
   const onPairingCompleteRef = useRef(onPairingComplete);
@@ -1148,6 +1153,10 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid Kinterest authority request');
       return;
     }
+    if (kinterest && !isKinterestAuthorityRoute(route.pubkey)) {
+      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'Kinterest authority needs your real identity');
+      return;
+    }
 
     const selectedChild = kinterest ? parseKinterestRequest(template)?.child : undefined;
     const kinterestChildProfile = selectedChild ? kinterestChildLabelRef.current?.(selectedChild.identityPk) : undefined;
@@ -1505,11 +1514,11 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         let template = req.template;
         if (isKinterestAuthority(template)) {
           const authority = parseKinterestRequest(template);
-          if (!authority || req.route.dependantId || !routesRef.current.some(r => !r.dependantId && r.pubkey === req.route.pubkey && r.backend === req.route.backend && r.signingBackend === req.route.signingBackend)) throw new Error('Authority route retired');
+          if (!authority || req.route.dependantId || !isKinterestAuthorityRoute(req.route.pubkey) || !routesRef.current.some(r => !r.dependantId && r.pubkey === req.route.pubkey && r.backend === req.route.backend && r.signingBackend === req.route.signingBackend)) throw new Error('Authority route retired');
           const childContent = authority.child ? await kinterestChildConsentRef.current?.(template) : undefined;
           if (authority.child && childContent === undefined) throw new Error('Dependant selection unavailable');
           if (childContent !== undefined && JSON.parse(childContent).name !== req.kinterestChildName) throw new Error('Selected profile changed; request a fresh approval');
-          if (!routesRef.current.some(r => !r.dependantId && r.pubkey === req.route.pubkey && r.backend === req.route.backend && r.signingBackend === req.route.signingBackend)) throw new Error('Authority route retired');
+          if (!isKinterestAuthorityRoute(req.route.pubkey) || !routesRef.current.some(r => !r.dependantId && r.pubkey === req.route.pubkey && r.backend === req.route.backend && r.signingBackend === req.route.signingBackend)) throw new Error('Authority route retired');
           template = confirmKinterest(template, childContent);
           decision = 'approve-once';
         }

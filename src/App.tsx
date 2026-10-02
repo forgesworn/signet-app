@@ -3309,6 +3309,7 @@ export function App() {
       const p = dependants.find(dep => dep.guardianPubkey === identity.naturalPerson.publicKey && (dep.persona.publicKey === pk || dep.id === pk))?.persona;
       return p ? { name:p.displayName, ...(p.contactAvatarHash && p.contactAvatarBlossomUrl && p.contactAvatarKey ? { avatar: { hash:p.contactAvatarHash,blossomUrl:p.contactAvatarBlossomUrl,keyHex:p.contactAvatarKey } } : {}) } : null;
     },
+    kinterestAuthorityPubkey: npActive && identity ? identity.naturalPerson.publicKey : undefined,
     kinterestChildConsent: async (template) => {
       const request = parseKinterestRequest(template);
       const key = encryptionKey;

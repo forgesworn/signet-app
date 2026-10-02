@@ -13,6 +13,7 @@ import { LocalSigningBackend } from '../lib/signing-backend';
 import { buildConnectedClientFromNostrConnect } from '../lib/nip46';
 import { deleteConnectedClient, getConnectedClient, saveConnectedClient } from '../lib/db';
 import * as db from '../lib/db';
+import { CHILD_PURPOSE } from '../lib/kinterest-authority';
 import type { TrustedAppPairing } from '../types';
 
 class MockRelaySocket {
@@ -568,8 +569,53 @@ describe('explicit Kinterest family authority', () => {
     return { kind:30078,pubkey:'',created_at:Math.floor(Date.now()/1000),content:'Authorise this family key to manage Kinterest and its encrypted family backup.',
       tags:[['d',`kin-jar/family-authorisation/v2/${'a'.repeat(64)}`],['scope','kin-jar:family:v2'],['family','a'.repeat(64)],['challenge','b'.repeat(64)],['approval','request']] };
   }
+  /** Owner-route harness; `authority` is the kinterestAuthorityPubkey ('owner' = the route's own pubkey) and can be changed with rerender. */
+  function renderKin(authority: string | undefined) {
+    const ownerBackend = new LocalSigningBackend(bytesToHex(generateSecretKey())), relayUrl = 'wss://canary-relay.example';
+    const hook = renderHook(({ authority: a }: { authority: string | undefined }) => useBunkerServer({ enabled: true, relayUrl, isOwnerServingActive: () => true,
+      routes: [{ pubkey: ownerBackend.activePublicKeyHex, backend: ownerBackend }], kinterestAuthorityPubkey: a === 'owner' ? ownerBackend.activePublicKeyHex : a }),
+      { initialProps: { authority } });
+    return { ...hook, ownerBackend, relayUrl };
+  }
+  function childTemplate() {
+    return { kind:30078,pubkey:'',created_at:Math.floor(Date.now()/1000),content:CHILD_PURPOSE,
+      tags:[['d',`kin-jar/child-selection/v2/${'a'.repeat(64)}`],['scope','kin-jar:family:v2'],['family','a'.repeat(64)],['challenge','b'.repeat(64)],['approval','request'],['child','c'.repeat(64)],['device','d'.repeat(64)],['role','child-phone']] };
+  }
+  async function expectRefused(authority: string | undefined, tpl: ReturnType<typeof template> | ReturnType<typeof childTemplate>) {
+    const { ownerBackend, relayUrl, result, unmount } = renderKin(authority), signing = vi.spyOn(ownerBackend, 'signEvent');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex,relayUrl), clientSk = generateSecretKey();
+    await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'wrong-route',method:'sign_event',params:[JSON.stringify(tpl)]})));
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk,ws.published[0])).toMatchObject({ id:'wrong-route', error:'Kinterest authority needs your real identity' });
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    expect(signing.mock.calls.some(([e]) => e.kind === 30078)).toBe(false);
+    unmount();
+  }
+  it('refuses a family authorisation on a route that is not the real identity', async () => {
+    await expectRefused(getPublicKey(generateSecretKey()), template());
+  });
+  it('refuses a family authorisation when no real identity is active', async () => {
+    await expectRefused(undefined, template());
+  });
+  it('refuses a child selection on a persona route on arrival', async () => {
+    await expectRefused(getPublicKey(generateSecretKey()), childTemplate());
+  });
+  it('fails signing when the real identity stops being active between request and approval', async () => {
+    for (const later of [getPublicKey(generateSecretKey()), undefined]) {
+      const { ownerBackend, relayUrl, result, rerender, unmount } = renderKin('owner'), signing = vi.spyOn(ownerBackend, 'signEvent');
+      const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex,relayUrl), clientSk = generateSecretKey();
+      await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'late',method:'sign_event',params:[JSON.stringify(template())]})));
+      await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+      rerender({ authority: later });
+      await act(async () => result.current.approveOnce(result.current.pendingApprovals[0].handle));
+      await waitFor(() => expect(ws.published).toHaveLength(1));
+      expect(decryptServerResponse(clientSk,ws.published[0])).toMatchObject({ id:'late', error:'signing failed' });
+      expect(signing.mock.calls.some(([e]) => e.kind === 30078)).toBe(false);
+      unmount(); MockRelaySocket.instances.length = 0;
+    }
+  });
   it('requires a fresh decision despite remembered allow-always, and never grants always for this ceremony', async () => {
-    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer();
+    const { ownerBackend, relayUrl, result, unmount } = renderKin('owner');
     const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex,relayUrl), clientSk = generateSecretKey(), pk = getPublicKey(clientSk);
     await saveConnectedClient({clientPubkey:pk,appName:'Kinterest',connectedAt:1,lastSeenAt:1,allowAlways:true});
     await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'consent',method:'sign_event',params:[JSON.stringify(template())]})));
@@ -587,7 +633,7 @@ describe('explicit Kinterest family authority', () => {
     unmount();
   });
   it('refuses a reserved but malformed request instead of signing it through a generic grant', async () => {
-    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer();
+    const { ownerBackend, relayUrl, result, unmount } = renderKin('owner');
     const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex,relayUrl), clientSk = generateSecretKey(), pk = getPublicKey(clientSk);
     await saveConnectedClient({clientPubkey:pk,appName:'Kinterest',connectedAt:1,lastSeenAt:1,allowAlways:true});
     await act(async () => ws.deliver(buildClientRequest({clientSk,targetPubkey:ownerBackend.activePublicKeyHex,id:'malformed',method:'sign_event',params:[JSON.stringify({...template(),kind:1})]})));
