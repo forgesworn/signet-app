@@ -1,3 +1,4 @@
+import { parseKinterestRequest } from './lib/kinterest-authority';
 import { useChildContactDirectory, useChildContactDirectoryPublisher } from './hooks/useChildContactDirectory';
 import { useChildContactReplyInbox } from './hooks/useChildContactReplyInbox';
 import { useGuardianChildContactRequests } from './hooks/useGuardianChildContactRequests';
@@ -3721,6 +3722,34 @@ export function App() {
     reconnectNonce: bunkerReconnectNonce,
     relayUrl: nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL,
     routes: bunkerRoutes,
+    kinterestChildLabel: (pk) => {
+      if (!npActive || !identity) return null;
+      const p = dependants.find(dep => dep.guardianPubkey === identity.naturalPerson.publicKey && (dep.persona.publicKey === pk || dep.id === pk))?.persona;
+      return p ? { name:p.displayName, ...(p.contactAvatarHash && p.contactAvatarBlossomUrl && p.contactAvatarKey ? { avatar: { hash:p.contactAvatarHash,blossomUrl:p.contactAvatarBlossomUrl,keyHex:p.contactAvatarKey } } : {}) } : null;
+    },
+    kinterestAuthorityPubkey: npActive && identity ? identity.naturalPerson.publicKey : undefined,
+    kinterestChildConsent: async (template) => {
+      const request = parseKinterestRequest(template);
+      const key = encryptionKey;
+      const guardian = identity?.naturalPerson.publicKey;
+      if (!request?.child || !key || !guardian || !npActive) throw new Error('Activate your real identity to authorise a child');
+      const { child, familyPk } = request;
+      const fresh = (await loadFreshDependants(key)).find(dep => dep.guardianPubkey === guardian && (dep.persona.publicKey === child.identityPk || dep.id === child.identityPk));
+      if (!fresh || encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== guardian) throw new Error('Dependant unavailable');
+      const persona = fresh.persona;
+      const identityPk = persona.publicKey;
+      const signing = new LocalSigningBackend(persona.privateKey);
+      try {
+        const statement = await signing.signEvent({ pubkey: identityPk, kind: 30078, created_at: template.created_at,
+          content: 'Authorise this device for Kinterest child actions only.',
+          tags: [['d', `kin-jar/device/v2/${familyPk}/${child.devicePk}`], ['scope', 'kin-jar:child-actions:v2'], ['family', familyPk], ['child', identityPk], ['device', child.devicePk], ['role', child.role]],
+        });
+        if (encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== guardian) throw new Error('Identity locked');
+        const avatar = persona.contactAvatarBlossomUrl && persona.contactAvatarHash && persona.contactAvatarKey
+          ? { url: persona.contactAvatarBlossomUrl, hash: persona.contactAvatarHash, key: persona.contactAvatarKey } : undefined;
+        return JSON.stringify({ v: 2, familyPk, identityPk, name: persona.displayName, ...(avatar ? { avatar } : {}), devicePk: child.devicePk, role: child.role, statement });
+      } finally { signing.destroy(); }
+    },
     onApprovalPending: (entry) => {
       // Native: raise a local notification when the app isn't visible —
       // the screen-off guardian must learn a human decision is needed.
