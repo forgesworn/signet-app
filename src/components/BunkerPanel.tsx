@@ -258,7 +258,8 @@ export function BunkerPanel({
     return <BunkerApprovalModal approval={reviewed}
       onApproveOnce={handle => { onApproveOnce(handle); setReviewHandle(null); }}
       onApproveAlways={handle => { onApproveOnce(handle); setReviewHandle(null); }}
-      onDeny={handle => { onDeny(handle); setReviewHandle(null); }} />;
+      onDeny={handle => { onDeny(handle); setReviewHandle(null); }}
+      onBack={() => setReviewHandle(null)} />;
   }
   return (
     <div style={backdrop} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>

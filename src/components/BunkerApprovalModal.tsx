@@ -25,6 +25,8 @@ interface Props {
   onApproveOnce: (handle: number) => void;
   onApproveAlways: (handle: number) => void;
   onDeny: (handle: number) => void;
+  /** Return to the list without answering the request (Escape does the same). Omitted: no Back button. */
+  onBack?: () => void;
 }
 
 function safeUrl(url: string | undefined): string | null {
@@ -37,7 +39,7 @@ function safeUrl(url: string | undefined): string | null {
   }
 }
 
-export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny }: Props) {
+export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny, onBack }: Props) {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const avatar = approval.kinterestChildAvatar;
   useEffect(() => {
@@ -46,6 +48,12 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
     if (avatar) void fetchAvatar(avatar).then(blob => { if (!cancelled) { url = URL.createObjectURL(blob); setAvatarUrl(url); } }).catch(() => {});
     return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
   }, [approval.handle, avatar?.hash, avatar?.keyHex, avatar?.blossomUrl]);
+  useEffect(() => {
+    if (!onBack) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onBack(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onBack]);
   const authority = parseKinterestRequest(approval.template);
   const reserved = isKinterestAuthority(approval.template);
   const name = safeAppName(approval.client.appName);
@@ -148,6 +156,7 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
               </button>
             </>
           )}
+          {onBack && <button className="btn btn-secondary" onClick={onBack}>Back</button>}
           <button className="btn btn-ghost" onClick={() => onDeny(approval.handle)}>
             Deny
           </button>
