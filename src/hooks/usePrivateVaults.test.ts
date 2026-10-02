@@ -6,6 +6,8 @@ vi.mock('../lib/private-vault-sync', () => ({ syncPrivateVaultDataset: sync }));
 import { usePrivateVaults, legacyVaultWriteAllowed, PRIVATE_VAULT_PAUSE_CAP_MS } from './usePrivateVaults';
 import { VaultApprovalError } from '../lib/vault-approval';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
+import { vaultContentHash } from 'signet-protocol/experimental';
+import type { VaultDataset } from 'signet-protocol/experimental';
 const job = { adapter: { dataset: 'profiles' as const, snapshot: async () => '{}', merge: async () => {} },
   resolve: async () => ({} as DecryptingSigningBackend) };
 const opts = () => ({ sessionKey: 'owner', ownerPubkey: 'a'.repeat(64), encryptionKey: 'unlock', supported: true,
@@ -21,7 +23,11 @@ it('retries without another edit and never re-enables legacy writes after verifi
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(false);
-  await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+  // All verified: no timer polls again on its own…
+  await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000); });
+  expect(sync).toHaveBeenCalledTimes(2);
+  // …but a full cycle (here `online`) still runs and can fail.
+  await act(async () => { window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(1500); });
   expect(result.current.datasets['signet:vault:profiles'].state).toBe('unavailable');
   expect(result.current.datasets['signet:vault:profiles'].canonical).toBe(true);
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(false);
@@ -177,5 +183,121 @@ it('a pause that is never lifted is honoured only up to the cap', async () => {
   expect(sync).not.toHaveBeenCalled();
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
   expect(sync).toHaveBeenCalledTimes(1);
+  unmount();
+});
+
+// ── Only datasets that need it ───────────────────────────────────────────────
+// Each sync is device work (a card per decrypt on a Heartwood). A change cycle
+// visits only datasets whose local snapshot moved since they verified, a
+// backoff retry only the unverified ones; unlock and `online` stay full.
+
+function trackedJobs(datasets: VaultDataset[]) {
+  const data = new Map<string, string>(datasets.map(d => [JSON.stringify(d), 'v0']));
+  const jobs = datasets.map(dataset => ({ adapter: { dataset, merge: async () => {},
+    snapshot: async () => data.get(JSON.stringify(dataset))! }, resolve: async () => ({} as DecryptingSigningBackend) }));
+  return { jobs, edit: (dataset: VaultDataset, value: string) => data.set(JSON.stringify(dataset), value) };
+}
+const verifiedSync = async (args: { adapter: { snapshot(): Promise<string> } }) =>
+  ({ state: 'verified', canonical: true, revision: vaultContentHash(await args.adapter.snapshot()) });
+const ran = () => sync.mock.calls.map(([args]) => (args as { adapter: { dataset: VaultDataset } }).adapter.dataset);
+const three: VaultDataset[] = ['profiles', 'credentials', 'settings'];
+
+it('a change cycle syncs only the dataset whose local data moved, and nothing polls once all verify', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(verifiedSync);
+  const { jobs, edit } = trackedJobs(three);
+  let props = { ...opts(), jobs: async () => jobs };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(ran()).toEqual(three);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000); });
+  expect(sync).toHaveBeenCalledTimes(3);
+  edit('settings', 'v1');
+  props = { ...props, changeToken: 'edited' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(3)).toEqual(['settings']);
+  // An unrelated token change with no data moved costs nothing.
+  rerender({ ...props, changeToken: 'edited-again' });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(sync).toHaveBeenCalledTimes(4);
+  unmount();
+});
+
+it('treats a snapshot that throws as changed', async () => {
+  vi.useFakeTimers();
+  sync.mockResolvedValue({ state: 'verified', canonical: true, revision: 'r' });
+  const broken = { ...job, adapter: { ...job.adapter, snapshot: async () => { throw new Error('locked'); } } };
+  let props = { ...opts(), jobs: async () => [broken] };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  props = { ...props, changeToken: 'edited' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(sync).toHaveBeenCalledTimes(2);
+  unmount();
+});
+
+it('a backoff retry syncs only the datasets that did not verify', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(async (args: { adapter: { dataset: VaultDataset; snapshot(): Promise<string> } }) =>
+    args.adapter.dataset === 'credentials' ? { state: 'unavailable', canonical: false } : verifiedSync(args));
+  const { jobs } = trackedJobs(three);
+  const { unmount } = renderHook(() => usePrivateVaults({ ...opts(), jobs: async () => jobs }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(ran()).toEqual(three);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(ran().slice(3)).toEqual(['credentials']);
+  unmount();
+});
+
+it('`online` runs a full cycle over unchanged, verified datasets', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(verifiedSync);
+  const { jobs } = trackedJobs(three);
+  const { unmount } = renderHook(() => usePrivateVaults({ ...opts(), jobs: async () => jobs }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  await act(async () => { window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(3)).toEqual(three);
+  unmount();
+});
+
+it('a full cycle requested while a change cycle runs is followed by a full one', async () => {
+  vi.useFakeTimers();
+  let finish!: () => void;
+  sync.mockImplementation(verifiedSync);
+  const { jobs, edit } = trackedJobs(three);
+  let props = { ...opts(), jobs: async () => jobs };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  sync.mockImplementationOnce(async args => { await new Promise<void>(r => { finish = r; }); return verifiedSync(args); });
+  edit('settings', 'v1');
+  props = { ...props, changeToken: 'edited' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(3)).toEqual(['settings']);
+  await act(async () => { window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(10); });
+  await act(async () => { finish(); await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(4)).toEqual(three);
+  unmount();
+});
+
+it('a full cycle held part-way still visits its unreached datasets after the pause', async () => {
+  vi.useFakeTimers();
+  let finish!: () => void;
+  sync.mockImplementation(verifiedSync);
+  const { jobs } = trackedJobs(three);
+  const props = { ...opts(), jobs: async () => jobs, paused: false };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  sync.mockImplementationOnce(async args => { await new Promise<void>(r => { finish = r; }); return verifiedSync(args); });
+  await act(async () => { window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(3)).toEqual(['profiles']);
+  rerender({ ...props, paused: true });
+  await act(async () => { finish(); await vi.advanceTimersByTimeAsync(10); });
+  rerender({ ...props, paused: false });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  // Verified and unchanged, but the full cycle never reached them.
+  expect(ran().slice(4)).toEqual(['credentials', 'settings']);
   unmount();
 });

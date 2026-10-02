@@ -38,6 +38,8 @@ export type PrivateVaultSyncResult = {
   merged?: boolean;
   confirmedAt?: number;
   confirmedRelays?: string[];
+  /** On `verified`: vaultContentHash of the local snapshot that was verified. */
+  revision?: string;
 };
 
 /** One bounded sync cycle. Scheduling and UI stay with the caller. */
@@ -156,7 +158,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
     merged = priorPlaintext !== undefined && priorPlaintext !== plaintext;
     const revision = vaultContentHash(plaintext);
     if (!before.pending && before.confirmed?.revision === revision && snapshots.some(s => s.checkpoint.revision === revision)) {
-      return { state: 'verified', canonical: true, merged, rotation,
+      return { state: 'verified', canonical: true, merged, rotation, revision,
         confirmedAt: before.confirmed?.confirmedAt, confirmedRelays: before.confirmed?.relays };
     }
     if (!before.pending || before.pending.manifest.revision !== revision
@@ -177,7 +179,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
       relays: args.relays.write, now: args.now, isCurrent: args.isCurrent });
     current();
     return { state: result.state === 'verified' ? 'verified' : 'pending', canonical: canonical || result.state === 'verified', merged, rotation,
-      ...(result.state === 'verified' ? { confirmedAt: args.now, confirmedRelays: result.confirmedRelays } : {}) };
+      ...(result.state === 'verified' ? { confirmedAt: args.now, confirmedRelays: result.confirmedRelays, revision } : {}) };
   } catch {
     return { state: args.isCurrent() ? 'unavailable' : 'cancelled', canonical, merged };
   } finally {
