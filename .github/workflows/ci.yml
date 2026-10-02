@@ -1,0 +1,53 @@
+name: CI
+
+# Pull requests had no checks at all — Deploy only runs on main. This is the
+# fast gate (typecheck, unit tests, conformance, build); the browser and
+# cross-app regressions stay in Deploy.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Actions pinned to commit SHA, matching deploy.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # npm normalises the public @forgesworn git deps to ssh://git@github.com/,
+      # which needs an SSH key the runner doesn't have, so fetch them over HTTPS.
+      # No secrets: pull requests from forks don't get them, and the deps are public.
+      - name: Route @forgesworn git deps over HTTPS
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install dependencies
+        run: npm ci --install-links=false
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Check Signet conformance
+        run: npm run check:signet-conformance
+
+      - name: Build
+        run: npm run build
