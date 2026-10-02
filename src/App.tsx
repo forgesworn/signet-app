@@ -68,7 +68,7 @@ import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDepe
 import { resolveSelectedPubkey } from './lib/auth-selection';
 import { downscaleAvatar, uploadAvatar, fetchAvatar, uploadContactAvatar, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
 import { generateContactAvatarKey } from './lib/photo-crypto';
-import { publishContactAvatarPointer, retractContactAvatarPointer } from './lib/contact-avatar';
+import { publishContactAvatarPointer } from './lib/contact-avatar';
 import { verifiedAuthoredEvent } from './lib/event-verify';
 import { resolveSettingsViewer } from './lib/carousel-routing';
 import type { StoredCredential, RememberedGrant, ChildSettings as ChildSettingsType, GrantScope, CompanionGrant } from './types';
@@ -591,7 +591,7 @@ export function App() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -760,7 +760,7 @@ export function App() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
+  const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
   // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
@@ -12526,62 +12526,6 @@ export function App() {
     return contactKey;
   };
 
-  const handleEnableContactAvatarShare = (target: string, depPubkey?: string): Promise<string | null> =>
-    pushContactAvatar({ target, depPubkey, requireExisting: false });
-
-  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
-  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
-  // revocation can't be blocked by an unreachable relay), then best-effort
-  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
-  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
-  // recipient who cached the old key can't follow the new pointer. Recipients
-  // who already fetched the blob keep it — no clawback, by design.
-  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
-    const key = encryptionKey || await requestAuth();
-    if (!key) throw new Error('Authentication required');
-
-    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
-    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
-    let slot: { publicKey: string; privateKey: string } | undefined;
-    if (depPubkey) {
-      const all = await loadFreshDependants(key);
-      const dep = all.find(d => d.id === depPubkey);
-      if (!dep) return;
-      slot = target === 'natural-person' ? dep.naturalPerson
-        : target === 'persona' ? dep.persona
-        : dep.extraPersonas?.find(e => e.publicKey === target);
-    } else {
-      if (!identity) return;
-      const decrypted = await loadIdentityDecrypted(identity.id, key);
-      if (!decrypted) return;
-      slot = target === 'natural-person' ? decrypted.naturalPerson
-        : target === 'persona' ? decrypted.persona
-        : decrypted.extraPersonas?.find(e => e.publicKey === target);
-    }
-    if (!slot) return;
-
-    // Clear FIRST — local revocation must not be blockable by relay state
-    // (or by the absence of a local/routed signing key).
-    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
-    else await clearPersonaContactAvatar(target);
-
-    // Best-effort retract of the published pointer. Router-sourced fallback
-    // is a SHARED, CACHED route — only a locally-constructed backend
-    // (ownedStop) may be destroy()'d below.
-    const ownedStop = !!slot.privateKey;
-    const stopBackend: DecryptingSigningBackend | null = ownedStop
-      ? new LocalSigningBackend(slot.privateKey)
-      // A42: never an ungated router route on a direct child.
-      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
-    if (stopBackend) {
-      try {
-        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
-      } finally {
-        if (ownedStop) stopBackend.destroy();
-      }
-    }
-  };
-
   // Home (default) — card-swipe wallet carousel
   return (
     <>
@@ -12936,14 +12880,6 @@ export function App() {
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });
         }}
-        // Contact-share avatar ENABLE. Gated on the paired-child surface for
-        // the same reasons as the in-app avatar handlers above (local writes
-        // get clobbered by the next persona-inventory sync; Blossom NIP-98
-        // auth would pop an unsolicited sign request to the guardian's bunker).
-        onEnableContactAvatarShare={isPairedChild ? undefined : handleEnableContactAvatarShare}
-        // Contact-share avatar STOP (G1 coarse revocation). Gated on the
-        // paired-child surface for the same reasons as enable above.
-        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
       >
         {pendingAuthRequest && page === 'home' && identity && (() => {
           // Display from the scan-time selection snapshot, not the live carousel

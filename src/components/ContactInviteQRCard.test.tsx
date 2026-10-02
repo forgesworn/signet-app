@@ -10,9 +10,9 @@ import type { ResolvedIdentity } from '../lib/carousel-utils';
 import type { QRCardSlots } from './QRCard';
 vi.mock('./QRCode', () => ({ QRCode: ({ data }: { data: string }) => <output data-testid="qr">{data}</output> }));
 const A = 'a'.repeat(64), B = 'b'.repeat(64);
-const invite = (key: string, name: string) => createStoredContactInvite({ identityPubkey: key, name, relays: ['wss://example.test'], mode: 'standing', now: 100 });
+const invite = (key: string, name: string, caption?: string) => createStoredContactInvite({ identityPubkey: key, name, relays: ['wss://example.test'], mode: 'standing', now: 100, caption });
 const vault = (rows: ReturnType<typeof invite>[], arrivals: unknown[] = []) => ({ v: 1 as const, directoryId: 'owner', invites: rows, arrivals, exchanges: [], outbox: [] });
-const resolved = (key: string): ResolvedIdentity => ({ displayName: 'Alice', displayNameIsSet: true, publicKey: key, type: 'Persona', isDependant: false });
+const resolved = (key: string, set = true): ResolvedIdentity => ({ displayName: 'Alice', displayNameIsSet: set, publicKey: key, type: 'Persona', isDependant: false });
 const renderPublicCard = (slots?: QRCardSlots): ReactNode => <div><p>Public key card</p>{slots?.tabs}{slots?.footer}</div>;
 const asService = (s: unknown) => s as ContactInviteService;
 const base = { relays: [], version: 0, renderPublicCard, onManage() {}, locked: false, onRequestUnlock() {} };
@@ -23,9 +23,9 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('carousel contact invite card', () => {
   it('shows only active standing invites for this identity, never their private name in the QR', async () => {
-    const rows = [invite(B, 'Other persona'), { ...invite(A, 'Off'), enabled: false },
-      { ...invite(A, 'Expired'), invite: { ...invite(A, 'Expired').invite, expiresAt: 200 } },
-      { ...invite(A, 'Single'), mode: 'single-use' as const }, invite(A, 'Private conference')];
+    const rows = [invite(B, 'Other persona', 'Alice'), { ...invite(A, 'Off', 'Alice'), enabled: false },
+      { ...invite(A, 'Expired', 'Alice'), invite: { ...invite(A, 'Expired', 'Alice').invite, expiresAt: 200 } },
+      { ...invite(A, 'Single', 'Alice'), mode: 'single-use' as const }, invite(A, 'Private conference', 'Alice')];
     const service = asService({ read: vi.fn(async () => vault(rows)), create: vi.fn() });
     render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
     const qr = await screen.findByTestId('qr');
@@ -37,13 +37,13 @@ describe('carousel contact invite card', () => {
 
   it('clears the previous identity QR immediately while a new identity is loading', async () => {
     let finish!: (value: ReturnType<typeof vault>) => void;
-    const read = vi.fn().mockResolvedValueOnce(vault([invite(A, 'Alice')])).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const read = vi.fn().mockResolvedValueOnce(vault([invite(A, 'Alice', 'Alice')])).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const service = asService({ read, create: vi.fn(() => new Promise(() => {})) });
     const view = render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
     await screen.findByTestId('qr');
     view.rerender(<ContactInviteQRCard {...base} service={service} identityPubkey={B} resolved={resolved(B)} />);
     expect(screen.queryByTestId('qr')).toBeNull();
-    await act(async () => finish(vault([invite(B, 'Bob')])));
+    await act(async () => finish(vault([invite(B, 'Bob', 'Alice')])));
     expect(parseContactInviteLink(screen.getByTestId('qr').textContent!, 101)?.recipient).toBe(B);
   });
 
@@ -64,7 +64,7 @@ describe('carousel contact invite card', () => {
   });
 
   it('returns to the remembered tab once unlocked', async () => {
-    const service = asService({ read: vi.fn(async () => vault([invite(A, 'Alice')])), create: vi.fn() });
+    const service = asService({ read: vi.fn(async () => vault([invite(A, 'Alice', 'Alice')])), create: vi.fn() });
     const view = render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} locked />);
     expect(screen.queryByTestId('qr')).toBeNull();
     view.rerender(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} locked={false} />);
@@ -78,16 +78,16 @@ describe('carousel contact invite card', () => {
     const view = render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
     await screen.findByText('Setting up your invite…');
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(create).toHaveBeenCalledWith(A, 'My contact card', [], 'standing', expect.any(Number));
+    expect(create).toHaveBeenCalledWith(A, 'My contact card', [], 'standing', expect.any(Number), undefined, 'Alice');
     view.rerender(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} version={1} />);
     await act(async () => { await Promise.resolve(); });
     expect(create).toHaveBeenCalledTimes(1);
-    await act(async () => created(invite(A, 'My contact card')));
+    await act(async () => created(invite(A, 'My contact card', 'Alice')));
     expect(parseContactInviteLink((await screen.findByTestId('qr')).textContent!, 101)?.recipient).toBe(A);
   });
 
   it('reports a failed setup and retries only on request', async () => {
-    const create = vi.fn().mockRejectedValueOnce(new Error('nope')).mockResolvedValueOnce(invite(A, 'My contact card'));
+    const create = vi.fn().mockRejectedValueOnce(new Error('nope')).mockResolvedValueOnce(invite(A, 'My contact card', 'Alice'));
     const service = asService({ read: vi.fn(async () => vault([])), create });
     render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
     expect((await screen.findByRole('alert')).textContent).toBe('Could not set up your invite.');
@@ -98,7 +98,7 @@ describe('carousel contact invite card', () => {
   });
 
   it('reports a read error while unlocked', async () => {
-    const read = vi.fn().mockRejectedValueOnce(new Error('x')).mockResolvedValueOnce(vault([invite(A, 'Alice')]));
+    const read = vi.fn().mockRejectedValueOnce(new Error('x')).mockResolvedValueOnce(vault([invite(A, 'Alice', 'Alice')]));
     render(<ContactInviteQRCard {...base} service={asService({ read, create: vi.fn() })} identityPubkey={A} resolved={resolved(A)} />);
     expect((await screen.findByRole('alert')).textContent).toBe('Could not load your invite.');
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -106,7 +106,7 @@ describe('carousel contact invite card', () => {
   });
 
   it('shows an invite select only with two or more live standing invites', async () => {
-    const service = asService({ read: vi.fn(async () => vault([invite(A, 'First'), invite(A, 'Second')])), create: vi.fn() });
+    const service = asService({ read: vi.fn(async () => vault([invite(A, 'First', 'Alice'), invite(A, 'Second', 'Alice')])), create: vi.fn() });
     render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
     expect(await screen.findByRole('combobox', { name: /Invite/ })).toBeTruthy();
     expect(screen.getAllByRole('option')).toHaveLength(2);
@@ -116,7 +116,7 @@ describe('carousel contact invite card', () => {
   it('shows the waiting-request count with the same rule as the Invites page', async () => {
     const arrival = (over: Record<string, unknown>) => ({ id: Math.random().toString(), inviteId: 'x', identityPubkey: A, ...over });
     const onManage = vi.fn();
-    const service = asService({ read: vi.fn(async () => vault([invite(A, 'Alice')], [
+    const service = asService({ read: vi.fn(async () => vault([invite(A, 'Alice', 'Alice')], [
       arrival({}), arrival({}), arrival({ dismissedAt: 5 }), arrival({ channel: 'exchange' }), arrival({ identityPubkey: B }),
     ])), create: vi.fn() });
     render(<ContactInviteQRCard {...base} onManage={onManage} service={service} identityPubkey={A} resolved={resolved(A)} />);
@@ -127,11 +127,61 @@ describe('carousel contact invite card', () => {
   });
 
   it('remembers the tab per persona', async () => {
-    const service = asService({ read: vi.fn(async () => vault([invite(A, 'Alice')])), create: vi.fn() });
+    const service = asService({ read: vi.fn(async () => vault([invite(A, 'Alice', 'Alice')])), create: vi.fn() });
     render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
     await screen.findByTestId('qr');
     fireEvent.click(tabButton('Nostr npub'));
     expect(localStorage.getItem(`signet:qr-tab:${A}`)).toBe('npub');
     expect(screen.queryByTestId('qr')).toBeNull();
+  });
+
+  describe('"They\'ll see" name chip', () => {
+    const read = (rows: ReturnType<typeof invite>[]) => asService({ read: vi.fn(async () => vault(rows)), create: vi.fn(async () => invite(A, 'My contact card', 'Alice')) });
+    it('defaults on: shows the captioned invite and says what they will see', async () => {
+      const rows = [invite(A, 'Plain'), invite(A, 'Named', 'Alice')];
+      render(<ContactInviteQRCard {...base} service={read(rows)} identityPubkey={A} resolved={resolved(A)} />);
+      const qr = await screen.findByTestId('qr');
+      expect(parseContactInviteLink(qr.textContent!, 101)?.caption).toBe('Alice');
+      expect(screen.getByText('Your name (Alice) and your npub')).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Your name/ }).getAttribute('aria-pressed')).toBe('true');
+      expect(screen.queryByRole('combobox')).toBeNull(); // only matching invites count
+    });
+    it('off: shows the uncaptioned invite, remembers the choice per persona', async () => {
+      const rows = [invite(A, 'Plain'), invite(A, 'Named', 'Alice')];
+      render(<ContactInviteQRCard {...base} service={read(rows)} identityPubkey={A} resolved={resolved(A)} />);
+      await screen.findByTestId('qr');
+      fireEvent.click(screen.getByRole('button', { name: /Your name/ }));
+      expect(parseContactInviteLink(screen.getByTestId('qr').textContent!, 101)?.caption).toBeUndefined();
+      expect(screen.getByText('Your npub only')).toBeTruthy();
+      expect(localStorage.getItem(`signet:qr-share-name:${A}`)).toBe('0');
+    });
+    it('starts off when remembered off, and creates an uncaptioned invite once if none exists', async () => {
+      try { localStorage.setItem(`signet:qr-share-name:${A}`, '0'); } catch { /* ignore */ }
+      const create = vi.fn(async () => invite(A, 'My contact card'));
+      const service = asService({ read: vi.fn(async () => vault([invite(A, 'Named', 'Alice')])), create });
+      render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
+      await screen.findByTestId('qr');
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledWith(A, 'My contact card', [], 'standing', expect.any(Number), undefined, undefined);
+      expect(parseContactInviteLink(screen.getByTestId('qr').textContent!, 101)?.caption).toBeUndefined();
+    });
+    it('turning the chip on creates a captioned invite once when none matches', async () => {
+      const create = vi.fn(async () => invite(A, 'My contact card', 'Alice'));
+      const service = asService({ read: vi.fn(async () => vault([invite(A, 'Plain')])), create });
+      try { localStorage.setItem(`signet:qr-share-name:${A}`, '0'); } catch { /* ignore */ }
+      render(<ContactInviteQRCard {...base} service={service} identityPubkey={A} resolved={resolved(A)} />);
+      await screen.findByTestId('qr');
+      expect(create).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: /Your name/ }));
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+      expect(create).toHaveBeenCalledWith(A, 'My contact card', [], 'standing', expect.any(Number), undefined, 'Alice');
+      await waitFor(() => expect(parseContactInviteLink(screen.getByTestId('qr').textContent!, 101)?.caption).toBe('Alice'));
+    });
+    it('has no chip and says npub only when the name is not set', async () => {
+      render(<ContactInviteQRCard {...base} service={read([invite(A, 'Plain')])} identityPubkey={A} resolved={resolved(A, false)} />);
+      await screen.findByTestId('qr');
+      expect(screen.queryByRole('button', { name: /Your name/ })).toBeNull();
+      expect(screen.getByText('Your npub only')).toBeTruthy();
+    });
   });
 });

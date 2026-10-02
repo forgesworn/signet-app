@@ -1,5 +1,6 @@
 import type { ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
+import { sanitizeDisplayName } from './text-sanitize';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { contactVerificationWords } from '@forgesworn/signet-contacts';
@@ -47,6 +48,9 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     const records = applyOperations(ops);
     const existing = [...records.values()].find(r => r.identities.some(i => i.pubkey === peer));
     if (existing && resolveEffective(existing, { activeGuardianPubkeys: [], defaultChildCeiling: 'ken', directoryIsDependant: args.directoryId !== 'owner' }).blocked) throw new Error('Contact is blocked');
+    // The requester scanned an invite whose public caption is the inviter's own
+    // name; the origin already carries it (validated, control/bidi-stripped).
+    const scannedName = e.role === 'requester' && e.origin?.caption ? sanitizeDisplayName(e.origin.caption, 100) || undefined : undefined;
     const contactId = existing?.contactId ?? id(seed + ':contact');
     let clock = frontierOf(ops).maxClock + 1;
     const now = e.reveal.createdAt * 1000;
@@ -58,7 +62,7 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     };
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
-      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? peer.slice(0, 12) + '…',
+      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? scannedName ?? peer.slice(0, 12) + '…',
         tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
     } else if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,

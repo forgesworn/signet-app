@@ -4,11 +4,21 @@ import type { StoredContactInvite } from '../lib/contact-invite-store';
 import { contactInviteLink, contactInviteOrigin } from '../lib/contact-invite-link';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import type { QRCardSlots } from './QRCard';
+import { sanitizeDisplayName } from '../lib/text-sanitize';
 import { MiniIdBadge } from './MiniIdBadge';
 import { QRCode } from './QRCode';
 
 type Tab = 'mysignet' | 'npub';
 const tabKey = (pubkey: string) => `signet:qr-tab:${pubkey}`;
+const nameKey = (pubkey: string) => `signet:qr-share-name:${pubkey}`;
+const NAME_MAX = 100;
+
+function readShareName(pubkey: string): boolean {
+  try { return localStorage.getItem(nameKey(pubkey)) !== '0'; } catch { return true; }
+}
+function writeShareName(pubkey: string, on: boolean): void {
+  try { localStorage.setItem(nameKey(pubkey), on ? '1' : '0'); } catch { /* storage unavailable: the choice just isn't remembered */ }
+}
 
 function readTab(pubkey: string): Tab {
   try { return localStorage.getItem(tabKey(pubkey)) === 'npub' ? 'npub' : 'mysignet'; } catch { return 'mysignet'; }
@@ -35,7 +45,12 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
   const [loadFailed, setLoadFailed] = useState(false), [createFailed, setCreateFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  const autoTried = useRef(false);
+  const [shareName, setShareName] = useState(() => readShareName(identityPubkey));
+  // One automatic attempt per mount for each chip state; a failure waits for "Try again".
+  const autoTried = useRef(new Set<'named' | 'plain'>());
+  const caption = resolved.displayNameIsSet ? sanitizeDisplayName(resolved.displayName, NAME_MAX) : '';
+  const nameAvailable = caption !== '';
+  const withName = nameAvailable && shareName;
   const tab: Tab = locked ? 'npub' : remembered;
   useEffect(() => {
     const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
@@ -57,13 +72,14 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
   }, [service, identityPubkey, version, locked, retry]);
   const ready = !locked && loaded?.service === service && loaded.key === identityPubkey;
   const invites = ready ? loaded.rows.filter(i => i.enabled && i.mode === 'standing'
-    && (i.invite.expiresAt === undefined || i.invite.expiresAt > now)) : [];
+    && (i.invite.expiresAt === undefined || i.invite.expiresAt > now)
+    && (withName ? i.invite.caption === caption : !i.invite.caption)) : [];
   const invite = invites.find(i => i.id === selected) ?? invites[0];
   const requests = ready ? loaded.requests : 0;
 
   const create = () => {
     setBusy(true); setCreateFailed(false);
-    void service.create(identityPubkey, 'My contact card', relays, 'standing', Math.floor(Date.now() / 1000))
+    void service.create(identityPubkey, 'My contact card', relays, 'standing', Math.floor(Date.now() / 1000), undefined, withName ? caption : undefined)
       .then(row => {
         setLoaded(old => ({ service, key: identityPubkey, rows: [...(old?.service === service && old.key === identityPubkey ? old.rows : []), row], requests: old?.requests ?? 0 }));
         setSelected(row.id);
@@ -71,10 +87,10 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
       .catch(() => setCreateFailed(true))
       .finally(() => setBusy(false));
   };
-  // One automatic attempt per mount; a failure waits for "Try again".
   useEffect(() => {
-    if (tab !== 'mysignet' || !ready || invite || busy || autoTried.current) return;
-    autoTried.current = true;
+    const state = withName ? 'named' : 'plain';
+    if (tab !== 'mysignet' || !ready || invite || busy || autoTried.current.has(state)) return;
+    autoTried.current.add(state);
     create();
   });
 
@@ -82,6 +98,7 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
     if (next === 'mysignet' && locked) { onRequestUnlock(); return; }
     setRemembered(next); writeTab(identityPubkey, next);
   };
+  const toggleName = () => { setCreateFailed(false); setShareName(!shareName); writeShareName(identityPubkey, !shareName); };
   const tabs = <div className="qr-tabs" role="group" aria-label="QR type">
     {([['mysignet', 'MySignet'], ['npub', 'Nostr npub']] as const).map(([id, label]) =>
       <button type="button" key={id} className={`qr-tab${tab === id ? ' active' : ''}`} aria-pressed={tab === id} onClick={() => choose(id)}>{label}</button>)}
@@ -106,6 +123,11 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
       </div>
       <div className="qr-caption">{`Scan with MySignet. You'll both be added once you accept.`}</div>
       <div className="qr-controls">
+        <div className="qr-sees">
+          <span>They&apos;ll see</span>
+          {nameAvailable && <button type="button" className={`qr-pill${withName ? ' active' : ''}`} aria-pressed={withName} onClick={toggleName}>{withName ? '✓ ' : ''}Your name</button>}
+          <span>{withName ? `Your name (${caption}) and your npub` : 'Your npub only'}</span>
+        </div>
         {loadFailed && <><p role="alert" className="qr-share-note danger">Could not load your invite.</p>
           <button type="button" className="btn btn-secondary" onClick={() => setRetry(n => n + 1)}>Try again</button></>}
         {!loadFailed && createFailed && <><p role="alert" className="qr-share-note danger">Could not set up your invite.</p>

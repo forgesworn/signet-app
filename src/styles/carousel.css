@@ -1010,7 +1010,7 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 64px;
+  min-height: 96px;
 }
 .qr-invite-select {
   display: flex;
@@ -1045,4 +1045,14 @@
   border-radius: 999px;
   padding: 8px 16px;
   cursor: pointer;
+}
+.qr-sees {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  text-align: center;
 }

@@ -35,9 +35,6 @@ interface CarouselProps {
     dependantId?: string;
     slotTarget?: 'natural-person' | 'persona' | 'professional-persona' | string;
   }) => void;
-  onEnableContactAvatarShare?: (target: string, depPubkey?: string) => Promise<string | null>;
-  /** Stop sharing the contact avatar for a slot (G1 coarse revocation). */
-  onStopContactAvatarShare?: (target: string, depPubkey?: string) => Promise<void>;
   onQRScanned: (data: string) => void;
   onEnterChildMode: (dependantId: string) => void;
   onExitChildMode: () => void;
@@ -305,8 +302,6 @@ function renderCard(
           key={identityCardKey(row)}
           resolved={resolved}
           badge={props.badge}
-          onEnableContactAvatarShare={props.onEnableContactAvatarShare}
-          onStopContactAvatarShare={props.onStopContactAvatarShare}
           tabs={slots?.tabs}
           footer={slots?.footer}
         />
