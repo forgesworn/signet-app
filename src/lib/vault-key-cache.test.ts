@@ -125,4 +125,17 @@ describe('vault key-leg cache', () => {
     const event = await wrapped.signEvent({ kind: 30078, pubkey: device.activePublicKeyHex, created_at: 1, tags: [], content: '' });
     expect(event.pubkey).toBe(device.activePublicKeyHex);
   });
+
+  it('is a no-op once the session is no longer current', async () => {
+    let current = true;
+    const cache = createVaultKeyCache(KEY, () => current);
+    await cache.put('1'.repeat(64), 'k-live');
+    expect(await cache.get('1'.repeat(64))).toBe('k-live');
+    current = false;
+    forgetSyncCacheKeys();
+    // A late device reply after lock: no row written, no read served.
+    await cache.put('2'.repeat(64), 'k-late');
+    expect(await getSyncCacheEntry(`${VAULT_KEY_ROW_PREFIX}${'2'.repeat(64)}`)).toBeUndefined();
+    expect(await cache.get('1'.repeat(64))).toBeNull();
+  });
 });

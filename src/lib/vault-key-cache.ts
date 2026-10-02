@@ -47,13 +47,18 @@ export function vaultKeyDigest(ownPubkey: string, peerPubkey: string, ciphertext
 const b64 = (u: Uint8Array): string => btoa(String.fromCharCode(...u));
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-export function createVaultKeyCache(encryptionKey: string): VaultKeyCache {
+/**
+ * `isCurrent` false (locked, session changed) makes both legs no-ops, so a late
+ * device reply cannot re-derive the AES key after `forgetSyncCacheKeys`.
+ */
+export function createVaultKeyCache(encryptionKey: string, isCurrent: () => boolean = () => true): VaultKeyCache {
   return {
     async get(digest) {
       try {
+        if (!isCurrent()) return null;
         const id = `${VAULT_KEY_ROW_PREFIX}${digest}`;
         const row = await getSyncCacheEntry(id);
-        if (!row || row.eventId !== digest) return null;
+        if (!row || row.eventId !== digest || !isCurrent()) return null;
         const env = JSON.parse(await aesDecrypt(unb64(row.iv), unb64(row.ciphertext), await aesKeyFor(encryptionKey))) as unknown;
         // As in sync-decrypt-cache: the ciphertext, not the cleartext row, says which slot it belongs to.
         const e = env as { id?: unknown; eventId?: unknown; payload?: unknown } | null;
@@ -68,6 +73,7 @@ export function createVaultKeyCache(encryptionKey: string): VaultKeyCache {
     },
     async put(digest, plaintext) {
       try {
+        if (!isCurrent()) return;
         const id = `${VAULT_KEY_ROW_PREFIX}${digest}`;
         const { iv, ciphertext } = await aesEncrypt(JSON.stringify({ id, eventId: digest, payload: plaintext }),
           await aesKeyFor(encryptionKey));

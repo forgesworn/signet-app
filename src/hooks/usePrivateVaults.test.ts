@@ -315,3 +315,54 @@ it('once every dataset verifies, the idle poll is a full cycle', async () => {
   expect(ran().slice(3)).toEqual(three);
   unmount();
 });
+
+it('a dataset stuck unverified does not stop the periodic full cycle', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(async (args: { adapter: { dataset: VaultDataset; snapshot(): Promise<string> } }) =>
+    args.adapter.dataset === 'credentials' ? { state: 'waiting-legacy', canonical: false } : verifiedSync(args));
+  const { jobs } = trackedJobs(three);
+  const { unmount } = renderHook(() => usePrivateVaults({ ...opts(), jobs: async () => jobs }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_IDLE_POLL_MS + 5 * 60_000); });
+  expect(ran().slice(3).filter(d => d === 'profiles').length).toBeGreaterThan(0);
+  unmount();
+});
+
+it('drops the health entry of a dataset no longer in the jobs, so it cannot hold a backoff', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(async (args: { adapter: { dataset: VaultDataset; snapshot(): Promise<string> } }) =>
+    typeof args.adapter.dataset === 'object' ? { state: 'unavailable', canonical: false } : verifiedSync(args));
+  const tracked = trackedJobs(['profiles', { dependant: 0 }]);
+  let current = tracked.jobs;
+  let props = { ...opts(), jobs: async () => current };
+  const { result, rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(Object.keys(result.current.datasets)).toHaveLength(2);
+  current = tracked.jobs.slice(0, 1);
+  props = { ...props, changeToken: 'dependant-removed' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(Object.keys(result.current.datasets)).toEqual(['signet:vault:profiles']);
+  const before = sync.mock.calls.length;
+  // Nothing runs again before the idle poll.
+  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_IDLE_POLL_MS - 5000); });
+  expect(sync.mock.calls.length).toBe(before);
+  unmount();
+});
+
+it('frequent edits do not postpone the periodic full cycle', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(verifiedSync);
+  const { jobs } = trackedJobs(three);
+  let props = { ...opts(), jobs: async () => jobs };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  for (let i = 0; i < 6; i++) {
+    props = { ...props, changeToken: `tick-${i}` };
+    rerender(props);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  }
+  // Nothing changed locally, yet a full cycle re-read every dataset.
+  expect(ran().slice(3)).toEqual(three);
+  unmount();
+});

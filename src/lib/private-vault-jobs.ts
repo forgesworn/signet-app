@@ -31,7 +31,7 @@ export async function privateVaultJobs(args: {
     [value.naturalPerson.publicKey, value.persona.publicKey, ...(value.extraPersonas ?? []).map(p => p.publicKey)];
   const forbidden = [...keys(identity), ...(identity.professionalPersona ? [identity.professionalPersona.publicKey] : []), ...dependants.flatMap(keys)];
   // Device-held keys only: each NIP-44 leg is a device request (a card); local keys are free.
-  const keyCache = deviceHeldKeys ? createVaultKeyCache(encryptionKey) : null;
+  const keyCache = deviceHeldKeys ? createVaultKeyCache(encryptionKey, isCurrent) : null;
   const resolve = (dataset: VaultDataset, rotation: number) => {
     if (!isCurrent()) return Promise.reject(new Error('Vault session changed'));
     if (deviceHeldKeys) {

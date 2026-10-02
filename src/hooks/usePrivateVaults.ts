@@ -120,7 +120,7 @@ export function usePrivateVaults(options: {
     if (!options.sessionKey || !options.encryptionKey || !options.ownerPubkey || !options.supported || !options.ready) return;
     if (stopped) return;
     let cancelled = false, running = false, dirty = false, failures = 0, refused = false, held = false;
-    let wanted: CycleKind | null = 'full';
+    let wanted: CycleKind | null = 'full', lastFullAt = 0;
     const want = (kind: CycleKind) => { if (!wanted || CYCLE_RANK[kind] > CYCLE_RANK[wanted]) wanted = kind; };
     const noteRefusal = (err: unknown) => { if (isVaultApprovalError(err)) refused = true; };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -152,12 +152,21 @@ export function usePrivateVaults(options: {
       if (running) { dirty = true; return; }
       // Held: the un-pause (or the cap) kicks a fresh cycle.
       if (isPaused()) return;
-      const kind = wanted ?? 'retry';
+      // A dataset stuck unverified keeps timed cycles at `retry`, and edits keep
+      // re-arming the timer: either way, one full cycle per idle-poll interval.
+      const kind = Date.now() - lastFullAt >= PRIVATE_VAULT_IDLE_POLL_MS ? 'full' : wanted ?? 'retry';
+      if (kind === 'full') lastFullAt = Date.now();
       running = true; dirty = false; held = false; wanted = null;
       emit({ ...latest, phase: 'running' });
       try {
         let merged = false;
         const jobs = (await opts.current.jobs(valid)).map(job => observeRefusals(job, noteRefusal));
+        if (!valid()) return;
+        // A dataset no longer in the jobs (a removed dependant) must not hold a stale entry.
+        const purposes = new Set(jobs.map(job => vaultPurpose(job.adapter.dataset)));
+        if (Object.keys(latest.datasets).some(purpose => !purposes.has(purpose))) {
+          emit({ ...latest, datasets: Object.fromEntries(Object.entries(latest.datasets).filter(([purpose]) => purposes.has(purpose))) });
+        }
         for (const [index, job] of jobs.entries()) {
           if (!valid()) return;
           // One refusal is enough: every further dataset would only queue
@@ -189,7 +198,7 @@ export function usePrivateVaults(options: {
           emit({ phase: 'running', datasets: { ...latest.datasets, [purpose]: { ...result, canonical } } });
         }
         if (valid() && merged) opts.current.onMerged();
-        failures = Object.values(latest.datasets).some(d => d.state !== 'verified') ? failures + 1 : 0;
+        failures = [...purposes].some(purpose => latest.datasets[purpose]?.state !== 'verified') ? failures + 1 : 0;
       } catch (err) { noteRefusal(err); failures++; }
       finally {
         running = false;
