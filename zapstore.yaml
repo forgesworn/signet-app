@@ -7,6 +7,7 @@
 # Dry-run without a key (unsigned events to stdout):
 #   SIGN_WITH=<npub1...> zsp publish --offline zapstore.yaml
 name: My Signet
+repository: https://github.com/forgesworn/signet-app
 release_source: ./android/app/build/outputs/apk/release/app-release.apk
 summary: Family identity and signing for the Signet protocol — your keys never leave your device
 description: |
