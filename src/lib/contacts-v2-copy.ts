@@ -730,3 +730,4 @@ export function confirmOtherKeyOfThisCopy(contactName: string): string {
 
 export const NOT_CONFIRMED_FILTER_LABEL = 'Not confirmed';
 export const CONFIRMED_MARK_LABEL = 'Key confirmed';
+export const CONFIRM_SAVED_COPY = 'Saved.';

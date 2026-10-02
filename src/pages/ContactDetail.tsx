@@ -2,11 +2,13 @@ import { uncheckedAppConnection } from '../lib/contact-app-notice';
 import { ContactOrigins } from '../components/ContactOrigins';
 import type { ContactOrigin } from '../lib/contact-origins';
 import { ContactChecks } from '../components/ContactChecks';
+import { ContactConfirm } from '../components/ContactConfirm';
+import { isConfirmed, newestCheckFor, type ConfirmStep } from '../lib/contacts-v2-confirm';
 import type { ContactCheck } from '../lib/contact-checks';
 import type { ContactIdentityList } from '../lib/contacts-v2-identity-lists';
 import { contactBelongsToList } from '../lib/contacts-v2-membership';
 import { useEffect, useState } from 'react';
-import type { Contact, ContactMethodKind, ContactTier, EffectiveContact, SignetIdentity, AddMethodValue } from '../types';
+import type { Contact, ContactIdentity, ContactMethodKind, ContactTier, EffectiveContact, SignetIdentity, AddMethodValue } from '../types';
 import { ContactTierChip } from '../components/ContactTierChip';
 import { ContactShare } from '../components/ContactShare';
 import { SignetWords } from '../components/SignetWords';
@@ -15,13 +17,13 @@ import { sanitizeDisplayName } from '../lib/text-sanitize';
 import {
   ADD_A_ROLE_LABEL, ADD_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
   BLOCK_REASON_FIELD_LABEL, BLOCK_SECTION_TITLE, CANCEL_LABEL, CONTACT_ACTION_FAILED_COPY,
-  CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
+  CONFIRM_BUTTON_LABEL, CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
   IDENTITY_VERIFICATION_LABELS, KEY_CONTROL_LABEL, KEYLESS_EXPLAINER, KEYLESS_MARKER,
   METHODS_SECTION_TITLE, METHOD_KIND_FIELD_LABEL, METHOD_LABEL_FIELD_LABEL,
   METHOD_PRIVACY_HINT, METHOD_VALUE_FIELD_LABEL, NAME_FIELD_LABEL, NOTE_SECTION_TITLE,
   NO_ROLES_YET, REMOVE_CONTACT_LABEL, REMOVE_LABEL, ROLES_SECTION_TITLE, ROLE_HINT,
   SAVE_LABEL, SAVE_NOTE_LABEL, TIER_HINT, TIER_SECTION_TITLE, UNBLOCK_LABEL,
-  blockConfirmLabel, blockedLine, effectiveTierLine, removeContactConfirmCopy,
+  blockConfirmLabel, blockedLine, confirmedLine, effectiveTierLine, removeContactConfirmCopy,
   removeRoleAriaLabel, tierChipLabel,
 } from '../lib/contacts-v2-copy';
 import type { ActorRights } from '../lib/contacts-v2-rights';
@@ -32,6 +34,17 @@ import {
 } from '../lib/contacts-v2-detail';
 
 interface Props {
+  /**
+   * "Confirm it's them": apply the writes one confirmation outcome compiles to.
+   * Absent where a check cannot be recorded (no single identity list selected).
+   */
+  onApplyConfirmation?: (steps: ConfirmStep[]) => Promise<void>;
+  /** Every contact in this directory, so a scanned key that belongs to someone else is named. */
+  confirmContacts?: EffectiveContact[];
+  /** The user's own public keys, so scanning one's own key is not read as a mismatch. */
+  ownPubkeys?: string[];
+  /** Start the My Signet invite exchange (the "They have My Signet" route). */
+  onStartExchange?: () => void;
   onRecordOrigin?: (origin: Omit<ContactOrigin, 'ownerIdentityPubkey'>) => Promise<void>;
   onRemoveOrigin?: (id: string) => Promise<void>;
   checkOwnerIdentityPubkey?: string;
@@ -110,6 +123,8 @@ export function ContactDetail(props: Props) {
   const [blockOpen, setBlockOpen] = useState(false);
   const [blockReason, setBlockReason] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // A snapshot of the row being confirmed, so the flow outlives the old key being removed from the record.
+  const [confirming, setConfirming] = useState<ContactIdentity | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<{ scope: ActionScope; message: string } | null>(null);
 
@@ -131,6 +146,15 @@ export function ContactDetail(props: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  const canConfirm = !!props.onApplyConfirmation && !!props.checkOwnerIdentityPubkey && rights.canAddIdentity;
+
+  /** "Confirmed in person · 2 Oct" from the newest check for the key; else the stored verification. */
+  function confirmationLabel(id: ContactIdentity): string {
+    if (!isConfirmed(id)) return IDENTITY_VERIFICATION_LABELS[id.verification];
+    const check = newestCheckFor(contact, id.pubkey, props.checkOwnerIdentityPubkey);
+    return check ? confirmedLine(check.method, check.checkedAt) : IDENTITY_VERIFICATION_LABELS[id.verification];
   }
 
   function errorFor(scope: ActionScope) {
@@ -226,10 +250,15 @@ export function ContactDetail(props: Props) {
               <span className="row-main">
                 <span className="row-label mono">{shortNpub(id.pubkey)}</span>
                 <span className="row-sub">
-                  {IDENTITY_VERIFICATION_LABELS[id.verification]}
+                  {confirmationLabel(id)}
                   {` · ${IDENTITY_PROVENANCE_LABELS[id.provenance]}`}
                 </span>
               </span>
+              {canConfirm && !isConfirmed(id) && !confirming && (
+                <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setConfirming(id)}>
+                  {CONFIRM_BUTTON_LABEL}
+                </button>
+              )}
               {legacy.hasKenEntry && (
                 <button className="btn btn-ghost btn-sm" onClick={() => props.onOpenKenDetail(id.pubkey)}>
                   {KEY_CONTROL_LABEL}
@@ -242,6 +271,19 @@ export function ContactDetail(props: Props) {
               )}
             </div>
           ))}
+          {confirming && props.onApplyConfirmation && (
+            <ContactConfirm
+              key={confirming.itemId}
+              contact={contact}
+              identity={confirming}
+              contacts={props.confirmContacts ?? [contact]}
+              ownPubkeys={props.ownPubkeys ?? []}
+              canSetTier={rights.canSetTier}
+              onApply={props.onApplyConfirmation}
+              onStartExchange={props.onStartExchange}
+              onClose={() => setConfirming(null)}
+            />
+          )}
           {errorFor('identities')}
         </div>
       )}

@@ -10,7 +10,7 @@ import type { FollowsImportState } from '../types';
 import { useContactAvatar, seedContactAvatarPointer } from '../hooks/useContactAvatar';
 import { fetchContactAvatarPointers } from '../lib/contact-avatar';
 import {
-  IMPORT_FOLLOWING_LABEL, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
+  CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
   ROLODEX_EMPTY_TEXT, ROLODEX_EMPTY_TITLE, ROLODEX_LOADING_COPY, ROLODEX_NO_MATCHES_TITLE,
   SEARCH_CONTACTS_LABEL, rolodexHeadingCopy,
 } from '../lib/contacts-v2-copy';
@@ -18,6 +18,7 @@ import {
   arrangeContactsV2, CONTACT_FILTERS, filterLabel, isKeyless, primaryIdentityPubkey,
   type ContactsFilter,
 } from '../lib/contacts-v2-list';
+import { isContactConfirmed } from '../lib/contacts-v2-verification';
 
 interface Props {
   initialSearch?: string;
@@ -87,6 +88,11 @@ function ContactRow({ contact, guardianName, relayUrl, encryptionKey, onTap }: {
         </span>
       </span>
       <span className="row-meta">
+        {isContactConfirmed(contact) && (
+          <span style={{ display: 'inline-flex', color: 'var(--accent)', marginRight: 6 }}>
+            <Icon name="checkCircle" size={16} title={CONFIRMED_MARK_LABEL} />
+          </span>
+        )}
         <ContactTierChip
           tier={contact.effectiveTier}
           source={contact.tierSource}

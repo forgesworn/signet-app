@@ -164,6 +164,7 @@ import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
 import { ContactsRolodex } from './pages/ContactsRolodex';
 import { ContactDetail } from './pages/ContactDetail';
+import { applyConfirmSteps } from './lib/contacts-v2-confirm';
 import { ContactNew } from './pages/ContactNew';
 import { AddMember } from './pages/AddMember';
 import { SettingsMenu } from './pages/SettingsMenu';
@@ -11171,6 +11172,11 @@ export function App() {
           onRemoveOrigin={id => contactsV2.removeOrigin(record.contactId, id)}
           onUpdateCheck={contactsListIdentity === 'all' ? undefined : check => contactsV2.updateCheck(record.contactId, check)}
           onRecordCheck={contactsListIdentity === 'all' ? undefined : check => contactsV2.recordCheck(record.contactId, check)}
+          onApplyConfirmation={contactsListIdentity === 'all' || isPairedChild ? undefined : steps => applyConfirmSteps(steps, record.contactId, contactsV2)}
+          confirmContacts={contactsV2.effective}
+          ownPubkeys={[...new Set([...contactsIdentityLists.map(l => l.ownerIdentityPubkey),
+            ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])]}
+          onStartExchange={contactsScope.directoryId && !isPairedChild ? () => navigateTo('contact-invites') : undefined}
           onRemoveCheck={id => contactsV2.removeCheck(record.contactId, id)}
           onSetNote={(note) => contactsV2.setNote(record.contactId, note)}
           onBlock={async (reason) => {

@@ -62,6 +62,21 @@ describe('ContactsRolodex', () => {
     expect(screen.queryByRole('button', { name: 'Open Dave' })).toBeNull();
   });
 
+  it('has a Not confirmed filter and marks contacts with a confirmed key', () => {
+    const id = (pubkey: string, verification: 'unverified' | 'proven' | 'mutual') =>
+      ({ itemId: pubkey.slice(0, 32), pubkey, provenance: 'direct' as const, verification, addedAt: 1 });
+    const sure = contact({ contactId: 'sure', displayName: 'Sure', identities: [id('a'.repeat(64), 'proven')] });
+    const maybe = contact({ contactId: 'maybe', displayName: 'Maybe', identities: [id('b'.repeat(64), 'unverified')] });
+    renderRolodex([sure, maybe]);
+    // The confirmed mark is on the confirmed contact's row only.
+    expect(screen.getByRole('button', { name: 'Open Sure' }).querySelector('title')?.textContent).toBe('Key confirmed');
+    expect(screen.getByRole('button', { name: 'Open Maybe' }).querySelector('title')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Not confirmed' }));
+    expect(screen.getByRole('button', { name: 'Open Maybe' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Open Sure' })).toBeNull();
+  });
+
   it('shows the empty state with an add prompt when there are no contacts at all', () => {
     renderRolodex([]);
     expect(screen.getByText('No contacts yet')).toBeDefined();
