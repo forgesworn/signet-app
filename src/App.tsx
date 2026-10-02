@@ -47,6 +47,7 @@ import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
 import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
 import { ContactInvites } from './pages/ContactInvites';
+import { ContactInviteSend } from './pages/ContactInviteSend';
 import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/signet-contacts';
 import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
@@ -224,7 +225,7 @@ import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, h
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
-import { routeNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
@@ -2577,11 +2578,13 @@ export function App() {
     const value = new URLSearchParams(window.location.hash.slice(1)).get('contact-invite');
     return value && value.length <= 8192 ? value : undefined;
   });
+  // The persona whose camera card scanned the invite; the send screen defaults to it.
+  const [pendingInviteSender, setPendingInviteSender] = useState<string | undefined>(undefined);
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
     // D6: a paired-child install asks the guardian instead of connecting.
-    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invites');
+    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
   }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId]);
 
   // C1: `useContactsV2`'s own mount-time `reload()` and the cold
@@ -8722,6 +8725,11 @@ export function App() {
         // D6: a paired-child install offers "Ask {guardian} to connect"
         // instead of connecting directly — see the navigation effect below.
         setPendingContactInvite(JSON.stringify(action.invite));
+        {
+          const scanRow = carousel.rows[carousel.row];
+          setPendingInviteSender(scanRow && (scanRow.type === 'persona' || scanRow.type === 'extra-persona' || scanRow.type === 'natural-person')
+            ? carousel.activeIdentity.publicKey : undefined);
+        }
         break;
       case 'verify':
         setPendingVerifyRequest(action.request);
@@ -8777,7 +8785,7 @@ export function App() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, resolveSigningSelection, preferences.signingMode, isPairedChild]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;
@@ -9117,8 +9125,8 @@ export function App() {
   const handleNativeUrl = useCallback((url: string) => {
     if (!url || lastNativeUrlRef.current === url) return;
     lastNativeUrlRef.current = url;
-    const contactInvite = parseContactInviteLink(url);
-    if (contactInvite) { setPendingContactInvite(JSON.stringify(contactInvite)); return; }
+    const contactInvite = contactInviteFromNativeUrl(url);
+    if (contactInvite) { setPendingContactInvite(contactInvite); setPendingInviteSender(undefined); return; }
     const action = routeNativeUrl(url);
     switch (action.type) {
       case 'companion-pair':
@@ -11154,6 +11162,32 @@ export function App() {
     );
   }
 
+  // Scanned invite: choose the sending persona and send the request.
+  if (page === 'contact-invite-send' && pendingContactInvite && !isPairedChild) {
+    const invite = parseContactInviteLink(pendingContactInvite, Math.floor(Date.now() / 1000));
+    const finish = () => { setPendingContactInvite(undefined); setPendingInviteSender(undefined); navigateReplace('home'); };
+    const sendPersonas = contactsIdentityLists.map(l => ({ pubkey: l.ownerIdentityPubkey, label: l.label }));
+    const ownPubkeys = [...new Set([...sendPersonas.map(p => p.pubkey),
+      ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])];
+    return <Layout title="Send a contact request" showBack onBack={finish} {...guardianLayoutProps}>
+      {invite
+        ? <ContactInviteSend invite={invite} personas={sendPersonas}
+          defaultPersona={pendingInviteSender && sendPersonas.some(p => p.pubkey === pendingInviteSender) ? pendingInviteSender : contactsWriteIdentity}
+          ownPubkeys={ownPubkeys}
+          onSend={async persona => {
+            setContactsIdentityChoice(persona);
+            const sentAt = Math.floor(Date.now() / 1000);
+            await ownerInviteService.request(persona, invite, sentAt);
+            await ownerInviteService.flush(sentAt);
+          }}
+          onDone={finish} onCancel={finish} />
+        : <div style={{ padding: 16 }}>
+          <p role="alert">This invite is invalid or has expired.</p>
+          <button className="btn btn-secondary" onClick={finish}>Back</button>
+        </div>}
+    </Layout>;
+  }
+
   // Contacts list
   if (page === 'contact-invites' && contactsScope.directoryId && !isPairedChild) {
     return <Layout title="Contact invites" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
@@ -12618,11 +12652,12 @@ export function App() {
           </div> : null;
         })}
       <Carousel
-        renderInviteCard={(_row, resolved, publicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
+        renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
-            name={resolved.displayName} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} publicCard={publicCard}
+            resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
+            locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
             onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
-          : publicCard}
+          : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           onSignIn={async (selection, request, valid) => {
             const key = encryptionKey, root = identity.naturalPerson.publicKey, mode = preferences.signingMode;
