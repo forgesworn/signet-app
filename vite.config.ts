@@ -64,6 +64,9 @@ export default defineConfig({
     },
     injectManifest: {
       globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+      // The main bundle is the whole app and must be precached for offline use;
+      // it outgrew Workbox's 2 MiB default (the build fails rather than skip it).
+      maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
     },
     devOptions: {
       enabled: false,
