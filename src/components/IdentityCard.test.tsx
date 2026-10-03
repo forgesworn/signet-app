@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { IdentityCard } from './IdentityCard';
 import { initialFromName } from '../lib/avatar';
 
@@ -250,5 +250,63 @@ describe('IdentityCard — inline name editor', () => {
     // The fallback 'Persona' is rendered as the card-name div (not an input)
     const cardName = container.querySelector('.card-name');
     expect(cardName?.textContent).toBe('Persona');
+  });
+});
+
+describe('IdentityCard — public kind-0 picture', () => {
+  const pubResolved = (pictureUrl?: string) => ({ ...baseResolved, displayName: 'Alice', pictureUrl });
+  const renderCard = (pictureUrl?: string, extra: Record<string, unknown> = {}) =>
+    render(
+      <IdentityCard
+        row={baseOwnerRow}
+        resolved={pubResolved(pictureUrl)}
+        badge={null}
+        childMode={false}
+        {...extra}
+      />,
+    );
+
+  it('shows a valid https pictureUrl with no-referrer when there is no in-app avatar', () => {
+    renderCard('https://example.com/alice.jpg');
+    const img = screen.getByAltText("Alice's image") as HTMLImageElement;
+    expect(img.src).toBe('https://example.com/alice.jpg');
+    expect(img.getAttribute('referrerpolicy')).toBe('no-referrer');
+  });
+
+  it.each(['javascript:alert(1)', 'http://example.com/a.jpg', 'data:image/png;base64,AAAA'])(
+    'ignores unsafe pictureUrl %s and shows the initial',
+    (url) => {
+      renderCard(url);
+      expect(screen.queryByAltText("Alice's image")).toBeNull();
+      expect(screen.getByText(initialFromName('Alice'))).toBeDefined();
+    },
+  );
+
+  it('falls back to the initial when the picture fails to load', () => {
+    renderCard('https://example.com/alice.jpg');
+    fireEvent.error(screen.getByAltText("Alice's image"));
+    expect(screen.queryByAltText("Alice's image")).toBeNull();
+    expect(screen.getByText(initialFromName('Alice'))).toBeDefined();
+  });
+
+  it('retries when the pictureUrl changes after a failure', () => {
+    const { rerender } = renderCard('https://example.com/a.jpg');
+    fireEvent.error(screen.getByAltText("Alice's image"));
+    rerender(
+      <IdentityCard row={baseOwnerRow} resolved={pubResolved('https://example.com/b.jpg')} badge={null} childMode={false} />,
+    );
+    expect((screen.getByAltText("Alice's image") as HTMLImageElement).src).toBe('https://example.com/b.jpg');
+  });
+
+  it('lets the photoUrl prop win over the public picture', () => {
+    renderCard('https://example.com/alice.jpg', { photoUrl: 'https://example.com/override.jpg' });
+    expect((screen.getByAltText("Alice's image") as HTMLImageElement).src).toBe('https://example.com/override.jpg');
+  });
+
+  it('blurs the public picture with the identity area when blurIdentityNames is on', () => {
+    renderCard('https://example.com/alice.jpg', { blurIdentityNames: true });
+    const blurred = screen.getByLabelText('Tap to reveal identity');
+    expect(blurred.style.filter).toContain('blur');
+    expect(within(blurred).getByAltText("Alice's image")).toBeDefined();
   });
 });
