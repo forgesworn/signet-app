@@ -800,42 +800,63 @@ function applyOne(record: ContactRecord | undefined, op: ContactOperation): Cont
   }
 }
 
-/** Replay duplicate npub records as one group. Once a key established an
- * alias it stays stable, so removing that key cannot resurrect the old id.
- * Names and methods never establish aliases. */
+/**
+ * Replay duplicate npub records as one group.
+ *
+ * Two records alias when one GAINS a key (add-identity / key-link) while the
+ * other currently holds it. Once formed, an alias is permanent: removing the
+ * key that formed it later cannot split the group or resurrect the old id
+ * (two devices that each created the same npub stay one contact). Names and
+ * methods never establish aliases.
+ *
+ * A key taken off a group by `remove-item` stops counting for FUTURE aliases.
+ * This is the impostor case: "The old key isn't theirs" removes a stranger's
+ * key from Alice, and that key must not re-attach to Alice when the user later
+ * files the stranger as a contact of their own (by hand, by a scan or by a
+ * follows import) — otherwise blocking the stranger would block Alice. A key
+ * that is removed and later re-added is held again and aliases as before. A
+ * deleted or archived contact keeps holding its keys (its identities are not
+ * cleared), so the confirm flow refuses such a key up front instead.
+ *
+ * Pure function of the operation log: the replay order is the sorted order,
+ * so every device computes the same groups.
+ */
 export function applyOperations(ops: ContactOperation[]): Map<string, ContactRecord> {
   const sorted = sortOperations(ops.filter(validateOperation));
   const raw = new Map<string, ContactRecord>();
   const firstAdds = new Map<string, ContactOperation>();
-  const identityHistory = new Map<string, Set<string>>();
-  for (const op of sorted) {
-    const key = recordKey(op.directoryId, op.contactId);
-    if (op.action === 'add' && !firstAdds.has(key)) firstAdds.set(key, op);
-    const next = applyOne(raw.get(key), op);
-    if (next) {
-      raw.set(key, next);
-      if (op.action === 'add-identity' || op.action === 'key-link') {
-        const pubkey = (op.value as AddIdentityValue).pubkey;
-        if (next.identities.some(i => i.pubkey === pubkey)) {
-          const history = identityHistory.get(key) ?? new Set<string>();
-          history.add(pubkey); identityHistory.set(key, history);
-        }
-      }
-    }
-  }
   const parent = new Map<string, string>();
   const root = (key: string): string => {
     const p = parent.get(key);
     if (!p || p === key) return key;
     const r = root(p); parent.set(key, r); return r;
   };
-  const keys = new Map<string, string>();
-  for (const [key, record] of raw) {
-    for (const identity of identityHistory.get(key) ?? []) {
-      const pubkey = `${record.directoryId}/${identity}`;
-      const other = keys.get(pubkey);
-      if (other) parent.set(root(key), root(other));
-      else keys.set(pubkey, key);
+  // `dir/pubkey` -> the records currently holding that key for aliasing.
+  const holders = new Map<string, Set<string>>();
+  // `dir/itemId` -> the key and record an identity item was introduced with,
+  // so a remove-item carrying a remapped (merged) item id still finds its key.
+  const items = new Map<string, { pubkey: string; key: string }>();
+  for (const op of sorted) {
+    const key = recordKey(op.directoryId, op.contactId);
+    if (op.action === 'add' && !firstAdds.has(key)) firstAdds.set(key, op);
+    const next = applyOne(raw.get(key), op);
+    if (!next) continue;
+    raw.set(key, next);
+    if (op.action === 'add-identity' || op.action === 'key-link') {
+      const value = op.value as AddIdentityValue;
+      items.set(`${op.directoryId}/${value.itemId}`, { pubkey: value.pubkey, key });
+      if (next.identities.some(i => i.pubkey === value.pubkey)) {
+        const slot = `${op.directoryId}/${value.pubkey}`;
+        const current = holders.get(slot) ?? new Set<string>();
+        for (const other of current) if (root(other) !== root(key)) parent.set(root(key), root(other));
+        current.add(key); holders.set(slot, current);
+      }
+    } else if (op.action === 'remove-item') {
+      const item = items.get(`${op.directoryId}/${(op.value as RemoveItemValue).itemId}`);
+      if (item && root(item.key) === root(key)) {
+        const current = holders.get(`${op.directoryId}/${item.pubkey}`);
+        for (const holder of current ?? []) if (root(holder) === root(key)) current!.delete(holder);
+      }
     }
   }
   const groups = new Map<string, string[]>();

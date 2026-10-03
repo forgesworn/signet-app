@@ -3,6 +3,7 @@ import { useId, useState } from 'react';
 import type { ContactCheck } from '../lib/contact-checks';
 import { CONTACT_CHECK_SOURCES } from '../lib/contact-checks';
 import type { ContactIdentity } from '../types';
+import { shortNpub } from '../lib/nostr-follows';
 const METHODS = { words: 'Words', 'in-person': 'In person', nip05: 'NIP-05', 'app-attested': 'App attestation' };
 const SOURCES = { nip05: 'NIP-05', facebook: 'Facebook', instagram: 'Instagram', x: 'X', youtube: 'YouTube', website: 'Website', 'printed-card': 'Printed card', other: 'Other' };
 export function ContactChecks({ checks, identities, onRecord, onUpdate, onRemove }: {
@@ -32,7 +33,7 @@ export function ContactChecks({ checks, identities, onRecord, onUpdate, onRemove
     <p>Record how you checked this person’s key. Sources and evidence stay private.</p>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {checks.map(check => <div key={check.id}>
-      <p>{METHODS[check.method]} · {new Date(check.checkedAt).toLocaleDateString()} · {check.identityPubkey.slice(0, 12)}…</p>
+      <p>{METHODS[check.method]} · {new Date(check.checkedAt).toLocaleDateString()} · {shortNpub(check.identityPubkey)}</p>
       {check.source && <p>Private source: {SOURCES[check.source]}</p>}
       {check.evidence && <p style={{ whiteSpace: 'pre-wrap' }}>{check.evidence}</p>}
       {onUpdate && <button className="btn btn-ghost" disabled={busy} onClick={() => {
@@ -43,7 +44,7 @@ export function ContactChecks({ checks, identities, onRecord, onUpdate, onRemove
     </div>)}
     {onRecord && identities.length > 0 && <>
       <label>Key checked<select className="input" value={peer} onChange={event => setPeer(event.target.value)}>
-        {identities.map(identity => <option key={identity.pubkey} value={identity.pubkey}>{identity.label || identity.pubkey.slice(0, 16) + '…'}</option>)}
+        {identities.map(identity => <option key={identity.pubkey} value={identity.pubkey}>{identity.label || shortNpub(identity.pubkey)}</option>)}
       </select></label>
       <label>Check method<select className="input" value={method} onChange={event => setMethod(event.target.value as ContactCheck['method'])}>
         {Object.entries(METHODS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}

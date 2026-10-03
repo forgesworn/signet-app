@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { nip19 } from 'nostr-tools';
 import {
   CONTACT_FILTERS, filterLabel, primaryIdentityPubkey, isKeyless,
   isVisibleContact, arrangeContactsV2,
@@ -28,9 +29,9 @@ function contact(over: Partial<EffectiveContact> = {}): EffectiveContact {
 }
 
 describe('filters', () => {
-  it('offers All, the three tiers and Blocked in order', () => {
-    expect(CONTACT_FILTERS).toEqual(['all', 'kin', 'kith', 'ken', 'blocked']);
-    expect(CONTACT_FILTERS.map(filterLabel)).toEqual(['All', 'Kin', 'Kith', 'Ken', 'Blocked']);
+  it('offers All, the three tiers, Not confirmed and Blocked in order', () => {
+    expect(CONTACT_FILTERS).toEqual(['all', 'kin', 'kith', 'ken', 'not-confirmed', 'blocked']);
+    expect(CONTACT_FILTERS.map(filterLabel)).toEqual(['All', 'Kin', 'Kith', 'Ken', 'Not confirmed', 'Blocked']);
   });
 });
 
@@ -85,6 +86,18 @@ describe('arrangeContactsV2', () => {
     expect(arrangeContactsV2(all, { filter: 'blocked', query: '' }).map(c => c.contactId)).toEqual(['bad']);
   });
 
+  it('lists under Not confirmed only keyed, unblocked contacts none of whose keys is confirmed, whatever their tier', () => {
+    const unconfirmedKen = contact({ contactId: 'u-ken', displayName: 'Ken One', effectiveTier: 'ken', identities: [identity(PK_A, { verification: 'unverified' })] });
+    const unconfirmedKith = contact({ contactId: 'u-kith', displayName: 'Kith One', effectiveTier: 'kith', identities: [identity(PK_B, { verification: 'unverified' })] });
+    const provenOne = contact({ contactId: 'proven', displayName: 'Proven', effectiveTier: 'ken', identities: [identity(PK_A, { verification: 'proven' })] });
+    const mutualOne = contact({ contactId: 'mutual', displayName: 'Mutual', effectiveTier: 'kith', identities: [identity(PK_A, { verification: 'mutual' })] });
+    const mixed = contact({ contactId: 'mixed', displayName: 'Mixed', effectiveTier: 'ken', identities: [identity(PK_A, { verification: 'unverified' }), identity(PK_B, { verification: 'proven' })] });
+    const keyless = contact({ contactId: 'keyless', displayName: 'Keyless', effectiveTier: 'ken', identities: [] });
+    const blockedUnconfirmed = contact({ contactId: 'bu', displayName: 'Blocked', effectiveTier: 'ken', blocked: true, identities: [identity(PK_A, { verification: 'unverified' })] });
+    const list = [unconfirmedKen, unconfirmedKith, provenOne, mutualOne, mixed, keyless, blockedUnconfirmed];
+    expect(arrangeContactsV2(list, { filter: 'not-confirmed', query: '' }).map(c => c.contactId)).toEqual(['u-ken', 'u-kith']);
+  });
+
   it('searches name, roles and identity pubkeys', () => {
     const withRole = contact({ contactId: 'gp', displayName: 'Dr Patel', roles: ['GP'], effectiveTier: 'ken' });
     const withKey = contact({ contactId: 'keyed', displayName: 'Zed', identities: [identity(PK_A)], effectiveTier: 'ken' });
@@ -96,5 +109,19 @@ describe('arrangeContactsV2', () => {
 
   it('never returns a removed record', () => {
     expect(arrangeContactsV2(all, { filter: 'all', query: 'gone' })).toEqual([]);
+  });
+});
+
+describe('contacts with no real name', () => {
+  const KEY = '66dd41aa' + 'b'.repeat(56);
+  const nameless = () => contact({ contactId: 'n1', displayName: '66dd41aa…', identities: [identity(KEY)] });
+  it('searches by the npub form as well as the hex key', () => {
+    const npub = nip19.npubEncode(KEY);
+    expect(arrangeContactsV2([nameless()], { filter: 'all', query: npub.slice(0, 20) })).toHaveLength(1);
+    expect(arrangeContactsV2([nameless()], { filter: 'all', query: '66dd41aa' })).toHaveLength(1);
+  });
+  it('sorts by the name shown, not the stored hex label', () => {
+    const out = arrangeContactsV2([contact({ contactId: 'z', displayName: 'Zed' }), nameless()], { filter: 'all', query: '' });
+    expect(out.map(c => c.contactId)).toEqual(['n1', 'z']);
   });
 });

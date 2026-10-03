@@ -5,6 +5,7 @@ import { useContactsV2 } from './useContactsV2';
 import * as db from '../lib/db';
 import * as reducer from '../lib/contacts-v2-reducer';
 import type { MutationActor } from '../lib/contacts-v2-mutations';
+import { ConfirmMergeRefusedError } from '../lib/contacts-v2-key-holders';
 
 const KEY = 'correct-horse-battery-staple';
 const GUARDIAN = '1'.repeat(64);
@@ -441,5 +442,43 @@ describe('unlinkContactsFromList (batch)', () => {
     expect(soloRec.lifecycle).toBe('active');
     expect(soloRec.listMemberships?.some(m => m.ownerIdentityPubkey === list && m.removedAt === undefined)).toBe(true);
     save.mockRestore();
+  }, TIMEOUT);
+});
+
+describe('addIdentity with refuseMerge (Confirm it\'s them)', () => {
+  const K = 'e'.repeat(64);
+  it('refuses, writing nothing, a key that would fold the contact into a deleted one', async () => {
+    const { result } = render();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let bob = '', alice = '';
+    await act(async () => {
+      bob = await result.current.addContact({ type: 'person', displayName: 'Bob', tier: 'ken' });
+      await result.current.addIdentity(bob, { pubkey: K, provenance: 'direct', verification: 'unverified' });
+      await result.current.removeContact(bob);
+      alice = await result.current.addContact({ type: 'person', displayName: 'Alice', tier: 'ken' });
+    });
+    const before = await db.listContactOperationsV2(DIR, KEY);
+    expect(result.current.keyHolderIds(K)).toEqual([bob]);
+    let error: unknown;
+    await act(async () => {
+      try {
+        await result.current.addIdentity(alice, { pubkey: K, provenance: 'direct', verification: 'proven' }, { refuseMerge: true });
+      } catch (e) { error = e; }
+    });
+    expect(error).toBeInstanceOf(ConfirmMergeRefusedError);
+    expect((error as ConfirmMergeRefusedError).refusal).toEqual({ contactId: bob, displayName: 'Bob', state: 'deleted' });
+    expect(await db.listContactOperationsV2(DIR, KEY)).toHaveLength(before.length);
+    expect(result.current.records.map(r => [r.displayName, r.lifecycle]).sort()).toEqual([['Alice', 'active'], ['Bob', 'removed']]);
+  }, TIMEOUT);
+
+  it('allows the same key when nothing else holds it', async () => {
+    const { result } = render();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let alice = '';
+    await act(async () => {
+      alice = await result.current.addContact({ type: 'person', displayName: 'Alice', tier: 'ken' });
+      await result.current.addIdentity(alice, { pubkey: K, provenance: 'direct', verification: 'proven' }, { refuseMerge: true });
+    });
+    await waitFor(() => expect(result.current.records[0]?.identities.map(i => i.pubkey)).toEqual([K]));
   }, TIMEOUT);
 });
