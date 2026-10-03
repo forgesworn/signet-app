@@ -640,3 +640,134 @@ export function contactsGrantCodeNotShowingLink(appName: string): string {
 export const CONTACTS_GRANT_CODE_NOT_SHOWING_COPY =
   "Older versions of an app don't show a code, so this connection can't be checked. You can keep it "
   + 'or disconnect it.';
+
+// ---- Confirm it's them (src/components/ContactConfirm.tsx) -----------------
+//
+// Two axes, kept apart: the tier is the real-world relationship and never
+// waits on key proof; confirming a key only OFFERS a tier move.
+
+export const CONFIRM_BUTTON_LABEL = "Confirm it's them";
+export const CONFIRM_BACK_LABEL = 'Back';
+export const CONFIRM_METHOD_LABELS = {
+  'in-person': 'Confirmed in person',
+  words: 'Confirmed with words',
+  nip05: 'Confirmed with a NIP-05 address',
+  'app-attested': 'Confirmed by an app',
+} as const;
+
+function confirmedDate(ms: number): string {
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('en-GB', sameYear
+    ? { day: 'numeric', month: 'short' }
+    : { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/** "Confirmed in person · 2 Oct" — the newest check for the key. */
+export function confirmedLine(method: keyof typeof CONFIRM_METHOD_LABELS, checkedAt: number): string {
+  return `${CONFIRM_METHOD_LABELS[method]} · ${confirmedDate(checkedAt)}`;
+}
+
+export function confirmIntroCopy(contactName: string): string {
+  return `How would you like to confirm this is ${safeName(contactName)}'s key? Confirming only checks the key. Your classification of ${safeName(contactName)} stays as it is unless you choose to change it.`;
+}
+export const CONFIRM_RECOGNISE_RULE =
+  "Only confirm someone you recognise — in person, or on a video call where you can see it's them. "
+  + "If you've never met them, a scan only shows the key this person holds, not that they're who they say.";
+export const CONFIRM_SCAN_RECOGNISE_HINT = 'Only confirm someone you recognise.';
+export const CONFIRM_READOUT_RECOGNISE_HINT = 'Only do this with someone you recognise.';
+export const CONFIRM_SCAN_LABEL = 'Scan their QR code';
+export const CONFIRM_SCAN_HINT =
+  "In person, or on a video call if you can see it is them. Any Nostr app's profile QR works, and so does a My Signet card.";
+export const CONFIRM_READOUT_LABEL = 'Read it out on a call';
+export const CONFIRM_READOUT_HINT = 'Compare the end of their key aloud, with no camera needed.';
+export const CONFIRM_MYSIGNET_LABEL = 'They have My Signet';
+export const CONFIRM_MYSIGNET_HINT = 'Swap keys with them in My Signet. This confirms both of you.';
+
+export const CONFIRM_SCAN_TITLE = 'Scan their QR code';
+export const CONFIRM_SCAN_PROMPT = 'Hold your camera over their profile QR code or My Signet card.';
+export const CONFIRM_ALLOW_CAMERA_LABEL = 'Allow camera access';
+export const CONFIRM_SCAN_UNREADABLE_COPY =
+  'Could not read a public key from that QR code. Try their profile QR or a My Signet card.';
+
+export const CONFIRM_READOUT_TITLE = 'Read it out';
+export function confirmReadoutPromptCopy(contactName: string): string {
+  return `Ask ${safeName(contactName)} to open their own app's profile and read out the last 16 characters of their npub. Do they match?`;
+}
+export const CONFIRM_READOUT_GROUPS_LABEL = 'Last 16 characters of the npub';
+export const CONFIRM_MATCHED_LABEL = 'It matched';
+export const CONFIRM_DID_NOT_MATCH_LABEL = "It didn't match";
+
+export function confirmedDoneCopy(contactName: string): string {
+  return `Confirmed. This is ${safeName(contactName)}'s key.`;
+}
+export function confirmTierPromptCopy(contactName: string): string {
+  return `You've confirmed this is ${safeName(contactName)}'s key. Move ${safeName(contactName)} to Kith?`;
+}
+export const CONFIRM_KEEP_KEN_LABEL = 'Keep as Ken';
+export const CONFIRM_DONE_LABEL = 'Done';
+
+export function confirmMismatchTitleCopy(contactName: string): string {
+  return `This isn't the key you have for ${safeName(contactName)}.`;
+}
+export const CONFIRM_MISMATCH_EXPLAINER =
+  "They may have a new account, or the key you have may not be theirs. Nothing is changed until you choose.";
+export const CONFIRM_USE_NEW_LABEL = 'Use the new key';
+export const CONFIRM_USE_NEW_HINT = 'Add the key you scanned as confirmed and remove the old one from this contact.';
+export const CONFIRM_KEEP_BOTH_LABEL = 'Keep both';
+export const CONFIRM_KEEP_BOTH_HINT = 'Add the key you scanned as confirmed. The old one stays, unconfirmed.';
+export const CONFIRM_OLD_NOT_THEIRS_LABEL = "The old key isn't theirs";
+export const CONFIRM_OLD_NOT_THEIRS_HINT = 'Remove the old key from this contact.';
+export const CONFIRM_OLD_NOT_THEIRS_HINT_SCANNED = 'Add the key you scanned as confirmed and remove the old key.';
+export const CONFIRM_CANCEL_LABEL = 'Cancel';
+export const CONFIRM_NOT_SURE_LABEL = "I'm not sure — leave it as it is";
+export const CONFIRM_NOT_SURE_HINT = 'Change nothing. You can try again whenever you like.';
+export const CONFIRM_NOT_SENT_COPY = "Nothing is sent to them — they can't tell whether it matched or what you choose.";
+export const CONFIRM_NOT_SURE_DONE_COPY = 'Left as it is. Nothing about this contact or their keys has changed.';
+export function confirmNotSureNoteLabel(contactName: string): string {
+  return `Add a private note to ${safeName(contactName)}`;
+}
+export const CONFIRM_NOTE_TOO_LONG_COPY =
+  "This contact's note is too long to add to. Untick the box, or shorten the note first.";
+/** One dated line for the contact's note: what was shown, and that it was not confirmed. */
+export function confirmNotSureNoteLine(shortKey: string | null, at: number): string {
+  const date = new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return shortKey
+    ? `Showed me a different key on ${date} (${shortKey}) — not confirmed.`
+    : `Read out a different key on ${date} — not confirmed.`;
+}
+export const CONFIRM_READOUT_MISMATCH_EXPLAINER =
+  "The key you have may not be theirs, or you may have read the wrong account. Nothing is changed until you choose.";
+
+/**
+ * The scanned key is, or was, another contact's. `state` says how: they hold
+ * it now, they are a contact you deleted or archived (who still hold it), or
+ * the key was once removed from them.
+ */
+export function confirmBelongsToOtherCopy(
+  otherName: string,
+  state: 'active' | 'deleted' | 'archived' | 'removed-key' = 'active',
+): string {
+  const name = safeName(otherName) || 'another contact';
+  const unchanged = 'Nothing has been changed, and the two contacts have not been merged.';
+  switch (state) {
+    case 'deleted':
+      return `That key belongs to ${name}, a contact you deleted. ${unchanged}`;
+    case 'archived':
+      return `That key belongs to ${name}, a contact you archived. ${unchanged}`;
+    case 'removed-key':
+      return `That key was once on ${name} in your contacts and was removed from them. ${unchanged}`;
+    default:
+      return `That key already belongs to ${name} in your contacts. ${unchanged}`;
+  }
+}
+export function confirmOwnKeyCopy(contactName: string): string {
+  return `That is one of your own keys, not ${safeName(contactName)}'s.`;
+}
+export function confirmOtherKeyOfThisCopy(contactName: string): string {
+  return `That is a different key you already have for ${safeName(contactName)}. Confirm that key from the list instead.`;
+}
+
+export const NOT_CONFIRMED_FILTER_LABEL = 'Not confirmed';
+export const CONFIRMED_MARK_LABEL = 'Key confirmed';
+export const CONFIRM_SAVED_COPY = 'Saved.';

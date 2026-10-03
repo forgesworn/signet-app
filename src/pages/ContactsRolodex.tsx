@@ -1,5 +1,6 @@
 import type { ContactIdentityList } from '../lib/contacts-v2-identity-lists';
 import { useEffect, useState } from 'react';
+import { contactDisplayName } from '../lib/contacts-v2-name';
 import type { EffectiveContact } from '../types';
 import { ContactAvatar } from '../components/ContactAvatar';
 import { ContactTierChip } from '../components/ContactTierChip';
@@ -10,7 +11,7 @@ import type { FollowsImportState } from '../types';
 import { useContactAvatar, seedContactAvatarPointer } from '../hooks/useContactAvatar';
 import { fetchContactAvatarPointers } from '../lib/contact-avatar';
 import {
-  IMPORT_FOLLOWING_LABEL, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
+  CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
   ROLODEX_EMPTY_TEXT, ROLODEX_EMPTY_TITLE, ROLODEX_LOADING_COPY, ROLODEX_NO_MATCHES_TITLE,
   SEARCH_CONTACTS_LABEL, rolodexHeadingCopy,
 } from '../lib/contacts-v2-copy';
@@ -18,6 +19,7 @@ import {
   arrangeContactsV2, CONTACT_FILTERS, filterLabel, isKeyless, primaryIdentityPubkey,
   type ContactsFilter,
 } from '../lib/contacts-v2-list';
+import { isContactConfirmed } from '../lib/contacts-v2-verification';
 
 interface Props {
   initialSearch?: string;
@@ -75,18 +77,24 @@ function ContactRow({ contact, guardianName, relayUrl, encryptionKey, onTap }: {
   relayUrl: string; encryptionKey: string | null; onTap: () => void;
 }) {
   const pubkey = primaryIdentityPubkey(contact);
+  const shownName = contactDisplayName(contact);
   return (
-    <button className="row row-button" onClick={onTap} aria-label={`Open ${contact.displayName}`}>
+    <button className="row row-button" onClick={onTap} aria-label={`Open ${shownName}`}>
       <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
-        <RowAvatar pubkey={pubkey} name={contact.displayName} relayUrl={relayUrl} encryptionKey={encryptionKey} />
+        <RowAvatar pubkey={pubkey} name={shownName} relayUrl={relayUrl} encryptionKey={encryptionKey} />
         <span className="row-main">
           <span className="row-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {contact.displayName}{contact.appIntroductions?.some(i => i.status === 'pending') ? ' · Link needs review' : ''}
+            {shownName}{contact.appIntroductions?.some(i => i.status === 'pending') ? ' · Link needs review' : ''}
           </span>
           {isKeyless(contact) && <span className="row-sub">{KEYLESS_MARKER}</span>}
         </span>
       </span>
       <span className="row-meta">
+        {isContactConfirmed(contact) && (
+          <span style={{ display: 'inline-flex', color: 'var(--accent)', marginRight: 6 }}>
+            <Icon name="checkCircle" size={16} title={CONFIRMED_MARK_LABEL} />
+          </span>
+        )}
         <ContactTierChip
           tier={contact.effectiveTier}
           source={contact.tierSource}

@@ -1,5 +1,7 @@
 import type { ContactRecord } from '../types';
 import type { ContactShareFields as Fields } from '../lib/contact-share-fields';
+import { contactDisplayName } from '../lib/contacts-v2-name';
+import { shortNpub } from '../lib/nostr-follows';
 import { METHOD_KIND_LABELS } from '../lib/contacts-v2-detail';
 
 export function ContactShareFields({ contact, value, onChange }: {
@@ -9,10 +11,10 @@ export function ContactShareFields({ contact, value, onChange }: {
     onChange({ ...value, [kind]: checked ? [...value[kind], id] : value[kind].filter(i => i !== id) });
   return <fieldset style={{ border: 0, padding: 0 }}>
     <legend>Fields to share</legend>
-    <label className="row"><input type="checkbox" checked={value.name} onChange={e => onChange({ ...value, name: e.target.checked })} /> Name: {contact.displayName}</label>
+    <label className="row"><input type="checkbox" checked={value.name} onChange={e => onChange({ ...value, name: e.target.checked })} /> Name: {contactDisplayName(contact)}</label>
     {contact.identities.map(i => <label className="row" key={i.itemId}>
       <input type="checkbox" checked={value.identities.includes(i.itemId)} onChange={e => toggle('identities', i.itemId, e.target.checked)} />
-      Public key: {i.pubkey.slice(0, 12)}…
+      Public key: {shortNpub(i.pubkey)}
     </label>)}
     {contact.contactMethods.map(m => <label className="row" key={m.itemId}>
       <input type="checkbox" checked={value.methods.includes(m.itemId)} onChange={e => toggle('methods', m.itemId, e.target.checked)} />

@@ -1,6 +1,7 @@
 import type { ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
 import { sanitizeDisplayName } from './text-sanitize';
+import { shortNpub } from './nostr-follows';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { contactVerificationWords } from '@forgesworn/signet-contacts';
@@ -11,6 +12,7 @@ import { resolveEffective } from './contacts-v2-effective';
 import { buildOperation } from './contacts-v2-mutations';
 import type { MutationActor } from './contacts-v2-mutations';
 import { frontierOf } from './contacts-v2-clock';
+import { verificationUpgrade } from './contacts-v2-verification';
 import { listContactOperationsV2, saveContactOperationsV2 } from './db';
 import type { ContactOperation } from '../types';
 const id = (value: string) => bytesToHex(sha256(new TextEncoder().encode(value))).slice(0, 32);
@@ -37,12 +39,27 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
       if (!e.wordsConfirmedAt || current.some(op => op.action === 'record-check' && (op.value as { exchangeId?: string }).exchangeId === exchangeId)) return;
       const contact = [...applyOperations(current).values()].find(record => record.contactId === contactId || record.mergedContactIds?.includes(contactId));
       if (!contact || contact.lifecycle === 'removed' || !contact.identities.some(identity => identity.pubkey === peer)) return;
+      const baseClock = frontierOf(current).maxClock + 1;
       const check = { ...buildOperation({ directoryId: args.directoryId, contactId, action: 'record-check',
         value: { id: id(seed + ':words-record'), identityPubkey: peer, ownerIdentityPubkey: own, method: 'words', checkedAt: e.wordsConfirmedAt * 1000, exchangeId },
-        clock: frontierOf(current).maxClock + 1, actor: args.actor, now: e.wordsConfirmedAt * 1000, operationId: id(seed + ':words-check') }), ownerIdentityPubkey: own };
+        clock: baseClock, actor: args.actor, now: e.wordsConfirmedAt * 1000, operationId: id(seed + ':words-check') }), ownerIdentityPubkey: own };
       check.operationId = id(JSON.stringify(check));
-      if (!args.isCurrent()) throw new Error('Contact exchange scope changed');
-      await saveContactOperationsV2([check], args.key);
+      const batch: ContactOperation[] = [check];
+      // Words confirmed on both sides is the ceremony `mutual` names: the
+      // identity stops reading "Not verified". `update-identity` does not
+      // rank-check, so never write it over an identity that is already mutual.
+      // Without confirmed words (a pasted link may have travelled through the
+      // very chat in question) nothing here touches verification.
+      const peerIdentity = contact.identities.find(identity => identity.pubkey === peer)!;
+      if (verificationUpgrade(peerIdentity.verification, 'mutual')) {
+        const confirm = { ...buildOperation({ directoryId: args.directoryId, contactId, action: 'update-identity',
+          value: { itemId: peerIdentity.itemId, verification: 'mutual' }, clock: baseClock + 1, actor: args.actor,
+          now: e.wordsConfirmedAt * 1000, operationId: id(seed + ':words-confirm') }), ownerIdentityPubkey: own };
+        confirm.operationId = id(JSON.stringify(confirm));
+        batch.push(confirm);
+      }
+      if (!batch.every(validateOperation) || !args.isCurrent()) throw new Error('Contact exchange scope changed');
+      await saveContactOperationsV2(batch, args.key);
     };
     if (saved) { await recordWords(saved.contactId, ops); return saved.contactId; }
     const records = applyOperations(ops);
@@ -66,7 +83,7 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     };
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
-      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? scannedName ?? peer.slice(0, 12) + '…',
+      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? scannedName ?? shortNpub(peer.toLowerCase()),
         tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
     } else if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,
