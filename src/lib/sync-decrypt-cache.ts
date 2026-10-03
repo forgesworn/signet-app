@@ -33,7 +33,8 @@ const SYNC_CACHE_SALT = new TextEncoder().encode('signet-sync-cache-v1').slice(0
 /** Derived-key memo, keyed by unlock key. Cleared on lock. */
 const keyMemo = new Map<string, Promise<CryptoKey>>();
 
-function aesKeyFor(encryptionKey: string): Promise<CryptoKey> {
+/** Also keys the vault content-key rows (`vault-key-cache.ts`) in the same store. */
+export function aesKeyFor(encryptionKey: string): Promise<CryptoKey> {
   let p = keyMemo.get(encryptionKey);
   if (!p) {
     p = deriveAesKey(encryptionKey, SYNC_CACHE_SALT);

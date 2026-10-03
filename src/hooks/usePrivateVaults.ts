@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { vaultPurpose } from 'signet-protocol/experimental';
+import { vaultPurpose, vaultContentHash } from 'signet-protocol/experimental';
 import type { VaultDataset } from 'signet-protocol/experimental';
 import type { DecryptingSigningBackend } from '../lib/signing-backend';
 import { syncPrivateVaultDataset } from '../lib/private-vault-sync';
@@ -49,6 +49,22 @@ function observeRefusals(job: PrivateVaultJob, note: (err: unknown) => void): Pr
 export const PRIVATE_VAULT_PAUSE_CAP_MS = 5 * 60_000;
 
 /**
+ * Once every dataset verifies, a full cycle at this interval picks up another
+ * device's edits. Unchanged heads hit the key-leg cache: no device request.
+ */
+export const PRIVATE_VAULT_IDLE_POLL_MS = 300_000;
+
+/**
+ * Which datasets a cycle visits. `full`: all (unlock, reconnect, relay change,
+ * approveToken, `online`). `change`: those not verified this session or whose
+ * local snapshot no longer hashes to the revision they verified. `retry`: those
+ * not verified. Each kind's set contains the next one's, so pending requests
+ * merge by taking the larger.
+ */
+type CycleKind = 'retry' | 'change' | 'full';
+const CYCLE_RANK: Record<CycleKind, number> = { retry: 0, change: 1, full: 2 };
+
+/**
  * One cycle at a time; mutations coalesce, offline failures retry without new
  * edits. A signer REFUSAL stops automatic retries for the unlock instead
  * (`needsApproval`); changing `approveToken` runs the jobs once more.
@@ -77,7 +93,7 @@ export function usePrivateVaults(options: {
 }) {
   const [health, setHealth] = useState<PrivateVaultHealth>({ phase: 'checking', datasets: {} });
   const opts = useRef(options); opts.current = options;
-  const kick = useRef<(() => void) | null>(null);
+  const kick = useRef<((kind?: CycleKind) => void) | null>(null);
   const session = `${options.sessionKey ?? ''}:${options.encryptionKey ?? ''}`;
   const currentSession = useRef(session); currentSession.current = session;
   const relayKey = JSON.stringify(options.relays);
@@ -104,48 +120,89 @@ export function usePrivateVaults(options: {
     if (!options.sessionKey || !options.encryptionKey || !options.ownerPubkey || !options.supported || !options.ready) return;
     if (stopped) return;
     let cancelled = false, running = false, dirty = false, failures = 0, refused = false, held = false;
+    let wanted: CycleKind | null = 'full', lastFullAt = 0;
+    const want = (kind: CycleKind) => { if (!wanted || CYCLE_RANK[kind] > CYCLE_RANK[wanted]) wanted = kind; };
     const noteRefusal = (err: unknown) => { if (isVaultApprovalError(err)) refused = true; };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let latest = initial;
     const valid = () => !cancelled && currentSession.current === session;
+    // Per-purpose revision last verified in this effect run; a full cycle re-establishes them.
+    const verifiedRevisions = new Map<string, string>();
+    // Datasets a held cycle never reached: the next cycle runs them whatever its kind.
+    const forced = new Set<string>();
+    const needsSync = async (job: PrivateVaultJob, kind: CycleKind): Promise<boolean> => {
+      const purpose = vaultPurpose(job.adapter.dataset);
+      // A pending rotation handover must finish on the short retry timer, not wait for a full cycle.
+      if (kind === 'full' || forced.has(purpose) || latest.datasets[purpose]?.state !== 'verified'
+        || latest.datasets[purpose]?.rotationPending !== undefined) return true;
+      if (kind === 'retry') return false;
+      const revision = verifiedRevisions.get(purpose);
+      if (!revision) return true;
+      try { return vaultContentHash(await job.adapter.snapshot()) !== revision; } catch { return true; }
+    };
     const emit = (next: PrivateVaultHealth) => {
       if (!valid()) return;
       latest = next; setHealth(next); opts.current.onHealth?.(next);
     };
-    const schedule = (delay: number) => {
+    const schedule = (delay: number, kind?: CycleKind) => {
       if (!valid()) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { void run(); }, delay);
+      timer = setTimeout(() => { if (kind) want(kind); void run(); }, delay);
     };
     const run = async () => {
       if (!valid()) return;
       if (running) { dirty = true; return; }
       // Held: the un-pause (or the cap) kicks a fresh cycle.
       if (isPaused()) return;
-      running = true; dirty = false; held = false;
+      // A dataset stuck unverified keeps timed cycles at `retry`, and edits keep
+      // re-arming the timer: either way, one full cycle per idle-poll interval.
+      const kind = Date.now() - lastFullAt >= PRIVATE_VAULT_IDLE_POLL_MS ? 'full' : wanted ?? 'retry';
+      if (kind === 'full') lastFullAt = Date.now();
+      running = true; dirty = false; held = false; wanted = null;
       emit({ ...latest, phase: 'running' });
       try {
         let merged = false;
         const jobs = (await opts.current.jobs(valid)).map(job => observeRefusals(job, noteRefusal));
-        for (const job of jobs) {
+        if (!valid()) return;
+        // A dataset no longer in the jobs (a removed dependant) must not hold a stale entry.
+        const purposes = new Set(jobs.map(job => vaultPurpose(job.adapter.dataset)));
+        if (Object.keys(latest.datasets).some(purpose => !purposes.has(purpose))) {
+          emit({ ...latest, datasets: Object.fromEntries(Object.entries(latest.datasets).filter(([purpose]) => purposes.has(purpose))) });
+        }
+        for (const [index, job] of jobs.entries()) {
           if (!valid()) return;
           // One refusal is enough: every further dataset would only queue
           // more cards on a device that has just said no.
           if (refused) break;
+          // Device-free: snapshots read only local storage.
+          if (!await needsSync(job, kind)) continue;
+          if (!valid()) return;
           // A sign-in took the device: leave the rest for when it is done.
-          if (isPaused()) { held = true; break; }
+          // A change/retry set is recomputed next time; a full one is not, so
+          // its unreached datasets are carried over.
+          if (isPaused()) {
+            held = true;
+            if (kind === 'full') for (const rest of jobs.slice(index)) forced.add(vaultPurpose(rest.adapter.dataset));
+            want(kind === 'full' ? 'change' : kind);
+            break;
+          }
           const result = await syncPrivateVaultDataset({ adapter: job.adapter, resolve: job.resolve,
             ownerPubkey: options.ownerPubkey!, encryptionKey: options.encryptionKey!,
             relays: opts.current.relays, allowInitialPublish: opts.current.migrationReady, isCurrent: valid, now: Math.floor(Date.now() / 1000) });
           if (!valid()) return;
           merged ||= !!result.merged;
           const purpose = vaultPurpose(job.adapter.dataset);
+          forced.delete(purpose);
+          if (result.state === 'verified' && result.revision) verifiedRevisions.set(purpose, result.revision);
+          else verifiedRevisions.delete(purpose);
           // Once canonical, an offline retry must never re-enable legacy writes.
           const canonical = result.canonical || latest.datasets[purpose]?.canonical;
           emit({ phase: 'running', datasets: { ...latest.datasets, [purpose]: { ...result, canonical } } });
         }
         if (valid() && merged) opts.current.onMerged();
-        failures = Object.values(latest.datasets).some(d => d.state !== 'verified') ? failures + 1 : 0;
+        const unfinished = (purpose: string) => latest.datasets[purpose]?.state !== 'verified'
+          || latest.datasets[purpose]?.rotationPending !== undefined;
+        failures = [...purposes].some(unfinished) ? failures + 1 : 0;
       } catch (err) { noteRefusal(err); failures++; }
       finally {
         running = false;
@@ -155,16 +212,21 @@ export function usePrivateVaults(options: {
           emit({ ...latest, phase: 'idle', needsApproval: true });
         } else {
           emit({ ...latest, phase: 'idle' });
-          // Held part-way: no timer — the un-pause kicks the next cycle.
-          if (!held) schedule(dirty ? 1000 : Math.min(300000, 30000 * 2 ** Math.min(failures, 4)));
+          // Held part-way: no timer — the un-pause kicks the next cycle. All
+          // verified: a slow full poll for other devices' edits (capped, so a clock
+          // stepped backwards cannot stretch it).
+          if (!held && dirty) schedule(1000);
+          else if (!held && failures) schedule(Math.min(300000, 30000 * 2 ** Math.min(failures, 4)), 'retry');
+          else if (!held) schedule(Math.min(PRIVATE_VAULT_IDLE_POLL_MS, Math.max(0, lastFullAt + PRIVATE_VAULT_IDLE_POLL_MS - Date.now())), 'full');
         }
       }
     };
-    kick.current = () => {
+    kick.current = (kind: CycleKind = 'change') => {
       if (stoppedSession.current === session) return;
+      want(kind);
       if (running) dirty = true; else schedule(1000);
     };
-    const online = () => kick.current?.();
+    const online = () => kick.current?.('full');
     window.addEventListener('online', online);
     void run();
     return () => {
