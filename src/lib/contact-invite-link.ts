@@ -1,5 +1,12 @@
 import { encodeContactInvite, parseContactInvite } from '@forgesworn/signet-contacts';
 import type { ContactInvite } from '@forgesworn/signet-contacts';
+import { isNativeApp } from './native';
+
+/** The origin written into invite links. The APK's own origin is a dead `https://localhost`, so it uses the real site. */
+export function contactInviteOrigin(): string {
+  return isNativeApp() ? 'https://mysignet.app' : window.location.origin;
+}
+
 /** The mailbox capability stays in the fragment, never in a server query. */
 export function contactInviteLink(invite: ContactInvite, origin: string): string {
   const url = new URL('/', origin);

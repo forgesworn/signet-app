@@ -533,7 +533,9 @@ describe('module source vocabulary check', () => {
     expect(files.map(f => f.split('/').pop()).sort()).toEqual([
       'ContactAvatar.tsx',
       'ContactChecks.tsx',
+      'ContactConfirm.tsx',
       'ContactDetail.tsx',
+      'ContactInviteSend.tsx',
       'ContactInvites.tsx',
       'ContactInviteQRCard.tsx',
       'ContactNew.tsx',

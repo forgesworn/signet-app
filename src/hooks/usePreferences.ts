@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { AppPreferences, SecurityTier, RelayConfig } from '../types';
 import { primaryRelayUrl } from '../lib/relay-service';
 import { TIER_WORD_COUNT } from '../types';
@@ -150,11 +150,47 @@ export function usePreferences() {
     await db.savePreferences(updated);
   }, [preferences]);
 
+  // Applied to the latest state AND a fresh IDB read, not a spread of the
+  // `preferences` captured at render (see noteDependantAdded): the always-on
+  // re-arm and a stay-awake window restored or armed at the same unlock write
+  // within milliseconds of each other, and two spread-and-save setters back to
+  // back lose one of the two fields.
+  // Serialised, so two of these fired together each read the other's write.
+  const applyFreshChainRef = useRef<Promise<void>>(Promise.resolve());
+  const applyFresh = useCallback((apply: (p: AppPreferences) => AppPreferences): Promise<void> => {
+    setPreferences(apply);
+    const run = applyFreshChainRef.current.catch(() => {}).then(async () => {
+      const stored = await db.getPreferences();
+      const updated = apply(stored);
+      if (updated !== stored) await db.savePreferences(updated);
+    });
+    applyFreshChainRef.current = run;
+    return run;
+  }, []);
+
   const setBackgroundBunkerEnabled = useCallback(async (enabled: boolean) => {
-    const updated = { ...preferences, backgroundBunkerEnabled: enabled };
-    setPreferences(updated);
-    await db.savePreferences(updated);
-  }, [preferences]);
+    await applyFresh(p => (p.backgroundBunkerEnabled === enabled ? p : { ...p, backgroundBunkerEnabled: enabled }));
+  }, [applyFresh]);
+
+  /**
+   * Device-local wall-clock end (Date.now() ms) of the open stay-awake
+   * window, or null to clear it. Read back on unlock so a window survives a
+   * swipe-away, process death or reboot (src/lib/bunker-restore.ts).
+   */
+  const setStayAwakeEndsAt = useCallback(async (endsAt: number | null, opts?: { endedBy?: number }) => {
+    await applyFresh(p => {
+      if (endsAt === null) {
+        if (p.stayAwakeEndsAt === undefined) return p;
+        // Expiry clears only a window that has ended by then — never a later
+        // one armed meanwhile. An explicit Stop passes no bound.
+        if (opts?.endedBy !== undefined && p.stayAwakeEndsAt > opts.endedBy) return p;
+        const next = { ...p };
+        delete next.stayAwakeEndsAt;
+        return next;
+      }
+      return p.stayAwakeEndsAt === endsAt ? p : { ...p, stayAwakeEndsAt: endsAt };
+    });
+  }, [applyFresh]);
 
   const setPreferPersonaForSignIns = useCallback(async (enabled: boolean) => {
     const updated = { ...preferences, preferPersonaForSignIns: enabled };
@@ -226,6 +262,9 @@ export function usePreferences() {
   // see db.getPreferences. Omit while locked; App.tsx calls this again
   // with the key once unlock completes.
   const reloadPreferences = useCallback(async (encryptionKey?: string) => {
+    // A queued applyFresh write has already changed state; read after it
+    // lands, or this read would put the old record back over it.
+    await applyFreshChainRef.current.catch(() => {});
     const fresh = await db.getPreferences(encryptionKey);
     setPreferences(fresh);
   }, []);
@@ -242,5 +281,5 @@ export function usePreferences() {
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences };
 }

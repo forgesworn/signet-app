@@ -25,6 +25,7 @@ import {
   isContactsPairingV2, parseContactsPairingRequestV2, type PairingRequestV2,
 } from './companion-pair-v2';
 import { parseSignInRequest } from './url-auth';
+import { parseContactInviteLink } from './contact-invite-link';
 import { MYSIGNET_HOSTS, QR_MAX_PAYLOAD_SIZE, isCompanionPairAppLink } from './qr-router';
 
 export type NativeUrlAction =
@@ -66,6 +67,21 @@ export function isUnactionableMysignetLink(url: string, action: NativeUrlAction)
   } catch {
     return false;
   }
+}
+
+/**
+ * A contact invite carried on a verified App Link
+ * (`https://mysignet.app/#contact-invite=…`, the same shape the web hash path
+ * reads). Returns the invite serialised exactly as `pendingContactInvite`
+ * holds it, or undefined for anything else — a different host or path, an
+ * expired, malformed or oversized invite.
+ */
+export function contactInviteFromNativeUrl(url: string, now = Math.floor(Date.now() / 1000)): string | undefined {
+  if (typeof url !== 'string' || url.length > QR_MAX_PAYLOAD_SIZE) return undefined;
+  const raw = url.trim();
+  if (!isMysignetRoot(raw)) return undefined;
+  const invite = parseContactInviteLink(raw, now);
+  return invite ? JSON.stringify(invite) : undefined;
 }
 
 export function routeNativeUrl(url: string): NativeUrlAction {

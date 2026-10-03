@@ -14,6 +14,8 @@ interface Props {
   /** `offer` is the one-off prompt at the end of an nsec import ("Not now" / "Import"). */
   variant?: 'block' | 'offer';
   onNotNow?: () => void;
+  /** When set, Import is disabled and this explains why (e.g. contacts still loading). */
+  disabledReason?: string;
 }
 
 const SHOWN_UNFOLLOWED = 20;
@@ -36,7 +38,7 @@ function summaryLine(o: Extract<FollowsImportOutcome, { status: 'done' }>): stri
  * changes who an account follows. Shared by a persona's Advanced page and the
  * offer that follows an nsec import.
  */
-export function FollowsImportPanel({ personaName, last, onImport, onUnlink, variant = 'block', onNotNow }: Props) {
+export function FollowsImportPanel({ personaName, last, onImport, onUnlink, variant = 'block', onNotNow, disabledReason }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [outcome, setOutcome] = useState<FollowsImportOutcome | null>(null);
@@ -135,12 +137,16 @@ export function FollowsImportPanel({ personaName, last, onImport, onUnlink, vari
       {unlinkNote && <p role="status" style={{ fontSize: '0.85rem', margin: '0 0 12px' }}>{unlinkNote}</p>}
       {error && <p role="alert" style={{ fontSize: '0.85rem', color: 'var(--danger, #c0392b)', margin: '0 0 12px' }}>{error}</p>}
 
+      {disabledReason && (
+        <p role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '0 0 12px' }}>{disabledReason}</p>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {offer && outcome?.status === 'done' ? (
           <button className="btn btn-primary" onClick={onNotNow}>Done</button>
         ) : (
           <>
-            <button className={offer ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => { void run(); }} disabled={busy || unlinking}>
+            <button className={offer ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => { void run(); }} disabled={busy || unlinking || !!disabledReason}>
               {offer && !busy ? 'Import' : importLabel}
             </button>
             {offer && <button className="btn btn-ghost" onClick={onNotNow} disabled={busy}>Not now</button>}

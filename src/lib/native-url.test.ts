@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { routeNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './native-url';
+import { contactInviteLink } from './contact-invite-link';
 import { buildPairingUriV2 } from '@forgesworn/signet-contacts/wire';
 
 // A verified https App Link (root path) or the signet-grant:// scheme lands
@@ -189,5 +190,21 @@ describe('isUnactionableMysignetLink', () => {
 
   it('has plain copy', () => {
     expect(NATIVE_LINK_NOTHING_TO_OPEN_COPY).toMatch(/didn't contain a request/);
+  });
+});
+
+describe('contact invite App Link', () => {
+  const invite = { v: 1 as const, recipient: 'a'.repeat(64), secret: 'b'.repeat(64), relays: ['wss://relay.example/'] };
+  const link = contactInviteLink(invite, 'https://mysignet.app');
+  it('feeds the hash invite to the pending-invite state, cold and warm alike', () => {
+    expect(contactInviteFromNativeUrl(link)).toBe(JSON.stringify(invite));
+    // The router itself has no query to act on, so the invite check must come first.
+    expect(routeNativeUrl(link)).toEqual({ type: 'none' });
+  });
+  it('ignores other hosts, other paths, expired and oversized invites', () => {
+    expect(contactInviteFromNativeUrl(contactInviteLink(invite, 'https://evil.example'))).toBeUndefined();
+    expect(contactInviteFromNativeUrl(link.replace('mysignet.app/', 'mysignet.app/about'))).toBeUndefined();
+    expect(contactInviteFromNativeUrl(contactInviteLink({ ...invite, expiresAt: 100 }, 'https://mysignet.app'))).toBeUndefined();
+    expect(contactInviteFromNativeUrl(link + 'x'.repeat(9000))).toBeUndefined();
   });
 });

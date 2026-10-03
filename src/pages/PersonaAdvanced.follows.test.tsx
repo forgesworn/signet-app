@@ -37,6 +37,31 @@ describe('PersonaAdvanced — Nostr follows block', () => {
     expect(screen.queryByText('Nostr follows')).toBeNull();
   });
 
+  it('a followsPending owner slot renders the disabled panel with the reason', () => {
+    renderPage(identityWith(), { followsPending: 'Loading your contacts…' });
+    expect(screen.getByText('Nostr follows')).toBeDefined();
+    expect(screen.getByText('Loading your contacts…')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Import who this account follows' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a dependant slot renders no panel even with followsPending', () => {
+    const dep = {
+      id: 'c'.repeat(64), guardianPubkey: '1'.repeat(64), displayName: 'Sam',
+      naturalPerson: { publicKey: 'c'.repeat(64), privateKey: '', displayName: 'Sam' },
+      persona: { publicKey: 'd'.repeat(64), privateKey: '', displayName: 'Sam' },
+      derivationPath: 'dependant-0', createdAt: 1, autonomyStage: 'full-control', primaryKeypair: 'persona',
+    } as never;
+    render(
+      <PersonaAdvanced
+        slotTarget="persona" depPubkey={'c'.repeat(64)} identity={identityWith()} dependants={[dep]}
+        followsPending="Loading your contacts…"
+        onPublishProfile={vi.fn(async () => ({ ok: true }))} onDisablePublicProfile={vi.fn(async () => {})} onBack={() => {}}
+      />,
+    );
+    expect(screen.getAllByText('Sam').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Nostr follows')).toBeNull();
+  });
+
   it('first import: shows the explanation line, imports, and summarises added / already there', async () => {
     const onImport = vi.fn(async () => done());
     renderPage(identityWith(), { onImportFollows: onImport, onUnlinkFollows: vi.fn() });
@@ -68,6 +93,16 @@ describe('PersonaAdvanced — Nostr follows block', () => {
 });
 
 describe('FollowsImportPanel', () => {
+  it('disabledReason disables Import and shows the reason', () => {
+    const onImport = vi.fn();
+    render(<FollowsImportPanel personaName="Alex" onImport={onImport} onUnlink={vi.fn()} disabledReason="Loading your contacts…" />);
+    const btn = screen.getByRole('button', { name: 'Import who this account follows' }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(screen.getByText('Loading your contacts…')).toBeDefined();
+    fireEvent.click(btn);
+    expect(onImport).not.toHaveBeenCalled();
+  });
+
   it('says how many were skipped because the user removed them', async () => {
     render(<FollowsImportPanel personaName="Alex" onImport={async () => done({ skippedRemoved: 3 })} onUnlink={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Import who this account follows' }));

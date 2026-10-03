@@ -1,3 +1,4 @@
+import { parseKinterestRequest } from './lib/kinterest-authority';
 import { useChildContactDirectory, useChildContactDirectoryPublisher } from './hooks/useChildContactDirectory';
 import { useChildContactReplyInbox } from './hooks/useChildContactReplyInbox';
 import { useGuardianChildContactRequests } from './hooks/useGuardianChildContactRequests';
@@ -47,6 +48,7 @@ import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
 import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
 import { ContactInvites } from './pages/ContactInvites';
+import { ContactInviteSend } from './pages/ContactInviteSend';
 import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/signet-contacts';
 import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
@@ -127,6 +129,7 @@ import { isNativeApp, SignetNative } from './lib/native';
 import { BunkerApprovalModal } from './components/BunkerApprovalModal';
 import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
+import { phoneAppsKeyExpired } from './lib/phone-apps-window';
 import { usePreferences } from './hooks/usePreferences';
 import { useDocuments } from './hooks/useDocuments';
 import { useCredentials } from './hooks/useCredentials';
@@ -162,6 +165,7 @@ import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
 import { ContactsRolodex } from './pages/ContactsRolodex';
 import { ContactDetail } from './pages/ContactDetail';
+import { applyConfirmSteps } from './lib/contacts-v2-confirm';
 import { ContactNew } from './pages/ContactNew';
 import { AddMember } from './pages/AddMember';
 import { SettingsMenu } from './pages/SettingsMenu';
@@ -177,7 +181,7 @@ import { PersonaAdvanced } from './pages/PersonaAdvanced';
 import { ActivateRealIdentity } from './pages/ActivateRealIdentity';
 import { RequireRealIdentity } from './components/RequireRealIdentity';
 import { resolveActivationBackupStep } from './lib/activation-backup-step';
-import { isNaturalPersonActive, isDependantNaturalPersonActive } from './lib/identity-display';
+import { isNaturalPersonActive, isDependantNaturalPersonActive, hasPublicNostrProfile } from './lib/identity-display';
 import { dependantGateReason } from './lib/real-identity-gate-reasons';
 import { toRecoveryWords } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
@@ -223,7 +227,7 @@ import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, h
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
-import { routeNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
@@ -328,8 +332,9 @@ import type { RosterMember } from './lib/professional/role-anchor';
 import { useNavigation } from './hooks/useNavigation';
 import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLock';
 import { BunkerPanel } from './components/BunkerPanel';
-import { isBarHiddenPage, isOrphanedApprovalPage } from './lib/app-nav';
+import { isBarHiddenPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './lib/app-nav';
 import { stayAwakeUntil as computeStayAwakeUntil } from './lib/stay-awake';
+import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, shouldPromptUnlockForAlwaysOn } from './lib/bunker-restore';
 
 /**
  * How long the key stays after the app is hidden once a phone app has been
@@ -457,6 +462,33 @@ export function App() {
   stayAwakeUntilRef.current = stayAwakeUntil;
   /** End of the window during which a hidden app keeps its key for the phone apps it serves (NIP-55). */
   const phoneAppsUntilRef = useRef<number | null>(null);
+  /** The phone-apps key was found expired and its lock asked for; cleared once the lock has rendered. */
+  const phoneAppsLockPendingRef = useRef(false);
+  /** When the app was last hidden; null while it has been visible since. */
+  const hiddenAtRef = useRef<number | null>(null);
+  /**
+   * Whether the key held for phone apps has outlived its window. By the wall
+   * clock, not a timer: a timer stops with the page when Chromium freezes it
+   * (see src/lib/phone-apps-window.ts). Asked on visibility, on resume, and
+   * before every NIP-55 request.
+   */
+  const phoneAppsKeyExpiredNow = useCallback(() => !!encryptionKeyRef.current && phoneAppsKeyExpired({
+    now: Date.now(),
+    hiddenAt: hiddenAtRef.current,
+    until: phoneAppsUntilRef.current,
+    exempt: backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
+    lockPending: phoneAppsLockPendingRef.current,
+  }), []);
+  /**
+   * Drops the key at once. No publish flush first, unlike the other
+   * auto-locks: this runs just before a NIP-55 answer, which must not be
+   * made with a key whose window has ended.
+   */
+  const lockExpiredPhoneAppsKey = useCallback(() => {
+    phoneAppsLockPendingRef.current = true;
+    phoneAppsUntilRef.current = null;
+    setEncryptionKey(null);
+  }, []);
   /** Refuses the NIP-55 requests held for an unlock; set once the NIP-55 server below is up. */
   const refuseHeldNip55Ref = useRef<() => void>(() => {});
 
@@ -472,6 +504,8 @@ export function App() {
   // Bunker panel pending arm — set when user clicks +X while locked and requests unlock.
   // After successful unlock, the panel reopens and arms with this value.
   const [pendingBunkerArm, setPendingBunkerArm] = useState<number | null>(null);
+  // Always-on tapped while locked: turned on once the unlock lands.
+  const [pendingAlwaysOnArm, setPendingAlwaysOnArm] = useState(false);
 
   // On-demand auth prompt — shown as an overlay when a signing operation needs the encryption key
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
@@ -527,6 +561,8 @@ export function App() {
   }, [pendingBunkerArm]);
 
   const handleAuthPromptCancel = useCallback(() => {
+    setPendingBunkerArm(null);
+    setPendingAlwaysOnArm(false);
     setShowAuthPrompt(false);
     setAuthPromptContext(undefined);
     authResolverRef.current?.(null);
@@ -606,7 +642,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -775,6 +811,7 @@ export function App() {
   // PWA update refs (avoid stale closures in effects)
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
+  if (!encryptionKey) phoneAppsLockPendingRef.current = false;
   const needRefreshRef = useRef(needRefresh);
   needRefreshRef.current = needRefresh;
 
@@ -2092,6 +2129,9 @@ export function App() {
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
     ?? contactsIdentityLists[0]?.ownerIdentityPubkey ?? '';
   const [contactCardSearch, setContactCardSearch] = useState('');
+  // Carousel contacts card "Import following": open the panel on arrival.
+  const [contactsOpenFollows, setContactsOpenFollows] = useState(false);
+  useEffect(() => { if (page !== 'contacts') setContactsOpenFollows(false); }, [page]);
   const [contactsIdentityChoice, setContactsIdentityChoice] = useState<string | null>(null);
   useEffect(() => { setContactsIdentityChoice(null); }, [contactsScope.directoryId, defaultContactsIdentity]);
   const contactsListIdentity = contactsIdentityChoice ?? defaultContactsIdentity;
@@ -2234,9 +2274,17 @@ export function App() {
    * mutators are bound to the scope's directory, so a stale dependant scope
    * hides the offer rather than writing into the wrong directory.
    */
-  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+  const followsPendingFor = (slotTarget: string): string | undefined => {
     if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
-    if (contactsScope.directoryId !== 'owner' || contactsV2.loading) return undefined;
+    if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
+    if (contactsScope.directoryId !== 'owner') return 'Open this from your own card to import follows.';
+    if (contactsV2.loading) return 'Loading your contacts…';
+    return undefined;
+  };
+
+  const followsHandlersFor = (slotTarget: string, personaPubkey: string, personaName: string): FollowsHandlers | undefined => {
+    if (followsPendingFor(slotTarget)) return undefined;
+    if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
     if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
     return {
       onImportFollows: () => runFollowsImport({
@@ -2532,11 +2580,22 @@ export function App() {
     const value = new URLSearchParams(window.location.hash.slice(1)).get('contact-invite');
     return value && value.length <= 8192 ? value : undefined;
   });
+  // The persona whose camera card scanned the invite; the send screen defaults to it.
+  const [pendingInviteSender, setPendingInviteSender] = useState<string | undefined>(undefined);
+  const sendPageOpenRef = useRef(false);
+  useEffect(() => {
+    // Leaving the send page by any route (back, Done, Cancel, other navigation)
+    // retires the invite and the scanning persona, so neither can leak into a later invite.
+    if (page === 'contact-invite-send') { sendPageOpenRef.current = true; return; }
+    if (!sendPageOpenRef.current) return;
+    sendPageOpenRef.current = false;
+    setPendingContactInvite(undefined); setPendingInviteSender(undefined);
+  }, [page]);
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
     // D6: a paired-child install asks the guardian instead of connecting.
-    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invites');
+    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
   }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId]);
 
   // C1: `useContactsV2`'s own mount-time `reload()` and the cold
@@ -3664,6 +3723,34 @@ export function App() {
     reconnectNonce: bunkerReconnectNonce,
     relayUrl: nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL,
     routes: bunkerRoutes,
+    kinterestChildLabel: (pk) => {
+      if (!npActive || !identity) return null;
+      const p = dependants.find(dep => dep.guardianPubkey === identity.naturalPerson.publicKey && (dep.persona.publicKey === pk || dep.id === pk))?.persona;
+      return p ? { name:p.displayName, ...(p.contactAvatarHash && p.contactAvatarBlossomUrl && p.contactAvatarKey ? { avatar: { hash:p.contactAvatarHash,blossomUrl:p.contactAvatarBlossomUrl,keyHex:p.contactAvatarKey } } : {}) } : null;
+    },
+    kinterestAuthorityPubkey: npActive && identity ? identity.naturalPerson.publicKey : undefined,
+    kinterestChildConsent: async (template) => {
+      const request = parseKinterestRequest(template);
+      const key = encryptionKey;
+      const guardian = identity?.naturalPerson.publicKey;
+      if (!request?.child || !key || !guardian || !npActive) throw new Error('Activate your real identity to authorise a child');
+      const { child, familyPk } = request;
+      const fresh = (await loadFreshDependants(key)).find(dep => dep.guardianPubkey === guardian && (dep.persona.publicKey === child.identityPk || dep.id === child.identityPk));
+      if (!fresh || encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== guardian) throw new Error('Dependant unavailable');
+      const persona = fresh.persona;
+      const identityPk = persona.publicKey;
+      const signing = new LocalSigningBackend(persona.privateKey);
+      try {
+        const statement = await signing.signEvent({ pubkey: identityPk, kind: 30078, created_at: template.created_at,
+          content: 'Authorise this device for Kinterest child actions only.',
+          tags: [['d', `kin-jar/device/v2/${familyPk}/${child.devicePk}`], ['scope', 'kin-jar:child-actions:v2'], ['family', familyPk], ['child', identityPk], ['device', child.devicePk], ['role', child.role]],
+        });
+        if (encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== guardian) throw new Error('Identity locked');
+        const avatar = persona.contactAvatarBlossomUrl && persona.contactAvatarHash && persona.contactAvatarKey
+          ? { url: persona.contactAvatarBlossomUrl, hash: persona.contactAvatarHash, key: persona.contactAvatarKey } : undefined;
+        return JSON.stringify({ v: 2, familyPk, identityPk, name: persona.displayName, ...(avatar ? { avatar } : {}), devicePk: child.devicePk, role: child.role, statement });
+      } finally { signing.destroy(); }
+    },
     onApprovalPending: (entry) => {
       // Native: raise a local notification when the app isn't visible —
       // the screen-off guardian must learn a human decision is needed.
@@ -3823,6 +3910,8 @@ export function App() {
     activePubkey: activePubkey ?? null,
     onNeedsUnlock: () => { setAuthPromptContext(undefined); setShowAuthPrompt(true); },
     onServed: () => { phoneAppsUntilRef.current = Date.now() + PHONE_APPS_WINDOW_MS; },
+    keyExpired: phoneAppsKeyExpiredNow,
+    onKeyExpired: lockExpiredPhoneAppsKey,
   });
   refuseHeldNip55Ref.current = nip55.refuseHeld;
   // The remembered NIP-55 decisions, as the Connected Sites page lists them; grants keep milliseconds, the page reads seconds.
@@ -4807,7 +4896,38 @@ export function App() {
   }, []);
   const closeStayAwake = useCallback(() => {
     setStayAwakeUntil(null);
-  }, []);
+    // The user's explicit Stop: forget the stored end too.
+    if (isNativeApp()) void setStayAwakeEndsAt(null).catch(() => {});
+  }, [setStayAwakeEndsAt]);
+
+  // Native: keep the open window's wall-clock end on the device, so a
+  // swipe-away, process death or reboot can resume it on the next unlock.
+  // Only a window being OPEN is mirrored here — a null `stayAwakeUntil` is
+  // also the state of a fresh page before the restore below has run, so
+  // clearing happens only where the window really ends (Stop, expiry).
+  useEffect(() => {
+    if (!isNativeApp() || stayAwakeUntil === null) return;
+    void setStayAwakeEndsAt(stayAwakeUntil).catch(() => {});
+  }, [stayAwakeUntil, setStayAwakeEndsAt]);
+
+  // Native: on unlock, resume a window that was still running when the page
+  // went away — same end, never extended, so the countdown shows what is
+  // left. One check per unlock, once preferences have loaded.
+  const stayAwakeRestoredForKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!encryptionKey) { stayAwakeRestoredForKeyRef.current = null; return; }
+    if (!isNativeApp() || prefsLoading) return;
+    if (stayAwakeRestoredForKeyRef.current === encryptionKey) return;
+    stayAwakeRestoredForKeyRef.current = encryptionKey;
+    const stored = preferences.stayAwakeEndsAt;
+    const end = resolveStayAwakeOnUnlock(stored, Date.now());
+    if (end === null) {
+      if (stored !== undefined) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      return;
+    }
+    setStayAwakeUntil(prev => mergeRestoredStayAwake(prev, end));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey, prefsLoading]);
 
   // Native always-on background serving: arm = permissions + battery
   // exemption + foreground service; disarm = stop service. The preference
@@ -4815,9 +4935,20 @@ export function App() {
   // unlock effect below.
   const bunkerServePubkeysCsv = bunkerRoutes.map(r => r.pubkey).join(',');
   const bunkerServeRelayUrl = nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL;
+  const alwaysOnArmInFlightRef = useRef(false);
   const handleSetBackgroundServing = useCallback(async (on: boolean) => {
     if (!isNativeApp()) return;
-    if (on) {
+    if (!on) {
+      void setBackgroundBunkerEnabled(false);
+      try { await SignetNative.stopBunkerService(); } catch { /* already stopped */ }
+      setBackgroundServing(false);
+      return;
+    }
+    // One arm at a time: the unlock re-arm below and the user's toggle can
+    // both fire while the permission/exemption awaits are pending.
+    if (alwaysOnArmInFlightRef.current) return;
+    alwaysOnArmInFlightRef.current = true;
+    try {
       try {
         await LocalNotifications.requestPermissions();
         await LocalNotifications.createChannel({
@@ -4837,10 +4968,8 @@ export function App() {
       } catch { return; }
       setBackgroundServing(true);
       void setBackgroundBunkerEnabled(true);
-    } else {
-      try { await SignetNative.stopBunkerService(); } catch { /* already stopped */ }
-      setBackgroundServing(false);
-      void setBackgroundBunkerEnabled(false);
+    } finally {
+      alwaysOnArmInFlightRef.current = false;
     }
   }, [bunkerServePubkeysCsv, bunkerServeRelayUrl, setBackgroundBunkerEnabled]);
 
@@ -4851,6 +4980,15 @@ export function App() {
   // After unlock succeeds, panel reopens and arms with the pending time.
   const handleBunkerPendingArm = useCallback((minutes: number) => {
     setPendingBunkerArm(minutes);
+    setBunkerPanelOpen(false);
+    requestAuth();
+  }, [requestAuth]);
+
+  // Always-on tapped while locked: same unlock-first flow as +X. The pref is
+  // only set once the unlock lands, so a cancelled PIN never leaves always-on
+  // armed for a later unlock; the re-arm effect below then waits for routes.
+  const handleBunkerPendingAlwaysOn = useCallback(() => {
+    setPendingAlwaysOnArm(true);
     setBunkerPanelOpen(false);
     requestAuth();
   }, [requestAuth]);
@@ -4886,7 +5024,6 @@ export function App() {
     void requestAuth();
   }, [identityLoading, prefsLoading, identity, preferences.signingMode, pendingEncryptionKey, encryptionKey, showAuthPrompt, requestAuth]);
 
-  const hiddenAtRef = useRef<number | null>(null);
   // Attach activity listeners when authenticated
   useEffect(() => {
     if (!encryptionKey) return;
@@ -4953,11 +5090,20 @@ export function App() {
           requestHideLock();
         }
       } else {
+        // Back in front, perhaps thawed from a freeze that stopped the timer
+        // ending the phone-apps window: if the window ran out meanwhile, lock
+        // now, as the timer would have. `hiddenAt` is left set so a NIP-55
+        // request handled before the lock renders sees the same verdict.
+        if (phoneAppsKeyExpiredNow()) { lockExpiredPhoneAppsKey(); return; }
         hiddenAtRef.current = null;
         if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
       }
     };
+    // A frozen page that is thawed while still hidden gets a `resume` and no
+    // visibilitychange.
+    const handleResume = () => { if (phoneAppsKeyExpiredNow()) lockExpiredPhoneAppsKey(); };
     document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener('resume', handleResume);
     // A dependency change while hidden (the approve handler moving to the
     // code page, an inbound auth request) re-runs this effect, and the
     // cleanup below has just cancelled the grace timer. No visibilitychange
@@ -4968,10 +5114,11 @@ export function App() {
     return () => {
       events.forEach(ev => window.removeEventListener(ev, handler));
       document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('resume', handleResume);
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       if (graceTimer) clearTimeout(graceTimer);
     };
-  }, [encryptionKey, resetInactivityTimer, pendingVerifyRequest, pendingAuthRequest, page]);
+  }, [encryptionKey, resetInactivityTimer, pendingVerifyRequest, pendingAuthRequest, page, phoneAppsKeyExpiredNow, lockExpiredPhoneAppsKey]);
 
   // Stay-awake window expiry: when the deadline passes, end the window and
   // restore the normal security posture at once — a hidden app locks NOW
@@ -4980,9 +5127,14 @@ export function App() {
   useEffect(() => {
     if (stayAwakeUntil === null) return;
     const ms = stayAwakeUntil - Date.now();
-    if (ms <= 0) { setStayAwakeUntil(null); return; }
+    if (ms <= 0) {
+      setStayAwakeUntil(null);
+      if (isNativeApp()) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
+      return;
+    }
     const timer = setTimeout(() => {
       setStayAwakeUntil(null);
+      if (isNativeApp()) void setStayAwakeEndsAt(null, { endedBy: Date.now() }).catch(() => {});
       // Native always-on serving outlives a short window: ending the window
       // must not lock a page that is serving in the background.
       if (document.visibilityState === 'hidden' && !backgroundServingRef.current) {
@@ -4992,7 +5144,7 @@ export function App() {
       }
     }, ms);
     return () => clearTimeout(timer);
-  }, [stayAwakeUntil, resetInactivityTimer]);
+  }, [stayAwakeUntil, resetInactivityTimer, setStayAwakeEndsAt]);
 
   // When the window ends (expiry or Close now), resume normal auto-lock by
   // re-arming the inactivity timer from this moment.
@@ -5019,14 +5171,52 @@ export function App() {
     }).catch(() => {});
   }, [encryptionKey, stayAwakeUntil, backgroundServing, bunkerServePubkeysCsv, bunkerServeRelayUrl]);
 
-  // Native: re-arm background serving on unlock when the preference is set.
+  // Native: re-arm background serving after an unlock when the preference is
+  // set — after a swipe-away, process death or reboot the page starts with
+  // serving off and nothing else turns it back on. Waits for preferences and
+  // for the serve routes, which arrive a render or more after the key: an arm
+  // with no pubkeys stores an empty set for the boot receiver and the
+  // fallback poll. Re-evaluated whenever any of those change.
   useEffect(() => {
-    if (!isNativeApp() || !encryptionKey) return;
-    if (preferences.backgroundBunkerEnabled && !backgroundServing) {
-      void handleSetBackgroundServing(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encryptionKey, preferences.backgroundBunkerEnabled]);
+    if (!shouldRearmAlwaysOn({
+      native: isNativeApp(),
+      unlocked: !!encryptionKey,
+      prefsLoading,
+      enabledPref: preferences.backgroundBunkerEnabled,
+      serving: backgroundServing,
+      inFlight: alwaysOnArmInFlightRef.current,
+      servePubkeyCount: bunkerRoutes.length,
+    })) return;
+    void handleSetBackgroundServing(true);
+  }, [encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+
+  useEffect(() => {
+    if (!encryptionKey || !pendingAlwaysOnArm) return;
+    setPendingAlwaysOnArm(false);
+    setBunkerPanelOpen(true);
+    void setBackgroundBunkerEnabled(true);
+  }, [encryptionKey, pendingAlwaysOnArm, setBackgroundBunkerEnabled]);
+
+  // Native: always-on is set but this page is locked (opened from the
+  // "stopped signing" notification, after a swipe-away or a reboot). Serving
+  // needs the key, so ask for the unlock straight away rather than leaving
+  // always-on silently off. Once per page; a cancel is left alone.
+  const alwaysOnUnlockPromptRef = useRef(false);
+  useEffect(() => {
+    if (alwaysOnUnlockPromptRef.current) return;
+    if (!shouldPromptUnlockForAlwaysOn({
+      native: isNativeApp(),
+      loading: identityLoading || prefsLoading,
+      hasIdentity: !!identity,
+      authSetUp: isAuthSetUp(),
+      unlocked: !!encryptionKey || !!pendingEncryptionKey,
+      promptOpen: showAuthPrompt,
+      enabledPref: preferences.backgroundBunkerEnabled,
+      pairedChild: preferences.signingMode === 'paired-child',
+    })) return;
+    alwaysOnUnlockPromptRef.current = true;
+    void requestAuth();
+  }, [identityLoading, prefsLoading, identity, encryptionKey, pendingEncryptionKey, showAuthPrompt, preferences.backgroundBunkerEnabled, preferences.signingMode, requestAuth]);
 
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode and
@@ -8574,6 +8764,11 @@ export function App() {
         // D6: a paired-child install offers "Ask {guardian} to connect"
         // instead of connecting directly — see the navigation effect below.
         setPendingContactInvite(JSON.stringify(action.invite));
+        {
+          const scanRow = carousel.rows[carousel.row];
+          setPendingInviteSender(scanRow && (scanRow.type === 'persona' || scanRow.type === 'extra-persona' || scanRow.type === 'natural-person')
+            ? carousel.activeIdentity.publicKey : undefined);
+        }
         break;
       case 'verify':
         setPendingVerifyRequest(action.request);
@@ -8629,7 +8824,7 @@ export function App() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, resolveSigningSelection, preferences.signingMode, isPairedChild]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;
@@ -8969,8 +9164,8 @@ export function App() {
   const handleNativeUrl = useCallback((url: string) => {
     if (!url || lastNativeUrlRef.current === url) return;
     lastNativeUrlRef.current = url;
-    const contactInvite = parseContactInviteLink(url);
-    if (contactInvite) { setPendingContactInvite(JSON.stringify(contactInvite)); return; }
+    const contactInvite = contactInviteFromNativeUrl(url);
+    if (contactInvite) { setPendingContactInvite(contactInvite); setPendingInviteSender(undefined); return; }
     const action = routeNativeUrl(url);
     switch (action.type) {
       case 'companion-pair':
@@ -10297,6 +10492,59 @@ export function App() {
     ));
   }
 
+  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
+  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
+  // revocation can't be blocked by an unreachable relay), then best-effort
+  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
+  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
+  // recipient who cached the old key can't follow the new pointer. Recipients
+  // who already fetched the blob keep it — no clawback, by design.
+  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
+    const key = encryptionKey || await requestAuth();
+    if (!key) throw new Error('Authentication required');
+
+    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
+    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
+    let slot: { publicKey: string; privateKey: string } | undefined;
+    if (depPubkey) {
+      const all = await loadFreshDependants(key);
+      const dep = all.find(d => d.id === depPubkey);
+      if (!dep) return;
+      slot = target === 'natural-person' ? dep.naturalPerson
+        : target === 'persona' ? dep.persona
+        : dep.extraPersonas?.find(e => e.publicKey === target);
+    } else {
+      if (!identity) return;
+      const decrypted = await loadIdentityDecrypted(identity.id, key);
+      if (!decrypted) return;
+      slot = target === 'natural-person' ? decrypted.naturalPerson
+        : target === 'persona' ? decrypted.persona
+        : decrypted.extraPersonas?.find(e => e.publicKey === target);
+    }
+    if (!slot) return;
+
+    // Clear FIRST — local revocation must not be blockable by relay state
+    // (or by the absence of a local/routed signing key).
+    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
+    else await clearPersonaContactAvatar(target);
+
+    // Best-effort retract of the published pointer. Router-sourced fallback
+    // is a SHARED, CACHED route — only a locally-constructed backend
+    // (ownedStop) may be destroy()'d below.
+    const ownedStop = !!slot.privateKey;
+    const stopBackend: DecryptingSigningBackend | null = ownedStop
+      ? new LocalSigningBackend(slot.privateKey)
+      // A42: never an ungated router route on a direct child.
+      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
+    if (stopBackend) {
+      try {
+        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
+      } finally {
+        if (ownedStop) stopBackend.destroy();
+      }
+    }
+  };
+
   if (page === 'persona-advanced' && identity && pendingPersonaAdvancedTarget) {
     const { slotTarget, depPubkey } = pendingPersonaAdvancedTarget;
     return renderSettingsPage('persona-advanced', 'Advanced', (
@@ -10347,7 +10595,9 @@ export function App() {
             : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
           if (!ownSlot) return {};
           const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
-          return handlers ? { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows } : {};
+          if (handlers) return { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows };
+          const pending = followsPendingFor(slotTarget);
+          return pending ? { followsPending: pending } : {};
         })()}
         onMatchExistingProfile={depPubkey || slotTarget === 'natural-person' || isPairedChild || childDirect || !identity ? undefined : async (found) => {
           // Writes card + state + base in one save and publishes nothing: the
@@ -10381,6 +10631,7 @@ export function App() {
         // the signer, and a dep slot never offers the guardian's words at all.
         onShowMnemonic={depPubkey || preferences.signingMode === 'bunker' ? undefined : () => navigateTo('settings-security')}
         mnemonicOnSigner={!depPubkey && preferences.signingMode === 'bunker'}
+        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
         onHidePersona={async (pubkey) => {
           // Soft-delete (preserves derivation slot). Distinct from delete.
           // Both branches set `ExtraPersona.hidden = true` — that's the
@@ -10950,6 +11201,12 @@ export function App() {
           onRemoveOrigin={id => contactsV2.removeOrigin(record.contactId, id)}
           onUpdateCheck={contactsListIdentity === 'all' ? undefined : check => contactsV2.updateCheck(record.contactId, check)}
           onRecordCheck={contactsListIdentity === 'all' ? undefined : check => contactsV2.recordCheck(record.contactId, check)}
+          onApplyConfirmation={contactsListIdentity === 'all' || isPairedChild ? undefined : steps => applyConfirmSteps(steps, record.contactId, contactsV2)}
+          confirmContacts={contactsV2.effective}
+          confirmKeyHolderIds={contactsV2.keyHolderIds}
+          ownPubkeys={[...new Set([...contactsIdentityLists.map(l => l.ownerIdentityPubkey),
+            ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])]}
+          onStartExchange={contactsScope.directoryId && !isPairedChild ? () => navigateTo('contact-invites') : undefined}
           onRemoveCheck={id => contactsV2.removeCheck(record.contactId, id)}
           onSetNote={(note) => contactsV2.setNote(record.contactId, note)}
           onBlock={async (reason) => {
@@ -11002,6 +11259,32 @@ export function App() {
           : <p role="alert">This invite is invalid or has expired.</p>}
       </Layout>
     );
+  }
+
+  // Scanned invite: choose the sending persona and send the request.
+  if (page === 'contact-invite-send' && pendingContactInvite && !isPairedChild) {
+    const invite = parseContactInviteLink(pendingContactInvite, Math.floor(Date.now() / 1000));
+    const finish = () => { setPendingContactInvite(undefined); setPendingInviteSender(undefined); navigateReplace('home'); };
+    const sendPersonas = contactsIdentityLists.map(l => ({ pubkey: l.ownerIdentityPubkey, label: l.label }));
+    const ownPubkeys = [...new Set([...sendPersonas.map(p => p.pubkey),
+      ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])];
+    return <Layout title="Send a contact request" showBack onBack={finish} {...guardianLayoutProps}>
+      {invite
+        ? <ContactInviteSend key={pendingContactInvite} invite={invite} personas={sendPersonas}
+          defaultPersona={pendingInviteSender && sendPersonas.some(p => p.pubkey === pendingInviteSender) ? pendingInviteSender : contactsWriteIdentity}
+          ownPubkeys={ownPubkeys}
+          onSend={async persona => {
+            setContactsIdentityChoice(persona);
+            const sentAt = Math.floor(Date.now() / 1000);
+            await ownerInviteService.request(persona, invite, sentAt);
+            await ownerInviteService.flush(sentAt);
+          }}
+          onDone={finish} onCancel={finish} />
+        : <div style={{ padding: 16 }}>
+          <p role="alert">This invite is invalid or has expired.</p>
+          <button className="btn btn-secondary" onClick={finish}>Back</button>
+        </div>}
+    </Layout>;
   }
 
   // Contacts list
@@ -11075,7 +11358,31 @@ export function App() {
         </section>}
         {isPairedChild && <h2>Contacts saved on this device</h2>}
         <ContactsRolodex
+          {...(() => {
+            // Owner scope only; never a dependant scope or a paired-child install.
+            if (!identity || isPairedChild || childDirect || contactsScope.directoryId !== 'owner' || !contactsWriteIdentity) return {};
+            const pk = contactsWriteIdentity;
+            const slot = pk === identity.naturalPerson.publicKey ? { target: 'natural-person', s: identity.naturalPerson }
+              : pk === identity.persona.publicKey ? { target: 'persona', s: identity.persona }
+              : pk === identity.professionalPersona?.publicKey ? { target: 'professional-persona', s: identity.professionalPersona }
+              : (() => { const x = identity.extraPersonas?.find(e => e.publicKey === pk); return x ? { target: pk, s: x } : undefined; })();
+            if (!slot) return {};
+            const name = slot.s.displayName || 'this persona';
+            const handlers = followsHandlersFor(slot.target, pk, name);
+            // Only the loading wait is shown; "open from your own card" never is.
+            const pending = followsPendingFor(slot.target);
+            const loadingReason = pending && contactsV2.loading ? pending : undefined;
+            if (!handlers && !loadingReason) return {};
+            return {
+              onImportFollows: handlers?.onImportFollows,
+              onUnlinkFollows: handlers?.onUnlinkFollows,
+              followsPersonaName: name,
+              followsLast: slot.s.followsImport,
+              followsDisabledReason: loadingReason,
+            };
+          })()}
           initialSearch={contactCardSearch}
+          initialFollowsOpen={contactsOpenFollows}
           contacts={contactsListIdentity === 'all' ? contactsV2.effective : contactsV2.effective.filter(c => contactBelongsToList(c, contactsListIdentity))}
           lists={contactsIdentityLists}
           pendingLinks={contactsV2.records.reduce((n, r) => n + (r.appIntroductions?.filter(i => i.status === 'pending').length ?? 0), 0)}
@@ -12318,62 +12625,6 @@ export function App() {
     return contactKey;
   };
 
-  const handleEnableContactAvatarShare = (target: string, depPubkey?: string): Promise<string | null> =>
-    pushContactAvatar({ target, depPubkey, requireExisting: false });
-
-  // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
-  // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
-  // revocation can't be blocked by an unreachable relay), then best-effort
-  // retracts the published pointer via kind-5 + tombstone. Re-enabling later
-  // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
-  // recipient who cached the old key can't follow the new pointer. Recipients
-  // who already fetched the blob keep it — no clawback, by design.
-  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
-    const key = encryptionKey || await requestAuth();
-    if (!key) throw new Error('Authentication required');
-
-    // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
-    // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
-    let slot: { publicKey: string; privateKey: string } | undefined;
-    if (depPubkey) {
-      const all = await loadFreshDependants(key);
-      const dep = all.find(d => d.id === depPubkey);
-      if (!dep) return;
-      slot = target === 'natural-person' ? dep.naturalPerson
-        : target === 'persona' ? dep.persona
-        : dep.extraPersonas?.find(e => e.publicKey === target);
-    } else {
-      if (!identity) return;
-      const decrypted = await loadIdentityDecrypted(identity.id, key);
-      if (!decrypted) return;
-      slot = target === 'natural-person' ? decrypted.naturalPerson
-        : target === 'persona' ? decrypted.persona
-        : decrypted.extraPersonas?.find(e => e.publicKey === target);
-    }
-    if (!slot) return;
-
-    // Clear FIRST — local revocation must not be blockable by relay state
-    // (or by the absence of a local/routed signing key).
-    if (depPubkey) await clearDependantPersonaContactAvatar(depPubkey, target);
-    else await clearPersonaContactAvatar(target);
-
-    // Best-effort retract of the published pointer. Router-sourced fallback
-    // is a SHARED, CACHED route — only a locally-constructed backend
-    // (ownedStop) may be destroy()'d below.
-    const ownedStop = !!slot.privateKey;
-    const stopBackend: DecryptingSigningBackend | null = ownedStop
-      ? new LocalSigningBackend(slot.privateKey)
-      // A42: never an ungated router route on a direct child.
-      : (childDirect ? null : bunkerRouter?.backendFor(slot.publicKey) ?? null);
-    if (stopBackend) {
-      try {
-        await retractContactAvatarPointer(stopBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
-      } finally {
-        if (ownedStop) stopBackend.destroy();
-      }
-    }
-  };
-
   // Home (default) — card-swipe wallet carousel
   return (
     <>
@@ -12444,11 +12695,12 @@ export function App() {
           </div> : null;
         })}
       <Carousel
-        renderInviteCard={(_row, resolved, publicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
+        renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
-            name={resolved.displayName} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} publicCard={publicCard}
+            resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
+            locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
             onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
-          : publicCard}
+          : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           onSignIn={async (selection, request, valid) => {
             const key = encryptionKey, root = identity.naturalPerson.publicKey, mode = preferences.signingMode;
@@ -12475,6 +12727,7 @@ export function App() {
           name={resolved.displayName} available={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild) && !contactsV2.loading}
           contacts={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild)
             ? contactsV2.effective.filter(contact => contactBelongsToList(contact, resolved.publicKey)) : []}
+          followsAvailable={!resolved.isDependant && !isPairedChild && !childDirect && hasPublicNostrProfile(identity, resolved.publicKey)}
           onOpen={async (action, query) => {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
@@ -12482,6 +12735,7 @@ export function App() {
             setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
+            setContactsOpenFollows(action === 'follows');
             navigateTo(action === 'new' ? 'contact-new' : 'contacts');
           }} />}
         row={carousel.row}
@@ -12504,6 +12758,9 @@ export function App() {
           // 'transition-ceremony') read activeDependant synchronously on
           // render; React batches both state updates into the same flush.
           if (opts?.dependantId) setActiveDependantId(opts.dependantId);
+          // An owner slot's Advanced page must not inherit a dependant scope
+          // left over from an earlier visit (it hid the follows panel).
+          else if (p === 'persona-advanced' && opts?.slotTarget) setActiveDependantId(null);
           if (opts?.slotTarget) {
             setPendingPersonaAdvancedTarget({
               slotTarget: opts.slotTarget,
@@ -12722,14 +12979,6 @@ export function App() {
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });
         }}
-        // Contact-share avatar ENABLE. Gated on the paired-child surface for
-        // the same reasons as the in-app avatar handlers above (local writes
-        // get clobbered by the next persona-inventory sync; Blossom NIP-98
-        // auth would pop an unsolicited sign request to the guardian's bunker).
-        onEnableContactAvatarShare={isPairedChild ? undefined : handleEnableContactAvatarShare}
-        // Contact-share avatar STOP (G1 coarse revocation). Gated on the
-        // paired-child surface for the same reasons as enable above.
-        onStopContactAvatarShare={isPairedChild ? undefined : handleStopContactAvatarShare}
       >
         {pendingAuthRequest && page === 'home' && identity && (() => {
           // Display from the scan-time selection snapshot, not the live carousel
@@ -12776,7 +13025,18 @@ export function App() {
         isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child'}
         childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
+        bunkerTint={bunkerTint({
+          serving: backgroundServing || stayAwakeUntil !== null,
+          alwaysOnWanted: isNativeApp() && preferences.backgroundBunkerEnabled === true,
+        })}
         onNavigate={(target) => {
+          if (target === 'home') {
+            // Child mode is left only through the guardian's unlock, so a
+            // second tap goes to the top of whichever ring is showing.
+            const action = homeTapAction({ onHome: page === 'home', row: carousel.row, col: carousel.col });
+            if (action === 'front') carousel.navigateToCell(carousel.row, 0);
+            else if (action === 'top') carousel.navigateToCell(0, 0);
+          }
           void (async () => {
             if (target === 'contacts') setContactCardSearch('');
             if (target === 'contacts' && page === 'home' && !isPairedChild) {
@@ -12813,6 +13073,8 @@ export function App() {
           serveStatus={bunkerServeStatus}
           locked={!encryptionKey}
           onRequestUnlockWithPendingArm={handleBunkerPendingArm}
+          onRequestUnlockForAlwaysOn={handleBunkerPendingAlwaysOn}
+          alwaysOnWanted={preferences.backgroundBunkerEnabled === true}
           isNative={isNativeApp()}
           backgroundServing={backgroundServing}
           onSetBackgroundServing={handleSetBackgroundServing}

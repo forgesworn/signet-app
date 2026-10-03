@@ -4,6 +4,7 @@ import type { PrivateVaultJob } from '../hooks/usePrivateVaults';
 import type { PrivateVaultDatasetAdapter } from './private-vault-sync';
 import type { BunkerSigningBackend } from './signing-backend';
 import { localVaultBackend } from './private-vault';
+import { createVaultKeyCache, withVaultKeyCache } from './vault-key-cache';
 import { profilesVaultAdapter } from './private-vault-profiles';
 import { contactsVaultAdapter } from './private-vault-contacts';
 import { credentialsVaultAdapter } from './private-vault-credentials';
@@ -29,11 +30,13 @@ export async function privateVaultJobs(args: {
   const keys = (value: { naturalPerson: { publicKey: string }; persona: { publicKey: string }; extraPersonas?: { publicKey: string }[] }) =>
     [value.naturalPerson.publicKey, value.persona.publicKey, ...(value.extraPersonas ?? []).map(p => p.publicKey)];
   const forbidden = [...keys(identity), ...(identity.professionalPersona ? [identity.professionalPersona.publicKey] : []), ...dependants.flatMap(keys)];
+  // Device-held keys only: each NIP-44 leg is a device request (a card); local keys are free.
+  const keyCache = deviceHeldKeys ? createVaultKeyCache(encryptionKey, isCurrent) : null;
   const resolve = (dataset: VaultDataset, rotation: number) => {
     if (!isCurrent()) return Promise.reject(new Error('Vault session changed'));
     if (deviceHeldKeys) {
       if (!args.bunker) return Promise.reject(new Error('Connect Heartwood to access private backups'));
-      return args.bunker.vaultBackend(dataset, rotation, forbidden);
+      return args.bunker.vaultBackend(dataset, rotation, forbidden).then(backend => withVaultKeyCache(backend, keyCache!));
     }
     return Promise.resolve(localVaultBackend(identity.mnemonic, dataset, rotation));
   };

@@ -6,15 +6,21 @@
  * independently carry. A blocked contact therefore keeps its tier but is
  * withheld from the tier filters and sorted to the end of All, so the ordinary
  * browsing view never hands somebody a blocked contact as if nothing happened.
+ *
+ * "Not confirmed" works the same way (see `isContactConfirmed`): a filter for
+ * working through contacts whose keys nobody has checked yet.
  */
 import type { ContactRecord, EffectiveContact } from '../types';
+import { NOT_CONFIRMED_FILTER_LABEL } from './contacts-v2-copy';
+import { isContactConfirmed } from './contacts-v2-verification';
+import { contactDisplayName, fullNpub } from './contacts-v2-name';
 
-export type ContactsFilter = 'all' | 'kin' | 'kith' | 'ken' | 'blocked';
+export type ContactsFilter = 'all' | 'kin' | 'kith' | 'ken' | 'not-confirmed' | 'blocked';
 
-export const CONTACT_FILTERS: readonly ContactsFilter[] = ['all', 'kin', 'kith', 'ken', 'blocked'];
+export const CONTACT_FILTERS: readonly ContactsFilter[] = ['all', 'kin', 'kith', 'ken', 'not-confirmed', 'blocked'];
 
 const FILTER_LABELS: Record<ContactsFilter, string> = {
-  all: 'All', kin: 'Kin', kith: 'Kith', ken: 'Ken', blocked: 'Blocked',
+  all: 'All', kin: 'Kin', kith: 'Kith', ken: 'Ken', 'not-confirmed': NOT_CONFIRMED_FILTER_LABEL, blocked: 'Blocked',
 };
 
 export function filterLabel(filter: ContactsFilter): string {
@@ -43,7 +49,7 @@ export function isVisibleContact(record: Pick<ContactRecord, 'lifecycle' | 'arch
 }
 
 function haystack(c: EffectiveContact): string {
-  return [c.displayName, ...c.roles, ...c.identities.map(i => i.pubkey)].join(' ').toLowerCase();
+  return [c.displayName, contactDisplayName(c), ...c.roles, ...c.identities.flatMap(i => [i.pubkey, fullNpub(i.pubkey)])].join(' ').toLowerCase();
 }
 
 export function arrangeContactsV2(
@@ -56,6 +62,11 @@ export function arrangeContactsV2(
     .filter(c => {
       if (opts.filter === 'all') return true;
       if (opts.filter === 'blocked') return c.blocked;
+      // Like Blocked, a filter and not a tier: tier is the relationship, this
+      // is whether any of their keys has been confirmed. A keyless contact has
+      // no key to confirm, so it is not listed, and a blocked one is withheld
+      // exactly as it is from the tier filters.
+      if (opts.filter === 'not-confirmed') return !c.blocked && c.identities.length > 0 && !isContactConfirmed(c);
       return !c.blocked && c.effectiveTier === opts.filter;
     })
     .filter(c => !q || haystack(c).includes(q));
@@ -65,6 +76,6 @@ export function arrangeContactsV2(
   // reordering unpredictably.
   return filtered.sort((a, b) => {
     if (a.blocked !== b.blocked) return a.blocked ? 1 : -1;
-    return a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase());
+    return contactDisplayName(a).toLowerCase().localeCompare(contactDisplayName(b).toLowerCase());
   });
 }

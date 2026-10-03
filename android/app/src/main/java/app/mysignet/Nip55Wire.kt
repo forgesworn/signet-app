@@ -31,6 +31,25 @@ object Nip55Wire {
 
     val METHODS = setOf("get_public_key", "sign_event", "nip44_encrypt", "nip44_decrypt")
 
+    /**
+     * The extras an intent result carries. `id` is the CALLER's own id,
+     * echoed on every result, a refusal or a timeout included, so an app
+     * with several requests out matches each answer to its request rather
+     * than to launch order; omitted when the caller sent none. The id this
+     * app uses inside, between the activity and the page, never leaves it.
+     * [answer] null or not ok is a refusal.
+     */
+    fun resultExtras(callerId: String?, signerPackage: String, answer: Nip55Answer?): Map<String, Any> = buildMap {
+        callerId?.takeIf { it.isNotEmpty() }?.let { put(EXTRA_ID, it) }
+        if (answer == null || !answer.ok) {
+            put(EXTRA_REJECTED, true)
+            return@buildMap
+        }
+        put(EXTRA_PACKAGE, signerPackage)
+        answer.result?.let { put(EXTRA_RESULT, it); put(EXTRA_SIGNATURE, it) }
+        answer.event?.let { put(EXTRA_EVENT, it) }
+    }
+
     /** The provider authorities this signer answers on, `<package>.<METHOD>`. */
     fun authority(packageName: String, method: String): String = "$packageName.${method.uppercase()}"
 

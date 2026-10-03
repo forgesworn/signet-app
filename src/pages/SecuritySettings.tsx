@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import type { SignetIdentity, SecurityTier } from '../types';
-import { getAuthMethod, changePIN, enableBiometric, disableBiometric, isBiometricAvailable } from '../lib/auth';
+import { getAuthMethod, changePIN, enableBiometric, disableBiometric, isBiometricAvailable, hasPinFallback, biometricAcceptsDevicePin } from '../lib/auth';
+import { securityMethodLabel } from '../lib/security-method-label';
 import { QRCode } from '../components/QRCode';
 import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
 import { toRecoveryWords } from '../lib/recovery-words';
@@ -241,6 +242,15 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
     return m === 'biometric' || m === 'pin' ? m : null;
   });
   const [biometricSupported, setBiometricSupported] = useState(false);
+  // Whether the biometric key also opens with the phone's own PIN (native,
+  // Android 11+, set up since that became possible). Re-read when the method changes.
+  const [devicePin, setDevicePin] = useState(false);
+  useEffect(() => {
+    let live = true;
+    if (authMethod !== 'biometric') { setDevicePin(false); return; }
+    void biometricAcceptsDevicePin().then(v => { if (live) setDevicePin(v); });
+    return () => { live = false; };
+  }, [authMethod]);
   const [changePinStep, setChangePinStep] = useState<'idle' | 'current' | 'new' | 'confirm'>('idle');
   const [currentPinEntry, setCurrentPinEntry] = useState('');
   const [newPinEntry, setNewPinEntry] = useState('');
@@ -434,7 +444,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
             <ul style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 6, paddingLeft: 18, lineHeight: 1.5 }}>
               <li>pair a dependant's phone</li>
               <li>pair your desktop signet-app</li>
-              <li>pair companion apps (MatchPass, or any other app using NIP-46)</li>
+              <li>pair companion apps (any app using NIP-46)</li>
               <li>pair a third-party app that acts as a dependant</li>
             </ul>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 0 }}>
@@ -573,21 +583,24 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
       <div className="card section">
         <div className="section-title">Security</div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-          Currently using: <strong>{authMethod === 'biometric' ? 'Biometrics + PIN fallback' : authMethod === 'pin' ? 'PIN' : 'Not yet set up'}</strong>
+          Currently using: <strong>{securityMethodLabel(authMethod, devicePin)}</strong>
         </p>
 
         {/* Change PIN flow */}
         {changePinStep === 'idle' && disableBioStep === 'idle' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <button className="btn btn-secondary" onClick={() => {
-              setChangePinStep('current');
-              setCurrentPinEntry('');
-              setNewPinEntry('');
-              setConfirmPinEntry('');
-              setPinChangeError('');
-            }}>
-              Change PIN
-            </button>
+            {/* A native biometric install holds no PIN to change. */}
+            {(authMethod !== 'biometric' || hasPinFallback()) && (
+              <button className="btn btn-secondary" onClick={() => {
+                setChangePinStep('current');
+                setCurrentPinEntry('');
+                setNewPinEntry('');
+                setConfirmPinEntry('');
+                setPinChangeError('');
+              }}>
+                Change PIN
+              </button>
+            )}
 
             {/* Biometric toggle */}
             {authMethod === 'pin' && biometricSupported && (

@@ -509,3 +509,85 @@ describe('validateOperation — app actor role restriction (Opus review gap)', (
     }
   });
 });
+
+describe('applyOperations — key aliasing after remove-item', () => {
+  const ALICE = '3'.repeat(32), MALLORY = '4'.repeat(32), BOB = '5'.repeat(32);
+  const K = 'e'.repeat(64), K2 = 'f'.repeat(64);
+  let n = 0;
+  const id = () => (++n).toString(16).padStart(32, '0');
+  const at = (clock: number, contactId: string, action: ContactOperation['action'], value: unknown, extra: Partial<ContactOperation> = {}) =>
+    op({ operationId: id(), logicalClock: clock, createdAt: clock * 100, contactId, action, value, ...extra });
+  const add = (clock: number, contactId: string, displayName: string) =>
+    at(clock, contactId, 'add', { type: 'person', displayName, tier: 'ken' });
+  const identity = (clock: number, contactId: string, itemId: string, pubkey = K) =>
+    at(clock, contactId, 'add-identity', { itemId, pubkey, provenance: 'direct', verification: 'unverified' }, { itemId });
+  const removeItem = (clock: number, contactId: string, itemId: string) =>
+    at(clock, contactId, 'remove-item', { itemId }, { itemId });
+  const names = (ops: ContactOperation[]) => [...applyOperations(ops).values()]
+    .map(r => [r.displayName, r.identities.map(i => i.pubkey)]);
+  const permutations = (ops: ContactOperation[]) => [ops, [...ops].reverse(), [...ops.slice(1), ops[0]]];
+
+  it('a key removed from a contact does not re-attach it when a new contact is filed with that key', () => {
+    const impostorItem = '6'.repeat(32), malloryItem = '7'.repeat(32);
+    const ops = [add(1, ALICE, 'Alice'), identity(2, ALICE, impostorItem), removeItem(3, ALICE, impostorItem),
+      add(4, MALLORY, 'Mallory'), identity(5, MALLORY, malloryItem)];
+    for (const order of permutations(ops)) {
+      expect(names(order)).toEqual([['Alice', []], ['Mallory', [K]]]);
+    }
+    const blocked = applyOperations([...ops, at(6, MALLORY, 'block', { scope: { kind: 'contact' } })]);
+    expect(blocked.get(recordKey(DIR, MALLORY))!.blocks).toHaveLength(1);
+    expect(blocked.get(recordKey(DIR, ALICE))!.blocks).toEqual([]);
+    expect(blocked.get(recordKey(DIR, ALICE))!.mergedContactIds).toBeUndefined();
+  });
+
+  it('still merges same-npub records created concurrently on two devices', () => {
+    const ops = [add(1, ALICE, 'Alice'), identity(2, ALICE, '6'.repeat(32)),
+      add(1, MALLORY, 'Alice again'), identity(2, MALLORY, '7'.repeat(32))];
+    for (const order of permutations(ops)) {
+      const records = [...applyOperations(order).values()];
+      expect(records).toHaveLength(1);
+      expect(records[0].mergedContactIds).toHaveLength(1);
+    }
+  });
+
+  it('keeps a formed merge when the shared key is later removed, and a later contact with it stays apart', () => {
+    const ops = [add(1, ALICE, 'Alice'), identity(2, ALICE, '6'.repeat(32)),
+      add(3, MALLORY, 'Alice again'), identity(4, MALLORY, '7'.repeat(32)),
+      removeItem(5, ALICE, '6'.repeat(32)),
+      add(6, BOB, 'Stranger'), identity(7, BOB, '8'.repeat(32))];
+    for (const order of permutations(ops)) {
+      const map = applyOperations(order);
+      expect(map.size).toBe(2);
+      expect(map.get(recordKey(DIR, ALICE))!.mergedContactIds).toEqual([MALLORY]);
+      expect(map.get(recordKey(DIR, ALICE))!.identities).toEqual([]);
+      expect(map.get(recordKey(DIR, BOB))!.identities.map(i => i.pubkey)).toEqual([K]);
+    }
+  });
+
+  it('a key rotated in by key-link aliases a record that holds the new key', () => {
+    const ops = [add(1, ALICE, 'Alice'), identity(2, ALICE, '6'.repeat(32)),
+      at(3, ALICE, 'key-link', { itemId: '9'.repeat(32), pubkey: K2, linkedFromItemId: '6'.repeat(32) }, { itemId: '9'.repeat(32) }),
+      add(4, MALLORY, 'Alice new'), identity(5, MALLORY, '7'.repeat(32), K2)];
+    for (const order of permutations(ops)) {
+      const records = [...applyOperations(order).values()];
+      expect(records).toHaveLength(1);
+      expect(records[0].identities.map(i => i.pubkey)).toEqual([K, K2]);
+    }
+  });
+
+  it('a key removed and re-added to the same contact aliases again', () => {
+    const ops = [add(1, ALICE, 'Alice'), identity(2, ALICE, '6'.repeat(32)), removeItem(3, ALICE, '6'.repeat(32)),
+      identity(4, ALICE, '8'.repeat(32)), add(5, MALLORY, 'Alice again'), identity(6, MALLORY, '7'.repeat(32))];
+    for (const order of permutations(ops)) {
+      const records = [...applyOperations(order).values()];
+      expect(records).toHaveLength(1);
+      expect(records[0].identities.map(i => i.pubkey)).toEqual([K]);
+    }
+  });
+
+  it('a deleted contact still holds its key, so adding that key elsewhere merges (refused upstream)', () => {
+    const ops = [add(1, BOB, 'Bob'), identity(2, BOB, '6'.repeat(32)), at(3, BOB, 'remove', {}),
+      add(4, ALICE, 'Alice'), identity(5, ALICE, '7'.repeat(32))];
+    expect(applyOperations(ops).size).toBe(1);
+  });
+});

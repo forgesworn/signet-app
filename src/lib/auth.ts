@@ -303,6 +303,20 @@ export function hasPinFallback(): boolean {
   }
 }
 
+/**
+ * Whether the biometric unlock also accepts the phone's own PIN, pattern or
+ * password: a native key made on Android 11 or later. False on the web and
+ * for an older native key.
+ */
+export async function biometricAcceptsDevicePin(): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    return (await SignetNative.biometricDeviceCredential()).allowed === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Check if auth is set up */
 export function isAuthSetUp(): boolean {
   return localStorage.getItem(AUTH_METHOD_KEY) !== null;

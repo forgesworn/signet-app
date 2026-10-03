@@ -4,6 +4,7 @@ import { recordCompletedContactExchange, contactPeerAllowed } from './contact-ex
 import { listContactOperationsV2, saveContactOperationsV2, purgeAllUserData } from './db';
 import { applyOperations } from './contacts-v2-reducer';
 import { buildOperation } from './contacts-v2-mutations';
+import { shortNpub } from './nostr-follows';
 const key = 'exchange contact test', own = '1'.repeat(64), peer = '2'.repeat(64);
 const actor = { actorPubkey: own, actorRole: 'owner' as const, actorDeviceId: '3'.repeat(32) };
 function exchange() {
@@ -73,4 +74,74 @@ it('copies private invite attribution to the contact once and does not recreate 
     clock: 100, actor, now: 200000, operationId: 'd'.repeat(32) })], key);
   await recordCompletedContactExchange(args);
   expect(applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.origins).toEqual([]);
+});
+const link = (caption?: string) => ({ ...exchange(), origin: { id: 'b'.repeat(32), ownerIdentityPubkey: own,
+  method: 'link' as const, addedAt: 102000, ...(caption ? { caption } : {}) } });
+const nameOf = async (contactId: string) => applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.displayName;
+it('names the new contact after the scanned invite caption, sanitised and capped, else the short key', async () => {
+  const named = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('  Bob‮ at the fair '), isCurrent: () => true });
+  expect(await nameOf(named)).toBe('Bob at the fair');
+  await purgeAllUserData();
+  const long = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('x'.repeat(150)), isCurrent: () => true });
+  expect((await nameOf(long)).length).toBe(100);
+  await purgeAllUserData();
+  const bare = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link(), isCurrent: () => true });
+  expect(await nameOf(bare)).toBe(shortNpub(peer));
+});
+it('keeps an existing contact’s own name rather than the caption', async () => {
+  const contactId = '9'.repeat(32);
+  const make = (action: Parameters<typeof buildOperation>[0]['action'], value: unknown, clock: number) => buildOperation({
+    directoryId: 'owner', contactId, action, value, clock, actor, now: 1000, operationId: clock.toString(16).padStart(32, '0') });
+  await saveContactOperationsV2([make('add', { type: 'person', displayName: 'Friend', tier: 'ken' }, 1),
+    make('add-identity', { itemId: 'a'.repeat(32), pubkey: peer, provenance: 'direct', verification: 'unverified' }, 2)], key);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('Someone else'), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Friend');
+});
+it('falls back to the short key when the caption exceeds the reducer cap in UTF-16 units, and for app handovers', async () => {
+  const emoji = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: link('\u{1F600}'.repeat(60)), isCurrent: () => true });
+  expect(await nameOf(emoji)).toBe(shortNpub(peer));
+  await purgeAllUserData();
+  const app = { ...link('Bob'), origin: { ...link('Bob').origin, method: 'app' as const } };
+  const viaApp = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: app, isCurrent: () => true });
+  expect(await nameOf(viaApp)).toBe(shortNpub(peer));
+});
+const seedExisting = async (verification: 'unverified' | 'proven' | 'mutual') => {
+  const contactId = '9'.repeat(32);
+  const make = (action: Parameters<typeof buildOperation>[0]['action'], value: unknown, clock: number) => buildOperation({
+    directoryId: 'owner', contactId, action, value, clock, actor, now: 1000, operationId: clock.toString(16).padStart(32, '0') });
+  await saveContactOperationsV2([make('add', { type: 'person', displayName: 'Friend', tier: 'ken' }, 1),
+    make('add-identity', { itemId: 'a'.repeat(32), pubkey: peer, provenance: 'direct', verification }, 2)], key);
+  return contactId;
+};
+const identityOf = async (contactId: string) => applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.identities[0];
+it('words confirmed marks the peer key mutual, once, and moves a ken to kith', async () => {
+  const contactId = await seedExisting('unverified');
+  const args = { directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true };
+  await recordCompletedContactExchange(args);
+  const record = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!;
+  expect(record.identities[0].verification).toBe('mutual');
+  expect(record.checks?.[0]).toMatchObject({ method: 'words', identityPubkey: peer });
+  expect(record.tier).toBe('kith');
+  const count = (await listContactOperationsV2('owner', key)).length;
+  await recordCompletedContactExchange(args);
+  expect(await listContactOperationsV2('owner', key)).toHaveLength(count);
+});
+it('words confirmed on a brand-new contact also marks its key mutual', async () => {
+  const contactId = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
+  expect((await identityOf(contactId)).verification).toBe('mutual');
+});
+it('without words confirmed the key stays unverified and no check is recorded', async () => {
+  const contactId = await seedExisting('unverified');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: exchange(), isCurrent: () => true });
+  expect((await identityOf(contactId)).verification).toBe('unverified');
+  expect(applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.checks ?? []).toHaveLength(0);
+});
+it('a proven key is lifted to mutual, and an already-mutual key gets no further write', async () => {
+  const contactId = await seedExisting('proven');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
+  expect((await identityOf(contactId)).verification).toBe('mutual');
+  await purgeAllUserData();
+  await seedExisting('mutual');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
+  expect((await listContactOperationsV2('owner', key)).filter(op => op.action === 'update-identity')).toHaveLength(0);
 });

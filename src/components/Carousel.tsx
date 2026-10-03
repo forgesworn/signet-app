@@ -9,7 +9,7 @@ import { shouldShowPairingStatus } from '../lib/carousel-routing';
 import { NavDots } from './NavDots';
 import { IdentityCard } from './IdentityCard';
 import type { IdentityCardProps } from './IdentityCard';
-import { QRCard } from './QRCard';
+import { QRCard, type QRCardSlots } from './QRCard';
 import { SettingsCard } from './SettingsCard';
 import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
@@ -19,7 +19,7 @@ import type { IQBreakdownItem } from '../lib/badge-fetch';
 
 interface CarouselProps {
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
-  renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, publicCard: ReactNode) => ReactNode;
+  renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, renderPublicCard: (slots?: QRCardSlots) => ReactNode) => ReactNode;
   renderContactsCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
   row: number;
   col: CarouselColumn;
@@ -35,9 +35,6 @@ interface CarouselProps {
     dependantId?: string;
     slotTarget?: 'natural-person' | 'persona' | 'professional-persona' | string;
   }) => void;
-  onEnableContactAvatarShare?: (target: string, depPubkey?: string) => Promise<string | null>;
-  /** Stop sharing the contact avatar for a slot (G1 coarse revocation). */
-  onStopContactAvatarShare?: (target: string, depPubkey?: string) => Promise<void>;
   onQRScanned: (data: string) => void;
   onEnterChildMode: (dependantId: string) => void;
   onExitChildMode: () => void;
@@ -295,7 +292,7 @@ function renderCard(
       );
     }
     case 1: {
-      const publicCard = (
+      const renderPublicCard = (slots?: QRCardSlots) => (
         <QRCard
           // Per-row remount (same pattern as IdentityCard at case 0): the
           // carousel reuses this positional instance across vertical swipes, so
@@ -305,12 +302,11 @@ function renderCard(
           key={identityCardKey(row)}
           resolved={resolved}
           badge={props.badge}
-          onNavigateDeepPage={props.onNavigateDeepPage}
-          onEnableContactAvatarShare={props.onEnableContactAvatarShare}
-          onStopContactAvatarShare={props.onStopContactAvatarShare}
+          tabs={slots?.tabs}
+          footer={slots?.footer}
         />
       );
-      return props.renderInviteCard?.(row, resolved, publicCard) ?? publicCard;
+      return props.renderInviteCard?.(row, resolved, renderPublicCard) ?? renderPublicCard();
     }
     case 2:
       return props.renderContactsCard?.(row, resolved) ?? null;
