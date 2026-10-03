@@ -132,7 +132,9 @@ export function usePrivateVaults(options: {
     const forced = new Set<string>();
     const needsSync = async (job: PrivateVaultJob, kind: CycleKind): Promise<boolean> => {
       const purpose = vaultPurpose(job.adapter.dataset);
-      if (kind === 'full' || forced.has(purpose) || latest.datasets[purpose]?.state !== 'verified') return true;
+      // A pending rotation handover must finish on the short retry timer, not wait for a full cycle.
+      if (kind === 'full' || forced.has(purpose) || latest.datasets[purpose]?.state !== 'verified'
+        || latest.datasets[purpose]?.rotationPending !== undefined) return true;
       if (kind === 'retry') return false;
       const revision = verifiedRevisions.get(purpose);
       if (!revision) return true;
@@ -198,7 +200,9 @@ export function usePrivateVaults(options: {
           emit({ phase: 'running', datasets: { ...latest.datasets, [purpose]: { ...result, canonical } } });
         }
         if (valid() && merged) opts.current.onMerged();
-        failures = [...purposes].some(purpose => latest.datasets[purpose]?.state !== 'verified') ? failures + 1 : 0;
+        const unfinished = (purpose: string) => latest.datasets[purpose]?.state !== 'verified'
+          || latest.datasets[purpose]?.rotationPending !== undefined;
+        failures = [...purposes].some(unfinished) ? failures + 1 : 0;
       } catch (err) { noteRefusal(err); failures++; }
       finally {
         running = false;
@@ -212,7 +216,7 @@ export function usePrivateVaults(options: {
           // verified: a slow full poll for other devices' edits.
           if (!held && dirty) schedule(1000);
           else if (!held && failures) schedule(Math.min(300000, 30000 * 2 ** Math.min(failures, 4)), 'retry');
-          else if (!held) schedule(PRIVATE_VAULT_IDLE_POLL_MS, 'full');
+          else if (!held) schedule(Math.max(0, lastFullAt + PRIVATE_VAULT_IDLE_POLL_MS - Date.now()), 'full');
         }
       }
     };

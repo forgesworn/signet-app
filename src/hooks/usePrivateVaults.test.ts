@@ -23,8 +23,8 @@ it('retries without another edit and never re-enables legacy writes after verifi
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
   expect(legacyVaultWriteAllowed(result.current, 'profiles')).toBe(false);
-  // All verified: the next run is the idle poll, not a 30 s backoff…
-  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_IDLE_POLL_MS - 5000); });
+  // All verified: the next run is the idle poll (due 5 min after the first full cycle), not a backoff…
+  await act(async () => { await vi.advanceTimersByTimeAsync(PRIVATE_VAULT_IDLE_POLL_MS - 61_000 - 5000); });
   expect(sync).toHaveBeenCalledTimes(2);
   // …and it is a full cycle, so it re-reads a verified dataset and can fail.
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
@@ -364,5 +364,53 @@ it('frequent edits do not postpone the periodic full cycle', async () => {
   }
   // Nothing changed locally, yet a full cycle re-read every dataset.
   expect(ran().slice(3)).toEqual(three);
+  unmount();
+});
+
+it('a late edit does not push the next full cycle back', async () => {
+  vi.useFakeTimers();
+  sync.mockImplementation(verifiedSync);
+  const { jobs, edit } = trackedJobs(three);
+  let props = { ...opts(), jobs: async () => jobs };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(ran()).toEqual(three);
+  await act(async () => { await vi.advanceTimersByTimeAsync(4 * 60_000 - 100); });
+  edit('settings', 'v1');
+  props = { ...props, changeToken: 'edited' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(3)).toEqual(['settings']);
+  // Measured from the last full cycle (t0 + 5 min), not from this edit's cycle.
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(ran().slice(4)).toEqual(three);
+  unmount();
+});
+
+it('a pending rotation is re-synced on a change cycle and retried on the backoff, not the idle poll', async () => {
+  vi.useFakeTimers();
+  let pending = 2;
+  sync.mockImplementation(async (args: { adapter: { dataset: VaultDataset; snapshot(): Promise<string> } }) => {
+    const base = await verifiedSync(args);
+    return args.adapter.dataset === 'settings' && pending-- > 0 ? { ...base, rotationPending: 1 } : base;
+  });
+  const { jobs } = trackedJobs(three);
+  let props = { ...opts(), jobs: async () => jobs };
+  const { rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(ran()).toEqual(three);
+  // Verified but handing over: a change cycle does not skip it, though nothing moved locally.
+  props = { ...props, changeToken: 'edited' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(ran().slice(3)).toEqual(['settings']);
+  // Still pending, so the backoff timer is armed rather than the 5 min idle poll.
+  await act(async () => { await vi.advanceTimersByTimeAsync(130_000); });
+  expect(ran().slice(4)).toEqual(['settings']);
+  // Handed over: unchanged and verified, so change cycles skip it again.
+  props = { ...props, changeToken: 'edited-again' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(sync).toHaveBeenCalledTimes(5);
   unmount();
 });

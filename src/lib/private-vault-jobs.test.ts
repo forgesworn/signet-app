@@ -18,10 +18,11 @@ it('in device-held mode, every resolved vault backend reuses a key leg the devic
     signEvent: e => local.signEvent(e), nip44Encrypt: (p, t) => local.nip44Encrypt(p, t), nip44Decrypt, destroy: () => {} }) as DecryptingSigningBackend);
   const jobs = await privateVaultJobs({ identity, encryptionKey: 'a'.repeat(64), deviceHeldKeys: true,
     bunker: { vaultBackend } as unknown as BunkerSigningBackend, isCurrent: () => true });
-  const ct = await local.nip44Encrypt(local.activePublicKeyHex, 'content-key');
+  const contentKey = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+  const ct = await local.nip44Encrypt(local.activePublicKeyHex, contentKey);
   // Two independently resolved instances (a sync, then a rotation or forwarding step).
   for (const backend of [await jobs[0].resolve(0), await jobs[0].resolve(0)]) {
-    expect(await backend.nip44Decrypt(local.activePublicKeyHex, ct)).toBe('content-key');
+    expect(await backend.nip44Decrypt(local.activePublicKeyHex, ct)).toBe(contentKey);
   }
   expect(vaultBackend).toHaveBeenCalledTimes(2);
   expect(nip44Decrypt).toHaveBeenCalledTimes(1);

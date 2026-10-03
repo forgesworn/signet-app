@@ -10,7 +10,8 @@
  * Shares the §11.1.10 `syncCache` store and its unlock-derived AES key (no IDB
  * version bump; forgotten on lock, cleared by `purgeAllUserData`). Rows are
  * `vault-k:<digest>`, capped at `VAULT_KEY_CACHE_ROWS`, oldest write evicted.
- * Only short plaintexts are cached — a base64 content key, never a payload.
+ * Only a well-formed key leg is cached (base64 of 32 bytes), on write and on
+ * read — a malformed device reply must not stick as a hit nothing evicts.
  *
  * Best-effort: a cache failure is a miss or a skipped write. The device's own
  * errors (refusals included) propagate untouched, and only successes are kept.
@@ -25,8 +26,8 @@ import type { DecryptingSigningBackend } from './signing-backend';
 
 export const VAULT_KEY_ROW_PREFIX = 'vault-k:';
 export const VAULT_KEY_CACHE_ROWS = 256;
-/** A base64 32-byte key is 44 chars; anything well over that is not a key leg. */
-export const VAULT_KEY_MAX_PLAINTEXT = 128;
+/** vault-envelope's `b64(rawKey)`: standard alphabet, padded, 32 bytes. */
+const KEY_LEG = /^[A-Za-z0-9+/]{43}=$/;
 /** A hit older than this refreshes its row's write time, so live rows outlast eviction. */
 const TOUCH_AFTER_MS = 60 * 60_000;
 const HEX_64 = /^[0-9a-f]{64}$/;
@@ -43,6 +44,9 @@ export function vaultKeyDigest(ownPubkey: string, peerPubkey: string, ciphertext
   return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(
     ['signet:vault-k-cache:v1', ownPubkey.toLowerCase(), peerPubkey.toLowerCase(), ciphertext]))));
 }
+
+const cacheable = (plaintext: unknown): plaintext is string =>
+  typeof plaintext === 'string' && KEY_LEG.test(plaintext);
 
 const b64 = (u: Uint8Array): string => btoa(String.fromCharCode(...u));
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -62,7 +66,7 @@ export function createVaultKeyCache(encryptionKey: string, isCurrent: () => bool
         const env = JSON.parse(await aesDecrypt(unb64(row.iv), unb64(row.ciphertext), await aesKeyFor(encryptionKey))) as unknown;
         // As in sync-decrypt-cache: the ciphertext, not the cleartext row, says which slot it belongs to.
         const e = env as { id?: unknown; eventId?: unknown; payload?: unknown } | null;
-        if (!e || e.id !== id || e.eventId !== digest || typeof e.payload !== 'string') return null;
+        if (!e || e.id !== id || e.eventId !== digest || typeof e.payload !== 'string' || !cacheable(e.payload)) return null;
         if (Date.now() - row.updatedAt > TOUCH_AFTER_MS) {
           await putSyncCacheEntry({ ...row, updatedAt: Date.now() }).catch(() => {});
         }
@@ -73,7 +77,7 @@ export function createVaultKeyCache(encryptionKey: string, isCurrent: () => bool
     },
     async put(digest, plaintext) {
       try {
-        if (!isCurrent()) return;
+        if (!isCurrent() || !cacheable(plaintext)) return;
         const id = `${VAULT_KEY_ROW_PREFIX}${digest}`;
         const { iv, ciphertext } = await aesEncrypt(JSON.stringify({ id, eventId: digest, payload: plaintext }),
           await aesKeyFor(encryptionKey));
@@ -85,9 +89,6 @@ export function createVaultKeyCache(encryptionKey: string, isCurrent: () => bool
     },
   };
 }
-
-const cacheable = (plaintext: unknown): plaintext is string =>
-  typeof plaintext === 'string' && plaintext.length <= VAULT_KEY_MAX_PLAINTEXT;
 
 /**
  * `backend` with its NIP-44 legs going through `cache`. One wrapper per
