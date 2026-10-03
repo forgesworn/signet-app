@@ -213,10 +213,11 @@ export function usePrivateVaults(options: {
         } else {
           emit({ ...latest, phase: 'idle' });
           // Held part-way: no timer — the un-pause kicks the next cycle. All
-          // verified: a slow full poll for other devices' edits.
+          // verified: a slow full poll for other devices' edits (capped, so a clock
+          // stepped backwards cannot stretch it).
           if (!held && dirty) schedule(1000);
           else if (!held && failures) schedule(Math.min(300000, 30000 * 2 ** Math.min(failures, 4)), 'retry');
-          else if (!held) schedule(Math.max(0, lastFullAt + PRIVATE_VAULT_IDLE_POLL_MS - Date.now()), 'full');
+          else if (!held) schedule(Math.min(PRIVATE_VAULT_IDLE_POLL_MS, Math.max(0, lastFullAt + PRIVATE_VAULT_IDLE_POLL_MS - Date.now())), 'full');
         }
       }
     };
