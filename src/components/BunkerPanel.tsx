@@ -1,6 +1,7 @@
 import { BunkerApprovalModal } from './BunkerApprovalModal';
 import { isKinterestAuthority } from '../lib/kinterest-authority';
 import { shortNpub } from '../lib/signet';
+import { escalationSectionTitle, type EscalationOwner } from '../lib/escalation-owner';
 // src/components/BunkerPanel.tsx
 import { useEffect, useState, type CSSProperties } from 'react';
 import type { PendingApproval, BunkerServeStatus } from '../hooks/useBunkerServer';
@@ -71,12 +72,12 @@ interface Props {
   alwaysOnWanted: boolean;
   /** Arm/disarm native always-on background serving. */
   onSetBackgroundServing: (on: boolean) => Promise<void>;
-  /** "Family asks" — parked-approval + petition notices (C4/C5). Absent/empty renders no section. */
+  /** "Family asks" / "Waiting for approval" — parked-approval + petition notices (C4/C5). Absent/empty renders no section. */
   escalationNotices?: EscalationNotice[];
   /** Local-only hide of a notice row. */
   onDismissEscalation?: (id: string) => void;
-  /** Resolve an escalation notice's `identityPubkey` to a dependant display name. */
-  resolveEscalationIdentityName?: (identityPubkey: string) => string | undefined;
+  /** Whose ask a notice is (family member, the owner's own app, or unknown), from its `identityPubkey`. */
+  resolveEscalationOwner?: (identityPubkey: string) => EscalationOwner;
   /**
    * C4 verdict leg (family-bunker §11.1.4/9): send `resolve_approval` for a
    * parked approval over the operator channel. Only `approve-once` and
@@ -100,7 +101,7 @@ export function BunkerPanel({
   pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
   hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
   isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing,
-  escalationNotices, onDismissEscalation, resolveEscalationIdentityName,
+  escalationNotices, onDismissEscalation, resolveEscalationOwner,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
   childAsks, childAskAlwaysAvailable, onChildAskDecide,
 }: Props) {
@@ -109,6 +110,9 @@ export function BunkerPanel({
   const hasChildAsks = !!childAsks && childAsks.length > 0 && !!onChildAskDecide;
   const [childAskNote, setChildAskNote] = useState<string | null>(null);
   const hasEscalations = (!!escalationNotices && escalationNotices.length > 0) || hasChildAsks || !!childAskNote;
+  // Without a resolver (older callers, tests) every ask stays unknown, so the
+  // heading is neutral and no row is worded as the owner's own.
+  const ownerOf = (n: EscalationNotice): EscalationOwner => resolveEscalationOwner?.(n.identityPubkey) ?? { kind: 'unknown' };
   const [verdictRows, setVerdictRows] = useState<Map<string, VerdictRowState>>(() => new Map());
   const setVerdictRow = (id: string, state: VerdictRowState | null) => {
     setVerdictRows((prev) => {
@@ -377,10 +381,11 @@ export function BunkerPanel({
           </div>
         )}
 
-        {/* "Family asks" — parked approvals + paired-child petitions (C4/C5) */}
+        {/* "Family asks" — parked approvals + paired-child petitions (C4/C5);
+            "Waiting for approval" once an owner's own app's ask is listed */}
         {hasEscalations && (
           <>
-            <div style={sectionTitle}>Family asks</div>
+            <div style={sectionTitle}>{escalationSectionTitle((escalationNotices ?? []).map(ownerOf))}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {childAskNote && (
                 <div role="alert" style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -398,14 +403,17 @@ export function BunkerPanel({
                 </div>
               ))}
               {(escalationNotices ?? []).map((n) => {
-                const name = resolveEscalationIdentityName?.(n.identityPubkey) ?? shortNpub(n.identityPubkey);
+                const owner = ownerOf(n);
+                const name = owner.kind === 'family' ? owner.name
+                  : owner.kind === 'self' ? `${owner.name || shortNpub(n.identityPubkey)} (you)`
+                  : shortNpub(n.identityPubkey);
                 const client = shortNpub(n.clientPubkey);
                 const ask = describeAsk(n.method, n.eventKind);
                 const expired = n.kind === 'approval' && isParkExpired(n, Math.floor(now / 1000));
                 const stateLabel = n.kind === 'petition'
                   ? `asked again ×${n.count ?? 1}`
                   : expired
-                    ? 'expired — a verdict will apply to their next try'
+                    ? `expired — a verdict will apply to ${owner.kind === 'family' ? 'their' : 'the app’s'} next try`
                     : 'waiting';
                 return (
                   <div key={n.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>

@@ -113,6 +113,7 @@ import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublish
 import { usePersonaInventory } from './hooks/usePersonaInventory';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
+import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
 import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
@@ -4148,21 +4149,26 @@ export function App() {
     bunkerConnected: !!bunkerBackend, unlocked: !!encryptionKey, viewingDependant: !!activeDependant,
   });
 
-  // Resolve an escalation notice's `identityPubkey` (the dependant slot the
-  // parked/petitioned request would sign as) to a display name. Checks the
-  // dependant's NP (== `id`), persona, and extra-persona pubkeys — mirrors
-  // the `dependantNameFor` lookup passed to BunkerPanel below, but keyed on
-  // a raw pubkey rather than a dependant id since escalation notices don't
-  // carry the dependant id itself.
-  const resolveEscalationIdentityName = useCallback((identityPubkey: string): string | undefined => {
-    const pk = identityPubkey.toLowerCase();
-    for (const dep of dependants) {
-      if (dep.naturalPerson.publicKey.toLowerCase() === pk) return dep.displayName;
-      if (dep.persona.publicKey.toLowerCase() === pk) return dep.displayName;
-      if ((dep.extraPersonas ?? []).some((ep) => ep.publicKey.toLowerCase() === pk)) return dep.displayName;
-    }
-    return undefined;
-  }, [dependants]);
+  // Whose ask an escalation notice is, from its `identityPubkey` (the identity
+  // the held request would sign as). A dependant's NP (== `id`), persona or
+  // extra persona makes it a family ask; the owner's own slots, or the
+  // primary pairing's pubkey (the master on a family bunker, which an owner's
+  // own app pairing signs as), make it the owner's. Notices don't carry the
+  // dependant id, so this is keyed on the raw pubkey.
+  const resolveEscalationOwner = useCallback((identityPubkey: string): EscalationOwner => {
+    const family = dependants.map((dep) => ({
+      displayName: dep.displayName,
+      publicKeys: [dep.naturalPerson.publicKey, dep.persona.publicKey, ...(dep.extraPersonas ?? []).map((ep) => ep.publicKey)],
+    }));
+    const own = identity ? [
+      { displayName: identity.naturalPerson.displayName, publicKey: identity.naturalPerson.publicKey },
+      { displayName: identity.persona.displayName, publicKey: identity.persona.publicKey },
+      ...(identity.extraPersonas ?? []).map((ep) => ({ displayName: ep.displayName, publicKey: ep.publicKey })),
+      ...(identity.professionalPersona ? [{ displayName: identity.professionalPersona.displayName, publicKey: identity.professionalPersona.publicKey }] : []),
+      { displayName: identity.naturalPerson.displayName, publicKey: bunkerBackend?.activePublicKeyHex ?? '' },
+    ] : [];
+    return escalationOwner(identityPubkey, family, own);
+  }, [dependants, identity, bunkerBackend]);
 
   // Native nudge — fired by the hook itself, ONLY for a genuinely-new LIVE
   // notice (never the backlog; see useEscalations.ts's header comment for
@@ -4175,18 +4181,18 @@ export function App() {
   // notification id spaces can't collide.
   const handleLiveEscalationNotice = useCallback((notice: EscalationNotice) => {
     if (notice.kind !== 'approval' || !isNativeApp()) return;
-    const name = resolveEscalationIdentityName(notice.identityPubkey) ?? notice.identityPubkey.slice(0, 8);
+    const { title, body } = escalationNotificationText(resolveEscalationOwner(notice.identityPubkey), notice.identityPubkey.slice(0, 8));
     void LocalNotifications.schedule({
       notifications: [{
         id: ESCALATION_NOTIFICATION_ID_BASE + (hashToUint32(notice.id) % ESCALATION_NOTIFICATION_ID_RANGE),
         channelId: 'signet-requests',
-        title: `${name} is waiting for a sign-in approval`,
-        body: 'Open Signet to review it.',
+        title,
+        body,
         smallIcon: 'ic_stat_signet',
         isExactNotification: false,
       }],
     }).catch(() => { /* permission denied / not granted yet — non-fatal */ });
-  }, [resolveEscalationIdentityName]);
+  }, [resolveEscalationOwner]);
 
   const escalations = useEscalations({
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
@@ -13080,7 +13086,7 @@ export function App() {
           onSetBackgroundServing={handleSetBackgroundServing}
           escalationNotices={escalations.notices}
           onDismissEscalation={escalations.dismiss}
-          resolveEscalationIdentityName={resolveEscalationIdentityName}
+          resolveEscalationOwner={resolveEscalationOwner}
           onEscalationVerdict={handleEscalationVerdict}
           verdictAvailability={verdictAvailability}
           childAsks={childAsks.asks}
