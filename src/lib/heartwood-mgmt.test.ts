@@ -20,6 +20,7 @@ import {
   listClients,
   parseDeviceClientSlot,
   updateClientPolicy,
+  updateClientEscalate,
   nostrconnectV2,
   revokeClient,
   revokeClientIdentity,
@@ -694,6 +695,23 @@ const policy: SlotPolicyUpdate = {
   petitionOnDeny: true,
   auditChildWrap: false,
 };
+
+describe('updateClientEscalate', () => {
+  it('sends only escalate, so the device keeps every other field', async () => {
+    const d = makeFakeDevice({
+      handler: (req) => (req.method === 'update_client'
+        ? { result: { slot_index: req.params.slot_index, updated: true } }
+        : undefined),
+    });
+    const c = d.client();
+    c.start();
+    await updateClientEscalate(c, { slotIndex: 5, secretFingerprint: 'fp-5' }, true);
+    const sent = d.seen.find(s => s.method === 'update_client')!;
+    expect(sent.params).toEqual({ slot_index: 5, expected_secret_fingerprint: 'fp-5', escalate: true });
+    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
+    c.stop();
+  });
+});
 
 describe('updateClientPolicy', () => {
   it('sends every field explicitly with the fingerprint echoed', async () => {

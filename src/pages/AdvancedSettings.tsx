@@ -4,6 +4,7 @@ import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { defaultRelays, MAX_RELAYS } from '../lib/relay-service';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { HeartwoodOperatorImport } from '../components/HeartwoodOperatorImport';
+import { AwayApprovalList, type AwayApprovalListProps } from '../components/AwayApprovalList';
 import { Icon } from '../components/Icon';
 import type { OperatorImportOutcome } from '../hooks/useHeartwoodOperator';
 import type { DeviceStatus } from '../lib/heartwood-mgmt-types';
@@ -30,6 +31,8 @@ export interface HeartwoodOperatorSettingsProps {
   };
   /** Pre-filled link text (from a QR scan routed here). */
   initialImportText?: string;
+  /** Approve from my phone, per own app; absent hides the section. */
+  awayApproval?: AwayApprovalListProps;
 }
 
 interface Props {
@@ -572,6 +575,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
                 </div>
               </div>
             )}
+            {heartwoodOperator.awayApproval && <AwayApprovalList {...heartwoodOperator.awayApproval} />}
           </div>
         ) : (
           <HeartwoodOperatorImport
