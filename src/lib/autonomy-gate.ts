@@ -154,3 +154,19 @@ export function isOriginScopedScope(scope: Scope): boolean {
     || scope === 'upload-photo'
     || scope === 'react-zap-reply';
 }
+
+/**
+ * Whether "allow always" on a DEPENDANT route actually saves a
+ * `(dependantId, scope, origin)` grant. It needs a classified scope, a known
+ * origin and an origin-scoped scope; otherwise the choice degrades to
+ * approve-once with nothing persisted. The approval UI gates the "always"
+ * button on this and `resolveApproval` gates the save on it, so the offer and
+ * the save cannot drift apart. (Stage is deliberately not part of it: the save
+ * is not stage-gated today, and a saved grant is honoured at every stage.)
+ */
+export function dependantAllowAlwaysPersists(
+  scope: Scope | null,
+  origin: string | null | undefined,
+): boolean {
+  return scope !== null && !!origin && isOriginScopedScope(scope);
+}

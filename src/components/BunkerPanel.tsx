@@ -369,8 +369,10 @@ export function BunkerPanel({
                     ) : <>
                       <button type="button" className="btn btn-primary" onClick={() => onApproveOnce(a.handle)}
                         style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Approve</button>
-                      <button type="button" className="btn btn-secondary" onClick={() => onApproveAlways(a.handle)}
-                        style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Always</button>
+                      {a.alwaysAvailable && (
+                        <button type="button" className="btn btn-secondary" onClick={() => onApproveAlways(a.handle)}
+                          style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Always</button>
+                      )}
                     </>}
                     <button type="button" className="btn btn-ghost" onClick={() => onDeny(a.handle)}
                       style={{ fontSize: 13, padding: '6px 10px', color: 'var(--danger)' }}>Deny</button>

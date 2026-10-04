@@ -9,7 +9,7 @@ const family = 'a'.repeat(64);
 function approval(handle: number): PendingApproval {
   return { handle, route: { pubkey: 'b'.repeat(64), dependantId: null }, method: 'sign_event',
     client: { appName: 'Kinterest', appUrl: 'https://example.com', existing: true, pubkey: 'c'.repeat(64) },
-    description: 'Family authorisation', template: { pubkey: 'b'.repeat(64), kind: 30078, created_at: 1, content: FAMILY_PURPOSE,
+    description: 'Family authorisation', alwaysAvailable: true, template: { pubkey: 'b'.repeat(64), kind: 30078, created_at: 1, content: FAMILY_PURPOSE,
       tags: [['d', `kin-jar/family-authorisation/v2/${family}`], ['scope', 'kin-jar:family:v2'], ['family', family], ['challenge', 'd'.repeat(64)], ['approval', 'request']] } };
 }
 afterEach(cleanup);
