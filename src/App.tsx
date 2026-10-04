@@ -189,7 +189,9 @@ import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
 import { publishPublicProfile, retractPublicProfile, adoptPublishedIntoCard, toPublicProfileBase } from './lib/public-profile-publish';
 import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
-import { fetchFollowList, fetchFollowNames } from './lib/nostr-follows';
+import { fetchFollowList, fetchFollowNames, shortNpub } from './lib/nostr-follows';
+import { planScannedContact } from './lib/scan-add-contact';
+import { SCAN_CONTACT_SAVE_FAILED_COPY } from './lib/contacts-v2-copy';
 import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
@@ -8756,8 +8758,36 @@ export function App() {
     }
   }, []);
 
-  const handleCarouselQRScanned = useCallback((data: string) => {
+  // A bare Nostr key scanned on a persona card joins THAT persona's contact
+  // list (a new contact, or the existing one linked to this list), then opens
+  // the contact so it can be renamed, confirmed or given a note.
+  const addScannedContact = useCallback(async (pubkey: string, ownerIdentityPubkey: string): Promise<string | void> => {
+    try {
+      const contactId = await contactsV2.recogniseContact(pubkey, shortNpub(pubkey), ownerIdentityPubkey, 'qr');
+      setContactsIdentityChoice(ownerIdentityPubkey);
+      setSelectedContactId(contactId);
+      navigateTo('contact-detail');
+    } catch {
+      return SCAN_CONTACT_SAVE_FAILED_COPY;
+    }
+  }, [contactsV2.recogniseContact, navigateTo]);
+
+  const handleCarouselQRScanned = useCallback((data: string): string | void | Promise<string | void> => {
     if (carousel.rows[carousel.row]?.type === 'bot') return;
+    const scannedContact = planScannedContact(data, {
+      ownerIdentityPubkey: carousel.activeIdentity.publicKey,
+      ownerLists: contactsIdentityLists.map(l => l.ownerIdentityPubkey),
+      ownPubkeys: [...contactsIdentityLists.map(l => l.ownerIdentityPubkey),
+        ...(identity ? [identity.naturalPerson?.publicKey, identity.persona?.publicKey,
+          ...(identity.extraPersonas ?? []).map(p => p.publicKey), identity.professionalPersona?.publicKey] : []),
+        ...dependants.flatMap(d => [d.naturalPerson?.publicKey, d.persona?.publicKey,
+          ...(d.extraPersonas ?? []).map(p => p.publicKey)]),
+      ].filter((k): k is string => !!k),
+    });
+    if (scannedContact) {
+      if (!scannedContact.ok) return scannedContact.error;
+      return addScannedContact(scannedContact.pubkey, scannedContact.ownerIdentityPubkey);
+    }
     const action = routeQR(data);
     switch (action.type) {
       case 'contact-invite':
@@ -8824,7 +8854,7 @@ export function App() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild, contactsIdentityLists, identity, dependants, addScannedContact]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;

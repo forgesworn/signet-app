@@ -35,7 +35,7 @@ interface CarouselProps {
     dependantId?: string;
     slotTarget?: 'natural-person' | 'persona' | 'professional-persona' | string;
   }) => void;
-  onQRScanned: (data: string) => void;
+  onQRScanned: (data: string) => string | void | Promise<string | void>;
   onEnterChildMode: (dependantId: string) => void;
   onExitChildMode: () => void;
   childMode: boolean;

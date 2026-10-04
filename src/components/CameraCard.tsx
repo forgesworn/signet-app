@@ -5,21 +5,28 @@ import { QRScanner } from './QRScanner';
 
 interface Props {
   resolved: ResolvedIdentity;
-  onQRScanned: (data: string) => void;
+  /** May return (or resolve to) an error to show under the viewfinder. */
+  onQRScanned: (data: string) => string | void | Promise<string | void>;
 }
 
 export function CameraCard({ resolved, onQRScanned }: Props) {
   const [scannerActive, setScannerActive] = useState(false);
   const [pasteValue, setPasteValue] = useState('');
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const handleStartScan = useCallback(() => {
+    setScanError(null);
     setScannerActive(true);
   }, []);
 
   const handleScan = useCallback((data: string) => {
     setScannerActive(false);
     setPasteValue('');
-    onQRScanned(data);
+    setScanError(null);
+    Promise.resolve(onQRScanned(data)).then(
+      (error) => { if (typeof error === 'string' && error) setScanError(error); },
+      () => {},
+    );
   }, [onQRScanned]);
 
   return (
@@ -77,6 +84,7 @@ export function CameraCard({ resolved, onQRScanned }: Props) {
             <div className="vf-corner br" />
           </div>
           <div className="cam-sub">Sign in &middot; Verify &middot; Add contact</div>
+          {scanError && <div className="cam-sub" role="alert" data-testid="camera-card-scan-error">{scanError}</div>}
         </>
       )}
     </div>
