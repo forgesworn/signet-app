@@ -3,6 +3,9 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.18.2
+- Approve from my phone: in Advanced settings, under your Heartwood operator key, choose which of your own apps can have their button requests approved from this phone when you are away from your Heartwood. Off for every app until you turn it on, and only offered once this phone can see and answer those requests
+
 ## 0.18.1
 - Requests your Heartwood holds for your phone from your own apps now say so: "An app wants to sign as <name>", listed under Waiting for approval, instead of being shown as a family sign-in
 

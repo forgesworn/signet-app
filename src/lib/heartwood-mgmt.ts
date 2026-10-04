@@ -473,6 +473,27 @@ export async function updateClientPolicy(
   if (r.slot_index !== slot.slotIndex) throw new Error('update_client confirmed a different slot');
 }
 
+/** `update_client` carrying only `escalate` (Approve from my phone on one of
+ *  the owner's own app pairings). Every other field is left out, so the
+ *  device keeps it; never use this on a family pairing, whose whole policy
+ *  the compiler owns. Firmware before 0.18.0-beta.23 ignores `escalate` on a
+ *  legacy pairing over the relay, so callers must read the slot back. */
+export async function updateClientEscalate(
+  c: HeartwoodMgmtClient,
+  slot: { slotIndex: number; secretFingerprint: string },
+  escalate: boolean,
+): Promise<void> {
+  if (!Number.isInteger(slot.slotIndex) || slot.slotIndex < 0) throw new Error('slotIndex must be a non-negative integer');
+  if (typeof slot.secretFingerprint !== 'string' || slot.secretFingerprint.length === 0) throw new Error('secretFingerprint is required');
+  const r = await c.request('update_client', {
+    slot_index: slot.slotIndex,
+    expected_secret_fingerprint: slot.secretFingerprint,
+    escalate,
+  });
+  if (r.updated !== true) throw new Error('update_client did not confirm the update');
+  if (r.slot_index !== slot.slotIndex) throw new Error('update_client confirmed a different slot');
+}
+
 export type VerdictAction = 'approve-once' | 'approve-remember' | 'deny';
 
 export interface VerdictResult {

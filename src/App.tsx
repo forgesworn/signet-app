@@ -116,7 +116,9 @@ import { useEscalations } from './hooks/useEscalations';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
-import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
+import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, updateClientEscalate as mgmtUpdateClientEscalate, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
+import { awayApprovalBlocked, ownAppSlots, setAwayApproval } from './lib/away-approval';
+import type { AwayApprovalListProps } from './components/AwayApprovalList';
 import { ChildPermissions, ChildPermissionsGuardianRoute } from './pages/ChildPermissions';
 import { blockAppRules } from './lib/child-permissions';
 import { tombstonesForRemovedDependant } from './lib/child-rules';
@@ -4227,6 +4229,35 @@ export function App() {
     getApprovedOnce: isPairedChild ? undefined : approvedOnceStore.get,
     loadChildRules: isPairedChild || !encryptionKey ? undefined : () => listAllChildRules(encryptionKey),
   });
+
+  // Approve from my phone, per app, for the owner's own pairings (Advanced
+  // settings, inside the operator key card). The compiler's classification
+  // decides what is "own": a pairing it compiles (the guardian's, a
+  // dependant's) is never listed, so the policy push and this switch never
+  // fight over a slot. Every read and write runs inside the operator lock.
+  const awayApproval = useMemo<AwayApprovalListProps | undefined>(() => {
+    if (isPairedChild) return undefined;
+    const client = heartwoodOperator.client;
+    const blocked = awayApprovalBlocked({
+      asksInboxOn: escalationsEnabled,
+      hasOperatorKey: !!heartwoodOperator.credential && !!client,
+      canVerdict: heartwoodOperator.canVerdict,
+    });
+    const family = { dependants, guardianClientPubkey: policyPush.guardianClientPubkey };
+    const load = async () => {
+      if (!client) throw new Error('The operator channel is not running.');
+      return ownAppSlots(await withOperatorLock(client, () => mgmtListClients(client)), family);
+    };
+    const set = async (slot: { slotIndex: number; secretFingerprint: string }, on: boolean) => {
+      if (!client) throw new Error('The operator channel is not running.');
+      const fresh = await withOperatorLock(client, () => setAwayApproval({
+        listClients: () => mgmtListClients(client),
+        updateEscalate: (target, value) => mgmtUpdateClientEscalate(client, target, value),
+      }, slot, on));
+      return ownAppSlots(fresh, family);
+    };
+    return { blocked, load, set };
+  }, [isPairedChild, heartwoodOperator.client, heartwoodOperator.credential, heartwoodOperator.canVerdict, escalationsEnabled, dependants, policyPush.guardianClientPubkey]);
 
   // Guardian → child rules rail for every dependant whose own phone is
   // paired straight to the Heartwood (spec §5.2), on the rail relay.
@@ -10379,6 +10410,7 @@ export function App() {
             pushNow: policyPush.pushNow,
           },
           initialImportText: pendingOperatorImportText ?? undefined,
+          awayApproval,
         } : undefined}
         onSetDefaultBlossomUrl={async (url) => { await setDefaultBlossomUrl(url); }}
         onResetDefaultBlossomUrl={async () => { await resetDefaultBlossomUrl(); }}
