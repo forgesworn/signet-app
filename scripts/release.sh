@@ -7,6 +7,7 @@
 #
 # What it does, in order (each step fails loud):
 #   1. preflight: clean tree, on main, in sync with origin, gh authed,
+#      CHANGELOG.md has a "## X.Y.Z" section (Zapstore's release notes),
 #      keystore.properties present, aapt2 + apksigner found, java + gradlew found
 #   2. npm version X.Y.Z (package.json is THE version source; Gradle derives
 #      versionName/versionCode from it — see android/app/build.gradle)
@@ -48,6 +49,8 @@ say "preflight"
 git fetch -q origin main
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || die "main is not in sync with origin/main"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists"
+# zsp publishes this section as the Zapstore release notes (release_notes in zapstore.yaml).
+grep -qxF "## $VERSION" CHANGELOG.md || die "CHANGELOG.md has no '## $VERSION' section — add short user-facing notes first (Zapstore shows them)"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated"
 KS_PROPS="${SIGNET_KEYSTORE_PROPERTIES:-$HOME/.android-keystores/signet-app-keystore.properties}"
 [[ -f "$KS_PROPS" ]] || die "no keystore.properties at $KS_PROPS — this machine cannot sign a release (android/RELEASE_SIGNING.md)"
