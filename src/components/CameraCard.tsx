@@ -5,21 +5,28 @@ import { QRScanner } from './QRScanner';
 
 interface Props {
   resolved: ResolvedIdentity;
-  onQRScanned: (data: string) => void;
+  /** May return (or resolve to) an error to show under the viewfinder. */
+  onQRScanned: (data: string) => string | void | Promise<string | void>;
 }
 
 export function CameraCard({ resolved, onQRScanned }: Props) {
   const [scannerActive, setScannerActive] = useState(false);
   const [pasteValue, setPasteValue] = useState('');
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const handleStartScan = useCallback(() => {
+    setScanError(null);
     setScannerActive(true);
   }, []);
 
   const handleScan = useCallback((data: string) => {
     setScannerActive(false);
     setPasteValue('');
-    onQRScanned(data);
+    setScanError(null);
+    Promise.resolve(onQRScanned(data)).then(
+      (error) => { if (typeof error === 'string' && error) setScanError(error); },
+      () => {},
+    );
   }, [onQRScanned]);
 
   return (
@@ -31,19 +38,13 @@ export function CameraCard({ resolved, onQRScanned }: Props) {
           <QRScanner onScan={handleScan} active={scannerActive} compact />
           <div style={{ marginTop: 10 }}>
             <textarea
-              className="input"
+              className="input cam-paste"
               rows={3}
               placeholder="Paste QR link"
               aria-label="Paste QR link"
               value={pasteValue}
               onChange={e => setPasteValue(e.target.value)}
               data-testid="camera-card-paste-input"
-              style={{
-                resize: 'none',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.8rem',
-                background: 'rgba(255,255,255,0.92)',
-              }}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button
@@ -77,6 +78,7 @@ export function CameraCard({ resolved, onQRScanned }: Props) {
             <div className="vf-corner br" />
           </div>
           <div className="cam-sub">Sign in &middot; Verify &middot; Add contact</div>
+          {scanError && <div className="cam-error" role="alert" data-testid="camera-card-scan-error">{scanError}</div>}
         </>
       )}
     </div>

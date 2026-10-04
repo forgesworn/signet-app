@@ -505,6 +505,27 @@
 .vf-corner.br { bottom: -1px; right: -1px; border-bottom: 3px solid var(--accent); border-right: 3px solid var(--accent); border-radius: 0 0 12px 0; }
 .cam-text { color: rgba(255, 255, 255, 0.6); font-size: 0.82rem; }
 .cam-sub { color: rgba(255, 255, 255, 0.35); font-size: 0.7rem; }
+/* The camera card is always dark, whatever the app theme, so its paste box
+   and scan error set their own colours rather than inheriting theme tokens. */
+.cam-paste.input {
+  resize: none;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.cam-paste.input::placeholder { color: rgba(255, 255, 255, 0.5); }
+.cam-error {
+  margin: 14px 16px 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #fecaca;
+  font-size: 0.85rem;
+  text-align: center;
+}
 
 /* ─── Settings Card ─── */
 .settings-view {

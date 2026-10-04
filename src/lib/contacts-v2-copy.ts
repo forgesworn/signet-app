@@ -771,3 +771,9 @@ export function confirmOtherKeyOfThisCopy(contactName: string): string {
 export const NOT_CONFIRMED_FILTER_LABEL = 'Not confirmed';
 export const CONFIRMED_MARK_LABEL = 'Key confirmed';
 export const CONFIRM_SAVED_COPY = 'Saved.';
+
+// Home scanner: an npub scanned on a persona card is added to that persona's contacts.
+export const SCAN_CONTACT_INVALID_COPY = 'That Nostr key could not be read.';
+export const SCAN_CONTACT_OWN_KEY_COPY = 'That is one of your own keys.';
+export const SCAN_CONTACT_WRONG_CARD_COPY = "Contacts can't be added from this card. Swipe to one of your personas and scan again.";
+export const SCAN_CONTACT_SAVE_FAILED_COPY = 'The contact could not be saved. Try again.';
