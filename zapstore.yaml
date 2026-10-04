@@ -9,6 +9,7 @@
 name: My Signet
 repository: https://github.com/forgesworn/signet-app
 release_source: ./android/app/build/outputs/apk/release/app-release.apk
+release_notes: ./CHANGELOG.md
 summary: Family identity and signing for the Signet protocol — your keys never leave your device
 description: |
   My Signet is client-side identity for the Signet protocol: verify who you
