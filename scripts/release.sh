@@ -21,7 +21,9 @@
 #      (Android itself would refuse the "upgrade" otherwise)
 #   7. commit "chore(release): vX.Y.Z", push main, tag vX.Y.Z, push the tag
 #   8. gh release create with the three assets + provenance notes
-#   9. print the Zapstore publish command (needs a Nostr key; not automated)
+#   9. publish to Zapstore with the bunker URL from the macOS Keychain
+#      (service mysignet-zapstore-bunker), then confirm the release event is on
+#      the relay; without a Keychain entry it prints the command instead
 #
 # If it fails part-way after main/tag are pushed, see "If it fails part-way"
 # in android/RELEASE_SIGNING.md.
@@ -193,12 +195,35 @@ gh release create "$TAG" \
   "$OUT/signet-app-$TAG.apk" "$OUT/signet-app.apk" "$OUT/signet-app.json" \
   || die "gh release create failed — main and tag $TAG are already pushed. Re-run the gh release create command by hand from the artifacts dir: see \"If it fails part-way\" in android/RELEASE_SIGNING.md. Artifacts are in $OUT"
 
-# ---------- 9. next step ----------
+# ---------- 9. Zapstore ----------
 say "done. The deploy workflow re-publishes mysignet.app/get on release publish."
-cat <<EOF
+# The GitHub release is already out, so nothing below dies: a Zapstore failure
+# only prints how to publish by hand.
+ZSP="$(command -v zsp || echo "$HOME/go/bin/zsp")"
+ZAP_BUNKER="$(security find-generic-password -s mysignet-zapstore-bunker -w 2>/dev/null || true)"
+if [[ -x "$ZSP" && -n "$ZAP_BUNKER" ]]; then
+  say "zsp publish (bunker from Keychain)"
+  # -q also skips silently when the release already exists on the relay, so
+  # read the relay back rather than trusting the exit code.
+  SIGN_WITH="$ZAP_BUNKER" "$ZSP" publish -q --skip-preview zapstore.yaml 2>&1 | sed -E 's#bunker://[^" ]*#bunker://[redacted]#g' || true
+  if node -e '
+    const ws = new WebSocket("wss://relay.zapstore.dev");
+    ws.onopen = () => ws.send(JSON.stringify(["REQ", "r", { kinds: [30063], "#d": ["app.mysignet@" + process.argv[1]] }]));
+    ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d[0] === "EVENT") process.exit(0); if (d[0] === "EOSE") process.exit(1); };
+    setTimeout(() => process.exit(1), 20000);
+  ' "$VERSION"; then
+    echo "Zapstore: app.mysignet@$VERSION is on wss://relay.zapstore.dev"
+  else
+    echo "Zapstore: app.mysignet@$VERSION NOT found on the relay — publish by hand:"
+    echo "  SIGN_WITH=\"\$(security find-generic-password -s mysignet-zapstore-bunker -w)\" zsp publish zapstore.yaml"
+  fi
+else
+  cat <<EOF
 
-Next (needs your Nostr key; not automated):
+Next (needs your Nostr key; no Keychain entry 'mysignet-zapstore-bunker' or no zsp):
   SIGN_WITH=<nsec1... | bunker://...> zsp publish zapstore.yaml
-
-Artifacts kept in: $OUT
 EOF
+fi
+
+echo
+echo "Artifacts kept in: $OUT"
