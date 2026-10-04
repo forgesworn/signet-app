@@ -6,6 +6,8 @@ import * as db from '../lib/db';
 import * as reducer from '../lib/contacts-v2-reducer';
 import type { MutationActor } from '../lib/contacts-v2-mutations';
 import { ConfirmMergeRefusedError } from '../lib/contacts-v2-key-holders';
+import { shortNpub } from '../lib/nostr-follows';
+import { contactDisplayName } from '../lib/contacts-v2-name';
 
 const KEY = 'correct-horse-battery-staple';
 const GUARDIAN = '1'.repeat(64);
@@ -310,6 +312,19 @@ it('keeps recognition methods private to each identity without changing existing
   expect(result.current.records).toHaveLength(1);
   expect(result.current.records[0].tier).toBe('kin');
   expect(result.current.records[0].origins?.map(o => [o.ownerIdentityPubkey, o.method])).toEqual([[GUARDIAN, 'qr'], [OTHER_GUARDIAN, 'nip05']]);
+}, TIMEOUT);
+
+it('files a scanned key under the scanning persona, named by its short npub', async () => {
+  const { result } = renderHook(() => useContactsV2({ directoryId: DIR, encryptionKey: KEY, actor, context, ownerIdentityPubkey: GUARDIAN }));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  const peer = 'f'.repeat(64);
+  let id = '';
+  await act(async () => { id = await result.current.recogniseContact(peer, shortNpub(peer), GUARDIAN, 'qr'); });
+  const record = result.current.records.find(r => r.contactId === id)!;
+  expect(record.displayName).toBe(shortNpub(peer));
+  expect(contactDisplayName(record)).toBe(shortNpub(peer));
+  expect(record.listMemberships?.map(m => m.ownerIdentityPubkey)).toEqual([GUARDIAN]);
+  expect(record.origins?.map(o => [o.ownerIdentityPubkey, o.method])).toEqual([[GUARDIAN, 'qr']]);
 }, TIMEOUT);
 
 it('edits an existing check without resurrecting a removed check or rebinding another identity’s record', async () => {
