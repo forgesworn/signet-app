@@ -45,7 +45,7 @@ const TIMEOUT = 45_000;
 // Used to write records that bypass saveIdentityEncrypted.
 async function rawOpen() {
   const { openDB } = await import('idb');
-  return openDB('my-signet', 26, {
+  return openDB('my-signet', 27, {
     upgrade(d) {
       if (!d.objectStoreNames.contains('identity')) d.createObjectStore('identity', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('contacts')) {
@@ -2710,7 +2710,7 @@ describe('contacts v2 stores', () => {
     // names a version: it was pinned at v23 while this assertion had already
     // moved to 24, which is exactly the drift that makes a stale literal hard
     // to spot.
-    expect(raw.version).toBe(26);
+    expect(raw.version).toBe(27);
     expect(raw.objectStoreNames.contains('privateVaultState')).toBe(true);
     expect(raw.objectStoreNames.contains('contactRecordsV2')).toBe(true);
     expect(raw.objectStoreNames.contains('contactOpsV2')).toBe(true);
@@ -3188,4 +3188,52 @@ it('allocates one contacts device ID atomically without rewriting unrelated sett
   const [a, b] = await Promise.all([db.getOrCreateContactsDeviceId(), db.getOrCreateContactsDeviceId()]);
   expect(a).toMatch(/^[0-9a-f]{32}$/); expect(b).toBe(a);
   expect(await db.getPreferences()).toMatchObject({ theme: 'dark', relayUrl: 'wss://chosen.example', contactsDeviceId: a });
+});
+
+describe('contactPictures store (v27)', () => {
+  const JPEG = Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAARCAACAAMDASIAAhEBAxEB/9oADAMBAAIRAxEAPwDgqKKK8M/VD//Z'), c => c.charCodeAt(0));
+  const PK = 'ab'.repeat(32);
+
+  it('round-trips encrypted, with only id and updatedAt in clear', async () => {
+    const db = await freshDb();
+    await db.saveContactPicture({ id: `kind0:${PK}`, jpeg: JPEG, sourceUrl: 'https://example.com/me.jpg', fetchedAt: 5, updatedAt: 6 }, PASSPHRASE);
+    const raw = await (await db.getDb()).get('contactPictures', `kind0:${PK}`) as Record<string, unknown>;
+    expect(Object.keys(raw).sort()).toEqual(['encrypted', 'encryptedData', 'id', 'updatedAt']);
+    expect(String(raw.encryptedData)).not.toContain('example.com');
+    const back = await db.getContactPicture(`kind0:${PK}`, PASSPHRASE);
+    expect(back?.sourceUrl).toBe('https://example.com/me.jpg');
+    expect(back?.fetchedAt).toBe(5);
+    expect(Array.from(back?.jpeg ?? [])).toEqual(Array.from(JPEG));
+    expect(await db.getContactPicture(`kind0:${PK}`, 'wrong-key')).toBeNull();
+  }, TIMEOUT);
+
+  it('refuses a row relabelled under another id', async () => {
+    const db = await freshDb();
+    await db.saveContactPicture({ id: `kind0:${PK}`, jpeg: JPEG, fetchedAt: 1, updatedAt: 1 }, PASSPHRASE);
+    const raw = await db.getDb();
+    const row = await raw.get('contactPictures', `kind0:${PK}`) as Record<string, unknown>;
+    const other = `kind0:${'cd'.repeat(32)}`;
+    await raw.put('contactPictures', { ...row, id: other });
+    expect(await db.getContactPicture(other, PASSPHRASE)).toBeNull();
+    expect((await db.listContactPictures(PASSPHRASE)).map(p => p.id)).toEqual([`kind0:${PK}`]);
+  }, TIMEOUT);
+
+  it('refuses bad ids and non-JPEG bodies', async () => {
+    const db = await freshDb();
+    await expect(db.saveContactPicture({ id: 'kind0:nothex', jpeg: JPEG, fetchedAt: 1, updatedAt: 1 }, PASSPHRASE)).rejects.toThrow();
+    await expect(db.saveContactPicture({ id: `kind0:${PK}`, jpeg: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), fetchedAt: 1, updatedAt: 1 }, PASSPHRASE)).rejects.toThrow();
+    await db.saveContactPicture({ id: `own:owner:${'1'.repeat(32)}`, jpeg: JPEG, fetchedAt: 1, updatedAt: 1 }, PASSPHRASE);
+    await db.saveContactPicture({ id: `own:dependant:${'2'.repeat(64)}:${'3'.repeat(32)}`, jpeg: JPEG, fetchedAt: 1, updatedAt: 1 }, PASSPHRASE);
+    expect((await db.listContactPictures(PASSPHRASE)).length).toBe(2);
+  }, TIMEOUT);
+
+  it('deletes one, and purge clears them all', async () => {
+    const db = await freshDb();
+    await db.saveContactPicture({ id: `kind0:${PK}`, jpeg: JPEG, fetchedAt: 1, updatedAt: 1 }, PASSPHRASE);
+    await db.saveContactPicture({ id: `own:owner:${'1'.repeat(32)}`, jpeg: JPEG, fetchedAt: 1, updatedAt: 1 }, PASSPHRASE);
+    await db.deleteContactPicture(`kind0:${PK}`);
+    expect((await db.listContactPictures(PASSPHRASE)).map(p => p.id)).toEqual([`own:owner:${'1'.repeat(32)}`]);
+    await db.purgeAllUserData();
+    expect(await (await db.getDb()).count('contactPictures')).toBe(0);
+  }, TIMEOUT);
 });

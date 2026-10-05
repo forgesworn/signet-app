@@ -21,12 +21,13 @@ import { validateOperation, validateRecord } from './contacts-v2-reducer';
 import { createSerialQueue } from './contacts-v2-queue';
 import { portableSettingsValues } from './portable-settings';
 import { privateVaultQueue } from './private-vault-queue';
+import { forgetContactPictureKeys, sealContactPicture, openContactPicture, type ContactPicture } from './contact-picture-crypto';
 import { parseGuardianActingEntry, pruneGuardianActing, type GuardianActingEntry } from './guardian-acting';
 
 export { encryptSecret, decryptSecret } from './crypto-store';
 
 const DB_NAME = 'my-signet';
-const DB_VERSION = 26;
+const DB_VERSION = 27;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -323,6 +324,12 @@ function getDB(): Promise<IDBPDatabase> {
         if (oldVersion < 26 && !db.objectStoreNames.contains('childRules')) {
           const rules = db.createObjectStore('childRules', { keyPath: 'id' });
           rules.createIndex('by-dependant', 'dependantId');
+        }
+        // Version 27: contactPictures — device-local contact picture thumbnails
+        // (downloaded kind-0 pictures and the user's own). Body encrypted;
+        // only id / updatedAt stay clear. Never on any sync rail.
+        if (oldVersion < 27 && !db.objectStoreNames.contains('contactPictures')) {
+          db.createObjectStore('contactPictures', { keyPath: 'id' });
         }
       },
     });
@@ -2468,6 +2475,37 @@ export async function purgeAllUserData(): Promise<void> {
     forgetChildRuleCache();
     await db.clear('childRules');
   }
+  forgetContactPictureKeys();
+  if (db.objectStoreNames.contains('contactPictures')) await db.clear('contactPictures');
+}
+
+// --- Contact pictures (v27) ---
+// Device-local thumbnails: `kind0:<pubkey>` (downloaded from a contact's
+// kind-0 picture, only after the user's explicit consent) and
+// `own:<directoryId>:<contactId>` (a picture the user chose). Never synced.
+
+export async function saveContactPicture(picture: ContactPicture, encryptionKey: string): Promise<void> {
+  const row = await sealContactPicture(picture, encryptionKey);
+  const db = await getDB();
+  await db.put('contactPictures', row);
+}
+
+export async function getContactPicture(id: string, encryptionKey: string): Promise<ContactPicture | null> {
+  const db = await getDB();
+  return openContactPicture(await db.get('contactPictures', id), encryptionKey);
+}
+
+/** Every readable picture. Unreadable rows are skipped, never thrown. */
+export async function listContactPictures(encryptionKey: string): Promise<ContactPicture[]> {
+  const db = await getDB();
+  const rows = await db.getAll('contactPictures');
+  const out = await Promise.all(rows.map(r => openContactPicture(r, encryptionKey)));
+  return out.filter((p): p is ContactPicture => p !== null);
+}
+
+export async function deleteContactPicture(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('contactPictures', id);
 }
 
 // --- Paired-child dependant-status cache ---
