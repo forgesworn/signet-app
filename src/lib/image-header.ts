@@ -126,3 +126,15 @@ export function checkImageHeader(bytes: Uint8Array): ImageHeaderCheck {
   }
   return { ok: true, ...header };
 }
+
+/** Thumbnail longest side, in pixels. */
+export const THUMBNAIL_MAX_SIDE_PX = 256;
+/** JPEG quality for the re-encoded thumbnail. */
+export const THUMBNAIL_JPEG_QUALITY = 0.8;
+
+/** Fit `width × height` inside `maxSide`, keeping the aspect ratio. Never upscales. */
+export function thumbnailSize(width: number, height: number, maxSide: number = THUMBNAIL_MAX_SIDE_PX): { width: number; height: number } {
+  const longest = Math.max(width, height, 1);
+  const scale = longest > maxSide ? maxSide / longest : 1;
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
