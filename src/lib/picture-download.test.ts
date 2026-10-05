@@ -134,6 +134,13 @@ describe('downloadPictureBytes (APK, CapacitorHttp)', () => {
     expect((await downloadPictureBytes('https://example.com/a.jpg', { native: true, nativeGet: ok as never, maxBytes: 100 }))?.length).toBe(100);
   });
 
+  it('accepts an ArrayBuffer body under the same cap', async () => {
+    const big = vi.fn(async () => ({ status: 200, data: new ArrayBuffer(101), headers: {}, url: '' }));
+    expect(await downloadPictureBytes('https://example.com/a.jpg', { native: true, nativeGet: big as never, maxBytes: 100 })).toBeNull();
+    const ok = vi.fn(async () => ({ status: 200, data: new ArrayBuffer(100), headers: {}, url: '' }));
+    expect((await downloadPictureBytes('https://example.com/a.jpg', { native: true, nativeGet: ok as never, maxBytes: 100 }))?.length).toBe(100);
+  });
+
   it('never calls native for a refused URL', async () => {
     const nativeGet = vi.fn();
     expect(await downloadPictureBytes('https://localhost/a.jpg', { native: true, nativeGet: nativeGet as never })).toBeNull();

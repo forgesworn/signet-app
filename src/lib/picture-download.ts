@@ -130,6 +130,10 @@ async function downloadNative(
       timeout,
     ]);
     if (!res || res.status < 200 || res.status >= 300) return null;
+    // Android hands back base64 for 'arraybuffer'; accept a real buffer too, under the same cap.
+    if (res.data instanceof ArrayBuffer) {
+      return res.data.byteLength > maxBytes ? null : new Uint8Array(res.data);
+    }
     if (typeof res.data !== 'string') return null;
     // Base64 inflates by 4/3: refuse before decoding anything clearly too big.
     const b64 = res.data.replace(/\s+/g, '');
