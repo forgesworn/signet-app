@@ -7,8 +7,11 @@
  *
  * Trust: same rules as the profile lookup (`existing-profile.ts`, whose
  * multi-relay fan-out this reuses) — the author is pinned, the signature is
- * verified, the newest event wins. Names are fetched as kind-0 TEXT only;
- * nothing inside a profile (picture, banner, links) is ever loaded.
+ * verified, the newest event wins. Profiles are fetched as kind-0 TEXT: the
+ * name, and the `picture` URL as a string. Nothing inside a profile (picture,
+ * banner, links) is ever loaded here. The picture URL is downloaded only by
+ * `contact-pictures.ts`, and only after the user has agreed to the "Download
+ * their profile pictures?" step for that run — never in the background.
  */
 
 import type { NostrEvent, NostrFilter } from 'signet-protocol';
@@ -137,20 +140,27 @@ export function shortNpub(pubkey: string): string {
   }
 }
 
+/** What one kind-0 profile contributes: its name and its picture URL (text only). */
+export interface Kind0Profile {
+  displayName?: string;
+  /** The `picture` URL as published (already length-capped and scheme-checked by the parser). Never fetched here. */
+  pictureUrl?: string;
+}
+
 /**
- * Batch-fetch kind-0 NAMES for `pubkeys` (authors in chunks of `NAME_CHUNK`,
- * a few chunks per request, one shared 6 s budget across every relay). A
- * follow nobody could name is simply absent from the map. Text only: the
- * `parseKindZeroContent` result's name is all that is read.
+ * Batch-fetch kind-0 profiles for `pubkeys` (authors in chunks of `NAME_CHUNK`,
+ * a few chunks per request, one shared 6 s budget across every relay). Only an
+ * author with a verified newest kind 0 is in the map — absence means "could
+ * not be fetched", which is different from "fetched, no picture".
  */
-export async function fetchFollowNames(
+export async function fetchKind0Profiles(
   pubkeys: string[],
   relays: string[],
   budgetMs: number = NAMES_BUDGET_MS,
-): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
+): Promise<Map<string, Kind0Profile>> {
+  const profiles = new Map<string, Kind0Profile>();
   const wanted = Array.from(new Set(pubkeys.filter(p => HEX64.test(p))));
-  if (wanted.length === 0) return names;
+  if (wanted.length === 0) return profiles;
 
   const filters: NostrFilter[] = [];
   for (let i = 0; i < wanted.length; i += NAME_CHUNK) {
@@ -184,12 +194,30 @@ export async function fetchFollowNames(
   let checked = 0;
   for (const [author, candidates] of byAuthor) {
     const winner = pickNewestVerified(candidates, author);
-    const profile = winner ? parseKindZeroContent(winner.event.content) : null;
-    if (profile?.displayName) names.set(author, sanitizeDisplayName(profile.displayName, 100));
+    if (winner) {
+      const parsed = parseKindZeroContent(winner.event.content);
+      const profile: Kind0Profile = {};
+      if (parsed?.displayName) profile.displayName = sanitizeDisplayName(parsed.displayName, 100);
+      if (parsed?.pictureUrl) profile.pictureUrl = parsed.pictureUrl;
+      profiles.set(author, profile);
+    }
     // Signature checks are synchronous: hand the thread back now and then so
     // a large list never freezes the screen.
     checked += 1;
     if (checked % 40 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
+  return profiles;
+}
+
+/** Names only, from `fetchKind0Profiles`. A follow nobody could name is absent from the map. */
+export async function fetchFollowNames(
+  pubkeys: string[],
+  relays: string[],
+  budgetMs: number = NAMES_BUDGET_MS,
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  for (const [pubkey, profile] of await fetchKind0Profiles(pubkeys, relays, budgetMs)) {
+    if (profile.displayName) names.set(pubkey, profile.displayName);
   }
   return names;
 }

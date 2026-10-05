@@ -775,6 +775,17 @@ export async function saveContactRecordV2(record: ContactRecord, encryptionKey: 
 export async function listContactRecordsV2(directoryId: string, encryptionKey: string): Promise<ContactRecord[]> {
   const db = await getDB();
   const rows = await db.getAllFromIndex('contactRecordsV2', 'directoryId', directoryId) as EncryptedRow[];
+  return decryptContactRecordRows(rows, encryptionKey);
+}
+
+/** Every directory's materialised records on this device (contact pictures' "Refresh pictures"). */
+export async function listAllContactRecordsV2(encryptionKey: string): Promise<ContactRecord[]> {
+  const db = await getDB();
+  const rows = await db.getAll('contactRecordsV2') as EncryptedRow[];
+  return decryptContactRecordRows(rows, encryptionKey);
+}
+
+async function decryptContactRecordRows(rows: EncryptedRow[], encryptionKey: string): Promise<ContactRecord[]> {
   // I2 perf: batched so a store where several rows share a salt (any rows
   // written via a batch save elsewhere) costs one derivation per distinct
   // salt to read, not one per row.
