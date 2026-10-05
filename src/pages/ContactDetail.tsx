@@ -8,7 +8,12 @@ import { isConfirmed, newestCheckFor, type ConfirmStep } from '../lib/contacts-v
 import type { ContactCheck } from '../lib/contact-checks';
 import type { ContactIdentityList } from '../lib/contacts-v2-identity-lists';
 import { contactBelongsToList } from '../lib/contacts-v2-membership';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { ContactAvatar } from '../components/ContactAvatar';
+import { useContactAvatar } from '../hooks/useContactAvatar';
+import { useContactPicture } from '../hooks/useContactPicture';
+import { OWN_PICTURE_ACCEPT } from '../lib/contact-pictures';
+import { primaryIdentityPubkey as avatarPubkeyOf } from '../lib/contacts-v2-list';
 import type { Contact, ContactIdentity, ContactMethodKind, ContactTier, EffectiveContact, SignetIdentity, AddMethodValue } from '../types';
 import { ContactTierChip } from '../components/ContactTierChip';
 import { ContactShare } from '../components/ContactShare';
@@ -16,7 +21,8 @@ import { SignetWords } from '../components/SignetWords';
 import { getActivePubkey, shortNpub } from '../lib/signet';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import {
-  ADD_A_ROLE_LABEL, ADD_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
+  ADD_A_ROLE_LABEL, ADD_LABEL, ADD_OWN_PICTURE_LABEL, CHANGE_OWN_PICTURE_LABEL, OWN_PICTURE_HINT,
+  OWN_PICTURE_REFUSED_COPY, REMOVE_OWN_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
   BLOCK_REASON_FIELD_LABEL, BLOCK_SECTION_TITLE, CANCEL_LABEL, CONTACT_ACTION_FAILED_COPY,
   CONFIRM_BUTTON_LABEL, CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
   IDENTITY_VERIFICATION_LABELS, KEY_CONTROL_LABEL, KEYLESS_EXPLAINER, KEYLESS_MARKER,
@@ -35,6 +41,12 @@ import {
 } from '../lib/contacts-v2-detail';
 
 interface Props {
+  /** Unlock key + relay, for the contact's picture (local thumbnails and the #242 shared avatar). */
+  encryptionKey?: string | null;
+  relayUrl?: string;
+  /** Set the user's own picture for this contact (device-local). Resolves false when the image is refused. */
+  onSetOwnPicture?: (file: File) => Promise<boolean>;
+  onRemoveOwnPicture?: () => Promise<void>;
   /**
    * "Confirm it's them": apply the writes one confirmation outcome compiles to.
    * Absent where a check cannot be recorded (no single identity list selected).
@@ -93,7 +105,7 @@ const TIERS: ContactTier[] = ['kin', 'kith', 'ken'];
  * `identities`/`methods` are shared by their own add/remove pairs, and
  * `block` is shared by block and unblock.
  */
-type ActionScope = 'rename' | 'identities' | 'methods' | 'roles' | 'tier' | 'note' | 'block' | 'remove';
+type ActionScope = 'picture' | 'rename' | 'identities' | 'methods' | 'roles' | 'tier' | 'note' | 'block' | 'remove';
 
 export function ContactDetail(props: Props) {
   const { contact, rights, sections, legacy, legacyContact, actorPubkey, guardianName } = props;
@@ -131,6 +143,17 @@ export function ContactDetail(props: Props) {
   const [confirming, setConfirming] = useState<ContactIdentity | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<{ scope: ActionScope; message: string } | null>(null);
+
+  const avatarPubkey = avatarPubkeyOf(contact);
+  const sharedAvatar = useContactAvatar(avatarPubkey ?? undefined, props.relayUrl ?? '', props.encryptionKey ?? null);
+  const picture = useContactPicture({
+    encryptionKey: props.encryptionKey ?? null,
+    pubkey: avatarPubkey,
+    directoryId: contact.directoryId,
+    contactId: contact.contactId,
+    sharedUrl: avatarPubkey ? sharedAvatar : null,
+  });
+  const pictureInput = useRef<HTMLInputElement>(null);
 
   const appConnection = props.checkOwnerIdentityPubkey ? uncheckedAppConnection(contact, props.checkOwnerIdentityPubkey) : null;
   const blocked = blockedLine(contact, actorPubkey, guardianName);
@@ -208,6 +231,48 @@ export function ContactDetail(props: Props) {
         {actionError?.scope === 'identities' && <p role="alert">{actionError.message}</p>}
       </div>}
       <div className="card section">
+        <div style={{ marginBottom: 8 }}>
+          <ContactAvatar url={picture.url} name={shownName} pubkey={avatarPubkey ?? shownName} size={72} />
+        </div>
+        {props.onSetOwnPicture && (
+          <div style={{ marginBottom: 8 }}>
+            <input
+              ref={pictureInput}
+              type="file"
+              accept={OWN_PICTURE_ACCEPT}
+              aria-label={picture.hasOwn ? CHANGE_OWN_PICTURE_LABEL : ADD_OWN_PICTURE_LABEL}
+              style={{ display: 'none' }}
+              onChange={e => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    const ok = await props.onSetOwnPicture!(file);
+                    setActionError(ok ? null : { scope: 'picture', message: OWN_PICTURE_REFUSED_COPY });
+                  } catch {
+                    setActionError({ scope: 'picture', message: CONTACT_ACTION_FAILED_COPY });
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => pictureInput.current?.click()}>
+                {picture.hasOwn ? CHANGE_OWN_PICTURE_LABEL : ADD_OWN_PICTURE_LABEL}
+              </button>
+              {picture.hasOwn && props.onRemoveOwnPicture && (
+                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run('picture', () => props.onRemoveOwnPicture!())}>
+                  {REMOVE_OWN_PICTURE_LABEL}
+                </button>
+              )}
+            </div>
+            <p className="field-hint" style={{ margin: '4px 0 0' }}>{OWN_PICTURE_HINT}</p>
+            {actionError?.scope === 'picture' && <p role="alert">{actionError.message}</p>}
+          </div>
+        )}
         <h1 style={{ marginBottom: 6 }}>{shownName}</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <ContactTierChip

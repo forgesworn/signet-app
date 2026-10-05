@@ -31,10 +31,11 @@ function getCachedPointer(pubkey: string): ContactAvatarPointer | null | undefin
  * contact-share key → latest kind-30078 pointer (author-verified) → encrypted
  * Blossom blob → object URL. Returns the object URL or null.
  *
- * There is deliberately NO public kind-0 `pictureUrl` fallback (H1): that URL is
- * attacker-controlled and auto-fetching it leaks the viewer's IP + view timing
- * to a relay-supplied origin. Showing a contact's public picture is now an
- * explicit, gated tap on KenDetail — not an automatic background fetch here.
+ * There is deliberately NO public kind-0 `pictureUrl` fallback here (H1): that
+ * URL is attacker-controlled and auto-fetching it leaks the viewer's IP + view
+ * timing to a relay-supplied origin. Kind-0 pictures are downloaded only by an
+ * explicit, consented user action (`contact-pictures.ts`) and stored as local
+ * thumbnails; `useContactPicture` layers those under this shared avatar.
  *
  * `overrideShareKey` lets the scan-confirm screen preview before the key is
  * persisted to IDB. Object-URL lifecycle (revoke / strict-mode race) lives in

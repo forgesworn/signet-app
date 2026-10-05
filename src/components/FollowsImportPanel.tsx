@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { FollowsImportState } from '../types';
-import type { FollowsImportOutcome, UnfollowedContact } from '../lib/follows-import-flow';
+import type { FollowsImportOptions, FollowsImportOutcome, UnfollowedContact } from '../lib/follows-import-flow';
+import { ContactPicturesConsent } from './ContactPicturesConsent';
+import { picturesResultCopy } from '../lib/contacts-v2-copy';
 
 interface Props {
   /** The persona's display name, for the copy. */
@@ -8,7 +10,12 @@ interface Props {
   /** The device-local record of the last import, if there has been one. */
   last?: FollowsImportState;
   /** Read the persona's kind 3 and file the follows as contacts. Never publishes. */
-  onImport: () => Promise<FollowsImportOutcome>;
+  onImport: (opts: FollowsImportOptions) => Promise<FollowsImportOutcome>;
+  /**
+   * When true, every Import first asks "Download their profile pictures?".
+   * "Not now" still imports the names. False (or absent) = names only, no step.
+   */
+  picturesAvailable?: boolean;
   /** Take contacts off this persona's list (never removes a contact). Resolves to how many were taken off. */
   onUnlink: (contactIds: string[]) => Promise<number>;
   /** `offer` is the one-off prompt at the end of an nsec import ("Not now" / "Import"). */
@@ -38,22 +45,29 @@ function summaryLine(o: Extract<FollowsImportOutcome, { status: 'done' }>): stri
  * changes who an account follows. Shared by a persona's Advanced page and the
  * offer that follows an nsec import.
  */
-export function FollowsImportPanel({ personaName, last, onImport, onUnlink, variant = 'block', onNotNow, disabledReason }: Props) {
+export function FollowsImportPanel({ personaName, last, onImport, onUnlink, variant = 'block', onNotNow, disabledReason, picturesAvailable = false }: Props) {
   const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState(false);
   const [error, setError] = useState('');
   const [outcome, setOutcome] = useState<FollowsImportOutcome | null>(null);
   const [unfollowed, setUnfollowed] = useState<UnfollowedContact[]>([]);
   const [unlinking, setUnlinking] = useState(false);
   const [unlinkNote, setUnlinkNote] = useState('');
 
-  async function run() {
+  function start() {
+    if (picturesAvailable) { setAsking(true); return; }
+    void run(false);
+  }
+
+  async function run(pictures: boolean) {
+    setAsking(false);
     setBusy(true);
     setError('');
     setOutcome(null);
     setUnfollowed([]);
     setUnlinkNote('');
     try {
-      const result = await onImport();
+      const result = await onImport({ pictures });
       setOutcome(result);
       if (result.status === 'done') setUnfollowed(result.unfollowed);
     } catch (err) {
@@ -108,6 +122,7 @@ export function FollowsImportPanel({ personaName, last, onImport, onUnlink, vari
         <div role="status" style={{ fontSize: '0.85rem', margin: '0 0 12px', lineHeight: 1.5 }}>
           <div>{summaryLine(outcome)}</div>
           {outcome.trimmedNotice && <div style={{ marginTop: 6 }}>{outcome.trimmedNotice}</div>}
+          {outcome.pictures && <div style={{ marginTop: 6 }}>{picturesResultCopy(outcome.pictures.downloaded, outcome.pictures.failed)}</div>}
         </div>
       )}
 
@@ -141,18 +156,20 @@ export function FollowsImportPanel({ personaName, last, onImport, onUnlink, vari
         <p role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '0 0 12px' }}>{disabledReason}</p>
       )}
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {asking && <ContactPicturesConsent onAccept={() => { void run(true); }} onDecline={() => { void run(false); }} />}
+
+      {!asking && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {offer && outcome?.status === 'done' ? (
           <button className="btn btn-primary" onClick={onNotNow}>Done</button>
         ) : (
           <>
-            <button className={offer ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => { void run(); }} disabled={busy || unlinking || !!disabledReason}>
+            <button className={offer ? 'btn btn-primary' : 'btn btn-secondary'} onClick={start} disabled={busy || unlinking || !!disabledReason}>
               {offer && !busy ? 'Import' : importLabel}
             </button>
             {offer && <button className="btn btn-ghost" onClick={onNotNow} disabled={busy}>Not now</button>}
           </>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

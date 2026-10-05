@@ -27,6 +27,8 @@ import { primaryIdentityPubkey } from './contacts-v2-list';
 import type { ContactRecord } from '../types';
 
 export const PICTURE_DOWNLOAD_CONCURRENCY = 4;
+/** The file picker filter (the header gate still decides what is accepted). */
+export const OWN_PICTURE_ACCEPT = 'image/*';
 /** Largest file accepted from the file picker. */
 export const OWN_PICTURE_MAX_FILE_BYTES = 20 * 1024 * 1024;
 

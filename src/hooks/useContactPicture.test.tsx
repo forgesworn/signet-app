@@ -1,0 +1,70 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
+import { renderHook, waitFor, act } from '@testing-library/react';
+
+const KEY = 'unlock-key';
+const JPEG = (n: number) => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd9]);
+const PK = 'ab'.repeat(32);
+const CID = '1'.repeat(32);
+
+let urlCount = 0;
+const urlFor = new Map<string, Blob>();
+
+beforeEach(() => {
+  vi.stubGlobal('indexedDB', new IDBFactory());
+  vi.resetModules();
+  urlCount = 0;
+  urlFor.clear();
+  URL.createObjectURL = vi.fn((b: Blob) => { const u = `blob:${++urlCount}`; urlFor.set(u, b); return u; }) as never;
+  URL.revokeObjectURL = vi.fn() as never;
+});
+
+async function firstByte(url: string | null): Promise<number | null> {
+  if (!url) return null;
+  const blob = urlFor.get(url);
+  return blob ? new Uint8Array(await blob.arrayBuffer())[4] : null;
+}
+
+describe('useContactPicture precedence', () => {
+  it('own > shared > downloaded kind-0 > none', async () => {
+    const db = await import('../lib/db');
+    const pictures = await import('../lib/contact-pictures');
+    const { useContactPicture } = await import('./useContactPicture');
+    await db.saveContactPicture({ id: `kind0:${PK}`, jpeg: JPEG(1), sourceUrl: 'https://x/a.jpg', fetchedAt: 1, updatedAt: 1 }, KEY);
+
+    const { result, rerender } = renderHook(
+      ({ shared }: { shared: string | null }) => useContactPicture({ encryptionKey: KEY, pubkey: PK, directoryId: 'owner', contactId: CID, sharedUrl: shared }),
+      { initialProps: { shared: null as string | null } },
+    );
+    // Downloaded thumbnail only.
+    await waitFor(() => expect(result.current.url).not.toBeNull());
+    expect(await firstByte(result.current.url)).toBe(1);
+
+    // Shared avatar beats it.
+    rerender({ shared: 'blob:shared' });
+    await waitFor(() => expect(result.current.url).toBe('blob:shared'));
+
+    // Own picture beats both.
+    await act(async () => {
+      await pictures.setOwnContactPicture(KEY, 'owner', CID, new Blob([new Uint8Array([1])]), { thumbnail: async () => JPEG(9) });
+    });
+    await waitFor(() => expect(result.current.hasOwn).toBe(true));
+    await waitFor(async () => expect(await firstByte(result.current.url)).toBe(9));
+
+    // Removing it falls back.
+    await act(async () => { await pictures.removeOwnContactPicture(KEY, 'owner', CID); });
+    await waitFor(() => expect(result.current.url).toBe('blob:shared'));
+    rerender({ shared: null });
+    await waitFor(async () => expect(await firstByte(result.current.url)).toBe(1));
+  });
+
+  it('shows nothing when locked or with nothing stored', async () => {
+    const { useContactPicture } = await import('./useContactPicture');
+    const locked = renderHook(() => useContactPicture({ encryptionKey: null, pubkey: PK }));
+    expect(locked.result.current.url).toBeNull();
+    const empty = renderHook(() => useContactPicture({ encryptionKey: KEY, pubkey: PK, sharedUrl: null }));
+    await new Promise(r => setTimeout(r, 20));
+    expect(empty.result.current.url).toBeNull();
+  });
+});

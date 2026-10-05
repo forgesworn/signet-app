@@ -19,7 +19,7 @@ import { Icon } from '../components/Icon';
 import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase, FollowsImportState } from '../types';
 import { ExistingProfilePanel } from '../components/ExistingProfilePanel';
 import { FollowsImportPanel } from '../components/FollowsImportPanel';
-import type { FollowsImportOutcome } from '../lib/follows-import-flow';
+import type { FollowsImportOptions, FollowsImportOutcome } from '../lib/follows-import-flow';
 import type { ExistingProfile } from '../lib/existing-profile';
 import { TypedNameConfirm } from '../components/TypedNameConfirm';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
@@ -75,7 +75,9 @@ export interface PersonaAdvancedProps {
    * scoped to the owner's contacts — never a dependant's slot, never a
    * paired-child install; absent => the block is hidden.
    */
-  onImportFollows?: () => Promise<FollowsImportOutcome>;
+  onImportFollows?: (opts: FollowsImportOptions) => Promise<FollowsImportOutcome>;
+  /** Offer the picture download step on import (never on a paired-child install). */
+  followsPicturesAvailable?: boolean;
   /** Take contacts off this slot's list after a refresh found they are no longer followed. */
   onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
   /**
@@ -344,6 +346,7 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
               last={slot.followsImport}
               onImport={props.onImportFollows}
               onUnlink={props.onUnlinkFollows}
+              picturesAvailable={props.followsPicturesAvailable}
             />
           )}
           {!isDep && !(props.onImportFollows && props.onUnlinkFollows) && props.followsPending && (

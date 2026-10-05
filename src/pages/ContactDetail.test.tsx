@@ -186,3 +186,25 @@ describe('ContactDetail on v2', () => {
     expect((screen.getByLabelText('Private note') as HTMLTextAreaElement).value).toBe('my draft note');
   });
 });
+
+describe('ContactDetail — your own picture', () => {
+  it('is offered for a keyless contact and sends the picked file', async () => {
+    const onSetOwnPicture = vi.fn(async () => true);
+    renderDetail(contact(), 'owner', { onSetOwnPicture, onRemoveOwnPicture: vi.fn() });
+    expect(screen.getByRole('button', { name: 'Add your own picture' })).toBeDefined();
+    const file = new File([new Uint8Array([1])], 'me.jpg', { type: 'image/jpeg' });
+    fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [file] } });
+    await vi.waitFor(() => expect(onSetOwnPicture).toHaveBeenCalledWith(file));
+  });
+
+  it('says so when the picture is refused', async () => {
+    renderDetail(contact(), 'owner', { onSetOwnPicture: vi.fn(async () => false) });
+    fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'x.gif')] } });
+    expect(await screen.findByText("That picture couldn't be used. Choose a JPEG, PNG or WebP photo.")).toBeDefined();
+  });
+
+  it('is absent when the host passes no handler', () => {
+    renderDetail(contact(), 'owner');
+    expect(screen.queryByRole('button', { name: 'Add your own picture' })).toBeNull();
+  });
+});

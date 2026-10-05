@@ -777,3 +777,22 @@ export const SCAN_CONTACT_INVALID_COPY = 'That Nostr key could not be read.';
 export const SCAN_CONTACT_OWN_KEY_COPY = 'That is one of your own keys.';
 export const SCAN_CONTACT_WRONG_CARD_COPY = "Contacts can't be added from this card. Swipe to one of your personas and scan again.";
 export const SCAN_CONTACT_SAVE_FAILED_COPY = 'The contact could not be saved. Try again.';
+
+// Contact pictures: kind-0 pictures download only after this consent step, every time.
+export const PICTURES_CONSENT_TITLE = 'Download their profile pictures?';
+export const PICTURES_CONSENT_BODY = "People host their profile pictures on websites they choose. Downloading them tells each of those sites your IP address and that you're looking at that person. My Signet downloads each picture once, keeps a small copy on this phone, and only checks again when you tap Refresh pictures. For more privacy, turn on a VPN before you continue.";
+export const PICTURES_CONSENT_ACCEPT_LABEL = 'Download pictures';
+export const PICTURES_CONSENT_DECLINE_LABEL = 'Not now';
+export const REFRESH_PICTURES_LABEL = 'Refresh pictures';
+export const REFRESHING_PICTURES_LABEL = 'Downloading pictures…';
+export const PICTURES_REFRESH_FAILED_COPY = "Pictures couldn't be refreshed. Try again in a moment.";
+/** "Downloaded N pictures." / "Downloaded N pictures, M couldn't be downloaded." */
+export function picturesResultCopy(downloaded: number, failed: number): string {
+  const head = `Downloaded ${downloaded} ${downloaded === 1 ? 'picture' : 'pictures'}`;
+  return failed > 0 ? `${head}, ${failed} couldn't be downloaded.` : `${head}.`;
+}
+export const ADD_OWN_PICTURE_LABEL = 'Add your own picture';
+export const CHANGE_OWN_PICTURE_LABEL = 'Change picture';
+export const REMOVE_OWN_PICTURE_LABEL = 'Remove your picture';
+export const OWN_PICTURE_HINT = 'Only on this phone. Your picture is used instead of theirs.';
+export const OWN_PICTURE_REFUSED_COPY = "That picture couldn't be used. Choose a JPEG, PNG or WebP photo.";

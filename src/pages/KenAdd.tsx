@@ -12,6 +12,7 @@ import { encodeNpub, hexToBytes, shortNpub, isValidHexKey } from '../lib/signet'
 import { parsePubkeyInput } from '../lib/pubkey-input';
 import { parseContactQR, resolveScannedContactName } from '../lib/contact-qr';
 import { useContactAvatar } from '../hooks/useContactAvatar';
+import { useContactPicture } from '../hooks/useContactPicture';
 import { ContactAvatar } from '../components/ContactAvatar';
 
 interface Props {
@@ -538,7 +539,9 @@ export function KenAdd({ ownerPubkeyHex, onAddKen, onDone, onBack, relayUrl, enc
 function ScannedAvatarPreview({ pubkey, relayUrl, encryptionKey, overrideShareKey, name }: {
   pubkey: string; relayUrl: string; encryptionKey: string | null; overrideShareKey?: string; name: string;
 }) {
-  const url = useContactAvatar(pubkey, relayUrl, encryptionKey, overrideShareKey);
+  const shared = useContactAvatar(pubkey, relayUrl, encryptionKey, overrideShareKey);
+  // Shared avatar first, else a kind-0 thumbnail already on this device (never fetched here).
+  const { url } = useContactPicture({ encryptionKey, pubkey, sharedUrl: shared });
   return (
     <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
       <ContactAvatar url={url} name={name} pubkey={pubkey} size={72} />

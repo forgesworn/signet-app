@@ -192,10 +192,12 @@ import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
 import { publishPublicProfile, retractPublicProfile, adoptPublishedIntoCard, toPublicProfileBase } from './lib/public-profile-publish';
 import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
-import { fetchFollowList, fetchFollowNames, shortNpub } from './lib/nostr-follows';
+import { fetchFollowList, fetchFollowNames, fetchKind0Profiles, shortNpub } from './lib/nostr-follows';
 import { planScannedContact } from './lib/scan-add-contact';
 import { SCAN_CONTACT_SAVE_FAILED_COPY } from './lib/contacts-v2-copy';
 import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
+import { syncKind0Pictures, refreshContactPictures, setOwnContactPicture, removeOwnContactPicture, forgetContactPictureCache } from './lib/contact-pictures';
+import { forgetContactPictureKeys } from './lib/contact-picture-crypto';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
 import { MyDocuments } from './pages/MyDocuments';
@@ -2292,12 +2294,17 @@ export function App() {
     if (!identity || isPairedChild || childDirect || !encryptionKey) return undefined;
     if (slotTarget === 'natural-person' && !isNaturalPersonActive(identity)) return undefined;
     return {
-      onImportFollows: () => runFollowsImport({
+      // Pictures only when the user agreed to the download step for this run.
+      picturesAvailable: !isPairedChild,
+      onImportFollows: (opts) => runFollowsImport({
         personaPubkey,
         personaName,
         records: contactsV2.records,
         fetchList: (pubkey) => fetchFollowList(pubkey, syncRelays.read),
         fetchNames: (pubkeys) => fetchFollowNames(pubkeys, syncRelays.read),
+        pictures: !isPairedChild && opts?.pictures === true,
+        fetchProfiles: (pubkeys) => fetchKind0Profiles(pubkeys, syncRelays.read),
+        syncPictures: (pubkeys, profiles) => syncKind0Pictures(encryptionKey, pubkeys, profiles),
         recogniseContacts: contactsV2.recogniseContacts,
         recordImport: (state) => setSlotFollowsImport(slotTarget, state),
       }),
@@ -4507,6 +4514,9 @@ export function App() {
       forgetSyncCacheKeys();
       // A52: and the decrypted child-rule memo.
       forgetChildRuleCache();
+      // Contact pictures: the derived key and the decrypted thumbnails.
+      forgetContactPictureKeys();
+      forgetContactPictureCache();
       // The Heartwood operator client (kind-24134) is stopped by
       // useHeartwoodOperator's own effect on the same encryptionKey flip.
       if (nip07Backend) {
@@ -10663,7 +10673,7 @@ export function App() {
             : identity.extraPersonas?.find(p => p.publicKey === slotTarget);
           if (!ownSlot) return {};
           const handlers = followsHandlersFor(slotTarget, ownSlot.publicKey, ownSlot.displayName || 'this persona');
-          if (handlers) return { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows };
+          if (handlers) return { onImportFollows: handlers.onImportFollows, onUnlinkFollows: handlers.onUnlinkFollows, followsPicturesAvailable: handlers.picturesAvailable };
           const pending = followsPendingFor(slotTarget);
           return pending ? { followsPending: pending } : {};
         })()}
@@ -11245,6 +11255,11 @@ export function App() {
       <Layout title={record.displayName} showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <ContactDetail
           contact={record}
+          encryptionKey={encryptionKey}
+          relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
+          // Own pictures are device-local and allowed on every install, paired-child too.
+          onSetOwnPicture={encryptionKey ? (file) => setOwnContactPicture(encryptionKey, record.directoryId, record.contactId, file) : undefined}
+          onRemoveOwnPicture={encryptionKey ? () => removeOwnContactPicture(encryptionKey, record.directoryId, record.contactId) : undefined}
           lists={contactsIdentityLists}
           onReviewAppList={(grantId, accept) => contactsV2.reviewAppList(record.contactId, grantId, accept)}
           onLinkList={(key) => contactsV2.linkList(record.contactId, key)}
@@ -11295,7 +11310,12 @@ export function App() {
             }
             if (lifted.length > 0) bumpContactsSafety(`unblock:${record.contactId}`);
           }}
-          onRemove={async () => { await contactsV2.removeContact(record.contactId); navigateReplace('contacts'); }}
+          onRemove={async () => {
+            await contactsV2.removeContact(record.contactId);
+            // The user's own picture for a removed contact goes with it (device-local, best effort).
+            if (encryptionKey) { try { await removeOwnContactPicture(encryptionKey, record.directoryId, record.contactId); } catch { /* best effort */ } }
+            navigateReplace('contacts');
+          }}
           onOpenKenDetail={(pubkey) => { handleSelectKen(pubkey); }}
         />
       </Layout>
@@ -11444,6 +11464,7 @@ export function App() {
             return {
               onImportFollows: handlers?.onImportFollows,
               onUnlinkFollows: handlers?.onUnlinkFollows,
+              followsPicturesAvailable: handlers?.picturesAvailable,
               followsPersonaName: name,
               followsLast: slot.s.followsImport,
               followsDisabledReason: loadingReason,
@@ -11457,6 +11478,10 @@ export function App() {
           selectedList={contactsListIdentity}
           onSelectList={setContactsIdentityChoice}
           loading={contactsV2.loading}
+          // Explicit, consented downloads only — and never on a paired-child install.
+          onRefreshPictures={!isPairedChild && encryptionKey
+            ? () => refreshContactPictures(encryptionKey, { fetchProfiles: (pubkeys) => fetchKind0Profiles(pubkeys, syncRelays.read) })
+            : undefined}
           actorPubkey={contactsActorPubkey}
           guardianName={activeDependant ? (identity?.naturalPerson.displayName || null) : null}
           subjectName={contactsScope.subjectName}
