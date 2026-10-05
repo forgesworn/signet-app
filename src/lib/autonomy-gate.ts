@@ -154,3 +154,22 @@ export function isOriginScopedScope(scope: Scope): boolean {
     || scope === 'upload-photo'
     || scope === 'react-zap-reply';
 }
+
+/**
+ * Whether "allow always" on a DEPENDANT route actually saves a
+ * `(dependantId, scope, origin)` grant. It needs a classified scope, a known
+ * origin and an origin-scoped scope, and the stage must not be `full-control`
+ * (there is no "always" there: a stored allow grant is ignored at that stage,
+ * see the request path in `useBunkerServer`). Otherwise the choice degrades to
+ * approve-once with nothing persisted. The approval UI gates the "always"
+ * button on this and `resolveApproval` gates the save on it, so the offer and
+ * the save cannot drift apart. An absent stage (route built without one) is
+ * treated as not full-control.
+ */
+export function dependantAllowAlwaysPersists(
+  scope: Scope | null,
+  origin: string | null | undefined,
+  stage?: AutonomyStage,
+): boolean {
+  return stage !== 'full-control' && scope !== null && !!origin && isOriginScopedScope(scope);
+}

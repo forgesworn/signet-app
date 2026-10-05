@@ -15,7 +15,8 @@ import { CHILD_ASK_COPY, CHILD_DEVICE_COPY } from '../lib/child-device-copy';
  *   same client will prompt again.
  * - **Allow always for <app>** — same + persist `allowAlways` for this
  *   client pubkey in IndexedDB. Future sign_event requests auto-
- *   approve without prompting.
+ *   approve without prompting. Hidden when it would not be saved (a
+ *   dependant request with no origin-scoped grant to key on).
  * - **Deny** — tell the client the user rejected the request. Denial
  *   is not persisted (user can change their mind next time).
  *
@@ -140,7 +141,11 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
             a trusted site stop costing kid-side foreground-wait latency.
             Buttons keep their wiring — only the visual weight flips. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-          {reserved ? (<button className="btn btn-primary" onClick={() => onApproveOnce(approval.handle)}>Approve this Kinterest authorisation</button>) : approval.client.existing ? (
+          {reserved ? (<button className="btn btn-primary" onClick={() => onApproveOnce(approval.handle)}>Approve this Kinterest authorisation</button>) : !approval.alwaysAvailable ? (
+            <button className="btn btn-primary" onClick={() => onApproveOnce(approval.handle)}>
+              Allow once
+            </button>
+          ) : approval.client.existing ? (
             <>
               <button className="btn btn-primary" onClick={() => onApproveAlways(approval.handle)}>
                 Allow always for {name.slice(0, 30)}

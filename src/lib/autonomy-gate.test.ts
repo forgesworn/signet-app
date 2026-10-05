@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkAutonomy, resolvePolicy, isOriginScopedScope, type Policy } from './autonomy-gate';
+import { checkAutonomy, resolvePolicy, isOriginScopedScope, dependantAllowAlwaysPersists, type Policy } from './autonomy-gate';
 import type { Scope } from './scope-inference';
 import type { AutonomyStage } from '../types';
 
@@ -130,5 +130,39 @@ describe('isOriginScopedScope', () => {
     expect(isOriginScopedScope('post-public')).toBe(false);
     expect(isOriginScopedScope('pair-device')).toBe(false);
     expect(isOriginScopedScope('mutate-identity')).toBe(false);
+  });
+});
+
+describe('dependantAllowAlwaysPersists', () => {
+  it('is false for an unclassified (null) scope, with or without an origin', () => {
+    expect(dependantAllowAlwaysPersists(null, 'https://example.com')).toBe(false);
+    expect(dependantAllowAlwaysPersists(null, null)).toBe(false);
+  });
+
+  it('is false for a non-origin-scoped scope even when an origin is known', () => {
+    expect(dependantAllowAlwaysPersists('post-public', 'https://example.com')).toBe(false);
+    expect(dependantAllowAlwaysPersists('mutate-identity', 'https://example.com')).toBe(false);
+  });
+
+  it('is false for an origin-scoped scope with no origin', () => {
+    expect(dependantAllowAlwaysPersists('sign-in', null)).toBe(false);
+    expect(dependantAllowAlwaysPersists('sign-in', undefined)).toBe(false);
+    expect(dependantAllowAlwaysPersists('sign-in', '')).toBe(false);
+  });
+
+  it('is true for an origin-scoped scope with an origin', () => {
+    expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com')).toBe(true);
+    expect(dependantAllowAlwaysPersists('dm-private', 'https://example.com')).toBe(true);
+  });
+
+  it('is false at full-control even for an origin-scoped scope with an origin', () => {
+    expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com', 'full-control')).toBe(false);
+  });
+
+  it('is true at every other stage, and with no stage, for an origin-scoped scope with an origin', () => {
+    for (const stage of ['request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'] as const) {
+      expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com', stage)).toBe(true);
+    }
+    expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com', undefined)).toBe(true);
   });
 });

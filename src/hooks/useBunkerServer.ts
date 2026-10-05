@@ -57,7 +57,7 @@ import type { UnsignedEvent } from 'signet-protocol';
 import type { AutonomyStage, RememberedGrant, GrantSchedule } from '../types';
 import { intersectSchedules, isWithinSchedule } from '../lib/grant-schedule';
 import { inferScope, inferOrigin, type Scope } from '../lib/scope-inference';
-import { resolvePolicy, isOriginScopedScope } from '../lib/autonomy-gate';
+import { resolvePolicy, isOriginScopedScope, dependantAllowAlwaysPersists } from '../lib/autonomy-gate';
 import { checkRateLimit, type RateLimitState } from '../lib/rate-limit';
 import type { AuditEventParams } from '../lib/audit';
 import { parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
@@ -209,6 +209,13 @@ export interface PendingApproval {
   template: UnsignedEvent;
   /** One-liner label suitable for modal copy. */
   description: string;
+  /**
+   * Whether "Allow always" would actually be saved. Always true on the
+   * guardian's own routes (whole-client allowAlways); on a dependant route
+   * only when `dependantAllowAlwaysPersists`. The UI offers "always" only
+   * when this is true.
+   */
+  alwaysAvailable: boolean;
   kinterestChildName?: string;
   kinterestChildAvatar?: { hash: string; blossomUrl: string; keyHex: string };
 }
@@ -1307,7 +1314,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     }
 
     // Dependant-route policy path (phone-as-family-bunker). Grants honoured
-    // at every stage (forward-only revocation); stage defaults only apply
+    // at every stage (forward-only revocation) except that full-control
+    // ignores a stored allow; stage defaults only apply
     // when no grant exists for this (dependantId, scope, origin).
     if (route.dependantId && route.autonomyStage) {
       // Pre-compute audit identity fields for the decision points below.
@@ -1441,10 +1449,14 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         }
       }
 
-      // 1) Grant lookup — origin-scoped scopes only. An existing allow/deny
-      //    decision always wins, independently of the current stage.
+      // 1) Grant lookup — origin-scoped scopes only. A stored DENY wins at
+      //    every stage. A stored ALLOW wins at every stage except
+      //    full-control, where "always" does not exist for a dependant: the
+      //    allow is ignored and the request falls through to the stage
+      //    policy (ask-every → guardian queue). The grant is kept, so it
+      //    works again if the stage is raised.
       if (scope && origin && isOriginScopedScope(scope)) {
-        if (grant?.decision === 'allow') {
+        if (grant?.decision === 'allow' && route.autonomyStage !== 'full-control') {
           try {
             const signed = await (route.signingBackend ?? route.backend).signEvent(template);
             await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
@@ -1549,6 +1561,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       method: 'sign_event',
       template,
       description: kinterestDescription(template) ?? describeEventTemplate(template),
+      alwaysAvailable: route.dependantId ? dependantAllowAlwaysPersists(scope, origin, route.autonomyStage) : true,
       ...(kinterestChildName ? { kinterestChildName, kinterestChildAvatar: kinterestChildProfile?.avatar } : {}),
     };
     setPendingApprovals(prev => [...prev, entry]);
@@ -1651,14 +1664,16 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
             // non-origin-scoped scopes (pair-device, post-public, vouch,
             // mutate-identity) approve-always degrades to approve-once —
             // there's no natural origin to key the grant on.
-            if (req.scope && req.origin && isOriginScopedScope(req.scope)) {
+            if (dependantAllowAlwaysPersists(req.scope, req.origin, req.route.autonomyStage)) {
+              const scope = req.scope as Scope;
+              const origin = req.origin as string;
               // Re-read grants before writing. If the guardian explicitly
               // denied this origin previously (either just now from another
               // surface, or long ago via the Grants screen), preserve the
               // denial rather than silently upgrading to allow. The sign was
               // already published for this single request — the next sign
               // will hit the deny path as intended.
-              const existing = await db.lookupGrant(req.route.dependantId, req.scope, req.origin);
+              const existing = await db.lookupGrant(req.route.dependantId, scope, origin);
               if (existing?.decision === 'deny') {
                 // Keep the deny in place. Don't promote approve-once into
                 // a deny-overwriting allow-always.
@@ -1667,8 +1682,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
               const now = Math.floor(Date.now() / 1000);
               const grant: RememberedGrant = {
                 dependantId: req.route.dependantId,
-                scope: req.scope,
-                origin: req.origin,
+                scope,
+                origin,
                 decision: 'allow',
                 decidedAt: now,
                 lastUsedAt: now,
