@@ -195,11 +195,15 @@ export async function fetchKind0Profiles(
   for (const [author, candidates] of byAuthor) {
     const winner = pickNewestVerified(candidates, author);
     if (winner) {
+      // An unparseable profile is "couldn't fetch", not "no picture": leaving
+      // it out of the map keeps any stored thumbnail on a refresh.
       const parsed = parseKindZeroContent(winner.event.content);
-      const profile: Kind0Profile = {};
-      if (parsed?.displayName) profile.displayName = sanitizeDisplayName(parsed.displayName, 100);
-      if (parsed?.pictureUrl) profile.pictureUrl = parsed.pictureUrl;
-      profiles.set(author, profile);
+      if (parsed) {
+        const profile: Kind0Profile = {};
+        if (parsed.displayName) profile.displayName = sanitizeDisplayName(parsed.displayName, 100);
+        if (parsed.pictureUrl) profile.pictureUrl = parsed.pictureUrl;
+        profiles.set(author, profile);
+      }
     }
     // Signature checks are synchronous: hand the thread back now and then so
     // a large list never freezes the screen.

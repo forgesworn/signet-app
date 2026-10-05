@@ -26,6 +26,7 @@ import {
   parseFollowList,
   fetchFollowList,
   fetchFollowNames,
+  fetchKind0Profiles,
   nameFollows,
   takeMostRecent,
   computeUnfollows,
@@ -217,6 +218,19 @@ describe('fetchFollowNames', () => {
     const names = await fetchFollowNames([getPublicKey(k)], [A, B], 150);
     expect(Date.now() - started).toBeLessThan(2000);
     expect(names.get(getPublicKey(k))).toBe('from b');
+  });
+
+  it('leaves out a profile whose content does not parse (so a refresh keeps the stored picture)', async () => {
+    const broken = generateSecretKey();
+    const plain = generateSecretKey();
+    relayMock.fetchReturns[A] = [
+      finalizeEvent({ kind: 0, created_at: 10, tags: [], content: 'not json {' }, broken) as unknown as NostrEvent,
+      kind0({ about: 'no picture' }, 10, plain),
+    ];
+    const profiles = await fetchKind0Profiles([getPublicKey(broken), getPublicKey(plain)], [A], 500);
+    expect(profiles.has(getPublicKey(broken))).toBe(false);
+    // A parsed profile with no picture is still present: that one means "no picture now".
+    expect(profiles.get(getPublicKey(plain))).toEqual({});
   });
 
   it('nothing to look up costs no relay call', async () => {
