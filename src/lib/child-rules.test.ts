@@ -168,7 +168,7 @@ describe('childRules store (DB v26)', () => {
     await db.saveChildRule(r2, KEY);
 
     const raw = await db.getDb();
-    expect(raw.version).toBe(26);
+    expect(raw.version).toBeGreaterThanOrEqual(26); // childRules arrived at v26; later bumps keep it
     const row = await raw.get('childRules', r1.id) as Record<string, unknown>;
     expect(row.decision).toBeUndefined();
     expect(row.scope).toBeUndefined();
