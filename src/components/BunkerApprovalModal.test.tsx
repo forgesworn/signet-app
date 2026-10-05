@@ -60,3 +60,13 @@ it('hides the Bunker panel "Always" button for an approval that would not be sav
   expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(2);
   expect(screen.getAllByRole('button', { name: 'Always' })).toHaveLength(1);
 });
+
+it('shows the Bunker panel "Always" button for a dependant approval that will be saved', () => {
+  render(<BunkerPanel onClose={() => {}} bunkerAllowed onGoToSecurity={() => {}} stayAwakeUntil={null}
+    onArmStayAwake={() => {}} onCloseStayAwake={() => {}} wakeLockSupported={false}
+    pendingApprovals={[approval({ handle: 3, dependantId: 'd'.repeat(64), alwaysAvailable: true })]}
+    onApproveOnce={() => {}} onApproveAlways={() => {}} onDeny={() => {}}
+    dependantNameFor={() => 'Sam'} hasDependants serveStatus={{ phase: 'idle', routePubkeys: [], relayUrl: 'wss://example.com' } as never}
+    locked={false} onRequestUnlockWithPendingArm={() => {}} onRequestUnlockForAlwaysOn={() => {}} isNative={false} backgroundServing={false} alwaysOnWanted={false} onSetBackgroundServing={async () => {}} />);
+  expect(screen.getAllByRole('button', { name: 'Always' })).toHaveLength(1);
+});

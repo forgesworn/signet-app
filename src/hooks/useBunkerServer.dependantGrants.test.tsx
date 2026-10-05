@@ -205,3 +205,34 @@ describe('useBunkerServer — PendingApproval.alwaysAvailable', () => {
     expect(await pending(await setup({ stage: 'request-approve', dependant: true }), SIGN_IN)).toBe(true);
   });
 });
+
+describe('useBunkerServer — approveAlways persistence by stage (dependant)', () => {
+  // Queue a sign-in request, run `before`, approve it "always", wait for the
+  // signed response to be published, then let the post-publish save settle.
+  async function approveAlwaysOn(stage: AutonomyStage, before?: (dependantId: string) => Promise<void>) {
+    const h = await setup({ stage, dependant: true });
+    await h.send('w1', SIGN_IN);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    await before?.(h.persona);
+    const handle = h.hook.result.current.pendingApprovals[0].handle;
+    await act(async () => { await h.hook.result.current.approveAlways(handle); });
+    await waitFor(() => expect(h.ws.published).toHaveLength(1));
+    const stored = await db.lookupGrant(h.persona, 'sign-in', ORIGIN);
+    h.hook.unmount();
+    return stored;
+  }
+
+  it('full-control: writes no grant', async () => {
+    expect(await approveAlwaysOn('full-control')).toBeUndefined();
+  });
+
+  it('request-approve: writes an allow grant for (dependantId, scope, origin)', async () => {
+    const stored = await approveAlwaysOn('request-approve');
+    expect(stored).toMatchObject({ scope: 'sign-in', origin: ORIGIN, decision: 'allow' });
+  });
+
+  it('request-approve: leaves an existing deny grant in place', async () => {
+    const stored = await approveAlwaysOn('request-approve', dep => grant(dep, 'deny'));
+    expect(stored).toMatchObject({ decision: 'deny', decidedAt: 1 });
+  });
+});
