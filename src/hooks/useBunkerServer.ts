@@ -1314,7 +1314,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     }
 
     // Dependant-route policy path (phone-as-family-bunker). Grants honoured
-    // at every stage (forward-only revocation); stage defaults only apply
+    // at every stage (forward-only revocation) except that full-control
+    // ignores a stored allow; stage defaults only apply
     // when no grant exists for this (dependantId, scope, origin).
     if (route.dependantId && route.autonomyStage) {
       // Pre-compute audit identity fields for the decision points below.
@@ -1448,10 +1449,14 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         }
       }
 
-      // 1) Grant lookup — origin-scoped scopes only. An existing allow/deny
-      //    decision always wins, independently of the current stage.
+      // 1) Grant lookup — origin-scoped scopes only. A stored DENY wins at
+      //    every stage. A stored ALLOW wins at every stage except
+      //    full-control, where "always" does not exist for a dependant: the
+      //    allow is ignored and the request falls through to the stage
+      //    policy (ask-every → guardian queue). The grant is kept, so it
+      //    works again if the stage is raised.
       if (scope && origin && isOriginScopedScope(scope)) {
-        if (grant?.decision === 'allow') {
+        if (grant?.decision === 'allow' && route.autonomyStage !== 'full-control') {
           try {
             const signed = await (route.signingBackend ?? route.backend).signEvent(template);
             await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
@@ -1556,7 +1561,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       method: 'sign_event',
       template,
       description: kinterestDescription(template) ?? describeEventTemplate(template),
-      alwaysAvailable: route.dependantId ? dependantAllowAlwaysPersists(scope, origin) : true,
+      alwaysAvailable: route.dependantId ? dependantAllowAlwaysPersists(scope, origin, route.autonomyStage) : true,
       ...(kinterestChildName ? { kinterestChildName, kinterestChildAvatar: kinterestChildProfile?.avatar } : {}),
     };
     setPendingApprovals(prev => [...prev, entry]);
@@ -1659,7 +1664,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
             // non-origin-scoped scopes (pair-device, post-public, vouch,
             // mutate-identity) approve-always degrades to approve-once —
             // there's no natural origin to key the grant on.
-            if (dependantAllowAlwaysPersists(req.scope, req.origin)) {
+            if (dependantAllowAlwaysPersists(req.scope, req.origin, req.route.autonomyStage)) {
               const scope = req.scope as Scope;
               const origin = req.origin as string;
               // Re-read grants before writing. If the guardian explicitly

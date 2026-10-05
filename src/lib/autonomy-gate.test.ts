@@ -154,4 +154,15 @@ describe('dependantAllowAlwaysPersists', () => {
     expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com')).toBe(true);
     expect(dependantAllowAlwaysPersists('dm-private', 'https://example.com')).toBe(true);
   });
+
+  it('is false at full-control even for an origin-scoped scope with an origin', () => {
+    expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com', 'full-control')).toBe(false);
+  });
+
+  it('is true at every other stage, and with no stage, for an origin-scoped scope with an origin', () => {
+    for (const stage of ['request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'] as const) {
+      expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com', stage)).toBe(true);
+    }
+    expect(dependantAllowAlwaysPersists('sign-in', 'https://example.com', undefined)).toBe(true);
+  });
 });
