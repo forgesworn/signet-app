@@ -7,15 +7,33 @@ const KEY = 'unlock-key-for-tests';
 const JPEG = (n: number) => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd9]);
 const PK = (c: string) => c.repeat(64);
 
+// Pass-through spy: counts every picture-key derivation (and any other).
+const derive = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('./aes-crypto', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./aes-crypto')>();
+  return {
+    ...real,
+    deriveAesKey: (...args: Parameters<typeof real.deriveAesKey>) => { derive.calls += 1; return real.deriveAesKey(...args); },
+  };
+});
+
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory());
   vi.resetModules();
+  derive.calls = 0;
 });
 
 async function load() {
   const pictures = await import('./contact-pictures');
   const db = await import('./db');
-  return { ...pictures, db };
+  const crypto = await import('./contact-picture-crypto');
+  return { ...pictures, db, crypto };
+}
+
+/** What App.tsx does on lock. */
+function lock(m: Awaited<ReturnType<typeof load>>): void {
+  m.crypto.forgetContactPictureKeys();
+  m.forgetContactPictureCache();
 }
 
 function record(directoryId: string, contactId: string, pubkey: string | null, extra: Partial<ContactRecord> = {}): ContactRecord {
@@ -152,6 +170,73 @@ describe('refreshContactPictures (real store)', () => {
     const fetchProfiles = vi.fn();
     await m.refreshContactPictures(KEY, { listRecords: async () => [record('owner', '1'.repeat(32), null)], fetchProfiles });
     expect(fetchProfiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('a lock while a refresh is running', () => {
+  const records = Array.from({ length: 6 }, (_, i) =>
+    record('owner', (i + 1).toString(16).repeat(32), (i + 1).toString(16).repeat(64)));
+  const profiles = () => new Map<string, Kind0Profile>(records.map(r => {
+    const pk = r.identities[0].pubkey;
+    return [pk, { pictureUrl: `https://x/${pk.slice(0, 4)}.jpg` }];
+  }));
+
+  it('stops the downloads: nothing stored, no key re-derived, no cache rebuilt', async () => {
+    const m = await load();
+    await m.db.saveContactPicture({ id: `kind0:${PK('a')}`, jpeg: JPEG(4), sourceUrl: 'https://x/a.jpg', fetchedAt: 1, updatedAt: 1 }, KEY);
+    await m.loadContactPictures(KEY);
+    let downloads = 0;
+    let derivedAtLock = -1;
+    const thumbnail = vi.fn(async () => JPEG(2));
+    const r = await m.refreshContactPictures(KEY, {
+      listRecords: async () => records,
+      fetchProfiles: async () => profiles(),
+      download: async () => {
+        downloads += 1;
+        if (downloads === 1) { lock(m); derivedAtLock = derive.calls; }
+        await new Promise(resolve => setTimeout(resolve, 5));
+        return new Uint8Array([1]);
+      },
+      thumbnail,
+    });
+    expect(r.downloaded).toBe(0);
+    // The lock landed inside the first download, before any other lane started one.
+    expect(downloads).toBe(1);
+    expect(thumbnail).not.toHaveBeenCalled();
+    expect(derive.calls).toBe(derivedAtLock);
+    expect(m.cachedContactPicture(KEY, `kind0:${PK('a')}`)).toBeNull();
+    // Only the row written before the lock is in the store (read under a fresh unlock).
+    expect((await m.db.listContactPictures(KEY)).map(p => p.id)).toEqual([`kind0:${PK('a')}`]);
+  });
+
+  it('a lock while the profiles are fetched loads and stores nothing', async () => {
+    const m = await load();
+    await m.db.saveContactPicture({ id: `kind0:${PK('a')}`, jpeg: JPEG(4), sourceUrl: 'https://x/a.jpg', fetchedAt: 1, updatedAt: 1 }, KEY);
+    lock(m);
+    derive.calls = 0;
+    const download = vi.fn(async () => new Uint8Array([1]));
+    const r = await m.refreshContactPictures(KEY, {
+      listRecords: async () => records,
+      fetchProfiles: async () => { lock(m); return profiles(); },
+      download,
+      thumbnail: async () => JPEG(2),
+    });
+    expect(r).toEqual({ downloaded: 0, failed: 0, removed: 0, unchanged: 0 });
+    expect(download).not.toHaveBeenCalled();
+    expect(derive.calls).toBe(0);
+    expect(m.cachedContactPicture(KEY, `kind0:${PK('a')}`)).toBeNull();
+  });
+
+  it('a stale run cannot derive the key, save or list on its own', async () => {
+    const m = await load();
+    const gen = m.crypto.contactPictureGeneration();
+    lock(m);
+    derive.calls = 0;
+    await expect(m.db.saveContactPicture({ id: `kind0:${PK('a')}`, jpeg: JPEG(4), fetchedAt: 1, updatedAt: 1 }, KEY, gen))
+      .rejects.toBeInstanceOf(m.crypto.ContactPicturesLockedError);
+    await m.loadContactPictures(KEY, gen);
+    expect(derive.calls).toBe(0);
+    expect(await m.db.listContactPictures(KEY)).toEqual([]);
   });
 });
 

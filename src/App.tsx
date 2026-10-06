@@ -197,7 +197,7 @@ import { planScannedContact } from './lib/scan-add-contact';
 import { SCAN_CONTACT_SAVE_FAILED_COPY } from './lib/contacts-v2-copy';
 import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
 import { syncKind0Pictures, refreshContactPictures, setOwnContactPicture, removeOwnContactPicture, forgetContactPictureCache } from './lib/contact-pictures';
-import { forgetContactPictureKeys } from './lib/contact-picture-crypto';
+import { forgetContactPictureKeys, contactPictureGeneration } from './lib/contact-picture-crypto';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
 import { MyDocuments } from './pages/MyDocuments';
@@ -2296,18 +2296,22 @@ export function App() {
     return {
       // Pictures only when the user agreed to the download step for this run.
       picturesAvailable: !isPairedChild,
-      onImportFollows: (opts) => runFollowsImport({
-        personaPubkey,
-        personaName,
-        records: contactsV2.records,
-        fetchList: (pubkey) => fetchFollowList(pubkey, syncRelays.read),
-        fetchNames: (pubkeys) => fetchFollowNames(pubkeys, syncRelays.read),
-        pictures: !isPairedChild && opts?.pictures === true,
-        fetchProfiles: (pubkeys) => fetchKind0Profiles(pubkeys, syncRelays.read),
-        syncPictures: (pubkeys, profiles) => syncKind0Pictures(encryptionKey, pubkeys, profiles),
-        recogniseContacts: contactsV2.recogniseContacts,
-        recordImport: (state) => setSlotFollowsImport(slotTarget, state),
-      }),
+      onImportFollows: (opts) => {
+        // Captured now: a lock while the follow list is fetched stops the picture run.
+        const pictureGeneration = contactPictureGeneration();
+        return runFollowsImport({
+          personaPubkey,
+          personaName,
+          records: contactsV2.records,
+          fetchList: (pubkey) => fetchFollowList(pubkey, syncRelays.read),
+          fetchNames: (pubkeys) => fetchFollowNames(pubkeys, syncRelays.read),
+          pictures: !isPairedChild && opts?.pictures === true,
+          fetchProfiles: (pubkeys) => fetchKind0Profiles(pubkeys, syncRelays.read),
+          syncPictures: (pubkeys, profiles) => syncKind0Pictures(encryptionKey, pubkeys, profiles, { generation: pictureGeneration }),
+          recogniseContacts: contactsV2.recogniseContacts,
+          recordImport: (state) => setSlotFollowsImport(slotTarget, state),
+        });
+      },
       onUnlinkFollows: (contactIds) => contactsV2.unlinkContactsFromList(contactIds, personaPubkey),
     };
   };

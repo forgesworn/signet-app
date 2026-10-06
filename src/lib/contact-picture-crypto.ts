@@ -19,8 +19,28 @@ import { sniffImageFormat } from './image-header';
 
 const PICTURE_SALT = new TextEncoder().encode('signet-contact-pictures-v1').slice(0, SALT_LENGTH);
 const keyMemo = new Map<string, Promise<CryptoKey>>();
+/**
+ * Bumped by every forget (lock, purge). Work that started before a lock
+ * carries the generation it started under; once that is stale it can no
+ * longer derive or re-memoise the key, so a picture refresh still running
+ * when the app locks cannot undo the lock. The unlock key string itself is
+ * no use as a revocation marker: the same string comes back on the next
+ * unlock.
+ */
+let generation = 0;
 
-function keyFor(encryptionKey: string): Promise<CryptoKey> {
+/** The current key generation; capture it at the start of a long-running run. */
+export function contactPictureGeneration(): number {
+  return generation;
+}
+
+/** Thrown (rejected) when work from before a lock tries to use the key. */
+export class ContactPicturesLockedError extends Error {
+  constructor() { super('Contact pictures were locked'); }
+}
+
+function keyFor(encryptionKey: string, gen: number = generation): Promise<CryptoKey> {
+  if (gen !== generation) return Promise.reject(new ContactPicturesLockedError());
   let p = keyMemo.get(encryptionKey);
   if (!p) {
     p = deriveAesKey(encryptionKey, PICTURE_SALT);
@@ -29,8 +49,9 @@ function keyFor(encryptionKey: string): Promise<CryptoKey> {
   return p;
 }
 
-/** Drop the memoised key. Called on lock and by `purgeAllUserData`. */
+/** Drop the memoised key and stale every run in flight. Called on lock and by `purgeAllUserData`. */
 export function forgetContactPictureKeys(): void {
+  generation += 1;
   keyMemo.clear();
 }
 
@@ -95,7 +116,7 @@ function fromB64(s: string): Uint8Array {
   return out;
 }
 
-export async function sealContactPicture(picture: ContactPicture, encryptionKey: string): Promise<StoredContactPictureRow> {
+export async function sealContactPicture(picture: ContactPicture, encryptionKey: string, gen?: number): Promise<StoredContactPictureRow> {
   if (!encryptionKey) throw new Error('Encryption key required to save a contact picture');
   if (!isContactPictureId(picture.id)) throw new Error('Invalid contact picture id');
   if (picture.jpeg.length === 0 || picture.jpeg.length > CONTACT_PICTURE_MAX_STORED_BYTES || sniffImageFormat(picture.jpeg) !== 'jpeg') {
@@ -107,7 +128,7 @@ export async function sealContactPicture(picture: ContactPicture, encryptionKey:
     ...(picture.sourceUrl ? { sourceUrl: picture.sourceUrl } : {}),
     fetchedAt: picture.fetchedAt,
   });
-  const { iv, ciphertext } = await aesEncrypt(body, await keyFor(encryptionKey));
+  const { iv, ciphertext } = await aesEncrypt(body, await keyFor(encryptionKey, gen));
   const combined = new Uint8Array(IV_LENGTH + ciphertext.length);
   combined.set(iv);
   combined.set(ciphertext, IV_LENGTH);
@@ -115,13 +136,13 @@ export async function sealContactPicture(picture: ContactPicture, encryptionKey:
 }
 
 /** The picture, or null for a corrupt, foreign, relabelled or wrong-key row. Never throws. */
-export async function openContactPicture(row: unknown, encryptionKey: string): Promise<ContactPicture | null> {
+export async function openContactPicture(row: unknown, encryptionKey: string, gen?: number): Promise<ContactPicture | null> {
   try {
     const r = row as Partial<StoredContactPictureRow> | undefined;
     if (!r || r.encrypted !== true || typeof r.encryptedData !== 'string' || !isContactPictureId(r.id)) return null;
     const combined = fromB64(r.encryptedData);
     if (combined.length < IV_LENGTH + 16) return null;
-    const plaintext = await aesDecrypt(combined.slice(0, IV_LENGTH), combined.slice(IV_LENGTH), await keyFor(encryptionKey));
+    const plaintext = await aesDecrypt(combined.slice(0, IV_LENGTH), combined.slice(IV_LENGTH), await keyFor(encryptionKey, gen));
     const body = JSON.parse(plaintext) as Record<string, unknown>;
     if (body.id !== r.id || typeof body.jpeg !== 'string') return null;
     const jpeg = fromB64(body.jpeg);

@@ -2495,8 +2495,9 @@ export async function purgeAllUserData(): Promise<void> {
 // kind-0 picture, only after the user's explicit consent) and
 // `own:<directoryId>:<contactId>` (a picture the user chose). Never synced.
 
-export async function saveContactPicture(picture: ContactPicture, encryptionKey: string): Promise<void> {
-  const row = await sealContactPicture(picture, encryptionKey);
+/** `gen`: the key generation the caller's run started under (`contactPictureGeneration`); stale ⇒ rejects, nothing written. */
+export async function saveContactPicture(picture: ContactPicture, encryptionKey: string, gen?: number): Promise<void> {
+  const row = await sealContactPicture(picture, encryptionKey, gen);
   const db = await getDB();
   await db.put('contactPictures', row);
 }
@@ -2507,10 +2508,10 @@ export async function getContactPicture(id: string, encryptionKey: string): Prom
 }
 
 /** Every readable picture. Unreadable rows are skipped, never thrown. */
-export async function listContactPictures(encryptionKey: string): Promise<ContactPicture[]> {
+export async function listContactPictures(encryptionKey: string, gen?: number): Promise<ContactPicture[]> {
   const db = await getDB();
   const rows = await db.getAll('contactPictures');
-  const out = await Promise.all(rows.map(r => openContactPicture(r, encryptionKey)));
+  const out = await Promise.all(rows.map(r => openContactPicture(r, encryptionKey, gen)));
   return out.filter((p): p is ContactPicture => p !== null);
 }
 
