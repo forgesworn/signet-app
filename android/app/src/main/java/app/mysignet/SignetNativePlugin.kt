@@ -355,6 +355,23 @@ class SignetNativePlugin : Plugin() {
         call.resolve()
     }
 
+    // ── Contact pictures: capped image download ───────────────────────────
+    //
+    // The APK leg of src/lib/picture-download.ts. Answers { ok, status, base64 }
+    // or { ok: false, status, reason }; never rejects for a failed download.
+    // See CappedImageFetch for the cap, the deadline and the threads.
+    @PluginMethod
+    fun fetchImageCapped(call: PluginCall) {
+        val url = call.getString("url")
+        val maxBytes = call.getInt("maxBytes")
+        val timeoutMs = call.getInt("timeoutMs")
+        if (url == null || maxBytes == null || timeoutMs == null) {
+            call.reject("url, maxBytes and timeoutMs are required")
+            return
+        }
+        CappedImageFetch.start(url, maxBytes, timeoutMs) { result -> call.resolve(result.toJs()) }
+    }
+
     // ── Camera permission ─────────────────────────────────────────────────
     @PluginMethod
     fun requestCameraPermission(call: PluginCall) {

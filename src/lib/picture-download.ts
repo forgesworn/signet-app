@@ -12,17 +12,18 @@
  * Web: `fetch` with a streamed read that aborts as soon as the cap is passed.
  * A host that sends no CORS header simply fails ("couldn't be downloaded").
  *
- * APK: `CapacitorHttp`, so CORS does not apply. Native code reads the whole
- * response before handing it back, so there the cap is enforced on the
- * received length rather than by aborting mid-stream (the read is still
- * bounded by the timeout). A redirect comes back as a 3xx status and fails.
+ * APK: the `SignetNative.fetchImageCapped` plugin method (CappedImageFetch.kt),
+ * so CORS does not apply. It enforces the same rules natively: https only, no
+ * redirects (a 3xx fails), no cookies or cache, the byte cap checked while
+ * reading, and a wall-clock deadline it always answers by. There is no JS-side
+ * timer: the caller's download lane is held until native has really finished,
+ * so at most four native reads ever run at once.
  *
  * The Content-Type header is ignored: the format is decided later from the
  * bytes themselves (`image-header.ts`).
  */
 
-import { CapacitorHttp } from '@capacitor/core';
-import { isNativeApp } from './native';
+import { isNativeApp, SignetNative, type NativeImageFetchResult } from './native';
 import { isPrivateOrInternalHost } from './safe-url';
 
 export const PICTURE_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
@@ -41,11 +42,13 @@ export function safePictureUrl(raw: unknown): URL | null {
   return url;
 }
 
+export type NativeImageFetch = (opts: { url: string; maxBytes: number; timeoutMs: number }) => Promise<NativeImageFetchResult>;
+
 export interface PictureDownloadOptions {
   fetcher?: typeof fetch;
   /** Force the native or web leg (tests); defaults to `isNativeApp()`. */
   native?: boolean;
-  nativeGet?: typeof CapacitorHttp.get;
+  nativeFetch?: NativeImageFetch;
   maxBytes?: number;
   timeoutMs?: number;
 }
@@ -59,7 +62,7 @@ export async function downloadPictureBytes(rawUrl: string, opts: PictureDownload
   const native = opts.native ?? isNativeApp();
   try {
     return native
-      ? await downloadNative(url.href, maxBytes, timeoutMs, opts.nativeGet ?? CapacitorHttp.get.bind(CapacitorHttp))
+      ? await downloadNative(url.href, maxBytes, timeoutMs, opts.nativeFetch ?? (o => SignetNative.fetchImageCapped(o)))
       : await downloadWeb(url.href, maxBytes, timeoutMs, opts.fetcher ?? fetch.bind(globalThis));
   } catch {
     return null;
@@ -113,38 +116,20 @@ async function downloadWeb(href: string, maxBytes: number, timeoutMs: number, fe
 }
 
 async function downloadNative(
-  href: string, maxBytes: number, timeoutMs: number, get: typeof CapacitorHttp.get,
+  href: string, maxBytes: number, timeoutMs: number, nativeFetch: NativeImageFetch,
 ): Promise<Uint8Array | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), timeoutMs + 1000); });
-  try {
-    const res = await Promise.race([
-      get({
-        url: href,
-        responseType: 'arraybuffer',
-        disableRedirects: true,
-        connectTimeout: timeoutMs,
-        readTimeout: timeoutMs,
-        headers: { 'Cache-Control': 'no-cache' },
-      }),
-      timeout,
-    ]);
-    if (!res || res.status < 200 || res.status >= 300) return null;
-    // Android hands back base64 for 'arraybuffer'; accept a real buffer too, under the same cap.
-    if (res.data instanceof ArrayBuffer) {
-      return res.data.byteLength > maxBytes ? null : new Uint8Array(res.data);
-    }
-    if (typeof res.data !== 'string') return null;
-    // Base64 inflates by 4/3: refuse before decoding anything clearly too big.
-    const b64 = res.data.replace(/\s+/g, '');
-    if (Math.floor((b64.length * 3) / 4) > maxBytes + 3) return null;
-    let binary: string;
-    try { binary = atob(b64); } catch { return null; }
-    if (binary.length > maxBytes) return null;
-    const out = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
-    return out;
-  } finally {
-    clearTimeout(timer);
-  }
+  // Deliberately not raced against a timer: native always answers by its own
+  // deadline, and releasing the lane early would let native reads pile up.
+  const res = await nativeFetch({ url: href, maxBytes, timeoutMs });
+  if (!res || res.ok !== true || typeof res.status !== 'number' || res.status < 200 || res.status >= 300) return null;
+  if (typeof res.base64 !== 'string') return null;
+  // Defence in depth: native already capped the body. Base64 inflates by 4/3.
+  const b64 = res.base64.replace(/\s+/g, '');
+  if (Math.floor((b64.length * 3) / 4) > maxBytes + 3) return null;
+  let binary: string;
+  try { binary = atob(b64); } catch { return null; }
+  if (binary.length > maxBytes) return null;
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
 }
