@@ -215,4 +215,33 @@ describe('makeThumbnail: bounded decode', () => {
     expect(built[1].terminated).toBe(false);
     expect(Array.from(second ?? [])).toEqual(Array.from(FAKE_JPEG));
   });
+
+  it('times out a main-thread decode that never settles, and the next job still runs', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('Worker', class { constructor() { throw new Error('should not be built'); } });
+    let calls = 0;
+    // No Worker/OffscreenCanvas: the main-thread path. The first decode never resolves.
+    vi.stubGlobal('createImageBitmap', vi.fn(() => {
+      calls++;
+      if (calls === 1) return new Promise(() => {});
+      return Promise.resolve({ width: 3, height: 2, close: vi.fn() });
+    }));
+    const toBlob = vi.fn((cb: BlobCallback) => cb(new Blob([FAKE_JPEG])));
+    const getContext = vi.fn(() => ({ fillRect: vi.fn(), drawImage: vi.fn(), fillStyle: '' }));
+    const realCreate = document.createElement.bind(document);
+    const spy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag);
+      if (tag === 'canvas') Object.assign(el, { getContext, toBlob });
+      return el;
+    });
+    try {
+      const first = makeThumbnail(bytes(PNG_3x2));
+      const second = makeThumbnail(bytes(PNG_3x2));
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await first).toBeNull();
+      expect(Array.from((await second) ?? [])).toEqual(Array.from(FAKE_JPEG));
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

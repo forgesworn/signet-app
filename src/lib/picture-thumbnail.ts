@@ -129,8 +129,17 @@ async function decodeInWorker(bytes: Uint8Array, mime: string, resizeWidth?: num
   return result;
 }
 
-/** Main-thread fallback: same steps with a DOM canvas. */
-export const decodeOnMainThread: Decoder = async (bytes, mime, resizeWidth) => {
+/** Main-thread fallback: same steps with a DOM canvas, bounded by the worker's timeout. */
+export const decodeOnMainThread: Decoder = (bytes, mime, resizeWidth) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('decode timed out')), WORKER_TIMEOUT_MS);
+  });
+  return Promise.race([decodeOnMainThreadUnbounded(bytes, mime, resizeWidth), timeout])
+    .finally(() => clearTimeout(timer));
+};
+
+const decodeOnMainThreadUnbounded: Decoder = async (bytes, mime, resizeWidth) => {
   if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
   const blob = new Blob([bytes as BlobPart], { type: mime });
   const options = decodeOptions(resizeWidth);
