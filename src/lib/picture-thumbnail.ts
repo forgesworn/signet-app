@@ -9,7 +9,12 @@
  * 2. Decode + resize to at most 256 px + re-encode as JPEG ~0.8 in a Web
  *    Worker (createImageBitmap + OffscreenCanvas). Where the worker or
  *    OffscreenCanvas is unavailable, the same steps run on the main thread
- *    with a DOM canvas.
+ *    with a DOM canvas. ONE decode at a time, whatever the caller's download
+ *    concurrency: a 40 MP image is ~160 MB of RGBA, and a single-colour one
+ *    is a ~40 KB PNG. Where the engine supports it, createImageBitmap is
+ *    asked to resize while decoding (`decodeResizeWidth`), so the full-size
+ *    bitmap is never kept. A job that hangs past the timeout terminates the
+ *    worker; the next job gets a fresh one.
  * 3. The original bytes are zero-filled once the decoder has them; the
  *    result is checked to really be a JPEG.
  */
@@ -23,7 +28,37 @@ import { CONTACT_PICTURE_MAX_STORED_BYTES } from './contact-picture-crypto';
 const MIME: Record<ImageFormat, string> = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
 const WORKER_TIMEOUT_MS = 15_000;
 
-type Decoder = (bytes: Uint8Array, mime: string) => Promise<Uint8Array | null>;
+/** `resizeWidth`: the width to ask createImageBitmap for (see `decodeResizeWidth`); undefined = decode as is. */
+type Decoder = (bytes: Uint8Array, mime: string, resizeWidth?: number) => Promise<Uint8Array | null>;
+
+/**
+ * The `resizeWidth` to decode at, from the header's dimensions, or undefined
+ * when the image is already small enough.
+ *
+ * Only the width is given, so the engine keeps the aspect ratio of the image
+ * AS ORIENTED — the header's width × height is before any EXIF rotation, and
+ * passing both would squash a rotated camera photo. Using the shorter header
+ * side (capped at 256) means neither orientation is ever upscaled, and the
+ * decoded bitmap is at most 256 × 8192 px; the exact thumbnail size is then
+ * taken from the bitmap itself.
+ */
+export function decodeResizeWidth(width: number, height: number, maxSide: number = THUMBNAIL_MAX_SIDE_PX): number | undefined {
+  if (Math.max(width, height) <= maxSide) return undefined;
+  return Math.max(1, Math.min(width, height, maxSide));
+}
+
+/** createImageBitmap options for a resize-on-decode (ignored by engines without resize support). */
+export function decodeOptions(resizeWidth: number | undefined): ImageBitmapOptions | undefined {
+  return resizeWidth ? { resizeWidth, resizeQuality: 'high' } : undefined;
+}
+
+// One decode at a time. The chain never rejects, so one failure cannot stall the queue.
+let decodeChain: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
+  const run = decodeChain.then(task, task);
+  decodeChain = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 let worker: Worker | null = null;
 let workerBroken = false;
@@ -62,7 +97,7 @@ function getWorker(): Worker {
 }
 
 /** Off-main-thread decode. Resolves null on failure; `'unavailable'` when the worker never ran. */
-async function decodeInWorker(bytes: Uint8Array, mime: string): Promise<Uint8Array | null | 'unavailable'> {
+async function decodeInWorker(bytes: Uint8Array, mime: string, resizeWidth?: number): Promise<Uint8Array | null | 'unavailable'> {
   let w: Worker;
   try { w = getWorker(); } catch { workerBroken = true; return 'unavailable'; }
   // Hand the worker its own copy (transferred, so it is not duplicated
@@ -71,10 +106,19 @@ async function decodeInWorker(bytes: Uint8Array, mime: string): Promise<Uint8Arr
   const id = nextJob++;
   const brokenBefore = workerBroken;
   const result = await new Promise<Uint8Array | null>((resolve) => {
-    const timer = setTimeout(() => { pending.delete(id); resolve(null); }, WORKER_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      // The job hung (a decoder stuck on a hostile image). Kill the worker so
+      // it stops holding that memory; the next job builds a fresh one. Not
+      // `workerBroken`: the script loaded fine.
+      pending.delete(id);
+      if (worker === w) worker = null;
+      w.terminate();
+      failAll();
+      resolve(null);
+    }, WORKER_TIMEOUT_MS);
     pending.set(id, (jpeg) => { clearTimeout(timer); resolve(jpeg); });
     try {
-      w.postMessage({ id, buffer: copy, type: mime }, [copy]);
+      w.postMessage({ id, buffer: copy, type: mime, ...(resizeWidth ? { resizeWidth } : {}) }, [copy]);
     } catch {
       pending.delete(id);
       clearTimeout(timer);
@@ -86,9 +130,11 @@ async function decodeInWorker(bytes: Uint8Array, mime: string): Promise<Uint8Arr
 }
 
 /** Main-thread fallback: same steps with a DOM canvas. */
-export const decodeOnMainThread: Decoder = async (bytes, mime) => {
+export const decodeOnMainThread: Decoder = async (bytes, mime, resizeWidth) => {
   if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
-  const bitmap = await createImageBitmap(new Blob([bytes as BlobPart], { type: mime }));
+  const blob = new Blob([bytes as BlobPart], { type: mime });
+  const options = decodeOptions(resizeWidth);
+  const bitmap = options ? await createImageBitmap(blob, options) : await createImageBitmap(blob);
   try {
     const size = thumbnailSize(bitmap.width, bitmap.height, THUMBNAIL_MAX_SIDE_PX);
     const canvas = document.createElement('canvas');
@@ -120,15 +166,15 @@ export async function makeThumbnail(bytes: Uint8Array, opts: ThumbnailOptions = 
     const header = checkImageHeader(bytes);
     if (!header.ok) return null;
     const mime = MIME[header.format];
-    let jpeg: Uint8Array | null;
-    if (opts.decode) {
-      jpeg = await opts.decode(bytes, mime);
-    } else if (workerAvailable()) {
-      const r = await decodeInWorker(bytes, mime);
-      jpeg = r === 'unavailable' ? await decodeOnMainThread(bytes, mime) : r;
-    } else {
-      jpeg = await decodeOnMainThread(bytes, mime);
-    }
+    const resizeWidth = decodeResizeWidth(header.width, header.height);
+    const jpeg = await oneAtATime(async (): Promise<Uint8Array | null> => {
+      if (opts.decode) return opts.decode(bytes, mime, resizeWidth);
+      if (workerAvailable()) {
+        const r = await decodeInWorker(bytes, mime, resizeWidth);
+        return r === 'unavailable' ? decodeOnMainThread(bytes, mime, resizeWidth) : r;
+      }
+      return decodeOnMainThread(bytes, mime, resizeWidth);
+    });
     if (!jpeg || jpeg.length === 0 || jpeg.length > CONTACT_PICTURE_MAX_STORED_BYTES || sniffImageFormat(jpeg) !== 'jpeg') return null;
     return jpeg;
   } catch {
@@ -143,5 +189,6 @@ export function resetThumbnailWorkerForTests(): void {
   if (worker) worker.terminate();
   worker = null;
   workerBroken = false;
+  decodeChain = Promise.resolve();
   failAll();
 }
