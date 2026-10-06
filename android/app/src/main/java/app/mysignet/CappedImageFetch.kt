@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * - https only; no redirects (any 3xx is a failure, a redirect could hop to a
  *   host the JS SSRF guard never saw); no cookies, no cache, no credentials.
+ * - IP-literal hosts are checked directly (OkHttp never sends them through Dns).
  * - The DNS answer must be a public address too (loopback, private,
  *   link-local, unique-local, CGNAT and multicast are refused), so a public
  *   name that resolves inward fails as well.
@@ -71,18 +72,56 @@ object CappedImageFetch {
         Thread(r, "signet-image-fetch-watchdog").apply { isDaemon = true }
     }
 
-    private fun isPublic(address: InetAddress): Boolean {
+    internal fun isPublic(address: InetAddress): Boolean {
         if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress ||
             address.isSiteLocalAddress || address.isMulticastAddress) return false
         val b = address.address
-        if (address is Inet6Address && (b[0].toInt() and 0xfe) == 0xfc) return false // fc00::/7
         if (b.size == 4) {
             val b0 = b[0].toInt() and 0xff
             val b1 = b[1].toInt() and 0xff
             if (b0 == 0) return false // 0.0.0.0/8
             if (b0 == 100 && b1 in 64..127) return false // 100.64.0.0/10
+            return true
         }
+        if (b.size != 16 || address !is Inet6Address) return false
+        fun zero(from: Int, to: Int) = (from until to).all { b[it].toInt() == 0 }
+        fun embedded(at: Int) = isPublic(InetAddress.getByAddress(b.copyOfRange(at, at + 4)))
+        val b0 = b[0].toInt() and 0xff
+        val b1 = b[1].toInt() and 0xff
+        if ((b0 and 0xfe) == 0xfc) return false // fc00::/7 unique-local
+        if (b0 == 0xfe && (b1 and 0xc0) == 0xc0) return false // fec0::/10 site-local (deprecated)
+        // NAT64: 64:ff9b::/96 and 64:ff9b:1::/48, refused outright.
+        if (b0 == 0x00 && b1 == 0x64 && (b[2].toInt() and 0xff) == 0xff && (b[3].toInt() and 0xff) == 0x9b) {
+            if (zero(4, 12)) return false
+            if (b[4].toInt() == 0 && b[5].toInt() == 1) return false
+        }
+        if (b0 == 0x20 && b1 == 0x02) return embedded(2) // 6to4: v4 in bits 16-48
+        // IPv4-mapped ::ffff:0:0/96 and deprecated IPv4-compatible ::/96.
+        if (zero(0, 10) && (b[10].toInt() and 0xff) == 0xff && (b[11].toInt() and 0xff) == 0xff) return embedded(12)
+        if (zero(0, 12)) return embedded(12)
         return true
+    }
+
+    private val DOTTED_QUAD = Regex("""^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$""")
+    // Mirrors OkHttp's own "is this an IP literal" test, which skips the custom Dns.
+    private val IP_LITERAL = Regex("""^(?:[0-9a-fA-F]*:[0-9a-fA-F:.]*|[\d.]+)$""")
+
+    /**
+     * An IP-literal host never reaches [publicOnlyDns] (OkHttp resolves it with
+     * InetAddress.getByName), so classify it here. A numeric-looking host that is
+     * not a strict dotted quad is refused rather than left to the resolver.
+     */
+    internal fun literalHostIsPublic(host: String): Boolean {
+        if (!IP_LITERAL.matches(host)) return true // a name: the Dns hook covers it
+        if (!host.contains(':')) {
+            val m = DOTTED_QUAD.matchEntire(host) ?: return false
+            if (m.groupValues.drop(1).any { it.toInt() > 255 }) return false
+        }
+        return try {
+            isPublic(InetAddress.getByName(host)) // a literal: no lookup happens
+        } catch (e: UnknownHostException) {
+            false
+        }
     }
 
     private val publicOnlyDns = object : Dns {
@@ -146,6 +185,7 @@ object CappedImageFetch {
         val parsed = url.toHttpUrlOrNull() ?: return Result.Failed("bad-url")
         if (!parsed.isHttps) return Result.Failed("not-https")
         if (parsed.username.isNotEmpty() || parsed.password.isNotEmpty()) return Result.Failed("bad-url")
+        if (!literalHostIsPublic(parsed.host)) return Result.Failed("bad-url")
         val remaining = remainingMs(deadline)
         if (remaining <= 0) return Result.Failed("timeout")
 

@@ -100,3 +100,28 @@ describe('safeImageOrLinkUrl applies the SSRF guard on the https path', () => {
     expect(safeImageOrLinkUrl('https://blossom.example.com/hash')?.protocol).toBe('https:');
   });
 });
+
+describe('IPv6 literals that wrap an internal or translated address', () => {
+  it('refuses NAT64, 6to4-of-internal, site-local and mapped-loopback hosts', () => {
+    expect(isPrivateOrInternalHost('64:ff9b::a9fe:a9fe')).toBe(true);
+    expect(isPrivateOrInternalHost('64:ff9b:1::1')).toBe(true);
+    expect(isPrivateOrInternalHost('2002:a9fe:a9fe::')).toBe(true);
+    expect(isPrivateOrInternalHost('fec0::1')).toBe(true);
+    expect(isPrivateOrInternalHost('::ffff:7f00:1')).toBe(true);
+    expect(isPrivateOrInternalHost('ff02::1')).toBe(true);
+  });
+  it('allows 6to4 wrapping a public address and ordinary global IPv6', () => {
+    expect(isPrivateOrInternalHost('2002:808:808::')).toBe(false); // 8.8.8.8
+    expect(isPrivateOrInternalHost('2606:4700:4700::1111')).toBe(false);
+  });
+  it('treats an unparseable IPv6 host as internal', () => {
+    expect(isPrivateOrInternalHost('1:2:3')).toBe(true);
+    expect(isPrivateOrInternalHost('::g')).toBe(true);
+  });
+  it('safeImageOrLinkUrl refuses each of them after URL normalisation', () => {
+    expect(safeImageOrLinkUrl('https://[64:ff9b::a9fe:a9fe]/')).toBeNull();
+    expect(safeImageOrLinkUrl('https://[2002:a9fe:a9fe::]/')).toBeNull();
+    expect(safeImageOrLinkUrl('https://[fec0::1]/')).toBeNull();
+    expect(safeImageOrLinkUrl('https://[::ffff:127.0.0.1]/')).toBeNull();
+  });
+});

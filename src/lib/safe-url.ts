@@ -33,18 +33,70 @@ function isPrivateIPv4(ip: string): boolean {
   return false;
 }
 
+/** Parse an IPv6 literal (no brackets, no zone) to its 16 bytes, or null. */
+function parseIPv6(h: string): number[] | null {
+  let text = h;
+  // Embedded dotted-quad tail (::ffff:1.2.3.4) becomes two hextets.
+  const dotted = text.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dotted) {
+    const o = dotted[2].split('.').map(Number);
+    if (o.some((n) => n > 255)) return null;
+    text = `${dotted[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const groups = (part: string): number[] | null => {
+    if (part === '') return [];
+    const out: number[] = [];
+    for (const g of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+      out.push(parseInt(g, 16));
+    }
+    return out;
+  };
+  const head = groups(halves[0]);
+  const tail = halves.length === 2 ? groups(halves[1]) : [];
+  if (head === null || tail === null) return null;
+  let hextets: number[];
+  if (halves.length === 2) {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 1) return null;
+    hextets = [...head, ...new Array<number>(fill).fill(0), ...tail];
+  } else {
+    if (head.length !== 8) return null;
+    hextets = head;
+  }
+  const bytes: number[] = [];
+  for (const x of hextets) bytes.push(x >> 8, x & 0xff);
+  return bytes;
+}
+
+/** True when a 16-byte IPv6 address is not a public unicast address. */
+function isInternalIPv6(b: number[]): boolean {
+  const v4 = (o: number[]) => isPrivateIPv4(o.join('.'));
+  if (b.slice(0, 15).every((x) => x === 0) && (b[15] === 0 || b[15] === 1)) return true; // :: and ::1
+  if ((b[0] & 0xfe) === 0xfc) return true;                       // fc00::/7 unique-local
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0x80) return true;      // fe80::/10 link-local
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0xc0) return true;      // fec0::/10 site-local (deprecated)
+  if (b[0] === 0xff) return true;                                // ff00::/8 multicast
+  // NAT64: 64:ff9b::/96 and 64:ff9b:1::/48. Refused outright, whatever v4 is embedded.
+  if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b) {
+    if (b.slice(4, 12).every((x) => x === 0)) return true;
+    if (b[4] === 0x00 && b[5] === 0x01) return true;
+  }
+  // 6to4 2002::/16: the v4 address sits in bits 16-48.
+  if (b[0] === 0x20 && b[1] === 0x02) return v4(b.slice(2, 6));
+  // IPv4-mapped ::ffff:0:0/96 and deprecated IPv4-compatible ::/96.
+  if (b.slice(0, 10).every((x) => x === 0) && b[10] === 0xff && b[11] === 0xff) return v4(b.slice(12));
+  if (b.slice(0, 12).every((x) => x === 0)) return v4(b.slice(12));
+  return false; // other global IPv6 - cannot enumerate, allow
+}
+
 /**
  * Reject hostnames that resolve to (or are literally) private, loopback,
  * link-local, unique-local, or cloud-metadata addresses, plus the `localhost`
  * family. Returns true for "do NOT connect to this host".
  */
-/** Reconstruct a dotted IPv4 from two 16-bit hextets (URL-normalized v4-mapped form). */
-function v4FromHextets(hiHex: string, loHex: string): string {
-  const hi = parseInt(hiHex, 16);
-  const lo = parseInt(loHex, 16);
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-}
-
 export function isPrivateOrInternalHost(hostname: string): boolean {
   if (!hostname || typeof hostname !== 'string') return true;
   let h = hostname.toLowerCase();
@@ -57,26 +109,12 @@ export function isPrivateOrInternalHost(hostname: string): boolean {
   // Internal-name shortcuts.
   if (h === 'localhost' || h.endsWith('.localhost')) return true;
 
-  // IPv6.
+  // IPv6. Parsed to 16 bytes and classified by range, so every spelling the
+  // URL parser can emit (compressed, hex-tail v4, mixed case) lands on the same
+  // answer. An address we cannot parse is treated as internal.
   if (h.includes(':')) {
-    if (h === '::1' || h === '::') return true;             // loopback / unspecified
-    const first = h.split(':')[0];
-    if (/^f[cd][0-9a-f]{0,2}$/.test(first)) return true;     // fc00::/7 unique-local
-    if (/^fe[89ab][0-9a-f]$/.test(first)) return true;       // fe80::/10 link-local
-    // IPv4-mapped (::ffff:a.b.c.d). The WHATWG URL parser normalizes the dotted
-    // tail to the hex form ::ffff:HHHH:HHHH, so handle BOTH and classify the
-    // embedded v4 (security audit re-review 2026-06-15 — the dotted-only match
-    // never fired for real URL.hostname input).
-    const mappedDotted = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (mappedDotted) return isPrivateIPv4(mappedDotted[1]);
-    const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (mappedHex) return isPrivateIPv4(v4FromHextets(mappedHex[1], mappedHex[2]));
-    // Deprecated IPv4-compatible form (::a.b.c.d → normalized ::HHHH:HHHH).
-    const compatHex = h.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (compatHex) return isPrivateIPv4(v4FromHextets(compatHex[1], compatHex[2]));
-    const compatDotted = h.match(/^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (compatDotted) return isPrivateIPv4(compatDotted[1]);
-    return false; // other global IPv6 — can't enumerate, allow
+    const b = parseIPv6(h);
+    return b === null ? true : isInternalIPv6(b);
   }
 
   // Dotted IPv4 literal.
