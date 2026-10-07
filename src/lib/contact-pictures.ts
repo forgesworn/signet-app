@@ -22,6 +22,7 @@ import type { Kind0Profile } from './nostr-follows';
 import { downloadPictureBytes } from './picture-download';
 import { makeThumbnail } from './picture-thumbnail';
 import type { PictureCrop } from './picture-crop';
+import { checkImageHeader } from './image-header';
 import { kind0PictureId, ownPictureId, contactPictureGeneration, ContactPicturesLockedError, type ContactPicture } from './contact-picture-crypto';
 import { saveContactPicture, deleteContactPicture, listContactPictures, listAllContactOperationsV2 } from './db';
 import { primaryIdentityPubkey } from './contacts-v2-list';
@@ -277,6 +278,24 @@ export async function syncKind0Pictures(
  * (encryption, storage) throws.
  */
 export type OwnPictureOutcome = 'saved' | 'refused' | 'unreadable' | 'locked';
+
+/**
+ * The gate a picked file passes BEFORE the crop screen opens: not empty, within
+ * the file cap, readable, and a JPEG/PNG/WebP within the header limits (8192 px
+ * a side, 40 MP). `refused` shows the refused copy; `unreadable` the read copy.
+ */
+export async function checkOwnPictureFile(file: Blob): Promise<'ok' | 'refused' | 'unreadable'> {
+  if (file.size === 0 || file.size > OWN_PICTURE_MAX_FILE_BYTES) return 'refused';
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return 'unreadable';
+  }
+  const verdict = checkImageHeader(bytes);
+  bytes.fill(0);
+  return verdict.ok ? 'ok' : 'refused';
+}
 
 /**
  * Set the user's own picture for one contact from a file they picked.

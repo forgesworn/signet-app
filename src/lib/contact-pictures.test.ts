@@ -396,6 +396,22 @@ describe('own pictures and the cache', () => {
     expect(await m.db.listContactPictures(KEY)).toEqual([]);
   });
 
+  it('the pre-crop gate accepts a JPEG/PNG/WebP within limits and refuses the rest, reading a file once', async () => {
+    const m = await load();
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGM8wcXFwMDAwMDAxAADABByAOAp6i43AAAAAElFTkSuQmCC'), c => c.charCodeAt(0));
+    expect(await m.checkOwnPictureFile(new Blob([png]))).toBe('ok');
+    const huge = png.slice();
+    new DataView(huge.buffer).setUint32(16, 20000);
+    new DataView(huge.buffer).setUint32(20, 20000);
+    expect(await m.checkOwnPictureFile(new Blob([huge]))).toBe('refused');
+    expect(await m.checkOwnPictureFile(new Blob([new TextEncoder().encode('<svg/>')]))).toBe('refused');
+    expect(await m.checkOwnPictureFile(new Blob([]))).toBe('refused');
+    expect(await m.checkOwnPictureFile({ size: 50 * 1024 * 1024, arrayBuffer: vi.fn() } as unknown as Blob)).toBe('refused');
+    const unreadable = new Blob([png]);
+    Object.defineProperty(unreadable, 'arrayBuffer', { value: async () => { throw new DOMException('not ready', 'NotReadableError'); } });
+    expect(await m.checkOwnPictureFile(unreadable)).toBe('unreadable');
+  });
+
   it('hands the chosen crop to the thumbnail step', async () => {
     const m = await load();
     const id = '5'.repeat(32);

@@ -798,3 +798,11 @@ export const REMOVE_OWN_PICTURE_LABEL = 'Remove your picture';
 export const OWN_PICTURE_HINT = 'Only on this phone. Your picture is used instead of theirs.';
 export const OWN_PICTURE_REFUSED_COPY = "That picture couldn't be used. Choose a JPEG, PNG or WebP photo.";
 export const OWN_PICTURE_UNREADABLE_COPY = "Couldn't read that photo. Pick it again.";
+// Own-picture crop screen, and the badge swap on the contact page.
+export const CROP_TITLE = 'Crop your picture';
+export const CROP_HINT = 'Move and zoom until their face or logo sits in the circle. The square is what gets saved.';
+export const ZOOM_LABEL = 'Zoom';
+export const USE_THIS_PICTURE_LABEL = 'Use this picture';
+export const CROP_LOADING_COPY = 'Opening your photo…';
+export const SHOW_THEIR_PICTURE_LABEL = 'Show their picture';
+export const SHOW_YOUR_PICTURE_LABEL = 'Show your picture';

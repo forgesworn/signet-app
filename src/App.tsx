@@ -11262,7 +11262,7 @@ export function App() {
           encryptionKey={encryptionKey}
           relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
           // Own pictures are device-local and allowed on every install, paired-child too.
-          onSetOwnPicture={encryptionKey ? (file) => setOwnContactPicture(encryptionKey, record.directoryId, record.contactId, file) : undefined}
+          onSetOwnPicture={encryptionKey ? (file, crop) => setOwnContactPicture(encryptionKey, record.directoryId, record.contactId, file, crop) : undefined}
           onRemoveOwnPicture={encryptionKey ? () => removeOwnContactPicture(encryptionKey, record.directoryId, record.contactId) : undefined}
           lists={contactsIdentityLists}
           onReviewAppList={(grantId, accept) => contactsV2.reviewAppList(record.contactId, grantId, accept)}

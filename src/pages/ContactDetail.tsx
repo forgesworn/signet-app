@@ -12,7 +12,9 @@ import { useEffect, useRef, useState } from 'react';
 import { ContactAvatar } from '../components/ContactAvatar';
 import { useContactAvatar } from '../hooks/useContactAvatar';
 import { useContactPicture } from '../hooks/useContactPicture';
-import { OWN_PICTURE_ACCEPT, type OwnPictureOutcome } from '../lib/contact-pictures';
+import { OWN_PICTURE_ACCEPT, checkOwnPictureFile, type OwnPictureOutcome } from '../lib/contact-pictures';
+import { ContactPictureCrop } from '../components/ContactPictureCrop';
+import type { PictureCrop } from '../lib/picture-crop';
 import { primaryIdentityPubkey as avatarPubkeyOf } from '../lib/contacts-v2-list';
 import type { Contact, ContactIdentity, ContactMethodKind, ContactTier, EffectiveContact, SignetIdentity, AddMethodValue } from '../types';
 import { ContactTierChip } from '../components/ContactTierChip';
@@ -22,7 +24,7 @@ import { getActivePubkey, shortNpub } from '../lib/signet';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import {
   ADD_A_ROLE_LABEL, ADD_LABEL, ADD_OWN_PICTURE_LABEL, CHANGE_OWN_PICTURE_LABEL, OWN_PICTURE_HINT,
-  OWN_PICTURE_REFUSED_COPY, OWN_PICTURE_UNREADABLE_COPY, REMOVE_OWN_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
+  OWN_PICTURE_REFUSED_COPY, OWN_PICTURE_UNREADABLE_COPY, REMOVE_OWN_PICTURE_LABEL, SHOW_THEIR_PICTURE_LABEL, SHOW_YOUR_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
   BLOCK_REASON_FIELD_LABEL, BLOCK_SECTION_TITLE, CANCEL_LABEL, CONTACT_ACTION_FAILED_COPY,
   CONFIRM_BUTTON_LABEL, CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
   IDENTITY_VERIFICATION_LABELS, KEY_CONTROL_LABEL, KEYLESS_EXPLAINER, KEYLESS_MARKER,
@@ -44,8 +46,8 @@ interface Props {
   /** Unlock key + relay, for the contact's picture (local thumbnails and the #242 shared avatar). */
   encryptionKey?: string | null;
   relayUrl?: string;
-  /** Set the user's own picture for this contact (device-local). Resolves false when the image is refused. */
-  onSetOwnPicture?: (file: File) => Promise<OwnPictureOutcome>;
+  /** Set the user's own picture for this contact (device-local), as the square chosen on the crop screen. */
+  onSetOwnPicture?: (file: File, crop: PictureCrop) => Promise<OwnPictureOutcome>;
   onRemoveOwnPicture?: () => Promise<void>;
   /**
    * "Confirm it's them": apply the writes one confirmation outcome compiles to.
@@ -154,6 +156,14 @@ export function ContactDetail(props: Props) {
     sharedUrl: avatarPubkey ? sharedAvatar : null,
   });
   const pictureInput = useRef<HTMLInputElement>(null);
+  // The picked file waiting on the crop screen (it has already passed the header gate).
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  // Which picture is main when both exist. Not saved: the page opens showing the user's own.
+  const [swapped, setSwapped] = useState(false);
+  const canSwap = !!picture.url && !!picture.badgeUrl;
+  useEffect(() => { setSwapped(false); }, [contact.directoryId, contact.contactId, canSwap]);
+  const mainUrl = canSwap && swapped ? picture.badgeUrl : picture.url;
+  const badgeUrl = canSwap ? (swapped ? picture.url : picture.badgeUrl) : null;
 
   const appConnection = props.checkOwnerIdentityPubkey ? uncheckedAppConnection(contact, props.checkOwnerIdentityPubkey) : null;
   const blocked = blockedLine(contact, actorPubkey, guardianName);
@@ -170,6 +180,25 @@ export function ContactDetail(props: Props) {
       setActionError(null);
     } catch {
       setActionError({ scope, message: CONTACT_ACTION_FAILED_COPY });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** "Use this picture" on the crop screen: save the chosen square. */
+  async function saveCroppedPicture(file: File, crop: PictureCrop) {
+    setCropFile(null);
+    setBusy(true);
+    try {
+      const outcome = await props.onSetOwnPicture!(file, crop);
+      // 'locked': the app locked mid-save, so there is nothing to say.
+      setActionError(
+        outcome === 'refused' ? { scope: 'picture', message: OWN_PICTURE_REFUSED_COPY }
+        : outcome === 'unreadable' ? { scope: 'picture', message: OWN_PICTURE_UNREADABLE_COPY }
+        : null,
+      );
+    } catch {
+      setActionError({ scope: 'picture', message: CONTACT_ACTION_FAILED_COPY });
     } finally {
       setBusy(false);
     }
@@ -203,6 +232,13 @@ export function ContactDetail(props: Props) {
 
   return (
     <div className="fade-in" role="main">
+      {cropFile && props.onSetOwnPicture && (
+        <ContactPictureCrop
+          file={cropFile}
+          onUse={crop => void saveCroppedPicture(cropFile, crop)}
+          onCancel={() => setCropFile(null)}
+        />
+      )}
       {appConnection && <div className="card section" role="status">
         <p>Added via {appConnection.appName}, not checked. Compare your verification words with this person.</p>
         {appConnection.canUndo && rights.canRemove && <button className="btn btn-ghost" disabled={busy}
@@ -232,7 +268,18 @@ export function ContactDetail(props: Props) {
       </div>}
       <div className="card section">
         <div style={{ marginBottom: 8 }}>
-          <ContactAvatar url={picture.url} name={shownName} pubkey={avatarPubkey ?? shownName} size={72} />
+          {canSwap ? (
+            <button
+              type="button"
+              aria-label={swapped ? SHOW_YOUR_PICTURE_LABEL : SHOW_THEIR_PICTURE_LABEL}
+              onClick={() => setSwapped(s => !s)}
+              style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', display: 'block', borderRadius: '50%' }}
+            >
+              <ContactAvatar url={mainUrl} badgeUrl={badgeUrl} name={shownName} pubkey={avatarPubkey ?? shownName} size={72} />
+            </button>
+          ) : (
+            <ContactAvatar url={picture.url} name={shownName} pubkey={avatarPubkey ?? shownName} size={72} />
+          )}
         </div>
         {props.onSetOwnPicture && (
           <div style={{ marginBottom: 8 }}>
@@ -249,13 +296,10 @@ export function ContactDetail(props: Props) {
                 void (async () => {
                   setBusy(true);
                   try {
-                    const outcome = await props.onSetOwnPicture!(file);
-                    // 'locked': the app locked mid-save, so there is nothing to say.
-                    setActionError(
-                      outcome === 'refused' ? { scope: 'picture', message: OWN_PICTURE_REFUSED_COPY }
-                      : outcome === 'unreadable' ? { scope: 'picture', message: OWN_PICTURE_UNREADABLE_COPY }
-                      : null,
-                    );
+                    // The header gate runs first: a refused photo never reaches the crop screen.
+                    const gate = await checkOwnPictureFile(file);
+                    if (gate === 'ok') { setActionError(null); setCropFile(file); }
+                    else setActionError({ scope: 'picture', message: gate === 'refused' ? OWN_PICTURE_REFUSED_COPY : OWN_PICTURE_UNREADABLE_COPY });
                   } catch {
                     setActionError({ scope: 'picture', message: CONTACT_ACTION_FAILED_COPY });
                   } finally {
