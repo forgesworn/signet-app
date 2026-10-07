@@ -22,8 +22,9 @@ import type { Kind0Profile } from './nostr-follows';
 import { downloadPictureBytes } from './picture-download';
 import { makeThumbnail } from './picture-thumbnail';
 import { kind0PictureId, ownPictureId, contactPictureGeneration, ContactPicturesLockedError, type ContactPicture } from './contact-picture-crypto';
-import { saveContactPicture, deleteContactPicture, listContactPictures, listAllContactRecordsV2 } from './db';
+import { saveContactPicture, deleteContactPicture, listContactPictures, listAllContactOperationsV2 } from './db';
 import { primaryIdentityPubkey } from './contacts-v2-list';
+import { applyOperations } from './contacts-v2-reducer';
 import type { ContactRecord } from '../types';
 
 export const PICTURE_DOWNLOAD_CONCURRENCY = 4;
@@ -328,6 +329,15 @@ export function contactPicturePubkeys(records: Iterable<ContactRecord>): string[
   return [...out];
 }
 
+/**
+ * Every contact in every directory, folded from the operation log. The log is
+ * the source of truth and the contacts pages fold it the same way; the
+ * `contactRecordsV2` cache is never written, so reading it finds nobody.
+ */
+async function listContactRecordsFromLog(encryptionKey: string): Promise<ContactRecord[]> {
+  return [...applyOperations(await listAllContactOperationsV2(encryptionKey)).values()];
+}
+
 export interface RefreshContactPicturesDeps extends PictureRunDeps {
   listRecords?: (encryptionKey: string) => Promise<ContactRecord[]>;
   fetchProfiles: (pubkeys: string[]) => Promise<Map<string, Kind0Profile> | 'unreachable'>;
@@ -344,7 +354,7 @@ export async function refreshContactPictures(
 ): Promise<PictureRunResult> {
   // Captured before anything else: a lock at any point after this stops the run.
   const generation = deps.generation ?? contactPictureGeneration();
-  const records = await (deps.listRecords ?? listAllContactRecordsV2)(encryptionKey);
+  const records = await (deps.listRecords ?? listContactRecordsFromLog)(encryptionKey);
   if (!live(generation)) return EMPTY_RESULT();
   const pubkeys = contactPicturePubkeys(records);
   if (pubkeys.length === 0) return EMPTY_RESULT();

@@ -128,6 +128,35 @@ describe('contactPicturePubkeys', () => {
 });
 
 describe('refreshContactPictures (real store)', () => {
+  // Device test 2026-10-07: the default read used the `contactRecordsV2` cache,
+  // which nothing writes, so a real refresh asked for nobody and reported
+  // "Downloaded 0 pictures." Only the operation log has the contacts.
+  it('asks for every contact key in the operation log when no lister is injected', async () => {
+    const m = await load();
+    const { buildOperation } = await import('./contacts-v2-mutations');
+    const actor = { actorPubkey: PK('e'), actorRole: 'owner' as const, actorDeviceId: 'd'.repeat(32) };
+    let clock = 0;
+    const op = (directoryId: string, contactId: string, action: 'add' | 'add-identity' | 'remove', value: unknown, itemId?: string) => buildOperation({
+      directoryId, contactId, action, value, clock: ++clock, actor, now: clock, operationId: clock.toString(16).padStart(32, '0'), itemId,
+    });
+    const dependantDir = `dependant:${'f'.repeat(64)}`;
+    await m.db.saveContactOperationsV2([
+      op('owner', '1'.repeat(32), 'add', { type: 'person', displayName: 'Fia', tier: 'ken' }),
+      op('owner', '1'.repeat(32), 'add-identity', { itemId: '9'.repeat(32), pubkey: PK('a'), provenance: 'direct', verification: 'unverified' }, '9'.repeat(32)),
+      op(dependantDir, '2'.repeat(32), 'add', { type: 'person', displayName: 'Gi', tier: 'ken' }),
+      op(dependantDir, '2'.repeat(32), 'add-identity', { itemId: '8'.repeat(32), pubkey: PK('b'), provenance: 'direct', verification: 'unverified' }, '8'.repeat(32)),
+      op('owner', '3'.repeat(32), 'add', { type: 'person', displayName: 'Gone', tier: 'ken' }),
+      op('owner', '3'.repeat(32), 'add-identity', { itemId: '7'.repeat(32), pubkey: PK('c'), provenance: 'direct', verification: 'unverified' }, '7'.repeat(32)),
+      op('owner', '3'.repeat(32), 'remove', {}),
+      op('owner', '4'.repeat(32), 'add', { type: 'person', displayName: 'Keyless', tier: 'ken' }),
+    ], KEY);
+    const fetchProfiles = vi.fn(async () => new Map<string, Kind0Profile>([[PK('a'), { pictureUrl: 'https://x/a.jpg' }]]));
+    const result = await m.refreshContactPictures(KEY, { fetchProfiles, download: async () => new Uint8Array([1]), thumbnail: async () => JPEG(3) });
+    expect(fetchProfiles).toHaveBeenCalledTimes(1);
+    expect([...(fetchProfiles.mock.calls[0] as unknown as [string[]])[0]].sort()).toEqual([PK('a'), PK('b')]);
+    expect(result.downloaded).toBe(1);
+  });
+
   it('only re-downloads changed URLs, deletes removed pictures, and never touches own pictures', async () => {
     const m = await load();
     const own = '7'.repeat(32);
