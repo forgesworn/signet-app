@@ -109,6 +109,8 @@ interface CarouselProps {
     kind: 'picture' | 'banner',
     crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
+  /** Delete a replaced/removed public picture or banner blob. */
+  onDeletePublicBlob?: (hash: string, server: string) => Promise<import('../lib/blob-deletion').DeleteOutcome>;
   onUpdateOwnPersonaName?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     name: string,
@@ -118,11 +120,11 @@ interface CarouselProps {
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   /** Clear the avatar for a user-side slot. */
   onClearPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   /** Persist a NIP-05 check result for a user-side slot (device-local, never synced). */
   onNip05Checked?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -156,12 +158,12 @@ interface CarouselProps {
     target: 'natural-person' | 'persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   /** Clear the avatar for a dep slot. */
   onClearDepPersonaAvatar?: (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   /** Persist a NIP-05 check result for a dep slot (device-local, never synced). */
   onDepNip05Checked?: (
     depPubkey: string,
@@ -329,6 +331,7 @@ function renderCard(
           onSavePersonaConfig={props.onSavePersonaConfig}
           onRepublishProfile={props.onRepublishProfile}
           onUploadPersonaPicture={props.onUploadPersonaPicture}
+          onDeletePublicBlob={props.onDeletePublicBlob}
           onUpdateOwnPersonaName={props.onUpdateOwnPersonaName}
           onSetPersonaAvatar={props.onSetPersonaAvatar}
           onClearPersonaAvatar={props.onClearPersonaAvatar}

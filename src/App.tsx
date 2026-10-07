@@ -67,6 +67,8 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { Page, CarouselRow, SignetIdentity } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
 import { resolveSelectedPubkey } from './lib/auth-selection';
+import { deleteOwnedBlob, deleteReplacedAvatar, deleteStoppedShareCopy, findSlotBlobs, type DeleteOutcome } from './lib/blob-deletion';
+import { PUBLIC_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN } from './lib/blossom-uploader';
 import { downscaleAvatar, uploadAvatar, uploadPublicPicture, fetchAvatar, uploadContactAvatar, AVATAR_MAX_EDGE_PX, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
 import { generateContactAvatarKey } from './lib/photo-crypto';
 import { publishContactAvatarPointer, retractContactAvatarPointer } from './lib/contact-avatar';
@@ -777,6 +779,16 @@ export function App() {
   const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
+
+  // Blossom blob deletion (design 2026-10-07 §2). Signs with the HMAC uploader
+  // of the blob's domain and refuses any blob a stored slot still references
+  // (R1). `deleteOwnedBlob` never throws, so a delete never blocks the save or
+  // remove it follows. `key` is for a handler that just unlocked on demand.
+  const deleteOwnBlob = (domain: string, hash: string, server: string, key: string | null = encryptionKey): Promise<DeleteOutcome> =>
+    key ? deleteOwnedBlob({ hash, server, domain, encryptionKey: key }) : Promise.resolve('failed');
+  /** Delete the private avatar a Change/Remove just replaced (R3); resolves with the one-line result. */
+  const dropReplacedAvatar = (old: { hash: string; server: string } | undefined, newHash: string | undefined, key: string): Promise<string | undefined> =>
+    deleteReplacedAvatar(old, newHash, (domain, hash, server) => deleteOwnBlob(domain, hash, server, key));
   // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
   // the same slot. `identity` and `encryptionKey` gate it to the unlocked,
   // loaded state; the rule itself lives in `shouldShowBackupNudge`. Holding a
@@ -9960,6 +9972,7 @@ export function App() {
             ? (photoHash, blossomUrl, photoKey) =>
                 updateDependantPhoto(activeDependant.id, photoHash, blossomUrl, photoKey)
             : updatePhoto}
+          onDeleteOldPhoto={(hash, server) => deleteOwnBlob(VENUE_PHOTO_UPLOADER_DOMAIN, hash, server)}
           onBack={() => navigateBack()}
           defaultBlossomUrl={preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL}
         />
@@ -10625,13 +10638,15 @@ export function App() {
   // mints a fresh key (generateContactAvatarKey in pushContactAvatar), so a
   // recipient who cached the old key can't follow the new pointer. Recipients
   // who already fetched the blob keep it — no clawback, by design.
-  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<void> => {
+  const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<string | void> => {
     const key = encryptionKey || await requestAuth();
     if (!key) throw new Error('Authentication required');
 
     // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
     // does (dep: loadFreshDependants; user: loadIdentityDecrypted).
     let slot: { publicKey: string; privateKey: string } | undefined;
+    // The share copy named by the slot BEFORE it is cleared (R5).
+    let shareCopy: { hash: string; server: string } | undefined;
     if (depPubkey) {
       const all = await loadFreshDependants(key);
       const dep = all.find(d => d.id === depPubkey);
@@ -10639,6 +10654,7 @@ export function App() {
       slot = target === 'natural-person' ? dep.naturalPerson
         : target === 'persona' ? dep.persona
         : dep.extraPersonas?.find(e => e.publicKey === target);
+      shareCopy = findSlotBlobs(dep, target).share;
     } else {
       if (!identity) return;
       const decrypted = await loadIdentityDecrypted(identity.id, key);
@@ -10646,6 +10662,7 @@ export function App() {
       slot = target === 'natural-person' ? decrypted.naturalPerson
         : target === 'persona' ? decrypted.persona
         : decrypted.extraPersonas?.find(e => e.publicKey === target);
+      shareCopy = findSlotBlobs(decrypted, target).share;
     }
     if (!slot) return;
 
@@ -10669,6 +10686,11 @@ export function App() {
         if (ownedStop) stopBackend.destroy();
       }
     }
+
+    // R5: with the pointer retracted, the share blob itself goes. (A NEW share
+    // copy after a picture change never deletes the previous one: Kinterest
+    // child consent fetches it by hash.)
+    return deleteStoppedShareCopy(shareCopy, (domain, hash, server) => deleteOwnBlob(domain, hash, server, key));
   };
 
   if (page === 'persona-advanced' && identity && pendingPersonaAdvancedTarget) {
@@ -13007,6 +13029,8 @@ export function App() {
           const result = await publishPersonaProfile(target, undefined);
           if (!result.ok) throw new Error(result.message || 'Republish failed.');
         }}
+        // R2/R4: picture/banner blobs this install uploaded and no stored slot references any more.
+        onDeletePublicBlob={(hash, server) => deleteOwnBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, hash, server)}
         onUploadPersonaPicture={async (file, kind, crop) => {
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
@@ -13104,16 +13128,22 @@ export function App() {
           }
           const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
           const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent, key);
+          const oldAvatar = findSlotBlobs(identity, target).avatar;
           await setPersonaAvatar(target, metadata);
+          // R3: the replaced avatar goes from the server now that nothing points at it.
+          const deletionNote = await dropReplacedAvatar(oldAvatar, metadata.hash, key);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
             await pushContactAvatar({ target, plaintext: new Uint8Array(await downscaled.arrayBuffer()), requireExisting: true });
           } catch { /* best-effort — never block the primary avatar set */ }
+          return deletionNote;
         }}
         onClearPersonaAvatar={isPairedChild ? undefined : async (target) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
+          const oldAvatar = findSlotBlobs(identity, target).avatar;
           await clearPersonaAvatar(target);
+          return dropReplacedAvatar(oldAvatar, undefined, key);
         }}
         // Device-local NIP-05 check result — persisted straight to IDB, no
         // auth prompt (mirrors the read-only nature of the check itself;
@@ -13139,16 +13169,22 @@ export function App() {
           }
           const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
           const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent, key);
+          const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
           await setDependantPersonaAvatar(depPubkey, target, metadata);
+          // R3: the replaced avatar goes from the server now that nothing points at it.
+          const deletionNote = await dropReplacedAvatar(oldAvatar, metadata.hash, key);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
             await pushContactAvatar({ target, depPubkey, plaintext: new Uint8Array(await downscaled.arrayBuffer()), requireExisting: true });
           } catch { /* best-effort */ }
+          return deletionNote;
         }}
         onClearDepPersonaAvatar={async (depPubkey, target) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
+          const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
           await clearDependantPersonaAvatar(depPubkey, target);
+          return dropReplacedAvatar(oldAvatar, undefined, key);
         }}
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });

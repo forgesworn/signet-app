@@ -2267,6 +2267,18 @@ export async function deleteBunkerSecret(): Promise<void> {
   await db.delete('identity', BUNKER_SECRET_KEY);
 }
 
+/**
+ * Every raw row of the `identity` store (the identity, every `dependant:` row
+ * and the marker rows), as stored: NOT decrypted. Used to ask "does anything
+ * still reference this Blossom blob?" (`blob-deletion.ts`): the hash and URL
+ * fields are routing fields kept in clear, so this costs no decryption and
+ * cannot be fooled by a stale React copy.
+ */
+export async function listIdentityStoreRows(): Promise<unknown[]> {
+  const db = await getDB();
+  return db.getAll('identity');
+}
+
 // --- Install uploader secret (encrypted) ---
 // One `identity`-store row keyed 'installUploaderSecret': 32 random bytes,
 // hex, encrypted with the unlock key — same pattern as `bunkerSecret`. It is

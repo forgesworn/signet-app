@@ -33,7 +33,7 @@ describe('Blossom uploads are never signed by a real key', () => {
     && !['lib/blossom.ts'].includes(f.rel));
 
   it('finds the known call sites', () => {
-    expect(callers.map(f => f.rel).sort()).toEqual(['lib/avatar.ts', 'lib/contact-picture-backup.ts', 'pages/PhotoCapture.tsx']);
+    expect(callers.map(f => f.rel).sort()).toEqual(['lib/avatar.ts', 'lib/blob-deletion.ts', 'lib/contact-picture-backup.ts', 'pages/PhotoCapture.tsx']);
   });
 
   it('App.tsx never calls uploadToBlossom directly', () => {

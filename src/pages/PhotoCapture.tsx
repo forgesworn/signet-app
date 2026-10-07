@@ -3,6 +3,7 @@ import type { SignetIdentity } from '../types';
 import { uploadToBlossom, BlossomUploadError, DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { encryptPhoto } from '../lib/photo-crypto';
 import { hmacUploaderBackendForBlob, VENUE_PHOTO_UPLOADER_DOMAIN } from '../lib/blossom-uploader';
+import { blobDeletionNote, type DeleteOutcome } from '../lib/blob-deletion';
 
 /** Shown when the server refuses the venue photo (415, 401 or 403): the server field is on this page. */
 export const PHOTO_SERVER_REFUSED_COPY =
@@ -15,6 +16,8 @@ interface Props {
   blossomConsent: boolean;
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
   onUpdatePhoto: (photoHash: string, blossomUrl: string, photoKey: string) => Promise<void>;
+  /** Deletes the photo this one replaces (R3). Refuses a blob a stored identity still references. Never throws. */
+  onDeleteOldPhoto?: (hash: string, server: string) => Promise<DeleteOutcome>;
   onBack: () => void;
   /** Default Blossom server from user preferences */
   defaultBlossomUrl?: string;
@@ -22,9 +25,10 @@ interface Props {
 
 type Step = 'consent' | 'camera' | 'preview' | 'uploading' | 'done';
 
-export function PhotoCapture({ identity, encryptionKey, blossomConsent, onSetBlossomConsent, onUpdatePhoto, onBack, defaultBlossomUrl }: Props) {
+export function PhotoCapture({ identity, encryptionKey, blossomConsent, onSetBlossomConsent, onUpdatePhoto, onDeleteOldPhoto, onBack, defaultBlossomUrl }: Props) {
   const [step, setStep] = useState<Step>(blossomConsent ? 'camera' : 'consent');
   const [error, setError] = useState<string | null>(null);
+  const [deletionNote, setDeletionNote] = useState<string | null>(null);
   const [blossomUrl, setBlossomUrl] = useState(identity.blossomUrl || (defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL));
   const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -119,8 +123,17 @@ export function PhotoCapture({ identity, encryptionKey, blossomConsent, onSetBlo
       } finally {
         uploader.destroy();
       }
+      // The photo this one replaces, read before the save updates `identity`.
+      const oldHash = identity.photoHash;
+      const oldServer = identity.blossomUrl;
       await onUpdatePhoto(hash, blossomUrl, keyHex);
       setStep('done');
+      // R3: delete the old blob once nothing references it. Never blocks the change.
+      if (oldHash && oldServer && oldHash !== hash && onDeleteOldPhoto) {
+        let outcome: DeleteOutcome;
+        try { outcome = await onDeleteOldPhoto(oldHash, oldServer); } catch { outcome = 'failed'; }
+        setDeletionNote(blobDeletionNote('photo', outcome, oldServer) ?? null);
+      }
     } catch (err) {
       if (err instanceof BlossomUploadError && (err.status === 415 || err.status === 401 || err.status === 403)) {
         setError(PHOTO_SERVER_REFUSED_COPY);
@@ -316,6 +329,11 @@ export function PhotoCapture({ identity, encryptionKey, blossomConsent, onSetBlo
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 24 }}>
             Your encrypted photo is on Blossom. The decryption key will be included in each venue entry QR.
           </p>
+          {deletionNote && (
+            <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 24 }}>
+              {deletionNote}
+            </p>
+          )}
           <button className="btn btn-primary" style={{ width: '100%' }} onClick={onBack}>
             Back to venue entry
           </button>

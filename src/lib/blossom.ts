@@ -57,6 +57,11 @@ function uploadFailureMessage(status: number, body: string, encrypted: boolean):
   return `Blossom upload failed: ${status}${detail ? ' — ' + detail : ''}`;
 }
 
+/** The server answered a delete with a non-2xx status. */
+export class BlossomDeleteError extends Error {
+  constructor(readonly status: number) { super(`Blossom delete failed: ${status}`); }
+}
+
 /** The server answered an upload with a non-2xx status. */
 export class BlossomUploadError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -176,5 +181,5 @@ export async function deleteFromBlossom(
     redirect: 'error',
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Blossom delete failed: ${response.status}`);
+  if (!response.ok) throw new BlossomDeleteError(response.status);
 }

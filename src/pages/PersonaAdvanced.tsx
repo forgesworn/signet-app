@@ -118,7 +118,7 @@ export interface PersonaAdvancedProps {
    * clears the contact key locally, then best-effort retracts the published
    * pointer. Absent on a paired-child install.
    */
-  onStopContactAvatarShare?: (target: string, depId?: string) => Promise<void>;
+  onStopContactAvatarShare?: (target: string, depId?: string) => Promise<string | void>;
   onDeletePersona?: (pubkey: string) => Promise<void>;
   onShowImportedNsec?: () => void;
 
@@ -772,13 +772,15 @@ function PrimaryKeypairBlock({
   );
 }
 
-function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<void> }) {
+function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<string | void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // The one-line result of deleting the share copy from Blossom (R5/R6).
+  const [note, setNote] = useState('');
   const stop = async () => {
     if (busy) return;
-    setBusy(true); setError('');
-    try { await onStop(); }
+    setBusy(true); setError(''); setNote('');
+    try { const result = await onStop(); if (typeof result === 'string') setNote(result); }
     catch { setError('Could not stop sharing. Try again.'); }
     finally { setBusy(false); }
   };
@@ -792,6 +794,7 @@ function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<void> }) {
         {busy ? 'Stopping…' : 'Stop sharing my picture with contacts'}
       </button>
       {error && <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.85rem', marginTop: 8 }}>{error}</p>}
+      {note && <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: 8 }}>{note}</p>}
     </div>
   );
 }

@@ -53,3 +53,29 @@ describe('InlineAvatarRow (private avatar picker)', () => {
     expect(onSet).not.toHaveBeenCalled();
   });
 });
+
+describe('InlineAvatarRow shows the result of deleting the old blob (R3)', () => {
+  it('Change: shows the note the handler resolves with', async () => {
+    const onSet = vi.fn(async () => 'Old photo deleted from nostr.download.');
+    const view = render(<InlineAvatarRow hasAvatar onSet={onSet} />);
+    const input = view.container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File([bytesOf(PNG_3x2)], 'me.png', { type: 'image/png' })] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Use this picture' }));
+    expect(await screen.findByText('Old photo deleted from nostr.download.')).toBeDefined();
+  });
+
+  it('Remove: shows the "Couldn\'t delete" note, and a later action clears it', async () => {
+    const onClear = vi.fn(async () => "Couldn't delete the old photo from nostr.download.");
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText("Couldn't delete the old photo from nostr.download.")).toBeDefined();
+  });
+
+  it('shows nothing when the handler resolves with no note', async () => {
+    const onClear = vi.fn(async () => {});
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(onClear).toHaveBeenCalled());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});

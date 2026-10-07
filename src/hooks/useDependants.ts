@@ -466,8 +466,9 @@ export function useDependants(
     await loadDependants();
   }, [dependants, encryptionKey, loadDependants]);
 
-  /** Remove avatar metadata from a dep persona slot. Blossom blob is left
-   *  in place (already encrypted; cleanup not required). */
+  /** Remove avatar metadata from a dep persona slot. This only clears the
+   *  record: the caller (App.tsx) deletes the old blob from Blossom afterwards
+   *  (`blob-deletion.ts`, R3). */
   const clearDependantPersonaAvatar = useCallback(async (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
@@ -544,8 +545,8 @@ export function useDependants(
     await loadDependants();
   }, [guardianPubkey, encryptionKey, loadDependants]);
 
-  /** Remove contact-card avatar metadata from a dep persona slot. Blossom
-   *  blob is left in place (already encrypted; cleanup not required).
+  /** Remove contact-card avatar metadata from a dep persona slot. This only
+   *  clears the record: Stop sharing (App.tsx) deletes the share blob (R5).
    *  Reads the dep FRESH from IDB for the same stale-snapshot reason as
    *  `setDependantPersonaContactAvatar` (C1). */
   const clearDependantPersonaContactAvatar = useCallback(async (

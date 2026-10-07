@@ -724,10 +724,10 @@ export function useIdentity(encryptionKey?: string | null) {
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**
-   * Remove the avatar from a persona slot. Doesn't touch the Blossom blob
-   * itself — Blossom servers don't accept a delete from the original uploader
-   * by default, and the blob being orphaned on the server is fine (it's
-   * encrypted; nobody can read it without the key we just dropped).
+   * Remove the avatar from a persona slot. This only clears the record.
+   * The caller (App.tsx) deletes the old blob from Blossom afterwards, signed
+   * by the avatar's HMAC uploader (`blob-deletion.ts`, R3); it can, because the
+   * uploader key is rebuilt from the blob's hash.
    */
   const clearPersonaAvatar = useCallback(async (
     target: 'natural-person' | 'persona' | string,
@@ -801,8 +801,9 @@ export function useIdentity(encryptionKey?: string | null) {
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**
-   * Remove the contact-card avatar from a persona slot. The Blossom blob is
-   * left in place (already encrypted; cleanup not required).
+   * Remove the contact-card avatar from a persona slot. This only clears the
+   * record: Stop sharing (App.tsx) deletes the share blob after retracting the
+   * pointer (`blob-deletion.ts`, R5).
    */
   const clearPersonaContactAvatar = useCallback(async (
     target: 'natural-person' | 'persona' | string,

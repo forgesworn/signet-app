@@ -9,6 +9,7 @@ import { SlotProfileFields, type SlotKind } from './SlotProfileFields';
 import { Icon } from './Icon';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
+import type { DeleteOutcome } from '../lib/blob-deletion';
 
 interface Props {
   resolved: ResolvedIdentity;
@@ -50,6 +51,8 @@ interface Props {
     kind: 'picture' | 'banner',
     crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
+  /** Delete a replaced/removed public picture or banner blob (R4/R2 of the blob-deletion design). */
+  onDeletePublicBlob?: (hash: string, server: string) => Promise<DeleteOutcome>;
   /** Update the display name for a user-side persona slot. */
   onUpdateOwnPersonaName?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -64,11 +67,11 @@ interface Props {
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<void>;
-  /** Clear the avatar for a user-side slot. */
+  ) => Promise<string | void>;
+  /** Clear the avatar for a user-side slot. May resolve with a one-line note about the old blob's deletion. */
   onClearPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   /** Persist a NIP-05 check result for a user-side slot (device-local, never synced). */
   onNip05Checked?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -112,12 +115,12 @@ interface Props {
     target: 'natural-person' | 'persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<void>;
-  /** Clear the avatar for a dep slot. */
+  ) => Promise<string | void>;
+  /** Clear the avatar for a dep slot. May resolve with a one-line note about the old blob's deletion. */
   onClearDepPersonaAvatar?: (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   /** Persist a NIP-05 check result for a dep slot (device-local, never synced). */
   onDepNip05Checked?: (
     depPubkey: string,
@@ -335,12 +338,14 @@ export function InlineAvatarRow({
   disabled,
 }: {
   hasAvatar: boolean;
-  onSet: (file: File, crop?: PictureCrop) => Promise<void>;
-  onClear?: () => Promise<void>;
+  /** May resolve with a one-line note about the old blob's deletion (R3). */
+  onSet: (file: File, crop?: PictureCrop) => Promise<string | void>;
+  onClear?: () => Promise<string | void>;
   disabled?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [note, setNote] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   function trigger() {
@@ -359,8 +364,10 @@ export function InlineAvatarRow({
   async function handleFilePicked(file: File, crop?: PictureCrop) {
     setBusy(true);
     setError('');
+    setNote('');
     try {
-      await onSet(file, crop);
+      const result = await onSet(file, crop);
+      if (typeof result === 'string') setNote(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save avatar. Try again.');
     } finally {
@@ -372,8 +379,10 @@ export function InlineAvatarRow({
     if (!onClear || busy) return;
     setBusy(true);
     setError('');
+    setNote('');
     try {
-      await onClear();
+      const result = await onClear();
+      if (typeof result === 'string') setNote(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not remove avatar.');
     } finally {
@@ -387,6 +396,7 @@ export function InlineAvatarRow({
         <span className="row-label">In-app picture</span>
         <span className="row-sub">Private — only on this device</span>
         {error && <span className="slot-row-error">{error}</span>}
+        {note && <span className="row-sub" role="status">{note}</span>}
       </div>
       <div className="slot-row-actions">
         <button
@@ -530,6 +540,7 @@ export function SettingsCard({
   onSavePersonaConfig,
   onRepublishProfile,
   onUploadPersonaPicture,
+  onDeletePublicBlob,
   onUpdateOwnPersonaName,
   onSetPersonaAvatar,
   onClearPersonaAvatar,
@@ -629,6 +640,7 @@ export function SettingsCard({
         onSaveConfig={onSaveConfig}
         onPublishNow={onPublishNow}
         onUploadPicture={onUploadPicture}
+        onDeleteBlob={pairedChildViewForSlot ? undefined : onDeletePublicBlob}
         onNip05Checked={onNip05CheckedForSlot}
       />
     );
