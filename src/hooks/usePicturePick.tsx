@@ -1,4 +1,5 @@
 import { useState, type ChangeEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ContactPictureCrop } from '../components/ContactPictureCrop';
 import {
   CROP_TITLE, OWN_PICTURE_REFUSED_COPY, OWN_PICTURE_UNREADABLE_COPY, PERSONA_CROP_HINT, PERSONA_PICTURE_TOO_LARGE_COPY,
@@ -12,7 +13,10 @@ import { checkPickedPicture } from '../lib/picture-pick';
  * opens the crop screen; `onError` gets the copy for it. With `crop: false`
  * (banners) the file goes straight to `onPicked` with no crop, as before.
  *
- * Render `cropScreen` anywhere in the picker's output.
+ * Render `cropScreen` anywhere in the picker's output. It portals into the
+ * app root (`.desk-frame-app`, else `document.body`): rendered in place it
+ * would sit inside the carousel, whose `transform` makes `position: fixed`
+ * resolve to the card instead of the screen (or the desktop phone frame).
  */
 export function usePicturePick({ crop = true, onPicked, onError }: {
   crop?: boolean;
@@ -34,14 +38,15 @@ export function usePicturePick({ crop = true, onPicked, onError }: {
     })();
   }
 
-  const cropScreen = cropFile ? (
+  const cropScreen = cropFile ? createPortal(
     <ContactPictureCrop
       file={cropFile}
       title={CROP_TITLE}
       hint={PERSONA_CROP_HINT}
       onUse={picked => { const file = cropFile; setCropFile(null); void onPicked(file, picked); }}
       onCancel={() => setCropFile(null)}
-    />
+    />,
+    document.querySelector('.desk-frame-app') ?? document.body,
   ) : null;
 
   return { onInputChange, cropScreen };
