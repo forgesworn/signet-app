@@ -270,7 +270,8 @@ export interface ContactOperation {
   createdAt: number;
 }
 
-export interface EffectiveContact extends ContactRecord {
+/** `picture` is deliberately absent: its `key` is a secret. Read the pointer from `ContactRecord` (`useContactsV2().records`). */
+export interface EffectiveContact extends Omit<ContactRecord, 'picture'> {
   effectiveTier: ContactCeilingTier;
   tierSource: ContactTierSource;
   blocked: boolean;

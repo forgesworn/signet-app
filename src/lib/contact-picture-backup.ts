@@ -268,6 +268,8 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
     const old = job.record.picture;
     if (old && old.hash !== pointer.hash) await deleteBlob(old);
   });
+  // Jobs a lock stopped us reaching still hold their plaintext.
+  for (const job of jobs) job.jpeg.fill(0);
   return result;
 }
 
