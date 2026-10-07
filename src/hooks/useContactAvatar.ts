@@ -1,5 +1,5 @@
-import { getContactAvatar } from '../lib/db';
-import { fetchContactAvatarPointer, type ContactAvatarPointer } from '../lib/contact-avatar';
+import { getContactAvatar, deleteContactAvatar } from '../lib/db';
+import { fetchContactAvatarPointer, type ContactAvatarLookup } from '../lib/contact-avatar';
 import { fetchAvatar } from '../lib/avatar';
 import { useObjectUrl } from './useObjectUrl';
 
@@ -11,15 +11,15 @@ import { useObjectUrl } from './useObjectUrl';
  * opening its own relay connection. `null` is a cached "no pointer" answer.
  */
 const POINTER_TTL_MS = 60_000;
-const pointerCache = new Map<string, { pointer: ContactAvatarPointer | null; ts: number }>();
+const pointerCache = new Map<string, { pointer: ContactAvatarLookup; ts: number }>();
 
 /** Seed the pointer cache from a batch fetch (ContactsRolodex). */
-export function seedContactAvatarPointer(pubkey: string, pointer: ContactAvatarPointer | null): void {
+export function seedContactAvatarPointer(pubkey: string, pointer: ContactAvatarLookup): void {
   pointerCache.set(pubkey.toLowerCase(), { pointer, ts: Date.now() });
 }
 
 /** Internal getter — returns the cached pointer only while fresh, else undefined. */
-function getCachedPointer(pubkey: string): ContactAvatarPointer | null | undefined {
+function getCachedPointer(pubkey: string): ContactAvatarLookup | undefined {
   const hit = pointerCache.get(pubkey.toLowerCase());
   if (!hit) return undefined;
   if (Date.now() - hit.ts > POINTER_TTL_MS) { pointerCache.delete(pubkey.toLowerCase()); return undefined; }
@@ -68,8 +68,16 @@ export function useContactAvatar(
             pointer = await fetchContactAvatarPointer(pubkey, relayUrl);
             seedContactAvatarPointer(pubkey, pointer);
           }
-          // 2b) No pointer on our relays: the card's own server and hash. https
-          // only; fetchAvatar still runs the strict host guard (isSafeContactBlossomBase).
+          // 2a) The sharer stopped sharing (a tombstone or a deletion of the
+          // pointer, S4): show nothing, and forget the key and the card's
+          // fallback so a failed server-side delete cannot bring the photo back.
+          if (pointer === 'retracted') {
+            await deleteContactAvatar(pubkey).catch(() => undefined);
+            return null;
+          }
+          // 2b) No pointer event on our relays at all: the card's own server and
+          // hash. https only; fetchAvatar still runs the strict host guard
+          // (isSafeContactBlossomBase).
           if (!pointer && fallback && fallback.server.startsWith('https://')) {
             pointer = { hash: fallback.hash, blossomUrl: fallback.server };
           }

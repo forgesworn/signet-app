@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getContactAvatar = vi.hoisted(() => vi.fn());
 const fetchContactAvatarPointer = vi.hoisted(() => vi.fn());
 const fetchAvatar = vi.hoisted(() => vi.fn());
-vi.mock('../lib/db', () => ({ getContactAvatar }));
+const deleteContactAvatar = vi.hoisted(() => vi.fn());
+vi.mock('../lib/db', () => ({ getContactAvatar, deleteContactAvatar }));
 vi.mock('../lib/contact-avatar', () => ({ fetchContactAvatarPointer }));
 vi.mock('../lib/avatar', () => ({ fetchAvatar }));
 
@@ -17,6 +18,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   URL.createObjectURL = vi.fn(() => 'blob:x'); URL.revokeObjectURL = vi.fn();
   fetchAvatar.mockResolvedValue(new Blob(['x']));
+  deleteContactAvatar.mockResolvedValue(undefined);
 });
 
 describe('useContactAvatar fallback from the contact card', () => {
@@ -25,14 +27,14 @@ describe('useContactAvatar fallback from the contact card', () => {
     fetchContactAvatarPointer.mockResolvedValue(null);
     const { result } = renderHook(() => useContactAvatar(pk('a'), 'wss://relay.example', 'unlock'));
     await waitFor(() => expect(result.current).toBe('blob:x'));
-    expect(fetchAvatar).toHaveBeenCalledWith({ hash: pk('2'), blossomUrl: 'https://card.example.com/', keyHex: pk('1') });
+    expect(fetchAvatar).toHaveBeenCalledWith({ hash: pk('2'), blossomUrl: 'https://card.example.com/', keyHex: pk('1'), contactControlled: true });
   });
   it('prefers the sharer pointer when one is found (later changes arrive that way)', async () => {
     getContactAvatar.mockResolvedValue({ ...record, pubkey: pk('b') });
     fetchContactAvatarPointer.mockResolvedValue({ hash: pk('3'), blossomUrl: 'https://pointer.example.com' });
     const { result } = renderHook(() => useContactAvatar(pk('b'), 'wss://relay.example', 'unlock'));
     await waitFor(() => expect(result.current).toBe('blob:x'));
-    expect(fetchAvatar).toHaveBeenCalledWith({ hash: pk('3'), blossomUrl: 'https://pointer.example.com', keyHex: pk('1') });
+    expect(fetchAvatar).toHaveBeenCalledWith({ hash: pk('3'), blossomUrl: 'https://pointer.example.com', keyHex: pk('1'), contactControlled: true });
   });
   it('shows nothing when there is no pointer and no fallback, and never falls back to a non-https server', async () => {
     getContactAvatar.mockResolvedValue({ pubkey: pk('c'), shareKey: pk('1'), addedAt: 1 });
@@ -52,6 +54,23 @@ describe('useContactAvatar fallback from the contact card', () => {
     const { result } = renderHook(() => useContactAvatar(pk('e'), 'wss://relay.example', 'unlock'));
     await waitFor(() => expect(result.current).toBe('blob:x'));
     expect(fetchContactAvatarPointer).not.toHaveBeenCalled();
-    expect(fetchAvatar).toHaveBeenCalledWith({ hash: pk('4'), blossomUrl: 'https://seeded.example.com', keyHex: pk('1') });
+    expect(fetchAvatar).toHaveBeenCalledWith({ hash: pk('4'), blossomUrl: 'https://seeded.example.com', keyHex: pk('1'), contactControlled: true });
+  });
+  it('S4: a retracted pointer shows nothing even with a stored fallback, and drops the key and the fallback', async () => {
+    getContactAvatar.mockResolvedValue({ ...record, pubkey: pk('f') });
+    fetchContactAvatarPointer.mockResolvedValue('retracted');
+    const { result } = renderHook(() => useContactAvatar(pk('f'), 'wss://relay.example', 'unlock'));
+    await waitFor(() => expect(deleteContactAvatar).toHaveBeenCalledWith(pk('f')));
+    expect(fetchAvatar).not.toHaveBeenCalled();
+    expect(result.current).toBeNull();
+  });
+  it('S4: a retraction the Rolodex batch seeded is honoured without asking the relays', async () => {
+    getContactAvatar.mockResolvedValue({ ...record, pubkey: pk('9') });
+    seedContactAvatarPointer(pk('9'), 'retracted');
+    const { result } = renderHook(() => useContactAvatar(pk('9'), 'wss://relay.example', 'unlock'));
+    await waitFor(() => expect(deleteContactAvatar).toHaveBeenCalledWith(pk('9')));
+    expect(fetchContactAvatarPointer).not.toHaveBeenCalled();
+    expect(fetchAvatar).not.toHaveBeenCalled();
+    expect(result.current).toBeNull();
   });
 });
