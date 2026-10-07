@@ -119,9 +119,14 @@ export async function uploadToBlossom(
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
   } catch {
-    // "Failed to fetch" usually means the server rejected with no CORS headers
-    // on the error response, masking the real reason (e.g. auth event invalid)
-    throw new Error('Upload failed — the Blossom server rejected the request. Try a different server.');
+    // "Failed to fetch" is either no network at all (DNS, offline) or a
+    // refusal with no CORS headers masking the real reason — the browser
+    // can't tell us which, so the copy names both.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new Error('Upload failed — this phone is offline. Connect and try again.');
+    }
+    const host = (() => { try { return new URL(baseUrl).host; } catch { return 'the Blossom server'; } })();
+    throw new Error(`Upload failed — couldn't reach ${host}, or it refused the upload. Check your connection, or try a different server.`);
   }
 
   if (!response.ok) {

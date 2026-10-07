@@ -305,3 +305,23 @@ describe('DEFAULT_BLOSSOM_URL', () => {
     expect(DEFAULT_BLOSSOM_URL).toBe('https://nostr.download');
   });
 });
+
+describe('uploadToBlossom — the request never reached a server', () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  // Device test 2026-10-08: an offline phone (DNS failing) was told the server
+  // "rejected the request", which sent the user hunting for another server.
+  it('says the phone is offline when the browser knows it is', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    vi.stubGlobal('navigator', { onLine: false });
+    await expect(uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true))
+      .rejects.toThrow('Upload failed — this phone is offline. Connect and try again.');
+  });
+
+  it('names the host and both causes when it cannot tell', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    vi.stubGlobal('navigator', { onLine: true });
+    await expect(uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true))
+      .rejects.toThrow("Upload failed — couldn't reach blossom.example.com, or it refused the upload. Check your connection, or try a different server.");
+  });
+});
