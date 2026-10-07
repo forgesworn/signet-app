@@ -200,3 +200,21 @@ it('the stored fallback is sealed at rest, and unreadable under another key', as
   expect(JSON.stringify(raw)).not.toContain(photo.key);
   expect(await getContactAvatar(peer, 'a different key')).toBeNull();
 });
+
+it('M4: a replayed older exchange never overwrites a newer received key; a newer one does', async () => {
+  const at = (now: number, p: typeof photo) => {
+    const nonce = '4'.repeat(64);
+    const request = createContactRequest({ id: '5'.repeat(32), from: own, to: peer, nonce,
+      reply: { secret: '6'.repeat(64), relays: ['wss://relay.example'] }, now });
+    const accepted = acceptContactExchange(request, '7'.repeat(64), now + 1);
+    const done = confirmContactRevealSent(receiveContactAcceptance(beginContactExchange(request, nonce), accepted.acceptance!, now + 2));
+    return { ...done, acceptance: { ...done.acceptance!, card: { photo: p } } };
+  };
+  const newer = { key: 'a'.repeat(64), server: 'https://new.example.com', hash: 'b'.repeat(64) };
+  const run = (e: ReturnType<typeof at>) => recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: e, isCurrent: () => true });
+  await run(at(1_700_000_500, newer));
+  await run(at(1_700_000_100, photo)); // the older exchange replays after the newer one
+  expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: newer.key, fallback: { server: newer.server, hash: newer.hash } });
+  await run(at(1_700_000_900, { ...photo, hash: 'c'.repeat(64) })); // a genuinely newer card wins
+  expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: photo.key, fallback: { hash: 'c'.repeat(64) } });
+});

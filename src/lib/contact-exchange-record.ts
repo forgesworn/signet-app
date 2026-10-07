@@ -13,7 +13,7 @@ import { buildOperation } from './contacts-v2-mutations';
 import type { MutationActor } from './contacts-v2-mutations';
 import { frontierOf } from './contacts-v2-clock';
 import { verificationUpgrade } from './contacts-v2-verification';
-import { listContactOperationsV2, saveContactOperationsV2, saveContactAvatar } from './db';
+import { listContactOperationsV2, saveContactOperationsV2, saveContactAvatar, getContactAvatar } from './db';
 import { partnerCardOf } from './contact-card-share';
 import type { ContactOperation } from '../types';
 const id = (value: string) => bytesToHex(sha256(new TextEncoder().encode(value))).slice(0, 32);
@@ -22,13 +22,26 @@ export async function contactPeerAllowed(directoryId: string, key: string, peer:
   return ![...records.values()].some(r => r.identities.some(i => i.pubkey === peer)
     && resolveEffective(r, { activeGuardianPubkeys: [], defaultChildCeiling: 'ken', directoryIsDependant: directoryId !== 'owner' }).blocked);
 }
+/** `ContactAvatarRecord.addedAt` is ms for rows written here and seconds for a scanned QR key. */
+const asMs = (t: number) => (t < 1e11 ? t * 1000 : t);
+
 /**
  * The partner's shared photo, kept for display. The card's key goes into the
  * #242 recipient store for the partner persona, with its `{ server, hash }` as
  * the fallback for a sharer whose pointer our relays cannot find. Best-effort:
  * the contact exists either way, and a photo that cannot be stored is only a
  * missing picture. Returns the stored record's parts so the caller can seed the
- * pointer cache, or null when the partner shared no photo.
+ * pointer cache, or null when the partner shared no photo (or this exchange's
+ * card is not newer than the key already stored).
+ *
+ * The row is stamped with the time of the card's own message, and an exchange
+ * whose card is older than the stored row never replaces it (M4): a replayed
+ * or restored old exchange must not undo a newer key the partner re-shared.
+ *
+ * Guardians acting in a dependant's directory send no card
+ * (`contactCardInfoFor` is null for a dependant persona), but a card a
+ * dependant-directory exchange RECEIVES lands in this device-wide store too
+ * (M8, accepted: the key is the guardian's to hold).
  */
 export async function recordPartnerCardPhoto(args: { exchange: ContactExchangeState; key: string }):
   Promise<{ peer: string; hash: string; server: string } | null> {
@@ -36,8 +49,13 @@ export async function recordPartnerCardPhoto(args: { exchange: ContactExchangeSt
   const photo = partnerCardOf(e)?.photo;
   if (!photo) return null;
   const peer = (e.role === 'requester' ? e.request.to : e.request.from).toLowerCase();
+  // Seconds since epoch of the message that carried the partner's card.
+  const cardAt = (e.role === 'requester' ? e.acceptance?.createdAt : e.request.createdAt) ?? e.request.createdAt;
+  const at = cardAt * 1000;
   try {
-    await saveContactAvatar({ pubkey: peer, shareKey: photo.key, addedAt: Date.now(),
+    const stored = await getContactAvatar(peer, args.key);
+    if (stored && asMs(stored.addedAt) >= at) return null;
+    await saveContactAvatar({ pubkey: peer, shareKey: photo.key, addedAt: at,
       fallback: { server: photo.server, hash: photo.hash } }, args.key);
   } catch { return null; }
   return { peer, hash: photo.hash, server: photo.server };
