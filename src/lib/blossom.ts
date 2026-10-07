@@ -1,6 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { SigningBackend } from './signing-backend';
+import type { UploaderBackend } from './blossom-uploader';
+import { sanitizeDisplayName } from './text-sanitize';
 
 /**
  * Default Blossom server URL — used when the user has never explicitly set
@@ -39,11 +40,21 @@ export const BLOSSOM_UNSUPPORTED_MEDIA_COPY =
 export const BLOSSOM_REFUSED_COPY =
   'That Blossom server refused the upload. It may only accept uploads from approved keys. Choose a different server in Advanced settings.';
 
-/** The message for a refused upload: the plain-English copy for the statuses a user can act on. */
-function uploadFailureMessage(status: number, body: string): string {
-  if (status === 415) return BLOSSOM_UNSUPPORTED_MEDIA_COPY;
+/** Shown when a server answers 415 to a plain (unencrypted) picture. */
+export const BLOSSOM_PICTURE_NOT_ACCEPTED_COPY =
+  "That Blossom server didn't accept this picture. Choose a different server in Advanced settings.";
+
+/**
+ * The message for a refused upload: the plain-English copy for the statuses a
+ * user can act on. A 415 blames encryption only when the uploaded blob is
+ * encrypted (`application/octet-stream`). Any server text shown is stripped of
+ * control and bidi characters and capped.
+ */
+function uploadFailureMessage(status: number, body: string, encrypted: boolean): string {
+  if (status === 415) return encrypted ? BLOSSOM_UNSUPPORTED_MEDIA_COPY : BLOSSOM_PICTURE_NOT_ACCEPTED_COPY;
   if (status === 401 || status === 403) return BLOSSOM_REFUSED_COPY;
-  return `Blossom upload failed: ${status}${body ? ' — ' + body.slice(0, 100) : ''}`;
+  const detail = sanitizeDisplayName(body, 100);
+  return `Blossom upload failed: ${status}${detail ? ' — ' + detail : ''}`;
 }
 
 /** The server answered an upload with a non-2xx status. */
@@ -54,7 +65,7 @@ export class BlossomUploadError extends Error {
 export async function uploadToBlossom(
   blob: Blob,
   blossomUrl: string,
-  backend: SigningBackend,
+  backend: UploaderBackend,
   /**
    * User-granted consent for Blossom uploads. Mirrors `preferences.blossomConsent`.
    * Callers pass `true` only after the user has accepted the Blossom-upload
@@ -110,7 +121,7 @@ export async function uploadToBlossom(
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new BlossomUploadError(response.status, uploadFailureMessage(response.status, body));
+    throw new BlossomUploadError(response.status, uploadFailureMessage(response.status, body, (blob.type || 'application/octet-stream') === 'application/octet-stream'));
   }
 
   const result: unknown = await response.json();
@@ -138,7 +149,7 @@ export async function uploadToBlossom(
 export async function deleteFromBlossom(
   hash: string,
   blossomUrl: string,
-  backend: SigningBackend,
+  backend: UploaderBackend,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
   if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error('Blossom delete needs a lowercase sha256 hex hash');

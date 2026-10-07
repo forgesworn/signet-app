@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import type { SigningBackend } from './signing-backend';
+import type { UploaderBackend } from './blossom-uploader';
 import type { NostrEvent } from 'signet-protocol';
 
 // ---- helpers -------------------------------------------------------------
@@ -12,8 +13,8 @@ import type { NostrEvent } from 'signet-protocol';
 const MOCK_PUBKEY = 'a'.repeat(64);
 const VALID_URL = 'https://blossom.example.com';
 
-/** Build a minimal SigningBackend stub. Captures the most recently signed event. */
-function makeBackend(overrides?: Partial<SigningBackend>): SigningBackend & { lastSignedEvent: NostrEvent | null } {
+/** Build a minimal signer stub (cast to the branded uploader type). Captures the most recently signed event. */
+function makeBackend(overrides?: Partial<SigningBackend>): UploaderBackend & { lastSignedEvent: NostrEvent | null } {
   let lastSignedEvent: NostrEvent | null = null;
   return {
     type: 'local',
@@ -27,7 +28,7 @@ function makeBackend(overrides?: Partial<SigningBackend>): SigningBackend & { la
     destroy: vi.fn(),
     get lastSignedEvent() { return lastSignedEvent; },
     ...overrides,
-  } as SigningBackend & { lastSignedEvent: NostrEvent | null };
+  } as unknown as UploaderBackend & { lastSignedEvent: NostrEvent | null };
 }
 
 /** Build a Blob whose SHA-256 we can predict in tests. */
@@ -196,14 +197,36 @@ describe('uploadToBlossom — HTTP error handling', () => {
     await expect(uploadToBlossom(makeBlob('x'), VALID_URL, backend, true)).rejects.toThrow('400');
   });
 
-  it('answers 415 with the plain-English "ordinary pictures" message, status kept', async () => {
+  it('answers 415 for an ENCRYPTED blob with the "ordinary pictures" message, status kept', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(415)));
-    const err = await uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true).catch(e => e);
+    const encrypted = new Blob(['x'], { type: 'application/octet-stream' });
+    const err = await uploadToBlossom(encrypted, VALID_URL, makeBackend(), true).catch(e => e);
     expect(err).toBeInstanceOf(BlossomUploadError);
     expect(err.status).toBe(415);
     expect(err.message).toBe(
       "That Blossom server only takes ordinary pictures, so it can't store encrypted ones. Choose a different server in Advanced settings.",
     );
+  });
+
+  it('answers 415 for a PLAIN picture without blaming encryption (M9)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(415)));
+    const err = await uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true).catch(e => e);
+    expect(err).toBeInstanceOf(BlossomUploadError);
+    expect(err.status).toBe(415);
+    expect(err.message).toBe(
+      "That Blossom server didn't accept this picture. Choose a different server in Advanced settings.",
+    );
+    expect(err.message).not.toMatch(/encrypted/);
+  });
+
+  it('strips control and bidi characters from a server message and caps it (M6)', async () => {
+    const hostile = '\u202Eevil\u0007 text\u200B' + 'y'.repeat(300);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(hostile, { status: 500 })));
+    const err = await uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true).catch(e => e);
+    expect(err.message).toMatch(/^Blossom upload failed: 500 — evil text/);
+    // eslint-disable-next-line no-control-regex
+    expect(err.message).not.toMatch(/[\u0000-\u001f\u200b-\u200f\u202a-\u202e]/);
+    expect(err.message.length).toBeLessThanOrEqual('Blossom upload failed: 500 — '.length + 100);
   });
 
   it.each([401, 403])('answers %i with the "approved keys" message, status kept', async (status) => {

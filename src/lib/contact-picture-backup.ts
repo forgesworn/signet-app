@@ -22,7 +22,7 @@ import { uploadToBlossom, deleteFromBlossom, BlossomUploadError, DEFAULT_BLOSSOM
 import {
   CONTACT_PICTURE_UPLOADER_DOMAIN, deriveUploaderKey as deriveKey, derivedUploaderBackend,
 } from './blossom-uploader';
-import type { LocalSigningBackend } from './signing-backend';
+import type { UploaderBackend } from './blossom-uploader';
 import { sniffImageFormat } from './image-header';
 import {
   contactPictureGeneration, ownPictureId, CONTACT_PICTURE_MAX_STORED_BYTES,
@@ -89,7 +89,7 @@ export async function uploadOwnPicture(jpeg: Uint8Array, server: string, deps: U
   const key = bytesToHex(keyBytes);
   keyBytes.fill(0);
   const encrypted = await encryptPhotoWithKey(jpeg, key);
-  let backend: LocalSigningBackend | null = null;
+  let backend: UploaderBackend | null = null;
   try {
     backend = derivedUploaderBackend(key, CONTACT_PICTURE_UPLOADER_DOMAIN);
     const blob = new Blob([encrypted as BlobPart], { type: 'application/octet-stream' });
@@ -147,7 +147,7 @@ export interface DeleteDeps {
 
 /** Best-effort `DELETE {server}/{hash}` signed by the derived uploader key. Never throws; true on 2xx. */
 export async function deleteOwnPictureBlob(p: PicturePointer, deps: DeleteDeps = {}): Promise<boolean> {
-  let backend: LocalSigningBackend | null = null;
+  let backend: UploaderBackend | null = null;
   try {
     if (!pointerIsUsable(p)) return false;
     backend = derivedUploaderBackend(p.key, CONTACT_PICTURE_UPLOADER_DOMAIN);

@@ -8,7 +8,7 @@
 import { encryptPhoto, encryptPhotoWithKey, decryptPhoto } from './photo-crypto';
 import { uploadToBlossom } from './blossom';
 import {
-  AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, derivedUploaderBackend, randomUploaderBackend,
+  AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN, hmacUploaderBackendForBlob,
 } from './blossom-uploader';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -158,9 +158,11 @@ export async function downscaleAvatar(
 
 /**
  * Upload a public picture or banner (the kind-0 profile image) to Blossom.
- * The kind-24242 auth is signed by a FRESH random key made for this one upload
- * and zeroed straight after: the server operator never sees an identity,
- * persona or dependant key beside the file. Returns the sha256 hex of the blob.
+ * The kind-24242 auth is signed by a one-off key HMAC'd from this install's
+ * uploader secret and the blob's hash (`PUBLIC_PICTURE_UPLOADER_DOMAIN`),
+ * zeroed straight after: the server operator never sees an identity, persona
+ * or dependant key beside the file, and this install can rebuild the key to
+ * delete the blob later. Returns the sha256 hex of the blob.
  *
  * Caller re-encodes first via `downscaleAvatar` (strips EXIF).
  */
@@ -169,8 +171,10 @@ export async function uploadPublicPicture(
   blossomUrl: string,
   /** Pass-through for the Blossom consent gate (enforced at uploadToBlossom). */
   blossomConsent: boolean,
+  /** The unlock key: the uploader secret is stored encrypted under it. */
+  encryptionKey: string,
 ): Promise<string> {
-  const backend = randomUploaderBackend();
+  const backend = await hmacUploaderBackendForBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, blob, encryptionKey);
   try {
     return await uploadToBlossom(blob, blossomUrl, backend, blossomConsent);
   } finally {
@@ -181,9 +185,9 @@ export async function uploadPublicPicture(
 /**
  * Encrypt + upload a persona avatar to Blossom. Returns the metadata the
  * caller persists on the persona record. The kind-24242 PUT auth is signed by
- * a one-off key derived from the avatar's content key
- * (`AVATAR_UPLOADER_DOMAIN`), never an identity, persona or dependant key —
- * and Blossom never sees plaintext bytes.
+ * a one-off key HMAC'd from this install's uploader secret and the
+ * encrypted blob's hash (`AVATAR_UPLOADER_DOMAIN`), never an identity, persona
+ * or dependant key — and Blossom never sees plaintext bytes.
  *
  * Caller is responsible for downscaling first via `downscaleAvatar` (we
  * accept any Blob here for testability; live callers should always
@@ -194,6 +198,8 @@ export async function uploadAvatar(
   blossomUrl: string,
   /** Pass-through for the Blossom consent gate (now enforced at uploadToBlossom). */
   blossomConsent: boolean,
+  /** The unlock key: the uploader secret is stored encrypted under it. */
+  encryptionKey: string,
 ): Promise<AvatarMetadata> {
   if (blob.size > AVATAR_MAX_BYTES) {
     throw new Error(`Avatar too large (${Math.round(blob.size / 1024)} KB) — keep it under ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`);
@@ -202,7 +208,7 @@ export async function uploadAvatar(
   const { encryptedBlob, keyHex } = await encryptPhoto(raw);
   raw.fill(0);
   const encBlob = new Blob([new Uint8Array(encryptedBlob)], { type: 'application/octet-stream' });
-  const backend = derivedUploaderBackend(keyHex, AVATAR_UPLOADER_DOMAIN);
+  const backend = await hmacUploaderBackendForBlob(AVATAR_UPLOADER_DOMAIN, encBlob, encryptionKey);
   try {
     const hash = await uploadToBlossom(encBlob, blossomUrl, backend, blossomConsent);
     return { hash, blossomUrl, keyHex, updatedAt: Math.floor(Date.now() / 1000) };
@@ -215,8 +221,9 @@ export async function uploadAvatar(
  * Encrypt + upload a contact-share avatar to Blossom under a STABLE,
  * caller-supplied key (the per-slot `contactAvatarKey`) — distinct from
  * `uploadAvatar`, which mints a fresh key each call. The upload auth is signed
- * by a one-off key derived from that content key
- * (`CONTACT_AVATAR_UPLOADER_DOMAIN`). Returns the new blob hash + the pointer
+ * by a one-off key HMAC'd from this install's uploader secret and the
+ * encrypted blob's hash (`CONTACT_AVATAR_UPLOADER_DOMAIN`) — NOT from the
+ * content key, which goes into contact QRs and so must not confer a delete. Returns the new blob hash + the pointer
  * fields the caller persists and republishes.
  */
 export async function uploadContactAvatar(
@@ -224,10 +231,12 @@ export async function uploadContactAvatar(
   keyHex: string,
   blossomUrl: string,
   blossomConsent: boolean,
+  /** The unlock key: the uploader secret is stored encrypted under it. */
+  encryptionKey: string,
 ): Promise<{ hash: string; blossomUrl: string; updatedAt: number }> {
   const encryptedBlob = await encryptPhotoWithKey(plaintext, keyHex);
   const encBlob = new Blob([new Uint8Array(encryptedBlob)], { type: 'application/octet-stream' });
-  const backend = derivedUploaderBackend(keyHex, CONTACT_AVATAR_UPLOADER_DOMAIN);
+  const backend = await hmacUploaderBackendForBlob(CONTACT_AVATAR_UPLOADER_DOMAIN, encBlob, encryptionKey);
   try {
     const hash = await uploadToBlossom(encBlob, blossomUrl, backend, blossomConsent);
     return { hash, blossomUrl, updatedAt: Math.floor(Date.now() / 1000) };

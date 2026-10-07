@@ -9936,7 +9936,8 @@ export function App() {
 
   // Photo Capture — Blossom upload
   if (page === 'photo-capture') {
-    if (!npBackend) {
+    // The page needs the unlock key (it holds the Blossom uploader secret), not a signer.
+    if (!encryptionKey) {
       return (
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--text-secondary)' }}>
@@ -9952,6 +9953,7 @@ export function App() {
       <Layout title="Add Photo" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <PhotoCapture
           identity={currentIdentity}
+          encryptionKey={encryptionKey}
           blossomConsent={blossomConsent}
           onSetBlossomConsent={setBlossomConsent}
           onUpdatePhoto={activeDependant
@@ -12758,7 +12760,7 @@ export function App() {
     // untouched (QRCard surfaces it) without persisting a stale flag.
     let meta;
     try {
-      meta = await uploadContactAvatar(plaintext, contactKey, blossomUrl, blossomConsent);
+      meta = await uploadContactAvatar(plaintext, contactKey, blossomUrl, blossomConsent, key);
     } catch (err) {
       if (opts.requireExisting) {
         // Re-publish of an already-shared avatar failed to upload. Keep the
@@ -13020,8 +13022,10 @@ export function App() {
           // the persona crop, for a picture). The upload auth is signed by a
           // one-off key, never the real-name key.
           const maxEdge = kind === 'banner' ? PUBLIC_BANNER_MAX_EDGE_PX : PUBLIC_PICTURE_MAX_EDGE_PX;
+          const uploaderKey = encryptionKey || await requestAuth();
+          if (!uploaderKey) throw new Error('Authentication required');
           const reencoded = await downscaleAvatar(file, maxEdge, kind === 'picture' ? crop : undefined);
-          const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent);
+          const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent, uploaderKey);
           const url = `${blossomUrl.replace(/\/+$/, '')}/${hash}`;
           return { url, sha256: hash };
         }}
@@ -13059,8 +13063,10 @@ export function App() {
           // uploading a phone photo of their child would otherwise leak
           // home GPS coordinates onto the public Nostr relay.
           const maxEdge = kind === 'banner' ? PUBLIC_BANNER_MAX_EDGE_PX : PUBLIC_PICTURE_MAX_EDGE_PX;
+          const uploaderKey = encryptionKey || await requestAuth();
+          if (!uploaderKey) throw new Error('Authentication required');
           const reencoded = await downscaleAvatar(file, maxEdge, kind === 'picture' ? crop : undefined);
-          const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent);
+          const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent, uploaderKey);
           const url = `${blossomUrl.replace(/\/+$/, '')}/${hash}`;
           return { url, sha256: hash };
         }}
@@ -13097,7 +13103,7 @@ export function App() {
             throw new Error('Enable Blossom uploads in Advanced Settings first.');
           }
           const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
-          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent);
+          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent, key);
           await setPersonaAvatar(target, metadata);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
@@ -13122,8 +13128,8 @@ export function App() {
           if (file.size > MAX_RAW_BYTES) {
             throw new Error('That photo is too large. Pick one under 20 MB.');
           }
-          // The Blossom auth is signed by a one-off key derived from the
-          // avatar's content key (see `uploadAvatar`), never a real key.
+          // The Blossom auth is signed by a one-off key HMAC'd from this
+          // install's uploader secret (see `uploadAvatar`), never a real key.
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) {
             throw new Error('Set a Blossom server in Advanced Settings before uploading photos.');
@@ -13132,7 +13138,7 @@ export function App() {
             throw new Error('Enable Blossom uploads in Advanced Settings first.');
           }
           const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
-          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent);
+          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent, key);
           await setDependantPersonaAvatar(depPubkey, target, metadata);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {

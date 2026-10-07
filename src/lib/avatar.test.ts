@@ -3,9 +3,11 @@ import {
   initialFromName, colourFromPubkey, AVATAR_MAX_BYTES, AVATAR_MAX_DOWNLOAD_BYTES, fetchAvatar,
   uploadAvatar, uploadContactAvatar, uploadPublicPicture, downscaleAvatar,
 } from './avatar';
-import { AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, deriveUploaderKey } from './blossom-uploader';
-import { schnorr } from '@noble/curves/secp256k1.js';
+import {
+  AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN, deriveUploaderKey, hmacUploaderBackend,
+} from './blossom-uploader';
 import { encryptPhoto, decryptPhoto } from './photo-crypto';
+import { schnorr } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
@@ -229,6 +231,7 @@ describe('fetchAvatar — SSRF guard + download cap (security audit 2026-06-15)'
 // ---- Blossom upload auth: never an identity, persona or dependant key --------
 
 const SERVER = 'https://nostr.download';
+const UNLOCK_KEY = 'correct-horse-battery-staple';
 /** The key the real-name (NP), persona and dependant slots would sign with. */
 const REAL_PUBKEYS = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
 
@@ -247,41 +250,54 @@ function stubBlossom(): Array<{ pubkey: string; kind: number; tags: string[][]; 
 describe('Blossom upload auth is signed by one-off keys', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('uploadPublicPicture: a fresh random key per upload, never a real key', async () => {
+  /** The uploader pubkey this install rebuilds for `(domain, blob hash)` — what a later DELETE would sign with. */
+  async function rebuiltPubkey(domain: string, blobHash: string): Promise<string> {
+    const backend = await hmacUploaderBackend(domain, blobHash, UNLOCK_KEY);
+    const pubkey = backend.activePublicKeyHex;
+    backend.destroy();
+    return pubkey;
+  }
+
+  it('uploadPublicPicture: signed by the HMAC key for (public-picture domain, blob hash), never a real key', async () => {
     const seen = stubBlossom();
     const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' });
-    await uploadPublicPicture(blob, SERVER, true);
-    await uploadPublicPicture(blob, SERVER, true);
-    expect(seen).toHaveLength(2);
+    const hash = await uploadPublicPicture(blob, SERVER, true, UNLOCK_KEY);
+    expect(seen).toHaveLength(1);
     expect(seen[0].kind).toBe(24242);
-    expect(seen[0].pubkey).toMatch(/^[0-9a-f]{64}$/);
     expect(REAL_PUBKEYS).not.toContain(seen[0].pubkey);
-    expect(seen[0].pubkey).not.toBe(seen[1].pubkey);
-  });
+    expect(seen[0].pubkey).toBe(await rebuiltPubkey(PUBLIC_PICTURE_UPLOADER_DOMAIN, hash));
+    // Different bytes -> a different uploader (unlinkable per blob).
+    const other = await uploadPublicPicture(new Blob([new Uint8Array([4, 5, 6])], { type: 'image/jpeg' }), SERVER, true, UNLOCK_KEY);
+    expect(seen[1].pubkey).toBe(await rebuiltPubkey(PUBLIC_PICTURE_UPLOADER_DOMAIN, other));
+    expect(seen[1].pubkey).not.toBe(seen[0].pubkey);
+  }, 30_000);
 
   it('uploadPublicPicture still enforces the consent gate', async () => {
     stubBlossom();
-    await expect(uploadPublicPicture(new Blob([new Uint8Array([1])]), SERVER, false)).rejects.toThrow('Enable Blossom uploads');
-  });
+    await expect(uploadPublicPicture(new Blob([new Uint8Array([1])]), SERVER, false, UNLOCK_KEY)).rejects.toThrow('Enable Blossom uploads');
+  }, 30_000);
 
-  it('uploadAvatar: signed by the key derived from the avatar content key (avatar domain)', async () => {
+  it('uploadAvatar: signed by the HMAC key for (avatar domain, encrypted blob hash), not derivable from the content key', async () => {
     const seen = stubBlossom();
-    const meta = await uploadAvatar(new Blob([new Uint8Array([9, 9, 9])], { type: 'image/jpeg' }), SERVER, true);
-    const expected = bytesToHex(schnorr.getPublicKey(deriveUploaderKey(meta.keyHex, AVATAR_UPLOADER_DOMAIN)));
+    const meta = await uploadAvatar(new Blob([new Uint8Array([9, 9, 9])], { type: 'image/jpeg' }), SERVER, true, UNLOCK_KEY);
     expect(seen).toHaveLength(1);
-    expect(seen[0].pubkey).toBe(expected);
+    expect(seen[0].pubkey).toBe(await rebuiltPubkey(AVATAR_UPLOADER_DOMAIN, meta.hash));
     expect(REAL_PUBKEYS).not.toContain(seen[0].pubkey);
-  });
+    // The content key (shared with a kid's device) must not yield the signer.
+    expect(seen[0].pubkey).not.toBe(bytesToHex(schnorr.getPublicKey(deriveUploaderKey(meta.keyHex, AVATAR_UPLOADER_DOMAIN))));
+  }, 30_000);
 
-  it('uploadContactAvatar: deterministic from the stable contact key (contact-avatar domain), same signer on re-share', async () => {
+  it('uploadContactAvatar: signed by the HMAC key for (contact-avatar domain, blob hash), not derivable from the content key that goes in contact QRs', async () => {
     const seen = stubBlossom();
     const keyHex = '7'.repeat(64);
-    await uploadContactAvatar(new Uint8Array([4, 5, 6]), keyHex, SERVER, true);
-    await uploadContactAvatar(new Uint8Array([7, 8, 9]), keyHex, SERVER, true);
-    const expected = bytesToHex(schnorr.getPublicKey(deriveUploaderKey(keyHex, CONTACT_AVATAR_UPLOADER_DOMAIN)));
-    expect(seen.map(e => e.pubkey)).toEqual([expected, expected]);
-    expect(expected).not.toBe(bytesToHex(schnorr.getPublicKey(deriveUploaderKey(keyHex, AVATAR_UPLOADER_DOMAIN))));
-  });
+    const first = await uploadContactAvatar(new Uint8Array([4, 5, 6]), keyHex, SERVER, true, UNLOCK_KEY);
+    const second = await uploadContactAvatar(new Uint8Array([7, 8, 9]), keyHex, SERVER, true, UNLOCK_KEY);
+    expect(seen[0].pubkey).toBe(await rebuiltPubkey(CONTACT_AVATAR_UPLOADER_DOMAIN, first.hash));
+    expect(seen[1].pubkey).toBe(await rebuiltPubkey(CONTACT_AVATAR_UPLOADER_DOMAIN, second.hash));
+    const fromContentKey = bytesToHex(schnorr.getPublicKey(deriveUploaderKey(keyHex, CONTACT_AVATAR_UPLOADER_DOMAIN)));
+    expect(seen.map(e => e.pubkey)).not.toContain(fromContentKey);
+    expect(seen[0].pubkey).not.toBe(await rebuiltPubkey(AVATAR_UPLOADER_DOMAIN, first.hash));
+  }, 30_000);
 });
 
 // ---- downscaleAvatar with a crop ---------------------------------------------

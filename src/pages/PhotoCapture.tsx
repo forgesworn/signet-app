@@ -1,11 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { SignetIdentity } from '../types';
-import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from '../lib/blossom';
+import { uploadToBlossom, BlossomUploadError, DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { encryptPhoto } from '../lib/photo-crypto';
-import { derivedUploaderBackend, VENUE_PHOTO_UPLOADER_DOMAIN } from '../lib/blossom-uploader';
+import { hmacUploaderBackendForBlob, VENUE_PHOTO_UPLOADER_DOMAIN } from '../lib/blossom-uploader';
+
+/** Shown when the server refuses the venue photo (415, 401 or 403): the server field is on this page. */
+export const PHOTO_SERVER_REFUSED_COPY =
+  "That Blossom server didn't accept the photo. Change the server in the Blossom server field on this page and try again.";
 
 interface Props {
   identity: SignetIdentity;
+  /** The unlock key: the Blossom uploader secret is stored encrypted under it. */
+  encryptionKey: string;
   blossomConsent: boolean;
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
   onUpdatePhoto: (photoHash: string, blossomUrl: string, photoKey: string) => Promise<void>;
@@ -16,7 +22,7 @@ interface Props {
 
 type Step = 'consent' | 'camera' | 'preview' | 'uploading' | 'done';
 
-export function PhotoCapture({ identity, blossomConsent, onSetBlossomConsent, onUpdatePhoto, onBack, defaultBlossomUrl }: Props) {
+export function PhotoCapture({ identity, encryptionKey, blossomConsent, onSetBlossomConsent, onUpdatePhoto, onBack, defaultBlossomUrl }: Props) {
   const [step, setStep] = useState<Step>(blossomConsent ? 'camera' : 'consent');
   const [error, setError] = useState<string | null>(null);
   const [blossomUrl, setBlossomUrl] = useState(identity.blossomUrl || (defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL));
@@ -105,8 +111,8 @@ export function PhotoCapture({ identity, blossomConsent, onSetBlossomConsent, on
       const plainBytes = new Uint8Array(await capturedBlob.arrayBuffer());
       const { encryptedBlob, keyHex } = await encryptPhoto(plainBytes);
       const encryptedBlobObj = new Blob([encryptedBlob as BlobPart], { type: 'application/octet-stream' });
-      // Signed by a one-off key derived from the photo's content key, never the identity's own.
-      const uploader = derivedUploaderBackend(keyHex, VENUE_PHOTO_UPLOADER_DOMAIN);
+      // Signed by a one-off key HMAC'd from this install's uploader secret, never the identity's own.
+      const uploader = await hmacUploaderBackendForBlob(VENUE_PHOTO_UPLOADER_DOMAIN, encryptedBlobObj, encryptionKey);
       let hash: string;
       try {
         hash = await uploadToBlossom(encryptedBlobObj, blossomUrl, uploader, blossomConsent);
@@ -116,7 +122,11 @@ export function PhotoCapture({ identity, blossomConsent, onSetBlossomConsent, on
       await onUpdatePhoto(hash, blossomUrl, keyHex);
       setStep('done');
     } catch (err) {
-      setError(err instanceof Error ? err.message.slice(0, 200) : 'Upload failed');
+      if (err instanceof BlossomUploadError && (err.status === 415 || err.status === 401 || err.status === 403)) {
+        setError(PHOTO_SERVER_REFUSED_COPY);
+      } else {
+        setError(err instanceof Error ? err.message.slice(0, 200) : 'Upload failed');
+      }
       setStep('preview');
     }
   };

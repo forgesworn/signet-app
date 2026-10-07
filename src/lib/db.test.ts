@@ -891,6 +891,60 @@ describe('plaintext persistence fallback removed (M2)', () => {
   }, TIMEOUT);
 });
 
+describe('Install uploader secret', () => {
+  it('is created once on first use, 32 bytes, and read back identically', async () => {
+    const db = await freshDb();
+    const first = await db.getOrCreateUploaderSecret(PASSPHRASE);
+    const second = await db.getOrCreateUploaderSecret(PASSPHRASE);
+    expect(first).toBeInstanceOf(Uint8Array);
+    expect(first).toHaveLength(32);
+    expect(Array.from(first).some(b => b !== 0)).toBe(true);
+    expect(Array.from(second)).toEqual(Array.from(first));
+  }, TIMEOUT);
+
+  it('persists across a reopened db and is stored encrypted, not as the raw bytes', async () => {
+    const db = await freshDb();
+    const secret = await db.getOrCreateUploaderSecret(PASSPHRASE);
+    const hex = Array.from(secret).map(b => b.toString(16).padStart(2, '0')).join('');
+    const db2 = await freshDb();
+    expect(Array.from(await db2.getOrCreateUploaderSecret(PASSPHRASE))).toEqual(Array.from(secret));
+    const raw = await rawOpen();
+    const row = await raw.get('identity', 'installUploaderSecret');
+    expect(row.secret).not.toContain(hex);
+    expect(JSON.stringify(row)).not.toContain(hex);
+  }, TIMEOUT);
+
+  it('two racing first uses end up sharing one secret', async () => {
+    const db = await freshDb();
+    const [a, b] = await Promise.all([db.getOrCreateUploaderSecret(PASSPHRASE), db.getOrCreateUploaderSecret(PASSPHRASE)]);
+    expect(Array.from(a)).toEqual(Array.from(b));
+    expect(Array.from(await db.getOrCreateUploaderSecret(PASSPHRASE))).toEqual(Array.from(a));
+  }, TIMEOUT);
+
+  it('refuses to replace a row it cannot read (wrong key)', async () => {
+    const db = await freshDb();
+    await db.getOrCreateUploaderSecret(PASSPHRASE);
+    await expect(db.getOrCreateUploaderSecret('some-other-passphrase')).rejects.toThrow();
+  }, TIMEOUT);
+
+  it('is not an identity, and the plaintext sweeper leaves it alone', async () => {
+    const db = await freshDb();
+    await db.saveIdentityEncrypted(makeIdentity(), PASSPHRASE);
+    const secret = await db.getOrCreateUploaderSecret(PASSPHRASE);
+    expect(await db.getAllIdentities()).toHaveLength(1);
+    expect(await db.cleanupUnencryptedIdentities()).toBe(0);
+    expect(Array.from(await db.getOrCreateUploaderSecret(PASSPHRASE))).toEqual(Array.from(secret));
+  }, TIMEOUT);
+
+  it('purgeAllUserData removes it, and the next use mints a fresh one', async () => {
+    const db = await freshDb();
+    const before = await db.getOrCreateUploaderSecret(PASSPHRASE);
+    await db.purgeAllUserData();
+    const after = await db.getOrCreateUploaderSecret(PASSPHRASE);
+    expect(Array.from(after)).not.toEqual(Array.from(before));
+  }, TIMEOUT);
+});
+
 describe('purgeAllUserData', () => {
   it('clears all stores', async () => {
     const db = await freshDb();

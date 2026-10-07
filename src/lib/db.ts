@@ -9,7 +9,7 @@ import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
 import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
 import { isValidRelayUrl } from './relay-url';
 import type { ChildRulesPayload } from './child-rules-wire';
@@ -365,6 +365,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== BUNKER_SECRET_KEY &&
     r.id !== PRO_PERSONA_KEY &&
     r.id !== HEARTWOOD_OPERATOR_KEY &&
+    r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
     !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
@@ -574,6 +575,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === BUNKER_SECRET_KEY) continue;
     if (identity.id === PRO_PERSONA_KEY) continue;
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
+    if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
@@ -2263,6 +2265,48 @@ export async function loadBunkerSecret(encryptionKey: string): Promise<string | 
 export async function deleteBunkerSecret(): Promise<void> {
   const db = await getDB();
   await db.delete('identity', BUNKER_SECRET_KEY);
+}
+
+// --- Install uploader secret (encrypted) ---
+// One `identity`-store row keyed 'installUploaderSecret': 32 random bytes,
+// hex, encrypted with the unlock key — same pattern as `bunkerSecret`. It is
+// the HMAC key behind the Blossom uploader keys (`blossom-uploader.ts`): only
+// this install can rebuild a blob's uploader key, so only it can sign that
+// blob's DELETE. Never synced, never on a wire; `purgeAllUserData` clears it
+// with the rest of the `identity` store.
+
+const UPLOADER_SECRET_KEY = 'installUploaderSecret';
+
+async function openUploaderSecret(encrypted: string, encryptionKey: string): Promise<Uint8Array> {
+  const hex = await decryptSecret(encrypted, encryptionKey);
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('Uploader secret is unreadable');
+  return hexToBytes(hex);
+}
+
+/**
+ * The install's uploader secret, created on first use. The caller zero-fills
+ * the returned bytes. A stored row that cannot be read throws rather than
+ * being replaced: a new secret would orphan every earlier upload's delete key.
+ * The create is a get-then-put in ONE transaction, so two racing first uses
+ * (two tabs, two uploads) end up sharing the row that landed first.
+ */
+export async function getOrCreateUploaderSecret(encryptionKey: string): Promise<Uint8Array> {
+  const db = await getDB();
+  const existing = await db.get('identity', UPLOADER_SECRET_KEY);
+  if (existing?.secret) return openUploaderSecret(existing.secret, encryptionKey);
+
+  const fresh = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    const encrypted = await encryptSecret(bytesToHex(fresh), encryptionKey);
+    const tx = db.transaction('identity', 'readwrite');
+    const raced = await tx.store.get(UPLOADER_SECRET_KEY);
+    if (!raced?.secret) await tx.store.put({ id: UPLOADER_SECRET_KEY, secret: encrypted });
+    await tx.done;
+    if (!raced?.secret) return fresh.slice();
+    return await openUploaderSecret(raced.secret, encryptionKey);
+  } finally {
+    fresh.fill(0);
+  }
 }
 
 // --- Heartwood operator credential (encrypted) ---
