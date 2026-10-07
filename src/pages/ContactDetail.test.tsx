@@ -214,6 +214,8 @@ describe('ContactDetail — your own picture', () => {
     renderDetail(contact(), 'owner', { onSetOwnPicture });
     fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'x.jpg')] } });
     await vi.waitFor(() => expect(onSetOwnPicture).toHaveBeenCalled());
+    // Busy clears in the same render as any error, so this waits for the outcome to land.
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Add your own picture' })).toHaveProperty('disabled', false));
     expect(screen.queryByText(/couldn't|didn't save/i)).toBeNull();
     onSetOwnPicture.mockRejectedValueOnce(new Error('idb'));
     fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'y.jpg')] } });
