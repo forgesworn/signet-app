@@ -272,10 +272,7 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
 
   // A 4xx on an upload means the server refuses what we send: stop spending uploads against it.
   let refused = false;
-  await runLanes(jobs, () => !live() || refused, async job => {
-    const flightKey = `${recordKey(job.directoryId, job.contactId)}/${job.plainHash}`;
-    if (inFlight.has(flightKey)) { job.jpeg.fill(0); return; }
-    inFlight.add(flightKey);
+  const uploadJob = async (job: (typeof jobs)[number]): Promise<void> => {
     let pointer: PicturePointer | null = null;
     try {
       if (!live()) return;
@@ -303,7 +300,6 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
       return;
     } finally {
       job.jpeg.fill(0);
-      inFlight.delete(flightKey);
     }
     result.uploaded += 1;
     let marked = false;
@@ -321,6 +317,14 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
     }
     const old = job.record.picture;
     if (old && old.hash !== pointer.hash) await deleteBlob(old);
+  };
+  await runLanes(jobs, () => !live() || refused, async job => {
+    const flightKey = `${recordKey(job.directoryId, job.contactId)}/${job.plainHash}`;
+    if (inFlight.has(flightKey)) { job.jpeg.fill(0); return; }
+    inFlight.add(flightKey);
+    // Held until the row is marked synced, not just until the upload ends: a run
+    // starting in between would still see it pending and upload it a second time.
+    try { await uploadJob(job); } finally { inFlight.delete(flightKey); }
   });
   // Jobs a lock stopped us reaching still hold their plaintext.
   for (const job of jobs) job.jpeg.fill(0);
