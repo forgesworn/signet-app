@@ -47,6 +47,30 @@ function addHash(out: Set<string>, v: unknown): void {
 function addSlot(out: Set<string>, slot: unknown): void {
   if (!isRecord(slot)) return;
   for (const f of SLOT_HASH_FIELDS) addHash(out, slot[f]);
+  for (const h of publishedBlobHashes(slot.publicProfileBase as { content?: unknown } | undefined)) out.add(h);
+}
+
+/**
+ * The Blossom blobs the PUBLISHED kind-0 of a slot shows: the hashes at the end
+ * of the `picture` and `banner` URLs in the stored `publicProfileBase` (the
+ * kind-0 as last published or matched). This is the durable record of "the
+ * live profile still shows it": unlike the slot's own hash fields it survives
+ * a "Save locally for now" (saved `h1`, published `h0`) and a remount. A URL
+ * that is not `{server}/{hash}` (an external link) contributes nothing.
+ */
+export function publishedBlobHashes(base: { content?: unknown } | null | undefined): string[] {
+  if (!isRecord(base) || typeof base.content !== 'string') return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(base.content); } catch { return []; }
+  if (!isRecord(parsed)) return [];
+  const out: string[] = [];
+  for (const field of ['picture', 'banner'] as const) {
+    const url = parsed[field];
+    if (typeof url !== 'string') continue;
+    const m = /\/([0-9a-f]{64})$/i.exec(url);
+    if (m) out.push(m[1].toLowerCase());
+  }
+  return out;
 }
 
 /**

@@ -68,6 +68,21 @@ describe('R1: never delete a blob something still references', () => {
     expect(hashes.size).toBe(9);
   });
 
+  it('S1: the picture and banner of a slot\'s published kind-0 (publicProfileBase) count as referenced', async () => {
+    const base = (content: unknown) => ({ eventId: 'f'.repeat(64), createdAt: 1, tags: [], content: typeof content === 'string' ? content : JSON.stringify(content) });
+    const rows = [row({
+      persona: { publicProfileBase: base({ picture: `${SERVER}/${H1}`, banner: `${SERVER}/${H2}` }) },
+      extraPersonas: [{ publicProfileBase: base({ banner: `${SERVER}/${H3}` }) }],
+      naturalPerson: { publicProfileBase: base('not json') },
+    }), { id: 'dependant:x', persona: { publicProfileBase: base({ picture: `${SERVER}/${H4}?x=1`, banner: 'https://example.com/b.jpg' }) } }];
+    const hashes = collectReferencedHashes(rows);
+    expect([...hashes].sort()).toEqual([H1, H2, H3].sort());
+    const { sent, fetchImpl } = stubDelete(200);
+    const outcome = await deleteOwnedBlob({ hash: H2, server: SERVER, domain: PUBLIC_PICTURE_UPLOADER_DOMAIN, encryptionKey: KEY, loadRows: async () => rows, fetchImpl });
+    expect(outcome).toBe('kept');
+    expect(sent).toHaveLength(0);
+  });
+
   it('is case-insensitive and tolerates marker rows and junk', () => {
     expect(isBlobReferenced(H1.toUpperCase(), [row({ photoHash: H1 })])).toBe(true);
     expect(isBlobReferenced(H1, [null, 'x', 7, { id: 'bunkerSecret', value: 'c' }, row({ extraPersonas: 'nope', naturalPerson: 3 })])).toBe(false);

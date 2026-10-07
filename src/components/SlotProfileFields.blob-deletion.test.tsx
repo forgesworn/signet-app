@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { SlotProfileFields } from './SlotProfileFields';
-import type { PublicProfileConfig, PersonaPublicProfile } from '../types';
+import type { PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import type { DeleteOutcome } from '../lib/blob-deletion';
 
 // Blossom clean-up for the public picture and banner (design 2026-10-07 §2: R2, R4, R6).
@@ -26,13 +26,15 @@ function savedConfig(over: Partial<PublicProfileConfig> = {}): PublicProfileConf
 function setup(opts: {
   config?: PublicProfileConfig;
   publishedState?: PersonaPublicProfile;
+  publishedBase?: PublicProfileBase;
+  uploads?: string[];
   withPublish?: boolean;
   outcome?: DeleteOutcome | 'throw';
   onSaveConfig?: () => Promise<void>;
   onPublishNow?: () => Promise<void>;
 } = {}) {
   const order: string[] = [];
-  const uploads = [MID, LATER];
+  const uploads = opts.uploads ? [...opts.uploads] : [MID, LATER];
   const onUploadPicture = vi.fn(async () => {
     const sha256 = uploads.shift()!;
     return { url: `${SERVER}/${sha256}`, sha256 };
@@ -49,6 +51,7 @@ function setup(opts: {
       pubkey={PUBKEY}
       config={config}
       publishedState={opts.publishedState}
+      publishedBase={opts.publishedBase}
       slotKind="natural-person"
       blossomConsent
       onSaveConfig={onSaveConfig}
@@ -251,5 +254,65 @@ describe('a blob counts as a session orphan only until a save keeps it', () => {
     fireEvent.click(await screen.findByRole('button', { name: /save locally for now/i }));
     expect(await screen.findByText('The old picture stays on nostr.download because your published profile still shows it.')).toBeDefined();
     expect(t.onDeleteBlob).not.toHaveBeenCalled();
+  });
+});
+
+
+/** The device-local base of the kind-0 last published: its banner is the blob `hash`. */
+function baseShowing(hash: string): PublicProfileBase {
+  return {
+    eventId: 'f'.repeat(64),
+    createdAt: 1_700_000_000,
+    content: JSON.stringify({ name: 'Alex', banner: `${SERVER}/${hash}` }),
+    tags: [],
+  };
+}
+
+describe('S1: the orphan sweep never deletes what the saved or published profile shows', () => {
+  it('re-picking the saved, published banner (same bytes, same hash), Remove, Save: nothing is deleted before or after the answer', async () => {
+    const t = setup({ publishedState: PUBLISHED, publishedBase: baseShowing(OLD), uploads: [OLD] });
+    await t.pickBanner(1);
+    const removes = screen.getAllByRole('button', { name: 'Remove' });
+    fireEvent.click(removes[removes.length - 1]);
+    t.save();
+    fireEvent.click(await screen.findByRole('button', { name: /save locally for now/i }));
+    expect(await screen.findByText(/stays on nostr\.download/)).toBeDefined();
+    expect(t.onDeleteBlob).not.toHaveBeenCalled();
+  });
+
+  it('the same without a stored base: the saved hash at form open is enough', async () => {
+    const t = setup({ publishedState: PUBLISHED, uploads: [OLD] });
+    await t.pickBanner(1);
+    const removes = screen.getAllByRole('button', { name: 'Remove' });
+    fireEvent.click(removes[removes.length - 1]);
+    t.save();
+    await screen.findByRole('button', { name: /save locally for now/i });
+    await new Promise(r => setTimeout(r, 30));
+    expect(t.onDeleteBlob).not.toHaveBeenCalled();
+  });
+
+  it('after "Save locally for now" and a remount: re-picking the PUBLISHED hash, then another, does not sweep the published one', async () => {
+    // Saved banner is MID; the published kind-0 still shows OLD (a fresh mount, no per-visit state).
+    const t = setup({
+      config: savedConfig({ bannerUrl: `${SERVER}/${MID}`, bannerBlossomHash: MID }),
+      publishedState: PUBLISHED, publishedBase: baseShowing(OLD), uploads: [OLD, LATER],
+    });
+    await t.pickBanner(1);
+    fireEvent.change(Array.from(t.view.container.querySelectorAll('input[type="file"]'))[1], { target: { files: [imageFile()] } });
+    await waitFor(() => expect(t.onUploadPicture).toHaveBeenCalledTimes(2));
+    await new Promise(r => setTimeout(r, 30));
+    expect(t.onDeleteBlob).not.toHaveBeenCalledWith(OLD, SERVER);
+    cleanup(); // leaving the form sweeps the genuine orphan only
+    await waitFor(() => expect(t.onDeleteBlob).toHaveBeenCalledWith(LATER, SERVER));
+    expect(t.onDeleteBlob).not.toHaveBeenCalledWith(OLD, SERVER);
+  });
+
+  it('a saved blob the published profile no longer shows is deleted at once, even on an enabled slot', async () => {
+    // Published base shows a DIFFERENT blob (LATER); the saved one (OLD) is replaced by Save.
+    const t = setup({ publishedState: PUBLISHED, publishedBase: baseShowing(LATER) });
+    await t.pickBanner(1);
+    t.save();
+    await waitFor(() => expect(t.onDeleteBlob).toHaveBeenCalledWith(OLD, SERVER));
+    expect(screen.queryByRole('button', { name: /yes, republish/i })).not.toBeNull(); // the prompt still asks about the republish
   });
 });

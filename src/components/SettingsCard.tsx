@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { CarouselRow, PublicProfileConfig, PersonaPublicProfile } from '../types';
+import type { CarouselRow, PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { resolveDependantCardSlot } from '../lib/carousel-utils';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
@@ -194,6 +194,7 @@ interface ResolvedSlot {
   config: PublicProfileConfig;
   /** PublicProfile state snapshot for §9 Q7 republish prompt + status line. */
   publishedState?: PersonaPublicProfile;
+  publishedBase?: PublicProfileBase;
   /** Imported flag for extras (renders the §6.4 banner). */
   imported?: boolean;
   /** Whether this row's persona is the user's own (vs dep) — selects handler family. */
@@ -245,6 +246,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'natural-person',
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'own',
         avatarHash: s.avatarHash,
       };
@@ -257,6 +259,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'persona',
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'own',
         avatarHash: s.avatarHash,
       };
@@ -270,6 +273,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'extra',
         config: buildConfigFromSlot(ep),
         publishedState: ep.publicProfile,
+        publishedBase: ep.publicProfileBase,
         imported: ep.imported,
         scope: 'own',
         avatarHash: ep.avatarHash,
@@ -284,6 +288,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: dependantSlotKindFor(slotTarget),
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'dep',
         avatarHash: s.avatarHash,
       };
@@ -297,6 +302,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'dep-persona',
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'dep',
         avatarHash: s.avatarHash,
       };
@@ -311,6 +317,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'dep-extra',
         config: buildConfigFromSlot(ep),
         publishedState: ep.publicProfile,
+        publishedBase: ep.publicProfileBase,
         imported: ep.imported,
         scope: 'dep',
         avatarHash: ep.avatarHash,
@@ -632,6 +639,7 @@ export function SettingsCard({
         pubkey={slot.pubkey}
         config={slot.config}
         publishedState={slot.publishedState}
+        publishedBase={slot.publishedBase}
         slotKind={slot.slotKind}
         imported={slot.imported}
         pairedChildView={pairedChildViewForSlot}

@@ -32,11 +32,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { NpubRow } from './NpubRow';
-import type { PublicProfileConfig, PersonaPublicProfile } from '../types';
+import type { PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { checkNip05, parseNip05, type Nip05CheckResult } from '../lib/nip05-check';
 import type { PictureCrop } from '../lib/picture-crop';
-import { blobDeletionNote, serverFromBlobUrl, type DeleteOutcome } from '../lib/blob-deletion';
+import { blobDeletionNote, publishedBlobHashes, serverFromBlobUrl, type DeleteOutcome } from '../lib/blob-deletion';
 import { OLD_PICTURE_STAYS_COPY, withBlobHost } from '../lib/blob-deletion-copy';
 import { ImageRow } from './ImageRow';
 import { Icon } from './Icon';
@@ -66,6 +66,13 @@ export interface SlotProfileFieldsProps {
   pubkey: string;
   config: PublicProfileConfig;
   publishedState?: PersonaPublicProfile;
+  /**
+   * The slot's stored base of the kind-0 last published (device-local). The
+   * durable record of which Blossom blobs the live profile shows: the blob
+   * clean-up never deletes one of them, across a "Save locally for now" and a
+   * remount alike.
+   */
+  publishedBase?: PublicProfileBase;
   slotKind: SlotKind;
   /** Shows "Imported — not in your seed phrase" badge above fields. Extras only. */
   imported?: boolean;
@@ -177,6 +184,7 @@ export function SlotProfileFields({
   pubkey,
   config,
   publishedState,
+  publishedBase,
   slotKind,
   imported = false,
   pairedChildView = false,
@@ -234,6 +242,19 @@ export function SlotProfileFields({
   const formHashes = useRef({ picture: config.pictureBlossomHash, banner: config.bannerBlossomHash });
   const savedHashes = useRef({ picture: config.pictureBlossomHash, banner: config.bannerBlossomHash });
   const pendingOld = useRef<Array<{ hash: string; server: string }>>([]);
+  // Durable "do not sweep" sources (S1): what the saved config named when the
+  // form opened, and what the stored base of the PUBLISHED kind-0 shows. Re-picking
+  // the same photo re-encodes to the same bytes, so a pick can land on a hash the
+  // saved or live profile already uses; that blob is never a session orphan.
+  const openHashes = useRef(new Set([config.pictureBlossomHash, config.bannerBlossomHash].filter((h): h is string => !!h).map(h => h.toLowerCase())));
+  const publishedHashes = useRef(new Set<string>());
+  publishedHashes.current = new Set(publishedBlobHashes(publishedBase));
+  const hasPublishedBase = !!publishedBase;
+  function isDurableHash(hash: string): boolean {
+    const h = hash.toLowerCase();
+    return openHashes.current.has(h) || publishedHashes.current.has(h)
+      || savedHashes.current.picture?.toLowerCase() === h || savedHashes.current.banner?.toLowerCase() === h;
+  }
   const onDeleteBlobRef = useRef(onDeleteBlob);
   onDeleteBlobRef.current = onDeleteBlob;
   const [blobNotes, setBlobNotes] = useState<string[]>([]);
@@ -249,6 +270,8 @@ export function SlotProfileFields({
     for (const [hash, server] of [...sessionUploads.current]) {
       if (keep.includes(hash)) continue;
       sessionUploads.current.delete(hash);
+      // Never an orphan: the saved or the published profile uses this blob (S1).
+      if (isDurableHash(hash)) continue;
       if (del) void del(hash, server).catch(() => undefined);
     }
   }
@@ -362,7 +385,7 @@ export function SlotProfileFields({
     try {
       const { url, sha256 } = await onUploadPicture(file, kind, crop);
       const server = serverFromBlobUrl(url, sha256);
-      if (server) sessionUploads.current.set(sha256, server);
+      if (server && !isDurableHash(sha256)) sessionUploads.current.set(sha256, server);
       if (kind === 'picture') {
         setFormPicture(url, sha256);
         setShowPicturePreview(true);
@@ -404,12 +427,18 @@ export function SlotProfileFields({
   async function deletePendingOld() {
     const todo = pendingOld.current;
     pendingOld.current = [];
+    await deleteBlobs(todo);
+  }
+
+  async function deleteBlobs(todo: Array<{ hash: string; server: string }>) {
     const del = onDeleteBlobRef.current;
     if (!del || todo.length === 0) return;
     const notes: string[] = [];
     for (const { hash, server } of todo) {
       let outcome: DeleteOutcome;
       try { outcome = await del(hash, server); } catch { outcome = 'failed'; }
+      // Gone from the server: picking the same photo again is a fresh upload.
+      if (outcome === 'deleted') openHashes.current.delete(hash.toLowerCase());
       const note = blobDeletionNote('picture', outcome, server);
       if (note && !notes.includes(note)) notes.push(note);
     }
@@ -456,7 +485,17 @@ export function SlotProfileFields({
       if (next.pictureBlossomHash) sessionUploads.current.delete(next.pictureBlossomHash);
       if (next.bannerBlossomHash) sessionUploads.current.delete(next.bannerBlossomHash);
       sweepOrphans([]);
-      pendingOld.current = previous.filter((p): p is { hash: string; server: string } => p.server !== null);
+      const replaced = previous.filter((p): p is { hash: string; server: string } => p.server !== null);
+      // R4 reads the durable record of the published profile (S1). When it is
+      // known, a replaced blob the live profile does NOT show can go at once;
+      // only the ones it does show wait on the republish. With no stored base
+      // the slot's publication state decides, as before.
+      const published = !pairedChildView && publishedState?.enabled === true;
+      const showsLive = (p: { hash: string }) => publishedHashes.current.has(p.hash.toLowerCase());
+      const holdBack = published && hasPublishedBase ? replaced.filter(showsLive) : replaced;
+      const goNow = published && hasPublishedBase ? replaced.filter(p => !showsLive(p)) : [];
+      pendingOld.current = holdBack;
+      if (goNow.length > 0) void deleteBlobs(goNow);
       // §9 Q7 — after successful local save, if the slot is currently
       // published, ask whether to push the changes to Nostr too. Skip the
       // prompt in paired-child view (no publish capability locally) and
