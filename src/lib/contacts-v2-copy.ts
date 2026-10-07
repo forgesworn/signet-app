@@ -786,6 +786,7 @@ export const PICTURES_CONSENT_DECLINE_LABEL = 'Not now';
 export const REFRESH_PICTURES_LABEL = 'Refresh pictures';
 export const REFRESHING_PICTURES_LABEL = 'Downloading pictures…';
 export const PICTURES_REFRESH_FAILED_COPY = "Pictures couldn't be refreshed. Try again in a moment.";
+export const PICTURES_RELAYS_UNREACHABLE_COPY = "Couldn't reach Nostr relays, so no pictures were checked. Try again in a moment.";
 /** "Downloaded N pictures." / "Downloaded N pictures, M couldn't be downloaded." */
 export function picturesResultCopy(downloaded: number, failed: number): string {
   const head = `Downloaded ${downloaded} ${downloaded === 1 ? 'picture' : 'pictures'}`;

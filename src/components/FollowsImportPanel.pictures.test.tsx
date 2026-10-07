@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { FollowsImportPanel } from './FollowsImportPanel';
 import type { FollowsImportOutcome } from '../lib/follows-import-flow';
-import { PICTURES_CONSENT_BODY, PICTURES_CONSENT_TITLE } from '../lib/contacts-v2-copy';
+import { PICTURES_CONSENT_BODY, PICTURES_CONSENT_TITLE, PICTURES_RELAYS_UNREACHABLE_COPY } from '../lib/contacts-v2-copy';
 
 const done = (over: Partial<Extract<FollowsImportOutcome, { status: 'done' }>> = {}): FollowsImportOutcome => ({
   status: 'done', total: 3, createdAt: 1, added: 3, linked: 0, unchanged: 0, skippedRemoved: 0, covered: 3, trimmedNotice: null,
@@ -53,5 +53,13 @@ describe('FollowsImportPanel — picture consent', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import who this account follows' }));
     fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
     expect(await screen.findByText('Downloaded 1 picture.')).toBeTruthy();
+  });
+
+  it('says no relay could be reached instead of "Downloaded 0 pictures."', async () => {
+    renderPanel(vi.fn(async () => done({ pictures: { downloaded: 0, failed: 0, unreachable: true } })), true);
+    fireEvent.click(screen.getByRole('button', { name: 'Import who this account follows' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
+    expect(await screen.findByText(PICTURES_RELAYS_UNREACHABLE_COPY)).toBeTruthy();
+    expect(screen.queryByText(/Downloaded/)).toBeNull();
   });
 });

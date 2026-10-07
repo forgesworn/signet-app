@@ -38,7 +38,7 @@ export interface FollowsImportDeps {
    * this run covered. Without consent the import is names only, as before.
    */
   pictures?: boolean;
-  fetchProfiles?: (pubkeys: string[]) => Promise<Map<string, Kind0Profile>>;
+  fetchProfiles?: (pubkeys: string[]) => Promise<Map<string, Kind0Profile> | 'unreachable'>;
   syncPictures?: (pubkeys: string[], profiles: Map<string, Kind0Profile>) => Promise<PictureRunResult>;
   recogniseContacts: (entries: FollowImportEntry[], owner: string, method: 'import', caption: string) => Promise<FollowsImportResult>;
   /** Persist the device-local "last import" record. Only called when something was covered. */
@@ -88,7 +88,7 @@ export type FollowsImportOutcome =
       /** Unfollowed contacts whose only list this is — kept, since taking them off would remove them. */
       unfollowedKept: number;
       /** Only when pictures were agreed to: how many downloaded / couldn't be. */
-      pictures?: { downloaded: number; failed: number };
+      pictures?: { downloaded: number; failed: number; unreachable?: true };
     };
 
 export async function runFollowsImport(deps: FollowsImportDeps): Promise<FollowsImportOutcome> {
@@ -106,10 +106,16 @@ export async function runFollowsImport(deps: FollowsImportDeps): Promise<Follows
   const withPictures = deps.pictures === true && !!deps.syncPictures;
   let profiles: Map<string, Kind0Profile> | null = null;
   let names: Map<string, string>;
+  let picturesUnreachable = false;
   if (withPictures) {
-    profiles = await (deps.fetchProfiles ?? ((pubkeys: string[]) => fetchKind0Profiles(pubkeys, [])))(chosen.map(f => f.pubkey));
+    const fetched = await (deps.fetchProfiles ?? ((pubkeys: string[]) => fetchKind0Profiles(pubkeys, [])))(chosen.map(f => f.pubkey));
     names = new Map();
-    for (const [pubkey, profile] of profiles) if (profile.displayName) names.set(pubkey, profile.displayName);
+    if (fetched === 'unreachable') {
+      picturesUnreachable = true;
+    } else {
+      profiles = fetched;
+      for (const [pubkey, profile] of profiles) if (profile.displayName) names.set(pubkey, profile.displayName);
+    }
   } else {
     names = await fetchNames(chosen.map(f => f.pubkey));
   }
@@ -132,8 +138,10 @@ export async function runFollowsImport(deps: FollowsImportDeps): Promise<Follows
   const notAll = summary.trimmed || chosen.length < list.follows.length;
 
   // Pictures only for the follows this run actually filed (the most recent `covered`).
-  let pictures: { downloaded: number; failed: number } | undefined;
-  if (withPictures && profiles && deps.syncPictures) {
+  let pictures: { downloaded: number; failed: number; unreachable?: true } | undefined;
+  if (withPictures && picturesUnreachable) {
+    pictures = { downloaded: 0, failed: 0, unreachable: true };
+  } else if (withPictures && profiles && deps.syncPictures) {
     const filed = covered > 0 ? chosen.slice(chosen.length - covered).map(f => f.pubkey) : [];
     try {
       const r = filed.length > 0 ? await deps.syncPictures(filed, profiles) : { downloaded: 0, failed: 0 };

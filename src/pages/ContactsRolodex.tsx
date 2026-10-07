@@ -14,7 +14,7 @@ import type { FollowsImportState } from '../types';
 import { useContactAvatar, seedContactAvatarPointer } from '../hooks/useContactAvatar';
 import { fetchContactAvatarPointers } from '../lib/contact-avatar';
 import {
-  CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, PICTURES_REFRESH_FAILED_COPY, REFRESH_PICTURES_LABEL, REFRESHING_PICTURES_LABEL, picturesResultCopy, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
+  CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, PICTURES_REFRESH_FAILED_COPY, PICTURES_RELAYS_UNREACHABLE_COPY, REFRESH_PICTURES_LABEL, REFRESHING_PICTURES_LABEL, picturesResultCopy, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
   ROLODEX_EMPTY_TEXT, ROLODEX_EMPTY_TITLE, ROLODEX_LOADING_COPY, ROLODEX_NO_MATCHES_TITLE,
   SEARCH_CONTACTS_LABEL, rolodexHeadingCopy,
 } from '../lib/contacts-v2-copy';
@@ -138,7 +138,7 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
     setPicturesNote('');
     try {
       const r = await onRefreshPictures();
-      setPicturesNote(picturesResultCopy(r.downloaded, r.failed));
+      setPicturesNote(r.unreachable ? PICTURES_RELAYS_UNREACHABLE_COPY : picturesResultCopy(r.downloaded, r.failed));
     } catch {
       setPicturesNote(PICTURES_REFRESH_FAILED_COPY);
     } finally {

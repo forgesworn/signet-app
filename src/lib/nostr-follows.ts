@@ -152,12 +152,17 @@ export interface Kind0Profile {
  * a few chunks per request, one shared 6 s budget across every relay). Only an
  * author with a verified newest kind 0 is in the map — absence means "could
  * not be fetched", which is different from "fetched, no picture".
+ *
+ * Returns `'unreachable'` when there was something to ask for and NO relay
+ * could be reached at all, so a caller can tell "no network" from "nobody had
+ * a profile". An empty pubkey list is an empty map; partial reachability is
+ * an ordinary (possibly empty) map.
  */
 export async function fetchKind0Profiles(
   pubkeys: string[],
   relays: string[],
   budgetMs: number = NAMES_BUDGET_MS,
-): Promise<Map<string, Kind0Profile>> {
+): Promise<Map<string, Kind0Profile> | 'unreachable'> {
   const profiles = new Map<string, Kind0Profile>();
   const wanted = Array.from(new Set(pubkeys.filter(p => HEX64.test(p))));
   if (wanted.length === 0) return profiles;
@@ -178,6 +183,7 @@ export async function fetchKind0Profiles(
     }));
   }
   const gathered = await Promise.all(gatherers);
+  if (gathered.every(g => g === null)) return 'unreachable';
 
   const byAuthor = new Map<string, import('./existing-profile').GatheredEvent[]>();
   const seenIds = new Set<string>();
@@ -220,7 +226,9 @@ export async function fetchFollowNames(
   budgetMs: number = NAMES_BUDGET_MS,
 ): Promise<Map<string, string>> {
   const names = new Map<string, string>();
-  for (const [pubkey, profile] of await fetchKind0Profiles(pubkeys, relays, budgetMs)) {
+  const fetched = await fetchKind0Profiles(pubkeys, relays, budgetMs);
+  if (fetched === 'unreachable') return names;
+  for (const [pubkey, profile] of fetched) {
     if (profile.displayName) names.set(pubkey, profile.displayName);
   }
   return names;

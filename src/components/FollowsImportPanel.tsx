@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { FollowsImportState } from '../types';
 import type { FollowsImportOptions, FollowsImportOutcome, UnfollowedContact } from '../lib/follows-import-flow';
 import { ContactPicturesConsent } from './ContactPicturesConsent';
-import { picturesResultCopy } from '../lib/contacts-v2-copy';
+import { picturesResultCopy, PICTURES_RELAYS_UNREACHABLE_COPY } from '../lib/contacts-v2-copy';
 
 interface Props {
   /** The persona's display name, for the copy. */
@@ -122,7 +122,7 @@ export function FollowsImportPanel({ personaName, last, onImport, onUnlink, vari
         <div role="status" style={{ fontSize: '0.85rem', margin: '0 0 12px', lineHeight: 1.5 }}>
           <div>{summaryLine(outcome)}</div>
           {outcome.trimmedNotice && <div style={{ marginTop: 6 }}>{outcome.trimmedNotice}</div>}
-          {outcome.pictures && <div style={{ marginTop: 6 }}>{picturesResultCopy(outcome.pictures.downloaded, outcome.pictures.failed)}</div>}
+          {outcome.pictures && <div style={{ marginTop: 6 }}>{outcome.pictures.unreachable ? PICTURES_RELAYS_UNREACHABLE_COPY : picturesResultCopy(outcome.pictures.downloaded, outcome.pictures.failed)}</div>}
         </div>
       )}
 

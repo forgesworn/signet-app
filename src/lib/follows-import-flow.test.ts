@@ -163,6 +163,17 @@ describe('runFollowsImport — profile pictures', () => {
     expect(syncPictures).toHaveBeenCalledWith([hex(3)], expect.any(Map));
   });
 
+  it('every relay unreachable: names import as short npubs, pictures are flagged and not synced', async () => {
+    const syncPictures = vi.fn();
+    const { d, recogniseContacts } = deps({ pictures: true, fetchProfiles: async () => 'unreachable' as const, syncPictures });
+    const out = await runFollowsImport(d);
+    expect(syncPictures).not.toHaveBeenCalled();
+    expect(recogniseContacts).toHaveBeenCalled();
+    expect(recogniseContacts.mock.calls[0][0][0].pubkey).toBe(hex(1));
+    expect(out.status).toBe('done');
+    expect(out.status === 'done' && out.pictures).toEqual({ downloaded: 0, failed: 0, unreachable: true });
+  });
+
   it('a picture failure never fails the import', async () => {
     const { d } = deps({
       pictures: true,

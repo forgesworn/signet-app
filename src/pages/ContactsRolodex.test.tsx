@@ -160,4 +160,13 @@ describe('ContactsRolodex — Refresh pictures', () => {
     expect(await screen.findByText("Downloaded 4 pictures, 2 couldn't be downloaded.")).toBeTruthy();
     expect(onRefreshPictures).toHaveBeenCalledTimes(1);
   });
+
+  it('says no relay could be reached instead of "Downloaded 0 pictures."', async () => {
+    const onRefreshPictures = vi.fn(async () => ({ downloaded: 0, failed: 0, removed: 0, unchanged: 0, unreachable: true as const }));
+    renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
+    expect(await screen.findByText("Couldn't reach Nostr relays, so no pictures were checked. Try again in a moment.")).toBeTruthy();
+    expect(screen.queryByText(/Downloaded/)).toBeNull();
+  });
 });

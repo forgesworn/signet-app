@@ -43,6 +43,8 @@ export interface PictureRunResult {
   removed: number;
   /** Pictures whose URL had not changed — not downloaded again. */
   unchanged: number;
+  /** Set when no Nostr relay could be reached, so nothing was checked and nothing was changed. */
+  unreachable?: true;
 }
 
 export interface ApplyKind0PicturesDeps {
@@ -308,7 +310,7 @@ export function contactPicturePubkeys(records: Iterable<ContactRecord>): string[
 
 export interface RefreshContactPicturesDeps extends PictureRunDeps {
   listRecords?: (encryptionKey: string) => Promise<ContactRecord[]>;
-  fetchProfiles: (pubkeys: string[]) => Promise<Map<string, Kind0Profile>>;
+  fetchProfiles: (pubkeys: string[]) => Promise<Map<string, Kind0Profile> | 'unreachable'>;
 }
 
 /**
@@ -328,5 +330,7 @@ export async function refreshContactPictures(
   if (pubkeys.length === 0) return EMPTY_RESULT();
   const profiles = await deps.fetchProfiles(pubkeys);
   if (!live(generation)) return EMPTY_RESULT();
+  // No relay answered: nothing was checked, so no stored thumbnail may be touched.
+  if (profiles === 'unreachable') return { ...EMPTY_RESULT(), unreachable: true };
   return syncKind0Pictures(encryptionKey, pubkeys, profiles, { ...deps, generation });
 }

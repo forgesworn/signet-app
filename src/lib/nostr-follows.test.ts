@@ -228,9 +228,40 @@ describe('fetchFollowNames', () => {
       kind0({ about: 'no picture' }, 10, plain),
     ];
     const profiles = await fetchKind0Profiles([getPublicKey(broken), getPublicKey(plain)], [A], 500);
+    if (profiles === 'unreachable') throw new Error('relay was reachable');
     expect(profiles.has(getPublicKey(broken))).toBe(false);
     // A parsed profile with no picture is still present: that one means "no picture now".
     expect(profiles.get(getPublicKey(plain))).toEqual({});
+  });
+
+  it('says "unreachable" only when every relay was unreachable', async () => {
+    const k = generateSecretKey();
+    relayMock.connectThrows = new Set([A, B, ...PROFILE_LOOKUP_RELAYS]);
+    expect(await fetchKind0Profiles([getPublicKey(k)], [A, B], 500)).toBe('unreachable');
+  });
+
+  it('one relay answering with nothing is an empty map, not "unreachable"', async () => {
+    const k = generateSecretKey();
+    relayMock.connectThrows = new Set([B, ...PROFILE_LOOKUP_RELAYS]);
+    relayMock.fetchReturns[A] = [];
+    const out = await fetchKind0Profiles([getPublicKey(k)], [A, B], 500);
+    expect(out).toBeInstanceOf(Map);
+    expect((out as Map<string, unknown>).size).toBe(0);
+  });
+
+  it('an empty pubkey list is an empty map, even with every relay down', async () => {
+    relayMock.connectThrows = new Set([A, ...PROFILE_LOOKUP_RELAYS]);
+    const out = await fetchKind0Profiles([], [A]);
+    expect(out).toBeInstanceOf(Map);
+    expect((out as Map<string, unknown>).size).toBe(0);
+  });
+
+  it('fetchFollowNames with every relay unreachable is an empty map', async () => {
+    const k = generateSecretKey();
+    relayMock.connectThrows = new Set([A, ...PROFILE_LOOKUP_RELAYS]);
+    const names = await fetchFollowNames([getPublicKey(k)], [A], 500);
+    expect(names).toBeInstanceOf(Map);
+    expect(names.size).toBe(0);
   });
 
   it('nothing to look up costs no relay call', async () => {

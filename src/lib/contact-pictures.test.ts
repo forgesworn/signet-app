@@ -165,6 +165,28 @@ describe('refreshContactPictures (real store)', () => {
     expect(Array.from(ownPic?.jpeg ?? [])).toEqual(Array.from(JPEG(9)));
   }, 30_000);
 
+  it('says so, and touches nothing, when no relay could be reached', async () => {
+    const m = await load();
+    const records = [record('owner', '8'.repeat(32), PK('a'))];
+    const download = vi.fn(async () => new Uint8Array([1]));
+    const thumbnail = vi.fn(async () => JPEG(2));
+    await m.refreshContactPictures(KEY, {
+      listRecords: async () => records, download, thumbnail,
+      fetchProfiles: async () => new Map<string, Kind0Profile>([[PK('a'), { pictureUrl: 'https://x/a.jpg' }]]),
+    });
+    expect((await m.db.listContactPictures(KEY)).map(p => p.id)).toEqual([`kind0:${PK('a')}`]);
+    download.mockClear();
+    thumbnail.mockClear();
+
+    const result = await m.refreshContactPictures(KEY, {
+      listRecords: async () => records, download, thumbnail, fetchProfiles: async () => 'unreachable',
+    });
+    expect(result).toEqual({ downloaded: 0, failed: 0, removed: 0, unchanged: 0, unreachable: true });
+    expect(download).not.toHaveBeenCalled();
+    expect(thumbnail).not.toHaveBeenCalled();
+    expect((await m.db.listContactPictures(KEY)).map(p => p.id)).toEqual([`kind0:${PK('a')}`]);
+  }, 30_000);
+
   it('makes no request at all when there are no contact keys', async () => {
     const m = await load();
     const fetchProfiles = vi.fn();
