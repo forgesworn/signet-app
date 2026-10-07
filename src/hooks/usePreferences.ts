@@ -238,6 +238,11 @@ export function usePreferences() {
     if (updated !== stored) await db.savePreferences(updated);
   }, []);
 
+  /** Device-local choice for the encrypted backup of own contact pictures. */
+  const setContactPictureBackup = useCallback(async (value: 'on' | 'off') => {
+    await applyFresh(p => (p.contactPictureBackup === value ? p : { ...p, contactPictureBackup: value }));
+  }, [applyFresh]);
+
   const setFallbackBunkerRelays = useCallback(async (relays: string[]) => {
     // Defence-in-depth: drop anything that doesn't pass the scheme check on
     // write. buildPairingURI will also reject, but silently filtering here
@@ -281,5 +286,5 @@ export function usePreferences() {
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences };
 }

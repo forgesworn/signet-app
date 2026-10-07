@@ -196,7 +196,12 @@ import { fetchFollowList, fetchFollowNames, fetchKind0Profiles, shortNpub } from
 import { planScannedContact } from './lib/scan-add-contact';
 import { SCAN_CONTACT_SAVE_FAILED_COPY } from './lib/contacts-v2-copy';
 import { runFollowsImport, type FollowsHandlers } from './lib/follows-import-flow';
-import { syncKind0Pictures, refreshContactPictures, setOwnContactPicture, removeOwnContactPicture, forgetContactPictureCache } from './lib/contact-pictures';
+import { syncKind0Pictures, refreshContactPictures, removeOwnContactPicture, forgetContactPictureCache } from './lib/contact-pictures';
+import { resolveBackupServer } from './lib/contact-picture-backup';
+import {
+  saveOwnPicture, removeOwnPicture, turnBackupOn, declineBackup, backupRefOf, createPictureBackupRunner,
+  type RunnerContext,
+} from './lib/contact-picture-backup-flow';
 import { forgetContactPictureKeys, contactPictureGeneration } from './lib/contact-picture-crypto';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
@@ -649,7 +654,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -2735,6 +2740,40 @@ export function App() {
     [familyContacts.directories, contactsActorPubkey],
   );
 
+  // ---- Encrypted backup of your own contact pictures -----------------------
+  //
+  // Policy lives in `contact-picture-backup-flow.ts`; this is only the live
+  // wiring. `pictureHostRef` is the LATEST hook state, read when a background
+  // upload finishes (the page may have moved to another directory by then).
+  const contactPictureServer = resolveBackupServer(preferences.defaultBlossomUrl);
+  const [pictureAskKey, setPictureAskKey] = useState<string | null>(null);
+  const pictureHostRef = useRef({ directoryId: contactsScope.directoryId, setPicture: contactsV2.setPicture });
+  pictureHostRef.current = { directoryId: contactsScope.directoryId, setPicture: contactsV2.setPicture };
+  const pictureRunnerCtxRef = useRef<RunnerContext | null>(null);
+  pictureRunnerCtxRef.current = {
+    encryptionKey,
+    pairedChild: isPairedChild,
+    server: contactPictureServer,
+    pref: preferences.contactPictureBackup,
+    actor: contactsActorPubkey && preferences.contactsDeviceId
+      ? { actorPubkey: contactsActorPubkey, actorDeviceId: preferences.contactsDeviceId }
+      : null,
+    // Same as `onRemoteMerged` (both hooks reseed their Lamport clocks from the
+    // log the sweep just wrote to), plus the counter so the rail publishes.
+    onSweepWrote: () => {
+      void contactsV2.reload();
+      if (familyLogEnabledNow) void familyContacts.reload();
+      bumpContactsV2();
+    },
+  };
+  const pictureRunner = useMemo(() => createPictureBackupRunner(() => pictureRunnerCtxRef.current!), []);
+  // Once per unlock: restore from the log, then upload anything a save left pending.
+  useEffect(() => {
+    if (!encryptionKey || prefsLoading || isPairedChild || contactsV2.loading) return;
+    if (!preferences.contactsDeviceId || !contactsActorPubkey) return;
+    void pictureRunner.runOnUnlock();
+  }, [encryptionKey, prefsLoading, isPairedChild, contactsV2.loading, preferences.contactsDeviceId, contactsActorPubkey, pictureRunner]);
+
   // ---- Contacts v2 app grants (Phase E, Task 22) ---------------------------
 
   /**
@@ -3487,6 +3526,8 @@ export function App() {
     onRemoteMerged: () => {
       void contactsV2.reload();
       if (familyLogEnabledNow) void familyContacts.reload();
+      // Pointers may have arrived: bring own pictures in line (a fresh fold, no sweep).
+      void pictureRunner.runRestore();
     },
     onVerifiedChange: setContactsV2Verified,
     onBackupStateChange: setContactsV2BackupState,
@@ -11255,6 +11296,23 @@ export function App() {
       hasSharedSecret: !!legacyContact?.sharedSecret,
       hasKenEntry: kens.some(k => recordPubkeys.has(k.pubkey.toLowerCase())),
     };
+    // Own-picture backup: the pointer comes from the hook's `records` (EffectiveContact carries none).
+    const pictureRecord = contactsV2.records.find(r => r.directoryId === record.directoryId && r.contactId === record.contactId);
+    const pictureRef = pictureRecord ? backupRefOf(pictureRecord) : undefined;
+    const pictureKey = `${record.directoryId}/${record.contactId}`;
+    const pictureBackupEnv = encryptionKey
+      ? { encryptionKey, pairedChild: isPairedChild, server: contactPictureServer, pref: preferences.contactPictureBackup }
+      : null;
+    // `contactsV2.setPicture` is bound to the hook's directory: refuse to write if the scope moved on mid-upload
+    // (the row stays pending and the next unlock's sweep uploads it).
+    const writePicturePointer = async (directoryId: string, contactId: string, p: Parameters<typeof contactsV2.setPicture>[1]) => {
+      if (pictureHostRef.current.directoryId !== directoryId) throw new Error('contacts scope changed');
+      await pictureHostRef.current.setPicture(contactId, p);
+    };
+    const enablePictureBackup = async () => {
+      if (!pictureBackupEnv) return;
+      await turnBackupOn({ env: pictureBackupEnv, directoryId: record.directoryId, contactId: record.contactId, record: pictureRef, setPref: setContactPictureBackup, writePointer: writePicturePointer });
+    };
     return (
       <Layout title={record.displayName} showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <ContactDetail
@@ -11262,8 +11320,29 @@ export function App() {
           encryptionKey={encryptionKey}
           relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
           // Own pictures are device-local and allowed on every install, paired-child too.
-          onSetOwnPicture={encryptionKey ? (file, crop) => setOwnContactPicture(encryptionKey, record.directoryId, record.contactId, file, crop) : undefined}
-          onRemoveOwnPicture={encryptionKey ? () => removeOwnContactPicture(encryptionKey, record.directoryId, record.contactId) : undefined}
+          onSetOwnPicture={pictureBackupEnv ? async (file, crop) => {
+            const saved = await saveOwnPicture({ env: pictureBackupEnv, directoryId: record.directoryId, contactId: record.contactId, file, crop, record: pictureRef, writePointer: writePicturePointer });
+            if (saved.askConsent) setPictureAskKey(pictureKey);
+            return saved.outcome;
+          } : undefined}
+          onRemoveOwnPicture={pictureBackupEnv ? async () => {
+            await removeOwnPicture({ encryptionKey: pictureBackupEnv.encryptionKey, directoryId: record.directoryId, contactId: record.contactId, record: pictureRef, clearPointer: (cid) => contactsV2.clearPicture(cid) });
+            setPictureAskKey(null);
+          } : undefined}
+          pictureBackup={pictureBackupEnv ? {
+            availability: isPairedChild ? 'paired-child' : contactPictureServer === null ? 'uploads-off' : 'possible',
+            serverHost: contactPictureServer ? (() => { try { return new URL(contactPictureServer).host; } catch { return contactPictureServer; } })() : '',
+            ask: pictureAskKey === pictureKey && preferences.contactPictureBackup === undefined,
+            onAnswer: async (backUp) => {
+              setPictureAskKey(null);
+              if (backUp) await enablePictureBackup(); else await declineBackup(setContactPictureBackup);
+            },
+            // Never asked: the link opens the ask so its wording is seen first; after "Only on this phone" it just turns on.
+            onBackItUp: async () => {
+              if (preferences.contactPictureBackup === undefined) { setPictureAskKey(pictureKey); return; }
+              await enablePictureBackup();
+            },
+          } : undefined}
           lists={contactsIdentityLists}
           onReviewAppList={(grantId, accept) => contactsV2.reviewAppList(record.contactId, grantId, accept)}
           onLinkList={(key) => contactsV2.linkList(record.contactId, key)}

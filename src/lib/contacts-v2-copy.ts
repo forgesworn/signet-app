@@ -795,7 +795,19 @@ export function picturesResultCopy(downloaded: number, failed: number): string {
 export const ADD_OWN_PICTURE_LABEL = 'Add your own picture';
 export const CHANGE_OWN_PICTURE_LABEL = 'Change picture';
 export const REMOVE_OWN_PICTURE_LABEL = 'Remove your picture';
-export const OWN_PICTURE_HINT = 'Only on this phone. Your picture is used instead of theirs.';
+// Encrypted backup of your own contact pictures: the one-time ask and the status line.
+export const PICTURE_BACKUP_ASK_TITLE = 'Back up your contact pictures?';
+export function pictureBackupAskBody(serverHost: string): string {
+  return `They're encrypted on this phone first, then stored on ${serverHost}. The server can't see them, but it does see your IP address when you save or restore one.`;
+}
+export const PICTURE_BACKUP_ASK_YES_LABEL = 'Back them up';
+export const PICTURE_BACKUP_ASK_NO_LABEL = 'Only on this phone';
+export const PICTURE_BACKUP_SYNCED_COPY = 'Backed up, encrypted';
+export const PICTURE_BACKUP_PENDING_COPY = 'Not backed up yet';
+export const PICTURE_BACKUP_LOCAL_COPY = 'Only on this phone';
+export const PICTURE_BACKUP_UPLOADS_OFF_COPY = 'Only on this phone. Blossom uploads are off in Advanced settings.';
+export const PICTURE_BACKUP_PAIRED_CHILD_COPY = 'Only on this phone.';
+export const PICTURE_BACKUP_NOW_LABEL = 'Back it up';
 export const OWN_PICTURE_REFUSED_COPY = "That picture couldn't be used. Choose a JPEG, PNG or WebP photo.";
 export const OWN_PICTURE_UNREADABLE_COPY = "Couldn't read that photo. Pick it again.";
 // Own-picture crop screen, and the badge swap on the contact page.

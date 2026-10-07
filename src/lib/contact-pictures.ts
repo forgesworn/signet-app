@@ -455,7 +455,7 @@ export function contactPicturePubkeys(records: Iterable<ContactRecord>): string[
  * the source of truth and the contacts pages fold it the same way; the
  * `contactRecordsV2` cache is never written, so reading it finds nobody.
  */
-async function listContactRecordsFromLog(encryptionKey: string): Promise<ContactRecord[]> {
+export async function listContactRecordsFromLog(encryptionKey: string): Promise<ContactRecord[]> {
   return [...applyOperations(await listAllContactOperationsV2(encryptionKey)).values()];
 }
 

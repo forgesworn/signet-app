@@ -5,7 +5,8 @@ import { ContactDetail } from './ContactDetail';
 import type { EffectiveContact, SignetIdentity } from '../types';
 import { resolveActorRights } from '../lib/contacts-v2-rights';
 import { detailSections } from '../lib/contacts-v2-detail';
-import { CONTACT_ACTION_FAILED_COPY } from '../lib/contacts-v2-copy';
+import { CONTACT_ACTION_FAILED_COPY, pictureBackupAskBody } from '../lib/contacts-v2-copy';
+import type { PictureBackupHost } from './ContactDetail';
 import { useContactPicture } from '../hooks/useContactPicture';
 
 // The crop screen has its own tests; here it is a stub that hands back a fixed crop.
@@ -19,7 +20,7 @@ vi.mock('../components/ContactPictureCrop', () => ({
   ),
 }));
 vi.mock('../hooks/useContactPicture', () => ({ useContactPicture: vi.fn() }));
-const NO_PICTURE = { url: null, badgeUrl: null, hasOwn: false };
+const NO_PICTURE = { url: null, badgeUrl: null, hasOwn: false, backup: null };
 beforeEach(() => { vi.mocked(useContactPicture).mockReturnValue(NO_PICTURE); });
 
 // A 3 x 2 PNG: passes the header gate. GIF and the empty file do not.
@@ -303,7 +304,7 @@ describe('ContactDetail — swapping the two pictures', () => {
   };
 
   it('has no swap button with only one picture', () => {
-    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: null, hasOwn: true });
+    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: null, hasOwn: true, backup: 'local' as const });
     renderDetail(contact(), 'owner');
     expect(screen.queryByRole('button', { name: 'Show their picture' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Show your picture' })).toBeNull();
@@ -315,7 +316,7 @@ describe('ContactDetail — swapping the two pictures', () => {
   });
 
   it('opens with yours as main and theirs as the badge, and tapping swaps them and back', () => {
-    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: 'blob:theirs', hasOwn: true });
+    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: 'blob:theirs', hasOwn: true, backup: 'local' as const });
     const { container } = renderDetail(contact(), 'owner');
     expect(avatarSrcs(container)).toEqual({ main: 'blob:own', badge: 'blob:theirs' });
     fireEvent.click(screen.getByRole('button', { name: 'Show their picture' }));
@@ -325,14 +326,91 @@ describe('ContactDetail — swapping the two pictures', () => {
   });
 
   it('the swap is not saved: it resets when their picture goes away and comes back', () => {
-    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: 'blob:theirs', hasOwn: true });
+    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: 'blob:theirs', hasOwn: true, backup: 'local' as const });
     const props = detailProps(contact(), 'owner');
     const { container, rerender } = render(<ContactDetail {...props} />);
     fireEvent.click(screen.getByRole('button', { name: 'Show their picture' }));
-    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: null, hasOwn: true });
+    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: null, hasOwn: true, backup: 'local' as const });
     rerender(<ContactDetail {...props} />);
-    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: 'blob:theirs', hasOwn: true });
+    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: 'blob:theirs', hasOwn: true, backup: 'local' as const });
     rerender(<ContactDetail {...props} />);
     expect(avatarSrcs(container)).toEqual({ main: 'blob:own', badge: 'blob:theirs' });
+  });
+});
+
+describe('ContactDetail — own picture backup status line and ask', () => {
+  const host = (over: Partial<PictureBackupHost> = {}): PictureBackupHost => ({
+    availability: 'possible', serverHost: 'nostr.download', ask: false,
+    onAnswer: vi.fn(async () => {}), onBackItUp: vi.fn(async () => {}), ...over,
+  });
+  const own = (backup: 'synced' | 'pending' | 'local') =>
+    vi.mocked(useContactPicture).mockReturnValue({ url: 'blob:own', badgeUrl: null, hasOwn: true, backup });
+  const show = (h: PictureBackupHost) => renderDetail(contact(), 'owner', { onSetOwnPicture: vi.fn(), pictureBackup: h });
+  const backItUp = () => screen.queryByRole('button', { name: 'Back it up' });
+
+  it('synced: "Backed up, encrypted", no link', () => {
+    own('synced'); show(host());
+    expect(screen.getByRole('status').textContent).toBe('Backed up, encrypted');
+    expect(backItUp()).toBeNull();
+  });
+
+  it('pending: "Not backed up yet", no link', () => {
+    own('pending'); show(host());
+    expect(screen.getByRole('status').textContent).toBe('Not backed up yet');
+    expect(backItUp()).toBeNull();
+  });
+
+  it('local with uploads possible: "Only on this phone" and a "Back it up" link that calls the host', async () => {
+    own('local');
+    const h = host();
+    show(h);
+    expect(screen.getByRole('status').textContent).toContain('Only on this phone');
+    fireEvent.click(backItUp()!);
+    await vi.waitFor(() => expect(h.onBackItUp).toHaveBeenCalledTimes(1));
+  });
+
+  it('local with Blossom uploads off: the settings sentence, no link', () => {
+    own('local'); show(host({ availability: 'uploads-off' }));
+    expect(screen.getByRole('status').textContent).toBe('Only on this phone. Blossom uploads are off in Advanced settings.');
+    expect(backItUp()).toBeNull();
+  });
+
+  it('paired-child: "Only on this phone.", no link, no ask', () => {
+    own('local'); show(host({ availability: 'paired-child', ask: true }));
+    expect(screen.getByRole('status').textContent).toBe('Only on this phone.');
+    expect(backItUp()).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back them up' })).toBeNull();
+  });
+
+  it('shows no status line without an own picture', () => {
+    vi.mocked(useContactPicture).mockReturnValue(NO_PICTURE);
+    show(host());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('shows no ask unless the host says so', () => {
+    own('local'); show(host({ ask: false }));
+    expect(screen.queryByRole('button', { name: 'Back them up' })).toBeNull();
+  });
+
+  it('the ask names the server and its buttons answer yes and no', async () => {
+    own('local');
+    const h = host({ ask: true });
+    show(h);
+    expect(screen.getByText('Back up your contact pictures?')).toBeDefined();
+    expect(screen.getByText(pictureBackupAskBody('nostr.download'))).toBeDefined();
+    expect(pictureBackupAskBody('nostr.download')).toBe("They're encrypted on this phone first, then stored on nostr.download. The server can't see them, but it does see your IP address when you save or restore one.");
+    fireEvent.click(screen.getByRole('button', { name: 'Back them up' }));
+    await vi.waitFor(() => expect(h.onAnswer).toHaveBeenLastCalledWith(true));
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Only on this phone' })).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Only on this phone' }));
+    await vi.waitFor(() => expect(h.onAnswer).toHaveBeenLastCalledWith(false));
+  });
+
+  it('a failing answer shows the action-failed copy', async () => {
+    own('local');
+    show(host({ ask: true, onAnswer: vi.fn(async () => { throw new Error('x'); }) }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back them up' }));
+    expect(await screen.findByText(CONTACT_ACTION_FAILED_COPY)).toBeDefined();
   });
 });

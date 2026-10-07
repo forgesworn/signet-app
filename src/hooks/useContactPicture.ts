@@ -1,8 +1,8 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import {
-  cachedContactPicture, contactPicturesVersion, loadContactPictures, subscribeContactPictures,
+  cachedContactPicture, cachedOwnPictureState, contactPicturesVersion, loadContactPictures, subscribeContactPictures,
 } from '../lib/contact-pictures';
-import { kind0PictureId, ownPictureId } from '../lib/contact-picture-crypto';
+import { kind0PictureId, ownPictureId, type OwnPictureBackupState } from '../lib/contact-picture-crypto';
 import { useObjectUrl } from './useObjectUrl';
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -40,6 +40,8 @@ export function useContactPicture({ encryptionKey, pubkey, directoryId, contactI
   /** Their picture, shown as a badge on the user's own; null unless both exist. */
   badgeUrl: string | null;
   hasOwn: boolean;
+  /** Backup state of the user's own picture (null when there is none). Re-renders as it changes. */
+  backup: OwnPictureBackupState | null;
 } {
   useSyncExternalStore(subscribeContactPictures, contactPicturesVersion, contactPicturesVersion);
   useEffect(() => {
@@ -47,6 +49,7 @@ export function useContactPicture({ encryptionKey, pubkey, directoryId, contactI
   }, [encryptionKey]);
 
   const ownBlob = directoryId && contactId ? cachedContactPicture(encryptionKey, ownPictureId(directoryId, contactId)) : null;
+  const backup = ownBlob && directoryId && contactId ? (cachedOwnPictureState(encryptionKey, directoryId, contactId)?.backup ?? null) : null;
   const pk = pubkey?.toLowerCase();
   // Loaded even under an own picture: it is the badge. Skipped only when a shared avatar already is "theirs".
   const kind0Blob = pk && HEX64.test(pk) && !sharedUrl ? cachedContactPicture(encryptionKey, kind0PictureId(pk)) : null;
@@ -57,5 +60,6 @@ export function useContactPicture({ encryptionKey, pubkey, directoryId, contactI
     url: (ownBlob ? ownUrl : null) ?? theirs,
     badgeUrl: ownBlob && ownUrl ? theirs : null,
     hasOwn: !!ownBlob,
+    backup,
   };
 }

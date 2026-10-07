@@ -23,7 +23,10 @@ import { SignetWords } from '../components/SignetWords';
 import { getActivePubkey, shortNpub } from '../lib/signet';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import {
-  ADD_A_ROLE_LABEL, ADD_LABEL, ADD_OWN_PICTURE_LABEL, CHANGE_OWN_PICTURE_LABEL, OWN_PICTURE_HINT,
+  ADD_A_ROLE_LABEL, ADD_LABEL, ADD_OWN_PICTURE_LABEL, CHANGE_OWN_PICTURE_LABEL,
+  PICTURE_BACKUP_ASK_NO_LABEL, PICTURE_BACKUP_ASK_TITLE, PICTURE_BACKUP_ASK_YES_LABEL, PICTURE_BACKUP_LOCAL_COPY,
+  PICTURE_BACKUP_NOW_LABEL, PICTURE_BACKUP_PAIRED_CHILD_COPY, PICTURE_BACKUP_PENDING_COPY, PICTURE_BACKUP_SYNCED_COPY,
+  PICTURE_BACKUP_UPLOADS_OFF_COPY, pictureBackupAskBody,
   OWN_PICTURE_REFUSED_COPY, OWN_PICTURE_UNREADABLE_COPY, REMOVE_OWN_PICTURE_LABEL, SHOW_THEIR_PICTURE_LABEL, SHOW_YOUR_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
   BLOCK_REASON_FIELD_LABEL, BLOCK_SECTION_TITLE, CANCEL_LABEL, CONTACT_ACTION_FAILED_COPY,
   CONFIRM_BUTTON_LABEL, CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
@@ -42,6 +45,20 @@ import {
   validateMethodDraft, type DetailSection, type LegacyMatch,
 } from '../lib/contacts-v2-detail';
 
+/** What the host knows about backing up the user's own pictures (the page only renders it). */
+export interface PictureBackupHost {
+  /** `possible`: uploads could run; `uploads-off`: Blossom uploads are off in settings; `paired-child`: never on this install. */
+  availability: 'possible' | 'uploads-off' | 'paired-child';
+  /** Host of the backup server, for the ask's wording. */
+  serverHost: string;
+  /** Show the one-time ask now. */
+  ask: boolean;
+  /** The ask's answer: true = "Back them up", false = "Only on this phone". */
+  onAnswer: (backUp: boolean) => Promise<void>;
+  /** The status line's "Back it up" link. */
+  onBackItUp: () => Promise<void>;
+}
+
 interface Props {
   /** Unlock key + relay, for the contact's picture (local thumbnails and the #242 shared avatar). */
   encryptionKey?: string | null;
@@ -49,6 +66,8 @@ interface Props {
   /** Set the user's own picture for this contact (device-local), as the square chosen on the crop screen. */
   onSetOwnPicture?: (file: File, crop: PictureCrop) => Promise<OwnPictureOutcome>;
   onRemoveOwnPicture?: () => Promise<void>;
+  /** Backup of the user's own picture: status line and the one-time ask. Absent = no status line. */
+  pictureBackup?: PictureBackupHost;
   /**
    * "Confirm it's them": apply the writes one confirmation outcome compiles to.
    * Absent where a check cannot be recorded (no single identity list selected).
@@ -318,7 +337,33 @@ export function ContactDetail(props: Props) {
                 </button>
               )}
             </div>
-            <p className="field-hint" style={{ margin: '4px 0 0' }}>{OWN_PICTURE_HINT}</p>
+            {picture.hasOwn && props.pictureBackup && (() => {
+              const host = props.pictureBackup;
+              const state = picture.backup ?? 'local';
+              const uploadsPossible = host.availability === 'possible';
+              const line = host.availability === 'paired-child' ? PICTURE_BACKUP_PAIRED_CHILD_COPY
+                : state === 'synced' ? PICTURE_BACKUP_SYNCED_COPY
+                : state === 'pending' ? PICTURE_BACKUP_PENDING_COPY
+                : uploadsPossible ? PICTURE_BACKUP_LOCAL_COPY : PICTURE_BACKUP_UPLOADS_OFF_COPY;
+              return (
+                <p className="field-hint" role="status" style={{ margin: '4px 0 0' }}>
+                  {line}
+                  {state === 'local' && uploadsPossible && (
+                    <>{' '}<button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run('picture', host.onBackItUp)}>{PICTURE_BACKUP_NOW_LABEL}</button></>
+                  )}
+                </p>
+              );
+            })()}
+            {picture.hasOwn && props.pictureBackup?.ask && props.pictureBackup.availability === 'possible' && (
+              <div className="card section" role="group" aria-label={PICTURE_BACKUP_ASK_TITLE}>
+                <h2>{PICTURE_BACKUP_ASK_TITLE}</h2>
+                <p>{pictureBackupAskBody(props.pictureBackup.serverHost)}</p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm" disabled={busy} onClick={() => void run('picture', () => props.pictureBackup!.onAnswer(true))}>{PICTURE_BACKUP_ASK_YES_LABEL}</button>
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run('picture', () => props.pictureBackup!.onAnswer(false))}>{PICTURE_BACKUP_ASK_NO_LABEL}</button>
+                </div>
+              </div>
+            )}
             {actionError?.scope === 'picture' && <p role="alert">{actionError.message}</p>}
           </div>
         )}

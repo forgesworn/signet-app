@@ -115,6 +115,35 @@ describe('useContactPicture precedence', () => {
     });
   });
 
+  describe('backup state', () => {
+    it('is null with no own picture, and follows the own row as it changes', async () => {
+      const pictures = await import('../lib/contact-pictures');
+      const { useContactPicture } = await import('./useContactPicture');
+      const { result } = renderHook(() => useContactPicture({ encryptionKey: KEY, pubkey: PK, directoryId: 'owner', contactId: CID, sharedUrl: null }));
+      await waitFor(() => expect(pictures.contactPicturesVersion()).toBeGreaterThan(0));
+      expect(result.current.backup).toBeNull();
+
+      await act(async () => {
+        await pictures.setOwnContactPicture(KEY, 'owner', CID, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => JPEG(9), backup: 'pending' });
+      });
+      await waitFor(() => expect(result.current.backup).toBe('pending'));
+
+      await act(async () => { await pictures.setOwnPictureBackupState(KEY, 'owner', CID, 'synced'); });
+      await waitFor(() => expect(result.current.backup).toBe('synced'));
+
+      await act(async () => { await pictures.removeOwnContactPicture(KEY, 'owner', CID); });
+      await waitFor(() => expect(result.current.backup).toBeNull());
+    });
+
+    it('a row saved without a state reads as local', async () => {
+      const pictures = await import('../lib/contact-pictures');
+      const { useContactPicture } = await import('./useContactPicture');
+      await pictures.setOwnContactPicture(KEY, 'owner', CID, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => JPEG(9) });
+      const { result } = renderHook(() => useContactPicture({ encryptionKey: KEY, pubkey: PK, directoryId: 'owner', contactId: CID, sharedUrl: null }));
+      await waitFor(() => expect(result.current.backup).toBe('local'));
+    });
+  });
+
   it('shows nothing when locked or with nothing stored', async () => {
     const { useContactPicture } = await import('./useContactPicture');
     const locked = renderHook(() => useContactPicture({ encryptionKey: null, pubkey: PK }));
