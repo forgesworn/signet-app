@@ -89,10 +89,24 @@ export interface ContactPicture {
   jpeg: Uint8Array;
   /** The kind-0 `picture` URL it was downloaded from (`kind0:` rows only). */
   sourceUrl?: string;
+  /** sha256 hex of `jpeg` (`own:` rows). Lets restore tell whether the row already matches a backup pointer. */
+  plainHash?: string;
+  /**
+   * Backup state of an `own:` row: `pending` = should be uploaded, `synced` =
+   * matches the operation log's pointer, `local` = kept on this device only.
+   * Absent reads as `local` (rows written before backups existed).
+   */
+  backup?: OwnPictureBackupState;
   /** Unix ms. */
   fetchedAt: number;
   /** Unix ms. */
   updatedAt: number;
+}
+
+export type OwnPictureBackupState = 'pending' | 'synced' | 'local';
+
+export function isOwnPictureBackupState(v: unknown): v is OwnPictureBackupState {
+  return v === 'pending' || v === 'synced' || v === 'local';
 }
 
 export interface StoredContactPictureRow {
@@ -119,6 +133,8 @@ function fromB64(s: string): Uint8Array {
 export async function sealContactPicture(picture: ContactPicture, encryptionKey: string, gen?: number): Promise<StoredContactPictureRow> {
   if (!encryptionKey) throw new Error('Encryption key required to save a contact picture');
   if (!isContactPictureId(picture.id)) throw new Error('Invalid contact picture id');
+  if (picture.plainHash !== undefined && !HEX64.test(picture.plainHash)) throw new Error('Invalid contact picture');
+  if (picture.backup !== undefined && !isOwnPictureBackupState(picture.backup)) throw new Error('Invalid contact picture');
   if (picture.jpeg.length === 0 || picture.jpeg.length > CONTACT_PICTURE_MAX_STORED_BYTES || sniffImageFormat(picture.jpeg) !== 'jpeg') {
     throw new Error('Invalid contact picture');
   }
@@ -126,6 +142,8 @@ export async function sealContactPicture(picture: ContactPicture, encryptionKey:
     id: picture.id,
     jpeg: toB64(picture.jpeg),
     ...(picture.sourceUrl ? { sourceUrl: picture.sourceUrl } : {}),
+    ...(picture.plainHash ? { plainHash: picture.plainHash } : {}),
+    ...(picture.backup ? { backup: picture.backup } : {}),
     fetchedAt: picture.fetchedAt,
   });
   const { iv, ciphertext } = await aesEncrypt(body, await keyFor(encryptionKey, gen));
@@ -151,6 +169,8 @@ export async function openContactPicture(row: unknown, encryptionKey: string, ge
       id: r.id,
       jpeg,
       ...(typeof body.sourceUrl === 'string' ? { sourceUrl: body.sourceUrl } : {}),
+      ...(typeof body.plainHash === 'string' && HEX64.test(body.plainHash) ? { plainHash: body.plainHash } : {}),
+      ...(isOwnPictureBackupState(body.backup) ? { backup: body.backup } : {}),
       fetchedAt: typeof body.fetchedAt === 'number' ? body.fetchedAt : 0,
       updatedAt: typeof r.updatedAt === 'number' ? r.updatedAt : 0,
     };

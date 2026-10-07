@@ -2498,9 +2498,9 @@ export async function saveContactPicture(picture: ContactPicture, encryptionKey:
   await db.put('contactPictures', row);
 }
 
-export async function getContactPicture(id: string, encryptionKey: string): Promise<ContactPicture | null> {
+export async function getContactPicture(id: string, encryptionKey: string, gen?: number): Promise<ContactPicture | null> {
   const db = await getDB();
-  return openContactPicture(await db.get('contactPictures', id), encryptionKey);
+  return openContactPicture(await db.get('contactPictures', id), encryptionKey, gen);
 }
 
 /** Every readable picture. Unreadable rows are skipped, never thrown. */

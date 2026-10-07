@@ -10,7 +10,7 @@ import { uploadToBlossom } from './blossom';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { SigningBackend } from './signing-backend';
-import { isPrivateOrInternalHost } from './safe-url';
+import { isSafeBlossomBase } from './safe-url';
 
 /** Cap per blob (post-downscale) so a fat photo can't choke a Blossom server. */
 export const AVATAR_MAX_BYTES = 500 * 1024;
@@ -25,29 +25,13 @@ export const AVATAR_MAX_BYTES = 500 * 1024;
 export const AVATAR_MAX_DOWNLOAD_BYTES = AVATAR_MAX_BYTES * 4;
 
 /**
- * Validate a Blossom base URL before issuing a fetch. Mirrors
- * `safeImageOrLinkUrl`: https only (plus http loopback for local dev), and
- * reject private/loopback/link-local/metadata hosts so a contact- or
- * inventory-supplied blossomUrl can't drive an SSRF/IP-probe.
- */
-function isSafeBlossomBase(raw: string): boolean {
-  let url: URL;
-  try { url = new URL(raw); } catch { return false; }
-  if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')) {
-    return true;
-  }
-  if (url.protocol !== 'https:') return false;
-  return !isPrivateOrInternalHost(url.hostname);
-}
-
-/**
  * Read a fetch Response body into a Uint8Array, aborting if it exceeds `cap`.
  * Checks the declared Content-Length first (cheap reject for honest servers),
  * then streams with a running byte counter (defends against a lying or absent
  * Content-Length). Falls back to a buffered read + post-check in environments
  * without a streaming body (e.g. some test mocks).
  */
-async function readBodyCapped(response: Response, cap: number): Promise<Uint8Array> {
+export async function readBodyCapped(response: Response, cap: number): Promise<Uint8Array> {
   const declared = response.headers.get('content-length');
   if (declared) {
     const n = Number(declared);

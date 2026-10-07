@@ -131,3 +131,19 @@ export function isPrivateOrInternalHost(hostname: string): boolean {
 
   return false;
 }
+
+/**
+ * Validate a Blossom base URL before issuing a fetch. Mirrors
+ * `safeImageOrLinkUrl`: https only (plus http loopback for local dev), and
+ * reject private/loopback/link-local/metadata hosts so a contact- or
+ * inventory-supplied blossomUrl can't drive an SSRF/IP-probe.
+ */
+export function isSafeBlossomBase(raw: string): boolean {
+  let url: URL;
+  try { url = new URL(raw); } catch { return false; }
+  if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')) {
+    return true;
+  }
+  if (url.protocol !== 'https:') return false;
+  return !isPrivateOrInternalHost(url.hostname);
+}

@@ -33,6 +33,7 @@ import type {
   ContactDirectEvidence,
   ContactOperation,
   ContactRecord,
+  ContactPicturePointer,
   KeyLinkValue,
   NoteValue,
   RemoveItemValue,
@@ -47,6 +48,7 @@ import type {
 } from '../types';
 import { linkContactList, unlinkContactList, removeContactLists, validContactLists } from './contacts-v2-membership';
 import { sanitizeDisplayName, sanitizeNote } from './text-sanitize';
+import { isSafeBlossomBase } from './safe-url';
 
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -74,12 +76,28 @@ const CAP_LABEL = 60;
 export const CAP_METHOD_VALUE = 200;
 const CAP_REASON = 200;
 const CAP_NOTE = 2000;
+const CAP_PICTURE_SERVER = 512;
+const PICTURE_FIELDS = ['server', 'hash', 'key', 'plainHash'];
+
+/**
+ * A `set-picture` pointer (also the shape of `ContactRecord.picture`): the
+ * EXACT field set, `hash`/`key`/`plainHash` strictly lowercase 64-hex, `server`
+ * an https URL that passes the Blossom SSRF guard. `key` is a secret.
+ */
+function validPicturePointer(v: unknown): v is ContactPicturePointer {
+  if (!isObj(v)) return false;
+  const keys = Object.keys(v);
+  if (keys.length !== PICTURE_FIELDS.length || !PICTURE_FIELDS.every(k => keys.includes(k))) return false;
+  return typeof v.server === 'string' && v.server.length > 0 && v.server.length <= CAP_PICTURE_SERVER
+    && v.server.startsWith('https://') && isSafeBlossomBase(v.server)
+    && isHex(v.hash, HEX64) && isHex(v.key, HEX64) && isHex(v.plainHash, HEX64);
+}
 
 const ACTIONS: readonly ContactAction[] = [
   'add', 'rename', 'set-tier', 'set-roles', 'add-identity', 'update-identity',
   'add-method', 'update-method', 'remove-item', 'evidence', 'vouch', 'revoke-vouch',
   'ceiling', 'revoke-ceiling', 'block', 'unblock', 'set-lifecycle', 'archive',
-  'remove', 'key-link', 'note', 'link-list', 'unlink-list', 'app-propose-list', 'review-app-list', 'receive-share', 'record-share', 'record-check', 'remove-check', 'record-origin', 'remove-origin',
+  'remove', 'key-link', 'note', 'set-picture', 'clear-picture', 'link-list', 'unlink-list', 'app-propose-list', 'review-app-list', 'receive-share', 'record-share', 'record-check', 'remove-check', 'record-origin', 'remove-origin',
 ];
 
 /**
@@ -300,6 +318,10 @@ function validateValue(op: { action: ContactAction; value: unknown; targetOperat
       return isObj(v) && isLifecycleValue(v.lifecycle);
     case 'note':
       return isObj(v) && typeof v.note === 'string' && v.note.length <= CAP_NOTE;
+    case 'set-picture':
+      return validPicturePointer(v);
+    case 'clear-picture':
+      return isObj(v) && Object.keys(v).length === 0;
     case 'remove':
     case 'archive':
       return isObj(v);
@@ -445,6 +467,7 @@ export function validateRecord(raw: unknown): raw is ContactRecord {
   if (!everyElement(raw.ceilings, isCeilingFact)) return false;
   if (!everyElement(raw.blocks, isBlockFact)) return false;
   if (raw.notes !== undefined && (typeof raw.notes !== 'string' || raw.notes.length > CAP_NOTE)) return false;
+  if (raw.picture !== undefined && !validPicturePointer(raw.picture)) return false;
   return true;
 }
 
@@ -504,6 +527,7 @@ function applyAdd(record: ContactRecord | undefined, op: ContactOperation): Cont
     ceilings: record?.ceilings ?? [],
     blocks: record?.blocks ?? [],
     notes: record?.notes,
+    ...(record?.picture ? { picture: record.picture } : {}),
     ...(record?.origins ? { origins: record.origins } : {}),
     ...(record?.checks ? { checks: record.checks } : {}),
     sharedContexts: record?.sharedContexts,
@@ -582,6 +606,13 @@ function applyOne(record: ContactRecord | undefined, op: ContactOperation): Cont
       // the owner typed for themselves, and the display-name sanitiser strips
       // the \n and \t out of it.
       return { ...touched, notes: sanitizeNote((op.value as NoteValue).note, CAP_NOTE) };
+    case 'set-picture':
+      return { ...touched, picture: { ...(op.value as ContactPicturePointer) } };
+    case 'clear-picture': {
+      const { picture: _gone, ...rest } = touched;
+      void _gone;
+      return rest;
+    }
     case 'remove':
       // A removal supersedes an archive: the snapshot is gone, so the record
       // must not keep reading as archived.

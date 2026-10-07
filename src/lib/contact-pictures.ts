@@ -23,8 +23,10 @@ import { downloadPictureBytes } from './picture-download';
 import { makeThumbnail } from './picture-thumbnail';
 import type { PictureCrop } from './picture-crop';
 import { checkImageHeader } from './image-header';
-import { kind0PictureId, ownPictureId, contactPictureGeneration, ContactPicturesLockedError, type ContactPicture } from './contact-picture-crypto';
-import { saveContactPicture, deleteContactPicture, listContactPictures, listAllContactOperationsV2 } from './db';
+import { kind0PictureId, ownPictureId, contactPictureGeneration, ContactPicturesLockedError, type ContactPicture, type OwnPictureBackupState } from './contact-picture-crypto';
+import { saveContactPicture, deleteContactPicture, listContactPictures, getContactPicture, listAllContactOperationsV2 } from './db';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { primaryIdentityPubkey } from './contacts-v2-list';
 import { applyOperations } from './contacts-v2-reducer';
 import type { ContactRecord } from '../types';
@@ -125,7 +127,19 @@ export async function applyKind0Pictures(
 // cache, re-derive the key, or store anything after the app locked.
 
 type Listener = () => void;
-let cache: { key: string; gen: number; byId: Map<string, Blob>; sources: Map<string, string | undefined>; load: Promise<void> } | null = null;
+export interface OwnPictureState {
+  /** sha256 hex of the stored JPEG, when known. */
+  plainHash?: string;
+  /** Absent in the store reads as `'local'`. */
+  backup: OwnPictureBackupState;
+}
+
+let cache: { key: string; gen: number; byId: Map<string, Blob>; sources: Map<string, string | undefined>; own: Map<string, OwnPictureState>; load: Promise<void> } | null = null;
+
+function ownStateOf(p: ContactPicture): OwnPictureState | null {
+  if (!p.id.startsWith('own:')) return null;
+  return { ...(p.plainHash ? { plainHash: p.plainHash } : {}), backup: p.backup ?? 'local' };
+}
 let version = 0;
 const listeners = new Set<Listener>();
 
@@ -156,6 +170,7 @@ export function loadContactPictures(encryptionKey: string, gen: number = contact
     gen,
     byId: new Map<string, Blob>(),
     sources: new Map<string, string | undefined>(),
+    own: new Map<string, OwnPictureState>(),
     load: Promise.resolve(),
   };
   cache = entry;
@@ -171,6 +186,8 @@ export function loadContactPictures(encryptionKey: string, gen: number = contact
       if (!entry.byId.has(p.id)) {
         entry.byId.set(p.id, blobOf(p.jpeg));
         entry.sources.set(p.id, p.sourceUrl);
+        const own = ownStateOf(p);
+        if (own) entry.own.set(p.id, own);
       }
       p.jpeg.fill(0);
     }
@@ -200,6 +217,16 @@ export function cachedContactPicture(encryptionKey: string | null, id: string): 
   return cacheFor(encryptionKey, contactPictureGeneration())?.byId.get(id) ?? null;
 }
 
+/**
+ * The backup state of an own picture from the decrypted cache (for the status
+ * line): `null` when there is no own row (or the cache isn't loaded for this
+ * unlock). A row with no stored `backup` reads as `'local'`.
+ */
+export function cachedOwnPictureState(encryptionKey: string | null, directoryId: string, contactId: string): OwnPictureState | null {
+  if (!encryptionKey) return null;
+  return cacheFor(encryptionKey, contactPictureGeneration())?.own.get(ownPictureId(directoryId, contactId)) ?? null;
+}
+
 /** Rejects with `ContactPicturesLockedError` (nothing written) when `gen` is stale. */
 async function storePicture(encryptionKey: string, picture: ContactPicture, gen: number): Promise<void> {
   if (!live(gen)) throw new ContactPicturesLockedError();
@@ -208,6 +235,8 @@ async function storePicture(encryptionKey: string, picture: ContactPicture, gen:
   if (entry) {
     entry.byId.set(picture.id, blobOf(picture.jpeg));
     entry.sources.set(picture.id, picture.sourceUrl);
+    const own = ownStateOf(picture);
+    if (own) entry.own.set(picture.id, own);
     notify();
   }
 }
@@ -219,6 +248,7 @@ async function dropPicture(encryptionKey: string, id: string, gen: number): Prom
   if (entry) {
     entry.byId.delete(id);
     entry.sources.delete(id);
+    entry.own.delete(id);
     notify();
   }
 }
@@ -308,7 +338,12 @@ export async function setOwnContactPicture(
   contactId: string,
   file: Blob,
   crop?: PictureCrop,
-  deps: { thumbnail?: (bytes: Uint8Array, crop?: PictureCrop) => Promise<Uint8Array | null>; now?: () => number } = {},
+  deps: {
+    thumbnail?: (bytes: Uint8Array, crop?: PictureCrop) => Promise<Uint8Array | null>;
+    now?: () => number;
+    /** Initial backup state of the new row (default `'local'`). */
+    backup?: OwnPictureBackupState;
+  } = {},
 ): Promise<OwnPictureOutcome> {
   // A picked file is untrusted input too. Camera photos are larger than the
   // 2 MB download cap, so the file cap is looser; the header gate (8192 px a
@@ -329,7 +364,10 @@ export async function setOwnContactPicture(
   if (!live(gen)) { jpeg.fill(0); return 'locked'; }
   const t = (deps.now ?? Date.now)();
   try {
-    await storePicture(encryptionKey, { id: ownPictureId(directoryId, contactId), jpeg, fetchedAt: t, updatedAt: t }, gen);
+    await storePicture(encryptionKey, {
+      id: ownPictureId(directoryId, contactId), jpeg, plainHash: bytesToHex(sha256(jpeg)),
+      backup: deps.backup ?? 'local', fetchedAt: t, updatedAt: t,
+    }, gen);
   } catch (e) {
     if (e instanceof ContactPicturesLockedError) { jpeg.fill(0); return 'locked'; }
     throw e;
@@ -337,8 +375,64 @@ export async function setOwnContactPicture(
   return 'saved';
 }
 
-export async function removeOwnContactPicture(encryptionKey: string, directoryId: string, contactId: string): Promise<void> {
-  await dropPicture(encryptionKey, ownPictureId(directoryId, contactId), contactPictureGeneration());
+export async function removeOwnContactPicture(encryptionKey: string, directoryId: string, contactId: string, gen: number = contactPictureGeneration()): Promise<void> {
+  await dropPicture(encryptionKey, ownPictureId(directoryId, contactId), gen);
+}
+
+/**
+ * Change the backup state of an own row. Returns false (nothing written) when
+ * there is no such row, when `expectPlainHash` is given and the row now holds a
+ * different picture (the user swapped it mid-upload), or when the app locked.
+ */
+export async function setOwnPictureBackupState(
+  encryptionKey: string,
+  directoryId: string,
+  contactId: string,
+  state: OwnPictureBackupState,
+  expectPlainHash?: string,
+  gen: number = contactPictureGeneration(),
+): Promise<boolean> {
+  if (!live(gen)) return false;
+  let row: ContactPicture | null;
+  try { row = await getContactPicture(ownPictureId(directoryId, contactId), encryptionKey, gen); } catch { return false; }
+  if (!row) return false;
+  const rowHash = row.plainHash ?? bytesToHex(sha256(row.jpeg));
+  if ((expectPlainHash !== undefined && rowHash !== expectPlainHash) || !live(gen)) { row.jpeg.fill(0); return false; }
+  try {
+    await storePicture(encryptionKey, { ...row, plainHash: rowHash, backup: state, updatedAt: Date.now() }, gen);
+    return true;
+  } catch (e) {
+    if (e instanceof ContactPicturesLockedError) return false;
+    throw e;
+  } finally {
+    row.jpeg.fill(0);
+  }
+}
+
+/**
+ * Store a picture restored from its encrypted backup as a `'synced'` own row.
+ * The bytes must hash to `plainHash` and be a JPEG. Returns false (nothing
+ * written) on a mismatch or when the app locked.
+ */
+export async function storeRestoredOwnPicture(
+  encryptionKey: string,
+  directoryId: string,
+  contactId: string,
+  jpeg: Uint8Array,
+  plainHash: string,
+  gen: number = contactPictureGeneration(),
+): Promise<boolean> {
+  if (!live(gen) || bytesToHex(sha256(jpeg)) !== plainHash) return false;
+  const t = Date.now();
+  try {
+    await storePicture(encryptionKey, { id: ownPictureId(directoryId, contactId), jpeg, plainHash, backup: 'synced', fetchedAt: t, updatedAt: t }, gen);
+    return true;
+  } catch (e) {
+    if (e instanceof ContactPicturesLockedError) return false;
+    // An invalid JPEG (sealContactPicture refuses it) is a refusal, not a crash.
+    if (e instanceof Error && e.message === 'Invalid contact picture') return false;
+    throw e;
+  }
 }
 
 /**

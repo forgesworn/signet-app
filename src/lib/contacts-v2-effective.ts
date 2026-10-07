@@ -139,8 +139,13 @@ export function resolveEffective(record: ContactRecord, ctx: EffectiveContext): 
   // only the blocking authority may lift a block (§7.10).
   const activeBlocks = record.blocks.filter(b => !b.liftedByOperationId);
 
+  // `picture.key` is a secret (the content key of the user's own picture
+  // backup). The effective view feeds exports, shares and projections, so the
+  // pointer is dropped here rather than relying on each consumer's allowlist.
+  const { picture: _picture, ...visible } = record;
+  void _picture;
   return {
-    ...record,
+    ...visible,
     effectiveTier: tierOfRank(effectiveRank),
     tierSource,
     blocked: activeBlocks.length > 0,

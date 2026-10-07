@@ -103,3 +103,40 @@ export async function uploadToBlossom(
 
   return localHash;
 }
+
+/**
+ * Delete a blob from a Blossom server (`DELETE {server}/{hash}`), authorised by
+ * a kind-24242 event with `t=delete`, `x=<hash>` and a 5-minute expiration,
+ * signed by `backend` (the key that uploaded it). Resolves on a 2xx response;
+ * throws otherwise. Callers that want best-effort behaviour catch.
+ */
+export async function deleteFromBlossom(
+  hash: string,
+  blossomUrl: string,
+  backend: SigningBackend,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error('Blossom delete needs a lowercase sha256 hex hash');
+  if (!/^https:\/\//i.test(blossomUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)([:\/]|$)/i.test(blossomUrl)) {
+    throw new Error('Blossom URL must use https:// (or http://localhost for dev)');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const authEvent = await backend.signEvent({
+    pubkey: backend.activePublicKeyHex,
+    kind: 24242,
+    created_at: now,
+    tags: [
+      ['t', 'delete'],
+      ['x', hash],
+      ['expiration', String(now + 300)],
+    ],
+    content: 'Delete photo',
+  });
+  const baseUrl = blossomUrl.replace(/\/+$/, '');
+  const response = await fetchImpl(`${baseUrl}/${hash}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Nostr ${btoa(JSON.stringify(authEvent))}` },
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Blossom delete failed: ${response.status}`);
+}
