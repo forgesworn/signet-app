@@ -13,6 +13,7 @@ const imageFile = () => new File([Uint8Array.from(atob(PNG_3x2), c => c.charCode
 const SERVER = 'https://nostr.download';
 const OLD = 'a1'.repeat(32);
 const MID = 'c3'.repeat(32);
+const LATER = 'd4'.repeat(32);
 const PUBKEY = 'a'.repeat(64);
 
 const PUBLISHED: PersonaPublicProfile = { enabled: true, lastEventId: 'e'.repeat(64), lastPublishedAt: 1_700_000_000, lastPublishedRelay: 'wss://relay.example' };
@@ -31,7 +32,7 @@ function setup(opts: {
   onPublishNow?: () => Promise<void>;
 } = {}) {
   const order: string[] = [];
-  const uploads = [MID, 'd4'.repeat(32)];
+  const uploads = [MID, LATER];
   const onUploadPicture = vi.fn(async () => {
     const sha256 = uploads.shift()!;
     return { url: `${SERVER}/${sha256}`, sha256 };
@@ -43,10 +44,10 @@ function setup(opts: {
     if (opts.outcome === 'throw') throw new Error('boom');
     return (opts.outcome ?? 'deleted') as DeleteOutcome;
   });
-  const view = render(
+  const element = (config: PublicProfileConfig) => (
     <SlotProfileFields
       pubkey={PUBKEY}
-      config={opts.config ?? savedConfig()}
+      config={config}
       publishedState={opts.publishedState}
       slotKind="natural-person"
       blossomConsent
@@ -54,8 +55,11 @@ function setup(opts: {
       onPublishNow={onPublishNow}
       onUploadPicture={onUploadPicture}
       onDeleteBlob={onDeleteBlob}
-    />,
+    />
   );
+  const view = render(element(opts.config ?? savedConfig()));
+  /** The parent hands the saved config back after a save. */
+  const adoptSaved = (hash: string) => view.rerender(element(savedConfig({ bannerUrl: `${SERVER}/${hash}`, bannerBlossomHash: hash })));
   const bannerInput = () => Array.from(view.container.querySelectorAll('input[type="file"]'))[1] as HTMLInputElement;
   const pickBanner = async (expectedUploads: number) => {
     fireEvent.change(bannerInput(), { target: { files: [imageFile()] } });
@@ -64,7 +68,7 @@ function setup(opts: {
     await waitFor(() => expect((screen.getAllByRole('button', { name: 'Remove' }).length)).toBeGreaterThan(0));
   };
   const save = () => fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-  return { order, onUploadPicture, onSaveConfig, onPublishNow, onDeleteBlob, view, pickBanner, save };
+  return { order, onUploadPicture, onSaveConfig, onPublishNow, onDeleteBlob, view, pickBanner, save, adoptSaved };
 }
 
 describe('R2: orphans are deleted silently', () => {
@@ -220,3 +224,32 @@ describe('R6: a failed delete never blocks the save', () => {
   });
 });
 
+
+
+describe('a blob counts as a session orphan only until a save keeps it', () => {
+  it('unpublished: a picture saved earlier this session and then replaced is deleted once, by R4', async () => {
+    const t = setup();
+    await t.pickBanner(1);
+    t.save();
+    await waitFor(() => expect(t.onDeleteBlob).toHaveBeenCalledWith(OLD, SERVER));
+    t.adoptSaved(MID);
+    await t.pickBanner(2);
+    t.save();
+    await waitFor(() => expect(t.onSaveConfig).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(t.onDeleteBlob.mock.calls.filter(c => c[0] === MID)).toHaveLength(1));
+    expect(t.order).toEqual(['save', 'delete:a1', 'save', 'delete:c3']); // MID only after the second save
+  });
+
+  it('published and "Save locally for now" twice: the saved picture is never swept, and the line says it stays', async () => {
+    const t = setup({ publishedState: PUBLISHED });
+    await t.pickBanner(1);
+    t.save();
+    fireEvent.click(await screen.findByRole('button', { name: /save locally for now/i }));
+    t.adoptSaved(MID);
+    await t.pickBanner(2);
+    t.save();
+    fireEvent.click(await screen.findByRole('button', { name: /save locally for now/i }));
+    expect(await screen.findByText('The old picture stays on nostr.download because your published profile still shows it.')).toBeDefined();
+    expect(t.onDeleteBlob).not.toHaveBeenCalled();
+  });
+});

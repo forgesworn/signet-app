@@ -450,8 +450,12 @@ export function SlotProfileFields({
       }
       await onSaveConfig(next);
       savedHashes.current = { picture: next.pictureBlossomHash, banner: next.bannerBlossomHash };
-      // R2: anything picked this session that the save didn't keep.
-      sweepOrphans([next.pictureBlossomHash, next.bannerBlossomHash]);
+      // A blob the save kept graduates from R2 (session orphan) to R4 (saved):
+      // a later save that replaces it goes through `pendingOld`, never the
+      // silent sweep. Everything else picked this session is now an orphan.
+      if (next.pictureBlossomHash) sessionUploads.current.delete(next.pictureBlossomHash);
+      if (next.bannerBlossomHash) sessionUploads.current.delete(next.bannerBlossomHash);
+      sweepOrphans([]);
       pendingOld.current = previous.filter((p): p is { hash: string; server: string } => p.server !== null);
       // §9 Q7 — after successful local save, if the slot is currently
       // published, ask whether to push the changes to Nostr too. Skip the
