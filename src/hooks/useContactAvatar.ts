@@ -69,14 +69,14 @@ export function useContactAvatar(
             seedContactAvatarPointer(pubkey, pointer);
           }
           // 2b) No pointer on our relays: the card's own server and hash. https
-          // only; fetchAvatar still runs the host guard (isSafeBlossomBase).
+          // only; fetchAvatar still runs the strict host guard (isSafeContactBlossomBase).
           if (!pointer && fallback && fallback.server.startsWith('https://')) {
             pointer = { hash: fallback.hash, blossomUrl: fallback.server };
           }
           if (!pointer) return null;
 
           // 3) Encrypted blob → Blob; useObjectUrl turns it into the object URL.
-          return fetchAvatar({ hash: pointer.hash, blossomUrl: pointer.blossomUrl, keyHex: shareKey });
+          return fetchAvatar({ hash: pointer.hash, blossomUrl: pointer.blossomUrl, keyHex: shareKey, contactControlled: true });
         }
       : null,
     [pubkey, relayUrl, encryptionKey, overrideShareKey],

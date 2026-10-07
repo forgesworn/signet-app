@@ -141,6 +141,45 @@ describe('fetchAvatar — SSRF guard + download cap (security audit 2026-06-15)'
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  it('S3: the user\'s own server may be a single-label name or an IP literal; a contact-controlled one may not', async () => {
+    const plaintext = new Uint8Array([1, 2, 3]);
+    const { encryptedBlob, keyHex } = await encryptPhoto(plaintext);
+    const bytes = new Uint8Array(encryptedBlob);
+    const hash = bytesToHex(sha256(bytes));
+    const body = () => ({
+      ok: true, status: 200, headers: { get: () => null }, body: null,
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    });
+    for (const own of ['https://nas', 'https://203.0.113.5']) {
+      const fetchFn = mockFetchOnce(body);
+      const blob = await fetchAvatar({ hash, blossomUrl: own, keyHex });
+      expect(blob.size).toBe(3);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      vi.unstubAllGlobals();
+      const contactFetch = mockFetchOnce(body);
+      await expect(fetchAvatar({ hash, blossomUrl: own, keyHex, contactControlled: true })).rejects.toThrow(/unsafe Blossom URL/);
+      expect(contactFetch).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('S5: a contact-controlled GET refuses redirects and sends no credentials; the user\'s own server follows them', async () => {
+    const { encryptedBlob, keyHex } = await encryptPhoto(new Uint8Array([1]));
+    const bytes = new Uint8Array(encryptedBlob);
+    const hash = bytesToHex(sha256(bytes));
+    const body = () => ({
+      ok: true, status: 200, headers: { get: () => null }, body: null,
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    });
+    const calls: Array<RequestInit | undefined> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => { calls.push(init); return body(); }));
+    await fetchAvatar({ hash, blossomUrl: 'https://blossom.example.com', keyHex, contactControlled: true });
+    await fetchAvatar({ hash, blossomUrl: 'https://blossom.example.com', keyHex });
+    expect(calls[0]).toMatchObject({ redirect: 'error', credentials: 'omit' });
+    // Own server: blossom.primal.net answers GETs with a 302 to its media host.
+    expect(calls[1]?.redirect).toBeUndefined();
+  });
+
   it('rejects a non-https Blossom host without issuing a request', async () => {
     const fetchFn = mockFetchOnce(() => { throw new Error('should not fetch'); });
     await expect(fetchAvatar({

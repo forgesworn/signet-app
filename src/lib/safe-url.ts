@@ -135,9 +135,14 @@ export function isPrivateOrInternalHost(hostname: string): boolean {
 /**
  * Validate a Blossom base URL before issuing a fetch. Mirrors
  * `safeImageOrLinkUrl`: https only (plus http loopback for local dev), and
- * reject private/loopback/link-local/metadata hosts, IP literals and
- * single-label hosts so a contact- or inventory-supplied blossomUrl can't
- * drive an SSRF/IP-probe.
+ * reject private/loopback/link-local/metadata hosts so an inventory-supplied
+ * blossomUrl can't drive an SSRF/IP-probe.
+ *
+ * This is the guard for servers the USER configured (their own avatars, their
+ * own picture backup, the reducer's `set-picture` check). A server the user
+ * chose may legitimately be a single-label name (`https://nas`) or a public IP
+ * literal, so those pass. A server a CONTACT chose goes through
+ * `isSafeContactBlossomBase` instead.
  */
 export function isSafeBlossomBase(raw: string): boolean {
   let url: URL;
@@ -146,11 +151,22 @@ export function isSafeBlossomBase(raw: string): boolean {
     return true;
   }
   if (url.protocol !== 'https:') return false;
-  if (isPrivateOrInternalHost(url.hostname)) return false;
-  // A Blossom server is a named public host. The contact-card rules
-  // (signet-contacts contact-invite-v1, "Fetching the photo") also refuse every
-  // IP literal, public ones included, and single-label names, because the
-  // sender chose the server and an intranet resolver can answer `https://nas`.
+  return !isPrivateOrInternalHost(url.hostname);
+}
+
+/**
+ * The stricter guard for a Blossom server a contact (or a card, or a pointer
+ * the contact published) named. On top of `isSafeBlossomBase` it refuses every
+ * IP literal, public ones included, and single-label names, because the sender
+ * chose the server and an intranet resolver can answer `https://nas`
+ * (signet-contacts contact-invite-v1, "Fetching the photo"). Never use it for
+ * the user's own server: that one may be a short name or an IP.
+ */
+export function isSafeContactBlossomBase(raw: string): boolean {
+  if (!isSafeBlossomBase(raw)) return false;
+  let url: URL;
+  try { url = new URL(raw); } catch { return false; }
+  if (url.protocol !== 'https:') return true; // http loopback for local dev, as isSafeBlossomBase
   let host = url.hostname.toLowerCase();
   if (host.startsWith('[') && host.endsWith(']')) return false; // IPv6 literal
   if (host.endsWith('.')) host = host.slice(0, -1);

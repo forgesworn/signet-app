@@ -13,7 +13,7 @@ import {
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { cropSourceRect, isValidPictureCrop, type PictureCrop } from './picture-crop';
-import { isSafeBlossomBase } from './safe-url';
+import { isSafeBlossomBase, isSafeContactBlossomBase } from './safe-url';
 
 /** Cap per blob (post-downscale) so a fat photo can't choke a Blossom server. */
 export const AVATAR_MAX_BYTES = 500 * 1024;
@@ -259,16 +259,27 @@ export async function fetchAvatar(meta: {
   hash: string;
   blossomUrl: string;
   keyHex: string;
+  /**
+   * True when a CONTACT chose the server (a contact's pointer, a stored card
+   * fallback). Applies the strict host rules (no IP literals, no single-label
+   * names) AND refuses redirects, so a hostile server cannot bounce the GET to
+   * a LAN host. The user's own server keeps the plain guard and follows
+   * redirects (blossom.primal.net answers GETs with a 302 to its media host).
+   */
+  contactControlled?: boolean;
 }): Promise<Blob> {
   const baseUrl = meta.blossomUrl.replace(/\/+$/, '');
   // SSRF / IP-leak guard (security audit 2026-06-15): reject non-https or
   // private/internal Blossom hosts before issuing the GET. blossomUrl is
   // contact- / inventory-supplied for shared avatars.
-  if (!isSafeBlossomBase(baseUrl)) {
+  const safe = meta.contactControlled ? isSafeContactBlossomBase(baseUrl) : isSafeBlossomBase(baseUrl);
+  if (!safe) {
     throw new Error('Avatar fetch rejected: unsafe Blossom URL (scheme or internal host)');
   }
   const url = `${baseUrl}/${meta.hash.toLowerCase()}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const response = await fetch(url, meta.contactControlled
+    ? { signal: AbortSignal.timeout(20_000), redirect: 'error', credentials: 'omit' }
+    : { signal: AbortSignal.timeout(20_000) });
   if (!response.ok) {
     throw new Error(`Avatar fetch failed: ${response.status}`);
   }

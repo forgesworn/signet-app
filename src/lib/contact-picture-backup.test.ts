@@ -130,6 +130,15 @@ describe('uploadOwnPicture', () => {
     }
     expect(upload).not.toHaveBeenCalled();
   });
+
+  it('S3: the user\'s own server may be a single-label name or a public IP literal', async () => {
+    const m = await load();
+    for (const s of ['https://nas', 'https://203.0.113.5']) {
+      const upload = vi.fn(async (blob: Blob) => hash(new Uint8Array(await blob.arrayBuffer())));
+      const p = await m.uploadOwnPicture(JPEG(1), s, { upload: upload as never });
+      expect(p.server).toBe(s);
+    }
+  });
 });
 
 describe('downloadOwnPicture', () => {
