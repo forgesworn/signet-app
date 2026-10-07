@@ -437,3 +437,39 @@ describe('child exchanges publish and record only for an approved request (revie
     expect(now).toBeLessThan(expiresAt);
   });
 });
+
+it('M3: the card builder runs only after the pre-checks pass, and its card rides the message', async () => {
+  const now = 1700000000;
+  const card = { name: 'Alex' };
+  // A refused request (policy) builds nothing.
+  const refusing = party('01'.repeat(32), 'owner', { mayConnect: () => false });
+  const target = party('02'.repeat(32), 'owner');
+  const invite = await target.service.create(target.pubkey, 'Conference', ['wss://relay.example'], 'single-use', now);
+  const builder = vi.fn(async () => card);
+  await expect(refusing.service.request(refusing.pubkey, invite.invite, now + 1, undefined, builder)).rejects.toThrow('contact policy');
+  expect(builder).not.toHaveBeenCalled();
+  // An allowed request builds it exactly once, after the checks, and sends it.
+  const a = party('01'.repeat(32), 'owner');
+  await a.service.request(a.pubkey, invite.invite, now + 1, undefined, builder);
+  expect(builder).toHaveBeenCalledTimes(1);
+  expect((await a.service.read()).exchanges[0].request.card).toEqual(card);
+});
+it('M3: a refused accept builds no card; an allowed one builds it once and sends it', async () => {
+  const now = 1700000000;
+  const a = party('01'.repeat(32), 'owner');
+  const dir = `dependant:${'b'.repeat(64)}`; // a separate vault from a's, as in the exchange test above
+  const refusing = party('02'.repeat(32), dir, { mayConnect: peer => peer !== a.pubkey });
+  const b = party('02'.repeat(32), dir);
+  const invite = await b.service.create(b.pubkey, 'Conference', ['wss://relay.example'], 'single-use', now);
+  await a.service.request(a.pubkey, invite.invite, now + 1);
+  const outbox = (await a.service.read()).outbox[0];
+  const arrival = { id: outbox.id, inviteId: invite.id, identityPubkey: b.pubkey, packet: openContactMailboxWrap(outbox.event, invite.invite.secret)!, receivedAt: now + 2 };
+  await recordContactArrival(dir, KEY, arrival);
+  await b.service.openInbox(now + 3);
+  const builder = vi.fn(async () => ({ name: 'Bea' }));
+  await expect(refusing.service.accept(outbox.id, now + 4, false, false, builder)).rejects.toThrow('cannot be accepted');
+  expect(builder).not.toHaveBeenCalled();
+  await b.service.accept(outbox.id, now + 4, false, false, builder);
+  expect(builder).toHaveBeenCalledTimes(1);
+  expect((await b.service.read()).exchanges[0].acceptance?.card).toEqual({ name: 'Bea' });
+});

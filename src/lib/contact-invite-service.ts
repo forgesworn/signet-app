@@ -13,6 +13,16 @@ import { publishToRelays } from './sync-relays';
 import type { NostrEvent } from 'signet-protocol';
 
 /** Calls never publish before their encrypted state/outbox has been persisted. */
+/**
+ * A card to send, or a builder for one. The builder runs only AFTER every
+ * pre-check (policy, "already accepted", mailbox capacity) has passed, and just
+ * before the message is made. Building a card mints a share key, uploads a
+ * photo copy and publishes a pointer, so a request or accept that is refused
+ * must never get that far (M3).
+ */
+export type ContactCardSource = ContactCard | (() => Promise<ContactCard | undefined>);
+const resolveCard = (source: ContactCardSource | undefined) => typeof source === 'function' ? source() : Promise.resolve(source);
+
 export class ContactInviteService {
   constructor(private options: {
     directoryId: string; encryptionKey: string; budget: ContactIdentityDecryptBudget;
@@ -153,7 +163,7 @@ export class ContactInviteService {
         ? { ...i, enabled, updatedAt: Math.max(now, i.updatedAt + 1) } : i) };
     });
   }
-  async request(identityPubkey: string, invite: ContactInvite, now: number, app?: ContactInviteAppOrigin, card?: ContactCard) {
+  async request(identityPubkey: string, invite: ContactInvite, now: number, app?: ContactInviteAppOrigin, cardSource?: ContactCardSource) {
     await this.cleanup(now);
     if (app) {
       if (!await this.options.appAllowed?.(app, identityPubkey, 'receive', false)) throw new Error('App invitation permission ended');
@@ -174,6 +184,8 @@ export class ContactInviteService {
       // acknowledgement, but must not repeat a refused signing prompt.
       this.options.automaticAttempts.add(attempt);
     }
+    // Every refusal above has passed; only now may the card be built (M3).
+    const card = await resolveCard(cardSource); this.check();
     const nonce = bytesToHex(randomBytes(32));
     const request = createContactRequest({ id: bytesToHex(randomBytes(16)), from: identityPubkey, to: parsed.recipient,
       nonce, reply: { secret: bytesToHex(randomBytes(32)), relays: parsed.relays }, now,
@@ -322,7 +334,7 @@ export class ContactInviteService {
       } catch { this.check(); }
     }
   }
-  async accept(arrivalId: string, now: number, acceptDifferentRecipient = false, automatic = false, card?: ContactCard) {
+  async accept(arrivalId: string, now: number, acceptDifferentRecipient = false, automatic = false, cardSource?: ContactCardSource) {
     const startedAt = Date.now();
     const state = await this.read();
     const arrival = state.arrivals.find(a => a.id === arrivalId);
@@ -334,6 +346,8 @@ export class ContactInviteService {
     if (!request || arrival.dismissedAt !== undefined || !await this.options.mayConnect(request.from)) throw new Error('Request cannot be accepted');
     if (state.exchanges.some(e => contactExchangeKey(e.request) === contactExchangeKey(request))) return;
     assertContactMailboxCapacity(state, request.to, now, request.reply.relays, 'exchange');
+    // Every refusal above has passed; only now may the card be built (M3).
+    const card = await resolveCard(cardSource); this.check();
     const next: StoredContactExchange = { ...acceptContactExchange(request, bytesToHex(randomBytes(32)), now, card), ...(invite?.app ? { app: invite.app } : {}),
       origin: { id: contactExchangeKey(request), ownerIdentityPubkey: request.to, method: invite?.app ? 'app' : 'accepted-request', addedAt: now * 1000, ...(invite?.app ? { appName: invite.app.appName } : {}),
         ...(invite ? { inviteId: invite.id, inviteName: invite.name } : {}) } };

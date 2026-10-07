@@ -17,7 +17,8 @@ const request = (card?: unknown) => ({ v: 1, type: 'signet-contact-request', id:
   commitment: 'c'.repeat(64), reply: { secret: 'd'.repeat(64), relays: ['wss://relay.example'] }, ...(card ? { card } : {}) });
 const vault = (req: unknown) => ({ invites: [], exchanges: [], outbox: [], arrivals: [{ id: 'arr1', inviteId: 'inv1', identityPubkey: ME, receivedAt: 1, request: req }] });
 function setup(req: unknown, cards?: Parameters<typeof ContactInvites>[0]['cards']) {
-  const service = { read: vi.fn(async () => vault(req)), accept: vi.fn(async () => {}), flush: vi.fn(async () => {}), dismiss: vi.fn(async () => {}) };
+  // Like the real service, resolve a lazily built card AFTER (here: when) it accepts.
+  const service = { read: vi.fn(async () => vault(req)), accept: vi.fn(async (_id: string, _now: number, _d: boolean, _auto: boolean, card?: unknown) => { if (typeof card === 'function') await card(); }), flush: vi.fn(async () => {}), dismiss: vi.fn(async () => {}) };
   render(<ContactInvites service={service as never} identityPubkey={ME} identityName="Pip" relays={[]} version={0} cards={cards}
     onAddContact={async () => {}} onBack={() => {}} />);
   return service;
@@ -66,7 +67,8 @@ describe('accepting with a card', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept request' }));
     await waitFor(() => expect(service.accept).toHaveBeenCalledTimes(1));
     expect(build).toHaveBeenCalledWith(ME, { name: true, photo: true });
-    expect(service.accept).toHaveBeenCalledWith('arr1', expect.any(Number), false, false, card);
+    expect(service.accept).toHaveBeenCalledWith('arr1', expect.any(Number), false, false, expect.any(Function));
+    expect(await (service.accept.mock.calls[0][4] as () => Promise<unknown>)()).toBe(card);
   });
   it('accepts nothing when the photo cannot be shared, and offers "Accept without your photo"', async () => {
     const build = vi.fn<(p: string, c: { name: boolean; photo: boolean }) => Promise<undefined | { name: string }>>()
@@ -75,10 +77,17 @@ describe('accepting with a card', () => {
     fireEvent.click(await screen.findByLabelText('Your photo'));
     fireEvent.click(screen.getByRole('button', { name: 'Accept request' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe("Your photo couldn't be shared, so nothing was sent."));
-    expect(service.accept).not.toHaveBeenCalled();
+    expect(service.flush).not.toHaveBeenCalled(); // the accept threw: nothing was sent
     fireEvent.click(screen.getByRole('button', { name: 'Accept without your photo' }));
-    await waitFor(() => expect(service.accept).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(service.flush).toHaveBeenCalledTimes(1));
     expect(build).toHaveBeenLastCalledWith(ME, { name: true, photo: false });
-    expect(service.accept).toHaveBeenCalledWith('arr1', expect.any(Number), false, false, { name: 'Pip' });
+  });
+  it('M3: an accept the service refuses builds no card, so no photo is uploaded or pointer published', async () => {
+    const build = vi.fn(async () => ({ name: 'Pip' }));
+    const service = setup(request(), { infoFor: () => info, build: build as never });
+    service.accept.mockImplementationOnce(async () => { throw new Error('Request cannot be accepted'); }); // a pre-check refuses
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept request' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Request cannot be accepted'));
+    expect(build).not.toHaveBeenCalled();
   });
 });

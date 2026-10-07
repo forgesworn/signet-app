@@ -11630,12 +11630,13 @@ export function App() {
           ownPubkeys={ownPubkeys}
           cardInfoFor={persona => contactCardInfoFor(identity, persona, { pairedChild: isPairedChild })}
           onSend={async (persona, choice) => {
-            // The card (and so any upload and pointer publish) is built here, on
-            // the Send press. A photo that cannot be shared rejects, sending nothing.
-            const card = choice ? await contactCardFor(persona, choice) : undefined;
+            // The card (and so any upload and pointer publish) is built on the
+            // Send press, by the service once its pre-checks (policy, pending
+            // limit) have passed, so a refused request shares nothing. A photo
+            // that cannot be shared rejects, sending nothing.
             setContactsIdentityChoice(persona);
             const sentAt = Math.floor(Date.now() / 1000);
-            await ownerInviteService.request(persona, invite, sentAt, undefined, card);
+            await ownerInviteService.request(persona, invite, sentAt, undefined, choice ? () => contactCardFor(persona, choice) : undefined);
             await ownerInviteService.flush(sentAt);
           }}
           onDone={finish} onCancel={finish} />

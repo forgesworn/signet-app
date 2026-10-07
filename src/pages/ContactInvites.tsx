@@ -54,14 +54,18 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
   const arrivals = state?.arrivals.filter(a => a.identityPubkey === identityPubkey && a.dismissedAt === undefined && a.channel !== 'exchange') ?? [];
   const accept = (arrivalId: string, request: NonNullable<ContactInviteVault['arrivals'][number]['request']>, different: boolean, withPhoto: boolean) => void run(async () => {
     const info = cards?.infoFor(request.to) ?? null;
-    let card: ContactCard | undefined;
+    // The card is built by the service AFTER its pre-checks pass (M3), so a
+    // refused accept never uploads a photo or publishes a pointer.
+    let card: (() => Promise<ContactCard | undefined>) | undefined;
     if (cards && info) {
       const base = cardChoices[arrivalId] ?? defaultCardChoice(info);
-      try { card = await cards.build(request.to, { name: base.name && !!info.name, photo: withPhoto && base.photo && info.hasPhoto }); }
-      catch (reason) {
-        if (reason instanceof ContactCardPhotoError) { setPhotoFailed(old => ({ ...old, [arrivalId]: true })); throw new Error(CARD_PHOTO_FAILED_COPY); }
-        throw reason;
-      }
+      card = async () => {
+        try { return await cards.build(request.to, { name: base.name && !!info.name, photo: withPhoto && base.photo && info.hasPhoto }); }
+        catch (reason) {
+          if (reason instanceof ContactCardPhotoError) { setPhotoFailed(old => ({ ...old, [arrivalId]: true })); throw new Error(CARD_PHOTO_FAILED_COPY); }
+          throw reason;
+        }
+      };
     }
     setPhotoFailed(old => ({ ...old, [arrivalId]: false }));
     if (onApproveContact) await onApproveContact(request.from);
