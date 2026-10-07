@@ -26,6 +26,11 @@ export const DEFAULT_BLOSSOM_URL = 'https://blossom.primal.net';
  */
 const UPLOAD_TIMEOUT_MS = 30_000;
 
+/** The server answered an upload with a non-2xx status. */
+export class BlossomUploadError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
 export async function uploadToBlossom(
   blob: Blob,
   blossomUrl: string,
@@ -85,7 +90,7 @@ export async function uploadToBlossom(
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Blossom upload failed: ${response.status}${body ? ' — ' + body.slice(0, 100) : ''}`);
+    throw new BlossomUploadError(response.status, `Blossom upload failed: ${response.status}${body ? ' — ' + body.slice(0, 100) : ''}`);
   }
 
   const result: unknown = await response.json();
@@ -136,6 +141,8 @@ export async function deleteFromBlossom(
   const response = await fetchImpl(`${baseUrl}/${hash}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Nostr ${btoa(JSON.stringify(authEvent))}` },
+    // A redirect would forward the Authorization header to a host the server chose.
+    redirect: 'error',
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Blossom delete failed: ${response.status}`);

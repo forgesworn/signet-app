@@ -36,9 +36,16 @@ describe('set-picture / clear-picture validation', () => {
     expect(validateOperation(clearOp('c', 3))).toBe(true);
   });
 
-  it('is allowed for guardian and dependant authors like a note', () => {
+  it('is allowed for owner and guardian authors', () => {
+    expect(validateOperation(setOp('b', 2, POINTER, { actorRole: 'owner' }))).toBe(true);
     expect(validateOperation(setOp('b', 2, POINTER, { actorRole: 'guardian' }))).toBe(true);
-    expect(validateOperation(setOp('b', 2, POINTER, { actorRole: 'dependant' }))).toBe(true);
+  });
+
+  it('is refused from a dependant or an app (a child-chosen server must never be fetched automatically)', () => {
+    for (const actorRole of ['dependant', 'app'] as const) {
+      expect(validateOperation(setOp('b', 2, POINTER, { actorRole }))).toBe(false);
+      expect(validateOperation({ ...clearOp('c', 3), actorRole })).toBe(false);
+    }
   });
 
   it('rejects uppercase hex in hash, key and plainHash', () => {

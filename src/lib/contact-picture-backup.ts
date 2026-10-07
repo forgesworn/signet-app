@@ -18,14 +18,15 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { encryptPhotoWithKey, decryptPhoto } from './photo-crypto';
 import { readBodyCapped } from './avatar';
 import { isSafeBlossomBase } from './safe-url';
-import { uploadToBlossom, deleteFromBlossom } from './blossom';
+import { uploadToBlossom, deleteFromBlossom, BlossomUploadError } from './blossom';
 import { LocalSigningBackend } from './signing-backend';
 import { sniffImageFormat } from './image-header';
 import {
-  contactPictureGeneration, CONTACT_PICTURE_MAX_STORED_BYTES,
+  contactPictureGeneration, ownPictureId, CONTACT_PICTURE_MAX_STORED_BYTES,
 } from './contact-picture-crypto';
 import {
-  loadContactPictures, cachedOwnPictureState, setOwnPictureBackupState, storeRestoredOwnPicture, removeOwnContactPicture,
+  loadContactPictures, cachedOwnPictureState, setOwnPictureBackupState, storeRestoredOwnPicture, removeOwnPictureIfSynced,
+  readOwnPictureState, type RestoreExpectation,
 } from './contact-pictures';
 import * as db from './db';
 import { buildOperation } from './contacts-v2-mutations';
@@ -119,14 +120,16 @@ export async function uploadOwnPicture(jpeg: Uint8Array, server: string, deps: U
   const key = bytesToHex(keyBytes);
   keyBytes.fill(0);
   const encrypted = await encryptPhotoWithKey(jpeg, key);
+  let backend: LocalSigningBackend | null = null;
   try {
-    const backend = uploaderBackend(key);
+    backend = uploaderBackend(key);
     const blob = new Blob([encrypted as BlobPart], { type: 'application/octet-stream' });
     const hash = (await (deps.upload ?? uploadToBlossom)(blob, base, backend, true)).toLowerCase();
     if (!HEX64.test(hash)) throw new Error('Backup upload returned an invalid hash');
     return { server: base, hash, key, plainHash: bytesToHex(sha256(jpeg)) };
   } finally {
     encrypted.fill(0);
+    backend?.destroy();
   }
 }
 
@@ -146,6 +149,8 @@ export async function downloadOwnPicture(p: PicturePointer, deps: DownloadDeps =
     const response = await (deps.fetch ?? fetch)(`${p.server.replace(/\/+$/, '')}/${p.hash}`, {
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
       credentials: 'omit',
+      // A redirect would send this device's address to a host the server chose.
+      redirect: 'error',
     });
     if (!response.ok) return null;
     ciphertext = await readBodyCapped(response, CONTACT_PICTURE_DOWNLOAD_MAX_BYTES);
@@ -173,12 +178,16 @@ export interface DeleteDeps {
 
 /** Best-effort `DELETE {server}/{hash}` signed by the derived uploader key. Never throws; true on 2xx. */
 export async function deleteOwnPictureBlob(p: PicturePointer, deps: DeleteDeps = {}): Promise<boolean> {
+  let backend: LocalSigningBackend | null = null;
   try {
     if (!pointerIsUsable(p)) return false;
-    await deleteFromBlossom(p.hash, p.server, uploaderBackend(p.key), deps.fetch ?? fetch);
+    backend = uploaderBackend(p.key);
+    await deleteFromBlossom(p.hash, p.server, backend, deps.fetch ?? fetch);
     return true;
   } catch {
     return false;
+  } finally {
+    backend?.destroy();
   }
 }
 
@@ -199,11 +208,20 @@ async function runLanes<T>(jobs: T[], stopped: () => boolean, work: (job: T) => 
 export interface BackupDeps {
   records: BackupRecordRef[];
   server: string;
+  /** The user's backup preference; nothing uploads unless it is `'on'` (the callers gate too: defence in depth). */
+  pref: 'on' | 'off' | undefined;
+  /** Back up only this contact's row (read directly, instead of listing every picture row). */
+  only?: { directoryId: string; contactId: string };
   writePointer: (directoryId: string, contactId: string, p: PicturePointer) => Promise<void>;
+  /** Write `clear-picture`, for a pointer written after its row was removed. */
+  clearPointer?: (directoryId: string, contactId: string) => Promise<void>;
   upload?: (jpeg: Uint8Array, server: string) => Promise<PicturePointer>;
   deleteBlob?: (p: PicturePointer) => Promise<boolean>;
   generation?: number;
 }
+
+/** Rows being uploaded right now, by `directory/contact/plainHash`: the page save and the sweep never upload the same picture at once. */
+const inFlight = new Set<string>();
 
 function splitOwnId(id: string): { directoryId: string; contactId: string } | null {
   if (!id.startsWith('own:')) return null;
@@ -221,6 +239,7 @@ function splitOwnId(id: string): { directoryId: string; contactId: string } | nu
  */
 export async function backupPendingPictures(encryptionKey: string, deps: BackupDeps): Promise<{ uploaded: number; failed: number }> {
   const result = { uploaded: 0, failed: 0 };
+  if (deps.pref !== 'on') return result;
   const gen = deps.generation ?? contactPictureGeneration();
   const live = () => gen === contactPictureGeneration();
   if (!live()) return result;
@@ -230,7 +249,14 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
   for (const r of deps.records) byKey.set(recordKey(r.directoryId, r.contactId), r);
 
   let rows;
-  try { rows = await db.listContactPictures(encryptionKey, gen); } catch { return result; }
+  try {
+    if (deps.only) {
+      const row = await db.getContactPicture(ownPictureId(deps.only.directoryId, deps.only.contactId), encryptionKey, gen);
+      rows = row ? [row] : [];
+    } else {
+      rows = await db.listContactPictures(encryptionKey, gen);
+    }
+  } catch { return result; }
   const jobs: { directoryId: string; contactId: string; jpeg: Uint8Array; plainHash: string; record: BackupRecordRef; at: number }[] = [];
   for (const row of rows) {
     const ids = splitOwnId(row.id);
@@ -244,7 +270,12 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
   jobs.sort((a, b) => a.at - b.at);
   for (const dropped of jobs.splice(CONTACT_PICTURE_SWEEP_CAP)) dropped.jpeg.fill(0);
 
-  await runLanes(jobs, () => !live(), async job => {
+  // A 4xx on an upload means the server refuses what we send: stop spending uploads against it.
+  let refused = false;
+  await runLanes(jobs, () => !live() || refused, async job => {
+    const flightKey = `${recordKey(job.directoryId, job.contactId)}/${job.plainHash}`;
+    if (inFlight.has(flightKey)) { job.jpeg.fill(0); return; }
+    inFlight.add(flightKey);
     let pointer: PicturePointer | null = null;
     try {
       if (!live()) return;
@@ -254,17 +285,40 @@ export async function backupPendingPictures(encryptionKey: string, deps: BackupD
         await deleteBlob(pointer);
         return;
       }
+      // The user may have swapped or removed the picture while it uploaded. Writing the
+      // pointer now would put an older picture's pointer after a newer one's (or one
+      // for a picture that is gone), and restore would then act on it.
+      let current: Awaited<ReturnType<typeof readOwnPictureState>> | undefined;
+      try { current = await readOwnPictureState(encryptionKey, job.directoryId, job.contactId, gen); } catch { current = undefined; }
+      if (!current || current.backup !== 'pending' || current.plainHash !== job.plainHash || !live()) {
+        await deleteBlob(pointer);
+        return;
+      }
       await deps.writePointer(job.directoryId, job.contactId, pointer);
-    } catch {
+    } catch (e) {
       // Deliberately NOT deleting `pointer`'s blob here: if the write threw after the
       // operation was saved, the log points at it, and deleting would break a live pointer.
+      if (e instanceof BlossomUploadError && e.status >= 400 && e.status < 500) refused = true;
       result.failed += 1;
       return;
     } finally {
       job.jpeg.fill(0);
+      inFlight.delete(flightKey);
     }
     result.uploaded += 1;
-    try { await setOwnPictureBackupState(encryptionKey, job.directoryId, job.contactId, 'synced', job.plainHash, gen); } catch { /* stays pending; the next run re-uploads */ }
+    let marked = false;
+    try { marked = await setOwnPictureBackupState(encryptionKey, job.directoryId, job.contactId, 'synced', job.plainHash, gen); } catch { /* stays pending; the next run re-uploads */ }
+    if (!marked && live()) {
+      // Removed between the check and the write: the pointer must not outlive its row.
+      let gone = false;
+      try { gone = (await readOwnPictureState(encryptionKey, job.directoryId, job.contactId, gen)) === null; } catch { /* unknown: leave it */ }
+      if (gone && deps.clearPointer) {
+        try {
+          await deps.clearPointer(job.directoryId, job.contactId);
+          await deleteBlob(pointer);
+        } catch { /* the next restore sees a pointer with no row; best effort */ }
+      }
+    }
     const old = job.record.picture;
     if (old && old.hash !== pointer.hash) await deleteBlob(old);
   });
@@ -296,32 +350,34 @@ export async function restorePictures(encryptionKey: string, deps: RestoreDeps):
   await loadContactPictures(encryptionKey, gen);
   if (!live()) return result;
 
-  const downloads: { record: BackupRecordRef; pointer: PicturePointer }[] = [];
-  const deletions: BackupRecordRef[] = [];
+  // Both branches act only if the row is still as it was when decided (compare-and-set):
+  // a download takes seconds, and the user may save or remove a picture meanwhile.
+  const downloads: { record: BackupRecordRef; pointer: PicturePointer; expected: RestoreExpectation }[] = [];
+  const deletions: { record: BackupRecordRef; plainHash: string | undefined }[] = [];
   for (const record of deps.records) {
     const state = cachedOwnPictureState(encryptionKey, record.directoryId, record.contactId);
     const pointer = record.lifecycle !== 'removed' ? record.picture : undefined;
     if (pointer) {
-      if (!state || (state.backup === 'synced' && state.plainHash !== pointer.plainHash)) downloads.push({ record, pointer });
+      if (!state) downloads.push({ record, pointer, expected: { kind: 'absent' } });
+      else if (state.backup === 'synced' && state.plainHash !== pointer.plainHash) downloads.push({ record, pointer, expected: { kind: 'synced', plainHash: state.plainHash } });
     } else if (state && state.backup === 'synced') {
-      deletions.push(record);
+      deletions.push({ record, plainHash: state.plainHash });
     }
   }
 
-  for (const record of deletions) {
+  for (const { record, plainHash } of deletions) {
     if (!live()) break;
     try {
-      await removeOwnContactPicture(encryptionKey, record.directoryId, record.contactId, gen);
-      result.removed += 1;
+      if (await removeOwnPictureIfSynced(encryptionKey, record.directoryId, record.contactId, plainHash, gen)) result.removed += 1;
     } catch { /* locked or storage error: leave it */ }
   }
-  await runLanes(downloads, () => !live(), async ({ record, pointer }) => {
+  await runLanes(downloads, () => !live(), async ({ record, pointer, expected }) => {
     let jpeg: Uint8Array | null = null;
     try {
       jpeg = await download(pointer);
       if (!jpeg) { result.failed += 1; return; }
       if (!live()) return;
-      if (await storeRestoredOwnPicture(encryptionKey, record.directoryId, record.contactId, jpeg, pointer.plainHash, gen)) result.restored += 1;
+      if (await storeRestoredOwnPicture(encryptionKey, record.directoryId, record.contactId, jpeg, pointer.plainHash, gen, expected)) result.restored += 1;
       else if (live()) result.failed += 1;
     } catch {
       result.failed += 1;
@@ -346,8 +402,12 @@ export async function writeContactPictureOp(encryptionKey: string, args: {
   action: 'set-picture' | 'clear-picture';
   value: PicturePointer | Record<string, never>;
   actor: { actorPubkey: string; actorRole: Extract<ContactActorRole, 'owner' | 'guardian'>; actorDeviceId: string };
+  /** The lock generation the caller started under (default: now). A write queued behind other work when the app locks is refused. */
+  generation?: number;
 }): Promise<void> {
+  const gen = args.generation ?? contactPictureGeneration();
   return contactsMutationQueue.run(async () => {
+    if (gen !== contactPictureGeneration()) throw new Error('contacts: locked');
     const ops = await db.listContactOperationsV2(args.directoryId, encryptionKey);
     const op = buildOperation({
       directoryId: args.directoryId,
@@ -362,6 +422,7 @@ export async function writeContactPictureOp(encryptionKey: string, args: {
       operationId: newOperationId(),
     });
     if (!validateOperation(op)) throw new Error(`contacts: cannot ${args.action} — invalid operation`);
+    if (gen !== contactPictureGeneration()) throw new Error('contacts: locked');
     await db.saveContactOperationV2(op, encryptionKey);
   });
 }

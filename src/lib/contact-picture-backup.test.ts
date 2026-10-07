@@ -298,7 +298,7 @@ describe('backupPendingPictures', () => {
     let seen: number[] = [];
     const upload = vi.fn(async (j: Uint8Array, _s: string) => { seen = Array.from(j); return pointerFor(1); });
     const writePointer = vi.fn(async () => {});
-    const result = await m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, upload, writePointer, deleteBlob: vi.fn(async () => true) });
+    const result = await m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, pref: 'on', upload, writePointer, deleteBlob: vi.fn(async () => true) });
     expect(result).toEqual({ uploaded: 1, failed: 0 });
     expect(upload).toHaveBeenCalledOnce();
     expect(seen).toEqual(Array.from(JPEG(1)));
@@ -314,7 +314,7 @@ describe('backupPendingPictures', () => {
     await ownRow(m, ID(2), 2, 'pending');
     const deleteBlob = vi.fn(async () => true);
     const result = await m.backupPendingPictures(KEY, {
-      records: [ref('owner', ID(1)), ref('owner', ID(2))], server: SERVER, deleteBlob,
+      records: [ref('owner', ID(1)), ref('owner', ID(2))], server: SERVER, pref: 'on', deleteBlob,
       upload: async () => pointerFor(1),
       writePointer: async (_d, c) => { if (c === ID(2)) throw new Error('write failed'); },
     });
@@ -327,7 +327,7 @@ describe('backupPendingPictures', () => {
 
     const m2 = await load();
     await ownRow(m2, ID(3), 3, 'pending');
-    const r2 = await m2.backupPendingPictures(KEY, { records: [ref('owner', ID(3))], server: SERVER, upload: async () => { throw new Error('offline'); }, writePointer: vi.fn() });
+    const r2 = await m2.backupPendingPictures(KEY, { records: [ref('owner', ID(3))], server: SERVER, pref: 'on', upload: async () => { throw new Error('offline'); }, writePointer: vi.fn() });
     expect(r2).toEqual({ uploaded: 0, failed: 1 });
     await m2.pictures.loadContactPictures(KEY);
     expect(state(m2, ID(3))?.backup).toBe('pending');
@@ -338,7 +338,7 @@ describe('backupPendingPictures', () => {
     const ids: string[] = [];
     for (let i = 1; i <= 25; i += 1) { ids.push(ID(i)); await ownRow(m, ID(i), i, 'pending'); }
     const upload = vi.fn(async () => pointerFor(1));
-    const result = await m.backupPendingPictures(KEY, { records: ids.map(c => ref('owner', c)), server: SERVER, upload, writePointer: async () => {}, deleteBlob: async () => true });
+    const result = await m.backupPendingPictures(KEY, { records: ids.map(c => ref('owner', c)), server: SERVER, pref: 'on', upload, writePointer: async () => {}, deleteBlob: async () => true });
     expect(m.CONTACT_PICTURE_SWEEP_CAP).toBe(20);
     expect(result).toEqual({ uploaded: 20, failed: 0 });
     expect(upload).toHaveBeenCalledTimes(20);
@@ -353,7 +353,7 @@ describe('backupPendingPictures', () => {
     let active = 0;
     let peak = 0;
     const upload = async () => { active += 1; peak = Math.max(peak, active); await new Promise(r => setTimeout(r, 5)); active -= 1; return pointerFor(1); };
-    await m.backupPendingPictures(KEY, { records: ids.map(c => ref('owner', c)), server: SERVER, upload, writePointer: async () => {}, deleteBlob: async () => true });
+    await m.backupPendingPictures(KEY, { records: ids.map(c => ref('owner', c)), server: SERVER, pref: 'on', upload, writePointer: async () => {}, deleteBlob: async () => true });
     expect(peak).toBe(4);
   }, 30_000);
 
@@ -366,7 +366,7 @@ describe('backupPendingPictures', () => {
     const upload = vi.fn(async () => pointerFor(1));
     const result = await m.backupPendingPictures(KEY, {
       records: [ref('owner', ID(1), { lifecycle: 'removed' }), ref('owner', ID(3)), ref('owner', ID(4))],
-      server: SERVER, upload, writePointer: async () => {},
+      server: SERVER, pref: 'on', upload, writePointer: async () => {},
     });
     expect(result).toEqual({ uploaded: 0, failed: 0 });
     expect(upload).not.toHaveBeenCalled();
@@ -380,7 +380,7 @@ describe('backupPendingPictures', () => {
     const dep = 'dependant:' + '7'.repeat(64);
     await ownRow(m, ID(1), 1, 'pending', dep);
     const writePointer = vi.fn(async () => {});
-    await m.backupPendingPictures(KEY, { records: [ref(dep, ID(1))], server: SERVER, upload: async () => pointerFor(1), writePointer, deleteBlob: async () => true });
+    await m.backupPendingPictures(KEY, { records: [ref(dep, ID(1))], server: SERVER, pref: 'on', upload: async () => pointerFor(1), writePointer, deleteBlob: async () => true });
     expect(writePointer).toHaveBeenCalledWith(dep, ID(1), pointerFor(1));
   });
 
@@ -391,7 +391,7 @@ describe('backupPendingPictures', () => {
     const upload = vi.fn(async () => { lock(m); return pointerFor(1); });
     const writePointer = vi.fn(async () => {});
     const deleteBlob = vi.fn(async () => true);
-    const result = await m.backupPendingPictures(KEY, { records: ids.map(c => ref('owner', c)), server: SERVER, upload, writePointer, deleteBlob });
+    const result = await m.backupPendingPictures(KEY, { records: ids.map(c => ref('owner', c)), server: SERVER, pref: 'on', upload, writePointer, deleteBlob });
     expect(upload.mock.calls.length).toBeLessThanOrEqual(4);
     expect(writePointer).not.toHaveBeenCalled();
     expect(deleteBlob).toHaveBeenCalledTimes(upload.mock.calls.length);
@@ -404,7 +404,7 @@ describe('backupPendingPictures', () => {
     const gen = m.crypto.contactPictureGeneration();
     lock(m);
     const upload = vi.fn();
-    expect(await m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, upload, writePointer: vi.fn(), generation: gen })).toEqual({ uploaded: 0, failed: 0 });
+    expect(await m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, pref: 'on', upload, writePointer: vi.fn(), generation: gen })).toEqual({ uploaded: 0, failed: 0 });
     expect(upload).not.toHaveBeenCalled();
   });
 
@@ -417,7 +417,7 @@ describe('backupPendingPictures', () => {
     const same = pointerFor(1);
     await m.backupPendingPictures(KEY, {
       records: [ref('owner', ID(1), { picture: old }), ref('owner', ID(2), { picture: same })],
-      server: SERVER,
+      server: SERVER, pref: 'on',
       upload: async () => pointerFor(1),
       writePointer: async (_d, c) => { calls.push('write:' + c); },
       deleteBlob: async p => { calls.push('delete:' + p.hash.slice(0, 4)); return true; },
@@ -430,7 +430,7 @@ describe('backupPendingPictures', () => {
     const m = await load();
     await ownRow(m, ID(1), 1, 'pending');
     const upload = async () => { await ownRow(m, ID(1), 2, 'pending'); return pointerFor(1); };
-    await m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, upload, writePointer: async () => {}, deleteBlob: async () => true });
+    await m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, pref: 'on', upload, writePointer: async () => {}, deleteBlob: async () => true });
     await m.pictures.loadContactPictures(KEY);
     expect(state(m, ID(1))?.backup).toBe('pending');
   });
@@ -545,6 +545,216 @@ describe('restorePictures', () => {
   }, 30_000);
 });
 
+describe('backupPendingPictures: ordering, concurrency and gates', () => {
+  const pointerFor = (n: number): PicturePointer => ({ server: SERVER, hash: hash(new Uint8Array([n])), key: 'a5'.repeat(32), plainHash: hash(new Uint8Array([n, n])) });
+  const run = (m: M, over: Partial<Parameters<M['backupPendingPictures']>[1]> & { records?: BackupRecordRef[] } = {}) =>
+    m.backupPendingPictures(KEY, { records: [ref('owner', ID(1))], server: SERVER, pref: 'on', upload: async () => pointerFor(1), writePointer: async () => {}, deleteBlob: async () => true, ...over });
+
+  it('S1: a picture swapped during the upload gets NO pointer written, and its blob is deleted', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    const writePointer = vi.fn(async () => {});
+    const deleteBlob = vi.fn(async () => true);
+    const upload = async () => { await ownRow(m, ID(1), 2, 'pending'); return pointerFor(1); };
+    expect(await run(m, { upload, writePointer, deleteBlob })).toEqual({ uploaded: 0, failed: 0 });
+    expect(writePointer).not.toHaveBeenCalled();
+    expect(deleteBlob).toHaveBeenCalledWith(pointerFor(1));
+    await m.pictures.loadContactPictures(KEY);
+    expect(state(m, ID(1))).toEqual({ plainHash: hash(JPEG(2)), backup: 'pending' });
+  });
+
+  it('S1: a picture removed during the upload gets NO pointer written, and its blob is deleted', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    const writePointer = vi.fn(async () => {});
+    const deleteBlob = vi.fn(async () => true);
+    const upload = async () => { await m.pictures.removeOwnContactPicture(KEY, 'owner', ID(1)); return pointerFor(1); };
+    await run(m, { upload, writePointer, deleteBlob });
+    expect(writePointer).not.toHaveBeenCalled();
+    expect(deleteBlob).toHaveBeenCalledWith(pointerFor(1));
+  });
+
+  it('S1: a row that stopped being pending (set to local) during the upload gets no pointer', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    const writePointer = vi.fn(async () => {});
+    const upload = async () => { await m.pictures.setOwnPictureBackupState(KEY, 'owner', ID(1), 'local'); return pointerFor(1); };
+    await run(m, { upload, writePointer });
+    expect(writePointer).not.toHaveBeenCalled();
+  });
+
+  it('S2: a row removed between the check and the write: clear-picture is written and the new blob deleted', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    const writePointer = vi.fn(async () => { await m.pictures.removeOwnContactPicture(KEY, 'owner', ID(1)); });
+    const clearPointer = vi.fn(async () => {});
+    const deleteBlob = vi.fn(async () => true);
+    await run(m, { writePointer, clearPointer, deleteBlob });
+    expect(clearPointer).toHaveBeenCalledWith('owner', ID(1));
+    expect(deleteBlob).toHaveBeenCalledWith(pointerFor(1));
+  });
+
+  it('S2: a row that is still there after the write is never cleared', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    const clearPointer = vi.fn(async () => {});
+    await run(m, { clearPointer });
+    expect(clearPointer).not.toHaveBeenCalled();
+  });
+
+  it('M9: the same row and picture is never uploaded twice at once (page save and sweep)', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    let release!: () => void;
+    const gate = new Promise<void>(res => { release = res; });
+    const upload = vi.fn(async () => { await gate; return pointerFor(1); });
+    const writePointer = vi.fn(async () => {});
+    const a = run(m, { upload, writePointer });
+    const b = run(m, { upload, writePointer });
+    await vi.waitFor(() => expect(upload).toHaveBeenCalled());
+    release();
+    await Promise.all([a, b]);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(writePointer).toHaveBeenCalledTimes(1);
+  });
+
+  it('M9: the guard is per picture, so a newer picture for the same row still uploads while an older one is in flight', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    let release!: () => void;
+    const gate = new Promise<void>(res => { release = res; });
+    const first = vi.fn(async () => { await gate; return pointerFor(1); });
+    const a = run(m, { upload: first });
+    await vi.waitFor(() => expect(first).toHaveBeenCalled());
+    await ownRow(m, ID(1), 2, 'pending');
+    const second = vi.fn(async () => pointerFor(2));
+    const writePointer = vi.fn(async () => {});
+    await run(m, { upload: second, writePointer });
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(writePointer).toHaveBeenCalledWith('owner', ID(1), pointerFor(2));
+    release();
+    await a;
+    // The older upload, finishing last, finds the row now holds the newer picture and writes nothing.
+    expect(writePointer).toHaveBeenCalledTimes(1);
+  });
+
+  it('M11: a 4xx on an upload stops the rest of the run', async () => {
+    const m = await load();
+    const { BlossomUploadError } = await import('./blossom');
+    const ids = Array.from({ length: 10 }, (_, i) => ID(i + 1));
+    for (const [i, c] of ids.entries()) await ownRow(m, c, i + 1, 'pending');
+    const upload = vi.fn(async () => { throw new BlossomUploadError(415, 'Blossom upload failed: 415'); });
+    const result = await run(m, { records: ids.map(c => ref('owner', c)), upload });
+    expect(upload.mock.calls.length).toBeLessThan(10);
+    expect(upload.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(result.uploaded).toBe(0);
+  });
+
+  it('M11: a network or 5xx failure does not stop the run', async () => {
+    const m = await load();
+    const { BlossomUploadError } = await import('./blossom');
+    const ids = Array.from({ length: 6 }, (_, i) => ID(i + 1));
+    for (const [i, c] of ids.entries()) await ownRow(m, c, i + 1, 'pending');
+    let n = 0;
+    const upload = vi.fn(async () => { n += 1; throw n % 2 ? new BlossomUploadError(503, 'Blossom upload failed: 503') : new Error('offline'); });
+    await run(m, { records: ids.map(c => ref('owner', c)), upload });
+    expect(upload).toHaveBeenCalledTimes(6);
+  });
+
+  it('M12: nothing uploads unless the preference is on (defence in depth)', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    const upload = vi.fn(async () => pointerFor(1));
+    for (const pref of ['off', undefined] as const) {
+      expect(await run(m, { pref, upload })).toEqual({ uploaded: 0, failed: 0 });
+    }
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('`only` backs up just that contact, reading only its row', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'pending');
+    await ownRow(m, ID(2), 2, 'pending');
+    const upload = vi.fn(async () => pointerFor(2));
+    const list = vi.spyOn(m.db, 'listContactPictures');
+    await run(m, { records: [ref('owner', ID(1)), ref('owner', ID(2))], only: { directoryId: 'owner', contactId: ID(2) }, upload });
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(list).not.toHaveBeenCalled();
+    await m.pictures.loadContactPictures(KEY);
+    expect(state(m, ID(1))?.backup).toBe('pending');
+    expect(state(m, ID(2))?.backup).toBe('synced');
+  });
+});
+
+describe('M8 / M12: fetch options and uploader-key hygiene', () => {
+  it('M8: the restore GET refuses redirects', async () => {
+    const m = await load();
+    const jpeg = JPEG(1);
+    const key = 'a5'.repeat(32);
+    const ct = await m.photo.encryptPhotoWithKey(jpeg, key);
+    const fetch = vi.fn(async () => new Response(ct as BodyInit, { status: 200 }));
+    await m.downloadOwnPicture({ server: SERVER, hash: hash(ct), key, plainHash: hash(jpeg) }, { fetch: fetch as never });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect((fetch.mock.calls[0] as unknown[])[1]).toMatchObject({ redirect: 'error' });
+  });
+
+  it('M8: the Blossom DELETE refuses redirects (it carries the Authorization header)', async () => {
+    const m = await load();
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    expect(await m.deleteOwnPictureBlob({ server: SERVER, hash: 'ab'.repeat(32), key: 'd4'.repeat(32), plainHash: 'cd'.repeat(32) }, { fetch: fetch as never })).toBe(true);
+    expect((fetch.mock.calls[0] as unknown[])[1]).toMatchObject({ method: 'DELETE', redirect: 'error' });
+  });
+
+  it('M12: the uploader backend is destroyed after an upload and after a delete', async () => {
+    const m = await load();
+    const { LocalSigningBackend } = await import('./signing-backend');
+    const destroy = vi.spyOn(LocalSigningBackend.prototype, 'destroy');
+    await m.uploadOwnPicture(JPEG(1), SERVER, { upload: (async (blob: Blob) => hash(new Uint8Array(await blob.arrayBuffer()))) as never });
+    expect(destroy).toHaveBeenCalledTimes(1);
+    await m.deleteOwnPictureBlob({ server: SERVER, hash: 'ab'.repeat(32), key: 'd4'.repeat(32), plainHash: 'cd'.repeat(32) }, { fetch: (async () => new Response(null, { status: 204 })) as never });
+    expect(destroy).toHaveBeenCalledTimes(2);
+    destroy.mockRestore();
+  });
+});
+
+describe('restorePictures: compare-and-set (S3)', () => {
+  const jpegPointer = (n: number): PicturePointer => ({ server: SERVER, hash: 'ab'.repeat(32), key: 'a5'.repeat(32), plainHash: hash(JPEG(n)) });
+
+  it('a picture saved while the download was in flight is NOT overwritten (no row at decision time)', async () => {
+    const m = await load();
+    const download = vi.fn(async () => { await ownRow(m, ID(1), 5, 'local'); return new Uint8Array(JPEG(1)); });
+    const result = await m.restorePictures(KEY, { records: [ref('owner', ID(1), { picture: jpegPointer(1) })], download });
+    expect(result.restored).toBe(0);
+    expect(state(m, ID(1))).toEqual({ plainHash: hash(JPEG(5)), backup: 'local' });
+    expect(Array.from((await m.db.getContactPicture(`own:owner:${ID(1)}`, KEY))!.jpeg)).toEqual(Array.from(JPEG(5)));
+  });
+
+  it('a synced row the user replaced while the download was in flight is NOT overwritten', async () => {
+    const m = await load();
+    await ownRow(m, ID(1), 1, 'synced');
+    const download = vi.fn(async () => { await ownRow(m, ID(1), 5, 'pending'); return new Uint8Array(JPEG(2)); });
+    const result = await m.restorePictures(KEY, { records: [ref('owner', ID(1), { picture: jpegPointer(2) })], download });
+    expect(result.restored).toBe(0);
+    expect(state(m, ID(1))).toEqual({ plainHash: hash(JPEG(5)), backup: 'pending' });
+  });
+
+  it('removeOwnPictureIfSynced deletes only a row still synced with that plainHash', async () => {
+    const m = await load();
+    const h1 = await ownRow(m, ID(1), 1, 'synced');
+    await m.pictures.loadContactPictures(KEY);
+    // Row moved on to pending since restore decided: leave it.
+    await m.pictures.setOwnPictureBackupState(KEY, 'owner', ID(1), 'pending');
+    expect(await m.pictures.removeOwnPictureIfSynced(KEY, 'owner', ID(1), h1)).toBe(false);
+    expect(await m.db.getContactPicture(`own:owner:${ID(1)}`, KEY)).not.toBeNull();
+    // Synced but a different picture: leave it.
+    await m.pictures.setOwnPictureBackupState(KEY, 'owner', ID(1), 'synced');
+    expect(await m.pictures.removeOwnPictureIfSynced(KEY, 'owner', ID(1), 'ee'.repeat(32))).toBe(false);
+    // Still synced with the same hash: deleted.
+    expect(await m.pictures.removeOwnPictureIfSynced(KEY, 'owner', ID(1), h1)).toBe(true);
+    expect(await m.db.getContactPicture(`own:owner:${ID(1)}`, KEY)).toBeNull();
+  });
+});
+
 describe('writeContactPictureOp', () => {
   const ACTOR = { actorPubkey: '1'.repeat(64), actorRole: 'owner' as const, actorDeviceId: 'd'.repeat(32) };
   const POINTER: PicturePointer = { server: SERVER, hash: 'ab'.repeat(32), key: 'c0'.repeat(32), plainHash: 'cd'.repeat(32) };
@@ -587,6 +797,29 @@ describe('writeContactPictureOp', () => {
     await m.writeContactPictureOp(KEY, { directoryId: dep, contactId: ID(1), action: 'set-picture', value: POINTER, actor: { ...ACTOR, actorRole: 'guardian' } });
     expect((await m.db.listContactOperationsV2(dep, KEY)).some(o => o.action === 'set-picture' && o.actorRole === 'guardian')).toBe(true);
     await expect(m.writeContactPictureOp(KEY, { directoryId: dep, contactId: ID(1), action: 'set-picture', value: { ...POINTER, server: 'http://x.example' }, actor: ACTOR })).rejects.toThrow();
+  });
+
+  it('M1: a write queued behind other work when the app locks is refused and persists nothing', async () => {
+    const m = await load();
+    await seed(m, 1);
+    const { contactsMutationQueue } = await import('./contacts-v2-queue');
+    let release!: () => void;
+    const gate = new Promise<void>(res => { release = res; });
+    const blocker = contactsMutationQueue.run(() => gate);
+    const pending = m.writeContactPictureOp(KEY, { directoryId: 'owner', contactId: ID(1), action: 'set-picture', value: POINTER, actor: ACTOR });
+    lock(m);
+    release();
+    await blocker;
+    await expect(pending).rejects.toThrow();
+    expect((await m.db.listContactOperationsV2('owner', KEY)).some(o => o.action === 'set-picture')).toBe(false);
+  });
+
+  it('M1: a caller-supplied stale generation is refused', async () => {
+    const m = await load();
+    await seed(m, 1);
+    const gen = m.crypto.contactPictureGeneration();
+    lock(m);
+    await expect(m.writeContactPictureOp(KEY, { directoryId: 'owner', contactId: ID(1), action: 'clear-picture', value: {}, actor: ACTOR, generation: gen })).rejects.toThrow();
   });
 
   it('a failed write does not wedge the queue', async () => {

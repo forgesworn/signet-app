@@ -253,6 +253,21 @@ async function dropPicture(encryptionKey: string, id: string, gen: number): Prom
   }
 }
 
+/**
+ * Own-row writes are serialised per row id, so a compare-and-set (read the row,
+ * decide, write) cannot interleave with a page save, a state change or a
+ * restore of the same row.
+ */
+const rowLocks = new Map<string, Promise<void>>();
+function withRowLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = rowLocks.get(id) ?? Promise.resolve();
+  const next = prev.then(fn);
+  const tail = next.then(() => undefined, () => undefined);
+  rowLocks.set(id, tail);
+  void tail.then(() => { if (rowLocks.get(id) === tail) rowLocks.delete(id); });
+  return next;
+}
+
 /** The stored source URL of each `kind0:` thumbnail, by pubkey. */
 async function storedKind0Sources(encryptionKey: string, gen: number): Promise<Map<string, string | undefined>> {
   await loadContactPictures(encryptionKey, gen);
@@ -364,10 +379,11 @@ export async function setOwnContactPicture(
   if (!live(gen)) { jpeg.fill(0); return 'locked'; }
   const t = (deps.now ?? Date.now)();
   try {
-    await storePicture(encryptionKey, {
-      id: ownPictureId(directoryId, contactId), jpeg, plainHash: bytesToHex(sha256(jpeg)),
+    const id = ownPictureId(directoryId, contactId);
+    await withRowLock(id, () => storePicture(encryptionKey, {
+      id, jpeg, plainHash: bytesToHex(sha256(jpeg)),
       backup: deps.backup ?? 'local', fetchedAt: t, updatedAt: t,
-    }, gen);
+    }, gen));
   } catch (e) {
     if (e instanceof ContactPicturesLockedError) { jpeg.fill(0); return 'locked'; }
     throw e;
@@ -376,7 +392,50 @@ export async function setOwnContactPicture(
 }
 
 export async function removeOwnContactPicture(encryptionKey: string, directoryId: string, contactId: string, gen: number = contactPictureGeneration()): Promise<void> {
-  await dropPicture(encryptionKey, ownPictureId(directoryId, contactId), gen);
+  const id = ownPictureId(directoryId, contactId);
+  await withRowLock(id, () => dropPicture(encryptionKey, id, gen));
+}
+
+/**
+ * The state of an own row read fresh from the store (not the cache): `null`
+ * when there is no such row. Rejects on a storage error or a stale `gen`, so a
+ * caller deciding to WRITE treats "could not read" as "do not write".
+ */
+export async function readOwnPictureState(
+  encryptionKey: string,
+  directoryId: string,
+  contactId: string,
+  gen: number = contactPictureGeneration(),
+): Promise<{ plainHash: string; backup: OwnPictureBackupState } | null> {
+  if (!live(gen)) throw new ContactPicturesLockedError();
+  const row = await getContactPicture(ownPictureId(directoryId, contactId), encryptionKey, gen);
+  if (!row) return null;
+  try {
+    return { plainHash: row.plainHash ?? bytesToHex(sha256(row.jpeg)), backup: row.backup ?? 'local' };
+  } finally {
+    row.jpeg.fill(0);
+  }
+}
+
+/**
+ * Delete an own row only if it is still `synced` with `plainHash` (restore saw
+ * the picture was removed elsewhere). Anything else means the user has acted
+ * since: leave it. Returns whether it deleted.
+ */
+export async function removeOwnPictureIfSynced(
+  encryptionKey: string,
+  directoryId: string,
+  contactId: string,
+  plainHash: string | undefined,
+  gen: number = contactPictureGeneration(),
+): Promise<boolean> {
+  const id = ownPictureId(directoryId, contactId);
+  return withRowLock(id, async () => {
+    const cur = await readOwnPictureState(encryptionKey, directoryId, contactId, gen);
+    if (!cur || cur.backup !== 'synced' || (plainHash !== undefined && cur.plainHash !== plainHash)) return false;
+    await dropPicture(encryptionKey, id, gen);
+    return true;
+  });
 }
 
 /**
@@ -393,26 +452,36 @@ export async function setOwnPictureBackupState(
   gen: number = contactPictureGeneration(),
 ): Promise<boolean> {
   if (!live(gen)) return false;
-  let row: ContactPicture | null;
-  try { row = await getContactPicture(ownPictureId(directoryId, contactId), encryptionKey, gen); } catch { return false; }
-  if (!row) return false;
-  const rowHash = row.plainHash ?? bytesToHex(sha256(row.jpeg));
-  if ((expectPlainHash !== undefined && rowHash !== expectPlainHash) || !live(gen)) { row.jpeg.fill(0); return false; }
-  try {
-    await storePicture(encryptionKey, { ...row, plainHash: rowHash, backup: state, updatedAt: Date.now() }, gen);
-    return true;
-  } catch (e) {
-    if (e instanceof ContactPicturesLockedError) return false;
-    throw e;
-  } finally {
-    row.jpeg.fill(0);
-  }
+  return withRowLock(ownPictureId(directoryId, contactId), async () => {
+    let row: ContactPicture | null;
+    try { row = await getContactPicture(ownPictureId(directoryId, contactId), encryptionKey, gen); } catch { return false; }
+    if (!row) return false;
+    const rowHash = row.plainHash ?? bytesToHex(sha256(row.jpeg));
+    if ((expectPlainHash !== undefined && rowHash !== expectPlainHash) || !live(gen)) { row.jpeg.fill(0); return false; }
+    try {
+      await storePicture(encryptionKey, { ...row, plainHash: rowHash, backup: state, updatedAt: Date.now() }, gen);
+      return true;
+    } catch (e) {
+      if (e instanceof ContactPicturesLockedError) return false;
+      throw e;
+    } finally {
+      row.jpeg.fill(0);
+    }
+  });
 }
+
+/**
+ * What restore decided on: no own row at all, or a `synced` row holding
+ * `plainHash` (the old picture the backup replaces).
+ */
+export type RestoreExpectation = { kind: 'absent' } | { kind: 'synced'; plainHash: string | undefined };
 
 /**
  * Store a picture restored from its encrypted backup as a `'synced'` own row.
  * The bytes must hash to `plainHash` and be a JPEG. Returns false (nothing
- * written) on a mismatch or when the app locked.
+ * written) on a mismatch, when the app locked, or, when `expected` is given,
+ * when the row is no longer in the state restore decided on (the user saved a
+ * picture while the download was in flight: the local choice stands).
  */
 export async function storeRestoredOwnPicture(
   encryptionKey: string,
@@ -421,12 +490,23 @@ export async function storeRestoredOwnPicture(
   jpeg: Uint8Array,
   plainHash: string,
   gen: number = contactPictureGeneration(),
+  expected?: RestoreExpectation,
 ): Promise<boolean> {
   if (!live(gen) || bytesToHex(sha256(jpeg)) !== plainHash) return false;
-  const t = Date.now();
+  const id = ownPictureId(directoryId, contactId);
   try {
-    await storePicture(encryptionKey, { id: ownPictureId(directoryId, contactId), jpeg, plainHash, backup: 'synced', fetchedAt: t, updatedAt: t }, gen);
-    return true;
+    return await withRowLock(id, async () => {
+      if (expected) {
+        const cur = await readOwnPictureState(encryptionKey, directoryId, contactId, gen);
+        const unchanged = expected.kind === 'absent'
+          ? cur === null
+          : cur !== null && cur.backup === 'synced' && (expected.plainHash === undefined || cur.plainHash === expected.plainHash);
+        if (!unchanged) return false;
+      }
+      const t = Date.now();
+      await storePicture(encryptionKey, { id, jpeg, plainHash, backup: 'synced', fetchedAt: t, updatedAt: t }, gen);
+      return true;
+    });
   } catch (e) {
     if (e instanceof ContactPicturesLockedError) return false;
     // An invalid JPEG (sealContactPicture refuses it) is a refusal, not a crash.

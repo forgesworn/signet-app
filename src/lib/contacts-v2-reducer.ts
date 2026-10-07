@@ -349,6 +349,11 @@ export function validateOperation(op: unknown): op is ContactOperation {
   // never anything with review/authority semantics, and never a rename of the
   // owner's own record — see APP_ALLOWED_ACTIONS above.
   if (op.actorRole === 'app' && !APP_ALLOWED_ACTIONS.has(op.action as ContactAction)) return false;
+  // A picture pointer makes every device that reads it fetch from the pointer's
+  // server automatically, so only the owner or a guardian may author one: a
+  // dependant-authored pointer would be a child-chosen server fetched by the
+  // guardian's phone.
+  if (op.actorRole === 'dependant' && (op.action === 'set-picture' || op.action === 'clear-picture')) return false;
   if (op.actorRole === 'app' && op.action === 'add'
     && isObj(op.value) && op.value.ownerIdentityPubkey !== undefined) return false;
   // R-15: a block's author is the operation's actor. The reducer already

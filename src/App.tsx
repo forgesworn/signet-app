@@ -6255,6 +6255,8 @@ export function App() {
     }).catch(() => { /* Keep the current policy view until the next successful reload. */ });
     if (familyLogEnabledNow) void familyContacts.reload();
     bumpContactsGrantSet();
+    // A contacts vault merge can bring pointers (or their removal): bring own pictures in line.
+    void pictureRunner.runRestore();
   };
   const rotationContext = useRef({ session: privateVaultSession, activeDependant: !!activeDependant, key: encryptionKey, generation: 0 });
   const priorRotationContext = rotationContext.current;
@@ -11311,7 +11313,7 @@ export function App() {
     };
     const enablePictureBackup = async () => {
       if (!pictureBackupEnv) return;
-      await turnBackupOn({ env: pictureBackupEnv, directoryId: record.directoryId, contactId: record.contactId, record: pictureRef, setPref: setContactPictureBackup, writePointer: writePicturePointer });
+      await turnBackupOn({ env: pictureBackupEnv, directoryId: record.directoryId, contactId: record.contactId, record: pictureRef, setPref: setContactPictureBackup, writePointer: writePicturePointer, clearPointer: pictureRunner.clearPointer });
     };
     return (
       <Layout title={record.displayName} showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
@@ -11321,7 +11323,7 @@ export function App() {
           relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
           // Own pictures are device-local and allowed on every install, paired-child too.
           onSetOwnPicture={pictureBackupEnv ? async (file, crop) => {
-            const saved = await saveOwnPicture({ env: pictureBackupEnv, directoryId: record.directoryId, contactId: record.contactId, file, crop, record: pictureRef, writePointer: writePicturePointer });
+            const saved = await saveOwnPicture({ env: pictureBackupEnv, directoryId: record.directoryId, contactId: record.contactId, file, crop, record: pictureRef, writePointer: writePicturePointer, clearPointer: pictureRunner.clearPointer });
             if (saved.askConsent) setPictureAskKey(pictureKey);
             return saved.outcome;
           } : undefined}

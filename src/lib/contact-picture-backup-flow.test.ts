@@ -3,6 +3,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { BackupRecordRef, PicturePointer } from './contact-picture-backup';
+import { forgetContactPictureKeys } from './contact-picture-crypto';
 import {
   backupPossible, consentNeeded, saveOwnPicture, turnBackupOn, declineBackup, removeOwnPicture,
   createPictureBackupRunner, backupRefOf, type BackupEnv, type RunnerContext, type RunnerDeps,
@@ -54,7 +55,7 @@ describe('saveOwnPicture', () => {
     expect(setOwn).toHaveBeenCalledWith(KEY, 'owner', ID(1), expect.any(File), undefined, { backup: 'pending' });
     expect(r).toMatchObject({ outcome: 'saved', askConsent: false });
     await r.background;
-    expect(backupPending).toHaveBeenCalledWith(KEY, { records: [pointerBefore], server: SERVER, writePointer });
+    expect(backupPending).toHaveBeenCalledWith(KEY, { records: [pointerBefore], server: SERVER, pref: 'on', only: { directoryId: 'owner', contactId: ID(1) }, writePointer });
   });
 
   it('returns before the upload settles', async () => {
@@ -128,7 +129,21 @@ describe('turnBackupOn / declineBackup', () => {
     await background;
     expect(setPref).toHaveBeenCalledWith('on');
     expect(setBackupState).toHaveBeenCalledWith(KEY, 'owner', ID(1), 'pending');
-    expect(backupPending).toHaveBeenCalledWith(KEY, { records: [ref()], server: SERVER, writePointer });
+    expect(backupPending).toHaveBeenCalledWith(KEY, { records: [ref()], server: SERVER, pref: 'on', only: { directoryId: 'owner', contactId: ID(1) }, writePointer });
+  });
+
+  it('paired-child or uploads off: the preference is NOT set (no consent recorded for a backup that cannot happen)', async () => {
+    for (const e of [env({ pref: undefined, pairedChild: true }), env({ pref: undefined, server: null })]) {
+      const setPref = vi.fn(async () => {});
+      const backupPending = vi.fn();
+      const { background } = await turnBackupOn(
+        { env: e, directoryId: 'owner', contactId: ID(1), record: ref(), setPref, writePointer: async () => {} },
+        { backupPending: backupPending as never },
+      );
+      await background;
+      expect(setPref).not.toHaveBeenCalled();
+      expect(backupPending).not.toHaveBeenCalled();
+    }
   });
 
   it('does not upload when the row is gone', async () => {
@@ -157,8 +172,12 @@ describe('removeOwnPicture', () => {
     deleteBlob.mockReset().mockResolvedValue(true);
     clearPointer.mockReset().mockResolvedValue(undefined);
   });
-  const run = (record: BackupRecordRef | undefined) =>
-    removeOwnPicture({ encryptionKey: KEY, directoryId: 'owner', contactId: ID(1), record, clearPointer }, { removeOwn: removeOwn as never, deleteBlob });
+  // The pointer is decided from a fresh fold of the log; `folded` is what that fold returns for the contact.
+  const run = (folded: BackupRecordRef | undefined, onScreen: BackupRecordRef | undefined = folded) =>
+    removeOwnPicture(
+      { encryptionKey: KEY, directoryId: 'owner', contactId: ID(1), record: onScreen, clearPointer },
+      { removeOwn: removeOwn as never, deleteBlob, fold: async () => (folded ? [folded] : []) },
+    );
 
   it('with a pointer: clears it, removes the row, then attempts the blob delete', async () => {
     await run(ref(ID(1), { picture: POINTER }));
@@ -166,6 +185,26 @@ describe('removeOwnPicture', () => {
     expect(removeOwn).toHaveBeenCalledWith(KEY, 'owner', ID(1));
     expect(deleteBlob).toHaveBeenCalledWith(POINTER);
     expect(clearPointer.mock.invocationCallOrder[0]).toBeLessThan(removeOwn.mock.invocationCallOrder[0]);
+  });
+
+  it('S2: a pointer in the fresh fold is cleared even though the on-screen record shows none', async () => {
+    await run(ref(ID(1), { picture: POINTER }), ref());
+    expect(clearPointer).toHaveBeenCalledWith(ID(1));
+    expect(deleteBlob).toHaveBeenCalledWith(POINTER);
+  });
+
+  it('S2: a stale on-screen pointer the fresh fold no longer has is not cleared again', async () => {
+    await run(ref(), ref(ID(1), { picture: POINTER }));
+    expect(clearPointer).not.toHaveBeenCalled();
+    expect(removeOwn).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the on-screen record when the log cannot be folded', async () => {
+    await removeOwnPicture(
+      { encryptionKey: KEY, directoryId: 'owner', contactId: ID(1), record: ref(ID(1), { picture: POINTER }), clearPointer },
+      { removeOwn: removeOwn as never, deleteBlob, fold: async () => { throw new Error('idb'); } },
+    );
+    expect(clearPointer).toHaveBeenCalledWith(ID(1));
   });
 
   it('without a pointer: just the row, no operation and no network', async () => {
@@ -215,18 +254,20 @@ describe('createPictureBackupRunner', () => {
   it('restores then sweeps, on a fresh fold of the log', async () => {
     await make().runOnUnlock();
     expect(order).toEqual(['fold', 'restore', 'sweep']);
-    expect(restore).toHaveBeenCalledWith(KEY, { records: [ref(), ref(ID(2))] });
+    expect(restore).toHaveBeenCalledWith(KEY, { records: [ref(), ref(ID(2))], generation: expect.any(Number) });
     expect(backupPending.mock.calls[0][1]).toMatchObject({ records: [ref(), ref(ID(2))], server: SERVER });
   });
 
-  it('runs once per unlock key', async () => {
+  it('S4: runs once per unlock, and again after a lock even though the unlock key string is the same', async () => {
     const runner = make();
     await runner.runOnUnlock();
     await runner.runOnUnlock();
     expect(restore).toHaveBeenCalledTimes(1);
-    ctx = { ...ctx, encryptionKey: 'next-unlock-key' };
+    // The app locks (the picture keys are forgotten, bumping the generation) and unlocks with the SAME key.
+    forgetContactPictureKeys();
     await runner.runOnUnlock();
     expect(restore).toHaveBeenCalledTimes(2);
+    expect(ctx.encryptionKey).toBe(KEY);
   });
 
   it('never runs on a paired-child install, or while locked', async () => {
@@ -274,11 +315,11 @@ describe('createPictureBackupRunner', () => {
       return { uploaded: 2, failed: 0 };
     });
     await make().runOnUnlock();
-    expect(writeOp).toHaveBeenNthCalledWith(1, KEY, { directoryId: 'owner', contactId: ID(1), action: 'set-picture', value: POINTER, actor: { ...ACTOR, actorRole: 'owner' } });
+    expect(writeOp).toHaveBeenNthCalledWith(1, KEY, { directoryId: 'owner', contactId: ID(1), action: 'set-picture', value: POINTER, actor: { ...ACTOR, actorRole: 'owner' }, generation: expect.any(Number) });
     expect(writeOp.mock.calls[1][1]).toMatchObject({ directoryId: 'dependant:' + 'f'.repeat(64), actor: { ...ACTOR, actorRole: 'guardian' } });
   });
 
-  it('reloads and bumps (once) only when the sweep wrote an operation', async () => {
+  it('reloads and bumps after each sweep write, through the LIVE context, only when an operation was written', async () => {
     await make().runOnUnlock();
     expect(onSweepWrote).not.toHaveBeenCalled();
 
@@ -289,7 +330,43 @@ describe('createPictureBackupRunner', () => {
     });
     ctx = { ...ctx, encryptionKey: 'second-unlock' };
     await make().runOnUnlock();
+    expect(onSweepWrote).toHaveBeenCalledTimes(2);
+  });
+
+  it('S2: the reload goes through the context live at write time, not the one captured at sweep start', async () => {
+    const laterOnSweepWrote = vi.fn();
+    backupPending.mockImplementation(async (_k: string, d: { writePointer: (dir: string, cid: string, p: PicturePointer) => Promise<void> }) => {
+      ctx = { ...ctx, onSweepWrote: laterOnSweepWrote };   // the page moved on (new hook closures) mid-sweep
+      await d.writePointer('owner', ID(1), POINTER);
+      return { uploaded: 1, failed: 0 };
+    });
+    await make().runOnUnlock();
+    expect(laterOnSweepWrote).toHaveBeenCalledTimes(1);
+    expect(onSweepWrote).not.toHaveBeenCalled();
+  });
+
+  it('S2: the sweep passes a clearPointer that writes clear-picture and refreshes the hooks', async () => {
+    backupPending.mockImplementation(async (_k: string, d: { clearPointer: (dir: string, cid: string) => Promise<void> }) => {
+      await d.clearPointer('owner', ID(1));
+      return { uploaded: 1, failed: 0 };
+    });
+    await make().runOnUnlock();
+    expect(writeOp).toHaveBeenCalledWith(KEY, expect.objectContaining({ action: 'clear-picture', value: {}, directoryId: 'owner', contactId: ID(1) }));
     expect(onSweepWrote).toHaveBeenCalledTimes(1);
+  });
+
+  it('the runner clearPointer (page path) writes clear-picture for any directory and refreshes', async () => {
+    const runner = make();
+    await runner.clearPointer('dependant:' + 'f'.repeat(64), ID(3));
+    expect(writeOp).toHaveBeenCalledWith(KEY, expect.objectContaining({ action: 'clear-picture', actor: { ...ACTOR, actorRole: 'guardian' } }));
+    expect(onSweepWrote).toHaveBeenCalledTimes(1);
+    ctx = { ...ctx, actor: null };
+    await expect(runner.clearPointer('owner', ID(3))).rejects.toThrow();
+  });
+
+  it('the sweep is given the preference and the run generation', async () => {
+    await make().runOnUnlock();
+    expect(backupPending.mock.calls[0][1]).toMatchObject({ pref: 'on', generation: expect.any(Number) });
   });
 
   it('an operation write that fails does not trigger the reload', async () => {
@@ -322,7 +399,18 @@ describe('createPictureBackupRunner', () => {
     ctx = { ...ctx, actor: ACTOR, server: null, encryptionKey: 'again' };
     await make().runOnUnlock();
     expect(backupPending).not.toHaveBeenCalled();
-    expect(restore).toHaveBeenCalledTimes(2);
+    // The first run (no actor) still restores; the second (uploads off) does not.
+    expect(restore).toHaveBeenCalledTimes(1);
+  });
+
+  it("M2: Blossom uploads off ('') means no automatic restore GETs either, on unlock or after a merge", async () => {
+    ctx = { ...ctx, server: null };
+    const runner = make();
+    await runner.runOnUnlock();
+    await runner.runRestore();
+    expect(fold).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
+    expect(backupPending).not.toHaveBeenCalled();
   });
 
   it('runRestore restores on a fresh fold and never sweeps; skipped on pref off and paired-child', async () => {
