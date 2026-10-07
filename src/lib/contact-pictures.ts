@@ -267,26 +267,46 @@ export async function syncKind0Pictures(
   });
 }
 
-/** Set the user's own picture for one contact from a file they picked. Resolves false when the image is refused. */
+/**
+ * How setting an own picture ended. `refused`: the image can't be used (empty,
+ * too big, not a decodable JPEG/PNG/WebP). `unreadable`: the picked file
+ * couldn't be read at all (e.g. an Android picker URI whose copy wasn't ready).
+ * `locked`: the app locked mid-save, so nothing was written. Any other failure
+ * (encryption, storage) throws.
+ */
+export type OwnPictureOutcome = 'saved' | 'refused' | 'unreadable' | 'locked';
+
+/** Set the user's own picture for one contact from a file they picked. */
 export async function setOwnContactPicture(
   encryptionKey: string,
   directoryId: string,
   contactId: string,
   file: Blob,
   deps: { thumbnail?: (bytes: Uint8Array) => Promise<Uint8Array | null>; now?: () => number } = {},
-): Promise<boolean> {
+): Promise<OwnPictureOutcome> {
   // A picked file is untrusted input too. Camera photos are larger than the
   // 2 MB download cap, so the file cap is looser; the header gate (8192 px a
   // side, 40 MP) is what bounds the decode either way.
-  if (file.size === 0 || file.size > OWN_PICTURE_MAX_FILE_BYTES) return false;
+  if (file.size === 0 || file.size > OWN_PICTURE_MAX_FILE_BYTES) return 'refused';
   const gen = contactPictureGeneration();
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const jpeg = await (deps.thumbnail ?? makeThumbnail)(bytes);
-  if (!jpeg) return false;
-  if (!live(gen)) { jpeg.fill(0); return false; }
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch {
+    // Only the read is caught, and it is not retried.
+    return 'unreadable';
+  }
+  const jpeg = await (deps.thumbnail ?? makeThumbnail)(new Uint8Array(buffer));
+  if (!jpeg) return 'refused';
+  if (!live(gen)) { jpeg.fill(0); return 'locked'; }
   const t = (deps.now ?? Date.now)();
-  await storePicture(encryptionKey, { id: ownPictureId(directoryId, contactId), jpeg, fetchedAt: t, updatedAt: t }, gen);
-  return true;
+  try {
+    await storePicture(encryptionKey, { id: ownPictureId(directoryId, contactId), jpeg, fetchedAt: t, updatedAt: t }, gen);
+  } catch (e) {
+    if (e instanceof ContactPicturesLockedError) { jpeg.fill(0); return 'locked'; }
+    throw e;
+  }
+  return 'saved';
 }
 
 export async function removeOwnContactPicture(encryptionKey: string, directoryId: string, contactId: string): Promise<void> {

@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ContactAvatar } from '../components/ContactAvatar';
 import { useContactAvatar } from '../hooks/useContactAvatar';
 import { useContactPicture } from '../hooks/useContactPicture';
-import { OWN_PICTURE_ACCEPT } from '../lib/contact-pictures';
+import { OWN_PICTURE_ACCEPT, type OwnPictureOutcome } from '../lib/contact-pictures';
 import { primaryIdentityPubkey as avatarPubkeyOf } from '../lib/contacts-v2-list';
 import type { Contact, ContactIdentity, ContactMethodKind, ContactTier, EffectiveContact, SignetIdentity, AddMethodValue } from '../types';
 import { ContactTierChip } from '../components/ContactTierChip';
@@ -22,7 +22,7 @@ import { getActivePubkey, shortNpub } from '../lib/signet';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import {
   ADD_A_ROLE_LABEL, ADD_LABEL, ADD_OWN_PICTURE_LABEL, CHANGE_OWN_PICTURE_LABEL, OWN_PICTURE_HINT,
-  OWN_PICTURE_REFUSED_COPY, REMOVE_OWN_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
+  OWN_PICTURE_REFUSED_COPY, OWN_PICTURE_UNREADABLE_COPY, REMOVE_OWN_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
   BLOCK_REASON_FIELD_LABEL, BLOCK_SECTION_TITLE, CANCEL_LABEL, CONTACT_ACTION_FAILED_COPY,
   CONFIRM_BUTTON_LABEL, CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
   IDENTITY_VERIFICATION_LABELS, KEY_CONTROL_LABEL, KEYLESS_EXPLAINER, KEYLESS_MARKER,
@@ -45,7 +45,7 @@ interface Props {
   encryptionKey?: string | null;
   relayUrl?: string;
   /** Set the user's own picture for this contact (device-local). Resolves false when the image is refused. */
-  onSetOwnPicture?: (file: File) => Promise<boolean>;
+  onSetOwnPicture?: (file: File) => Promise<OwnPictureOutcome>;
   onRemoveOwnPicture?: () => Promise<void>;
   /**
    * "Confirm it's them": apply the writes one confirmation outcome compiles to.
@@ -249,8 +249,13 @@ export function ContactDetail(props: Props) {
                 void (async () => {
                   setBusy(true);
                   try {
-                    const ok = await props.onSetOwnPicture!(file);
-                    setActionError(ok ? null : { scope: 'picture', message: OWN_PICTURE_REFUSED_COPY });
+                    const outcome = await props.onSetOwnPicture!(file);
+                    // 'locked': the app locked mid-save, so there is nothing to say.
+                    setActionError(
+                      outcome === 'refused' ? { scope: 'picture', message: OWN_PICTURE_REFUSED_COPY }
+                      : outcome === 'unreadable' ? { scope: 'picture', message: OWN_PICTURE_UNREADABLE_COPY }
+                      : null,
+                    );
                   } catch {
                     setActionError({ scope: 'picture', message: CONTACT_ACTION_FAILED_COPY });
                   } finally {

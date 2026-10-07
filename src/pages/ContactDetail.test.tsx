@@ -189,7 +189,7 @@ describe('ContactDetail on v2', () => {
 
 describe('ContactDetail — your own picture', () => {
   it('is offered for a keyless contact and sends the picked file', async () => {
-    const onSetOwnPicture = vi.fn(async () => true);
+    const onSetOwnPicture = vi.fn(async () => 'saved' as const);
     renderDetail(contact(), 'owner', { onSetOwnPicture, onRemoveOwnPicture: vi.fn() });
     expect(screen.getByRole('button', { name: 'Add your own picture' })).toBeDefined();
     const file = new File([new Uint8Array([1])], 'me.jpg', { type: 'image/jpeg' });
@@ -198,9 +198,26 @@ describe('ContactDetail — your own picture', () => {
   });
 
   it('says so when the picture is refused', async () => {
-    renderDetail(contact(), 'owner', { onSetOwnPicture: vi.fn(async () => false) });
+    renderDetail(contact(), 'owner', { onSetOwnPicture: vi.fn(async () => 'refused' as const) });
     fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'x.gif')] } });
     expect(await screen.findByText("That picture couldn't be used. Choose a JPEG, PNG or WebP photo.")).toBeDefined();
+  });
+
+  it('says so when the photo could not be read', async () => {
+    renderDetail(contact(), 'owner', { onSetOwnPicture: vi.fn(async () => 'unreadable' as const) });
+    fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'x.jpg')] } });
+    expect(await screen.findByText("Couldn't read that photo. Pick it again.")).toBeDefined();
+  });
+
+  it('shows nothing when the app locked mid-save, and the generic copy on a throw', async () => {
+    const onSetOwnPicture = vi.fn<(file: File) => Promise<'locked'>>(async () => 'locked');
+    renderDetail(contact(), 'owner', { onSetOwnPicture });
+    fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'x.jpg')] } });
+    await vi.waitFor(() => expect(onSetOwnPicture).toHaveBeenCalled());
+    expect(screen.queryByText(/couldn't|didn't save/i)).toBeNull();
+    onSetOwnPicture.mockRejectedValueOnce(new Error('idb'));
+    fireEvent.change(screen.getByLabelText('Add your own picture'), { target: { files: [new File([new Uint8Array([1])], 'y.jpg')] } });
+    expect(await screen.findByText("That change didn't save. Try again.")).toBeDefined();
   });
 
   it('is absent when the host passes no handler', () => {

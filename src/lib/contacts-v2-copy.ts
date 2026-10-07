@@ -797,3 +797,4 @@ export const CHANGE_OWN_PICTURE_LABEL = 'Change picture';
 export const REMOVE_OWN_PICTURE_LABEL = 'Remove your picture';
 export const OWN_PICTURE_HINT = 'Only on this phone. Your picture is used instead of theirs.';
 export const OWN_PICTURE_REFUSED_COPY = "That picture couldn't be used. Choose a JPEG, PNG or WebP photo.";
+export const OWN_PICTURE_UNREADABLE_COPY = "Couldn't read that photo. Pick it again.";
