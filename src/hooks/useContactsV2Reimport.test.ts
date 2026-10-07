@@ -31,6 +31,26 @@ function contact(pubkey: string, name: string): Contact {
   } as Contact;
 }
 
+// A run released from a gate keeps going after the test body would otherwise
+// end: the import is idempotent, so saving after an unmount or a disable is
+// allowed (only setRuns / onImported are suppressed). Its last db call is
+// `markContactImportSources`; awaiting that, plus one macrotask for the hook's
+// own tail (the aliveRef check, `finally`), means the run has fully settled
+// and cannot write into the next test. A fixed sleep cannot promise that: under
+// full-suite load PBKDF2 + IDB take arbitrarily long. Assumes the run is fresh
+// work (purged DB, unmarked legacy rows) so it reaches the mark step.
+function trackRunSettle() {
+  const markSpy = vi.spyOn(db, 'markContactImportSources');
+  return {
+    settled: async () => {
+      await waitFor(() => expect(markSpy).toHaveBeenCalled(), { timeout: 20_000 });
+      await markSpy.mock.results[0].value;
+      await new Promise(r => setTimeout(r, 0));
+    },
+    restore: () => markSpy.mockRestore(),
+  };
+}
+
 describe('useContactsV2Reimport', () => {
   beforeEach(async () => {
     await purgeAllUserData();
@@ -130,6 +150,7 @@ describe('useContactsV2Reimport', () => {
       return [];
     });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const run = trackRunSettle();
 
     const onImported = vi.fn();
     const contacts = [contact(PEER, 'Dave')];
@@ -146,7 +167,9 @@ describe('useContactsV2Reimport', () => {
 
     // Let the blocked run finish AFTER the hook is gone.
     releaseGate();
-    await new Promise(r => setTimeout(r, 200));
+    // Wait for the released run to finish (it still saves), THEN prove the
+    // callback was never fired and nothing warned.
+    await run.settled();
 
     expect(onImported).not.toHaveBeenCalled();
     // No React "not wrapped in act(...)" / unmounted-update warning — the
@@ -154,6 +177,7 @@ describe('useContactsV2Reimport', () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
 
     spy.mockRestore();
+    run.restore();
     consoleErrorSpy.mockRestore();
   });
 
@@ -167,6 +191,7 @@ describe('useContactsV2Reimport', () => {
       return [];
     });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const run = trackRunSettle();
 
     const onImported = vi.fn();
     const contacts = [contact(PEER, 'Dave')];
@@ -185,7 +210,9 @@ describe('useContactsV2Reimport', () => {
     rerender({ enabled: false });
 
     releaseGate();
-    await new Promise(r => setTimeout(r, 200));
+    // Wait for the released run to finish (it still saves), THEN prove the
+    // callback was never fired and nothing warned.
+    await run.settled();
 
     expect(onImported).not.toHaveBeenCalled();
     expect(result.current.runs).toBe(0);
