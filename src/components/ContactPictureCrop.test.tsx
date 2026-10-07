@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ContactPictureCrop } from './ContactPictureCrop';
 import type { CropPicture } from '../lib/picture-crop-loader';
-import { OWN_PICTURE_UNREADABLE_COPY } from '../lib/contacts-v2-copy';
+import { CROP_HINT, CROP_TITLE, OWN_PICTURE_UNREADABLE_COPY } from '../lib/contacts-v2-copy';
 
 // A 1000 x 500 photo in a 360 px frame (jsdom's window is 1024 wide): the
 // widest square is 500 px, so 1 screen px = 500/360 source px and the default
@@ -168,5 +168,15 @@ describe('ContactPictureCrop', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Use this picture' }));
       expect(used(onUse)).toEqual({ x: 0.25, y: 0, side: 0.5 });
     });
+  });
+
+  it('uses the contact wording by default and the given title and hint when passed', async () => {
+    const first = await open();
+    expect(screen.getByText(CROP_HINT)).toBeDefined();
+    expect(screen.getByRole('heading', { name: CROP_TITLE })).toBeDefined();
+    first.unmount();
+    render(<ContactPictureCrop file={FILE} onUse={vi.fn()} onCancel={vi.fn()} loadPicture={async () => picture()} title="My title" hint="My hint" />);
+    expect(await screen.findByText('My hint')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'My title' })).toBeDefined();
   });
 });

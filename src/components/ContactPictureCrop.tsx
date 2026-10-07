@@ -28,10 +28,13 @@ type Point = { x: number; y: number };
  * (`picture-crop.ts` holds the geometry). `onUse` receives the square as
  * fractions of the oriented image.
  */
-export function ContactPictureCrop({ file, onUse, onCancel, loadPicture = loadCropPicture }: {
+export function ContactPictureCrop({ file, onUse, onCancel, title = CROP_TITLE, hint = CROP_HINT, loadPicture = loadCropPicture }: {
   file: Blob;
   onUse: (crop: PictureCrop) => void;
   onCancel: () => void;
+  /** Heading and instruction; default to the contact-picture wording. */
+  title?: string;
+  hint?: string;
   /** Swappable in tests (jsdom has no image decoder). */
   loadPicture?: CropPictureLoader;
 }) {
@@ -154,7 +157,7 @@ export function ContactPictureCrop({ file, onUse, onCancel, loadPicture = loadCr
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 16, boxSizing: 'border-box',
       }}
     >
-      <h2 id={`${sliderId}-title`} style={{ margin: 0 }}>{CROP_TITLE}</h2>
+      <h2 id={`${sliderId}-title`} style={{ margin: 0 }}>{title}</h2>
       {failed && <p role="alert">{OWN_PICTURE_UNREADABLE_COPY}</p>}
       {!failed && !picture && <p role="status">{CROP_LOADING_COPY}</p>}
       {picture && rect && (
@@ -201,7 +204,7 @@ export function ContactPictureCrop({ file, onUse, onCancel, loadPicture = loadCr
               />
             </div>
           </div>
-          <p className="field-hint" style={{ margin: 0, maxWidth: frame }}>{CROP_HINT}</p>
+          <p className="field-hint" style={{ margin: 0, maxWidth: frame }}>{hint}</p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: frame }}>
             <label htmlFor={sliderId}>{ZOOM_LABEL}</label>
             <input

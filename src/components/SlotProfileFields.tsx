@@ -35,6 +35,7 @@ import { NpubRow } from './NpubRow';
 import type { PublicProfileConfig, PersonaPublicProfile } from '../types';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { checkNip05, parseNip05, type Nip05CheckResult } from '../lib/nip05-check';
+import type { PictureCrop } from '../lib/picture-crop';
 import { ImageRow } from './ImageRow';
 import { Icon } from './Icon';
 
@@ -81,7 +82,7 @@ export interface SlotProfileFieldsProps {
   onPublishNow?: () => Promise<void>;
 
   /** Uploads a file to Blossom and returns the resulting URL + sha256. */
-  onUploadPicture?: (file: File, kind: 'picture' | 'banner') => Promise<{ url: string; sha256: string }>;
+  onUploadPicture?: (file: File, kind: 'picture' | 'banner', crop?: PictureCrop) => Promise<{ url: string; sha256: string }>;
 
   /**
    * Persist a NIP-05 check result after the "Check" button runs `checkNip05`.
@@ -289,15 +290,13 @@ export function SlotProfileFields({
     }
   }
 
-  async function handleUpload(kind: 'picture' | 'banner', e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !onUploadPicture) return;
+  async function handleUpload(kind: 'picture' | 'banner', file: File, crop?: PictureCrop) {
+    if (!onUploadPicture) return;
     if (kind === 'picture') setUploadingPicture(true);
     else setUploadingBanner(true);
     setError('');
     try {
-      const { url, sha256 } = await onUploadPicture(file, kind);
+      const { url, sha256 } = await onUploadPicture(file, kind, crop);
       if (kind === 'picture') {
         setPictureUrl(url);
         setPictureBlossomHash(sha256);
@@ -486,7 +485,8 @@ export function SlotProfileFields({
             showPreview={showPicturePreview}
             uploading={uploadingPicture}
             hostname={hostFromUrl(pictureUrl)}
-            onUpload={onUploadPicture ? (e) => handleUpload('picture', e) : undefined}
+            onPick={onUploadPicture ? (file, crop) => handleUpload('picture', file, crop) : undefined}
+            onPickError={setError}
             onPasteUrl={handlePastedPictureUrl}
             onShowPreview={() => setShowPicturePreview(true)}
             onRemove={removePicture}
@@ -501,7 +501,8 @@ export function SlotProfileFields({
             showPreview={showBannerPreview}
             uploading={uploadingBanner}
             hostname={hostFromUrl(bannerUrl)}
-            onUpload={onUploadPicture ? (e) => handleUpload('banner', e) : undefined}
+            onPick={onUploadPicture ? (file) => handleUpload('banner', file) : undefined}
+            onPickError={setError}
             onPasteUrl={handlePastedBannerUrl}
             onShowPreview={() => setShowBannerPreview(true)}
             onRemove={removeBanner}

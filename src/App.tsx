@@ -67,7 +67,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { Page, CarouselRow, SignetIdentity } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
 import { resolveSelectedPubkey } from './lib/auth-selection';
-import { downscaleAvatar, uploadAvatar, fetchAvatar, uploadContactAvatar, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
+import { downscaleAvatar, uploadAvatar, uploadPublicPicture, fetchAvatar, uploadContactAvatar, AVATAR_MAX_EDGE_PX, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
 import { generateContactAvatarKey } from './lib/photo-crypto';
 import { publishContactAvatarPointer, retractContactAvatarPointer } from './lib/contact-avatar';
 import { verifiedAuthoredEvent } from './lib/event-verify';
@@ -203,7 +203,7 @@ import {
   type RunnerContext,
 } from './lib/contact-picture-backup-flow';
 import { forgetContactPictureKeys, contactPictureGeneration } from './lib/contact-picture-crypto';
-import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from './lib/blossom';
+import { DEFAULT_BLOSSOM_URL } from './lib/blossom';
 import { GetVerified } from './pages/GetVerified';
 import { MyDocuments } from './pages/MyDocuments';
 import { VerifySomeone } from './pages/VerifySomeone';
@@ -9952,7 +9952,6 @@ export function App() {
       <Layout title="Add Photo" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <PhotoCapture
           identity={currentIdentity}
-          backend={npBackend}
           blossomConsent={blossomConsent}
           onSetBlossomConsent={setBlossomConsent}
           onUpdatePhoto={activeDependant
@@ -12741,8 +12740,6 @@ export function App() {
       contactKey = generateContactAvatarKey();
     }
 
-    const backendForBlossom = npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson;
-    if (!backendForBlossom) throw new Error('Sign in before sharing an avatar.');
     const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
     if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
     if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');
@@ -12761,7 +12758,7 @@ export function App() {
     // untouched (QRCard surfaces it) without persisting a stale flag.
     let meta;
     try {
-      meta = await uploadContactAvatar(plaintext, contactKey, blossomUrl, backendForBlossom, blossomConsent);
+      meta = await uploadContactAvatar(plaintext, contactKey, blossomUrl, blossomConsent);
     } catch (err) {
       if (opts.requireExisting) {
         // Re-publish of an already-shared avatar failed to upload. Keep the
@@ -13008,7 +13005,7 @@ export function App() {
           const result = await publishPersonaProfile(target, undefined);
           if (!result.ok) throw new Error(result.message || 'Republish failed.');
         }}
-        onUploadPersonaPicture={async (file, kind) => {
+        onUploadPersonaPicture={async (file, kind, crop) => {
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
           if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');
@@ -13016,15 +13013,15 @@ export function App() {
           if (file.size > MAX_RAW_BYTES) {
             throw new Error('That photo is too large. Pick one under 20 MB.');
           }
-          const uploadBackend = npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson;
-          if (!uploadBackend) throw new Error('Sign in before uploading a photo.');
           // Re-encode via canvas to strip EXIF (GPS, device serial, capture
           // timestamp, etc.) before publishing the URL on a public Nostr
           // kind-0. `downscaleAvatar` is the same primitive used by the
-          // encrypted-avatar path; here we just pass a larger max edge.
+          // encrypted-avatar path; here we just pass a larger max edge (and
+          // the persona crop, for a picture). The upload auth is signed by a
+          // one-off key, never the real-name key.
           const maxEdge = kind === 'banner' ? PUBLIC_BANNER_MAX_EDGE_PX : PUBLIC_PICTURE_MAX_EDGE_PX;
-          const reencoded = await downscaleAvatar(file, maxEdge);
-          const hash = await uploadToBlossom(reencoded, blossomUrl, uploadBackend, blossomConsent);
+          const reencoded = await downscaleAvatar(file, maxEdge, kind === 'picture' ? crop : undefined);
+          const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent);
           const url = `${blossomUrl.replace(/\/+$/, '')}/${hash}`;
           return { url, sha256: hash };
         }}
@@ -13046,10 +13043,10 @@ export function App() {
           const result = await publishPersonaProfile(target, depPubkey);
           if (!result.ok) throw new Error(result.message || 'Republish failed.');
         }}
-        onUploadDepPersonaPicture={async (_depPubkey, file, kind) => {
-          // Same NP-backend signs the Blossom NIP-98 auth event regardless
-          // of which dep slot the picture is FOR — the dep's signing
-          // material isn't on this device. Mirrors GuardianSettings.tsx.
+        onUploadDepPersonaPicture={async (_depPubkey, file, kind, crop) => {
+          // The Blossom auth is signed by a one-off key (not the guardian's
+          // key, nor the dependant's) regardless of which dep slot the
+          // picture is FOR.
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
           if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');
@@ -13057,15 +13054,13 @@ export function App() {
           if (file.size > MAX_RAW_BYTES) {
             throw new Error('That photo is too large. Pick one under 20 MB.');
           }
-          const uploadBackend = npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson;
-          if (!uploadBackend) throw new Error('Sign in before uploading a photo.');
           // Re-encode to strip EXIF — see `onUploadPersonaPicture` above.
           // Particularly important for dep public pictures: a guardian
           // uploading a phone photo of their child would otherwise leak
           // home GPS coordinates onto the public Nostr relay.
           const maxEdge = kind === 'banner' ? PUBLIC_BANNER_MAX_EDGE_PX : PUBLIC_PICTURE_MAX_EDGE_PX;
-          const reencoded = await downscaleAvatar(file, maxEdge);
-          const hash = await uploadToBlossom(reencoded, blossomUrl, uploadBackend, blossomConsent);
+          const reencoded = await downscaleAvatar(file, maxEdge, kind === 'picture' ? crop : undefined);
+          const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent);
           const url = `${blossomUrl.replace(/\/+$/, '')}/${hash}`;
           return { url, sha256: hash };
         }}
@@ -13085,17 +13080,15 @@ export function App() {
         // upload pipeline as before; only the host surface changed.
         // Suppressed on the paired-child surface: the kid's local writes
         // get overwritten by the next persona-inventory sync from the
-        // guardian, and the Blossom NIP-98 auth event would
-        // pop an unsolicited sign request to the guardian's bunker.
-        onSetPersonaAvatar={isPairedChild ? undefined : async (target, file) => {
+        // guardian. (The Blossom auth is signed by a one-off key, so no sign
+        // request reaches a bunker.)
+        onSetPersonaAvatar={isPairedChild ? undefined : async (target, file, crop) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
           const MAX_RAW_BYTES = 20 * 1024 * 1024;
           if (file.size > MAX_RAW_BYTES) {
             throw new Error('That photo is too large. Pick one under 20 MB.');
           }
-          const npBackend = npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson;
-          if (!npBackend) throw new Error('Sign in before uploading a photo.');
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) {
             throw new Error('Set a Blossom server in Advanced Settings before uploading photos.');
@@ -13103,8 +13096,8 @@ export function App() {
           if (!blossomConsent) {
             throw new Error('Enable Blossom uploads in Advanced Settings first.');
           }
-          const downscaled = await downscaleAvatar(file);
-          const metadata = await uploadAvatar(downscaled, blossomUrl, npBackend, blossomConsent);
+          const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
+          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent);
           await setPersonaAvatar(target, metadata);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
@@ -13122,18 +13115,15 @@ export function App() {
         onNip05Checked={async (target, result, checkedAt) => {
           await setSlotNip05Check(target, { result, checkedAt });
         }}
-        onSetDepPersonaAvatar={async (depPubkey, target, file) => {
+        onSetDepPersonaAvatar={async (depPubkey, target, file, crop) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
           const MAX_RAW_BYTES = 20 * 1024 * 1024;
           if (file.size > MAX_RAW_BYTES) {
             throw new Error('That photo is too large. Pick one under 20 MB.');
           }
-          // Same NP-backend precedence as user-own avatar upload. The dep
-          // doesn't have signing material on this device — the guardian's
-          // NP key authorises the Blossom PUT.
-          const npBackend = npBunkerBackend ?? nip07Backend ?? backends?.naturalPerson;
-          if (!npBackend) throw new Error('Sign in before uploading a photo.');
+          // The Blossom auth is signed by a one-off key derived from the
+          // avatar's content key (see `uploadAvatar`), never a real key.
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) {
             throw new Error('Set a Blossom server in Advanced Settings before uploading photos.');
@@ -13141,8 +13131,8 @@ export function App() {
           if (!blossomConsent) {
             throw new Error('Enable Blossom uploads in Advanced Settings first.');
           }
-          const downscaled = await downscaleAvatar(file);
-          const metadata = await uploadAvatar(downscaled, blossomUrl, npBackend, blossomConsent);
+          const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
+          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent);
           await setDependantPersonaAvatar(depPubkey, target, metadata);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {

@@ -13,6 +13,18 @@ vi.mock('../lib/nip05-check', async () => {
 import { SlotProfileFields } from './SlotProfileFields';
 import { checkNip05 } from '../lib/nip05-check';
 import type { PublicProfileConfig, PersonaPublicProfile } from '../types';
+import { OWN_PICTURE_REFUSED_COPY } from '../lib/contacts-v2-copy';
+
+// The crop screen has its own tests; here it hands back a fixed crop.
+const CROP = { x: 0.1, y: 0.2, side: 0.5 };
+vi.mock('./ContactPictureCrop', () => ({
+  ContactPictureCrop: ({ onUse }: { onUse: (c: typeof CROP) => void }) => (
+    <div role="dialog" aria-label="crop stub"><button onClick={() => onUse(CROP)}>Use this picture</button></div>
+  ),
+}));
+const PNG_3x2 = 'iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGM8wcXFwMDAwMDAxAADABByAOAp6i43AAAAAElFTkSuQmCC';
+const GIF = 'R0lGODdhAwACAIEAAMgKCgAAAAAAAAAAACwAAAAAAwACAAAIBgABCBwYEAA7';
+const imageFile = (b64: string, type: string) => new File([Uint8Array.from(atob(b64), c => c.charCodeAt(0))], 'x', { type });
 
 const mockCheckNip05 = vi.mocked(checkNip05);
 
@@ -512,5 +524,47 @@ describe('SlotProfileFields — NIP-05 check', () => {
       />,
     );
     expect(screen.getByText(/Couldn't reach example\.com to check/)).toBeDefined();
+  });
+
+  describe('picture and banner uploads', () => {
+    function renderUploader() {
+      const onUploadPicture = vi.fn().mockResolvedValue({ url: 'https://nostr.download/' + 'e'.repeat(64), sha256: 'e'.repeat(64) });
+      const view = render(
+        <SlotProfileFields
+          pubkey={PUBKEY}
+          config={baseConfig()}
+          slotKind="natural-person"
+          blossomConsent
+          onSaveConfig={vi.fn().mockResolvedValue(undefined)}
+          onUploadPicture={onUploadPicture}
+        />,
+      );
+      const [pictureInput, bannerInput] = Array.from(view.container.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+      return { onUploadPicture, pictureInput, bannerInput };
+    }
+
+    it('a picture goes through the crop screen and onUploadPicture gets (file, "picture", crop)', async () => {
+      const { onUploadPicture, pictureInput } = renderUploader();
+      const file = imageFile(PNG_3x2, 'image/png');
+      fireEvent.change(pictureInput, { target: { files: [file] } });
+      fireEvent.click(await screen.findByRole('button', { name: 'Use this picture' }));
+      await waitFor(() => expect(onUploadPicture).toHaveBeenCalledWith(file, 'picture', CROP));
+    });
+
+    it('a banner is uploaded with no crop and no crop screen', async () => {
+      const { onUploadPicture, bannerInput } = renderUploader();
+      const file = imageFile(PNG_3x2, 'image/png');
+      fireEvent.change(bannerInput, { target: { files: [file] } });
+      await waitFor(() => expect(onUploadPicture).toHaveBeenCalledWith(file, 'banner', undefined));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('a refused picture shows the form error and never opens the crop screen', async () => {
+      const { onUploadPicture, pictureInput } = renderUploader();
+      fireEvent.change(pictureInput, { target: { files: [imageFile(GIF, 'image/gif')] } });
+      expect(await screen.findByText(OWN_PICTURE_REFUSED_COPY)).toBeDefined();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(onUploadPicture).not.toHaveBeenCalled();
+    });
   });
 });

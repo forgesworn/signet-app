@@ -7,6 +7,8 @@ import { resolveDependantIdFromRowAlways } from '../lib/carousel-routing';
 import { MiniIdBadge } from './MiniIdBadge';
 import { SlotProfileFields, type SlotKind } from './SlotProfileFields';
 import { Icon } from './Icon';
+import type { PictureCrop } from '../lib/picture-crop';
+import { usePicturePick } from '../hooks/usePicturePick';
 
 interface Props {
   resolved: ResolvedIdentity;
@@ -46,6 +48,7 @@ interface Props {
   onUploadPersonaPicture?: (
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
   /** Update the display name for a user-side persona slot. */
   onUpdateOwnPersonaName?: (
@@ -60,6 +63,7 @@ interface Props {
   onSetPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
+    crop?: PictureCrop,
   ) => Promise<void>;
   /** Clear the avatar for a user-side slot. */
   onClearPersonaAvatar?: (
@@ -89,6 +93,7 @@ interface Props {
     depPubkey: string,
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
   /** Update the dep's overall (NP-row) display name. */
   onUpdateDepName?: (depPubkey: string, name: string) => Promise<void>;
@@ -106,6 +111,7 @@ interface Props {
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
     file: File,
+    crop?: PictureCrop,
   ) => Promise<void>;
   /** Clear the avatar for a dep slot. */
   onClearDepPersonaAvatar?: (
@@ -322,14 +328,14 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
  * the kid's local writes get overwritten by the next persona-inventory
  * sync from the guardian.
  */
-function InlineAvatarRow({
+export function InlineAvatarRow({
   hasAvatar,
   onSet,
   onClear,
   disabled,
 }: {
   hasAvatar: boolean;
-  onSet: (file: File) => Promise<void>;
+  onSet: (file: File, crop?: PictureCrop) => Promise<void>;
   onClear?: () => Promise<void>;
   disabled?: boolean;
 }) {
@@ -343,15 +349,18 @@ function InlineAvatarRow({
     fileInputRef.current?.click();
   }
 
-  async function handleFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    // Reset input so picking the same file twice still triggers onChange.
-    e.target.value = '';
-    if (!file) return;
+  // pick -> header gate -> crop screen -> onSet(file, crop). A refused photo
+  // never opens the crop screen.
+  const picker = usePicturePick({
+    onPicked: (file, crop) => handleFilePicked(file, crop),
+    onError: setError,
+  });
+
+  async function handleFilePicked(file: File, crop?: PictureCrop) {
     setBusy(true);
     setError('');
     try {
-      await onSet(file);
+      await onSet(file, crop);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save avatar. Try again.');
     } finally {
@@ -402,8 +411,9 @@ function InlineAvatarRow({
           type="file"
           accept="image/*"
           style={{ display: 'none' }}
-          onChange={handleFileChosen}
+          onChange={picker.onInputChange}
         />
+        {picker.cropScreen}
       </div>
     </div>
   );
@@ -589,8 +599,8 @@ export function SettingsCard({
       slot.scope === 'own'
         ? onUploadPersonaPicture
         : slot.scope === 'dep' && slot.depPubkey && onUploadDepPersonaPicture
-          ? (file: File, kind: 'picture' | 'banner') =>
-              onUploadDepPersonaPicture(slot.depPubkey!, file, kind)
+          ? (file: File, kind: 'picture' | 'banner', crop?: PictureCrop) =>
+              onUploadDepPersonaPicture(slot.depPubkey!, file, kind, crop)
           : undefined;
     // No persistence path on the read-only paired-child surface — leave
     // onNip05Checked undefined there so SlotProfileFields hides the Check
@@ -640,7 +650,7 @@ export function SettingsCard({
       return (
         <InlineAvatarRow
           hasAvatar={hasAvatar}
-          onSet={(file) => onSetPersonaAvatar(target, file)}
+          onSet={(file, crop) => onSetPersonaAvatar(target, file, crop)}
           onClear={onClearPersonaAvatar ? () => onClearPersonaAvatar(target) : undefined}
         />
       );
@@ -653,7 +663,7 @@ export function SettingsCard({
     return (
       <InlineAvatarRow
         hasAvatar={hasAvatar}
-        onSet={(file) => onSetDepPersonaAvatar(depPubkey, depTarget, file)}
+        onSet={(file, crop) => onSetDepPersonaAvatar(depPubkey, depTarget, file, crop)}
         onClear={onClearDepPersonaAvatar ? () => onClearDepPersonaAvatar(depPubkey, depTarget) : undefined}
       />
     );

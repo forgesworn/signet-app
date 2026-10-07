@@ -813,6 +813,10 @@ export const OWN_PICTURE_UNREADABLE_COPY = "Couldn't read that photo. Pick it ag
 // Own-picture crop screen, and the badge swap on the contact page.
 export const CROP_TITLE = 'Crop your picture';
 export const CROP_HINT = 'Move and zoom until their face or logo sits in the circle. The square is what gets saved.';
+/** The crop screen's hint when the picture is one of your own personas' (not a contact's). */
+export const PERSONA_CROP_HINT = 'Move and zoom until your face or logo sits in the circle. The square is what gets saved.';
+/** A picked persona picture over the size the app will take (shown before the crop screen opens). */
+export const PERSONA_PICTURE_TOO_LARGE_COPY = 'That photo is too large. Pick one under 20 MB.';
 export const ZOOM_LABEL = 'Zoom';
 export const USE_THIS_PICTURE_LABEL = 'Use this picture';
 export const CROP_LOADING_COPY = 'Opening your photo…';

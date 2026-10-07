@@ -16,6 +16,7 @@ import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
 import type { IQBreakdownItem } from '../lib/badge-fetch';
+import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
@@ -106,6 +107,7 @@ interface CarouselProps {
   onUploadPersonaPicture?: (
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
   onUpdateOwnPersonaName?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -115,6 +117,7 @@ interface CarouselProps {
   onSetPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
+    crop?: PictureCrop,
   ) => Promise<void>;
   /** Clear the avatar for a user-side slot. */
   onClearPersonaAvatar?: (
@@ -139,6 +142,7 @@ interface CarouselProps {
     depPubkey: string,
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
   onUpdateDepName?: (depPubkey: string, name: string) => Promise<void>;
   onUpdateDepPersonaName?: (
@@ -151,6 +155,7 @@ interface CarouselProps {
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
     file: File,
+    crop?: PictureCrop,
   ) => Promise<void>;
   /** Clear the avatar for a dep slot. */
   onClearDepPersonaAvatar?: (
