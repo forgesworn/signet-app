@@ -109,6 +109,14 @@ describe('R1: never delete a blob something still references', () => {
     expect(sent).toHaveLength(0);
   });
 
+  it('M1: with no unlock key nothing is sent and the answer is kept, so no "Couldn\'t delete" line', async () => {
+    const { sent, fetchImpl } = stubDelete(200);
+    const outcome = await deleteOwnedBlob({ hash: H1, server: SERVER, domain: AVATAR_UPLOADER_DOMAIN, encryptionKey: null, loadRows: noRows, fetchImpl });
+    expect(outcome).toBe('kept');
+    expect(sent).toHaveLength(0);
+    expect(blobDeletionNote('picture', outcome, SERVER)).toBeUndefined();
+  });
+
   it('is deleted once nothing references it', async () => {
     const { sent, fetchImpl } = stubDelete(200);
     const outcome = await deleteOwnedBlob({ hash: H1, server: SERVER, domain: AVATAR_UPLOADER_DOMAIN, encryptionKey: KEY, loadRows: async () => [row({ persona: { avatarHash: H2 } })], fetchImpl });

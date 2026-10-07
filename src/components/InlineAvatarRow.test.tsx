@@ -79,3 +79,26 @@ describe('InlineAvatarRow shows the result of deleting the old blob (R3)', () =>
     expect(screen.queryByRole('status')).toBeNull();
   });
 });
+
+describe('M2: the old-blob delete does not hold up the row', () => {
+  it('the row is free as soon as the handler resolves, and the line shows when the delete lands', async () => {
+    let land!: (line: string | undefined) => void;
+    const deletion = new Promise<string | undefined>(resolve => { land = resolve; });
+    const onClear = vi.fn(async () => ({ deletion }));
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    // The handler has resolved: no spinner, nothing waiting on the server yet.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Change' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByRole('status')).toBeNull();
+    land('Old photo deleted from nostr.download.');
+    expect(await screen.findByText('Old photo deleted from nostr.download.')).toBeDefined();
+  });
+  it('a delete that lands with no line, or fails, says nothing', async () => {
+    const onClear = vi.fn(async () => ({ deletion: Promise.resolve(undefined) }));
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(onClear).toHaveBeenCalled());
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});

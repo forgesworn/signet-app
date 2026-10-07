@@ -116,8 +116,13 @@ export interface DeleteOwnedBlobArgs {
   server: string;
   /** The uploader domain the blob was uploaded under (`*_UPLOADER_DOMAIN`). */
   domain: string;
-  /** The unlock key: the uploader secret is stored encrypted under it. */
-  encryptionKey: string;
+  /**
+   * The unlock key: the uploader secret is stored encrypted under it. Null when
+   * the app is locked or the handler never had the key: nothing is sent then,
+   * and the answer is `kept` (silent), never a "Couldn't delete" for a request
+   * the server was never asked (M1).
+   */
+  encryptionKey: string | null;
   /** Test seam. Defaults to the stored `identity` rows. */
   loadRows?: () => Promise<readonly unknown[]>;
   fetchImpl?: typeof fetch;
@@ -128,6 +133,7 @@ export async function deleteOwnedBlob(args: DeleteOwnedBlobArgs): Promise<Delete
   const { server, domain, encryptionKey } = args;
   const hash = args.hash.toLowerCase();
   if (!HEX64.test(hash) || !server) return 'failed';
+  if (!encryptionKey) return 'kept';
 
   try {
     const rows = await (args.loadRows ?? listIdentityStoreRows)();
@@ -139,6 +145,10 @@ export async function deleteOwnedBlob(args: DeleteOwnedBlobArgs): Promise<Delete
 
   let backend: UploaderBackend | null = null;
   try {
+    // M7: this may MINT the install's uploader secret (getOrCreateUploaderSecret)
+    // on a fresh install, as a side effect of a delete that is then refused with
+    // 401/403 because the blob was not ours. Harmless: the secret is random,
+    // local and sealed, and the next upload would mint the same thing.
     backend = await hmacUploaderBackend(domain, hash, encryptionKey);
     await deleteFromBlossom(hash, server, backend, args.fetchImpl ?? fetch);
     return 'deleted';

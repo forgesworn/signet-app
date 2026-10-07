@@ -32,6 +32,11 @@ export function defaultCardChoice(info: ContactCardInfo): ContactCardChoice {
  * paired-child install (kid-side photo publishing is suppressed) and for any
  * pubkey that is not one of the signed-in owner's own slots (a dependant's
  * directory is never described by the guardian's card).
+ *
+ * M8, deliberate: a guardian acting in a dependant's directory therefore sends
+ * NO card at all (no name, no photo): the persona there is the dependant's, and
+ * the guardian's name or picture must not be offered in its place. The
+ * receiving side still stores any card it is sent (see `recordPartnerCardPhoto`).
  */
 export function contactCardInfoFor(identity: SignetIdentity | null, persona: string, opts: { pairedChild: boolean }): ContactCardInfo | null {
   if (opts.pairedChild || !identity || !persona) return null;
@@ -76,4 +81,28 @@ export async function buildContactCard(choice: ContactCardChoice, info: ContactC
 /** The OTHER side's card on a finished exchange: the acceptance's for a requester, the request's for a recipient. */
 export function partnerCardOf(exchange: Pick<ContactExchangeState, 'role' | 'request' | 'acceptance'>): ContactCard | undefined {
   return (exchange.role === 'requester' ? exchange.acceptance?.card : exchange.request.card) ?? undefined;
+}
+
+/** The slot fields that say whether its contact-share copy can go into a card as it is. */
+export interface ShareCopySlot {
+  contactAvatarKey?: string; contactAvatarHash?: string; contactAvatarBlossomUrl?: string;
+  contactAvatarStale?: boolean;
+  /** Seconds: when the in-app (private) picture was last set. */
+  avatarUpdatedAt?: number;
+  /** Seconds: when the share copy was last uploaded. */
+  contactAvatarUpdatedAt?: number;
+}
+
+/**
+ * The share copy a card may point at as it stands, or null when it must be
+ * made again (M5). Null when there is none, when it is flagged stale, or when
+ * the in-app picture changed after the copy was made: the change-time refresh
+ * can silently fail to run (a bunker with no route yet), and the card would
+ * then carry the previous photo. The old copy is never deleted by the re-make
+ * (R5): Kinterest child consent fetches it by hash.
+ */
+export function shareCopyReady(slot: ShareCopySlot | null | undefined): { key: string; server: string; hash: string } | null {
+  if (!slot?.contactAvatarKey || !slot.contactAvatarHash || !slot.contactAvatarBlossomUrl || slot.contactAvatarStale) return null;
+  if ((slot.avatarUpdatedAt ?? 0) > (slot.contactAvatarUpdatedAt ?? 0)) return null;
+  return { key: slot.contactAvatarKey, server: slot.contactAvatarBlossomUrl, hash: slot.contactAvatarHash };
 }

@@ -47,7 +47,7 @@ import { nip19 } from 'nostr-tools';
 import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
 import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
-import { buildContactCard, contactCardInfoFor, partnerCardOf } from './lib/contact-card-share';
+import { buildContactCard, contactCardInfoFor, partnerCardOf, shareCopyReady } from './lib/contact-card-share';
 import { seedContactAvatarPointer } from './hooks/useContactAvatar';
 import { ContactInvites } from './pages/ContactInvites';
 import { ContactInviteSend } from './pages/ContactInviteSend';
@@ -786,8 +786,11 @@ export function App() {
   // of the blob's domain and refuses any blob a stored slot still references
   // (R1). `deleteOwnedBlob` never throws, so a delete never blocks the save or
   // remove it follows. `key` is for a handler that just unlocked on demand.
-  const deleteOwnBlob = (domain: string, hash: string, server: string, key: string | null = encryptionKey): Promise<DeleteOutcome> =>
-    key ? deleteOwnedBlob({ hash, server, domain, encryptionKey: key }) : Promise.resolve('failed');
+  // With no key (locked, or a handler that never had one) nothing is sent and the
+  // answer is `kept`: silent, never a "Couldn't delete" line (M1). The default
+  // reads the live key, so a closure kept across a lock cannot delete after it.
+  const deleteOwnBlob = (domain: string, hash: string, server: string, key: string | null = encryptionKeyRef.current): Promise<DeleteOutcome> =>
+    deleteOwnedBlob({ hash, server, domain, encryptionKey: key });
   /** Delete the private avatar a Change/Remove just replaced (R3); resolves with the one-line result. */
   const dropReplacedAvatar = (old: { hash: string; server: string } | undefined, newHash: string | undefined, key: string): Promise<string | undefined> =>
     deleteReplacedAvatar(old, newHash, (domain, hash, server) => deleteOwnBlob(domain, hash, server, key));
@@ -10776,8 +10779,8 @@ export function App() {
       return target === 'natural-person' ? fresh?.naturalPerson : target === 'persona' ? fresh?.persona
         : fresh?.extraPersonas?.find(e => e.publicKey === target);
     };
-    const ready = (slot: Awaited<ReturnType<typeof read>>) => slot?.contactAvatarKey && slot.contactAvatarHash && slot.contactAvatarBlossomUrl && !slot.contactAvatarStale
-      ? { key: slot.contactAvatarKey, server: slot.contactAvatarBlossomUrl, hash: slot.contactAvatarHash } : null;
+    // M5: a copy older than the in-app picture is not ready, so it is made again.
+    const ready = (slot: Awaited<ReturnType<typeof read>>) => shareCopyReady(slot);
     const existing = ready(await read());
     if (existing) return existing;
     if (!await pushContactAvatar({ target, requireExisting: false, strict: true })) throw new Error('The photo could not be shared.');
@@ -13182,19 +13185,21 @@ export function App() {
           const oldAvatar = findSlotBlobs(identity, target).avatar;
           await setPersonaAvatar(target, metadata);
           // R3: the replaced avatar goes from the server now that nothing points at it.
-          const deletionNote = await dropReplacedAvatar(oldAvatar, metadata.hash, key);
+          // Started now, not awaited: the UI is already up to date and a slow server
+          // must not hold the spinner or the share-copy refresh below (M2).
+          const deletion = dropReplacedAvatar(oldAvatar, metadata.hash, key);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
             await pushContactAvatar({ target, plaintext: new Uint8Array(await downscaled.arrayBuffer()), requireExisting: true });
           } catch { /* best-effort — never block the primary avatar set */ }
-          return deletionNote;
+          return { deletion };
         }}
         onClearPersonaAvatar={isPairedChild ? undefined : async (target) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
           const oldAvatar = findSlotBlobs(identity, target).avatar;
           await clearPersonaAvatar(target);
-          return dropReplacedAvatar(oldAvatar, undefined, key);
+          return { deletion: dropReplacedAvatar(oldAvatar, undefined, key) }; // M2: the line shows when the delete lands
         }}
         // Device-local NIP-05 check result — persisted straight to IDB, no
         // auth prompt (mirrors the read-only nature of the check itself;
@@ -13223,19 +13228,21 @@ export function App() {
           const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
           await setDependantPersonaAvatar(depPubkey, target, metadata);
           // R3: the replaced avatar goes from the server now that nothing points at it.
-          const deletionNote = await dropReplacedAvatar(oldAvatar, metadata.hash, key);
+          // Started now, not awaited: the UI is already up to date and a slow server
+          // must not hold the spinner or the share-copy refresh below (M2).
+          const deletion = dropReplacedAvatar(oldAvatar, metadata.hash, key);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
             await pushContactAvatar({ target, depPubkey, plaintext: new Uint8Array(await downscaled.arrayBuffer()), requireExisting: true });
           } catch { /* best-effort */ }
-          return deletionNote;
+          return { deletion };
         }}
         onClearDepPersonaAvatar={async (depPubkey, target) => {
           const key = encryptionKey || await requestAuth();
           if (!key) throw new Error('Authentication required');
           const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
           await clearDependantPersonaAvatar(depPubkey, target);
-          return dropReplacedAvatar(oldAvatar, undefined, key);
+          return { deletion: dropReplacedAvatar(oldAvatar, undefined, key) }; // M2: the line shows when the delete lands
         }}
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });

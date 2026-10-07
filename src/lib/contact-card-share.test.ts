@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SignetIdentity } from '../types';
-import { buildContactCard, contactCardInfoFor, ContactCardPhotoError, defaultCardChoice, partnerCardOf } from './contact-card-share';
+import { buildContactCard, contactCardInfoFor, ContactCardPhotoError, defaultCardChoice, partnerCardOf, shareCopyReady } from './contact-card-share';
 
 const P = 'a'.repeat(64), X = 'b'.repeat(64), NP = 'c'.repeat(64), PRO = 'd'.repeat(64);
 const photo = { key: '1'.repeat(64), server: 'https://blossom.example.com/', hash: '2'.repeat(64) };
@@ -66,5 +66,23 @@ describe('partnerCardOf', () => {
     expect(partnerCardOf({ role: 'requester', request, acceptance })).toEqual({ name: 'Acc' });
     expect(partnerCardOf({ role: 'recipient', request, acceptance })).toEqual({ name: 'Req' });
     expect(partnerCardOf({ role: 'requester', request, acceptance: undefined })).toBeUndefined();
+  });
+});
+
+describe('M5: shareCopyReady', () => {
+  const copy = { contactAvatarKey: '1'.repeat(64), contactAvatarHash: '2'.repeat(64), contactAvatarBlossomUrl: 'https://b.example.com', contactAvatarUpdatedAt: 1000 };
+  it('returns a current, published copy as it stands', () => {
+    expect(shareCopyReady({ ...copy, avatarUpdatedAt: 900 })).toEqual({ key: copy.contactAvatarKey, server: copy.contactAvatarBlossomUrl, hash: copy.contactAvatarHash });
+    expect(shareCopyReady({ ...copy, avatarUpdatedAt: 1000 })).not.toBeNull(); // made in the same second as the change
+    expect(shareCopyReady(copy)).not.toBeNull();
+  });
+  it('returns null when the in-app picture changed after the copy was made', () => {
+    expect(shareCopyReady({ ...copy, avatarUpdatedAt: 1001 })).toBeNull();
+  });
+  it('returns null for no copy, a partial copy and a stale-flagged one', () => {
+    expect(shareCopyReady(null)).toBeNull();
+    expect(shareCopyReady({})).toBeNull();
+    expect(shareCopyReady({ ...copy, contactAvatarHash: undefined })).toBeNull();
+    expect(shareCopyReady({ ...copy, contactAvatarStale: true })).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { CarouselRow, PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { resolveDependantCardSlot } from '../lib/carousel-utils';
@@ -10,6 +10,14 @@ import { Icon } from './Icon';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
 import type { DeleteOutcome } from '../lib/blob-deletion';
+
+/**
+ * What an avatar Set/Change/Remove handler may resolve with: nothing, a one-line
+ * note about the old blob, or `{ deletion }` for a delete still running. The
+ * row is free as soon as the handler resolves and shows the line when
+ * `deletion` lands (M2).
+ */
+export type AvatarResult = string | void | { deletion: Promise<string | undefined> };
 
 interface Props {
   resolved: ResolvedIdentity;
@@ -67,11 +75,11 @@ interface Props {
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Clear the avatar for a user-side slot. May resolve with a one-line note about the old blob's deletion. */
   onClearPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a user-side slot (device-local, never synced). */
   onNip05Checked?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -115,12 +123,12 @@ interface Props {
     target: 'natural-person' | 'persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Clear the avatar for a dep slot. May resolve with a one-line note about the old blob's deletion. */
   onClearDepPersonaAvatar?: (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a dep slot (device-local, never synced). */
   onDepNip05Checked?: (
     depPubkey: string,
@@ -346,14 +354,22 @@ export function InlineAvatarRow({
 }: {
   hasAvatar: boolean;
   /** May resolve with a one-line note about the old blob's deletion (R3). */
-  onSet: (file: File, crop?: PictureCrop) => Promise<string | void>;
-  onClear?: () => Promise<string | void>;
+  onSet: (file: File, crop?: PictureCrop) => Promise<AvatarResult>;
+  onClear?: () => Promise<AvatarResult>;
   disabled?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const showResult = (result: AvatarResult) => {
+    if (typeof result === 'string') setNote(result);
+    else if (result && typeof result === 'object') {
+      void result.deletion.then(line => { if (mounted.current && line) setNote(line); }).catch(() => undefined);
+    }
+  };
 
   function trigger() {
     if (busy || disabled) return;
@@ -374,7 +390,7 @@ export function InlineAvatarRow({
     setNote('');
     try {
       const result = await onSet(file, crop);
-      if (typeof result === 'string') setNote(result);
+      showResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save avatar. Try again.');
     } finally {
@@ -389,7 +405,7 @@ export function InlineAvatarRow({
     setNote('');
     try {
       const result = await onClear();
-      if (typeof result === 'string') setNote(result);
+      showResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not remove avatar.');
     } finally {

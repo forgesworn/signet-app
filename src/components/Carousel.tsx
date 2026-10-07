@@ -10,7 +10,7 @@ import { NavDots } from './NavDots';
 import { IdentityCard } from './IdentityCard';
 import type { IdentityCardProps } from './IdentityCard';
 import { QRCard, type QRCardSlots } from './QRCard';
-import { SettingsCard } from './SettingsCard';
+import { SettingsCard, type AvatarResult } from './SettingsCard';
 import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
@@ -120,11 +120,11 @@ interface CarouselProps {
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Clear the avatar for a user-side slot. */
   onClearPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a user-side slot (device-local, never synced). */
   onNip05Checked?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -158,12 +158,12 @@ interface CarouselProps {
     target: 'natural-person' | 'persona' | string,
     file: File,
     crop?: PictureCrop,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Clear the avatar for a dep slot. */
   onClearDepPersonaAvatar?: (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-  ) => Promise<string | void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a dep slot (device-local, never synced). */
   onDepNip05Checked?: (
     depPubkey: string,
