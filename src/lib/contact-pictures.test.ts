@@ -164,7 +164,7 @@ describe('refreshContactPictures (real store)', () => {
     const download = vi.fn(async () => new Uint8Array([1]));
     const thumbnail = vi.fn(async () => JPEG(2));
 
-    await m.setOwnContactPicture(KEY, 'owner', own, new Blob([new Uint8Array([1])]), { thumbnail: async () => JPEG(9) });
+    await m.setOwnContactPicture(KEY, 'owner', own, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => JPEG(9) });
 
     // First run: both pictures new.
     let fetchProfiles = vi.fn(async () => new Map<string, Kind0Profile>([
@@ -330,7 +330,7 @@ describe('a lock during the write', () => {
     const m = await load();
     const id = '5'.repeat(32);
     const release = holdDerivation();
-    const pending = m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), { thumbnail: async () => JPEG(3) });
+    const pending = m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => JPEG(3) });
     await vi.waitFor(() => expect(derive.calls).toBe(1));
     lock(m);
     release();
@@ -358,10 +358,10 @@ describe('own pictures and the cache', () => {
   it('own picture is cached, removable, and a refused file stores nothing', async () => {
     const m = await load();
     const id = '1'.repeat(32);
-    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), { thumbnail: async () => null })).toBe('refused');
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => null })).toBe('refused');
     await m.loadContactPictures(KEY);
     expect(m.cachedContactPicture(KEY, `own:owner:${id}`)).toBeNull();
-    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), { thumbnail: async () => JPEG(3) })).toBe('saved');
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => JPEG(3) })).toBe('saved');
     expect(m.cachedContactPicture(KEY, `own:owner:${id}`)).not.toBeNull();
     expect(m.cachedContactPicture('other-key', `own:owner:${id}`)).toBeNull();
     await m.removeOwnContactPicture(KEY, 'owner', id);
@@ -373,12 +373,12 @@ describe('own pictures and the cache', () => {
     const m = await load();
     const id = '2'.repeat(32);
     const thumbnail = vi.fn(async () => JPEG(3));
-    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([]), { thumbnail })).toBe('refused');
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([]), undefined, { thumbnail })).toBe('refused');
     const big = { size: 50 * 1024 * 1024, arrayBuffer: vi.fn() } as unknown as Blob;
-    expect(await m.setOwnContactPicture(KEY, 'owner', id, big, { thumbnail })).toBe('refused');
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, big, undefined, { thumbnail })).toBe('refused');
     expect(thumbnail).not.toHaveBeenCalled();
     // Encryption/storage failures still throw (an invalid thumbnail is not a JPEG).
-    await expect(m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), { thumbnail: async () => new Uint8Array([1, 2, 3]) }))
+    await expect(m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => new Uint8Array([1, 2, 3]) }))
       .rejects.toThrow();
     expect(await m.db.listContactPictures(KEY)).toEqual([]);
   });
@@ -390,17 +390,26 @@ describe('own pictures and the cache', () => {
     const file = new Blob([new Uint8Array([1])]);
     const arrayBuffer = vi.fn(async () => { throw new DOMException('not ready', 'NotReadableError'); });
     Object.defineProperty(file, 'arrayBuffer', { value: arrayBuffer });
-    expect(await m.setOwnContactPicture(KEY, 'owner', id, file, { thumbnail })).toBe('unreadable');
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, file, undefined, { thumbnail })).toBe('unreadable');
     expect(arrayBuffer).toHaveBeenCalledTimes(1);
     expect(thumbnail).not.toHaveBeenCalled();
     expect(await m.db.listContactPictures(KEY)).toEqual([]);
+  });
+
+  it('hands the chosen crop to the thumbnail step', async () => {
+    const m = await load();
+    const id = '5'.repeat(32);
+    const crop = { x: 0.1, y: 0.2, side: 0.5 };
+    const thumbnail = vi.fn(async () => JPEG(4));
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), crop, { thumbnail })).toBe('saved');
+    expect(thumbnail).toHaveBeenCalledWith(expect.any(Uint8Array), crop);
   });
 
   it('a lock during the thumbnail or the save is "locked" and stores nothing', async () => {
     const m = await load();
     const id = '4'.repeat(32);
     // Lock while the thumbnail is being made.
-    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), {
+    expect(await m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), undefined, {
       thumbnail: async () => { lock(m); return JPEG(3); },
     })).toBe('locked');
     expect(await m.db.listContactPictures(KEY)).toEqual([]);

@@ -21,6 +21,7 @@
 import type { Kind0Profile } from './nostr-follows';
 import { downloadPictureBytes } from './picture-download';
 import { makeThumbnail } from './picture-thumbnail';
+import type { PictureCrop } from './picture-crop';
 import { kind0PictureId, ownPictureId, contactPictureGeneration, ContactPicturesLockedError, type ContactPicture } from './contact-picture-crypto';
 import { saveContactPicture, deleteContactPicture, listContactPictures, listAllContactOperationsV2 } from './db';
 import { primaryIdentityPubkey } from './contacts-v2-list';
@@ -277,13 +278,18 @@ export async function syncKind0Pictures(
  */
 export type OwnPictureOutcome = 'saved' | 'refused' | 'unreadable' | 'locked';
 
-/** Set the user's own picture for one contact from a file they picked. */
+/**
+ * Set the user's own picture for one contact from a file they picked.
+ * `crop` is the square the user chose on the crop screen (fractions of the
+ * oriented image); without it the whole photo is fitted to 256 px.
+ */
 export async function setOwnContactPicture(
   encryptionKey: string,
   directoryId: string,
   contactId: string,
   file: Blob,
-  deps: { thumbnail?: (bytes: Uint8Array) => Promise<Uint8Array | null>; now?: () => number } = {},
+  crop?: PictureCrop,
+  deps: { thumbnail?: (bytes: Uint8Array, crop?: PictureCrop) => Promise<Uint8Array | null>; now?: () => number } = {},
 ): Promise<OwnPictureOutcome> {
   // A picked file is untrusted input too. Camera photos are larger than the
   // 2 MB download cap, so the file cap is looser; the header gate (8192 px a
@@ -297,7 +303,9 @@ export async function setOwnContactPicture(
     // Only the read is caught, and it is not retried.
     return 'unreadable';
   }
-  const jpeg = await (deps.thumbnail ?? makeThumbnail)(new Uint8Array(buffer));
+  const jpeg = await (deps.thumbnail
+    ? deps.thumbnail(new Uint8Array(buffer), crop)
+    : makeThumbnail(new Uint8Array(buffer), { crop }));
   if (!jpeg) return 'refused';
   if (!live(gen)) { jpeg.fill(0); return 'locked'; }
   const t = (deps.now ?? Date.now)();

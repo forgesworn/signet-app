@@ -17,6 +17,12 @@
  *    worker; the next job gets a fresh one.
  * 3. The original bytes are zero-filled once the decoder has them; the
  *    result is checked to really be a JPEG.
+ *
+ * With `opts.crop` (the "your own picture" crop screen) the result is instead
+ * exactly that square, drawn onto a 256 x 256 canvas: the image is decoded
+ * with `imageOrientation: 'from-image'` (the same orientation the preview
+ * showed) at a width where the square is at least 256 px but never above the
+ * original (`cropDecodeWidth`). Without a crop nothing changes.
  */
 
 import {
@@ -24,12 +30,16 @@ import {
   type ImageFormat,
 } from './image-header';
 import { CONTACT_PICTURE_MAX_STORED_BYTES } from './contact-picture-crypto';
+import { CROP_OUTPUT_PX, cropDecodeWidth, cropSourceRect, isValidPictureCrop, type PictureCrop } from './picture-crop';
 
 const MIME: Record<ImageFormat, string> = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
 const WORKER_TIMEOUT_MS = 15_000;
 
-/** `resizeWidth`: the width to ask createImageBitmap for (see `decodeResizeWidth`); undefined = decode as is. */
-type Decoder = (bytes: Uint8Array, mime: string, resizeWidth?: number) => Promise<Uint8Array | null>;
+/**
+ * `resizeWidth`: the width to ask createImageBitmap for (see `decodeResizeWidth`); undefined = decode as is.
+ * `crop`: cut this square out instead and scale it to 256 x 256.
+ */
+type Decoder = (bytes: Uint8Array, mime: string, resizeWidth?: number, crop?: PictureCrop) => Promise<Uint8Array | null>;
 
 /**
  * The `resizeWidth` to decode at, from the header's dimensions, or undefined
@@ -47,9 +57,14 @@ export function decodeResizeWidth(width: number, height: number, maxSide: number
   return Math.max(1, Math.min(width, height, maxSide));
 }
 
-/** createImageBitmap options for a resize-on-decode (ignored by engines without resize support). */
-export function decodeOptions(resizeWidth: number | undefined): ImageBitmapOptions | undefined {
-  return resizeWidth ? { resizeWidth, resizeQuality: 'high' } : undefined;
+/**
+ * createImageBitmap options for a resize-on-decode (ignored by engines without resize support).
+ * A crop always names its orientation, so the preview and the result cannot disagree.
+ */
+export function decodeOptions(resizeWidth: number | undefined, crop?: PictureCrop): ImageBitmapOptions | undefined {
+  const resize: ImageBitmapOptions = resizeWidth ? { resizeWidth, resizeQuality: 'high' } : {};
+  if (crop) return { imageOrientation: 'from-image', ...resize };
+  return resizeWidth ? resize : undefined;
 }
 
 // One decode at a time. The chain never rejects, so one failure cannot stall the queue.
@@ -97,7 +112,7 @@ function getWorker(): Worker {
 }
 
 /** Off-main-thread decode. Resolves null on failure; `'unavailable'` when the worker never ran. */
-async function decodeInWorker(bytes: Uint8Array, mime: string, resizeWidth?: number): Promise<Uint8Array | null | 'unavailable'> {
+async function decodeInWorker(bytes: Uint8Array, mime: string, resizeWidth?: number, crop?: PictureCrop): Promise<Uint8Array | null | 'unavailable'> {
   let w: Worker;
   try { w = getWorker(); } catch { workerBroken = true; return 'unavailable'; }
   // Hand the worker its own copy (transferred, so it is not duplicated
@@ -118,7 +133,7 @@ async function decodeInWorker(bytes: Uint8Array, mime: string, resizeWidth?: num
     }, WORKER_TIMEOUT_MS);
     pending.set(id, (jpeg) => { clearTimeout(timer); resolve(jpeg); });
     try {
-      w.postMessage({ id, buffer: copy, type: mime, ...(resizeWidth ? { resizeWidth } : {}) }, [copy]);
+      w.postMessage({ id, buffer: copy, type: mime, ...(resizeWidth ? { resizeWidth } : {}), ...(crop ? { crop } : {}) }, [copy]);
     } catch {
       pending.delete(id);
       clearTimeout(timer);
@@ -130,22 +145,22 @@ async function decodeInWorker(bytes: Uint8Array, mime: string, resizeWidth?: num
 }
 
 /** Main-thread fallback: same steps with a DOM canvas, bounded by the worker's timeout. */
-export const decodeOnMainThread: Decoder = (bytes, mime, resizeWidth) => {
+export const decodeOnMainThread: Decoder = (bytes, mime, resizeWidth, crop) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((_, reject) => {
     timer = setTimeout(() => reject(new Error('decode timed out')), WORKER_TIMEOUT_MS);
   });
-  return Promise.race([decodeOnMainThreadUnbounded(bytes, mime, resizeWidth), timeout])
+  return Promise.race([decodeOnMainThreadUnbounded(bytes, mime, resizeWidth, crop), timeout])
     .finally(() => clearTimeout(timer));
 };
 
-const decodeOnMainThreadUnbounded: Decoder = async (bytes, mime, resizeWidth) => {
+const decodeOnMainThreadUnbounded: Decoder = async (bytes, mime, resizeWidth, crop) => {
   if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
   const blob = new Blob([bytes as BlobPart], { type: mime });
-  const options = decodeOptions(resizeWidth);
+  const options = decodeOptions(resizeWidth, crop);
   const bitmap = options ? await createImageBitmap(blob, options) : await createImageBitmap(blob);
   try {
-    const size = thumbnailSize(bitmap.width, bitmap.height, THUMBNAIL_MAX_SIDE_PX);
+    const size = crop ? { width: CROP_OUTPUT_PX, height: CROP_OUTPUT_PX } : thumbnailSize(bitmap.width, bitmap.height, THUMBNAIL_MAX_SIDE_PX);
     const canvas = document.createElement('canvas');
     canvas.width = size.width;
     canvas.height = size.height;
@@ -153,7 +168,12 @@ const decodeOnMainThreadUnbounded: Decoder = async (bytes, mime, resizeWidth) =>
     if (!ctx) return null;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, size.width, size.height);
-    ctx.drawImage(bitmap, 0, 0, size.width, size.height);
+    if (crop) {
+      const { sx, sy, s } = cropSourceRect(bitmap.width, bitmap.height, crop);
+      ctx.drawImage(bitmap, sx, sy, s, s, 0, 0, size.width, size.height);
+    } else {
+      ctx.drawImage(bitmap, 0, 0, size.width, size.height);
+    }
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', THUMBNAIL_JPEG_QUALITY));
     return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
   } finally {
@@ -164,6 +184,8 @@ const decodeOnMainThreadUnbounded: Decoder = async (bytes, mime, resizeWidth) =>
 export interface ThumbnailOptions {
   /** Replace the worker/main-thread decoders (tests). */
   decode?: Decoder;
+  /** Save exactly this square (fractions of the oriented image) as a 256 x 256 JPEG. */
+  crop?: PictureCrop;
 }
 
 /**
@@ -175,14 +197,18 @@ export async function makeThumbnail(bytes: Uint8Array, opts: ThumbnailOptions = 
     const header = checkImageHeader(bytes);
     if (!header.ok) return null;
     const mime = MIME[header.format];
-    const resizeWidth = decodeResizeWidth(header.width, header.height);
+    const { crop } = opts;
+    if (crop !== undefined && !isValidPictureCrop(crop)) return null;
+    const resizeWidth = crop ? cropDecodeWidth(crop, header.width, header.height) : decodeResizeWidth(header.width, header.height);
     const jpeg = await oneAtATime(async (): Promise<Uint8Array | null> => {
-      if (opts.decode) return opts.decode(bytes, mime, resizeWidth);
+      // The crop goes as a trailing argument only when there is one, so the
+      // no-crop calls keep their original shape.
+      if (opts.decode) return crop ? opts.decode(bytes, mime, resizeWidth, crop) : opts.decode(bytes, mime, resizeWidth);
       if (workerAvailable()) {
-        const r = await decodeInWorker(bytes, mime, resizeWidth);
-        return r === 'unavailable' ? decodeOnMainThread(bytes, mime, resizeWidth) : r;
+        const r = await decodeInWorker(bytes, mime, resizeWidth, crop);
+        return r === 'unavailable' ? decodeOnMainThread(bytes, mime, resizeWidth, crop) : r;
       }
-      return decodeOnMainThread(bytes, mime, resizeWidth);
+      return decodeOnMainThread(bytes, mime, resizeWidth, crop);
     });
     if (!jpeg || jpeg.length === 0 || jpeg.length > CONTACT_PICTURE_MAX_STORED_BYTES || sniffImageFormat(jpeg) !== 'jpeg') return null;
     return jpeg;

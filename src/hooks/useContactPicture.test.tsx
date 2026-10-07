@@ -47,7 +47,7 @@ describe('useContactPicture precedence', () => {
 
     // Own picture beats both.
     await act(async () => {
-      await pictures.setOwnContactPicture(KEY, 'owner', CID, new Blob([new Uint8Array([1])]), { thumbnail: async () => JPEG(9) });
+      await pictures.setOwnContactPicture(KEY, 'owner', CID, new Blob([new Uint8Array([1])]), undefined, { thumbnail: async () => JPEG(9) });
     });
     await waitFor(() => expect(result.current.hasOwn).toBe(true));
     await waitFor(async () => expect(await firstByte(result.current.url)).toBe(9));

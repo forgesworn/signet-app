@@ -245,3 +245,83 @@ describe('makeThumbnail: bounded decode', () => {
     }
   });
 });
+
+describe('makeThumbnail: crop', () => {
+  const crop = { x: 0.25, y: 0.125, side: 0.5 };
+
+  it('passes the crop and a decode width where the square is 256 px to the decoder', async () => {
+    const decode = vi.fn(async () => FAKE_JPEG.slice());
+    await makeThumbnail(pngOf(4000, 3000), { decode, crop });
+    // 256 / 0.5 = 512, below the shorter header side.
+    expect(decode).toHaveBeenCalledWith(expect.any(Uint8Array), 'image/png', 512, crop);
+  });
+
+  it('never decodes wider than the shorter header side', async () => {
+    const decode = vi.fn(async () => FAKE_JPEG.slice());
+    await makeThumbnail(pngOf(4000, 3000), { decode, crop: { x: 0, y: 0, side: 0.02 } });
+    expect(decode).toHaveBeenCalledWith(expect.any(Uint8Array), 'image/png', 3000, { x: 0, y: 0, side: 0.02 });
+  });
+
+  it('refuses a crop outside the image without decoding, and still zero-fills the bytes', async () => {
+    const decode = vi.fn(async () => FAKE_JPEG.slice());
+    const input = pngOf(400, 300);
+    expect(await makeThumbnail(input, { decode, crop: { x: 0.8, y: 0, side: 0.5 } })).toBeNull();
+    expect(decode).not.toHaveBeenCalled();
+    expect(input.every(b => b === 0)).toBe(true);
+  });
+
+  it('main thread: decodes with imageOrientation from-image and draws the crop square onto a 256 x 256 canvas', async () => {
+    vi.stubGlobal('Worker', class { constructor() { throw new Error('no worker'); } });
+    const close = vi.fn();
+    // The bitmap is decoded at 512 wide (crop.side 0.5 -> 256 px), 384 tall.
+    const createImageBitmapStub = vi.fn(async () => ({ width: 512, height: 384, close }));
+    vi.stubGlobal('createImageBitmap', createImageBitmapStub);
+    const drawImage = vi.fn();
+    const fillRect = vi.fn();
+    const toBlob = vi.fn((cb: BlobCallback) => cb(new Blob([FAKE_JPEG])));
+    const realCreate = document.createElement.bind(document);
+    let canvasEl: HTMLCanvasElement | null = null;
+    const spy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag);
+      if (tag === 'canvas') {
+        canvasEl = el as HTMLCanvasElement;
+        Object.assign(el, { getContext: () => ({ fillRect, drawImage, fillStyle: '' }), toBlob });
+      }
+      return el;
+    });
+    try {
+      const out = await makeThumbnail(pngOf(4000, 3000), { crop });
+      expect(Array.from(out ?? [])).toEqual(Array.from(FAKE_JPEG));
+      expect(createImageBitmapStub).toHaveBeenCalledWith(expect.any(Blob), { imageOrientation: 'from-image', resizeWidth: 512, resizeQuality: 'high' });
+      expect(canvasEl).not.toBeNull();
+      expect([canvasEl!.width, canvasEl!.height]).toEqual([256, 256]);
+      // x 0.25 * 512 = 128, y 0.125 * 384 = 48, side 0.5 * 512 = 256.
+      expect(drawImage).toHaveBeenCalledWith(expect.anything(), 128, 48, 256, 256, 0, 0, 256, 256);
+      expect(toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.8);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('sends the crop to the worker only when there is one', async () => {
+    const posted: { crop?: unknown; resizeWidth?: number }[] = [];
+    class FakeWorker {
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      postMessage(msg: { id: number; crop?: unknown; resizeWidth?: number }) {
+        posted.push(msg);
+        const jpeg = FAKE_JPEG.slice().buffer;
+        queueMicrotask(() => this.onmessage?.({ data: { id: msg.id, ok: true, jpeg } } as MessageEvent));
+      }
+      terminate() {}
+    }
+    vi.stubGlobal('Worker', FakeWorker);
+    vi.stubGlobal('OffscreenCanvas', class {});
+    await makeThumbnail(pngOf(4000, 3000), { crop });
+    await makeThumbnail(pngOf(4000, 3000));
+    expect(posted[0].crop).toEqual(crop);
+    expect(posted[0].resizeWidth).toBe(512);
+    expect('crop' in posted[1]).toBe(false);
+  });
+});
