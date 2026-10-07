@@ -14,12 +14,15 @@
  */
 
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { encryptPhotoWithKey, decryptPhoto } from './photo-crypto';
 import { readBodyCapped } from './avatar';
 import { isSafeBlossomBase } from './safe-url';
 import { uploadToBlossom, deleteFromBlossom, BlossomUploadError, DEFAULT_BLOSSOM_URL } from './blossom';
-import { LocalSigningBackend } from './signing-backend';
+import {
+  CONTACT_PICTURE_UPLOADER_DOMAIN, deriveUploaderKey as deriveKey, derivedUploaderBackend,
+} from './blossom-uploader';
+import type { LocalSigningBackend } from './signing-backend';
 import { sniffImageFormat } from './image-header';
 import {
   contactPictureGeneration, ownPictureId, CONTACT_PICTURE_MAX_STORED_BYTES,
@@ -42,9 +45,6 @@ const CONCURRENCY = 4;
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 const MAX_SERVER_CHARS = 512;
 const HEX64 = /^[0-9a-f]{64}$/;
-const UPLOADER_DOMAIN = new TextEncoder().encode('signet:contact-picture-uploader:v1');
-/** secp256k1 group order. */
-const CURVE_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
 
 export interface PicturePointer { server: string; hash: string; key: string; plainHash: string }
 
@@ -55,34 +55,13 @@ export function resolveBackupServer(defaultBlossomUrl: string | undefined): stri
   return defaultBlossomUrl;
 }
 
-function isValidScalar(sk: Uint8Array): boolean {
-  const n = BigInt('0x' + bytesToHex(sk));
-  return n > 0n && n < CURVE_N;
-}
-
 /**
- * sk = sha256(utf8("signet:contact-picture-uploader:v1") || keyBytes). In the
- * (2^-128) case that is not a valid secp256k1 scalar, the hash is retried with
- * a counter byte (1, 2, ...) appended to the input. The caller zero-fills.
+ * sk = sha256(utf8("signet:contact-picture-uploader:v1") || keyBytes), with the
+ * counter retry described on the shared `deriveUploaderKey`. The caller zero-fills.
+ * Output is byte-identical to before the derivation was generalised.
  */
 export function deriveUploaderKey(contentKeyHex: string): Uint8Array {
-  if (!HEX64.test(contentKeyHex)) throw new Error('Invalid picture key');
-  const keyBytes = hexToBytes(contentKeyHex);
-  try {
-    for (let counter = 0; counter < 256; counter += 1) {
-      const input = new Uint8Array(UPLOADER_DOMAIN.length + keyBytes.length + (counter === 0 ? 0 : 1));
-      input.set(UPLOADER_DOMAIN, 0);
-      input.set(keyBytes, UPLOADER_DOMAIN.length);
-      if (counter !== 0) input[input.length - 1] = counter;
-      const sk = sha256(input);
-      input.fill(0);
-      if (isValidScalar(sk)) return sk;
-      sk.fill(0);
-    }
-    throw new Error('Could not derive an uploader key');
-  } finally {
-    keyBytes.fill(0);
-  }
+  return deriveKey(contentKeyHex, CONTACT_PICTURE_UPLOADER_DOMAIN);
 }
 
 /** A well-formed pointer with a server that passes the https-only Blossom guard. */
@@ -90,15 +69,6 @@ function pointerIsUsable(p: PicturePointer): boolean {
   return typeof p.server === 'string' && p.server.length > 0 && p.server.length <= MAX_SERVER_CHARS
     && p.server.startsWith('https://') && isSafeBlossomBase(p.server)
     && HEX64.test(p.hash) && HEX64.test(p.key) && HEX64.test(p.plainHash);
-}
-
-function uploaderBackend(contentKeyHex: string): LocalSigningBackend {
-  const sk = deriveUploaderKey(contentKeyHex);
-  try {
-    return new LocalSigningBackend(bytesToHex(sk));
-  } finally {
-    sk.fill(0);
-  }
 }
 
 export interface UploadDeps {
@@ -121,7 +91,7 @@ export async function uploadOwnPicture(jpeg: Uint8Array, server: string, deps: U
   const encrypted = await encryptPhotoWithKey(jpeg, key);
   let backend: LocalSigningBackend | null = null;
   try {
-    backend = uploaderBackend(key);
+    backend = derivedUploaderBackend(key, CONTACT_PICTURE_UPLOADER_DOMAIN);
     const blob = new Blob([encrypted as BlobPart], { type: 'application/octet-stream' });
     const hash = (await (deps.upload ?? uploadToBlossom)(blob, base, backend, true)).toLowerCase();
     if (!HEX64.test(hash)) throw new Error('Backup upload returned an invalid hash');
@@ -180,7 +150,7 @@ export async function deleteOwnPictureBlob(p: PicturePointer, deps: DeleteDeps =
   let backend: LocalSigningBackend | null = null;
   try {
     if (!pointerIsUsable(p)) return false;
-    backend = uploaderBackend(p.key);
+    backend = derivedUploaderBackend(p.key, CONTACT_PICTURE_UPLOADER_DOMAIN);
     await deleteFromBlossom(p.hash, p.server, backend, deps.fetch ?? fetch);
     return true;
   } catch {

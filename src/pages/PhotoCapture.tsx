@@ -2,11 +2,10 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import type { SignetIdentity } from '../types';
 import { uploadToBlossom, DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { encryptPhoto } from '../lib/photo-crypto';
-import type { SigningBackend } from '../lib/signing-backend';
+import { derivedUploaderBackend, VENUE_PHOTO_UPLOADER_DOMAIN } from '../lib/blossom-uploader';
 
 interface Props {
   identity: SignetIdentity;
-  backend: SigningBackend;
   blossomConsent: boolean;
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
   onUpdatePhoto: (photoHash: string, blossomUrl: string, photoKey: string) => Promise<void>;
@@ -17,7 +16,7 @@ interface Props {
 
 type Step = 'consent' | 'camera' | 'preview' | 'uploading' | 'done';
 
-export function PhotoCapture({ identity, backend, blossomConsent, onSetBlossomConsent, onUpdatePhoto, onBack, defaultBlossomUrl }: Props) {
+export function PhotoCapture({ identity, blossomConsent, onSetBlossomConsent, onUpdatePhoto, onBack, defaultBlossomUrl }: Props) {
   const [step, setStep] = useState<Step>(blossomConsent ? 'camera' : 'consent');
   const [error, setError] = useState<string | null>(null);
   const [blossomUrl, setBlossomUrl] = useState(identity.blossomUrl || (defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL));
@@ -106,7 +105,14 @@ export function PhotoCapture({ identity, backend, blossomConsent, onSetBlossomCo
       const plainBytes = new Uint8Array(await capturedBlob.arrayBuffer());
       const { encryptedBlob, keyHex } = await encryptPhoto(plainBytes);
       const encryptedBlobObj = new Blob([encryptedBlob as BlobPart], { type: 'application/octet-stream' });
-      const hash = await uploadToBlossom(encryptedBlobObj, blossomUrl, backend, blossomConsent);
+      // Signed by a one-off key derived from the photo's content key, never the identity's own.
+      const uploader = derivedUploaderBackend(keyHex, VENUE_PHOTO_UPLOADER_DOMAIN);
+      let hash: string;
+      try {
+        hash = await uploadToBlossom(encryptedBlobObj, blossomUrl, uploader, blossomConsent);
+      } finally {
+        uploader.destroy();
+      }
       await onUpdatePhoto(hash, blossomUrl, keyHex);
       setStep('done');
     } catch (err) {

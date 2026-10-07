@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { initialFromName, colourFromPubkey, AVATAR_MAX_BYTES, AVATAR_MAX_DOWNLOAD_BYTES, fetchAvatar } from './avatar';
+import {
+  initialFromName, colourFromPubkey, AVATAR_MAX_BYTES, AVATAR_MAX_DOWNLOAD_BYTES, fetchAvatar,
+  uploadAvatar, uploadContactAvatar, uploadPublicPicture, downscaleAvatar,
+} from './avatar';
+import { AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, deriveUploaderKey } from './blossom-uploader';
+import { schnorr } from '@noble/curves/secp256k1.js';
 import { encryptPhoto, decryptPhoto } from './photo-crypto';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -218,5 +223,118 @@ describe('fetchAvatar — SSRF guard + download cap (security audit 2026-06-15)'
     const blob = await fetchAvatar({ hash, blossomUrl: 'https://blossom.example.com', keyHex });
     const out = new Uint8Array(await blob.arrayBuffer());
     expect(Array.from(out)).toEqual(Array.from(plaintext));
+  });
+});
+
+// ---- Blossom upload auth: never an identity, persona or dependant key --------
+
+const SERVER = 'https://nostr.download';
+/** The key the real-name (NP), persona and dependant slots would sign with. */
+const REAL_PUBKEYS = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
+
+/** Stub fetch as a Blossom server; returns the decoded kind-24242 auth events it was sent. */
+function stubBlossom(): Array<{ pubkey: string; kind: number; tags: string[][]; sig: string }> {
+  const seen: Array<{ pubkey: string; kind: number; tags: string[][]; sig: string }> = [];
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+    const header = (init.headers as Record<string, string>).Authorization;
+    seen.push(JSON.parse(atob(header.replace(/^Nostr /, ''))));
+    const body = new Uint8Array(await (init.body as Blob).arrayBuffer());
+    return new Response(JSON.stringify({ sha256: bytesToHex(sha256(body)) }), { status: 200 });
+  }));
+  return seen;
+}
+
+describe('Blossom upload auth is signed by one-off keys', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uploadPublicPicture: a fresh random key per upload, never a real key', async () => {
+    const seen = stubBlossom();
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' });
+    await uploadPublicPicture(blob, SERVER, true);
+    await uploadPublicPicture(blob, SERVER, true);
+    expect(seen).toHaveLength(2);
+    expect(seen[0].kind).toBe(24242);
+    expect(seen[0].pubkey).toMatch(/^[0-9a-f]{64}$/);
+    expect(REAL_PUBKEYS).not.toContain(seen[0].pubkey);
+    expect(seen[0].pubkey).not.toBe(seen[1].pubkey);
+  });
+
+  it('uploadPublicPicture still enforces the consent gate', async () => {
+    stubBlossom();
+    await expect(uploadPublicPicture(new Blob([new Uint8Array([1])]), SERVER, false)).rejects.toThrow('Enable Blossom uploads');
+  });
+
+  it('uploadAvatar: signed by the key derived from the avatar content key (avatar domain)', async () => {
+    const seen = stubBlossom();
+    const meta = await uploadAvatar(new Blob([new Uint8Array([9, 9, 9])], { type: 'image/jpeg' }), SERVER, true);
+    const expected = bytesToHex(schnorr.getPublicKey(deriveUploaderKey(meta.keyHex, AVATAR_UPLOADER_DOMAIN)));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].pubkey).toBe(expected);
+    expect(REAL_PUBKEYS).not.toContain(seen[0].pubkey);
+  });
+
+  it('uploadContactAvatar: deterministic from the stable contact key (contact-avatar domain), same signer on re-share', async () => {
+    const seen = stubBlossom();
+    const keyHex = '7'.repeat(64);
+    await uploadContactAvatar(new Uint8Array([4, 5, 6]), keyHex, SERVER, true);
+    await uploadContactAvatar(new Uint8Array([7, 8, 9]), keyHex, SERVER, true);
+    const expected = bytesToHex(schnorr.getPublicKey(deriveUploaderKey(keyHex, CONTACT_AVATAR_UPLOADER_DOMAIN)));
+    expect(seen.map(e => e.pubkey)).toEqual([expected, expected]);
+    expect(expected).not.toBe(bytesToHex(schnorr.getPublicKey(deriveUploaderKey(keyHex, AVATAR_UPLOADER_DOMAIN))));
+  });
+});
+
+// ---- downscaleAvatar with a crop ---------------------------------------------
+
+function fakeCanvas() {
+  const draws: number[][] = [];
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ({ drawImage: (_b: unknown, ...a: number[]) => { draws.push(a); } }),
+    toBlob: (cb: (b: Blob | null) => void, type: string, quality: number) => {
+      cb(Object.assign(new Blob(['jpeg'], { type }), { quality }));
+    },
+  };
+  return { canvas: canvas as unknown as HTMLCanvasElement, draws };
+}
+const bitmapOf = (width: number, height: number) => ({ width, height, close: vi.fn() }) as unknown as ImageBitmap;
+
+describe('downscaleAvatar crop', () => {
+  it('cuts the chosen square, scaled to min(maxEdge, crop px), decoding with the preview orientation', async () => {
+    const { canvas, draws } = fakeCanvas();
+    const decode = vi.fn(async () => bitmapOf(2000, 1000));
+    // Square at x 25%..75% of the width (side 50% of width = 1000 px), y 0.
+    const out = await downscaleAvatar(new Blob(['x']), 512, { x: 0.25, y: 0, side: 0.5 }, { decode, makeCanvas: () => canvas });
+    expect(decode).toHaveBeenCalledWith(expect.anything(), { imageOrientation: 'from-image' });
+    expect(canvas.width).toBe(512);
+    expect(canvas.height).toBe(512);
+    expect(draws).toEqual([[500, 0, 1000, 1000, 0, 0, 512, 512]]);
+    expect(out.type).toBe('image/jpeg');
+    expect((out as Blob & { quality: number }).quality).toBe(0.85);
+  });
+
+  it('never upscales: a crop smaller than the max edge keeps its own pixel side', async () => {
+    const { canvas } = fakeCanvas();
+    // 300 px square from a 1200 px wide image.
+    await downscaleAvatar(new Blob(['x']), 1024, { x: 0, y: 0, side: 0.25 }, { decode: async () => bitmapOf(1200, 900), makeCanvas: () => canvas });
+    expect(canvas.width).toBe(300);
+    expect(canvas.height).toBe(300);
+  });
+
+  it('refuses a crop that is not inside the image', async () => {
+    const { canvas } = fakeCanvas();
+    await expect(
+      downscaleAvatar(new Blob(['x']), 512, { x: 0.8, y: 0, side: 0.5 }, { decode: async () => bitmapOf(100, 100), makeCanvas: () => canvas }),
+    ).rejects.toThrow('crop');
+  });
+
+  it('without a crop the longest edge is capped and the aspect ratio kept, as before', async () => {
+    const { canvas, draws } = fakeCanvas();
+    const decode = vi.fn(async () => bitmapOf(2000, 1000));
+    await downscaleAvatar(new Blob(['x']), 512, undefined, { decode, makeCanvas: () => canvas });
+    expect(decode).toHaveBeenCalledWith(expect.anything(), undefined);
+    expect([canvas.width, canvas.height]).toEqual([512, 256]);
+    expect(draws).toEqual([[0, 0, 512, 256]]);
   });
 });
