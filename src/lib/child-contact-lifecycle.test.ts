@@ -264,7 +264,8 @@ describe('D6 — child submission', () => {
     }
     await expect(submitChildContactRequest({ scope, key, persona: scope.personas[0], invite, now: now + 100, isCurrent: current,
       transport: child, relays: [], publish: async () => true })).rejects.toThrow('Child request outbox is full');
-  }, 30000);
+    // 33 real submissions, each with real encryption: 17-23 s alone, and past 30 s under full-suite load.
+  }, 90000);
 });
 
 describe('D4 — read-only history caps and status labels', () => {
