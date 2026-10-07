@@ -18,7 +18,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { encryptPhotoWithKey, decryptPhoto } from './photo-crypto';
 import { readBodyCapped } from './avatar';
 import { isSafeBlossomBase } from './safe-url';
-import { uploadToBlossom, deleteFromBlossom, BlossomUploadError } from './blossom';
+import { uploadToBlossom, deleteFromBlossom, BlossomUploadError, DEFAULT_BLOSSOM_URL } from './blossom';
 import { LocalSigningBackend } from './signing-backend';
 import { sniffImageFormat } from './image-header';
 import {
@@ -36,7 +36,6 @@ import { newOperationId } from './contacts-v2-ids';
 import { contactsMutationQueue } from './contacts-v2-queue';
 import type { ContactActorRole } from '../types';
 
-export const CONTACT_PICTURE_BACKUP_DEFAULT_URL = 'https://nostr.download';
 export const CONTACT_PICTURE_SWEEP_CAP = 20;
 export const CONTACT_PICTURE_DOWNLOAD_MAX_BYTES = 512 * 1024;
 const CONCURRENCY = 4;
@@ -49,9 +48,9 @@ const CURVE_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD03641
 
 export interface PicturePointer { server: string; hash: string; key: string; plainHash: string }
 
-/** `defaultBlossomUrl` undefined => the backup default; '' => null (uploads off); else that URL. */
+/** `defaultBlossomUrl` undefined => the app-wide default (`DEFAULT_BLOSSOM_URL`); '' => null (uploads off); else that URL. */
 export function resolveBackupServer(defaultBlossomUrl: string | undefined): string | null {
-  if (defaultBlossomUrl === undefined) return CONTACT_PICTURE_BACKUP_DEFAULT_URL;
+  if (defaultBlossomUrl === undefined) return DEFAULT_BLOSSOM_URL;
   if (defaultBlossomUrl === '') return null;
   return defaultBlossomUrl;
 }

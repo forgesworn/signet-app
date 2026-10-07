@@ -50,7 +50,6 @@ const state = (m: M, contactId: string, directoryId = 'owner') => m.pictures.cac
 describe('resolveBackupServer', () => {
   it('undefined => default, empty => off, else the URL', async () => {
     const m = await load();
-    expect(m.CONTACT_PICTURE_BACKUP_DEFAULT_URL).toBe('https://nostr.download');
     expect(m.resolveBackupServer(undefined)).toBe('https://nostr.download');
     expect(m.resolveBackupServer('')).toBeNull();
     expect(m.resolveBackupServer('https://blossom.example')).toBe('https://blossom.example');

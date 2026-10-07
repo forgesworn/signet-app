@@ -4,20 +4,26 @@ import type { SigningBackend } from './signing-backend';
 
 /**
  * Default Blossom server URL — used when the user has never explicitly set
- * one. Currently points at `blossom.primal.net` as a stopgap; will switch
- * to `blossom.signet.you` once Signet-team-operated infra is live.
+ * one. `nostr.download` takes encrypted blobs as well as plain images, honours
+ * DELETE, and allows CORS from any origin. The previous default,
+ * `blossom.primal.net`, inspects content and answers 415 to any non-image
+ * bytes, so every ENCRYPTED upload (the contact-share avatar, the private
+ * persona avatar, the contact-picture backup) failed there (verified
+ * 2026-10-07). Will switch to `blossom.signet.you` once Signet-team-operated
+ * infra is live.
  *
  * Mirrors the `DEFAULT_RELAY_URL` pattern: every read site resolves via
  * `preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL`. Users who've
  * never opened Advanced Settings get this transparently on next load;
  * if we later rotate the default, they auto-track it. Users who've
  * explicitly Saved a custom server keep their choice as a literal IDB
- * string until they hit "Restore to default."
+ * string until they hit "Restore to default." A stored literal is never
+ * migrated.
  *
  * A literal empty string ('') counts as Custom — it's the user's
  * deliberate-clear escape hatch (disables uploads).
  */
-export const DEFAULT_BLOSSOM_URL = 'https://blossom.primal.net';
+export const DEFAULT_BLOSSOM_URL = 'https://nostr.download';
 
 /**
  * Generous ceiling for Blossom PUT uploads. A real upload of a 500 KB blob to
@@ -25,6 +31,20 @@ export const DEFAULT_BLOSSOM_URL = 'https://blossom.primal.net';
  * instead of spinning the caller's UI forever.
  */
 const UPLOAD_TIMEOUT_MS = 30_000;
+
+/** Shown when a server answers 415: it only stores ordinary pictures, and ours are encrypted. */
+export const BLOSSOM_UNSUPPORTED_MEDIA_COPY =
+  "That Blossom server only takes ordinary pictures, so it can't store encrypted ones. Choose a different server in Advanced settings.";
+/** Shown when a server answers 401 or 403: it wants uploads from approved keys. */
+export const BLOSSOM_REFUSED_COPY =
+  'That Blossom server refused the upload. It may only accept uploads from approved keys. Choose a different server in Advanced settings.';
+
+/** The message for a refused upload: the plain-English copy for the statuses a user can act on. */
+function uploadFailureMessage(status: number, body: string): string {
+  if (status === 415) return BLOSSOM_UNSUPPORTED_MEDIA_COPY;
+  if (status === 401 || status === 403) return BLOSSOM_REFUSED_COPY;
+  return `Blossom upload failed: ${status}${body ? ' — ' + body.slice(0, 100) : ''}`;
+}
 
 /** The server answered an upload with a non-2xx status. */
 export class BlossomUploadError extends Error {
@@ -90,7 +110,7 @@ export async function uploadToBlossom(
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new BlossomUploadError(response.status, `Blossom upload failed: ${response.status}${body ? ' — ' + body.slice(0, 100) : ''}`);
+    throw new BlossomUploadError(response.status, uploadFailureMessage(response.status, body));
   }
 
   const result: unknown = await response.json();

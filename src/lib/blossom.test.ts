@@ -59,7 +59,7 @@ function errorResponse(status: number): Response {
 // Must happen after mocks are registered if mocking were needed; here we let
 // @noble/hashes run natively as it is pure crypto.
 
-import { uploadToBlossom } from './blossom';
+import { uploadToBlossom, BlossomUploadError, DEFAULT_BLOSSOM_URL } from './blossom';
 
 // -------------------------------------------------------------------------
 describe('uploadToBlossom — URL scheme validation', () => {
@@ -196,6 +196,26 @@ describe('uploadToBlossom — HTTP error handling', () => {
     await expect(uploadToBlossom(makeBlob('x'), VALID_URL, backend, true)).rejects.toThrow('400');
   });
 
+  it('answers 415 with the plain-English "ordinary pictures" message, status kept', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(415)));
+    const err = await uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true).catch(e => e);
+    expect(err).toBeInstanceOf(BlossomUploadError);
+    expect(err.status).toBe(415);
+    expect(err.message).toBe(
+      "That Blossom server only takes ordinary pictures, so it can't store encrypted ones. Choose a different server in Advanced settings.",
+    );
+  });
+
+  it.each([401, 403])('answers %i with the "approved keys" message, status kept', async (status) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(status)));
+    const err = await uploadToBlossom(makeBlob('x'), VALID_URL, makeBackend(), true).catch(e => e);
+    expect(err).toBeInstanceOf(BlossomUploadError);
+    expect(err.status).toBe(status);
+    expect(err.message).toBe(
+      'That Blossom server refused the upload. It may only accept uploads from approved keys. Choose a different server in Advanced settings.',
+    );
+  });
+
   it('throws when server returns 500', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(500)));
     const backend = makeBackend();
@@ -254,5 +274,11 @@ describe('uploadToBlossom — SHA-256 hash verification', () => {
     const backend = makeBackend();
     const result = await uploadToBlossom(makeBlob(content), VALID_URL, backend, true);
     expect(result).toBe(expectedHash);
+  });
+});
+
+describe('DEFAULT_BLOSSOM_URL', () => {
+  it('is nostr.download (accepts encrypted blobs; primal answers 415 to non-image bytes)', () => {
+    expect(DEFAULT_BLOSSOM_URL).toBe('https://nostr.download');
   });
 });
