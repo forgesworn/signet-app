@@ -59,7 +59,7 @@ export function KenDetail({ entry, onAddKen, onRemoveKen, onBack, relayUrl, encr
 
   const avatarUrl = useContactAvatar(entry.pubkey, relayUrl, encryptionKey);
   // A kind-0 thumbnail already downloaded (with consent) is shown when there is no shared avatar.
-  const { url: storedPictureUrl } = useContactPicture({ encryptionKey, pubkey: entry.pubkey, sharedUrl: avatarUrl });
+  const { url: storedPictureUrl, badgeUrl: storedBadgeUrl } = useContactPicture({ encryptionKey, pubkey: entry.pubkey, sharedUrl: avatarUrl });
   const [section, setSection] = useState<Section>('overview');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -579,6 +579,7 @@ export function KenDetail({ entry, onAddKen, onRemoveKen, onBack, relayUrl, encr
         <div style={{ marginBottom: 8 }}>
           <ContactAvatar
             url={publicPic ?? storedPictureUrl}
+            badgeUrl={publicPic ? null : storedBadgeUrl}
             name={entry.displayName ?? ''}
             pubkey={shortNpub(entry.pubkey)}
             size={64}

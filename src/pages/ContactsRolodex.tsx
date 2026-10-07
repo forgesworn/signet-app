@@ -77,10 +77,10 @@ function RowAvatar({ pubkey, name, relayUrl, encryptionKey, directoryId, contact
   directoryId: string; contactId: string;
 }) {
   const shared = useContactAvatar(pubkey ?? '', relayUrl, encryptionKey);
-  const { url } = useContactPicture({ encryptionKey, pubkey, directoryId, contactId, sharedUrl: pubkey ? shared : null });
+  const { url, badgeUrl } = useContactPicture({ encryptionKey, pubkey, directoryId, contactId, sharedUrl: pubkey ? shared : null });
   return (
     <div style={{ flexShrink: 0 }}>
-      <ContactAvatar url={url} name={name} pubkey={pubkey ?? name} size={32} />
+      <ContactAvatar url={url} badgeUrl={badgeUrl} name={name} pubkey={pubkey ?? name} size={40} />
     </div>
   );
 }

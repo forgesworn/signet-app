@@ -541,10 +541,10 @@ function ScannedAvatarPreview({ pubkey, relayUrl, encryptionKey, overrideShareKe
 }) {
   const shared = useContactAvatar(pubkey, relayUrl, encryptionKey, overrideShareKey);
   // Shared avatar first, else a kind-0 thumbnail already on this device (never fetched here).
-  const { url } = useContactPicture({ encryptionKey, pubkey, sharedUrl: shared });
+  const { url, badgeUrl } = useContactPicture({ encryptionKey, pubkey, sharedUrl: shared });
   return (
     <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-      <ContactAvatar url={url} name={name} pubkey={pubkey} size={72} />
+      <ContactAvatar url={url} badgeUrl={badgeUrl} name={name} pubkey={pubkey} size={72} />
     </div>
   );
 }
