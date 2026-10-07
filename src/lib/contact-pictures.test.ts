@@ -8,12 +8,12 @@ const JPEG = (n: number) => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, n, 0xff, 0xd
 const PK = (c: string) => c.repeat(64);
 
 // Pass-through spy: counts every picture-key derivation (and any other).
-const derive = vi.hoisted(() => ({ calls: 0 }));
+const derive = vi.hoisted(() => ({ calls: 0, gate: null as Promise<void> | null }));
 vi.mock('./aes-crypto', async (importOriginal) => {
   const real = await importOriginal<typeof import('./aes-crypto')>();
   return {
     ...real,
-    deriveAesKey: (...args: Parameters<typeof real.deriveAesKey>) => { derive.calls += 1; return real.deriveAesKey(...args); },
+    deriveAesKey: async (...args: Parameters<typeof real.deriveAesKey>) => { derive.calls += 1; if (derive.gate) await derive.gate; return real.deriveAesKey(...args); },
   };
 });
 
@@ -21,6 +21,7 @@ beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory());
   vi.resetModules();
   derive.calls = 0;
+  derive.gate = null;
 });
 
 async function load() {
@@ -258,6 +259,68 @@ describe('a lock while a refresh is running', () => {
       .rejects.toBeInstanceOf(m.crypto.ContactPicturesLockedError);
     await m.loadContactPictures(KEY, gen);
     expect(derive.calls).toBe(0);
+    expect(await m.db.listContactPictures(KEY)).toEqual([]);
+  });
+});
+
+describe('a lock during the write', () => {
+  /** Holds the key derivation until `release()`. */
+  function holdDerivation(): () => void {
+    let release!: () => void;
+    derive.gate = new Promise<void>(r => { release = r; });
+    return release;
+  }
+
+  it('a lock while the key derives writes nothing and rejects as locked', async () => {
+    const m = await load();
+    const gen = m.crypto.contactPictureGeneration();
+    const release = holdDerivation();
+    const pending = m.db.saveContactPicture({ id: `kind0:${PK('a')}`, jpeg: JPEG(4), fetchedAt: 1, updatedAt: 1 }, KEY, gen);
+    const outcome = expect(pending).rejects.toBeInstanceOf(m.crypto.ContactPicturesLockedError);
+    await vi.waitFor(() => expect(derive.calls).toBe(1));
+    lock(m);
+    release();
+    await outcome;
+    derive.gate = null;
+    expect(await m.db.listContactPictures(KEY)).toEqual([]);
+  });
+
+  it('a save without a generation keeps writing regardless', async () => {
+    const m = await load();
+    const release = holdDerivation();
+    const pending = m.db.saveContactPicture({ id: `kind0:${PK('a')}`, jpeg: JPEG(4), fetchedAt: 1, updatedAt: 1 }, KEY);
+    await vi.waitFor(() => expect(derive.calls).toBe(1));
+    lock(m);
+    release();
+    await pending;
+    derive.gate = null;
+    expect(await m.db.listContactPictures(KEY)).toHaveLength(1);
+  });
+
+  it('a lock during an own-picture save is "locked" and the row is not written', async () => {
+    const m = await load();
+    const id = '5'.repeat(32);
+    const release = holdDerivation();
+    const pending = m.setOwnContactPicture(KEY, 'owner', id, new Blob([new Uint8Array([1])]), { thumbnail: async () => JPEG(3) });
+    await vi.waitFor(() => expect(derive.calls).toBe(1));
+    lock(m);
+    release();
+    expect(await pending).toBe('locked');
+    derive.gate = null;
+    expect(await m.db.listContactPictures(KEY)).toEqual([]);
+    expect(m.cachedContactPicture(KEY, `own:owner:${id}`)).toBeNull();
+  });
+
+  it('a lock between opening the db and the delete leaves the row in place', async () => {
+    const m = await load();
+    const id = `kind0:${PK('a')}`;
+    await m.db.saveContactPicture({ id, jpeg: JPEG(4), fetchedAt: 1, updatedAt: 1 }, KEY);
+    const gen = m.crypto.contactPictureGeneration();
+    const pending = m.db.deleteContactPicture(id, gen);
+    lock(m); // lands while getDB() is still pending
+    await expect(pending).rejects.toBeInstanceOf(m.crypto.ContactPicturesLockedError);
+    expect(await m.db.listContactPictures(KEY)).toHaveLength(1);
+    await m.db.deleteContactPicture(id); // no generation: today's behaviour
     expect(await m.db.listContactPictures(KEY)).toEqual([]);
   });
 });

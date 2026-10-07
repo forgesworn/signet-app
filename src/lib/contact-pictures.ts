@@ -211,7 +211,7 @@ async function storePicture(encryptionKey: string, picture: ContactPicture, gen:
 
 async function dropPicture(encryptionKey: string, id: string, gen: number): Promise<void> {
   if (!live(gen)) throw new ContactPicturesLockedError();
-  await deleteContactPicture(id);
+  await deleteContactPicture(id, gen);
   const entry = cacheFor(encryptionKey, gen);
   if (entry) {
     entry.byId.delete(id);

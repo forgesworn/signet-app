@@ -21,7 +21,7 @@ import { validateOperation, validateRecord } from './contacts-v2-reducer';
 import { createSerialQueue } from './contacts-v2-queue';
 import { portableSettingsValues } from './portable-settings';
 import { privateVaultQueue } from './private-vault-queue';
-import { forgetContactPictureKeys, sealContactPicture, openContactPicture, type ContactPicture } from './contact-picture-crypto';
+import { forgetContactPictureKeys, contactPictureGeneration, ContactPicturesLockedError, sealContactPicture, openContactPicture, type ContactPicture } from './contact-picture-crypto';
 import { parseGuardianActingEntry, pruneGuardianActing, type GuardianActingEntry } from './guardian-acting';
 
 export { encryptSecret, decryptSecret } from './crypto-store';
@@ -2499,6 +2499,9 @@ export async function purgeAllUserData(): Promise<void> {
 export async function saveContactPicture(picture: ContactPicture, encryptionKey: string, gen?: number): Promise<void> {
   const row = await sealContactPicture(picture, encryptionKey, gen);
   const db = await getDB();
+  // A lock can land while the key derives (600k PBKDF2) or the body encrypts;
+  // re-check right before the write, which is the only step that persists.
+  if (gen !== undefined && gen !== contactPictureGeneration()) throw new ContactPicturesLockedError();
   await db.put('contactPictures', row);
 }
 
@@ -2515,8 +2518,9 @@ export async function listContactPictures(encryptionKey: string, gen?: number): 
   return out.filter((p): p is ContactPicture => p !== null);
 }
 
-export async function deleteContactPicture(id: string): Promise<void> {
+export async function deleteContactPicture(id: string, gen?: number): Promise<void> {
   const db = await getDB();
+  if (gen !== undefined && gen !== contactPictureGeneration()) throw new ContactPicturesLockedError();
   await db.delete('contactPictures', id);
 }
 
