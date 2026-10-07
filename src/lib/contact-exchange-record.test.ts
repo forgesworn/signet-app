@@ -5,6 +5,8 @@ import { listContactOperationsV2, saveContactOperationsV2, purgeAllUserData } fr
 import { applyOperations } from './contacts-v2-reducer';
 import { buildOperation } from './contacts-v2-mutations';
 import { shortNpub } from './nostr-follows';
+import { getContactAvatar } from './db';
+import { openDB } from 'idb';
 const key = 'exchange contact test', own = '1'.repeat(64), peer = '2'.repeat(64);
 const actor = { actorPubkey: own, actorRole: 'owner' as const, actorDeviceId: '3'.repeat(32) };
 function exchange() {
@@ -144,4 +146,57 @@ it('a proven key is lifted to mutual, and an already-mutual key gets no further 
   await seedExisting('mutual');
   await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
   expect((await listContactOperationsV2('owner', key)).filter(op => op.action === 'update-identity')).toHaveLength(0);
+});
+
+// Partner cards. The requester reads the acceptance's card; the recipient reads the request's.
+const photo = { key: '8'.repeat(64), server: 'https://blossom.example.com/', hash: '9'.repeat(64) };
+const withCards = (role: 'requester' | 'recipient', card: { name?: string; photo?: typeof photo }, origin?: ReturnType<typeof link>['origin']) => {
+  const base = exchange();
+  return role === 'requester'
+    ? { ...base, acceptance: { ...base.acceptance!, card }, ...(origin ? { origin } : {}) }
+    : { ...base, role: 'recipient' as const, request: { ...base.request, card }, ...(origin ? { origin } : {}) };
+};
+it('requester side: the partner card name beats the invite caption, which beats the short key', async () => {
+  const caption = link('Caption name').origin;
+  const carded = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }, caption), isCurrent: () => true });
+  expect(await nameOf(carded)).toBe('Card name');
+  await purgeAllUserData();
+  const captionOnly = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }, caption), isCurrent: () => true });
+  expect(await nameOf(captionOnly)).toBe('Caption name');
+  await purgeAllUserData();
+  const neither = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  expect(await nameOf(neither)).toBe(shortNpub(peer));
+});
+it('recipient side: the partner card name beats the short key', async () => {
+  const carded = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', { name: 'Card name' }), isCurrent: () => true });
+  expect(await nameOf(carded)).toBe('Card name');
+  await purgeAllUserData();
+  const bare = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', {}), isCurrent: () => true });
+  expect(await nameOf(bare)).toBe(shortNpub(own));
+});
+it('an existing contact keeps its own name over a card name, and a card name over the UTF-16 cap falls through', async () => {
+  const contactId = await seedExisting('unverified');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Friend');
+  await purgeAllUserData();
+  const long = await recordCompletedContactExchange({ directoryId: 'owner', key, actor,
+    exchange: withCards('requester', { name: '\u{1F600}'.repeat(60) }, link('Caption name').origin), isCurrent: () => true });
+  expect(await nameOf(long)).toBe('Caption name');
+});
+it('saves the partner photo key with the card server and hash as the fallback, on either side, and not at all without a photo', async () => {
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  expect(await getContactAvatar(peer, key)).toMatchObject({ pubkey: peer, shareKey: photo.key, fallback: { server: photo.server, hash: photo.hash } });
+  await purgeAllUserData();
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', { photo }), isCurrent: () => true });
+  expect(await getContactAvatar(own, key)).toMatchObject({ shareKey: photo.key, fallback: { server: photo.server, hash: photo.hash } });
+  await purgeAllUserData();
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Only a name' }), isCurrent: () => true });
+  expect(await getContactAvatar(peer, key)).toBeNull();
+});
+it('the stored fallback is sealed at rest, and unreadable under another key', async () => {
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  const raw = await (await openDB('my-signet')).get('contactAvatars', peer);
+  expect(JSON.stringify(raw)).not.toContain(photo.server);
+  expect(JSON.stringify(raw)).not.toContain(photo.key);
+  expect(await getContactAvatar(peer, 'a different key')).toBeNull();
 });

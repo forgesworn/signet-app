@@ -47,6 +47,8 @@ import { nip19 } from 'nostr-tools';
 import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
 import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
+import { buildContactCard, contactCardInfoFor, partnerCardOf } from './lib/contact-card-share';
+import { seedContactAvatarPointer } from './hooks/useContactAvatar';
 import { ContactInvites } from './pages/ContactInvites';
 import { ContactInviteSend } from './pages/ContactInviteSend';
 import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/signet-contacts';
@@ -2501,6 +2503,11 @@ export function App() {
         if (!current()) throw new Error('Unlock this identity first.');
         const contactId = await recordCompletedContactExchange({ directoryId, key, exchange, isCurrent: current,
           actor: { actorPubkey: owner, actorRole: directoryId === 'owner' ? 'owner' : 'guardian', actorDeviceId } });
+        // Their shared photo (key and fallback) was stored with the contact; let
+        // the avatar hook find it without a relay round trip for the first minute.
+        const sharedPhoto = partnerCardOf(exchange)?.photo;
+        if (sharedPhoto) seedContactAvatarPointer(exchange.role === 'requester' ? exchange.request.to : exchange.request.from,
+          { hash: sharedPhoto.hash, blossomUrl: sharedPhoto.server });
         if (current()) {
           void contactsV2.reload(); bumpContactsV2();
           if (directoryId === 'owner') void inviteNotifications.current?.completed(exchange);
@@ -10631,6 +10638,158 @@ export function App() {
     ));
   }
 
+  // ─── Contact-share avatar: ENABLE + always-current republish (Task 13) ───
+  // Distinct from the encrypted in-app avatar above. The contact avatar is
+  // encrypted with a STABLE per-slot key (`contactAvatarKey`) so the pointer
+  // can be reshared/refetched across devices; the pointer is a kind-0-shaped
+  // event signed by the persona's OWN key (not the guardian's), and the blob
+  // re-uploads on every avatar change to stay current. `requireExisting`
+  // gates the change-time path so a plain avatar edit never auto-enables
+  // sharing — only the explicit carousel "share" action does.
+  const pushContactAvatar = async (opts: {
+    target: string;
+    depPubkey?: string;
+    plaintext?: Uint8Array;
+    requireExisting: boolean;
+    /** Sending the key inside a contact card: a pointer that did not publish is a failure to throw, not a stale flag to record. */
+    strict?: boolean;
+  }): Promise<string | null> => {
+    // A42: a direct child publishes no avatar pointer (guardian-managed).
+    if (childDirect) return null;
+    const key = encryptionKey || await requestAuth();
+    if (!key) throw new Error('Authentication required');
+
+    // Resolve the decrypted slot (privateKey + private-avatar fields).
+    let slot: { publicKey: string; privateKey: string; avatarHash?: string; avatarBlossomUrl?: string; avatarKey?: string; contactAvatarKey?: string; contactAvatarHash?: string; contactAvatarBlossomUrl?: string; contactAvatarUpdatedAt?: number } | undefined;
+    if (opts.depPubkey) {
+      // Read the dep FRESH from IDB — the in-memory `dependants` array is the
+      // pre-change snapshot when this runs right after a same-handler avatar
+      // change (e.g. onSetDepPersonaAvatar → setDependantPersonaAvatar →
+      // pushContactAvatar). Using the stale slot here would re-share the old
+      // avatar bytes. loadFreshDependants re-decrypts via getDependants and
+      // mirrors the user-side loadIdentityDecrypted path below. See C1.
+      const all = await loadFreshDependants(key);
+      const dep = all.find(d => d.id === opts.depPubkey);
+      if (!dep) return null;
+      slot = opts.target === 'natural-person' ? dep.naturalPerson
+        : opts.target === 'persona' ? dep.persona
+        : dep.extraPersonas?.find(e => e.publicKey === opts.target);
+    } else {
+      if (!identity) return null;
+      const decrypted = await loadIdentityDecrypted(identity.id, key);
+      if (!decrypted) return null;
+      slot = opts.target === 'natural-person' ? decrypted.naturalPerson
+        : opts.target === 'persona' ? decrypted.persona
+        : decrypted.extraPersonas?.find(e => e.publicKey === opts.target);
+    }
+    if (!slot) return null;
+    // Need a PRIVATE avatar to share.
+    if (!(slot.avatarHash && slot.avatarBlossomUrl && slot.avatarKey)) return null;
+    const ownedPublish = !!slot.privateKey;
+    // Router-sourced fallback is a SHARED, CACHED route — only a locally-
+    // constructed backend (ownedPublish) may be destroy()'d below.
+    const routedPublish = ownedPublish ? null : (bunkerRouter?.backendFor(slot.publicKey) ?? null);
+    if (!ownedPublish && !routedPublish) return null;
+
+    let contactKey = slot.contactAvatarKey;
+    if (!contactKey) {
+      if (opts.requireExisting) return null; // change-time: don't auto-enable
+      contactKey = generateContactAvatarKey();
+    }
+
+    const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
+    if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
+    if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');
+
+    // Plaintext: supplied on avatar change, else fetch + decrypt the current avatar.
+    let plaintext = opts.plaintext;
+    if (!plaintext) {
+      const blob = await fetchAvatar({ hash: slot.avatarHash, blossomUrl: slot.avatarBlossomUrl, keyHex: slot.avatarKey });
+      plaintext = new Uint8Array(await blob.arrayBuffer());
+    }
+
+    // M3: surface re-publish failures instead of swallowing them. An upload OR
+    // publish failure at CHANGE-time (requireExisting) leaves contacts seeing
+    // the OLD avatar, so we flag the slot stale; a successful (re-)share clears
+    // it. At ENABLE-time nothing was shared yet, so an upload throw propagates
+    // untouched (QRCard surfaces it) without persisting a stale flag.
+    let meta;
+    try {
+      meta = await uploadContactAvatar(plaintext, contactKey, blossomUrl, blossomConsent, key);
+    } catch (err) {
+      if (opts.requireExisting) {
+        // Re-publish of an already-shared avatar failed to upload. Keep the
+        // last-known-good pointer in place but mark it stale so the card nudges
+        // a re-share; the change-time caller's catch then no-ops gracefully.
+        const staleFields = {
+          contactAvatarKey: contactKey,
+          contactAvatarHash: slot.contactAvatarHash ?? '',
+          contactAvatarBlossomUrl: slot.contactAvatarBlossomUrl ?? '',
+          contactAvatarUpdatedAt: slot.contactAvatarUpdatedAt ?? 0,
+          contactAvatarStale: true,
+        };
+        if (opts.depPubkey) await setDependantPersonaContactAvatar(opts.depPubkey, opts.target, staleFields);
+        else await setPersonaContactAvatar(opts.target, staleFields);
+      }
+      throw err;
+    }
+
+    // Publish the pointer signed by the persona's own key. A `false` return is
+    // a relay reject — record it as stale rather than discarding it.
+    const slotBackend: DecryptingSigningBackend = ownedPublish ? new LocalSigningBackend(slot.privateKey) : routedPublish!;
+    let publishOk: boolean;
+    try {
+      publishOk = await publishContactAvatarPointer({ hash: meta.hash, blossomUrl: meta.blossomUrl }, slotBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
+    } finally {
+      if (ownedPublish) slotBackend.destroy();
+    }
+
+    const fields = {
+      contactAvatarKey: contactKey,
+      contactAvatarHash: meta.hash,
+      contactAvatarBlossomUrl: meta.blossomUrl,
+      contactAvatarUpdatedAt: meta.updatedAt,
+      contactAvatarStale: !publishOk,
+    };
+    if (opts.depPubkey) await setDependantPersonaContactAvatar(opts.depPubkey, opts.target, fields);
+    else await setPersonaContactAvatar(opts.target, fields);
+    if (opts.strict && !publishOk) throw new Error('The photo pointer could not be published.');
+
+    return contactKey;
+  };
+
+  // The share copy a contact card points at (design 2026-10-07 §1): mint the
+  // key if missing, upload, publish the pointer. An unchanged, published copy
+  // is reused rather than re-uploaded. Runs only from a Send/Accept press.
+  // Any failure throws, and the caller sends nothing.
+  const shareContactPhoto = async (persona: string): Promise<{ key: string; server: string; hash: string }> => {
+    if (!identity || isPairedChild) throw new Error('Photo sharing is not available here.');
+    const key = encryptionKey || await requestAuth();
+    if (!key) throw new Error('Authentication required');
+    const want = persona.toLowerCase();
+    const target = identity.persona?.publicKey?.toLowerCase() === want ? 'persona'
+      : identity.naturalPerson?.publicKey?.toLowerCase() === want ? 'natural-person'
+      : identity.extraPersonas?.find(e => e.publicKey.toLowerCase() === want)?.publicKey;
+    if (!target) throw new Error('That persona has no photo to share.');
+    const read = async () => {
+      const fresh = await loadIdentityDecrypted(identity.id, key);
+      return target === 'natural-person' ? fresh?.naturalPerson : target === 'persona' ? fresh?.persona
+        : fresh?.extraPersonas?.find(e => e.publicKey === target);
+    };
+    const ready = (slot: Awaited<ReturnType<typeof read>>) => slot?.contactAvatarKey && slot.contactAvatarHash && slot.contactAvatarBlossomUrl && !slot.contactAvatarStale
+      ? { key: slot.contactAvatarKey, server: slot.contactAvatarBlossomUrl, hash: slot.contactAvatarHash } : null;
+    const existing = ready(await read());
+    if (existing) return existing;
+    if (!await pushContactAvatar({ target, requireExisting: false, strict: true })) throw new Error('The photo could not be shared.');
+    const made = ready(await read());
+    if (!made) throw new Error('The photo could not be shared.');
+    return made;
+  };
+  const contactCardFor = (persona: string, choice: { name: boolean; photo: boolean }) => {
+    const info = contactCardInfoFor(identity, persona, { pairedChild: isPairedChild });
+    return info ? buildContactCard(choice, info, () => shareContactPhoto(persona)) : Promise.resolve(undefined);
+  };
+
   // ─── Contact-share avatar: STOP sharing (G1 coarse revocation) ───
   // Clears the stable per-slot key + pointer metadata LOCALLY first (so the
   // revocation can't be blocked by an unreachable relay), then best-effort
@@ -11469,10 +11628,14 @@ export function App() {
         ? <ContactInviteSend key={pendingContactInvite} invite={invite} personas={sendPersonas}
           defaultPersona={pendingInviteSender && sendPersonas.some(p => p.pubkey === pendingInviteSender) ? pendingInviteSender : contactsWriteIdentity}
           ownPubkeys={ownPubkeys}
-          onSend={async persona => {
+          cardInfoFor={persona => contactCardInfoFor(identity, persona, { pairedChild: isPairedChild })}
+          onSend={async (persona, choice) => {
+            // The card (and so any upload and pointer publish) is built here, on
+            // the Send press. A photo that cannot be shared rejects, sending nothing.
+            const card = choice ? await contactCardFor(persona, choice) : undefined;
             setContactsIdentityChoice(persona);
             const sentAt = Math.floor(Date.now() / 1000);
-            await ownerInviteService.request(persona, invite, sentAt);
+            await ownerInviteService.request(persona, invite, sentAt, undefined, card);
             await ownerInviteService.flush(sentAt);
           }}
           onDone={finish} onCancel={finish} />
@@ -11490,6 +11653,10 @@ export function App() {
         identityName={contactsIdentityLists.find(i => i.ownerIdentityPubkey === contactsWriteIdentity)?.label ?? 'this identity'}
         relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version}
         initialInvite={pendingContactInvite}
+        cards={isPairedChild ? undefined : {
+          infoFor: persona => contactCardInfoFor(identity, persona, { pairedChild: isPairedChild }),
+          build: contactCardFor,
+        }}
         onApproveContact={activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved' ? async peer => {
           if (!encryptionKey || !identity || isPairedChild) throw new Error('Unlock the guardian identity first.');
           const guardian = identity.naturalPerson.publicKey;
@@ -12706,123 +12873,6 @@ export function App() {
       </Layout>
     );
   }
-
-  // ─── Contact-share avatar: ENABLE + always-current republish (Task 13) ───
-  // Distinct from the encrypted in-app avatar above. The contact avatar is
-  // encrypted with a STABLE per-slot key (`contactAvatarKey`) so the pointer
-  // can be reshared/refetched across devices; the pointer is a kind-0-shaped
-  // event signed by the persona's OWN key (not the guardian's), and the blob
-  // re-uploads on every avatar change to stay current. `requireExisting`
-  // gates the change-time path so a plain avatar edit never auto-enables
-  // sharing — only the explicit carousel "share" action does.
-  const pushContactAvatar = async (opts: {
-    target: string;
-    depPubkey?: string;
-    plaintext?: Uint8Array;
-    requireExisting: boolean;
-  }): Promise<string | null> => {
-    // A42: a direct child publishes no avatar pointer (guardian-managed).
-    if (childDirect) return null;
-    const key = encryptionKey || await requestAuth();
-    if (!key) throw new Error('Authentication required');
-
-    // Resolve the decrypted slot (privateKey + private-avatar fields).
-    let slot: { publicKey: string; privateKey: string; avatarHash?: string; avatarBlossomUrl?: string; avatarKey?: string; contactAvatarKey?: string; contactAvatarHash?: string; contactAvatarBlossomUrl?: string; contactAvatarUpdatedAt?: number } | undefined;
-    if (opts.depPubkey) {
-      // Read the dep FRESH from IDB — the in-memory `dependants` array is the
-      // pre-change snapshot when this runs right after a same-handler avatar
-      // change (e.g. onSetDepPersonaAvatar → setDependantPersonaAvatar →
-      // pushContactAvatar). Using the stale slot here would re-share the old
-      // avatar bytes. loadFreshDependants re-decrypts via getDependants and
-      // mirrors the user-side loadIdentityDecrypted path below. See C1.
-      const all = await loadFreshDependants(key);
-      const dep = all.find(d => d.id === opts.depPubkey);
-      if (!dep) return null;
-      slot = opts.target === 'natural-person' ? dep.naturalPerson
-        : opts.target === 'persona' ? dep.persona
-        : dep.extraPersonas?.find(e => e.publicKey === opts.target);
-    } else {
-      if (!identity) return null;
-      const decrypted = await loadIdentityDecrypted(identity.id, key);
-      if (!decrypted) return null;
-      slot = opts.target === 'natural-person' ? decrypted.naturalPerson
-        : opts.target === 'persona' ? decrypted.persona
-        : decrypted.extraPersonas?.find(e => e.publicKey === opts.target);
-    }
-    if (!slot) return null;
-    // Need a PRIVATE avatar to share.
-    if (!(slot.avatarHash && slot.avatarBlossomUrl && slot.avatarKey)) return null;
-    const ownedPublish = !!slot.privateKey;
-    // Router-sourced fallback is a SHARED, CACHED route — only a locally-
-    // constructed backend (ownedPublish) may be destroy()'d below.
-    const routedPublish = ownedPublish ? null : (bunkerRouter?.backendFor(slot.publicKey) ?? null);
-    if (!ownedPublish && !routedPublish) return null;
-
-    let contactKey = slot.contactAvatarKey;
-    if (!contactKey) {
-      if (opts.requireExisting) return null; // change-time: don't auto-enable
-      contactKey = generateContactAvatarKey();
-    }
-
-    const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
-    if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
-    if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');
-
-    // Plaintext: supplied on avatar change, else fetch + decrypt the current avatar.
-    let plaintext = opts.plaintext;
-    if (!plaintext) {
-      const blob = await fetchAvatar({ hash: slot.avatarHash, blossomUrl: slot.avatarBlossomUrl, keyHex: slot.avatarKey });
-      plaintext = new Uint8Array(await blob.arrayBuffer());
-    }
-
-    // M3: surface re-publish failures instead of swallowing them. An upload OR
-    // publish failure at CHANGE-time (requireExisting) leaves contacts seeing
-    // the OLD avatar, so we flag the slot stale; a successful (re-)share clears
-    // it. At ENABLE-time nothing was shared yet, so an upload throw propagates
-    // untouched (QRCard surfaces it) without persisting a stale flag.
-    let meta;
-    try {
-      meta = await uploadContactAvatar(plaintext, contactKey, blossomUrl, blossomConsent, key);
-    } catch (err) {
-      if (opts.requireExisting) {
-        // Re-publish of an already-shared avatar failed to upload. Keep the
-        // last-known-good pointer in place but mark it stale so the card nudges
-        // a re-share; the change-time caller's catch then no-ops gracefully.
-        const staleFields = {
-          contactAvatarKey: contactKey,
-          contactAvatarHash: slot.contactAvatarHash ?? '',
-          contactAvatarBlossomUrl: slot.contactAvatarBlossomUrl ?? '',
-          contactAvatarUpdatedAt: slot.contactAvatarUpdatedAt ?? 0,
-          contactAvatarStale: true,
-        };
-        if (opts.depPubkey) await setDependantPersonaContactAvatar(opts.depPubkey, opts.target, staleFields);
-        else await setPersonaContactAvatar(opts.target, staleFields);
-      }
-      throw err;
-    }
-
-    // Publish the pointer signed by the persona's own key. A `false` return is
-    // a relay reject — record it as stale rather than discarding it.
-    const slotBackend: DecryptingSigningBackend = ownedPublish ? new LocalSigningBackend(slot.privateKey) : routedPublish!;
-    let publishOk: boolean;
-    try {
-      publishOk = await publishContactAvatarPointer({ hash: meta.hash, blossomUrl: meta.blossomUrl }, slotBackend, preferences.relayUrl ?? DEFAULT_RELAY_URL);
-    } finally {
-      if (ownedPublish) slotBackend.destroy();
-    }
-
-    const fields = {
-      contactAvatarKey: contactKey,
-      contactAvatarHash: meta.hash,
-      contactAvatarBlossomUrl: meta.blossomUrl,
-      contactAvatarUpdatedAt: meta.updatedAt,
-      contactAvatarStale: !publishOk,
-    };
-    if (opts.depPubkey) await setDependantPersonaContactAvatar(opts.depPubkey, opts.target, fields);
-    else await setPersonaContactAvatar(opts.target, fields);
-
-    return contactKey;
-  };
 
   // Home (default) — card-swipe wallet carousel
   return (

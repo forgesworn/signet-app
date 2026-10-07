@@ -822,3 +822,17 @@ export const USE_THIS_PICTURE_LABEL = 'Use this picture';
 export const CROP_LOADING_COPY = 'Opening your photo…';
 export const SHOW_THEIR_PICTURE_LABEL = 'Show their picture';
 export const SHOW_YOUR_PICTURE_LABEL = 'Show your picture';
+
+// "They'll see:" chips on a contact request or an acceptance (your name and photo
+// travel inside the encrypted message, never in the QR).
+export const CARD_CHIPS_LABEL = "They'll see:";
+export const CARD_NAME_CHIP_LABEL = 'Your name';
+export const CARD_PHOTO_CHIP_LABEL = 'Your photo';
+export const CARD_PHOTO_UNAVAILABLE_COPY = 'Add an in-app picture on your persona card first.';
+export const CARD_PHOTO_FAILED_COPY = "Your photo couldn't be shared, so nothing was sent.";
+export const SEND_WITHOUT_PHOTO_LABEL = 'Send without your photo';
+export const ACCEPT_WITHOUT_PHOTO_LABEL = 'Accept without your photo';
+/** An unaccepted request's card name is self-declared, never a fact: anyone holding the invite can claim any name. */
+export function requestFromNamedCopy(name: string): string {
+  return `Request from someone calling themselves “${sanitizeDisplayName(name, 100)}”`;
+}

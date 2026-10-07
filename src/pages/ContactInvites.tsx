@@ -4,16 +4,24 @@ import { QRCode } from '../components/QRCode';
 import { contactInviteLink, contactInviteOrigin, parseContactInviteLink } from '../lib/contact-invite-link';
 import { useEffect, useRef, useState } from 'react';
 import { contactVerificationWords } from '@forgesworn/signet-contacts';
-import type { ContactExchangeState } from '@forgesworn/signet-contacts';
+import type { ContactCard, ContactExchangeState } from '@forgesworn/signet-contacts';
+import { ContactCardPhotoError, defaultCardChoice } from '../lib/contact-card-share';
+import type { ContactCardChoice, ContactCardInfo } from '../lib/contact-card-share';
+import { ShareCardChips } from '../components/ShareCardChips';
+import { shortNpub } from '../lib/nostr-follows';
+import { ACCEPT_WITHOUT_PHOTO_LABEL, CARD_PHOTO_FAILED_COPY, requestFromNamedCopy } from '../lib/contacts-v2-copy';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import { conflictedContactExchanges } from '../lib/contact-invite-store';
 import type { ContactInviteVault } from '../lib/contact-invite-store';
 
 export function ContactInvites({ service, identityPubkey, identityName, relays, version, initialInvite,
-  onAddContact, onBack, onApproveContact }: { service: ContactInviteService; identityPubkey: string; identityName: string;
+  onAddContact, onBack, onApproveContact, cards }: { service: ContactInviteService; identityPubkey: string; identityName: string;
   relays: string[]; version: number; initialInvite?: string;
   onAddContact(exchange: ContactExchangeState): Promise<void>; onBack(): void;
-  onApproveContact?(peer: string): Promise<void> }) {
+  onApproveContact?(peer: string): Promise<void>;
+  /** "They'll see:" on an opened request. Absent (a paired child, a dependant's list) means no chips and no card.
+   * `build` uploads the share copy and publishes its pointer, so it runs only when Accept is pressed. */
+  cards?: { infoFor(persona: string): ContactCardInfo | null; build(persona: string, choice: ContactCardChoice): Promise<ContactCard | undefined> } }) {
   const [state, setState] = useState<ContactInviteVault | null>(null);
   const [heardWords, setHeardWords] = useState<Record<string, string>>({});
   const [qrInvite, setQrInvite] = useState<string | null>(null);
@@ -21,6 +29,8 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
   const [publicCaption, setPublicCaption] = useState(''), [shareCaption, setShareCaption] = useState(false);
   const [intendedRecipient, setIntendedRecipient] = useState('');
   const [allowDifferent, setAllowDifferent] = useState<Record<string, boolean>>({});
+  const [cardChoices, setCardChoices] = useState<Record<string, ContactCardChoice>>({});
+  const [photoFailed, setPhotoFailed] = useState<Record<string, boolean>>({});
   const [expiryDays, setExpiryDays] = useState(0);
   const [mode, setMode] = useState<'standing' | 'single-use'>('standing');
   const [incoming, setIncoming] = useState(initialInvite ?? '');
@@ -42,6 +52,21 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
   const now = () => Math.floor(Date.now() / 1000);
   const invites = state?.invites.filter(i => i.identityPubkey === identityPubkey) ?? [];
   const arrivals = state?.arrivals.filter(a => a.identityPubkey === identityPubkey && a.dismissedAt === undefined && a.channel !== 'exchange') ?? [];
+  const accept = (arrivalId: string, request: NonNullable<ContactInviteVault['arrivals'][number]['request']>, different: boolean, withPhoto: boolean) => void run(async () => {
+    const info = cards?.infoFor(request.to) ?? null;
+    let card: ContactCard | undefined;
+    if (cards && info) {
+      const base = cardChoices[arrivalId] ?? defaultCardChoice(info);
+      try { card = await cards.build(request.to, { name: base.name && !!info.name, photo: withPhoto && base.photo && info.hasPhoto }); }
+      catch (reason) {
+        if (reason instanceof ContactCardPhotoError) { setPhotoFailed(old => ({ ...old, [arrivalId]: true })); throw new Error(CARD_PHOTO_FAILED_COPY); }
+        throw reason;
+      }
+    }
+    setPhotoFailed(old => ({ ...old, [arrivalId]: false }));
+    if (onApproveContact) await onApproveContact(request.from);
+    await service.accept(arrivalId, now(), different, false, card); await service.flush(now());
+  });
   const exchanges = state?.exchanges.filter(e => (e.role === 'requester' ? e.request.from : e.request.to) === identityPubkey) ?? [];
   return <div style={{ padding: 16 }}>
     <h2>Invites for {identityName}</h2>
@@ -90,10 +115,18 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
       const intended = invites.find(i => i.id === a.inviteId)?.intendedPubkey;
       const different = !!(a.request && intended && a.request.from !== intended);
       return <div key={a.id} style={{ marginBlock: 12 }}>
-      <p>{a.request ? `Request from ${a.request.from.slice(0, 12)}…` : 'Unopened contact request'}</p>
+      {a.request?.card?.name
+        ? <><p>{requestFromNamedCopy(a.request.card.name)}</p><p>{shortNpub(a.request.from)}</p></>
+        : <p>{a.request ? `Request from ${a.request.from.slice(0, 12)}…` : 'Unopened contact request'}</p>}
       {different && <><p role="alert">This request is from a different public key than the intended recipient.</p>
         <label><input type="checkbox" checked={!!allowDifferent[a.id]} onChange={event => setAllowDifferent(old => ({ ...old, [a.id]: event.target.checked }))} /> Accept this different contact</label></>}
-      {a.request && <button className="btn btn-primary" disabled={busy || (different && !allowDifferent[a.id])} onClick={() => void run(async () => { if (onApproveContact) await onApproveContact(a.request!.from); await service.accept(a.id, now(), different && allowDifferent[a.id]); await service.flush(now()); })}>{onApproveContact ? 'Approve and accept request' : 'Accept request'}</button>}
+      {a.request && (() => {
+        const info = cards?.infoFor(a.request.to) ?? null;
+        return info ? <ShareCardChips info={info} value={cardChoices[a.id] ?? defaultCardChoice(info)} disabled={busy}
+          onChange={next => { setCardChoices(old => ({ ...old, [a.id]: next })); setPhotoFailed(old => ({ ...old, [a.id]: false })); }} /> : null;
+      })()}
+      {a.request && <button className="btn btn-primary" disabled={busy || (different && !allowDifferent[a.id])} onClick={() => accept(a.id, a.request!, different && !!allowDifferent[a.id], true)}>{onApproveContact ? 'Approve and accept request' : 'Accept request'}</button>}
+      {a.request && photoFailed[a.id] && <button className="btn btn-secondary" disabled={busy || (different && !allowDifferent[a.id])} onClick={() => accept(a.id, a.request!, different && !!allowDifferent[a.id], false)}>{ACCEPT_WITHOUT_PHOTO_LABEL}</button>}
       <button className="btn btn-ghost" disabled={busy} onClick={() => void run(() => service.dismiss(a.id, now()))}>Decline silently</button>
     </div>; })}
     <h3>Connections</h3>

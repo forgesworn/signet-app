@@ -50,11 +50,15 @@ export function useContactAvatar(
   return useObjectUrl(
     pubkey
       ? async () => {
-          // 1) Private path — contact-share key (override or from IDB).
+          // 1) Private path — contact-share key (override or from IDB). The
+          // stored record may also carry the `{ server, hash }` the sharer's
+          // contact card named; it is only used when no pointer can be found.
           let shareKey = overrideShareKey;
-          if (!shareKey && encryptionKey) {
+          let fallback: { server: string; hash: string } | undefined;
+          if (encryptionKey) {
             const rec = await getContactAvatar(pubkey, encryptionKey);
-            shareKey = rec?.shareKey;
+            if (!shareKey) shareKey = rec?.shareKey;
+            fallback = rec?.fallback;
           }
           if (!shareKey) return null; // no key → no avatar (no public fallback).
 
@@ -63,6 +67,11 @@ export function useContactAvatar(
           if (pointer === undefined) {
             pointer = await fetchContactAvatarPointer(pubkey, relayUrl);
             seedContactAvatarPointer(pubkey, pointer);
+          }
+          // 2b) No pointer on our relays: the card's own server and hash. https
+          // only; fetchAvatar still runs the host guard (isSafeBlossomBase).
+          if (!pointer && fallback && fallback.server.startsWith('https://')) {
+            pointer = { hash: fallback.hash, blossomUrl: fallback.server };
           }
           if (!pointer) return null;
 

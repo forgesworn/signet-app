@@ -135,8 +135,9 @@ export function isPrivateOrInternalHost(hostname: string): boolean {
 /**
  * Validate a Blossom base URL before issuing a fetch. Mirrors
  * `safeImageOrLinkUrl`: https only (plus http loopback for local dev), and
- * reject private/loopback/link-local/metadata hosts so a contact- or
- * inventory-supplied blossomUrl can't drive an SSRF/IP-probe.
+ * reject private/loopback/link-local/metadata hosts, IP literals and
+ * single-label hosts so a contact- or inventory-supplied blossomUrl can't
+ * drive an SSRF/IP-probe.
  */
 export function isSafeBlossomBase(raw: string): boolean {
   let url: URL;
@@ -145,5 +146,15 @@ export function isSafeBlossomBase(raw: string): boolean {
     return true;
   }
   if (url.protocol !== 'https:') return false;
-  return !isPrivateOrInternalHost(url.hostname);
+  if (isPrivateOrInternalHost(url.hostname)) return false;
+  // A Blossom server is a named public host. The contact-card rules
+  // (signet-contacts contact-invite-v1, "Fetching the photo") also refuse every
+  // IP literal, public ones included, and single-label names, because the
+  // sender chose the server and an intranet resolver can answer `https://nas`.
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) return false; // IPv6 literal
+  if (host.endsWith('.')) host = host.slice(0, -1);
+  if (host.includes(':') || /^\d+(\.\d+)*$/.test(host)) return false; // IPv6 / IPv4 literal
+  if (!host.includes('.')) return false; // single-label host
+  return true;
 }

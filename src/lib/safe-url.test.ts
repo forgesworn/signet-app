@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPrivateOrInternalHost } from './safe-url';
+import { isPrivateOrInternalHost, isSafeBlossomBase } from './safe-url';
 import { safeImageOrLinkUrl } from './public-profile-publish';
 
 describe('isPrivateOrInternalHost (SSRF guard — security audit 2026-06-15)', () => {
@@ -123,5 +123,33 @@ describe('IPv6 literals that wrap an internal or translated address', () => {
     expect(safeImageOrLinkUrl('https://[2002:a9fe:a9fe::]/')).toBeNull();
     expect(safeImageOrLinkUrl('https://[fec0::1]/')).toBeNull();
     expect(safeImageOrLinkUrl('https://[::ffff:127.0.0.1]/')).toBeNull();
+  });
+});
+
+describe('isSafeBlossomBase (contact-card host rules: signet-contacts contact-invite-v1)', () => {
+  it('accepts a named public https host, with or without a path or trailing slashes', () => {
+    expect(isSafeBlossomBase('https://blossom.example.com')).toBe(true);
+    expect(isSafeBlossomBase('https://blossom.example.com/')).toBe(true);
+    expect(isSafeBlossomBase('https://cdn.nostr.build/media')).toBe(true);
+  });
+  it('refuses private, loopback and link-local hosts', () => {
+    for (const u of ['https://localhost', 'https://app.localhost', 'https://127.0.0.1', 'https://10.0.0.5', 'https://192.168.1.1',
+      'https://172.16.0.1', 'https://169.254.169.254', 'https://[::1]', 'https://[fe80::1]', 'https://[fd00::1]', 'https://100.64.0.1']) {
+      expect(isSafeBlossomBase(u), u).toBe(false);
+    }
+  });
+  it('refuses single-label hosts, including with a trailing dot', () => {
+    for (const u of ['https://nas', 'https://intranet/', 'https://nas.', 'https://blossom:8443']) expect(isSafeBlossomBase(u), u).toBe(false);
+  });
+  it('refuses every IP literal, public ones too, in every spelling the URL parser accepts', () => {
+    for (const u of ['https://8.8.8.8', 'https://1.1.1.1/', 'https://[2606:4700:4700::1111]', 'https://2130706433', 'https://0x7f000001',
+      'https://0177.0.0.1', 'https://[::ffff:8.8.8.8]', 'https://1.2.3']) {
+      expect(isSafeBlossomBase(u), u).toBe(false);
+    }
+  });
+  it('refuses plain http and malformed input', () => {
+    expect(isSafeBlossomBase('http://blossom.example.com')).toBe(false);
+    expect(isSafeBlossomBase('not a url')).toBe(false);
+    expect(isSafeBlossomBase('')).toBe(false);
   });
 });

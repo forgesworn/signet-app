@@ -1334,13 +1334,21 @@ export interface ContactAvatarRecord {
   pubkey: string;
   shareKey: string;
   addedAt: number;
+  /**
+   * Where the sharer's contact card said the blob lives (design 2026-10-07 §1).
+   * Used only when the sharer's kind-30078 pointer cannot be found on our
+   * relays. Sealed with the key at rest, since it names the contact's server.
+   */
+  fallback?: { server: string; hash: string };
 }
 
-/** Save a recipient-side contact-share key. shareKey encrypted at rest. */
+/** Save a recipient-side contact-share key. shareKey (and any fallback) encrypted at rest. */
 export async function saveContactAvatar(rec: ContactAvatarRecord, encryptionKey: string): Promise<void> {
   const encrypted = await encryptSecret(rec.shareKey, encryptionKey);
+  const { fallback, ...rest } = rec;
+  const sealedFallback = fallback ? await encryptSecret(JSON.stringify({ server: fallback.server, hash: fallback.hash }), encryptionKey) : undefined;
   const db = await getDB();
-  await db.put('contactAvatars', { ...rec, shareKey: encrypted });
+  await db.put('contactAvatars', { ...rest, shareKey: encrypted, ...(sealedFallback ? { fallback: sealedFallback } : {}) });
 }
 
 /** Load + decrypt a contact-share key. Null if absent or wrong key. */
@@ -1349,7 +1357,17 @@ export async function getContactAvatar(pubkey: string, encryptionKey: string): P
   const rec = await db.get('contactAvatars', pubkey);
   if (!rec) return null;
   try {
-    return { pubkey: rec.pubkey, addedAt: rec.addedAt, shareKey: await decryptSecret(rec.shareKey, encryptionKey) };
+    const shareKey = await decryptSecret(rec.shareKey, encryptionKey);
+    // A fallback that will not open or parse is dropped; the key still works.
+    let fallback: ContactAvatarRecord['fallback'];
+    const sealed = (rec as { fallback?: unknown }).fallback;
+    if (typeof sealed === 'string') {
+      try {
+        const parsed = JSON.parse(await decryptSecret(sealed, encryptionKey)) as { server?: unknown; hash?: unknown };
+        if (typeof parsed.server === 'string' && typeof parsed.hash === 'string') fallback = { server: parsed.server, hash: parsed.hash };
+      } catch { /* keep the key without the fallback */ }
+    }
+    return { pubkey: rec.pubkey, addedAt: rec.addedAt, shareKey, ...(fallback ? { fallback } : {}) };
   } catch {
     return null;
   }
