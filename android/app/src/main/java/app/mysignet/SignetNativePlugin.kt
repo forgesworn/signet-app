@@ -96,15 +96,17 @@ class SignetNativePlugin : Plugin() {
         val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         val beat = call.getString("beat")
         if (beat !in listOf("tick", "double", "thud")) { call.reject("Unknown handshake beat"); return }
+        // Predefined ticks were too faint during the two-phone scan test.
+        // Keep the three beats distinct, with a full-strength scan pulse.
+        val duration = if (beat == "tick") 65L else 180L
+        val doublePattern = longArrayOf(0, 90, 120, 90)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val effect = if (beat == "double") VibrationEffect.createWaveform(longArrayOf(0, 40, 80, 40), -1)
-            else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) VibrationEffect.createPredefined(
-                if (beat == "tick") VibrationEffect.EFFECT_TICK else VibrationEffect.EFFECT_HEAVY_CLICK)
-            else VibrationEffect.createOneShot(if (beat == "tick") 15L else 90L, VibrationEffect.DEFAULT_AMPLITUDE)
+            val effect = if (beat == "double") VibrationEffect.createWaveform(doublePattern, intArrayOf(0, 255, 0, 255), -1)
+            else VibrationEffect.createOneShot(duration, 255)
             vibrator.vibrate(effect)
         } else {
             @Suppress("DEPRECATION")
-            vibrator.vibrate(if (beat == "double") longArrayOf(0, 40, 80, 40) else longArrayOf(0, if (beat == "tick") 15L else 90L), -1)
+            vibrator.vibrate(if (beat == "double") doublePattern else longArrayOf(0, duration), -1)
         }
         call.resolve()
     }
