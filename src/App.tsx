@@ -64,7 +64,7 @@ import { portableSettingsValues } from './lib/portable-settings';
 import { contactsMutationQueue } from './lib/contacts-v2-queue';
 import { contactsForGrant } from './lib/contacts-v2-grant-scope';
 import { contactIdentityLists } from './lib/contacts-v2-identity-lists';
-import { contactBelongsToList } from './lib/contacts-v2-membership';
+import { contactBelongsToList, unlinkContactList } from './lib/contacts-v2-membership';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { Page, CarouselRow, SignetIdentity } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
@@ -11533,7 +11533,14 @@ export function App() {
           lists={contactsIdentityLists}
           onReviewAppList={(grantId, accept) => contactsV2.reviewAppList(record.contactId, grantId, accept)}
           onLinkList={(key) => contactsV2.linkList(record.contactId, key)}
-          onUnlinkList={async (key) => { await contactsV2.unlinkList(record.contactId, key); navigateReplace('contacts'); }}
+          onUnlinkList={async (key) => {
+            // Unlinking the last list removes the contact (the reducer's own
+            // rule, run ahead), so the user's own picture goes with it, as on Remove.
+            const removes = unlinkContactList(record, key, Date.now()).lifecycle === 'removed';
+            await contactsV2.unlinkList(record.contactId, key);
+            if (removes && encryptionKey) { try { await removeOwnContactPicture(encryptionKey, record.directoryId, record.contactId); } catch { /* best effort */ } }
+            navigateReplace('contacts');
+          }}
           identity={identity}
           rights={rights}
           sections={detailSections(record, rights, legacyMatch)}
