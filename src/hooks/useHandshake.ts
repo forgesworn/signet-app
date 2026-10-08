@@ -5,7 +5,7 @@ import type { ContactInviteService } from '../lib/contact-invite-service';
 import type { StoredContactInvite, StoredContactExchange } from '../lib/contact-invite-store';
 import { contactExchangeKey } from '../lib/contact-exchange-key';
 import { handshakeRole, inviteFingerprint, readHandshakeQR, validHandshakeScan, type HandshakeQR } from '../lib/handshake-proof';
-import { handshakeHaptic } from '../lib/handshake-haptics';
+import { cancelHandshakeHaptics, handshakeHaptic } from '../lib/handshake-haptics';
 import { handshakeSigil } from '../lib/handshake-sigil';
 import { partnerCardOf } from '../lib/contact-card-share';
 
@@ -134,6 +134,7 @@ export function useHandshake(host: HandshakeHost) {
       if (own && now() >= own.invite.expiresAt! && !sealed && !(oneWay && currentExchange?.phase === 'complete')) publish({ phase: 'expired' });
     }, 1000);
     return () => {
+      cancelHandshakeHaptics();
       closed = true; clearInterval(expiry); kick.current = () => {};
       if (own) {
         const retiring = latest.current.service(() => true);

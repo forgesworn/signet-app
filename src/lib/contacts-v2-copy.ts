@@ -846,6 +846,7 @@ export const HANDSHAKE_COPY = {
   oneWay: 'Use Jigsaw', compare: 'Put the phones edge to edge. Do all the lines join?',
   joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
   keepTier: 'Keep current tier', kith: 'Kith', kin: 'Kin', tier: 'Choose how you know them',
+  openContact: 'Open contact',
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;

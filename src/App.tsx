@@ -11633,6 +11633,11 @@ export function App() {
         service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid)}
         buildCard={choice => contactCardFor(pendingHandshake.persona, choice)} pairedChild={isPairedChild}
         onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(pendingHandshake.persona); }}
+        onOpenContact={async contactId => {
+          await contactsV2.reload();
+          setContactsIdentityChoice(pendingHandshake.persona);
+          setSelectedContactId(contactId); navigateTo('contact-detail');
+        }}
         onTier={async (contactId, tier) => { await contactsV2.reload(); await contactsV2.setTier(contactId, tier); }} />
     </Layout>;
   }

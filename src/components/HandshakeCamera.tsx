@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
 import { isNativeApp, SignetNative } from '../lib/native';
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
+import { createHandshakeFrameReader } from '../lib/handshake-optical';
+
+/** Match the square object-fit: cover preview, retaining the full image for
+ * the separate ambiguity check. Never accept a code outside the visible view. */
+export function handshakeCameraCrop(width: number, height: number) {
+  const size = Math.min(width, height);
+  return { x: (width - size) / 2, y: (height - size) / 2, size };
+}
 
 /** Only a central, nearby QR, and no second QR in the same frame. */
 export function nearbyQR(location: { topLeftCorner: { x: number; y: number }; topRightCorner: { x: number; y: number }; bottomRightCorner: { x: number; y: number }; bottomLeftCorner: { x: number; y: number } }, width: number, height: number) {
@@ -22,26 +30,43 @@ export function HandshakeCamera({ facing, active, reading = true, onScan }: { fa
     let cancelled = false, stream: MediaStream | undefined, timer: ReturnType<typeof setTimeout>;
     setFailed(false);
     const canvas = document.createElement('canvas');
+    const fullCanvas = document.createElement('canvas');
+    const readFrame = createHandshakeFrameReader();
     const frame = () => {
       if (cancelled) return;
       const v = video.current;
       // Keep the live preview after pinning a peer, without repeatedly decoding
       // the same QR while the signed exchange is being verified.
       if (shouldRead.current && v && v.readyState >= 2 && v.videoWidth) {
-        const scale = Math.min(1, 1280 / v.videoWidth);
-        canvas.width = Math.round(v.videoWidth * scale); canvas.height = Math.round(v.videoHeight * scale);
+        const crop = handshakeCameraCrop(v.videoWidth, v.videoHeight);
+        const scale = Math.min(1, 1280 / crop.size);
+        canvas.width = Math.round(crop.size * scale); canvas.height = canvas.width;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
-          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+          ctx.drawImage(v, crop.x, crop.y, crop.size, crop.size, 0, 0, canvas.width, canvas.height);
           const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const qr = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
           if (qr && nearbyQR(qr.location, data.width, data.height)) {
             // Mask this code and decode again. Ambiguous frames are never accepted.
             const points = [qr.location.topLeftCorner, qr.location.topRightCorner, qr.location.bottomRightCorner, qr.location.bottomLeftCorner];
             const x = Math.min(...points.map(p => p.x)), y = Math.min(...points.map(p => p.y));
-            ctx.fillStyle = '#888'; ctx.fillRect(x - 5, y - 5, Math.max(...points.map(p => p.x)) - x + 10, Math.max(...points.map(p => p.y)) - y + 10);
-            const masked = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            if (!jsQR(masked.data, masked.width, masked.height, { inversionAttempts: 'attemptBoth' })) latest.current(qr.data);
+            // Look for any second QR in the full camera image, including the
+            // area cropped out of the square preview. Keep the size gate.
+            const fullScale = Math.min(1, 1280 / v.videoWidth);
+            fullCanvas.width = Math.round(v.videoWidth * fullScale); fullCanvas.height = Math.round(v.videoHeight * fullScale);
+            const full = fullCanvas.getContext('2d', { willReadFrequently: true });
+            if (full) {
+              full.drawImage(v, 0, 0, fullCanvas.width, fullCanvas.height);
+              full.fillStyle = '#888';
+              full.fillRect((crop.x + x / scale) * fullScale - 5, (crop.y + y / scale) * fullScale - 5,
+                (Math.max(...points.map(p => p.x)) - x) / scale * fullScale + 10,
+                (Math.max(...points.map(p => p.y)) - y) / scale * fullScale + 10);
+              const masked = full.getImageData(0, 0, fullCanvas.width, fullCanvas.height);
+              if (!jsQR(masked.data, masked.width, masked.height, { inversionAttempts: 'attemptBoth' })) {
+                const raw = readFrame(qr.data, performance.now());
+                if (raw !== null) latest.current(raw);
+              }
+            }
           }
         }
       }

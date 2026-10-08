@@ -8,6 +8,7 @@ import { handshakeQR, readHandshakeQR } from '../lib/handshake-proof';
 import { encodeContactInvite } from '@forgesworn/signet-contacts';
 import { HandshakeCamera } from '../components/HandshakeCamera';
 import { QRCode } from '../components/QRCode';
+import { HandshakeQR } from '../components/HandshakeQR';
 import { JigsawIcon } from '../components/JigsawIcon';
 import { JigsawSigil } from '../components/JigsawSigil';
 import { useScreenWakeLock } from '../hooks/useScreenWakeLock';
@@ -19,6 +20,7 @@ interface Props extends Omit<HandshakeHost, 'card'> {
   buildCard(choice: ContactCardChoice): ReturnType<HandshakeHost['card']>;
   pairedChild?: boolean; onChildInvite(raw: string): void;
   onTier(contactId: string, tier: 'kith' | 'kin'): Promise<void>;
+  onOpenContact(contactId: string): Promise<void>;
 }
 // S1 decides this value on the real screen. Rear is the working baseline.
 export const HANDSHAKE_DEFAULT_CAMERA = 'environment' as const;
@@ -75,6 +77,8 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   const [tierBusy, setTierBusy] = useState(false);
   const [tierChosen, setTierChosen] = useState(false);
   const [tierFailed, setTierFailed] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [openFailed, setOpenFailed] = useState(false);
   const active = view.phase === 'reading' || view.phase === 'waiting';
   const half = view.peer ? (props.persona < view.peer.recipient ? 'left' : 'right')
     : 'right'; // A one-way request's recipient is the right half; requester overrides below.
@@ -82,7 +86,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   return <div className="handshake-screen">
     {view.sigil && (view.phase === 'checking' || view.phase === 'sealed')
       ? <JigsawSigil digest={view.sigil} half={view.half ?? half} />
-      : view.invite && active ? <QRCode data={handshakeQR(view.invite, view.peer)} size={280} /> : null}
+      : view.invite && active ? <HandshakeQR data={handshakeQR(view.invite)} /> : null}
     {active && <>
       <HandshakeCamera facing={facing} active reading={!view.peer} onScan={scan} />
       <CameraChoice facing={facing} change={() => setFacing(f => f === 'user' ? 'environment' : 'user')} />
@@ -102,6 +106,13 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
       }}>{COPY[tier]}</button>)}
       <button className="btn btn-ghost" onClick={() => setTierChosen(true)}>{COPY.keepTier}</button>
       {tierFailed && <p role="alert">{CONTACT_ACTION_FAILED_COPY}</p>}
+    </div>}
+    {view.phase === 'sealed' && view.contactId && <div className="handshake-open-contact">
+      <button className="btn btn-primary" disabled={opening} onClick={() => {
+        setOpening(true); setOpenFailed(false);
+        void props.onOpenContact(view.contactId!).catch(() => setOpenFailed(true)).finally(() => setOpening(false));
+      }}>{COPY.openContact}</button>
+      {openFailed && <p role="alert">{CONTACT_ACTION_FAILED_COPY}</p>}
     </div>}
   </div>;
 }

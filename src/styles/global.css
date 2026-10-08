@@ -748,6 +748,8 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 .handshake-screen:has(.jigsaw-sigil-left), .handshake-screen:has(.jigsaw-sigil-right) { margin-inline: -20px; }
 .handshake-tier { text-align: center; }
 .handshake-tier .btn { margin: 4px; }
+.handshake-open-contact { margin-top: 16px; text-align: center; width: 100%; }
+.handshake-open-contact > .btn { width: min(100%, 280px); }
 .handshake-mark > span { display: flex; align-items: center; gap: 8px; }
 .handshake-mark .jigsaw-sigil { width: 120px; height: 120px; margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) { .jigsaw-closing { animation: none; } }

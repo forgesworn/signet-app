@@ -3,6 +3,7 @@ import type { ContactInvite, ContactRequest } from '@forgesworn/signet-contacts'
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { parseContactInviteLink } from './contact-invite-link';
+import { compactHandshakeInvite, readCompactHandshakeInvite } from './handshake-optical';
 
 /** Optical envelope only. The enclosed invite and every relay message use SDK v1. */
 export interface HandshakeQR { invite: ContactInvite; echo?: string }
@@ -12,10 +13,16 @@ export function inviteFingerprint(invite: ContactInvite): string {
   ]))));
 }
 export function handshakeQR(invite: ContactInvite, peer?: ContactInvite): string {
+  if (!peer) { const compact = compactHandshakeInvite(invite); if (compact) return compact; }
   return JSON.stringify({ handshake: 1, invite, ...(peer ? { echo: inviteFingerprint(peer) } : {}) });
 }
 export function readHandshakeQR(raw: string, now: number): HandshakeQR | null {
   if (raw.length > 8192) return null;
+  if (raw.startsWith('SGH1:')) {
+    const decoded = readCompactHandshakeInvite(raw);
+    const invite = decoded && parseContactInvite(JSON.stringify(decoded), now);
+    return invite?.expiresAt !== undefined && invite.expiresAt <= now + 120 ? { invite } : null;
+  }
   try {
     const value: unknown = JSON.parse(raw);
     if (value && typeof value === 'object' && 'handshake' in value) {
