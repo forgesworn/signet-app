@@ -836,3 +836,20 @@ export const ACCEPT_WITHOUT_PHOTO_LABEL = 'Accept without your photo';
 export function requestFromNamedCopy(name: string): string {
   return `Request from someone calling themselves “${sanitizeDisplayName(name, 100)}”`;
 }
+
+export const HANDSHAKE_COPY = {
+  title: 'Handshake', reading: 'Reading', sealed: 'Sealed', waiting: 'Waiting for their phone…',
+  expired: 'Expired — go back and start a new handshake.', failed: 'Handshake could not finish. Go back and try again.',
+  chooser: "They’ll see", name: 'Your name', npub: 'Your npub', photo: 'Your picture',
+  keyRequired: 'Your npub is needed to connect.', saveDefault: 'Save as default', go: 'Go',
+  front: 'Front camera', rear: 'Rear camera', switchCamera: 'Switch camera',
+  oneWay: 'Use Jigsaw', compare: 'Put the phones edge to edge. Do all the lines join?',
+  joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
+  keepTier: 'Keep current tier', kith: 'Kith', kin: 'Kin', tier: 'Choose how you know them',
+  child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
+  requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
+} as const;
+export function handshakeWaiting(name?: string): string {
+  const safe = sanitizeDisplayName(name ?? '', 100);
+  return safe ? `Waiting for ${safe}’s phone…` : HANDSHAKE_COPY.waiting;
+}

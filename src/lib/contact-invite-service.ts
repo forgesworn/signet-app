@@ -1,3 +1,5 @@
+import { handshakeRole, mayAutoAcceptHandshake, validHandshakeScan, type HandshakeQR } from './handshake-proof';
+import { handshakeSigil } from './handshake-sigil';
 import { assertContactMailboxCapacity } from './contact-invite-limits';
 import { contactExchangeKey } from './contact-exchange-key';
 import { randomBytes, bytesToHex } from '@noble/hashes/utils.js';
@@ -163,7 +165,7 @@ export class ContactInviteService {
         ? { ...i, enabled, updatedAt: Math.max(now, i.updatedAt + 1) } : i) };
     });
   }
-  async request(identityPubkey: string, invite: ContactInvite, now: number, app?: ContactInviteAppOrigin, cardSource?: ContactCardSource) {
+  async request(identityPubkey: string, invite: ContactInvite, now: number, app?: ContactInviteAppOrigin, cardSource?: ContactCardSource, handshake = false) {
     await this.cleanup(now);
     if (app) {
       if (!await this.options.appAllowed?.(app, identityPubkey, 'receive', false)) throw new Error('App invitation permission ended');
@@ -194,7 +196,7 @@ export class ContactInviteService {
     const event = await wrapContactExchange(request, parsed.secret, signer); this.check();
     if (!await this.options.mayConnect(parsed.recipient)) throw new Error('The contact policy changed');
     if (app && !await this.options.appAllowed?.(app, identityPubkey, 'receive', false)) throw new Error('App invitation permission ended');
-    const exchange: StoredContactExchange = { ...beginContactExchange(request, nonce), ...(app ? { app } : {}), origin: { id: contactExchangeKey(request), ownerIdentityPubkey: identityPubkey, method: app ? 'app' : 'link', addedAt: now * 1000, ...(app ? { appName: app.appName } : {}), ...(parsed.caption ? { caption: parsed.caption } : {}) } };
+    const exchange: StoredContactExchange = { ...beginContactExchange(request, nonce), ...(handshake ? { handshake: { startedAt: now } } : {}), ...(app ? { app } : {}), origin: { id: contactExchangeKey(request), ownerIdentityPubkey: identityPubkey, method: app ? 'app' : 'link', addedAt: now * 1000, ...(app ? { appName: app.appName } : {}), ...(parsed.caption ? { caption: parsed.caption } : {}) } };
     await this.update(state => {
       if (app) {
         const old = state.exchanges.find(e => e.app?.grantId === app.grantId && e.app.requestId === app.requestId);
@@ -208,6 +210,7 @@ export class ContactInviteService {
       return { ...state, exchanges: [...state.exchanges, exchange],
         outbox: [...state.outbox, { id: event.id, identityPubkey, event, relays: parsed.relays, exchangeId: contactExchangeKey(request), messageType: 'request' }] };
     });
+    return contactExchangeKey(request);
   }
   /** Child-managed exchange entry point. The caller has already persisted a
    * pairing-bound plan; this method keeps its request id/nonce/reply secret
@@ -276,7 +279,13 @@ export class ContactInviteService {
         message = await openContactIdentityPacket(arrival.packet, signer); this.check();
       } catch { this.check(); continue; }
       if (!message) { await this.dismiss(arrival.id, now); continue; }
-      if (arrival.channel !== 'exchange') {
+      const opticalInvite = arrival.channel !== 'exchange'
+        ? state.invites.find(i => i.id === arrival.inviteId && i.identityPubkey === arrival.identityPubkey && i.mode === 'single-use'
+          && i.invite.expiresAt !== undefined && now < i.invite.expiresAt) : undefined;
+      const opticalExchange = opticalInvite && message.type === 'signet-contact-accept'
+        ? (await this.read()).exchanges.find(e => e.handshake && e.role === 'requester' && e.request.id === message.id
+          && e.request.from === message.to && e.request.to === message.from && e.handshake.startedAt >= opticalInvite.createdAt) : undefined;
+      if (arrival.channel !== 'exchange' && !opticalExchange) {
         const invite = (await this.read()).invites.find(row => row.id === arrival.inviteId && row.identityPubkey === arrival.identityPubkey);
         if (!invite) { await this.dismiss(arrival.id, now); continue; }
         if (message.type !== 'signet-contact-request' || now < message.createdAt || now >= message.expiresAt
@@ -288,7 +297,7 @@ export class ContactInviteService {
         });
       } else {
         const fresh = await this.read();
-        const old = fresh.exchanges.find(e => contactExchangeKey(e.request) === arrival.inviteId);
+        const old = opticalExchange ?? fresh.exchanges.find(e => contactExchangeKey(e.request) === arrival.inviteId);
         if (!old || conflictedContactExchanges(fresh).has(contactExchangeKey(old.request)) || !await this.options.mayConnect(old.role === 'requester' ? old.request.to : old.request.from)) continue;
         let next: ContactExchangeState;
         let outbox: ContactInviteOutbox | undefined;
@@ -303,6 +312,7 @@ export class ContactInviteService {
           try { next = receiveContactReveal(old, message, now); }
           catch { await this.dismiss(arrival.id, now); continue; }
         } else { await this.dismiss(arrival.id, now); continue; }
+        if (opticalExchange) next = { ...next, handshake: { ...opticalExchange.handshake!, opticalAcceptanceAt: now } } as StoredContactExchange;
         await this.update(current => {
           const existing = current.exchanges.find(e => contactExchangeKey(e.request) === contactExchangeKey(old.request));
           if (JSON.stringify(existing) !== JSON.stringify(old)) throw new Error('Contact exchange changed; reopen the inbox');
@@ -334,7 +344,7 @@ export class ContactInviteService {
       } catch { this.check(); }
     }
   }
-  async accept(arrivalId: string, now: number, acceptDifferentRecipient = false, automatic = false, cardSource?: ContactCardSource) {
+  async accept(arrivalId: string, now: number, acceptDifferentRecipient = false, automatic = false, cardSource?: ContactCardSource, handshake = false) {
     const startedAt = Date.now();
     const state = await this.read();
     const arrival = state.arrivals.find(a => a.id === arrivalId);
@@ -348,7 +358,7 @@ export class ContactInviteService {
     assertContactMailboxCapacity(state, request.to, now, request.reply.relays, 'exchange');
     // Every refusal above has passed; only now may the card be built (M3).
     const card = await resolveCard(cardSource); this.check();
-    const next: StoredContactExchange = { ...acceptContactExchange(request, bytesToHex(randomBytes(32)), now, card), ...(invite?.app ? { app: invite.app } : {}),
+    const next: StoredContactExchange = { ...acceptContactExchange(request, bytesToHex(randomBytes(32)), now, card), ...(handshake ? { handshake: { startedAt: now, ...(invite ? { inviteId: invite.id } : {}) } } : {}), ...(invite?.app ? { app: invite.app } : {}),
       origin: { id: contactExchangeKey(request), ownerIdentityPubkey: request.to, method: invite?.app ? 'app' : 'accepted-request', addedAt: now * 1000, ...(invite?.app ? { appName: invite.app.appName } : {}),
         ...(invite ? { inviteId: invite.id, inviteName: invite.name } : {}) } };
     const signer = await this.options.signer(request.to); this.check();
@@ -369,10 +379,65 @@ export class ContactInviteService {
         arrivals: fresh.arrivals.map(a => a.id === arrivalId ? { ...a, dismissedAt: now } : a) };
     });
   }
+  /** Camera-bound automatic acceptance. Signature verification happened in
+   * openInbox; this binds the opened author to the optical session. */
+  async acceptHandshake(arrivalId: string, own: ContactInvite, scanned: HandshakeQR, now: number, card?: ContactCardSource) {
+    const state = await this.read();
+    const arrival = state.arrivals.find(a => a.id === arrivalId);
+    const invite = state.invites.find(i => i.id === arrival?.inviteId);
+    if (!arrival?.request || !invite?.enabled || invite.mode !== 'single-use'
+      || JSON.stringify(invite.invite) !== JSON.stringify(own)
+      || !mayAutoAcceptHandshake({ own, scanned, request: arrival.request, now, receivedOnOwnInvite: true })) throw new Error('Handshake proof does not match');
+    await this.accept(arrivalId, now, false, false, card, true);
+    await this.sendOpticalAcceptance(contactExchangeKey(arrival.request), scanned.invite, now);
+  }
+  /** Reuse the SAME signed acceptance, additionally wrapped to the invitation
+   * the camera read. Its recipient mailbox capability proves the return scan;
+   * the signed seal pins the reader's key. No new SDK message or operation. */
+  async sendOpticalAcceptance(exchangeId: string, scanned: ContactInvite, now: number) {
+    const state = await this.read();
+    const e = state.exchanges.find(e => contactExchangeKey(e.request) === exchangeId);
+    if (!e?.handshake || e.phase === 'declined' || e.role !== 'recipient' || !e.acceptance || e.handshake.opticalAcceptanceSent) return;
+    if (!parseContactInvite(JSON.stringify(scanned), now) || scanned.recipient !== e.request.from) throw new Error('Handshake proof does not match');
+    const signer = await this.options.signer(e.request.to); this.check();
+    const event = await wrapContactExchange(e.acceptance, scanned.secret, signer); this.check();
+    await this.update(fresh => {
+      const current = fresh.exchanges.find(row => contactExchangeKey(row.request) === exchangeId);
+      if (!current?.handshake || current.handshake.opticalAcceptanceSent) return fresh;
+      return { ...fresh, exchanges: fresh.exchanges.map(row => contactExchangeKey(row.request) === exchangeId
+        ? { ...row, handshake: { ...row.handshake!, opticalAcceptanceSent: true } } : row),
+        outbox: [...fresh.outbox, { id: event.id, identityPubkey: e.request.to, event, relays: scanned.relays,
+          exchangeId, messageType: 'acceptance' }] };
+    });
+  }
+  /** Confirm only a completed, SDK-verified transcript. The optical proof is
+   * captured while both short-lived invitations are still valid. A human seam
+   * check records proven, never mutual. */
+  async confirmHandshake(exchangeId: string, now: number, optical?: { own: ContactInvite; scanned: HandshakeQR; readAt: number }) {
+    await this.update(state => ({ ...state, exchanges: state.exchanges.map(e => {
+      if (contactExchangeKey(e.request) !== exchangeId) return e;
+      if (!e.handshake || e.phase !== 'complete' || conflictedContactExchanges(state).has(exchangeId)) throw new Error('Handshake is incomplete');
+      if (e.handshake.strength) return e;
+      if (optical) {
+        const localInvite = state.invites.find(i => JSON.stringify(i.invite) === JSON.stringify(optical.own));
+        const ownKey = e.role === 'requester' ? e.request.from : e.request.to;
+        const peerKey = e.role === 'requester' ? e.request.to : e.request.from;
+        if (!localInvite
+          || (e.role === 'requester' ? e.handshake.opticalAcceptanceAt === undefined : e.handshake.inviteId !== localInvite.id)
+          || handshakeRole(ownKey, peerKey) !== e.role
+          || ownKey !== optical.own.recipient || peerKey !== optical.scanned.invite.recipient
+          || optical.readAt < localInvite.createdAt || optical.readAt > now
+          || !validHandshakeScan(optical.own, optical.scanned, optical.readAt)) throw new Error('Handshake proof does not match');
+      }
+      return { ...e, handshake: { ...e.handshake, strength: optical ? 'mutual' as const : 'proven' as const,
+        confirmedAt: now, sigil: handshakeSigil(e) } };
+    }) }));
+    return this.materialiseContact(exchangeId);
+  }
   async materialiseContact(exchangeId: string): Promise<string> {
     const state = await this.read();
     const exchange = state.exchanges.find(e => contactExchangeKey(e.request) === exchangeId);
-    if (!exchange || exchange.phase !== 'complete' || !this.options.onCompleted || conflictedContactExchanges(state).has(exchangeId)
+    if (!exchange || (exchange.handshake && !exchange.handshake.strength) || exchange.phase !== 'complete' || !this.options.onCompleted || conflictedContactExchanges(state).has(exchangeId)
       || !await this.childMayProceed(exchange)) throw new Error('The exchange is not ready.');
     this.check();
     const contactId = await this.options.onCompleted(exchange); this.check();
@@ -445,7 +510,7 @@ export class ContactInviteService {
       ? confirmContactRevealSent(e) : e) }));
     if (this.options.onCompleted) {
       for (const exchange of (await this.read()).exchanges) {
-        if (exchange.phase !== 'complete' || blocked.has(contactExchangeKey(exchange.request)) || (exchange.contactId && (!exchange.wordsConfirmedAt || exchange.wordsRecordedAt === exchange.wordsConfirmedAt)) || conflictedContactExchanges(await this.read()).has(contactExchangeKey(exchange.request))) continue;
+        if ((exchange.handshake && !exchange.handshake.strength) || exchange.phase !== 'complete' || blocked.has(contactExchangeKey(exchange.request)) || (exchange.contactId && (!exchange.wordsConfirmedAt || exchange.wordsRecordedAt === exchange.wordsConfirmedAt)) || conflictedContactExchanges(await this.read()).has(contactExchangeKey(exchange.request))) continue;
         if (!await this.childMayProceed(exchange)) continue;
         this.check();
         const contactId = await this.options.onCompleted(exchange); this.check();

@@ -1,4 +1,5 @@
-import { contactMailboxPlan } from '../lib/contact-mailbox-plan';
+import { contactInviteWork } from '../lib/contact-invite-work';
+import { contactMailboxPlan, type ContactMailboxBinding } from '../lib/contact-mailbox-plan';
 import { useEffect, useRef, useState } from 'react';
 import { SimplePool } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
@@ -12,17 +13,35 @@ export interface ContactInviteScope { directoryId: string; identities: string[] 
 export function useContactInviteMailboxes(options: {
   encryptionKey: string | null; scopes: ContactInviteScope[]; version: number;
   service(directoryId: string, isCurrent: () => boolean): ContactInviteService;
-  onChanged(): void;
+  onChanged(): void; onRequest?(id: string): void;
 }) {
   const latest = useRef(options); latest.current = options;
   const scopeKey = JSON.stringify(options.scopes);
   const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60000));
+  const trigger = useRef<() => void>(() => {});
+  const [planKey, setPlanKey] = useState('[]');
   const closing = useRef<Promise<unknown>>(Promise.resolve());
   useEffect(() => {
     if (!options.encryptionKey) return;
     const timer = setInterval(() => setMinute(Math.floor(Date.now() / 60000)), 1000);
     return () => clearInterval(timer);
   }, [options.encryptionKey]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!options.encryptionKey) { setPlanKey('[]'); return; }
+    void (async () => {
+      const plans = [];
+      for (const scope of options.scopes) {
+        const state = await loadContactInviteVault(scope.directoryId, options.encryptionKey!);
+        for (const identity of scope.identities) {
+          const { bindings } = contactMailboxPlan(state, identity, Math.floor(Date.now() / 1000));
+          if (bindings.length) plans.push({ directoryId: scope.directoryId, identity, bindings: bindings.sort((a, b) => a.id.localeCompare(b.id) || a.channel.localeCompare(b.channel)) });
+        }
+      }
+      if (!cancelled) setPlanKey(JSON.stringify(plans));
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [options.encryptionKey, scopeKey, options.version, minute]);
   useEffect(() => {
     if (!options.encryptionKey) return;
     let cancelled = false;
@@ -33,40 +52,43 @@ export function useContactInviteMailboxes(options: {
     const start = async () => {
       await closing.current;
       if (!valid()) return;
-      for (const scope of options.scopes) {
-        const state = await loadContactInviteVault(scope.directoryId, options.encryptionKey!);
+      const plans = JSON.parse(planKey) as Array<{ directoryId: string; identity: string; bindings: ContactMailboxBinding[] }>;
+      for (const { directoryId, identity, bindings } of plans) {
+        if (!latest.current.scopes.some(s => s.directoryId === directoryId && s.identities.includes(identity))) continue;
+        const state = await loadContactInviteVault(directoryId, options.encryptionKey!);
         if (!valid()) return;
         const now = Math.floor(Date.now() / 1000);
-        for (const identity of scope.identities) {
-          const { bindings } = contactMailboxPlan(state, identity, now);
-          if (!bindings.length) continue;
-          const owned = { pool: new SimplePool(), relays: new Set<string>(), stops: [] as Array<() => Promise<void>> };
-          pools.push(owned);
-          const seen = new Set([...state.arrivals.map(a => a.id), ...state.outbox.map(o => o.id)]);
-          for (const binding of bindings) {
-            const secret = deriveContactMailboxSecret(binding.secret);
-            let pubkey: string;
-            try { pubkey = getPublicKey(secret); } finally { secret.fill(0); }
-            for (const relay of binding.relays) owned.relays.add(relay);
-            let attempted = 0;
-            const sub = owned.pool.subscribeMany(binding.relays, { kinds: [1059], '#p': [pubkey], since: now - 32 * 86400, limit: 128 }, {
-              onevent: event => {
-                if (!valid() || seen.has(event.id) || attempted++ >= 128) return;
-                seen.add(event.id);
-                const packet = openContactMailboxWrap(event, binding.secret);
-                if (!packet) return;
-                queue = queue.then(async () => {
-                  if (!valid()) return;
-                  const result = await recordContactArrival(scope.directoryId, options.encryptionKey!, {
-                    id: event.id, inviteId: binding.id, identityPubkey: identity, packet,
-                    receivedAt: Math.floor(Date.now() / 1000), channel: binding.channel,
-                  });
-                  if (result.arrivals.some(a => a.id === event.id)) changed();
-                }).catch(() => { /* Bounded local storage failure is retried on next subscription. */ });
-              },
-            });
-            owned.stops.push(async () => { await sub.close(); });
-          }
+        const owned = { pool: new SimplePool(), relays: new Set<string>(), stops: [] as Array<() => Promise<void>> };
+        pools.push(owned);
+        const seen = new Set([...state.arrivals.map(a => a.id), ...state.outbox.map(o => o.id)]);
+        for (const binding of bindings) {
+          const secret = deriveContactMailboxSecret(binding.secret);
+          let pubkey: string;
+          try { pubkey = getPublicKey(secret); } finally { secret.fill(0); }
+          for (const relay of binding.relays) owned.relays.add(relay);
+          let attempted = 0, live = false;
+          const sub = owned.pool.subscribeMany(binding.relays, { kinds: [1059], '#p': [pubkey], since: now - 32 * 86400, limit: 128 }, {
+            oneose: () => { live = true; trigger.current(); },
+            onevent: event => {
+              if (!valid() || seen.has(event.id) || attempted++ >= 128) return;
+              seen.add(event.id);
+              const packet = openContactMailboxWrap(event, binding.secret);
+              if (!packet) return;
+              const notify = live && binding.channel === 'invite' && !state.invites.find(i => i.id === binding.id)?.app;
+              queue = queue.then(async () => {
+                if (!valid()) return;
+                const result = await recordContactArrival(directoryId, options.encryptionKey!, {
+                  id: event.id, inviteId: binding.id, identityPubkey: identity, packet,
+                  receivedAt: Math.floor(Date.now() / 1000), channel: binding.channel,
+                });
+                if (result.arrivals.some(a => a.id === event.id)) {
+                  changed(); trigger.current();
+                  if (notify && !result.exchanges.some(e => e.handshake && e.role === 'requester' && e.request.from === identity)) latest.current.onRequest?.(event.id);
+                }
+              }).catch(() => { /* Bounded local storage failure is retried on next subscription. */ });
+            },
+          });
+          owned.stops.push(async () => { await sub.close(); });
         }
       }
     };
@@ -81,33 +103,41 @@ export function useContactInviteMailboxes(options: {
         owned.pool.close([...owned.relays]);
       })));
     };
-  }, [options.encryptionKey, scopeKey, options.version, minute]);
+  }, [options.encryptionKey, scopeKey, planKey]);
 
   useEffect(() => {
     if (!options.encryptionKey) return;
-    let cancelled = false, running = false;
+    let cancelled = false, running = false, queued = false;
     const valid = () => !cancelled;
     const run = async () => {
-      if (running || cancelled) return;
+      if (cancelled) return;
+      if (running) { queued = true; return; }
       running = true;
       try {
-        for (const scope of latest.current.scopes) {
-          if (!valid()) return;
-          const service = latest.current.service(scope.directoryId, valid);
-          // Ordinary requests stay unopened. Replies to a previously initiated
-          // exchange may finish automatically, under the same unlock budget.
-          await service.processAppInvites(Math.floor(Date.now() / 1000));
-          await service.openInbox(Math.floor(Date.now() / 1000), true);
-          await service.flush(Math.floor(Date.now() / 1000));
-          await service.cleanup(Math.floor(Date.now() / 1000));
-        }
+        do {
+          queued = false;
+          for (const scope of latest.current.scopes) {
+            if (!valid()) return;
+            const service = latest.current.service(scope.directoryId, valid);
+            await contactInviteWork(async () => {
+            if (!valid()) return;
+            // Ordinary requests stay unopened. Replies to a previously initiated
+            // exchange may finish automatically, under the same unlock budget.
+            await service.processAppInvites(Math.floor(Date.now() / 1000));
+            await service.openInbox(Math.floor(Date.now() / 1000), true);
+            await service.flush(Math.floor(Date.now() / 1000));
+            await service.cleanup(Math.floor(Date.now() / 1000));
+            });
+          }
+        } while (queued && valid());
       } catch { /* Durable outbox survives connection/signer failures. */ }
       finally { running = false; }
     };
-    const timer = setInterval(() => { void run(); }, 15000);
+    trigger.current = () => { void run(); };
     const online = () => { void run(); };
     window.addEventListener('online', online);
     void run();
-    return () => { cancelled = true; clearInterval(timer); window.removeEventListener('online', online); };
+    return () => { cancelled = true; trigger.current = () => {}; window.removeEventListener('online', online); };
   }, [options.encryptionKey, scopeKey]);
+  useEffect(() => { trigger.current(); }, [options.version]);
 }

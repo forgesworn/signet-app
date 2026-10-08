@@ -1,3 +1,5 @@
+import { ContactHandshake } from './pages/ContactHandshake';
+import { HANDSHAKE_COPY } from './lib/contacts-v2-copy';
 import { parseKinterestRequest } from './lib/kinterest-authority';
 import { useChildContactDirectory, useChildContactDirectoryPublisher } from './hooks/useChildContactDirectory';
 import { useChildContactReplyInbox } from './hooks/useChildContactReplyInbox';
@@ -470,6 +472,7 @@ export function App() {
     hasPending: hasPendingPublishes,
     flush: flushPendingPublishes,
   }));
+  const handshakeForegroundRef = useRef(false);
   const inactivityTimeoutRef = useRef(INACTIVITY_TIMEOUT_MS);
 
   // Stay-awake window — foreground-only; holds off the inactivity auto-lock.
@@ -845,6 +848,7 @@ export function App() {
   needRefreshRef.current = needRefresh;
 
   const [page, setPage] = useState<Page>('home');
+  handshakeForegroundRef.current = page === 'contact-handshake' && !!encryptionKey;
   // Refs threaded into useNavigation so hardware/browser back can be PIN-gated
   // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
   // are defined later in the function body — assignment at render time is enough
@@ -894,6 +898,7 @@ export function App() {
    * Set when the carousel `gear-fab` is tapped (`onNavigateDeepPage` below)
    * and consumed by the `persona-advanced` render branch.
    */
+  const [pendingHandshake, setPendingHandshake] = useState<{ persona: string; choose: boolean; info: { name: string; hasPhoto: boolean } } | null>(null);
   const [pendingPersonaAdvancedTarget, setPendingPersonaAdvancedTarget] = useState<import('./types').PersonaAdvancedRoute | null>(null);
   // Where activation returns to. Set by every gate and by the sign-in
   // np-dormant empty state; null means "return to the new real-identity card".
@@ -2618,7 +2623,7 @@ export function App() {
     identities: inviteScopes[0]?.identities ?? [], relays: syncRelays.write.filter(url => url.startsWith('wss:')),
     service: valid => makeInviteService('owner', valid) });
   useContactInviteMailboxes({ encryptionKey, scopes: inviteScopes, version: contactsV2Version,
-    service: makeInviteService, onChanged: bumpContactsV2 });
+    service: makeInviteService, onChanged: bumpContactsV2, onRequest: id => { void inviteNotifications.current?.requested(id); } });
   const [pendingContactInvite, setPendingContactInvite] = useState<string | undefined>(() => {
     const value = new URLSearchParams(window.location.hash.slice(1)).get('contact-invite');
     return value && value.length <= 8192 ? value : undefined;
@@ -4484,6 +4489,18 @@ export function App() {
       // moment the public (still-encrypted) record is what the pages hold.
       isIdentityDecrypted: () => encryptionKeyRef.current !== null && identityRef.current?.encrypted === false,
       getActivePubkey: () => identityRef.current ? getActivePubkey(identityRef.current) : null,
+      getContactInviteProgress: async () => {
+        const key = benchRef.current.encryptionKey;
+        if (!key) return null;
+        const { loadContactInviteVault } = await import('./lib/contact-invite-store');
+        const state = await loadContactInviteVault('owner', key);
+        return {
+          invites: state.invites.map(i => ({ id: i.id, enabled: i.enabled, expiresAt: i.invite.expiresAt })),
+          arrivals: state.arrivals.map(a => ({ id: a.id, channel: a.channel, dismissedAt: a.dismissedAt, opened: !!a.request })),
+          exchanges: state.exchanges.map(e => ({ phase: e.phase, role: e.role, handshake: e.handshake })),
+          outbox: state.outbox.map(o => ({ type: o.messageType, acknowledgedAt: o.acknowledgedAt })),
+        };
+      },
       addCredential: (cred: Parameters<typeof addCredentialRef.current>[0]) => addCredentialRef.current(cred),
       injectGetVerifiedSaved: (eventJsons: string[]) => getVerifiedSavedInjectorRef.current?.(eventJsons),
       // Hardware-bench helpers — go through the real setters so the change
@@ -4988,7 +5005,7 @@ export function App() {
   const resetInactivityTimer = useCallback(() => {
     if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
     inactivityTimer.current = setTimeout(function fire() {
-      if (backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current)) {
+      if (handshakeForegroundRef.current || backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current)) {
         // Stay-awake window or native always-on serving active — hold off the
         // foreground auto-lock, but RE-ARM so the idle countdown resumes after
         // the window. (A bare return left the app unlocked forever once this
@@ -11608,6 +11625,18 @@ export function App() {
     );
   }
 
+  if (page === 'contact-handshake' && pendingHandshake && encryptionKey) {
+    return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack}>
+      <ContactHandshake key={encryptionKey + pendingHandshake.persona} persona={pendingHandshake.persona}
+        info={pendingHandshake.info} choose={pendingHandshake.choose} encryptionKey={encryptionKey}
+        version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
+        service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid)}
+        buildCard={choice => contactCardFor(pendingHandshake.persona, choice)} pairedChild={isPairedChild}
+        onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(pendingHandshake.persona); }}
+        onTier={async (contactId, tier) => { await contactsV2.reload(); await contactsV2.setTier(contactId, tier); }} />
+    </Layout>;
+  }
+
   // D6: paired-child branch of the contact-invite intake — ask the
   // guardian to connect instead of connecting directly.
   if (page === 'child-contact-ask' && isPairedChild && pendingContactInvite) {
@@ -12955,6 +12984,15 @@ export function App() {
           </div> : null;
         })}
       <Carousel
+        onHandshake={async (resolved, choose) => {
+          const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
+          if (!key || !resolved.publicKey) return;
+          setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
+          setContactsIdentityChoice(resolved.publicKey);
+          const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
+          setPendingHandshake({ persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
+          navigateTo('contact-handshake');
+        }}
         renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}

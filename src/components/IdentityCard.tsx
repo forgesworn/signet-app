@@ -1,3 +1,4 @@
+import { HandshakeButton } from './HandshakeButton';
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type { CarouselRow } from '../types';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
@@ -12,6 +13,7 @@ import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
 
 export interface IdentityCardProps {
+  onHandshake?: (choose: boolean) => void;
   row: CarouselRow;
   resolved: ResolvedIdentity;
   badge: { tier: number; score: number; vouchCount: number; iqBreakdown?: IQBreakdownItem[] } | null;
@@ -70,7 +72,7 @@ export interface IdentityCardProps {
   onRenameActive?: (name: string) => void | Promise<void>;
 }
 
-export function IdentityCard({ row, resolved, badge, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, badge, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
   const tier = badge?.tier ?? 1;
   const iq = badge?.score ?? 0;
   const vouches = badge?.vouchCount ?? 0;
@@ -395,6 +397,8 @@ export function IdentityCard({ row, resolved, badge, childMode, childDormant, ch
             </div>
           </div>
         )}
+
+        {onHandshake && <HandshakeButton onStart={onHandshake} />}
 
         <div className="card-footer">
           <div className={isChildCard ? 'card-hint-child' : 'card-hint'}>

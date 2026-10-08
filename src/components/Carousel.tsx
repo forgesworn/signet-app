@@ -19,6 +19,7 @@ import type { IQBreakdownItem } from '../lib/badge-fetch';
 import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
+  onHandshake?: (resolved: ResolvedIdentity, choose: boolean) => void;
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
   renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, renderPublicCard: (slots?: QRCardSlots) => ReactNode) => ReactNode;
   renderContactsCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
@@ -279,6 +280,7 @@ function renderCard(
         <IdentityCard
           key={identityCardKey(row)}
           row={row}
+          onHandshake={props.onHandshake ? choose => props.onHandshake!(resolved, choose) : undefined}
           resolved={resolved}
           badge={props.badge}
           childMode={props.childMode}

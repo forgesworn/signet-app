@@ -8,6 +8,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.WindowManager
 import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -75,6 +78,35 @@ class SignetNativePlugin : Plugin() {
     override fun handleOnDestroy() {
         Nip55Requests.detach(deliverToPage, withdrawFromPage)
         super.handleOnDestroy()
+    }
+
+    /** Foreground screen only; does not keep keys alive when the app is hidden. */
+    @PluginMethod
+    fun handshakeAwake(call: PluginCall) {
+        val active = call.getBoolean("active") ?: false
+        activity.runOnUiThread {
+            if (active) activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            call.resolve()
+        }
+    }
+
+    @PluginMethod
+    fun handshakeHaptic(call: PluginCall) {
+        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        val beat = call.getString("beat")
+        if (beat !in listOf("tick", "double", "thud")) { call.reject("Unknown handshake beat"); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val effect = if (beat == "double") VibrationEffect.createWaveform(longArrayOf(0, 40, 80, 40), -1)
+            else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) VibrationEffect.createPredefined(
+                if (beat == "tick") VibrationEffect.EFFECT_TICK else VibrationEffect.EFFECT_HEAVY_CLICK)
+            else VibrationEffect.createOneShot(if (beat == "tick") 15L else 90L, VibrationEffect.DEFAULT_AMPLITUDE)
+            vibrator.vibrate(effect)
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(if (beat == "double") longArrayOf(0, 40, 80, 40) else longArrayOf(0, if (beat == "tick") 15L else 90L), -1)
+        }
+        call.resolve()
     }
 
     @PluginMethod

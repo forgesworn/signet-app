@@ -729,3 +729,23 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
   margin-top: 8px;
   max-width: 280px;
 }
+
+.handshake-button { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 14px auto 0; touch-action: none; }
+.handshake-screen { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.handshake-screen canvas { max-width: 100%; height: auto; }
+.handshake-camera { width: 100%; height: min(25vh, 180px); background: #05070b; position: relative; overflow: hidden; border-radius: var(--radius-sm); }
+.handshake-camera video { width: 100%; height: 100%; object-fit: cover; }
+.handshake-camera p { position: absolute; inset: 0; padding: 12px; color: #fff; }
+.handshake-status { display: flex; align-items: center; gap: 10px; text-align: center; }
+.jigsaw-closing { animation: jigsaw-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes jigsaw-pulse { to { opacity: .4; } }
+.jigsaw-sigil { width: 256px; height: 256px; display: block; }
+.jigsaw-sigil-left, .jigsaw-sigil-right { width: 50%; height: min(60vh, 400px); }
+.jigsaw-sigil-left { align-self: flex-end; }
+.jigsaw-sigil-right { align-self: flex-start; }
+.handshake-screen:has(.jigsaw-sigil-left), .handshake-screen:has(.jigsaw-sigil-right) { margin-inline: -20px; }
+.handshake-tier { text-align: center; }
+.handshake-tier .btn { margin: 4px; }
+.handshake-mark > span { display: flex; align-items: center; gap: 8px; }
+.handshake-mark .jigsaw-sigil { width: 120px; height: 120px; margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) { .jigsaw-closing { animation: none; } }

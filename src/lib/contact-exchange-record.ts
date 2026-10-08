@@ -1,3 +1,5 @@
+import { handshakeEvidence } from './handshake-sigil';
+import type { HandshakeRecord } from './contact-invite-store';
 import type { ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
 import { sanitizeDisplayName } from './text-sanitize';
@@ -64,10 +66,10 @@ export async function recordPartnerCardPhoto(args: { exchange: ContactExchangeSt
 /** Semantic completion markers prevent replay after removal. Operation IDs hash
  * their full payload so concurrent devices never reuse an ID with different bytes. */
 export function recordCompletedContactExchange(args: { directoryId: string; key: string; actor: MutationActor;
-  exchange: ContactExchangeState & { wordsConfirmedAt?: number; origin?: ContactOrigin }; isCurrent(): boolean }): Promise<string> {
+  exchange: ContactExchangeState & { wordsConfirmedAt?: number; origin?: ContactOrigin; handshake?: HandshakeRecord }; isCurrent(): boolean }): Promise<string> {
   return contactsMutationQueue.run(async () => {
     const { exchange: e } = args;
-    if (e.phase !== 'complete' || !e.acceptance || !e.reveal) throw new Error('Contact exchange is incomplete');
+    if (e.phase !== 'complete' || !e.acceptance || !e.reveal || (e.handshake && !e.handshake.strength)) throw new Error('Contact exchange is incomplete');
     const own = e.role === 'requester' ? e.request.from : e.request.to;
     const peer = e.role === 'requester' ? e.request.to : e.request.from;
     contactVerificationWords(e.request, e.acceptance, e.reveal, own);
@@ -75,14 +77,17 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     const exchangeId = contactExchangeKey(e.request);
     const seed = `contact-exchange:${args.directoryId}:${exchangeId}`;
     const saved = ops.find(op => op.action === 'link-list' && (op.value as { contactExchangeId?: string }).contactExchangeId === exchangeId);
+    const confirmationAt = e.handshake?.confirmedAt ?? e.wordsConfirmedAt;
+    const confirmation = e.handshake?.strength ?? 'mutual';
     const recordWords = async (contactId: string, current: ContactOperation[]) => {
-      if (!e.wordsConfirmedAt || current.some(op => op.action === 'record-check' && (op.value as { exchangeId?: string }).exchangeId === exchangeId)) return;
+      if (!confirmationAt || current.some(op => op.action === 'record-check' && (op.value as { exchangeId?: string }).exchangeId === exchangeId)) return;
       const contact = [...applyOperations(current).values()].find(record => record.contactId === contactId || record.mergedContactIds?.includes(contactId));
       if (!contact || contact.lifecycle === 'removed' || !contact.identities.some(identity => identity.pubkey === peer)) return;
       const baseClock = frontierOf(current).maxClock + 1;
       const check = { ...buildOperation({ directoryId: args.directoryId, contactId, action: 'record-check',
-        value: { id: id(seed + ':words-record'), identityPubkey: peer, ownerIdentityPubkey: own, method: 'words', checkedAt: e.wordsConfirmedAt * 1000, exchangeId },
-        clock: baseClock, actor: args.actor, now: e.wordsConfirmedAt * 1000, operationId: id(seed + ':words-check') }), ownerIdentityPubkey: own };
+        value: { id: id(seed + ':words-record'), identityPubkey: peer, ownerIdentityPubkey: own, method: e.handshake ? 'in-person' : 'words', checkedAt: confirmationAt * 1000, exchangeId,
+          ...(e.handshake?.sigil ? { evidence: handshakeEvidence(confirmation, e.handshake.sigil) } : {}) },
+        clock: baseClock, actor: args.actor, now: confirmationAt * 1000, operationId: id(seed + ':words-check') }), ownerIdentityPubkey: own };
       check.operationId = id(JSON.stringify(check));
       const batch: ContactOperation[] = [check];
       // Words confirmed on both sides is the ceremony `mutual` names: the
@@ -91,10 +96,10 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
       // Without confirmed words (a pasted link may have travelled through the
       // very chat in question) nothing here touches verification.
       const peerIdentity = contact.identities.find(identity => identity.pubkey === peer)!;
-      if (verificationUpgrade(peerIdentity.verification, 'mutual')) {
+      if (verificationUpgrade(peerIdentity.verification, confirmation)) {
         const confirm = { ...buildOperation({ directoryId: args.directoryId, contactId, action: 'update-identity',
-          value: { itemId: peerIdentity.itemId, verification: 'mutual' }, clock: baseClock + 1, actor: args.actor,
-          now: e.wordsConfirmedAt * 1000, operationId: id(seed + ':words-confirm') }), ownerIdentityPubkey: own };
+          value: { itemId: peerIdentity.itemId, verification: confirmation }, clock: baseClock + 1, actor: args.actor,
+          now: confirmationAt * 1000, operationId: id(seed + ':words-confirm') }), ownerIdentityPubkey: own };
         confirm.operationId = id(JSON.stringify(confirm));
         batch.push(confirm);
       }
@@ -134,9 +139,9 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
       changes.push(make('add', { type: existing?.type ?? 'person', displayName,
-        tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
+        tier: e.handshake ? existing?.tier ?? 'ken' : existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
     } else {
-      if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
+      if (!e.handshake && existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
       if (displayName !== existing.displayName) changes.push(make('rename', { displayName }, 'rename'));
     }
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,

@@ -1,3 +1,4 @@
+import { handshakeSigil } from './handshake-sigil';
 import { validContactOrigin, normaliseContactOrigin, type ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
@@ -41,7 +42,8 @@ export interface ContactInviteOutbox {
 /** The child pairing a guardian-managed child exchange was approved under
  * (D5): the dependant's endpoint pubkey and its authorised client pubkey. */
 export interface ChildExchangePairing { endpoint: string; client: string }
-export interface StoredContactExchange extends ContactExchangeState { app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing }
+export interface HandshakeRecord { startedAt: number; inviteId?: string; opticalAcceptanceAt?: number; opticalAcceptanceSent?: boolean; strength?: 'mutual' | 'proven'; confirmedAt?: number; sigil?: string }
+export interface StoredContactExchange extends ContactExchangeState { handshake?: HandshakeRecord; app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing }
 /** Child-originated: stamped at `requestChildPlan`, or an older unstamped row
  * written by that path (requester with an accepted-request origin). */
 export function isChildContactExchange(exchange: StoredContactExchange): boolean {
@@ -72,6 +74,13 @@ function validExchange(state: StoredContactExchange): boolean {
   try {
     if (!state || !['requester', 'recipient'].includes(state.role) || !HEX.test(state.nonce)
       || !['requested', 'accepted', 'reveal-pending', 'complete', 'declined'].includes(state.phase)) return false;
+    if (state.handshake !== undefined && (!state.handshake || typeof state.handshake !== 'object' || !stamp(state.handshake.startedAt)
+      || (state.handshake.inviteId !== undefined && !ID.test(state.handshake.inviteId))
+      || (state.handshake.opticalAcceptanceAt !== undefined && !stamp(state.handshake.opticalAcceptanceAt))
+      || (state.handshake.opticalAcceptanceSent !== undefined && typeof state.handshake.opticalAcceptanceSent !== 'boolean')
+      || (state.handshake.strength === undefined && (state.handshake.confirmedAt !== undefined || state.handshake.sigil !== undefined)) || (state.handshake.strength !== undefined
+      && (!['mutual', 'proven'].includes(state.handshake.strength) || !stamp(state.handshake.confirmedAt)
+        || state.phase !== 'complete' || state.handshake.sigil !== handshakeSigil(state))))) return false;
     if (state.wordsRecordedAt !== undefined && (!stamp(state.wordsRecordedAt) || state.wordsRecordedAt !== state.wordsConfirmedAt)) return false;
     if ((state.contactId !== undefined && !ID.test(state.contactId)) || (state.wordsConfirmedAt !== undefined && !stamp(state.wordsConfirmedAt))) return false;
     const request = parseContactExchangeMessage(JSON.stringify(state.request));
@@ -267,7 +276,17 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
     }
     if (!old || rank[row.phase] > rank[old.phase]) exchanges.set(contactExchangeKey(row.request), row);
     const chosen = exchanges.get(contactExchangeKey(row.request))!;
-    exchanges.set(contactExchangeKey(row.request), { ...chosen, origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
+    // An older build may advance the SDK transcript without retaining optical
+    // metadata. Losing this marker would bypass the handshake confirmation gate.
+    const marks = [old?.handshake, row.handshake].filter((mark): mark is HandshakeRecord => !!mark);
+    const confirmed = marks.filter(mark => mark.strength).sort((a, b) =>
+      (a.strength === b.strength ? (a.confirmedAt ?? 0) - (b.confirmedAt ?? 0) : a.strength === 'mutual' ? -1 : 1))[0];
+    const handshake = marks.length ? { startedAt: Math.min(...marks.map(mark => mark.startedAt)),
+      inviteId: marks.map(mark => mark.inviteId).filter((value): value is string => !!value).sort()[0],
+      opticalAcceptanceAt: marks.map(mark => mark.opticalAcceptanceAt).filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
+      opticalAcceptanceSent: marks.some(mark => mark.opticalAcceptanceSent),
+      ...(confirmed ? { strength: confirmed.strength, confirmedAt: confirmed.confirmedAt, sigil: confirmed.sigil } : {}) } : undefined;
+    exchanges.set(contactExchangeKey(row.request), { ...chosen, ...(handshake ? { handshake } : {}), origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
       wordsConfirmedAt: Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) || undefined,
       wordsRecordedAt: Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) === Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) ? Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) || undefined : undefined });
   }

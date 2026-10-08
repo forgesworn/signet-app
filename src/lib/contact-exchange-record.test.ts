@@ -259,3 +259,28 @@ it('M4: a replayed older exchange never overwrites a newer received key; a newer
   await run(at(1_700_000_900, { ...photo, hash: 'c'.repeat(64) })); // a genuinely newer card wins
   expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: photo.key, fallback: { hash: 'c'.repeat(64) } });
 });
+
+it('records a mutual Handshake using existing operations, without promoting Ken', async () => {
+  const { handshakeSigil, readHandshakeEvidence } = await import('./handshake-sigil');
+  const e = exchange();
+  const contactId = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
+    exchange: { ...e, handshake: { startedAt: 100, strength: 'mutual', confirmedAt: 103, sigil: handshakeSigil(e) } } });
+  const ops = await listContactOperationsV2('owner', key);
+  const contact = applyOperations(ops).get(`owner/${contactId}`)!;
+  expect(contact.tier).toBe('ken');
+  expect(contact.identities[0].verification).toBe('mutual');
+  expect(contact.checks?.[0].method).toBe('in-person');
+  expect(readHandshakeEvidence(contact.checks?.[0].evidence)).toEqual({ strength: 'mutual', sigil: handshakeSigil(e) });
+  expect(ops.map(op => op.action)).toEqual(expect.arrayContaining(['add', 'add-identity', 'link-list', 'record-check', 'update-identity']));
+});
+it('a human Jigsaw check records proven and preserves an existing tier', async () => {
+  const { handshakeSigil } = await import('./handshake-sigil');
+  const contactId = await record();
+  const e = exchange();
+  // Confirm the existing exchange without changing the contact's tier.
+  const checked = { ...e, request: { ...e.request } };
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
+    exchange: { ...checked, handshake: { startedAt: 100, strength: 'proven', confirmedAt: 103, sigil: handshakeSigil(checked) } } });
+  const contact = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!;
+  expect(contact.tier).toBe('kith'); expect(contact.identities[0].verification).toBe('proven');
+});

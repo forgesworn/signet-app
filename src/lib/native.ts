@@ -14,6 +14,8 @@ export function isNativeApp(): boolean {
 }
 
 export interface SignetNativePlugin {
+  handshakeAwake(opts: { active: boolean }): Promise<void>;
+  handshakeHaptic(opts: { beat: 'tick' | 'double' | 'thud' }): Promise<void>;
   isBiometricAvailable(): Promise<{ available: boolean }>;
   /** Wrap the 64-hex master key with a biometric-gated Keystore key. */
   biometricEnroll(opts: { secret: string }): Promise<{ ok: boolean }>;
