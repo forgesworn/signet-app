@@ -104,6 +104,16 @@ export function useSwipeGesture({
     if (disabledRef.current) return;
 
     const el = target instanceof Element ? target : null;
+    // A modal dialog owns its own gestures (the persona crop screen pans a
+    // photo by dragging). The listeners live on `document`, so a portal alone
+    // would not stop a drag inside it from swiping the carousel behind it.
+    if (el?.closest('[aria-modal="true"]')) {
+      awaitingLongPress.current = false;
+      longPressEngaged.current = false;
+      dragging.current = false;
+      clearLongPressTimer();
+      return;
+    }
     const onInteractiveZone = !!el?.closest(INTERACTIVE_ZONE_SELECTOR);
     // Block vertical card-swipe inside scrollable identity-settings cards so
     // native content scroll wins (the `.settings-view` content can overflow).

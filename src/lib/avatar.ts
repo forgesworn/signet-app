@@ -7,10 +7,13 @@
 
 import { encryptPhoto, encryptPhotoWithKey, decryptPhoto } from './photo-crypto';
 import { uploadToBlossom } from './blossom';
+import {
+  AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN, hmacUploaderBackendForBlob,
+} from './blossom-uploader';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { SigningBackend } from './signing-backend';
-import { isPrivateOrInternalHost } from './safe-url';
+import { cropSourceRect, isValidPictureCrop, type PictureCrop } from './picture-crop';
+import { isSafeBlossomBase, isSafeContactBlossomBase } from './safe-url';
 
 /** Cap per blob (post-downscale) so a fat photo can't choke a Blossom server. */
 export const AVATAR_MAX_BYTES = 500 * 1024;
@@ -25,29 +28,13 @@ export const AVATAR_MAX_BYTES = 500 * 1024;
 export const AVATAR_MAX_DOWNLOAD_BYTES = AVATAR_MAX_BYTES * 4;
 
 /**
- * Validate a Blossom base URL before issuing a fetch. Mirrors
- * `safeImageOrLinkUrl`: https only (plus http loopback for local dev), and
- * reject private/loopback/link-local/metadata hosts so a contact- or
- * inventory-supplied blossomUrl can't drive an SSRF/IP-probe.
- */
-function isSafeBlossomBase(raw: string): boolean {
-  let url: URL;
-  try { url = new URL(raw); } catch { return false; }
-  if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')) {
-    return true;
-  }
-  if (url.protocol !== 'https:') return false;
-  return !isPrivateOrInternalHost(url.hostname);
-}
-
-/**
  * Read a fetch Response body into a Uint8Array, aborting if it exceeds `cap`.
  * Checks the declared Content-Length first (cheap reject for honest servers),
  * then streams with a running byte counter (defends against a lying or absent
  * Content-Length). Falls back to a buffered read + post-check in environments
  * without a streaming body (e.g. some test mocks).
  */
-async function readBodyCapped(response: Response, cap: number): Promise<Uint8Array> {
+export async function readBodyCapped(response: Response, cap: number): Promise<Uint8Array> {
   const declared = response.headers.get('content-length');
   if (declared) {
     const n = Number(declared);
@@ -107,31 +94,56 @@ export interface AvatarMetadata {
   updatedAt: number;
 }
 
+/** Swappable in tests (jsdom has neither an image decoder nor a canvas). */
+export interface DownscaleDeps {
+  decode?: (input: Blob, options?: ImageBitmapOptions) => Promise<ImageBitmap>;
+  makeCanvas?: () => HTMLCanvasElement;
+}
+
 /**
- * Downscale + re-encode an image File/Blob to a JPEG at most
- * `AVATAR_MAX_EDGE_PX` on its longest edge. Keeps aspect ratio. Re-encodes
+ * Downscale + re-encode an image File/Blob to a JPEG at most `maxEdge` (default
+ * `AVATAR_MAX_EDGE_PX`) on its longest edge. Keeps aspect ratio. Re-encodes
  * regardless of input format to strip metadata (EXIF location etc.) and
  * normalise to JPEG. Returns the new Blob.
  *
  * If the input already fits, still re-encodes — strip-EXIF is the bigger
  * win than skipping a no-op resize.
+ *
+ * With `crop` (the persona crop screen's square, as fractions of the ORIENTED
+ * image) the result is instead exactly that square: a square JPEG whose side is
+ * the smaller of `maxEdge` and the crop's side in source pixels (never
+ * upscaled). The image is decoded with `imageOrientation: 'from-image'`, the
+ * orientation the crop preview showed.
  */
 export async function downscaleAvatar(
   input: Blob,
   maxEdge: number = AVATAR_MAX_EDGE_PX,
+  crop?: PictureCrop,
+  deps: DownscaleDeps = {},
 ): Promise<Blob> {
-  const bitmap = await createImageBitmap(input);
+  if (crop !== undefined && !isValidPictureCrop(crop)) throw new Error('That crop could not be used. Choose the picture again.');
+  const decode = deps.decode ?? ((b: Blob, o?: ImageBitmapOptions) => (o ? createImageBitmap(b, o) : createImageBitmap(b)));
+  const bitmap = await decode(input, crop ? { imageOrientation: 'from-image' } : undefined);
   try {
-    const longEdge = Math.max(bitmap.width, bitmap.height);
-    const scale = longEdge > maxEdge ? maxEdge / longEdge : 1;
-    const w = Math.max(1, Math.round(bitmap.width * scale));
-    const h = Math.max(1, Math.round(bitmap.height * scale));
-    const canvas = document.createElement('canvas');
+    let w: number;
+    let h: number;
+    let source: { sx: number; sy: number; s: number } | null = null;
+    if (crop) {
+      source = cropSourceRect(bitmap.width, bitmap.height, crop);
+      w = h = Math.max(1, Math.min(maxEdge, Math.round(source.s)));
+    } else {
+      const longEdge = Math.max(bitmap.width, bitmap.height);
+      const scale = longEdge > maxEdge ? maxEdge / longEdge : 1;
+      w = Math.max(1, Math.round(bitmap.width * scale));
+      h = Math.max(1, Math.round(bitmap.height * scale));
+    }
+    const canvas = deps.makeCanvas ? deps.makeCanvas() : document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas 2D context unavailable');
-    ctx.drawImage(bitmap, 0, 0, w, h);
+    if (source) ctx.drawImage(bitmap, source.sx, source.sy, source.s, source.s, 0, 0, w, h);
+    else ctx.drawImage(bitmap, 0, 0, w, h);
     return await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob(
         (blob) => blob ? resolve(blob) : reject(new Error('Canvas toBlob failed')),
@@ -145,9 +157,37 @@ export async function downscaleAvatar(
 }
 
 /**
+ * Upload a public picture or banner (the kind-0 profile image) to Blossom.
+ * The kind-24242 auth is signed by a one-off key HMAC'd from this install's
+ * uploader secret and the blob's hash (`PUBLIC_PICTURE_UPLOADER_DOMAIN`),
+ * zeroed straight after: the server operator never sees an identity, persona
+ * or dependant key beside the file, and this install can rebuild the key to
+ * delete the blob later. Returns the sha256 hex of the blob.
+ *
+ * Caller re-encodes first via `downscaleAvatar` (strips EXIF).
+ */
+export async function uploadPublicPicture(
+  blob: Blob,
+  blossomUrl: string,
+  /** Pass-through for the Blossom consent gate (enforced at uploadToBlossom). */
+  blossomConsent: boolean,
+  /** The unlock key: the uploader secret is stored encrypted under it. */
+  encryptionKey: string,
+): Promise<string> {
+  const backend = await hmacUploaderBackendForBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, blob, encryptionKey);
+  try {
+    return await uploadToBlossom(blob, blossomUrl, backend, blossomConsent);
+  } finally {
+    backend.destroy();
+  }
+}
+
+/**
  * Encrypt + upload a persona avatar to Blossom. Returns the metadata the
- * caller persists on the persona record. The `backend` signs the NIP-98 PUT
- * auth event under the user's key — Blossom never sees plaintext bytes.
+ * caller persists on the persona record. The kind-24242 PUT auth is signed by
+ * a one-off key HMAC'd from this install's uploader secret and the
+ * encrypted blob's hash (`AVATAR_UPLOADER_DOMAIN`), never an identity, persona
+ * or dependant key — and Blossom never sees plaintext bytes.
  *
  * Caller is responsible for downscaling first via `downscaleAvatar` (we
  * accept any Blob here for testability; live callers should always
@@ -156,9 +196,10 @@ export async function downscaleAvatar(
 export async function uploadAvatar(
   blob: Blob,
   blossomUrl: string,
-  backend: SigningBackend,
   /** Pass-through for the Blossom consent gate (now enforced at uploadToBlossom). */
   blossomConsent: boolean,
+  /** The unlock key: the uploader secret is stored encrypted under it. */
+  encryptionKey: string,
 ): Promise<AvatarMetadata> {
   if (blob.size > AVATAR_MAX_BYTES) {
     throw new Error(`Avatar too large (${Math.round(blob.size / 1024)} KB) — keep it under ${Math.round(AVATAR_MAX_BYTES / 1024)} KB`);
@@ -167,27 +208,41 @@ export async function uploadAvatar(
   const { encryptedBlob, keyHex } = await encryptPhoto(raw);
   raw.fill(0);
   const encBlob = new Blob([new Uint8Array(encryptedBlob)], { type: 'application/octet-stream' });
-  const hash = await uploadToBlossom(encBlob, blossomUrl, backend, blossomConsent);
-  return { hash, blossomUrl, keyHex, updatedAt: Math.floor(Date.now() / 1000) };
+  const backend = await hmacUploaderBackendForBlob(AVATAR_UPLOADER_DOMAIN, encBlob, encryptionKey);
+  try {
+    const hash = await uploadToBlossom(encBlob, blossomUrl, backend, blossomConsent);
+    return { hash, blossomUrl, keyHex, updatedAt: Math.floor(Date.now() / 1000) };
+  } finally {
+    backend.destroy();
+  }
 }
 
 /**
  * Encrypt + upload a contact-share avatar to Blossom under a STABLE,
  * caller-supplied key (the per-slot `contactAvatarKey`) — distinct from
- * `uploadAvatar`, which mints a fresh key each call. Returns the new blob
- * hash + the pointer fields the caller persists and republishes.
+ * `uploadAvatar`, which mints a fresh key each call. The upload auth is signed
+ * by a one-off key HMAC'd from this install's uploader secret and the
+ * encrypted blob's hash (`CONTACT_AVATAR_UPLOADER_DOMAIN`) — NOT from the
+ * content key, which goes into contact QRs and so must not confer a delete. Returns the new blob hash + the pointer
+ * fields the caller persists and republishes.
  */
 export async function uploadContactAvatar(
   plaintext: Uint8Array,
   keyHex: string,
   blossomUrl: string,
-  backend: SigningBackend,
   blossomConsent: boolean,
+  /** The unlock key: the uploader secret is stored encrypted under it. */
+  encryptionKey: string,
 ): Promise<{ hash: string; blossomUrl: string; updatedAt: number }> {
   const encryptedBlob = await encryptPhotoWithKey(plaintext, keyHex);
   const encBlob = new Blob([new Uint8Array(encryptedBlob)], { type: 'application/octet-stream' });
-  const hash = await uploadToBlossom(encBlob, blossomUrl, backend, blossomConsent);
-  return { hash, blossomUrl, updatedAt: Math.floor(Date.now() / 1000) };
+  const backend = await hmacUploaderBackendForBlob(CONTACT_AVATAR_UPLOADER_DOMAIN, encBlob, encryptionKey);
+  try {
+    const hash = await uploadToBlossom(encBlob, blossomUrl, backend, blossomConsent);
+    return { hash, blossomUrl, updatedAt: Math.floor(Date.now() / 1000) };
+  } finally {
+    backend.destroy();
+  }
 }
 
 /**
@@ -204,16 +259,27 @@ export async function fetchAvatar(meta: {
   hash: string;
   blossomUrl: string;
   keyHex: string;
+  /**
+   * True when a CONTACT chose the server (a contact's pointer, a stored card
+   * fallback). Applies the strict host rules (no IP literals, no single-label
+   * names) AND refuses redirects, so a hostile server cannot bounce the GET to
+   * a LAN host. The user's own server keeps the plain guard and follows
+   * redirects (blossom.primal.net answers GETs with a 302 to its media host).
+   */
+  contactControlled?: boolean;
 }): Promise<Blob> {
   const baseUrl = meta.blossomUrl.replace(/\/+$/, '');
   // SSRF / IP-leak guard (security audit 2026-06-15): reject non-https or
   // private/internal Blossom hosts before issuing the GET. blossomUrl is
   // contact- / inventory-supplied for shared avatars.
-  if (!isSafeBlossomBase(baseUrl)) {
+  const safe = meta.contactControlled ? isSafeContactBlossomBase(baseUrl) : isSafeBlossomBase(baseUrl);
+  if (!safe) {
     throw new Error('Avatar fetch rejected: unsafe Blossom URL (scheme or internal host)');
   }
   const url = `${baseUrl}/${meta.hash.toLowerCase()}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  const response = await fetch(url, meta.contactControlled
+    ? { signal: AbortSignal.timeout(20_000), redirect: 'error', credentials: 'omit' }
+    : { signal: AbortSignal.timeout(20_000) });
   if (!response.ok) {
     throw new Error(`Avatar fetch failed: ${response.status}`);
   }

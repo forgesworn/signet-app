@@ -10,12 +10,13 @@ import { NavDots } from './NavDots';
 import { IdentityCard } from './IdentityCard';
 import type { IdentityCardProps } from './IdentityCard';
 import { QRCard, type QRCardSlots } from './QRCard';
-import { SettingsCard } from './SettingsCard';
+import { SettingsCard, type AvatarResult } from './SettingsCard';
 import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
 import type { IQBreakdownItem } from '../lib/badge-fetch';
+import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
@@ -106,7 +107,10 @@ interface CarouselProps {
   onUploadPersonaPicture?: (
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
+  /** Delete a replaced/removed public picture or banner blob. */
+  onDeletePublicBlob?: (hash: string, server: string) => Promise<import('../lib/blob-deletion').DeleteOutcome>;
   onUpdateOwnPersonaName?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     name: string,
@@ -115,11 +119,12 @@ interface CarouselProps {
   onSetPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
-  ) => Promise<void>;
+    crop?: PictureCrop,
+  ) => Promise<AvatarResult>;
   /** Clear the avatar for a user-side slot. */
   onClearPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
-  ) => Promise<void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a user-side slot (device-local, never synced). */
   onNip05Checked?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -139,6 +144,7 @@ interface CarouselProps {
     depPubkey: string,
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
   onUpdateDepName?: (depPubkey: string, name: string) => Promise<void>;
   onUpdateDepPersonaName?: (
@@ -151,12 +157,13 @@ interface CarouselProps {
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
     file: File,
-  ) => Promise<void>;
+    crop?: PictureCrop,
+  ) => Promise<AvatarResult>;
   /** Clear the avatar for a dep slot. */
   onClearDepPersonaAvatar?: (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-  ) => Promise<void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a dep slot (device-local, never synced). */
   onDepNip05Checked?: (
     depPubkey: string,
@@ -324,6 +331,7 @@ function renderCard(
           onSavePersonaConfig={props.onSavePersonaConfig}
           onRepublishProfile={props.onRepublishProfile}
           onUploadPersonaPicture={props.onUploadPersonaPicture}
+          onDeletePublicBlob={props.onDeletePublicBlob}
           onUpdateOwnPersonaName={props.onUpdateOwnPersonaName}
           onSetPersonaAvatar={props.onSetPersonaAvatar}
           onClearPersonaAvatar={props.onClearPersonaAvatar}

@@ -1,5 +1,5 @@
-import { getContactAvatar } from '../lib/db';
-import { fetchContactAvatarPointer, type ContactAvatarPointer } from '../lib/contact-avatar';
+import { getContactAvatar, deleteContactAvatar } from '../lib/db';
+import { fetchContactAvatarPointer, type ContactAvatarLookup } from '../lib/contact-avatar';
 import { fetchAvatar } from '../lib/avatar';
 import { useObjectUrl } from './useObjectUrl';
 
@@ -11,15 +11,15 @@ import { useObjectUrl } from './useObjectUrl';
  * opening its own relay connection. `null` is a cached "no pointer" answer.
  */
 const POINTER_TTL_MS = 60_000;
-const pointerCache = new Map<string, { pointer: ContactAvatarPointer | null; ts: number }>();
+const pointerCache = new Map<string, { pointer: ContactAvatarLookup; ts: number }>();
 
 /** Seed the pointer cache from a batch fetch (ContactsRolodex). */
-export function seedContactAvatarPointer(pubkey: string, pointer: ContactAvatarPointer | null): void {
+export function seedContactAvatarPointer(pubkey: string, pointer: ContactAvatarLookup): void {
   pointerCache.set(pubkey.toLowerCase(), { pointer, ts: Date.now() });
 }
 
 /** Internal getter — returns the cached pointer only while fresh, else undefined. */
-function getCachedPointer(pubkey: string): ContactAvatarPointer | null | undefined {
+function getCachedPointer(pubkey: string): ContactAvatarLookup | undefined {
   const hit = pointerCache.get(pubkey.toLowerCase());
   if (!hit) return undefined;
   if (Date.now() - hit.ts > POINTER_TTL_MS) { pointerCache.delete(pubkey.toLowerCase()); return undefined; }
@@ -31,10 +31,11 @@ function getCachedPointer(pubkey: string): ContactAvatarPointer | null | undefin
  * contact-share key → latest kind-30078 pointer (author-verified) → encrypted
  * Blossom blob → object URL. Returns the object URL or null.
  *
- * There is deliberately NO public kind-0 `pictureUrl` fallback (H1): that URL is
- * attacker-controlled and auto-fetching it leaks the viewer's IP + view timing
- * to a relay-supplied origin. Showing a contact's public picture is now an
- * explicit, gated tap on KenDetail — not an automatic background fetch here.
+ * There is deliberately NO public kind-0 `pictureUrl` fallback here (H1): that
+ * URL is attacker-controlled and auto-fetching it leaks the viewer's IP + view
+ * timing to a relay-supplied origin. Kind-0 pictures are downloaded only by an
+ * explicit, consented user action (`contact-pictures.ts`) and stored as local
+ * thumbnails; `useContactPicture` layers those under this shared avatar.
  *
  * `overrideShareKey` lets the scan-confirm screen preview before the key is
  * persisted to IDB. Object-URL lifecycle (revoke / strict-mode race) lives in
@@ -49,11 +50,15 @@ export function useContactAvatar(
   return useObjectUrl(
     pubkey
       ? async () => {
-          // 1) Private path — contact-share key (override or from IDB).
+          // 1) Private path — contact-share key (override or from IDB). The
+          // stored record may also carry the `{ server, hash }` the sharer's
+          // contact card named; it is only used when no pointer can be found.
           let shareKey = overrideShareKey;
-          if (!shareKey && encryptionKey) {
+          let fallback: { server: string; hash: string } | undefined;
+          if (encryptionKey) {
             const rec = await getContactAvatar(pubkey, encryptionKey);
-            shareKey = rec?.shareKey;
+            if (!shareKey) shareKey = rec?.shareKey;
+            fallback = rec?.fallback;
           }
           if (!shareKey) return null; // no key → no avatar (no public fallback).
 
@@ -63,10 +68,23 @@ export function useContactAvatar(
             pointer = await fetchContactAvatarPointer(pubkey, relayUrl);
             seedContactAvatarPointer(pubkey, pointer);
           }
+          // 2a) The sharer stopped sharing (a tombstone or a deletion of the
+          // pointer, S4): show nothing, and forget the key and the card's
+          // fallback so a failed server-side delete cannot bring the photo back.
+          if (pointer === 'retracted') {
+            await deleteContactAvatar(pubkey).catch(() => undefined);
+            return null;
+          }
+          // 2b) No pointer event on our relays at all: the card's own server and
+          // hash. https only; fetchAvatar still runs the strict host guard
+          // (isSafeContactBlossomBase).
+          if (!pointer && fallback && fallback.server.startsWith('https://')) {
+            pointer = { hash: fallback.hash, blossomUrl: fallback.server };
+          }
           if (!pointer) return null;
 
           // 3) Encrypted blob → Blob; useObjectUrl turns it into the object URL.
-          return fetchAvatar({ hash: pointer.hash, blossomUrl: pointer.blossomUrl, keyHex: shareKey });
+          return fetchAvatar({ hash: pointer.hash, blossomUrl: pointer.blossomUrl, keyHex: shareKey, contactControlled: true });
         }
       : null,
     [pubkey, relayUrl, encryptionKey, overrideShareKey],

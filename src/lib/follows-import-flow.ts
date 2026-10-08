@@ -13,12 +13,15 @@ import {
   MAX_FOLLOWS_PER_IMPORT,
   computeUnfollows,
   fetchFollowList,
+  fetchKind0Profiles,
   fetchFollowNames,
   followsTrimmedCopy,
   nameFollows,
   takeMostRecent,
   type FollowList,
+  type Kind0Profile,
 } from './nostr-follows';
+import type { PictureRunResult } from './contact-pictures';
 import type { FollowImportEntry, FollowsImportResult } from './contacts-v2-follows-import';
 
 export interface FollowsImportDeps {
@@ -28,6 +31,15 @@ export interface FollowsImportDeps {
   records: ContactRecord[];
   fetchList?: (pubkey: string) => Promise<FollowList | null | 'unreachable'>;
   fetchNames?: (pubkeys: string[]) => Promise<Map<string, string>>;
+  /**
+   * Profile pictures, ONLY when the user agreed to the download step for this
+   * run (`pictures: true`). Then the one kind-0 fetch supplies names and
+   * picture URLs, and `syncPictures` downloads what changed for the follows
+   * this run covered. Without consent the import is names only, as before.
+   */
+  pictures?: boolean;
+  fetchProfiles?: (pubkeys: string[]) => Promise<Map<string, Kind0Profile> | 'unreachable'>;
+  syncPictures?: (pubkeys: string[], profiles: Map<string, Kind0Profile>) => Promise<PictureRunResult>;
   recogniseContacts: (entries: FollowImportEntry[], owner: string, method: 'import', caption: string) => Promise<FollowsImportResult>;
   /** Persist the device-local "last import" record. Only called when something was covered. */
   recordImport: (state: { eventId: string; createdAt: number; importedAt: number; count: number }) => Promise<void>;
@@ -35,8 +47,15 @@ export interface FollowsImportDeps {
 }
 
 /** What a screen needs to offer the import for one persona. */
+export interface FollowsImportOptions {
+  /** The user agreed to "Download their profile pictures?" for this run. */
+  pictures: boolean;
+}
+
 export interface FollowsHandlers {
-  onImportFollows: () => Promise<FollowsImportOutcome>;
+  onImportFollows: (opts: FollowsImportOptions) => Promise<FollowsImportOutcome>;
+  /** Whether this install may download pictures at all (never on a paired-child install). */
+  picturesAvailable?: boolean;
   onUnlinkFollows: (contactIds: string[]) => Promise<number>;
 }
 
@@ -68,6 +87,8 @@ export type FollowsImportOutcome =
       unfollowed: UnfollowedContact[];
       /** Unfollowed contacts whose only list this is — kept, since taking them off would remove them. */
       unfollowedKept: number;
+      /** Only when pictures were agreed to: how many downloaded / couldn't be. */
+      pictures?: { downloaded: number; failed: number; unreachable?: true };
     };
 
 export async function runFollowsImport(deps: FollowsImportDeps): Promise<FollowsImportOutcome> {
@@ -82,7 +103,22 @@ export async function runFollowsImport(deps: FollowsImportDeps): Promise<Follows
 
   // Rule 1: at most 1000 per run, the most recent (the end of the tag order).
   const chosen = takeMostRecent(list.follows, MAX_FOLLOWS_PER_IMPORT);
-  const names = await fetchNames(chosen.map(f => f.pubkey));
+  const withPictures = deps.pictures === true && !!deps.syncPictures;
+  let profiles: Map<string, Kind0Profile> | null = null;
+  let names: Map<string, string>;
+  let picturesUnreachable = false;
+  if (withPictures) {
+    const fetched = await (deps.fetchProfiles ?? ((pubkeys: string[]) => fetchKind0Profiles(pubkeys, [])))(chosen.map(f => f.pubkey));
+    names = new Map();
+    if (fetched === 'unreachable') {
+      picturesUnreachable = true;
+    } else {
+      profiles = fetched;
+      for (const [pubkey, profile] of profiles) if (profile.displayName) names.set(pubkey, profile.displayName);
+    }
+  } else {
+    names = await fetchNames(chosen.map(f => f.pubkey));
+  }
   const entries = nameFollows(chosen, names);
 
   // The unfollow check runs on the records as they were before this import —
@@ -100,6 +136,20 @@ export async function runFollowsImport(deps: FollowsImportDeps): Promise<Follows
     await deps.recordImport({ eventId: list.eventId, createdAt: list.createdAt, importedAt: now(), count: list.total });
   }
   const notAll = summary.trimmed || chosen.length < list.follows.length;
+
+  // Pictures only for the follows this run actually filed (the most recent `covered`).
+  let pictures: { downloaded: number; failed: number; unreachable?: true } | undefined;
+  if (withPictures && picturesUnreachable) {
+    pictures = { downloaded: 0, failed: 0, unreachable: true };
+  } else if (withPictures && profiles && deps.syncPictures) {
+    const filed = covered > 0 ? chosen.slice(chosen.length - covered).map(f => f.pubkey) : [];
+    try {
+      const r = filed.length > 0 ? await deps.syncPictures(filed, profiles) : { downloaded: 0, failed: 0 };
+      pictures = { downloaded: r.downloaded, failed: r.failed };
+    } catch {
+      pictures = { downloaded: 0, failed: filed.filter(p => profiles?.get(p)?.pictureUrl).length };
+    }
+  }
   return {
     status: 'done',
     total: list.total,
@@ -116,5 +166,6 @@ export async function runFollowsImport(deps: FollowsImportDeps): Promise<Follows
       : null,
     unfollowed: unfollow.removable.map(r => ({ contactId: r.contactId, name: r.displayName })),
     unfollowedKept: unfollow.onlyOnThisList.length,
+    ...(pictures ? { pictures } : {}),
   };
 }

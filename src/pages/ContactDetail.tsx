@@ -8,7 +8,14 @@ import { isConfirmed, newestCheckFor, type ConfirmStep } from '../lib/contacts-v
 import type { ContactCheck } from '../lib/contact-checks';
 import type { ContactIdentityList } from '../lib/contacts-v2-identity-lists';
 import { contactBelongsToList } from '../lib/contacts-v2-membership';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { ContactAvatar } from '../components/ContactAvatar';
+import { useContactAvatar } from '../hooks/useContactAvatar';
+import { useContactPicture } from '../hooks/useContactPicture';
+import { OWN_PICTURE_ACCEPT, checkOwnPictureFile, type OwnPictureOutcome } from '../lib/contact-pictures';
+import { ContactPictureCrop } from '../components/ContactPictureCrop';
+import type { PictureCrop } from '../lib/picture-crop';
+import { primaryIdentityPubkey as avatarPubkeyOf } from '../lib/contacts-v2-list';
 import type { Contact, ContactIdentity, ContactMethodKind, ContactTier, EffectiveContact, SignetIdentity, AddMethodValue } from '../types';
 import { ContactTierChip } from '../components/ContactTierChip';
 import { ContactShare } from '../components/ContactShare';
@@ -16,7 +23,11 @@ import { SignetWords } from '../components/SignetWords';
 import { getActivePubkey, shortNpub } from '../lib/signet';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import {
-  ADD_A_ROLE_LABEL, ADD_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
+  ADD_A_ROLE_LABEL, ADD_LABEL, ADD_OWN_PICTURE_LABEL, CHANGE_OWN_PICTURE_LABEL,
+  PICTURE_BACKUP_ASK_NO_LABEL, PICTURE_BACKUP_ASK_TITLE, PICTURE_BACKUP_ASK_YES_LABEL, PICTURE_BACKUP_LOCAL_COPY,
+  PICTURE_BACKUP_NOW_LABEL, PICTURE_BACKUP_PAIRED_CHILD_COPY, PICTURE_BACKUP_PENDING_COPY, PICTURE_BACKUP_SYNCED_COPY,
+  PICTURE_BACKUP_UPLOADS_OFF_COPY, pictureBackupAskBody,
+  OWN_PICTURE_REFUSED_COPY, OWN_PICTURE_UNREADABLE_COPY, REMOVE_OWN_PICTURE_LABEL, SHOW_THEIR_PICTURE_LABEL, SHOW_YOUR_PICTURE_LABEL, ADD_METHOD_LABEL, BLOCK_BOUNDARY_COPY, BLOCK_LABEL,
   BLOCK_REASON_FIELD_LABEL, BLOCK_SECTION_TITLE, CANCEL_LABEL, CONTACT_ACTION_FAILED_COPY,
   CONFIRM_BUTTON_LABEL, CONTACT_TYPE_LABELS, IDENTITIES_SECTION_TITLE, IDENTITY_PROVENANCE_LABELS,
   IDENTITY_VERIFICATION_LABELS, KEY_CONTROL_LABEL, KEYLESS_EXPLAINER, KEYLESS_MARKER,
@@ -34,7 +45,29 @@ import {
   validateMethodDraft, type DetailSection, type LegacyMatch,
 } from '../lib/contacts-v2-detail';
 
+/** What the host knows about backing up the user's own pictures (the page only renders it). */
+export interface PictureBackupHost {
+  /** `possible`: uploads could run; `uploads-off`: Blossom uploads are off in settings; `paired-child`: never on this install. */
+  availability: 'possible' | 'uploads-off' | 'paired-child';
+  /** Host of the backup server, for the ask's wording. */
+  serverHost: string;
+  /** Show the one-time ask now. */
+  ask: boolean;
+  /** The ask's answer: true = "Back them up", false = "Only on this phone". */
+  onAnswer: (backUp: boolean) => Promise<void>;
+  /** The status line's "Back it up" link. */
+  onBackItUp: () => Promise<void>;
+}
+
 interface Props {
+  /** Unlock key + relay, for the contact's picture (local thumbnails and the #242 shared avatar). */
+  encryptionKey?: string | null;
+  relayUrl?: string;
+  /** Set the user's own picture for this contact (device-local), as the square chosen on the crop screen. */
+  onSetOwnPicture?: (file: File, crop: PictureCrop) => Promise<OwnPictureOutcome>;
+  onRemoveOwnPicture?: () => Promise<void>;
+  /** Backup of the user's own picture: status line and the one-time ask. Absent = no status line. */
+  pictureBackup?: PictureBackupHost;
   /**
    * "Confirm it's them": apply the writes one confirmation outcome compiles to.
    * Absent where a check cannot be recorded (no single identity list selected).
@@ -93,7 +126,7 @@ const TIERS: ContactTier[] = ['kin', 'kith', 'ken'];
  * `identities`/`methods` are shared by their own add/remove pairs, and
  * `block` is shared by block and unblock.
  */
-type ActionScope = 'rename' | 'identities' | 'methods' | 'roles' | 'tier' | 'note' | 'block' | 'remove';
+type ActionScope = 'picture' | 'rename' | 'identities' | 'methods' | 'roles' | 'tier' | 'note' | 'block' | 'remove';
 
 export function ContactDetail(props: Props) {
   const { contact, rights, sections, legacy, legacyContact, actorPubkey, guardianName } = props;
@@ -132,6 +165,25 @@ export function ContactDetail(props: Props) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<{ scope: ActionScope; message: string } | null>(null);
 
+  const avatarPubkey = avatarPubkeyOf(contact);
+  const sharedAvatar = useContactAvatar(avatarPubkey ?? undefined, props.relayUrl ?? '', props.encryptionKey ?? null);
+  const picture = useContactPicture({
+    encryptionKey: props.encryptionKey ?? null,
+    pubkey: avatarPubkey,
+    directoryId: contact.directoryId,
+    contactId: contact.contactId,
+    sharedUrl: avatarPubkey ? sharedAvatar : null,
+  });
+  const pictureInput = useRef<HTMLInputElement>(null);
+  // The picked file waiting on the crop screen (it has already passed the header gate).
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  // Which picture is main when both exist. Not saved: the page opens showing the user's own.
+  const [swapped, setSwapped] = useState(false);
+  const canSwap = !!picture.url && !!picture.badgeUrl;
+  useEffect(() => { setSwapped(false); }, [contact.directoryId, contact.contactId, canSwap]);
+  const mainUrl = canSwap && swapped ? picture.badgeUrl : picture.url;
+  const badgeUrl = canSwap ? (swapped ? picture.url : picture.badgeUrl) : null;
+
   const appConnection = props.checkOwnerIdentityPubkey ? uncheckedAppConnection(contact, props.checkOwnerIdentityPubkey) : null;
   const blocked = blockedLine(contact, actorPubkey, guardianName);
 
@@ -147,6 +199,25 @@ export function ContactDetail(props: Props) {
       setActionError(null);
     } catch {
       setActionError({ scope, message: CONTACT_ACTION_FAILED_COPY });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** "Use this picture" on the crop screen: save the chosen square. */
+  async function saveCroppedPicture(file: File, crop: PictureCrop) {
+    setCropFile(null);
+    setBusy(true);
+    try {
+      const outcome = await props.onSetOwnPicture!(file, crop);
+      // 'locked': the app locked mid-save, so there is nothing to say.
+      setActionError(
+        outcome === 'refused' ? { scope: 'picture', message: OWN_PICTURE_REFUSED_COPY }
+        : outcome === 'unreadable' ? { scope: 'picture', message: OWN_PICTURE_UNREADABLE_COPY }
+        : null,
+      );
+    } catch {
+      setActionError({ scope: 'picture', message: CONTACT_ACTION_FAILED_COPY });
     } finally {
       setBusy(false);
     }
@@ -180,6 +251,13 @@ export function ContactDetail(props: Props) {
 
   return (
     <div className="fade-in" role="main">
+      {cropFile && props.onSetOwnPicture && (
+        <ContactPictureCrop
+          file={cropFile}
+          onUse={crop => void saveCroppedPicture(cropFile, crop)}
+          onCancel={() => setCropFile(null)}
+        />
+      )}
       {appConnection && <div className="card section" role="status">
         <p>Added via {appConnection.appName}, not checked. Compare your verification words with this person.</p>
         {appConnection.canUndo && rights.canRemove && <button className="btn btn-ghost" disabled={busy}
@@ -208,6 +286,87 @@ export function ContactDetail(props: Props) {
         {actionError?.scope === 'identities' && <p role="alert">{actionError.message}</p>}
       </div>}
       <div className="card section">
+        <div style={{ marginBottom: 8 }}>
+          {canSwap ? (
+            <button
+              type="button"
+              aria-label={swapped ? SHOW_YOUR_PICTURE_LABEL : SHOW_THEIR_PICTURE_LABEL}
+              onClick={() => setSwapped(s => !s)}
+              style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', display: 'block', borderRadius: '50%' }}
+            >
+              <ContactAvatar url={mainUrl} badgeUrl={badgeUrl} name={shownName} pubkey={avatarPubkey ?? shownName} size={72} />
+            </button>
+          ) : (
+            <ContactAvatar url={picture.url} name={shownName} pubkey={avatarPubkey ?? shownName} size={72} />
+          )}
+        </div>
+        {props.onSetOwnPicture && (
+          <div style={{ marginBottom: 8 }}>
+            <input
+              ref={pictureInput}
+              type="file"
+              accept={OWN_PICTURE_ACCEPT}
+              aria-label={picture.hasOwn ? CHANGE_OWN_PICTURE_LABEL : ADD_OWN_PICTURE_LABEL}
+              style={{ display: 'none' }}
+              onChange={e => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    // The header gate runs first: a refused photo never reaches the crop screen.
+                    const gate = await checkOwnPictureFile(file);
+                    if (gate === 'ok') { setActionError(null); setCropFile(file); }
+                    else setActionError({ scope: 'picture', message: gate === 'refused' ? OWN_PICTURE_REFUSED_COPY : OWN_PICTURE_UNREADABLE_COPY });
+                  } catch {
+                    setActionError({ scope: 'picture', message: CONTACT_ACTION_FAILED_COPY });
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => pictureInput.current?.click()}>
+                {picture.hasOwn ? CHANGE_OWN_PICTURE_LABEL : ADD_OWN_PICTURE_LABEL}
+              </button>
+              {picture.hasOwn && props.onRemoveOwnPicture && (
+                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run('picture', () => props.onRemoveOwnPicture!())}>
+                  {REMOVE_OWN_PICTURE_LABEL}
+                </button>
+              )}
+            </div>
+            {picture.hasOwn && props.pictureBackup && (() => {
+              const host = props.pictureBackup;
+              const state = picture.backup ?? 'local';
+              const uploadsPossible = host.availability === 'possible';
+              const line = host.availability === 'paired-child' ? PICTURE_BACKUP_PAIRED_CHILD_COPY
+                : state === 'synced' ? PICTURE_BACKUP_SYNCED_COPY
+                : state === 'pending' ? PICTURE_BACKUP_PENDING_COPY
+                : uploadsPossible ? PICTURE_BACKUP_LOCAL_COPY : PICTURE_BACKUP_UPLOADS_OFF_COPY;
+              return (
+                <p className="field-hint" role="status" style={{ margin: '4px 0 0' }}>
+                  {line}
+                  {state === 'local' && uploadsPossible && (
+                    <>{' '}<button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run('picture', host.onBackItUp)}>{PICTURE_BACKUP_NOW_LABEL}</button></>
+                  )}
+                </p>
+              );
+            })()}
+            {picture.hasOwn && props.pictureBackup?.ask && props.pictureBackup.availability === 'possible' && (
+              <div className="card section" role="group" aria-label={PICTURE_BACKUP_ASK_TITLE}>
+                <h2>{PICTURE_BACKUP_ASK_TITLE}</h2>
+                <p>{pictureBackupAskBody(props.pictureBackup.serverHost)}</p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm" disabled={busy} onClick={() => void run('picture', () => props.pictureBackup!.onAnswer(true))}>{PICTURE_BACKUP_ASK_YES_LABEL}</button>
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void run('picture', () => props.pictureBackup!.onAnswer(false))}>{PICTURE_BACKUP_ASK_NO_LABEL}</button>
+                </div>
+              </div>
+            )}
+            {actionError?.scope === 'picture' && <p role="alert">{actionError.message}</p>}
+          </div>
+        )}
         <h1 style={{ marginBottom: 6 }}>{shownName}</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <ContactTierChip

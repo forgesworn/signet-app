@@ -19,7 +19,7 @@ import { Icon } from '../components/Icon';
 import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase, FollowsImportState } from '../types';
 import { ExistingProfilePanel } from '../components/ExistingProfilePanel';
 import { FollowsImportPanel } from '../components/FollowsImportPanel';
-import type { FollowsImportOutcome } from '../lib/follows-import-flow';
+import type { FollowsImportOptions, FollowsImportOutcome } from '../lib/follows-import-flow';
 import type { ExistingProfile } from '../lib/existing-profile';
 import { TypedNameConfirm } from '../components/TypedNameConfirm';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
@@ -75,7 +75,9 @@ export interface PersonaAdvancedProps {
    * scoped to the owner's contacts — never a dependant's slot, never a
    * paired-child install; absent => the block is hidden.
    */
-  onImportFollows?: () => Promise<FollowsImportOutcome>;
+  onImportFollows?: (opts: FollowsImportOptions) => Promise<FollowsImportOutcome>;
+  /** Offer the picture download step on import (never on a paired-child install). */
+  followsPicturesAvailable?: boolean;
   /** Take contacts off this slot's list after a refresh found they are no longer followed. */
   onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
   /**
@@ -116,7 +118,7 @@ export interface PersonaAdvancedProps {
    * clears the contact key locally, then best-effort retracts the published
    * pointer. Absent on a paired-child install.
    */
-  onStopContactAvatarShare?: (target: string, depId?: string) => Promise<void>;
+  onStopContactAvatarShare?: (target: string, depId?: string) => Promise<string | void>;
   onDeletePersona?: (pubkey: string) => Promise<void>;
   onShowImportedNsec?: () => void;
 
@@ -273,6 +275,9 @@ function formatPublishedAt(ts?: number): string {
 
 export function PersonaAdvanced(props: PersonaAdvancedProps) {
   const { slotTarget, depPubkey, identity, dependants, onBack } = props;
+  // The result of the last "Stop sharing", kept here because the block that
+  // produced it unmounts once the share key is cleared.
+  const [shareStopNote, setShareStopNote] = useState('');
 
   const dep = depPubkey ? dependants.find(d => d.id === depPubkey) : undefined;
   const slotKind = inferSlotKind(slotTarget, depPubkey);
@@ -344,6 +349,7 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
               last={slot.followsImport}
               onImport={props.onImportFollows}
               onUnlink={props.onUnlinkFollows}
+              picturesAvailable={props.followsPicturesAvailable}
             />
           )}
           {!isDep && !(props.onImportFollows && props.onUnlinkFollows) && props.followsPending && (
@@ -372,7 +378,10 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
 
       {/* Stop sharing the picture with contacts — only while a share key exists. */}
       {slot.contactAvatarKey && slotKind !== 'professional-persona' && props.onStopContactAvatarShare && (
-        <StopAvatarShareBlock onStop={() => props.onStopContactAvatarShare!(slotTarget, depPubkey)} />
+        <StopAvatarShareBlock onStop={() => props.onStopContactAvatarShare!(slotTarget, depPubkey)} onNote={setShareStopNote} />
+      )}
+      {shareStopNote && (
+        <p role="status" className="card section" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{shareStopNote}</p>
       )}
 
       {/* Imported nsec note — extras (user + dep) only, if imported. */}
@@ -769,13 +778,16 @@ function PrimaryKeypairBlock({
   );
 }
 
-function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<void> }) {
+/** `onNote` receives the one-line result of deleting the share copy (R5/R6).
+ * The page holds it, because a successful stop clears the key and this block
+ * unmounts with it. */
+function StopAvatarShareBlock({ onStop, onNote }: { onStop: () => Promise<string | void>; onNote: (note: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const stop = async () => {
     if (busy) return;
-    setBusy(true); setError('');
-    try { await onStop(); }
+    setBusy(true); setError(''); onNote('');
+    try { const result = await onStop(); if (typeof result === 'string') onNote(result); }
     catch { setError('Could not stop sharing. Try again.'); }
     finally { setBusy(false); }
   };

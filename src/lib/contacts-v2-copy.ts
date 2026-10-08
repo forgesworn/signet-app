@@ -777,3 +777,62 @@ export const SCAN_CONTACT_INVALID_COPY = 'That Nostr key could not be read.';
 export const SCAN_CONTACT_OWN_KEY_COPY = 'That is one of your own keys.';
 export const SCAN_CONTACT_WRONG_CARD_COPY = "Contacts can't be added from this card. Swipe to one of your personas and scan again.";
 export const SCAN_CONTACT_SAVE_FAILED_COPY = 'The contact could not be saved. Try again.';
+
+// Contact pictures: kind-0 pictures download only after this consent step, every time.
+export const PICTURES_CONSENT_TITLE = 'Download their profile pictures?';
+export const PICTURES_CONSENT_BODY = "People host their profile pictures on websites they choose. Downloading them tells each of those sites your IP address and that you're looking at that person. My Signet downloads each picture once, keeps a small copy on this phone, and only checks again when you tap Refresh pictures. For more privacy, turn on a VPN before you continue.";
+export const PICTURES_CONSENT_ACCEPT_LABEL = 'Download pictures';
+export const PICTURES_CONSENT_DECLINE_LABEL = 'Not now';
+export const REFRESH_PICTURES_LABEL = 'Refresh pictures';
+export const REFRESHING_PICTURES_LABEL = 'Downloading pictures…';
+export const PICTURES_REFRESH_FAILED_COPY = "Pictures couldn't be refreshed. Try again in a moment.";
+export const PICTURES_RELAYS_UNREACHABLE_COPY = "Couldn't reach Nostr relays, so no pictures were checked. Try again in a moment.";
+/** "Downloaded N pictures." / "Downloaded N pictures, M couldn't be downloaded." */
+export function picturesResultCopy(downloaded: number, failed: number): string {
+  const head = `Downloaded ${downloaded} ${downloaded === 1 ? 'picture' : 'pictures'}`;
+  return failed > 0 ? `${head}, ${failed} couldn't be downloaded.` : `${head}.`;
+}
+export const ADD_OWN_PICTURE_LABEL = 'Add your own picture';
+export const CHANGE_OWN_PICTURE_LABEL = 'Change picture';
+export const REMOVE_OWN_PICTURE_LABEL = 'Remove your picture';
+// Encrypted backup of your own contact pictures: the one-time ask and the status line.
+export const PICTURE_BACKUP_ASK_TITLE = 'Back up your contact pictures?';
+export function pictureBackupAskBody(serverHost: string): string {
+  return `They're encrypted on this phone first, then stored on ${serverHost}. The server can't see them, but it does see your IP address when you save or restore one.`;
+}
+export const PICTURE_BACKUP_ASK_YES_LABEL = 'Back them up';
+export const PICTURE_BACKUP_ASK_NO_LABEL = 'Only on this phone';
+export const PICTURE_BACKUP_SYNCED_COPY = 'Backed up, encrypted';
+export const PICTURE_BACKUP_PENDING_COPY = 'Not backed up yet';
+export const PICTURE_BACKUP_LOCAL_COPY = 'Only on this phone';
+export const PICTURE_BACKUP_UPLOADS_OFF_COPY = 'Only on this phone. Blossom uploads are off in Advanced settings.';
+export const PICTURE_BACKUP_PAIRED_CHILD_COPY = 'Only on this phone.';
+export const PICTURE_BACKUP_NOW_LABEL = 'Back it up';
+export const OWN_PICTURE_REFUSED_COPY = "That picture couldn't be used. Choose a JPEG, PNG or WebP photo.";
+export const OWN_PICTURE_UNREADABLE_COPY = "Couldn't read that photo. Pick it again.";
+// Own-picture crop screen, and the badge swap on the contact page.
+export const CROP_TITLE = 'Crop your picture';
+export const CROP_HINT = 'Move and zoom until their face or logo sits in the circle. The square is what gets saved.';
+/** The crop screen's hint when the picture is one of your own personas' (not a contact's). */
+export const PERSONA_CROP_HINT = 'Move and zoom until your face or logo sits in the circle. The square is what gets saved.';
+/** A picked persona picture over the size the app will take (shown before the crop screen opens). */
+export const PERSONA_PICTURE_TOO_LARGE_COPY = 'That photo is too large. Pick one under 20 MB.';
+export const ZOOM_LABEL = 'Zoom';
+export const USE_THIS_PICTURE_LABEL = 'Use this picture';
+export const CROP_LOADING_COPY = 'Opening your photo…';
+export const SHOW_THEIR_PICTURE_LABEL = 'Show their picture';
+export const SHOW_YOUR_PICTURE_LABEL = 'Show your picture';
+
+// "They'll see:" chips on a contact request or an acceptance (your name and photo
+// travel inside the encrypted message, never in the QR).
+export const CARD_CHIPS_LABEL = "They'll see:";
+export const CARD_NAME_CHIP_LABEL = 'Your name';
+export const CARD_PHOTO_CHIP_LABEL = 'Your photo';
+export const CARD_PHOTO_UNAVAILABLE_COPY = 'Add an in-app picture on your persona card first.';
+export const CARD_PHOTO_FAILED_COPY = "Your photo couldn't be shared, so nothing was sent.";
+export const SEND_WITHOUT_PHOTO_LABEL = 'Send without your photo';
+export const ACCEPT_WITHOUT_PHOTO_LABEL = 'Accept without your photo';
+/** An unaccepted request's card name is self-declared, never a fact: anyone holding the invite can claim any name. */
+export function requestFromNamedCopy(name: string): string {
+  return `Request from someone calling themselves “${sanitizeDisplayName(name, 100)}”`;
+}

@@ -1,0 +1,104 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { InlineAvatarRow } from './SettingsCard';
+import { OWN_PICTURE_REFUSED_COPY, PERSONA_CROP_HINT } from '../lib/contacts-v2-copy';
+
+const CROP = { x: 0.1, y: 0.2, side: 0.5 };
+vi.mock('./ContactPictureCrop', () => ({
+  ContactPictureCrop: ({ onUse, onCancel, hint }: { onUse: (c: typeof CROP) => void; onCancel: () => void; hint?: string }) => (
+    <div role="dialog" aria-label="crop stub">
+      <p>{hint}</p>
+      <button onClick={() => onUse(CROP)}>Use this picture</button>
+      <button onClick={onCancel}>Cancel crop</button>
+    </div>
+  ),
+}));
+
+const PNG_3x2 = 'iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGM8wcXFwMDAwMDAxAADABByAOAp6i43AAAAAElFTkSuQmCC';
+const GIF = 'R0lGODdhAwACAIEAAMgKCgAAAAAAAAAAACwAAAAAAwACAAAIBgABCBwYEAA7';
+const bytesOf = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+function setup() {
+  const onSet = vi.fn(async () => {});
+  const view = render(<InlineAvatarRow hasAvatar={false} onSet={onSet} />);
+  const input = view.container.querySelector('input[type="file"]') as HTMLInputElement;
+  return { onSet, input, ...view };
+}
+
+describe('InlineAvatarRow (private avatar picker)', () => {
+  it('pick -> crop screen -> onSet gets the file AND the crop', async () => {
+    const { input, onSet } = setup();
+    const file = new File([bytesOf(PNG_3x2)], 'me.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByRole('dialog', { name: 'crop stub' })).toBeDefined();
+    expect(screen.getByText(PERSONA_CROP_HINT)).toBeDefined();
+    expect(onSet).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Use this picture' }));
+    await waitFor(() => expect(onSet).toHaveBeenCalledWith(file, CROP));
+  });
+
+  it('a file the header gate refuses shows the error in the row and never opens the crop screen', async () => {
+    const { input, onSet } = setup();
+    fireEvent.change(input, { target: { files: [new File([bytesOf(GIF)], 'me.gif', { type: 'image/gif' })] } });
+    expect(await screen.findByText(OWN_PICTURE_REFUSED_COPY)).toBeDefined();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onSet).not.toHaveBeenCalled();
+  });
+
+  it('cancelling the crop saves nothing', async () => {
+    const { input, onSet } = setup();
+    fireEvent.change(input, { target: { files: [new File([bytesOf(PNG_3x2)], 'me.png', { type: 'image/png' })] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel crop' }));
+    expect(onSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('InlineAvatarRow shows the result of deleting the old blob (R3)', () => {
+  it('Change: shows the note the handler resolves with', async () => {
+    const onSet = vi.fn(async () => 'Old photo deleted from nostr.download.');
+    const view = render(<InlineAvatarRow hasAvatar onSet={onSet} />);
+    const input = view.container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File([bytesOf(PNG_3x2)], 'me.png', { type: 'image/png' })] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Use this picture' }));
+    expect(await screen.findByText('Old photo deleted from nostr.download.')).toBeDefined();
+  });
+
+  it('Remove: shows the "Couldn\'t delete" note, and a later action clears it', async () => {
+    const onClear = vi.fn(async () => "Couldn't delete the old photo from nostr.download.");
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(await screen.findByText("Couldn't delete the old photo from nostr.download.")).toBeDefined();
+  });
+
+  it('shows nothing when the handler resolves with no note', async () => {
+    const onClear = vi.fn(async () => {});
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(onClear).toHaveBeenCalled());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});
+
+describe('M2: the old-blob delete does not hold up the row', () => {
+  it('the row is free as soon as the handler resolves, and the line shows when the delete lands', async () => {
+    let land!: (line: string | undefined) => void;
+    const deletion = new Promise<string | undefined>(resolve => { land = resolve; });
+    const onClear = vi.fn(async () => ({ deletion }));
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    // The handler has resolved: no spinner, nothing waiting on the server yet.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Change' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByRole('status')).toBeNull();
+    land('Old photo deleted from nostr.download.');
+    expect(await screen.findByText('Old photo deleted from nostr.download.')).toBeDefined();
+  });
+  it('a delete that lands with no line, or fails, says nothing', async () => {
+    const onClear = vi.fn(async () => ({ deletion: Promise.resolve(undefined) }));
+    render(<InlineAvatarRow hasAvatar onSet={vi.fn(async () => {})} onClear={onClear} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(onClear).toHaveBeenCalled());
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});

@@ -33,6 +33,12 @@ export interface SignetNativePlugin {
   requestBatteryExemption(): Promise<void>;
   requestCameraPermission(): Promise<{ granted: boolean }>;
   /**
+   * Contact pictures (APK): one https GET, no redirects/cookies/cache, body
+   * capped at `maxBytes` while reading, answered by `timeoutMs` (+1 s) at the
+   * latest. At most four run at once, off the plugin thread.
+   */
+  fetchImageCapped(opts: { url: string; maxBytes: number; timeoutMs: number }): Promise<NativeImageFetchResult>;
+  /**
    * NIP-55: requests from other apps on this phone. The shell raises
    * `nip55Request` for each one while this page is up, and holds the ones
    * that arrived before it was; `nip55Pending` drains those.
@@ -45,6 +51,15 @@ export interface SignetNativePlugin {
   addListener(eventName: 'nip55Request', listener: (request: NativeNip55Request) => void): Promise<PluginListenerHandle>;
   /** A request's caller went away (task swiped, or the shell's own timeout fired); drop it unanswered. */
   addListener(eventName: 'nip55Withdrawn', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>;
+}
+
+export interface NativeImageFetchResult {
+  ok: boolean;
+  status?: number;
+  /** The body, base64 (`ok` only). */
+  base64?: string;
+  /** Why it failed: 'status' | 'too-large' | 'timeout' | 'network' | 'not-https' | 'bad-url' | 'no-body' | 'error'. */
+  reason?: string;
 }
 
 export interface Nip55Response {

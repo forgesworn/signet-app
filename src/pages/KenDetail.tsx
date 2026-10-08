@@ -11,6 +11,7 @@ import type { KenEntry } from '@forgesworn/kenspeckle';
 import { ContactShareQR } from '../components/ContactShareQR';
 import { ContactAvatar } from '../components/ContactAvatar';
 import { useContactAvatar } from '../hooks/useContactAvatar';
+import { useContactPicture } from '../hooks/useContactPicture';
 import { fetchPublicProfile, safeImageOrLinkUrl } from '../lib/public-profile-publish';
 
 interface Props {
@@ -57,6 +58,8 @@ function humaniseKenDetailError(_e: unknown, fallback: string): string {
 export function KenDetail({ entry, onAddKen, onRemoveKen, onBack, relayUrl, encryptionKey }: Props) {
 
   const avatarUrl = useContactAvatar(entry.pubkey, relayUrl, encryptionKey);
+  // A kind-0 thumbnail already downloaded (with consent) is shown when there is no shared avatar.
+  const { url: storedPictureUrl, badgeUrl: storedBadgeUrl } = useContactPicture({ encryptionKey, pubkey: entry.pubkey, sharedUrl: avatarUrl });
   const [section, setSection] = useState<Section>('overview');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -575,15 +578,18 @@ export function KenDetail({ entry, onAddKen, onRemoveKen, onBack, relayUrl, encr
       <div className="section" style={{ marginBottom: 16 }}>
         <div style={{ marginBottom: 8 }}>
           <ContactAvatar
-            url={publicPic ?? avatarUrl}
+            url={publicPic ?? storedPictureUrl}
+            badgeUrl={publicPic ? null : storedBadgeUrl}
             name={entry.displayName ?? ''}
             pubkey={shortNpub(entry.pubkey)}
             size={64}
           />
         </div>
-        {/* H1: the contact's PUBLIC kind-0 picture is never auto-fetched and
-            never shown in the list — only behind this explicit tap, and only
-            when they haven't shared a private avatar. */}
+        {/* H1: the contact's PUBLIC kind-0 picture is never auto-fetched —
+            only behind this explicit tap (live, not stored), or as the small
+            thumbnail stored by a consented "Refresh pictures" / follows
+            import (contact-pictures.ts). Offered only when they haven't
+            shared a private avatar. */}
         {!avatarUrl && !publicPic && (
           <div style={{ marginBottom: 8 }}>
             {publicPicState === 'loading' ? (

@@ -73,6 +73,12 @@ export interface AppPreferences {
   blossomConsent?: boolean;
   /** Preferred Blossom server URL */
   defaultBlossomUrl?: string;
+  /**
+   * Encrypted Blossom backup of the user's own contact pictures. Device-local
+   * (never on a sync rail): undefined = never asked, 'on' = back them up,
+   * 'off' = the user chose to keep them on this phone only.
+   */
+  contactPictureBackup?: 'on' | 'off';
   /** Signing mode: 'local' (default), 'bunker' (Heartwood NIP-46), or 'nip07' (browser extension) */
   signingMode?: 'local' | 'bunker' | 'nip07' | 'paired-child';
   /**

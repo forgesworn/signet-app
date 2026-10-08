@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import type { CarouselRow, PublicProfileConfig, PersonaPublicProfile } from '../types';
+import { useEffect, useRef, useState } from 'react';
+import type { CarouselRow, PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { resolveDependantCardSlot } from '../lib/carousel-utils';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
@@ -7,6 +7,17 @@ import { resolveDependantIdFromRowAlways } from '../lib/carousel-routing';
 import { MiniIdBadge } from './MiniIdBadge';
 import { SlotProfileFields, type SlotKind } from './SlotProfileFields';
 import { Icon } from './Icon';
+import type { PictureCrop } from '../lib/picture-crop';
+import { usePicturePick } from '../hooks/usePicturePick';
+import type { DeleteOutcome } from '../lib/blob-deletion';
+
+/**
+ * What an avatar Set/Change/Remove handler may resolve with: nothing, a one-line
+ * note about the old blob, or `{ deletion }` for a delete still running. The
+ * row is free as soon as the handler resolves and shows the line when
+ * `deletion` lands (M2).
+ */
+export type AvatarResult = string | void | { deletion: Promise<string | undefined> };
 
 interface Props {
   resolved: ResolvedIdentity;
@@ -46,7 +57,10 @@ interface Props {
   onUploadPersonaPicture?: (
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
+  /** Delete a replaced/removed public picture or banner blob (R4/R2 of the blob-deletion design). */
+  onDeletePublicBlob?: (hash: string, server: string) => Promise<DeleteOutcome>;
   /** Update the display name for a user-side persona slot. */
   onUpdateOwnPersonaName?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -60,11 +74,12 @@ interface Props {
   onSetPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
     file: File,
-  ) => Promise<void>;
-  /** Clear the avatar for a user-side slot. */
+    crop?: PictureCrop,
+  ) => Promise<AvatarResult>;
+  /** Clear the avatar for a user-side slot. May resolve with a one-line note about the old blob's deletion. */
   onClearPersonaAvatar?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
-  ) => Promise<void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a user-side slot (device-local, never synced). */
   onNip05Checked?: (
     target: 'natural-person' | 'persona' | 'professional-persona' | string,
@@ -89,6 +104,7 @@ interface Props {
     depPubkey: string,
     file: File,
     kind: 'picture' | 'banner',
+    crop?: PictureCrop,
   ) => Promise<{ url: string; sha256: string }>;
   /** Update the dep's overall (NP-row) display name. */
   onUpdateDepName?: (depPubkey: string, name: string) => Promise<void>;
@@ -106,12 +122,13 @@ interface Props {
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
     file: File,
-  ) => Promise<void>;
-  /** Clear the avatar for a dep slot. */
+    crop?: PictureCrop,
+  ) => Promise<AvatarResult>;
+  /** Clear the avatar for a dep slot. May resolve with a one-line note about the old blob's deletion. */
   onClearDepPersonaAvatar?: (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-  ) => Promise<void>;
+  ) => Promise<AvatarResult>;
   /** Persist a NIP-05 check result for a dep slot (device-local, never synced). */
   onDepNip05Checked?: (
     depPubkey: string,
@@ -185,6 +202,7 @@ interface ResolvedSlot {
   config: PublicProfileConfig;
   /** PublicProfile state snapshot for §9 Q7 republish prompt + status line. */
   publishedState?: PersonaPublicProfile;
+  publishedBase?: PublicProfileBase;
   /** Imported flag for extras (renders the §6.4 banner). */
   imported?: boolean;
   /** Whether this row's persona is the user's own (vs dep) — selects handler family. */
@@ -236,6 +254,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'natural-person',
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'own',
         avatarHash: s.avatarHash,
       };
@@ -248,6 +267,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'persona',
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'own',
         avatarHash: s.avatarHash,
       };
@@ -261,6 +281,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'extra',
         config: buildConfigFromSlot(ep),
         publishedState: ep.publicProfile,
+        publishedBase: ep.publicProfileBase,
         imported: ep.imported,
         scope: 'own',
         avatarHash: ep.avatarHash,
@@ -275,6 +296,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: dependantSlotKindFor(slotTarget),
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'dep',
         avatarHash: s.avatarHash,
       };
@@ -288,6 +310,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'dep-persona',
         config: buildConfigFromSlot(s),
         publishedState: s.publicProfile,
+        publishedBase: s.publicProfileBase,
         scope: 'dep',
         avatarHash: s.avatarHash,
       };
@@ -302,6 +325,7 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
         slotKind: 'dep-extra',
         config: buildConfigFromSlot(ep),
         publishedState: ep.publicProfile,
+        publishedBase: ep.publicProfileBase,
         imported: ep.imported,
         scope: 'dep',
         avatarHash: ep.avatarHash,
@@ -322,20 +346,30 @@ function resolveSlotForRow(row: CarouselRow): ResolvedSlot | null {
  * the kid's local writes get overwritten by the next persona-inventory
  * sync from the guardian.
  */
-function InlineAvatarRow({
+export function InlineAvatarRow({
   hasAvatar,
   onSet,
   onClear,
   disabled,
 }: {
   hasAvatar: boolean;
-  onSet: (file: File) => Promise<void>;
-  onClear?: () => Promise<void>;
+  /** May resolve with a one-line note about the old blob's deletion (R3). */
+  onSet: (file: File, crop?: PictureCrop) => Promise<AvatarResult>;
+  onClear?: () => Promise<AvatarResult>;
   disabled?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [note, setNote] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const showResult = (result: AvatarResult) => {
+    if (typeof result === 'string') setNote(result);
+    else if (result && typeof result === 'object') {
+      void result.deletion.then(line => { if (mounted.current && line) setNote(line); }).catch(() => undefined);
+    }
+  };
 
   function trigger() {
     if (busy || disabled) return;
@@ -343,15 +377,20 @@ function InlineAvatarRow({
     fileInputRef.current?.click();
   }
 
-  async function handleFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    // Reset input so picking the same file twice still triggers onChange.
-    e.target.value = '';
-    if (!file) return;
+  // pick -> header gate -> crop screen -> onSet(file, crop). A refused photo
+  // never opens the crop screen.
+  const picker = usePicturePick({
+    onPicked: (file, crop) => handleFilePicked(file, crop),
+    onError: setError,
+  });
+
+  async function handleFilePicked(file: File, crop?: PictureCrop) {
     setBusy(true);
     setError('');
+    setNote('');
     try {
-      await onSet(file);
+      const result = await onSet(file, crop);
+      showResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save avatar. Try again.');
     } finally {
@@ -363,8 +402,10 @@ function InlineAvatarRow({
     if (!onClear || busy) return;
     setBusy(true);
     setError('');
+    setNote('');
     try {
-      await onClear();
+      const result = await onClear();
+      showResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not remove avatar.');
     } finally {
@@ -378,6 +419,7 @@ function InlineAvatarRow({
         <span className="row-label">In-app picture</span>
         <span className="row-sub">Private — only on this device</span>
         {error && <span className="slot-row-error">{error}</span>}
+        {note && <span className="row-sub" role="status">{note}</span>}
       </div>
       <div className="slot-row-actions">
         <button
@@ -402,8 +444,9 @@ function InlineAvatarRow({
           type="file"
           accept="image/*"
           style={{ display: 'none' }}
-          onChange={handleFileChosen}
+          onChange={picker.onInputChange}
         />
+        {picker.cropScreen}
       </div>
     </div>
   );
@@ -520,6 +563,7 @@ export function SettingsCard({
   onSavePersonaConfig,
   onRepublishProfile,
   onUploadPersonaPicture,
+  onDeletePublicBlob,
   onUpdateOwnPersonaName,
   onSetPersonaAvatar,
   onClearPersonaAvatar,
@@ -589,8 +633,8 @@ export function SettingsCard({
       slot.scope === 'own'
         ? onUploadPersonaPicture
         : slot.scope === 'dep' && slot.depPubkey && onUploadDepPersonaPicture
-          ? (file: File, kind: 'picture' | 'banner') =>
-              onUploadDepPersonaPicture(slot.depPubkey!, file, kind)
+          ? (file: File, kind: 'picture' | 'banner', crop?: PictureCrop) =>
+              onUploadDepPersonaPicture(slot.depPubkey!, file, kind, crop)
           : undefined;
     // No persistence path on the read-only paired-child surface — leave
     // onNip05Checked undefined there so SlotProfileFields hides the Check
@@ -611,6 +655,7 @@ export function SettingsCard({
         pubkey={slot.pubkey}
         config={slot.config}
         publishedState={slot.publishedState}
+        publishedBase={slot.publishedBase}
         slotKind={slot.slotKind}
         imported={slot.imported}
         pairedChildView={pairedChildViewForSlot}
@@ -619,6 +664,7 @@ export function SettingsCard({
         onSaveConfig={onSaveConfig}
         onPublishNow={onPublishNow}
         onUploadPicture={onUploadPicture}
+        onDeleteBlob={pairedChildViewForSlot ? undefined : onDeletePublicBlob}
         onNip05Checked={onNip05CheckedForSlot}
       />
     );
@@ -640,7 +686,7 @@ export function SettingsCard({
       return (
         <InlineAvatarRow
           hasAvatar={hasAvatar}
-          onSet={(file) => onSetPersonaAvatar(target, file)}
+          onSet={(file, crop) => onSetPersonaAvatar(target, file, crop)}
           onClear={onClearPersonaAvatar ? () => onClearPersonaAvatar(target) : undefined}
         />
       );
@@ -653,7 +699,7 @@ export function SettingsCard({
     return (
       <InlineAvatarRow
         hasAvatar={hasAvatar}
-        onSet={(file) => onSetDepPersonaAvatar(depPubkey, depTarget, file)}
+        onSet={(file, crop) => onSetDepPersonaAvatar(depPubkey, depTarget, file, crop)}
         onClear={onClearDepPersonaAvatar ? () => onClearDepPersonaAvatar(depPubkey, depTarget) : undefined}
       />
     );

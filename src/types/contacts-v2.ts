@@ -64,6 +64,8 @@ export type ContactAction =
   | 'remove'
   | 'key-link'
   | 'note'
+  | 'set-picture'
+  | 'clear-picture'
   | 'link-list'
   | 'unlink-list'
   | 'app-propose-list'
@@ -228,6 +230,23 @@ export interface ContactRecord {
   blocks: BlockFact[];
   /** Private owner/guardian note. Never projected to an app. */
   notes?: string;
+  /**
+   * Pointer to the encrypted Blossom backup of the user's own picture for this
+   * contact. `key` is a SECRET (the AES content key, and the seed of the
+   * one-off uploader key): never exported, shared, projected or logged.
+   */
+  picture?: ContactPicturePointer;
+}
+
+export interface ContactPicturePointer {
+  /** Blossom base URL (https, at most 512 chars). */
+  server: string;
+  /** sha256 of the uploaded ciphertext, lowercase hex. */
+  hash: string;
+  /** AES-256-GCM content key, 64 lowercase hex. SECRET. */
+  key: string;
+  /** sha256 of the JPEG plaintext, lowercase hex. */
+  plainHash: string;
 }
 
 export interface ContactOperation {
@@ -251,7 +270,8 @@ export interface ContactOperation {
   createdAt: number;
 }
 
-export interface EffectiveContact extends ContactRecord {
+/** `picture` is deliberately absent: its `key` is a secret. Read the pointer from `ContactRecord` (`useContactsV2().records`). */
+export interface EffectiveContact extends Omit<ContactRecord, 'picture'> {
   effectiveTier: ContactCeilingTier;
   tierSource: ContactTierSource;
   blocked: boolean;
@@ -310,3 +330,4 @@ export interface BlockValue { scope: BlockScope; reason?: string }
 export interface SetLifecycleValue { lifecycle: 'suggested' | 'pending' | 'active' | 'rejected' }
 export interface KeyLinkValue { itemId: string; pubkey: string; linkedFromItemId: string }
 export interface NoteValue { note: string }
+export type SetPictureValue = ContactPicturePointer;

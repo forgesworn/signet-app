@@ -6,12 +6,15 @@ import { ContactAvatar } from '../components/ContactAvatar';
 import { ContactTierChip } from '../components/ContactTierChip';
 import { Icon } from '../components/Icon';
 import { FollowsImportPanel } from '../components/FollowsImportPanel';
-import type { FollowsImportOutcome } from '../lib/follows-import-flow';
+import type { FollowsImportOptions, FollowsImportOutcome } from '../lib/follows-import-flow';
+import type { PictureRunResult } from '../lib/contact-pictures';
+import { ContactPicturesConsent } from '../components/ContactPicturesConsent';
+import { useContactPicture } from '../hooks/useContactPicture';
 import type { FollowsImportState } from '../types';
 import { useContactAvatar, seedContactAvatarPointer } from '../hooks/useContactAvatar';
 import { fetchContactAvatarPointers } from '../lib/contact-avatar';
 import {
-  CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
+  CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, PICTURES_REFRESH_FAILED_COPY, PICTURES_RELAYS_UNREACHABLE_COPY, REFRESH_PICTURES_LABEL, REFRESHING_PICTURES_LABEL, picturesResultCopy, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
   ROLODEX_EMPTY_TEXT, ROLODEX_EMPTY_TITLE, ROLODEX_LOADING_COPY, ROLODEX_NO_MATCHES_TITLE,
   SEARCH_CONTACTS_LABEL, rolodexHeadingCopy,
 } from '../lib/contacts-v2-copy';
@@ -48,7 +51,15 @@ interface Props {
    * shows when the handlers or `followsDisabledReason` are present; with only a
    * reason the panel opens with Import disabled.
    */
-  onImportFollows?: () => Promise<FollowsImportOutcome>;
+  onImportFollows?: (opts: FollowsImportOptions) => Promise<FollowsImportOutcome>;
+  /** Offer the picture download step on import (never on a paired-child install). */
+  followsPicturesAvailable?: boolean;
+  /**
+   * "Refresh pictures": download contacts' kind-0 pictures that are new or
+   * changed. Absent on a paired-child install. Only ever called after the
+   * consent step, from a tap.
+   */
+  onRefreshPictures?: () => Promise<PictureRunResult>;
   onUnlinkFollows?: (contactIds: string[]) => Promise<number>;
   followsPersonaName?: string;
   followsLast?: FollowsImportState;
@@ -61,13 +72,15 @@ interface Props {
 
 const COMPACT_THRESHOLD = 8;
 
-function RowAvatar({ pubkey, name, relayUrl, encryptionKey }: {
+function RowAvatar({ pubkey, name, relayUrl, encryptionKey, directoryId, contactId }: {
   pubkey: string | null; name: string; relayUrl: string; encryptionKey: string | null;
+  directoryId: string; contactId: string;
 }) {
-  const url = useContactAvatar(pubkey ?? '', relayUrl, encryptionKey);
+  const shared = useContactAvatar(pubkey ?? '', relayUrl, encryptionKey);
+  const { url, badgeUrl } = useContactPicture({ encryptionKey, pubkey, directoryId, contactId, sharedUrl: pubkey ? shared : null });
   return (
     <div style={{ flexShrink: 0 }}>
-      <ContactAvatar url={pubkey ? url : null} name={name} pubkey={pubkey ?? name} size={32} />
+      <ContactAvatar url={url} badgeUrl={badgeUrl} name={name} pubkey={pubkey ?? name} size={40} />
     </div>
   );
 }
@@ -81,7 +94,8 @@ function ContactRow({ contact, guardianName, relayUrl, encryptionKey, onTap }: {
   return (
     <button className="row row-button" onClick={onTap} aria-label={`Open ${shownName}`}>
       <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
-        <RowAvatar pubkey={pubkey} name={shownName} relayUrl={relayUrl} encryptionKey={encryptionKey} />
+        <RowAvatar pubkey={pubkey} name={shownName} relayUrl={relayUrl} encryptionKey={encryptionKey}
+          directoryId={contact.directoryId} contactId={contact.contactId} />
         <span className="row-main">
           <span className="row-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {shownName}{contact.appIntroductions?.some(i => i.status === 'pending') ? ' · Link needs review' : ''}
@@ -112,7 +126,25 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
   contacts, loading, guardianName, subjectName, relayUrl, encryptionKey,
   onSelectContact, onNewContact, onAddKen, onManageFamily, onInvites,
   onImportFollows, onUnlinkFollows, followsPersonaName, followsLast, followsDisabledReason, initialFollowsOpen = false,
+  followsPicturesAvailable = false, onRefreshPictures,
 }: Props) {
+  const [picturesAsking, setPicturesAsking] = useState(false);
+  const [picturesBusy, setPicturesBusy] = useState(false);
+  const [picturesNote, setPicturesNote] = useState('');
+  async function refreshPictures() {
+    if (!onRefreshPictures) return;
+    setPicturesAsking(false);
+    setPicturesBusy(true);
+    setPicturesNote('');
+    try {
+      const r = await onRefreshPictures();
+      setPicturesNote(r.unreachable ? PICTURES_RELAYS_UNREACHABLE_COPY : picturesResultCopy(r.downloaded, r.failed));
+    } catch {
+      setPicturesNote(PICTURES_REFRESH_FAILED_COPY);
+    } finally {
+      setPicturesBusy(false);
+    }
+  }
   const [followsOpen, setFollowsOpen] = useState(initialFollowsOpen);
   const showFollows = !!((onImportFollows && onUnlinkFollows) || followsDisabledReason);
   const [filter, setFilter] = useState<ContactsFilter>('all');
@@ -245,8 +277,18 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
             onImport={onImportFollows ?? (async () => ({ status: 'unreachable' }))}
             onUnlink={onUnlinkFollows ?? (async () => 0)}
             disabledReason={followsDisabledReason}
+            picturesAvailable={followsPicturesAvailable}
           />
         )}
+        {onRefreshPictures && !picturesAsking && (
+          <button className="btn btn-secondary" disabled={picturesBusy} onClick={() => { setPicturesNote(''); setPicturesAsking(true); }}>
+            {picturesBusy ? REFRESHING_PICTURES_LABEL : REFRESH_PICTURES_LABEL}
+          </button>
+        )}
+        {onRefreshPictures && picturesAsking && (
+          <ContactPicturesConsent onAccept={() => { void refreshPictures(); }} onDecline={() => setPicturesAsking(false)} />
+        )}
+        {picturesNote && <p role="status" className="field-hint" style={{ margin: 0 }}>{picturesNote}</p>}
         {onAddKen && (
           <button className="btn btn-ghost" onClick={onAddKen}>{RECOGNISE_PUBLIC_KEY_LABEL}</button>
         )}

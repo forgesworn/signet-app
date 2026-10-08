@@ -11,12 +11,15 @@
  *      privacy invariant (don't auto-leak IP to a third-party host).
  *   3. Empty — shows a placeholder.
  *
- * Renders an Upload button only when an `onUpload` callback is wired; otherwise
- * only paste-URL is supported (no Blossom).
+ * Renders an Upload button only when an `onPick` callback is wired; otherwise
+ * only paste-URL is supported (no Blossom). A square picture goes through the
+ * header gate and the crop screen first (`usePicturePick`), so `onPick` gets the
+ * file AND the chosen square; a wide banner is passed straight through.
  */
 
-import type React from 'react';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
+import type { PictureCrop } from '../lib/picture-crop';
+import { usePicturePick } from '../hooks/usePicturePick';
 import { Icon } from './Icon';
 
 export interface ImageRowProps {
@@ -25,7 +28,10 @@ export interface ImageRowProps {
   showPreview: boolean;
   uploading: boolean;
   hostname: string;
-  onUpload?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  /** A picked file; `crop` is the square chosen on the crop screen (square pictures only, never banners). */
+  onPick?: (file: File, crop?: PictureCrop) => void | Promise<void>;
+  /** A picked file the gate refused (copy to show), so the host can use its own error style. */
+  onPickError?: (message: string) => void;
   onPasteUrl: (value: string) => void;
   onShowPreview: () => void;
   onRemove: () => void;
@@ -39,13 +45,19 @@ export function ImageRow({
   showPreview,
   uploading,
   hostname,
-  onUpload,
+  onPick,
+  onPickError,
   onPasteUrl,
   onShowPreview,
   onRemove,
   disabled,
   aspect = 'square',
 }: ImageRowProps) {
+  const picker = usePicturePick({
+    crop: aspect !== 'wide',
+    onPicked: (file, crop) => onPick?.(file, crop),
+    onError: message => onPickError?.(message),
+  });
   const isAllowedScheme = url ? safeImageOrLinkUrl(url) !== null : true;
   const renderInline = !!url && isAllowedScheme && (isSignetHosted || showPreview);
 
@@ -69,13 +81,14 @@ export function ImageRow({
 
   return (
     <div className="slot-image-block">
+      {picker.cropScreen}
       <div className="slot-image-row">
         {thumb}
         <div className="slot-image-actions">
-          {onUpload && (
+          {onPick && (
             <label className="btn btn-ghost btn-sm" style={{ cursor: disabled || uploading ? 'not-allowed' : 'pointer' }}>
               {uploading ? 'Uploading…' : url ? 'Change…' : 'Upload…'}
-              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={onUpload} disabled={disabled || uploading} />
+              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={picker.onInputChange} disabled={disabled || uploading} />
             </label>
           )}
           {url && (

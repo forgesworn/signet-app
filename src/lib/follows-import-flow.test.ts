@@ -126,3 +126,62 @@ describe('runFollowsImport', () => {
     expect(await runFollowsImport(d)).toMatchObject({ unfollowed: [], unfollowedKept: 1 });
   });
 });
+
+describe('runFollowsImport — profile pictures', () => {
+  it('without consent fetches names only and never touches pictures', async () => {
+    const fetchProfiles = vi.fn(async () => new Map());
+    const syncPictures = vi.fn();
+    const fetchNames = vi.fn(async () => new Map([[hex(1), 'Ann']]));
+    const { d, recogniseContacts } = deps({ pictures: false, fetchProfiles, syncPictures, fetchNames });
+    const out = await runFollowsImport(d);
+    expect(fetchProfiles).not.toHaveBeenCalled();
+    expect(syncPictures).not.toHaveBeenCalled();
+    expect(fetchNames).toHaveBeenCalled();
+    expect(recogniseContacts.mock.calls[0][0][0]).toMatchObject({ pubkey: hex(1), displayName: 'Ann' });
+    expect(out.status === 'done' && out.pictures).toBeFalsy();
+  });
+
+  it('with consent, one kind-0 fetch gives names and the pictures for the filed follows', async () => {
+    const fetchProfiles = vi.fn(async () => new Map([[hex(1), { displayName: 'Ann', pictureUrl: 'https://x/a.jpg' }]]));
+    const syncPictures = vi.fn(async () => ({ downloaded: 1, failed: 0, removed: 0, unchanged: 0 }));
+    const fetchNames = vi.fn();
+    const { d, recogniseContacts } = deps({ pictures: true, fetchProfiles, syncPictures, fetchNames });
+    const out = await runFollowsImport(d);
+    expect(fetchNames).not.toHaveBeenCalled();
+    expect(recogniseContacts.mock.calls[0][0][0]).toMatchObject({ pubkey: hex(1), displayName: 'Ann' });
+    expect(syncPictures).toHaveBeenCalledWith([hex(1), hex(2), hex(3)], expect.any(Map));
+    expect(out.status === 'done' && out.pictures).toEqual({ downloaded: 1, failed: 0 });
+  });
+
+  it('pictures only for the most recent follows the backup could hold', async () => {
+    const syncPictures = vi.fn(async () => ({ downloaded: 0, failed: 0, removed: 0, unchanged: 0 }));
+    const { d } = deps({
+      pictures: true, fetchProfiles: async () => new Map(), syncPictures,
+      recogniseContacts: vi.fn(async () => ({ added: 1, linked: 0, unchanged: 0, skippedRemoved: 0, covered: 1, trimmed: true, requested: 3 })),
+    });
+    await runFollowsImport(d);
+    expect(syncPictures).toHaveBeenCalledWith([hex(3)], expect.any(Map));
+  });
+
+  it('every relay unreachable: names import as short npubs, pictures are flagged and not synced', async () => {
+    const syncPictures = vi.fn();
+    const { d, recogniseContacts } = deps({ pictures: true, fetchProfiles: async () => 'unreachable' as const, syncPictures });
+    const out = await runFollowsImport(d);
+    expect(syncPictures).not.toHaveBeenCalled();
+    expect(recogniseContacts).toHaveBeenCalled();
+    expect(recogniseContacts.mock.calls[0][0][0].pubkey).toBe(hex(1));
+    expect(out.status).toBe('done');
+    expect(out.status === 'done' && out.pictures).toEqual({ downloaded: 0, failed: 0, unreachable: true });
+  });
+
+  it('a picture failure never fails the import', async () => {
+    const { d } = deps({
+      pictures: true,
+      fetchProfiles: async () => new Map([[hex(1), { pictureUrl: 'https://x/a.jpg' }]]),
+      syncPictures: async () => { throw new Error('boom'); },
+    });
+    const out = await runFollowsImport(d);
+    expect(out.status).toBe('done');
+    expect(out.status === 'done' && out.pictures).toEqual({ downloaded: 0, failed: 1 });
+  });
+});

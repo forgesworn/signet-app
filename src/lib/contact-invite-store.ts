@@ -9,6 +9,7 @@ import type { SealedContactPacket } from '@forgesworn/signet-contacts/adapters/i
 import type { NostrEvent } from 'signet-protocol';
 import { verifyEvent } from 'signet-protocol';
 import { getDb } from './db';
+import { recordPartnerCardPhoto } from './contact-exchange-record';
 import { decryptSecret } from './crypto-store';
 import { privateVaultQueue } from './private-vault-queue';
 import { updateEncryptedPrivateState } from './private-vault-store';
@@ -284,7 +285,18 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
     outbox: [...outbox.values()].sort((a, b) => a.id.localeCompare(b.id)),
     ...(conflicts.size ? { conflicts: [...conflicts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, row]) => row) } : {}) }); 
 }
+/**
+ * Merge a restored invite vault into this device's. The vault is sealed to self
+ * and already carries every finished exchange's card, partner photo key
+ * included (a sanctioned destination, S2: the same stance as the contact-picture
+ * backup key). So a restored phone gets its received photos back: each
+ * completed exchange's partner key goes into the `contactAvatars` store, never
+ * over a newer row (`recordPartnerCardPhoto` compares the card's own time).
+ */
 export async function restoreContactInviteVault(directoryId: string, key: string, raw: string): Promise<void> {
   const remote = await parseContactInviteVault(raw, directoryId);
   await updateContactInviteVault(directoryId, key, local => mergeContactInviteVault(local, remote));
+  for (const exchange of remote.exchanges) {
+    if (exchange.phase === 'complete') await recordPartnerCardPhoto({ exchange, key });
+  }
 }

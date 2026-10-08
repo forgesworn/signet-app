@@ -5,6 +5,8 @@ import { listContactOperationsV2, saveContactOperationsV2, purgeAllUserData } fr
 import { applyOperations } from './contacts-v2-reducer';
 import { buildOperation } from './contacts-v2-mutations';
 import { shortNpub } from './nostr-follows';
+import { getContactAvatar } from './db';
+import { openDB } from 'idb';
 const key = 'exchange contact test', own = '1'.repeat(64), peer = '2'.repeat(64);
 const actor = { actorPubkey: own, actorRole: 'owner' as const, actorDeviceId: '3'.repeat(32) };
 function exchange() {
@@ -144,4 +146,116 @@ it('a proven key is lifted to mutual, and an already-mutual key gets no further 
   await seedExisting('mutual');
   await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: { ...exchange(), wordsConfirmedAt: 103 }, isCurrent: () => true });
   expect((await listContactOperationsV2('owner', key)).filter(op => op.action === 'update-identity')).toHaveLength(0);
+});
+
+// Partner cards. The requester reads the acceptance's card; the recipient reads the request's.
+const photo = { key: '8'.repeat(64), server: 'https://blossom.example.com/', hash: '9'.repeat(64) };
+const withCards = (role: 'requester' | 'recipient', card: { name?: string; photo?: typeof photo }, origin?: ReturnType<typeof link>['origin']) => {
+  const base = exchange();
+  return role === 'requester'
+    ? { ...base, acceptance: { ...base.acceptance!, card }, ...(origin ? { origin } : {}) }
+    : { ...base, role: 'recipient' as const, request: { ...base.request, card }, ...(origin ? { origin } : {}) };
+};
+it('requester side: the partner card name beats the invite caption, which beats the short key', async () => {
+  const caption = link('Caption name').origin;
+  const carded = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }, caption), isCurrent: () => true });
+  expect(await nameOf(carded)).toBe('Card name');
+  await purgeAllUserData();
+  const captionOnly = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }, caption), isCurrent: () => true });
+  expect(await nameOf(captionOnly)).toBe('Caption name');
+  await purgeAllUserData();
+  const neither = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  expect(await nameOf(neither)).toBe(shortNpub(peer));
+});
+it('recipient side: the partner card name beats the short key', async () => {
+  const carded = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', { name: 'Card name' }), isCurrent: () => true });
+  expect(await nameOf(carded)).toBe('Card name');
+  await purgeAllUserData();
+  const bare = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', {}), isCurrent: () => true });
+  expect(await nameOf(bare)).toBe(shortNpub(own));
+});
+// Found on two phones 2026-10-08: contacts made by an exchange before cards
+// existed were named with the short key, and re-adding them after a remove
+// kept that placeholder over the card name and the caption.
+const seedNamed = async (displayName: string, removed: boolean) => {
+  const contactId = '9'.repeat(32);
+  const make = (action: Parameters<typeof buildOperation>[0]['action'], value: unknown, clock: number) => buildOperation({
+    directoryId: 'owner', contactId, action, value, clock, actor, now: 1000, operationId: clock.toString(16).padStart(32, '0') });
+  await saveContactOperationsV2([make('add', { type: 'person', displayName, tier: 'kith' }, 1),
+    make('add-identity', { itemId: 'a'.repeat(32), pubkey: peer, provenance: 'direct', verification: 'unverified' }, 2),
+    ...(removed ? [make('remove', {}, 3)] : [])], key);
+  return contactId;
+};
+it('a removed contact named only with the short key comes back with the card name, else the caption', async () => {
+  const contactId = await seedNamed(shortNpub(peer), true);
+  expect(await recordCompletedContactExchange({ directoryId: 'owner', key, actor,
+    exchange: withCards('requester', { name: 'Card name' }, link('Caption name').origin), isCurrent: () => true })).toBe(contactId);
+  expect(await nameOf(contactId)).toBe('Card name');
+  await purgeAllUserData();
+  await seedNamed(shortNpub(peer), true);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }, link('Caption name').origin), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Caption name');
+});
+it('a live contact still named with the short key takes the card name, once', async () => {
+  const contactId = await seedNamed(shortNpub(peer), false);
+  const args = { directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true };
+  await recordCompletedContactExchange(args);
+  expect(await nameOf(contactId)).toBe('Card name');
+  const count = (await listContactOperationsV2('owner', key)).length;
+  await recordCompletedContactExchange(args);
+  expect(await listContactOperationsV2('owner', key)).toHaveLength(count);
+});
+it('a name the user chose survives a remove and re-add, and no card or caption means no rename', async () => {
+  const contactId = await seedNamed('Mum', true);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Mum');
+  await purgeAllUserData();
+  await seedNamed(shortNpub(peer), false);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  expect((await listContactOperationsV2('owner', key)).filter(op => op.action === 'rename')).toHaveLength(0);
+  expect(await nameOf(contactId)).toBe(shortNpub(peer));
+});
+it('an existing contact keeps its own name over a card name, and a card name over the UTF-16 cap falls through', async () => {
+  const contactId = await seedExisting('unverified');
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Friend');
+  await purgeAllUserData();
+  const long = await recordCompletedContactExchange({ directoryId: 'owner', key, actor,
+    exchange: withCards('requester', { name: '\u{1F600}'.repeat(60) }, link('Caption name').origin), isCurrent: () => true });
+  expect(await nameOf(long)).toBe('Caption name');
+});
+it('saves the partner photo key with the card server and hash as the fallback, on either side, and not at all without a photo', async () => {
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  expect(await getContactAvatar(peer, key)).toMatchObject({ pubkey: peer, shareKey: photo.key, fallback: { server: photo.server, hash: photo.hash } });
+  await purgeAllUserData();
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', { photo }), isCurrent: () => true });
+  expect(await getContactAvatar(own, key)).toMatchObject({ shareKey: photo.key, fallback: { server: photo.server, hash: photo.hash } });
+  await purgeAllUserData();
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Only a name' }), isCurrent: () => true });
+  expect(await getContactAvatar(peer, key)).toBeNull();
+});
+it('the stored fallback is sealed at rest, and unreadable under another key', async () => {
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  const raw = await (await openDB('my-signet')).get('contactAvatars', peer);
+  expect(JSON.stringify(raw)).not.toContain(photo.server);
+  expect(JSON.stringify(raw)).not.toContain(photo.key);
+  expect(await getContactAvatar(peer, 'a different key')).toBeNull();
+});
+
+it('M4: a replayed older exchange never overwrites a newer received key; a newer one does', async () => {
+  const at = (now: number, p: typeof photo) => {
+    const nonce = '4'.repeat(64);
+    const request = createContactRequest({ id: '5'.repeat(32), from: own, to: peer, nonce,
+      reply: { secret: '6'.repeat(64), relays: ['wss://relay.example'] }, now });
+    const accepted = acceptContactExchange(request, '7'.repeat(64), now + 1);
+    const done = confirmContactRevealSent(receiveContactAcceptance(beginContactExchange(request, nonce), accepted.acceptance!, now + 2));
+    return { ...done, acceptance: { ...done.acceptance!, card: { photo: p } } };
+  };
+  const newer = { key: 'a'.repeat(64), server: 'https://new.example.com', hash: 'b'.repeat(64) };
+  const run = (e: ReturnType<typeof at>) => recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: e, isCurrent: () => true });
+  await run(at(1_700_000_500, newer));
+  await run(at(1_700_000_100, photo)); // the older exchange replays after the newer one
+  expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: newer.key, fallback: { server: newer.server, hash: newer.hash } });
+  await run(at(1_700_000_900, { ...photo, hash: 'c'.repeat(64) })); // a genuinely newer card wins
+  expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: photo.key, fallback: { hash: 'c'.repeat(64) } });
 });

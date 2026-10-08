@@ -9,7 +9,7 @@ import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
 import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
 import { isValidRelayUrl } from './relay-url';
 import type { ChildRulesPayload } from './child-rules-wire';
@@ -21,12 +21,13 @@ import { validateOperation, validateRecord } from './contacts-v2-reducer';
 import { createSerialQueue } from './contacts-v2-queue';
 import { portableSettingsValues } from './portable-settings';
 import { privateVaultQueue } from './private-vault-queue';
+import { forgetContactPictureKeys, contactPictureGeneration, ContactPicturesLockedError, sealContactPicture, openContactPicture, type ContactPicture } from './contact-picture-crypto';
 import { parseGuardianActingEntry, pruneGuardianActing, type GuardianActingEntry } from './guardian-acting';
 
 export { encryptSecret, decryptSecret } from './crypto-store';
 
 const DB_NAME = 'my-signet';
-const DB_VERSION = 26;
+const DB_VERSION = 27;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -324,6 +325,12 @@ function getDB(): Promise<IDBPDatabase> {
           const rules = db.createObjectStore('childRules', { keyPath: 'id' });
           rules.createIndex('by-dependant', 'dependantId');
         }
+        // Version 27: contactPictures — device-local contact picture thumbnails
+        // (downloaded kind-0 pictures and the user's own). Body encrypted;
+        // only id / updatedAt stay clear. Never on any sync rail.
+        if (oldVersion < 27 && !db.objectStoreNames.contains('contactPictures')) {
+          db.createObjectStore('contactPictures', { keyPath: 'id' });
+        }
       },
     });
   }
@@ -358,6 +365,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== BUNKER_SECRET_KEY &&
     r.id !== PRO_PERSONA_KEY &&
     r.id !== HEARTWOOD_OPERATOR_KEY &&
+    r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
     !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
@@ -567,6 +575,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === BUNKER_SECRET_KEY) continue;
     if (identity.id === PRO_PERSONA_KEY) continue;
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
+    if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
@@ -768,6 +777,10 @@ export async function saveContactRecordV2(record: ContactRecord, encryptionKey: 
 export async function listContactRecordsV2(directoryId: string, encryptionKey: string): Promise<ContactRecord[]> {
   const db = await getDB();
   const rows = await db.getAllFromIndex('contactRecordsV2', 'directoryId', directoryId) as EncryptedRow[];
+  return decryptContactRecordRows(rows, encryptionKey);
+}
+
+async function decryptContactRecordRows(rows: EncryptedRow[], encryptionKey: string): Promise<ContactRecord[]> {
   // I2 perf: batched so a store where several rows share a salt (any rows
   // written via a batch save elsewhere) costs one derivation per distinct
   // salt to read, not one per row.
@@ -1321,13 +1334,21 @@ export interface ContactAvatarRecord {
   pubkey: string;
   shareKey: string;
   addedAt: number;
+  /**
+   * Where the sharer's contact card said the blob lives (design 2026-10-07 §1).
+   * Used only when the sharer's kind-30078 pointer cannot be found on our
+   * relays. Sealed with the key at rest, since it names the contact's server.
+   */
+  fallback?: { server: string; hash: string };
 }
 
-/** Save a recipient-side contact-share key. shareKey encrypted at rest. */
+/** Save a recipient-side contact-share key. shareKey (and any fallback) encrypted at rest. */
 export async function saveContactAvatar(rec: ContactAvatarRecord, encryptionKey: string): Promise<void> {
   const encrypted = await encryptSecret(rec.shareKey, encryptionKey);
+  const { fallback, ...rest } = rec;
+  const sealedFallback = fallback ? await encryptSecret(JSON.stringify({ server: fallback.server, hash: fallback.hash }), encryptionKey) : undefined;
   const db = await getDB();
-  await db.put('contactAvatars', { ...rec, shareKey: encrypted });
+  await db.put('contactAvatars', { ...rest, shareKey: encrypted, ...(sealedFallback ? { fallback: sealedFallback } : {}) });
 }
 
 /** Load + decrypt a contact-share key. Null if absent or wrong key. */
@@ -1336,7 +1357,17 @@ export async function getContactAvatar(pubkey: string, encryptionKey: string): P
   const rec = await db.get('contactAvatars', pubkey);
   if (!rec) return null;
   try {
-    return { pubkey: rec.pubkey, addedAt: rec.addedAt, shareKey: await decryptSecret(rec.shareKey, encryptionKey) };
+    const shareKey = await decryptSecret(rec.shareKey, encryptionKey);
+    // A fallback that will not open or parse is dropped; the key still works.
+    let fallback: ContactAvatarRecord['fallback'];
+    const sealed = (rec as { fallback?: unknown }).fallback;
+    if (typeof sealed === 'string') {
+      try {
+        const parsed = JSON.parse(await decryptSecret(sealed, encryptionKey)) as { server?: unknown; hash?: unknown };
+        if (typeof parsed.server === 'string' && typeof parsed.hash === 'string') fallback = { server: parsed.server, hash: parsed.hash };
+      } catch { /* keep the key without the fallback */ }
+    }
+    return { pubkey: rec.pubkey, addedAt: rec.addedAt, shareKey, ...(fallback ? { fallback } : {}) };
   } catch {
     return null;
   }
@@ -2254,6 +2285,60 @@ export async function deleteBunkerSecret(): Promise<void> {
   await db.delete('identity', BUNKER_SECRET_KEY);
 }
 
+/**
+ * Every raw row of the `identity` store (the identity, every `dependant:` row
+ * and the marker rows), as stored: NOT decrypted. Used to ask "does anything
+ * still reference this Blossom blob?" (`blob-deletion.ts`): the hash and URL
+ * fields are routing fields kept in clear, so this costs no decryption and
+ * cannot be fooled by a stale React copy.
+ */
+export async function listIdentityStoreRows(): Promise<unknown[]> {
+  const db = await getDB();
+  return db.getAll('identity');
+}
+
+// --- Install uploader secret (encrypted) ---
+// One `identity`-store row keyed 'installUploaderSecret': 32 random bytes,
+// hex, encrypted with the unlock key — same pattern as `bunkerSecret`. It is
+// the HMAC key behind the Blossom uploader keys (`blossom-uploader.ts`): only
+// this install can rebuild a blob's uploader key, so only it can sign that
+// blob's DELETE. Never synced, never on a wire; `purgeAllUserData` clears it
+// with the rest of the `identity` store.
+
+const UPLOADER_SECRET_KEY = 'installUploaderSecret';
+
+async function openUploaderSecret(encrypted: string, encryptionKey: string): Promise<Uint8Array> {
+  const hex = await decryptSecret(encrypted, encryptionKey);
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('Uploader secret is unreadable');
+  return hexToBytes(hex);
+}
+
+/**
+ * The install's uploader secret, created on first use. The caller zero-fills
+ * the returned bytes. A stored row that cannot be read throws rather than
+ * being replaced: a new secret would orphan every earlier upload's delete key.
+ * The create is a get-then-put in ONE transaction, so two racing first uses
+ * (two tabs, two uploads) end up sharing the row that landed first.
+ */
+export async function getOrCreateUploaderSecret(encryptionKey: string): Promise<Uint8Array> {
+  const db = await getDB();
+  const existing = await db.get('identity', UPLOADER_SECRET_KEY);
+  if (existing?.secret) return openUploaderSecret(existing.secret, encryptionKey);
+
+  const fresh = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    const encrypted = await encryptSecret(bytesToHex(fresh), encryptionKey);
+    const tx = db.transaction('identity', 'readwrite');
+    const raced = await tx.store.get(UPLOADER_SECRET_KEY);
+    if (!raced?.secret) await tx.store.put({ id: UPLOADER_SECRET_KEY, secret: encrypted });
+    await tx.done;
+    if (!raced?.secret) return fresh.slice();
+    return await openUploaderSecret(raced.secret, encryptionKey);
+  } finally {
+    fresh.fill(0);
+  }
+}
+
 // --- Heartwood operator credential (encrypted) ---
 // One `identity`-store row keyed 'heartwoodOperator', the whole credential
 // JSON encrypted with the unlock key — same pattern as `bunkerSecret`.
@@ -2468,6 +2553,42 @@ export async function purgeAllUserData(): Promise<void> {
     forgetChildRuleCache();
     await db.clear('childRules');
   }
+  forgetContactPictureKeys();
+  if (db.objectStoreNames.contains('contactPictures')) await db.clear('contactPictures');
+}
+
+// --- Contact pictures (v27) ---
+// Device-local thumbnails: `kind0:<pubkey>` (downloaded from a contact's
+// kind-0 picture, only after the user's explicit consent) and
+// `own:<directoryId>:<contactId>` (a picture the user chose). Never synced.
+
+/** `gen`: the key generation the caller's run started under (`contactPictureGeneration`); stale ⇒ rejects, nothing written. */
+export async function saveContactPicture(picture: ContactPicture, encryptionKey: string, gen?: number): Promise<void> {
+  const row = await sealContactPicture(picture, encryptionKey, gen);
+  const db = await getDB();
+  // A lock can land while the key derives (600k PBKDF2) or the body encrypts;
+  // re-check right before the write, which is the only step that persists.
+  if (gen !== undefined && gen !== contactPictureGeneration()) throw new ContactPicturesLockedError();
+  await db.put('contactPictures', row);
+}
+
+export async function getContactPicture(id: string, encryptionKey: string, gen?: number): Promise<ContactPicture | null> {
+  const db = await getDB();
+  return openContactPicture(await db.get('contactPictures', id), encryptionKey, gen);
+}
+
+/** Every readable picture. Unreadable rows are skipped, never thrown. */
+export async function listContactPictures(encryptionKey: string, gen?: number): Promise<ContactPicture[]> {
+  const db = await getDB();
+  const rows = await db.getAll('contactPictures');
+  const out = await Promise.all(rows.map(r => openContactPicture(r, encryptionKey, gen)));
+  return out.filter((p): p is ContactPicture => p !== null);
+}
+
+export async function deleteContactPicture(id: string, gen?: number): Promise<void> {
+  const db = await getDB();
+  if (gen !== undefined && gen !== contactPictureGeneration()) throw new ContactPicturesLockedError();
+  await db.delete('contactPictures', id);
 }
 
 // --- Paired-child dependant-status cache ---

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPrivateOrInternalHost } from './safe-url';
+import { isPrivateOrInternalHost, isSafeBlossomBase, isSafeContactBlossomBase } from './safe-url';
 import { safeImageOrLinkUrl } from './public-profile-publish';
 
 describe('isPrivateOrInternalHost (SSRF guard — security audit 2026-06-15)', () => {
@@ -98,5 +98,73 @@ describe('safeImageOrLinkUrl applies the SSRF guard on the https path', () => {
   it('allows legitimate public https avatar/profile URLs', () => {
     expect(safeImageOrLinkUrl('https://cdn.nostr.build/abc.jpg')?.protocol).toBe('https:');
     expect(safeImageOrLinkUrl('https://blossom.example.com/hash')?.protocol).toBe('https:');
+  });
+});
+
+describe('IPv6 literals that wrap an internal or translated address', () => {
+  it('refuses NAT64, 6to4-of-internal, site-local and mapped-loopback hosts', () => {
+    expect(isPrivateOrInternalHost('64:ff9b::a9fe:a9fe')).toBe(true);
+    expect(isPrivateOrInternalHost('64:ff9b:1::1')).toBe(true);
+    expect(isPrivateOrInternalHost('2002:a9fe:a9fe::')).toBe(true);
+    expect(isPrivateOrInternalHost('fec0::1')).toBe(true);
+    expect(isPrivateOrInternalHost('::ffff:7f00:1')).toBe(true);
+    expect(isPrivateOrInternalHost('ff02::1')).toBe(true);
+  });
+  it('allows 6to4 wrapping a public address and ordinary global IPv6', () => {
+    expect(isPrivateOrInternalHost('2002:808:808::')).toBe(false); // 8.8.8.8
+    expect(isPrivateOrInternalHost('2606:4700:4700::1111')).toBe(false);
+  });
+  it('treats an unparseable IPv6 host as internal', () => {
+    expect(isPrivateOrInternalHost('1:2:3')).toBe(true);
+    expect(isPrivateOrInternalHost('::g')).toBe(true);
+  });
+  it('safeImageOrLinkUrl refuses each of them after URL normalisation', () => {
+    expect(safeImageOrLinkUrl('https://[64:ff9b::a9fe:a9fe]/')).toBeNull();
+    expect(safeImageOrLinkUrl('https://[2002:a9fe:a9fe::]/')).toBeNull();
+    expect(safeImageOrLinkUrl('https://[fec0::1]/')).toBeNull();
+    expect(safeImageOrLinkUrl('https://[::ffff:127.0.0.1]/')).toBeNull();
+  });
+});
+
+describe('isSafeBlossomBase (the user\'s OWN server: S3)', () => {
+  it('accepts a named host, a single-label name and a public IP literal', () => {
+    for (const u of ['https://blossom.example.com', 'https://cdn.nostr.build/media', 'https://nas', 'https://nas/', 'https://203.0.113.5', 'https://8.8.8.8']) {
+      expect(isSafeBlossomBase(u), u).toBe(true);
+    }
+  });
+  it('still refuses private, loopback and link-local hosts, plain http and junk', () => {
+    for (const u of ['https://localhost', 'https://app.localhost', 'https://127.0.0.1', 'https://10.0.0.5', 'https://192.168.1.1',
+      'https://172.16.0.1', 'https://169.254.169.254', 'https://[::1]', 'https://[fe80::1]', 'https://[fd00::1]', 'https://100.64.0.1',
+      'https://2130706433', 'https://0x7f000001', 'http://blossom.example.com', 'not a url', '']) {
+      expect(isSafeBlossomBase(u), u).toBe(false);
+    }
+  });
+});
+
+describe('isSafeContactBlossomBase (a server a contact chose: signet-contacts contact-invite-v1)', () => {
+  it('accepts a named public https host, with or without a path or trailing slashes', () => {
+    expect(isSafeContactBlossomBase('https://blossom.example.com')).toBe(true);
+    expect(isSafeContactBlossomBase('https://blossom.example.com/')).toBe(true);
+    expect(isSafeContactBlossomBase('https://cdn.nostr.build/media')).toBe(true);
+  });
+  it('refuses private, loopback and link-local hosts', () => {
+    for (const u of ['https://localhost', 'https://app.localhost', 'https://127.0.0.1', 'https://10.0.0.5', 'https://192.168.1.1',
+      'https://172.16.0.1', 'https://169.254.169.254', 'https://[::1]', 'https://[fe80::1]', 'https://[fd00::1]', 'https://100.64.0.1']) {
+      expect(isSafeContactBlossomBase(u), u).toBe(false);
+    }
+  });
+  it('refuses single-label hosts, including with a trailing dot', () => {
+    for (const u of ['https://nas', 'https://intranet/', 'https://nas.', 'https://blossom:8443']) expect(isSafeContactBlossomBase(u), u).toBe(false);
+  });
+  it('refuses every IP literal, public ones too, in every spelling the URL parser accepts', () => {
+    for (const u of ['https://8.8.8.8', 'https://1.1.1.1/', 'https://[2606:4700:4700::1111]', 'https://2130706433', 'https://0x7f000001',
+      'https://0177.0.0.1', 'https://[::ffff:8.8.8.8]', 'https://1.2.3']) {
+      expect(isSafeContactBlossomBase(u), u).toBe(false);
+    }
+  });
+  it('refuses plain http and malformed input', () => {
+    expect(isSafeContactBlossomBase('http://blossom.example.com')).toBe(false);
+    expect(isSafeContactBlossomBase('not a url')).toBe(false);
+    expect(isSafeContactBlossomBase('')).toBe(false);
   });
 });

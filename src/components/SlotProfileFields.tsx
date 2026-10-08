@@ -30,11 +30,14 @@
  * this up.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NpubRow } from './NpubRow';
-import type { PublicProfileConfig, PersonaPublicProfile } from '../types';
+import type { PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { checkNip05, parseNip05, type Nip05CheckResult } from '../lib/nip05-check';
+import type { PictureCrop } from '../lib/picture-crop';
+import { blobDeletionNote, publishedBlobHashes, serverFromBlobUrl, type DeleteOutcome } from '../lib/blob-deletion';
+import { OLD_PICTURE_STAYS_COPY, withBlobHost } from '../lib/blob-deletion-copy';
 import { ImageRow } from './ImageRow';
 import { Icon } from './Icon';
 
@@ -63,6 +66,13 @@ export interface SlotProfileFieldsProps {
   pubkey: string;
   config: PublicProfileConfig;
   publishedState?: PersonaPublicProfile;
+  /**
+   * The slot's stored base of the kind-0 last published (device-local). The
+   * durable record of which Blossom blobs the live profile shows: the blob
+   * clean-up never deletes one of them, across a "Save locally for now" and a
+   * remount alike.
+   */
+  publishedBase?: PublicProfileBase;
   slotKind: SlotKind;
   /** Shows "Imported — not in your seed phrase" badge above fields. Extras only. */
   imported?: boolean;
@@ -81,7 +91,15 @@ export interface SlotProfileFieldsProps {
   onPublishNow?: () => Promise<void>;
 
   /** Uploads a file to Blossom and returns the resulting URL + sha256. */
-  onUploadPicture?: (file: File, kind: 'picture' | 'banner') => Promise<{ url: string; sha256: string }>;
+  onUploadPicture?: (file: File, kind: 'picture' | 'banner', crop?: PictureCrop) => Promise<{ url: string; sha256: string }>;
+
+  /**
+   * Deletes a picture/banner blob this install uploaded (design 2026-10-07
+   * §2). The parent signs with the public-picture uploader and refuses a blob
+   * any stored slot still references (R1). Never throws; optional, and
+   * without it old blobs are simply left on the server.
+   */
+  onDeleteBlob?: (hash: string, server: string) => Promise<DeleteOutcome>;
 
   /**
    * Persist a NIP-05 check result after the "Check" button runs `checkNip05`.
@@ -166,12 +184,14 @@ export function SlotProfileFields({
   pubkey,
   config,
   publishedState,
+  publishedBase,
   slotKind,
   imported = false,
   pairedChildView = false,
   onSaveConfig,
   onPublishNow,
   onUploadPicture,
+  onDeleteBlob,
   onNip05Checked,
 }: SlotProfileFieldsProps) {
   // Field state, seeded from `config`. Local form-only; parent owns canonical.
@@ -205,6 +225,74 @@ export function SlotProfileFields({
   // before showing this modal, so the parent's slot is up to date.
   const [republishPromptOpen, setRepublishPromptOpen] = useState(false);
   const [republishing, setRepublishing] = useState(false);
+
+  // Blossom blob housekeeping (design 2026-10-07 §2).
+  //  - `sessionUploads`: blobs uploaded at pick time during this editing
+  //    session (hash -> server). One that never reaches a save (replaced or
+  //    removed before Save, or the form is left) is an orphan: deleted
+  //    silently (R2).
+  //  - `formHashes` / `savedHashes`: what the form and the saved config
+  //    reference right now, kept in refs so the orphan sweep (also run on
+  //    unmount) never reads a stale closure.
+  //  - `pendingOld`: blobs a SAVED config used that this save replaced or
+  //    removed. Deleted straight after the save when the profile isn't
+  //    published, or once the republish lands (R4); otherwise kept.
+  //  - `blobNotes`: the one-line results shown under the Save button.
+  const sessionUploads = useRef(new Map<string, string>());
+  const formHashes = useRef({ picture: config.pictureBlossomHash, banner: config.bannerBlossomHash });
+  const savedHashes = useRef({ picture: config.pictureBlossomHash, banner: config.bannerBlossomHash });
+  const pendingOld = useRef<Array<{ hash: string; server: string }>>([]);
+  // Durable "do not sweep" sources (S1): what the saved config named when the
+  // form opened, and what the stored base of the PUBLISHED kind-0 shows. Re-picking
+  // the same photo re-encodes to the same bytes, so a pick can land on a hash the
+  // saved or live profile already uses; that blob is never a session orphan.
+  const openHashes = useRef(new Set([config.pictureBlossomHash, config.bannerBlossomHash].filter((h): h is string => !!h).map(h => h.toLowerCase())));
+  const publishedHashes = useRef(new Set<string>());
+  publishedHashes.current = new Set(publishedBlobHashes(publishedBase));
+  const hasPublishedBase = !!publishedBase;
+  function isDurableHash(hash: string): boolean {
+    const h = hash.toLowerCase();
+    return openHashes.current.has(h) || publishedHashes.current.has(h)
+      || savedHashes.current.picture?.toLowerCase() === h || savedHashes.current.banner?.toLowerCase() === h;
+  }
+  const onDeleteBlobRef = useRef(onDeleteBlob);
+  onDeleteBlobRef.current = onDeleteBlob;
+  const [blobNotes, setBlobNotes] = useState<string[]>([]);
+
+  // The saved config is authoritative whenever the parent hands in a new one.
+  useEffect(() => {
+    savedHashes.current = { picture: config.pictureBlossomHash, banner: config.bannerBlossomHash };
+  }, [config.pictureBlossomHash, config.bannerBlossomHash]);
+
+  /** R2: delete every session upload nothing references any more. Silent. */
+  function sweepOrphans(keep: Array<string | undefined>) {
+    const del = onDeleteBlobRef.current;
+    for (const [hash, server] of [...sessionUploads.current]) {
+      if (keep.includes(hash)) continue;
+      sessionUploads.current.delete(hash);
+      // Never an orphan: the saved or the published profile uses this blob (S1).
+      if (isDurableHash(hash)) continue;
+      if (del) void del(hash, server).catch(() => undefined);
+    }
+  }
+
+  // Leaving the form abandons whatever was picked but never saved.
+  useEffect(() => () => {
+    sweepOrphans([savedHashes.current.picture, savedHashes.current.banner]);
+  }, []);
+
+  function setFormPicture(url: string, hash: string | undefined) {
+    setPictureUrl(url);
+    setPictureBlossomHash(hash);
+    formHashes.current = { ...formHashes.current, picture: hash };
+    sweepOrphans([formHashes.current.picture, formHashes.current.banner, savedHashes.current.picture, savedHashes.current.banner]);
+  }
+  function setFormBanner(url: string, hash: string | undefined) {
+    setBannerUrl(url);
+    setBannerBlossomHash(hash);
+    formHashes.current = { ...formHashes.current, banner: hash };
+    sweepOrphans([formHashes.current.picture, formHashes.current.banner, savedHashes.current.picture, savedHashes.current.banner]);
+  }
 
   // NIP-05 check — never auto-runs. Only the "Check" button tap below calls
   // checkNip05; no effect anywhere in this component fetches on mount, save,
@@ -289,22 +377,20 @@ export function SlotProfileFields({
     }
   }
 
-  async function handleUpload(kind: 'picture' | 'banner', e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !onUploadPicture) return;
+  async function handleUpload(kind: 'picture' | 'banner', file: File, crop?: PictureCrop) {
+    if (!onUploadPicture) return;
     if (kind === 'picture') setUploadingPicture(true);
     else setUploadingBanner(true);
     setError('');
     try {
-      const { url, sha256 } = await onUploadPicture(file, kind);
+      const { url, sha256 } = await onUploadPicture(file, kind, crop);
+      const server = serverFromBlobUrl(url, sha256);
+      if (server && !isDurableHash(sha256)) sessionUploads.current.set(sha256, server);
       if (kind === 'picture') {
-        setPictureUrl(url);
-        setPictureBlossomHash(sha256);
+        setFormPicture(url, sha256);
         setShowPicturePreview(true);
       } else {
-        setBannerUrl(url);
-        setBannerBlossomHash(sha256);
+        setFormBanner(url, sha256);
         setShowBannerPreview(true);
       }
     } catch (err) {
@@ -316,24 +402,60 @@ export function SlotProfileFields({
   }
 
   function handlePastedPictureUrl(value: string) {
-    setPictureUrl(value);
-    setPictureBlossomHash(undefined);
+    setFormPicture(value, undefined);
     setShowPicturePreview(false);
   }
   function handlePastedBannerUrl(value: string) {
-    setBannerUrl(value);
-    setBannerBlossomHash(undefined);
+    setFormBanner(value, undefined);
     setShowBannerPreview(false);
   }
   function removePicture() {
-    setPictureUrl('');
-    setPictureBlossomHash(undefined);
+    setFormPicture('', undefined);
     setShowPicturePreview(false);
   }
   function removeBanner() {
-    setBannerUrl('');
-    setBannerBlossomHash(undefined);
+    setFormBanner('', undefined);
     setShowBannerPreview(false);
+  }
+
+  /**
+   * Delete the blobs a save replaced or removed and say how it went. The
+   * parent's delete refuses anything a stored slot still references (R1), so
+   * a blob moved between the picture and banner fields, or shared with
+   * another slot, is left alone and says nothing.
+   */
+  async function deletePendingOld() {
+    const todo = pendingOld.current;
+    pendingOld.current = [];
+    await deleteBlobs(todo);
+  }
+
+  async function deleteBlobs(todo: Array<{ hash: string; server: string }>) {
+    const del = onDeleteBlobRef.current;
+    if (!del || todo.length === 0) return;
+    const notes: string[] = [];
+    for (const { hash, server } of todo) {
+      let outcome: DeleteOutcome;
+      try { outcome = await del(hash, server); } catch { outcome = 'failed'; }
+      // Gone from the server: picking the same photo again is a fresh upload.
+      if (outcome === 'deleted') openHashes.current.delete(hash.toLowerCase());
+      const note = blobDeletionNote('picture', outcome, server);
+      if (note && !notes.includes(note)) notes.push(note);
+    }
+    if (notes.length > 0) setBlobNotes(notes);
+  }
+
+  /** R4: the profile still shows the old blobs, so they stay. */
+  function keepPendingOld() {
+    const todo = pendingOld.current;
+    pendingOld.current = [];
+    if (todo.length === 0) return;
+    const hosts: string[] = [];
+    for (const { server } of todo) {
+      const line = withBlobHost(OLD_PICTURE_STAYS_COPY, server);
+      if (!hosts.includes(line)) hosts.push(line);
+    }
+    setBlobNotes(hosts);
   }
 
   async function handleSave() {
@@ -343,15 +465,49 @@ export function SlotProfileFields({
     }
     setSaving(true);
     setError('');
+    setBlobNotes([]);
     try {
       const next = buildCandidate();
+      // What the saved config used before this save: anything it no longer
+      // uses afterwards was replaced or removed.
+      const previous: Array<{ hash: string; server: string | null }> = [];
+      if (config.pictureBlossomHash && config.pictureBlossomHash !== next.pictureBlossomHash) {
+        previous.push({ hash: config.pictureBlossomHash, server: serverFromBlobUrl(config.pictureUrl, config.pictureBlossomHash) });
+      }
+      if (config.bannerBlossomHash && config.bannerBlossomHash !== next.bannerBlossomHash) {
+        previous.push({ hash: config.bannerBlossomHash, server: serverFromBlobUrl(config.bannerUrl, config.bannerBlossomHash) });
+      }
       await onSaveConfig(next);
+      savedHashes.current = { picture: next.pictureBlossomHash, banner: next.bannerBlossomHash };
+      // A blob the save kept graduates from R2 (session orphan) to R4 (saved):
+      // a later save that replaces it goes through `pendingOld`, never the
+      // silent sweep. Everything else picked this session is now an orphan.
+      if (next.pictureBlossomHash) sessionUploads.current.delete(next.pictureBlossomHash);
+      if (next.bannerBlossomHash) sessionUploads.current.delete(next.bannerBlossomHash);
+      sweepOrphans([]);
+      const replaced = previous.filter((p): p is { hash: string; server: string } => p.server !== null);
+      // R4 reads the durable record of the published profile (S1). When it is
+      // known, a replaced blob the live profile does NOT show can go at once;
+      // only the ones it does show wait on the republish. With no stored base
+      // the slot's publication state decides, as before.
+      const published = !pairedChildView && publishedState?.enabled === true;
+      const showsLive = (p: { hash: string }) => publishedHashes.current.has(p.hash.toLowerCase());
+      const holdBack = published && hasPublishedBase ? replaced.filter(showsLive) : replaced;
+      const goNow = published && hasPublishedBase ? replaced.filter(p => !showsLive(p)) : [];
+      pendingOld.current = holdBack;
+      if (goNow.length > 0) void deleteBlobs(goNow);
       // §9 Q7 — after successful local save, if the slot is currently
       // published, ask whether to push the changes to Nostr too. Skip the
       // prompt in paired-child view (no publish capability locally) and
       // when the parent didn't wire onPublishNow.
       if (!pairedChildView && publishedState?.enabled === true && onPublishNow) {
+        // R4: whether the old blobs go depends on the answer.
         setRepublishPromptOpen(true);
+      } else if (!pairedChildView && publishedState?.enabled === true) {
+        keepPendingOld();
+      } else {
+        // Not awaited: the save is done, and a slow server must not hold the button.
+        void deletePendingOld();
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
@@ -370,6 +526,8 @@ export function SlotProfileFields({
     try {
       await onPublishNow();
       setRepublishPromptOpen(false);
+      // R4: this save republished, so the old blobs are no longer shown.
+      void deletePendingOld();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Publish failed');
     } finally {
@@ -486,7 +644,8 @@ export function SlotProfileFields({
             showPreview={showPicturePreview}
             uploading={uploadingPicture}
             hostname={hostFromUrl(pictureUrl)}
-            onUpload={onUploadPicture ? (e) => handleUpload('picture', e) : undefined}
+            onPick={onUploadPicture ? (file, crop) => handleUpload('picture', file, crop) : undefined}
+            onPickError={setError}
             onPasteUrl={handlePastedPictureUrl}
             onShowPreview={() => setShowPicturePreview(true)}
             onRemove={removePicture}
@@ -501,7 +660,8 @@ export function SlotProfileFields({
             showPreview={showBannerPreview}
             uploading={uploadingBanner}
             hostname={hostFromUrl(bannerUrl)}
-            onUpload={onUploadPicture ? (e) => handleUpload('banner', e) : undefined}
+            onPick={onUploadPicture ? (file) => handleUpload('banner', file) : undefined}
+            onPickError={setError}
             onPasteUrl={handlePastedBannerUrl}
             onShowPreview={() => setShowBannerPreview(true)}
             onRemove={removeBanner}
@@ -616,6 +776,12 @@ export function SlotProfileFields({
             </button>
           </div>
         )}
+
+        {blobNotes.length > 0 && (
+          <div role="status" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+            {blobNotes.map(line => <div key={line}>{line}</div>)}
+          </div>
+        )}
       </div>
 
       {republishPromptOpen && (
@@ -642,7 +808,7 @@ export function SlotProfileFields({
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-secondary"
-                onClick={() => setRepublishPromptOpen(false)}
+                onClick={() => { setRepublishPromptOpen(false); keepPendingOld(); }}
                 disabled={republishing}
                 style={{ flex: 1 }}
               >

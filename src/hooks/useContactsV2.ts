@@ -39,6 +39,7 @@ import type {
   BlockValue,
   CeilingValue,
   ContactOperation,
+  ContactPicturePointer,
   ContactRecord,
   ContactTier,
   EffectiveContact,
@@ -108,6 +109,10 @@ export interface UseContactsV2Result {
   updateCheck: (contactId: string, check: Omit<ContactCheck, 'ownerIdentityPubkey'>) => Promise<void>;
   removeCheck: (contactId: string, id: string) => Promise<void>;
   setNote: (contactId: string, note: string) => Promise<void>;
+  /** Record the encrypted-backup pointer for the user's own picture of this contact (`set-picture`). */
+  setPicture: (contactId: string, pointer: ContactPicturePointer) => Promise<void>;
+  /** Remove that pointer (`clear-picture`). */
+  clearPicture: (contactId: string) => Promise<void>;
   /**
    * `refuseMerge` (the "Confirm it's them" flow): checked inside the queued
    * write against the fresh log; if the new key would merge this contact with
@@ -438,6 +443,8 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     setTier: useCallback((contactId, tier) => mutate({ contactId, action: 'set-tier', value: { tier } }), [mutate]),
     setRoles: useCallback((contactId, roles) => mutate({ contactId, action: 'set-roles', value: { roles } }), [mutate]),
     setNote: useCallback((contactId, note) => mutate({ contactId, action: 'note', value: { note } as NoteValue }), [mutate]),
+    setPicture: useCallback((contactId, pointer) => mutate({ contactId, action: 'set-picture', value: { server: pointer.server, hash: pointer.hash, key: pointer.key, plainHash: pointer.plainHash } }), [mutate]),
+    clearPicture: useCallback((contactId) => mutate({ contactId, action: 'clear-picture', value: {} }), [mutate]),
     recordOrigin: useCallback((contactId, origin) => {
       if (!opts.ownerIdentityPubkey) throw new Error('Select the identity for this contact history.');
       return mutate({ contactId, action: 'record-origin', value: { ...origin, ownerIdentityPubkey: opts.ownerIdentityPubkey } });

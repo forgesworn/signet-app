@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ContactsRolodex } from './ContactsRolodex';
 import type { EffectiveContact } from '../types';
@@ -133,5 +133,40 @@ describe('ContactsRolodex', () => {
       identities: [{ itemId: 'i1', pubkey: key, provenance: 'direct', verification: 'unverified', addedAt: 1 } as never] })]);
     expect(screen.queryByText('66dd41aa…')).toBeNull();
     expect(screen.getByRole('button', { name: /^Open npub1/ })).toBeTruthy();
+  });
+});
+
+describe('ContactsRolodex — Refresh pictures', () => {
+  it('is absent without the handler (paired-child install)', () => {
+    renderRolodex([contact({ contactId: 'a' })]);
+    expect(screen.queryByRole('button', { name: 'Refresh pictures' })).toBeNull();
+  });
+
+  it('asks before downloading anything; "Not now" downloads nothing', () => {
+    const onRefreshPictures = vi.fn(async () => ({ downloaded: 1, failed: 0, removed: 0, unchanged: 0 }));
+    renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
+    expect(screen.getByText('Download their profile pictures?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    expect(onRefreshPictures).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Refresh pictures' })).toBeTruthy();
+  });
+
+  it('downloads after consent and reports the result', async () => {
+    const onRefreshPictures = vi.fn(async () => ({ downloaded: 4, failed: 2, removed: 1, unchanged: 3 }));
+    renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
+    expect(await screen.findByText("Downloaded 4 pictures, 2 couldn't be downloaded.")).toBeTruthy();
+    expect(onRefreshPictures).toHaveBeenCalledTimes(1);
+  });
+
+  it('says no relay could be reached instead of "Downloaded 0 pictures."', async () => {
+    const onRefreshPictures = vi.fn(async () => ({ downloaded: 0, failed: 0, removed: 0, unchanged: 0, unreachable: true as const }));
+    renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
+    expect(await screen.findByText("Couldn't reach Nostr relays, so no pictures were checked. Try again in a moment.")).toBeTruthy();
+    expect(screen.queryByText(/Downloaded/)).toBeNull();
   });
 });

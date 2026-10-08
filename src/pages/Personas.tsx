@@ -405,6 +405,7 @@ export function Personas({
           personaName={followsOffer.name}
           onImport={followsOfferHandlers.onImportFollows}
           onUnlink={followsOfferHandlers.onUnlinkFollows}
+          picturesAvailable={followsOfferHandlers.picturesAvailable}
           onNotNow={() => setFollowsOffer(null)}
         />
       )}

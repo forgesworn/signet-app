@@ -540,6 +540,8 @@ describe('module source vocabulary check', () => {
       'ContactInviteQRCard.tsx',
       'ContactNew.tsx',
       'ContactOrigins.tsx',
+      'ContactPictureCrop.tsx',
+      'ContactPicturesConsent.tsx',
       'ContactShare.tsx',
       'ContactShareFields.tsx',
       'ContactShareQR.tsx',

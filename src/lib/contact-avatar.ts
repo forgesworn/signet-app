@@ -84,6 +84,52 @@ export function selectLatestPointerByAuthor(
 }
 
 /**
+ * What a pointer lookup found. A `ContactAvatarPointer` is a live pointer.
+ * `'retracted'` means the sharer stopped sharing: their newest signed event is a
+ * tombstone (an empty or non-pointer replaceable) or a NIP-09 deletion of the
+ * pointer. `null` means no event at all, which is the only case where the
+ * card's stored fallback may stand in (S4).
+ */
+export type ContactAvatarLookup = ContactAvatarPointer | 'retracted' | null;
+
+/** The addressable coordinate of a persona's pointer, as a kind-5 `a` tag names it. */
+export function contactAvatarCoordinate(pubkeyHex: string): string {
+  return `${CONTACT_AVATAR_KIND}:${pubkeyHex.toLowerCase()}:${CONTACT_AVATAR_D_TAG}`;
+}
+
+/**
+ * Like `selectLatestPointerByAuthor`, but tells a retraction apart from "nothing
+ * found". Input may mix the author's kind-30078 pointer events with their kind-5
+ * deletions of the pointer's coordinate (callers pass a signature-verified set).
+ *  - the newest pointer-kind event parses to a pointer -> that pointer, unless a
+ *    deletion of the coordinate is newer than it -> 'retracted';
+ *  - the newest pointer-kind event does NOT parse (the `{}` tombstone, or junk
+ *    the author themselves signed) -> 'retracted', never an older pointer;
+ *  - no pointer-kind event but a deletion of the coordinate -> 'retracted';
+ *  - nothing -> null.
+ */
+export function selectPointerLookup(
+  events: Array<{ pubkey: string; created_at: number; content: string; kind?: number; tags?: string[][] }>,
+  authorHex: string,
+): ContactAvatarLookup {
+  const lc = authorHex.toLowerCase();
+  const coord = contactAvatarCoordinate(lc);
+  const mine = events.filter(e => e.pubkey.toLowerCase() === lc);
+  const deletions = mine.filter(e => e.kind === 5 && (e.tags ?? []).some(t => t[0] === 'a' && t[1]?.toLowerCase() === coord));
+  const pointers = mine.filter(e => e.kind !== 5);
+  const newest = <T extends { created_at: number }>(list: T[]): T | undefined =>
+    list.length === 0 ? undefined : list.reduce((a, b) => (b.created_at > a.created_at ? b : a));
+  const latestPointer = newest(pointers);
+  const latestDeletion = newest(deletions);
+  if (latestPointer) {
+    const parsed = parseContactAvatarPointer(latestPointer);
+    if (!parsed) return 'retracted';
+    return latestDeletion && latestDeletion.created_at > latestPointer.created_at ? 'retracted' : parsed;
+  }
+  return latestDeletion ? 'retracted' : null;
+}
+
+/**
  * Publish/refresh the pointer, signed by the persona's own key. Returns ok.
  * Modelled on publishKensSync in ken-sync.ts (RelayClient connect/publish/disconnect shape).
  */
@@ -125,7 +171,7 @@ export async function publishContactAvatarPointer(
 export async function retractContactAvatarPointer(backend: SigningBackend, relayUrl: string): Promise<boolean> {
   if (!isValidRelayUrl(relayUrl)) return false;
   const pubkey = backend.activePublicKeyHex;
-  const coord = `${CONTACT_AVATAR_KIND}:${pubkey}:${CONTACT_AVATAR_D_TAG}`;
+  const coord = contactAvatarCoordinate(pubkey);
   const deletion: UnsignedEvent = {
     kind: 5, pubkey, created_at: Math.floor(Date.now() / 1000),
     tags: [['a', coord]], content: 'contact-avatar retracted',
@@ -150,7 +196,7 @@ export async function retractContactAvatarPointer(backend: SigningBackend, relay
 }
 
 /**
- * Fetch the latest pointer authored by `pubkeyHex`. Null on any failure.
+ * Fetch the latest pointer authored by `pubkeyHex`. Null on any failure or when nothing is found; 'retracted' when the sharer stopped sharing (S4).
  * Modelled on fetchKensSync in ken-sync.ts (RelayClient connect/fetch/disconnect shape).
  *
  * The relay's `authors:` filter is untrusted — a hostile relay can return an
@@ -161,24 +207,31 @@ export async function retractContactAvatarPointer(backend: SigningBackend, relay
 export async function fetchContactAvatarPointer(
   pubkeyHex: string,
   relayUrl: string,
-): Promise<ContactAvatarPointer | null> {
+): Promise<ContactAvatarLookup> {
   if (!isValidRelayUrl(relayUrl)) return null;
   if (!isValidHexKey(pubkeyHex.toLowerCase())) return null;
 
   try {
+    // The pointer, and any NIP-09 deletion of it, so a retraction reads as
+    // 'retracted' rather than as "nothing found" (S4).
     const events = await fetchEvents([{
       kinds: [CONTACT_AVATAR_KIND],
       authors: [pubkeyHex.toLowerCase()],
       '#d': [CONTACT_AVATAR_D_TAG],
       limit: 1,
+    }, {
+      kinds: [5],
+      authors: [pubkeyHex.toLowerCase()],
+      '#a': [contactAvatarCoordinate(pubkeyHex)],
+      limit: 5,
     }] as never, { timeoutMs: RELAY_FETCH_TIMEOUT_MS, relays: [relayUrl] });
     if (!events || events.length === 0) return null;
 
     // Signature + author verification (L1) — drop relay-forged events before
     // any parse. kind 30078 is replaceable, so the relay should send only the
-    // latest; selectLatestPointerByAuthor sorts defensively regardless.
+    // latest; selectPointerLookup sorts defensively regardless.
     const verified = verifiedAuthoredEvents(events as NostrEvent[], pubkeyHex);
-    return selectLatestPointerByAuthor(verified, pubkeyHex);
+    return selectPointerLookup(verified, pubkeyHex);
   } catch {
     return null;
   }
@@ -196,8 +249,8 @@ export async function fetchContactAvatarPointer(
 export async function fetchContactAvatarPointers(
   pubkeys: string[],
   relayUrl: string,
-): Promise<Map<string, ContactAvatarPointer>> {
-  const results = new Map<string, ContactAvatarPointer>();
+): Promise<Map<string, ContactAvatarPointer | 'retracted'>> {
+  const results = new Map<string, ContactAvatarPointer | 'retracted'>();
   if (!isValidRelayUrl(relayUrl)) return results;
 
   const validAuthors = pubkeys
@@ -211,6 +264,10 @@ export async function fetchContactAvatarPointers(
       kinds: [CONTACT_AVATAR_KIND],
       authors: validAuthors,
       '#d': [CONTACT_AVATAR_D_TAG],
+    }, {
+      kinds: [5],
+      authors: validAuthors,
+      '#a': validAuthors.map(contactAvatarCoordinate),
     }] as never, { timeoutMs: RELAY_FETCH_TIMEOUT_MS, relays: [relayUrl] });
     if (!events || events.length === 0) return results;
 
@@ -218,8 +275,8 @@ export async function fetchContactAvatarPointers(
     // per-pubkey inside selectLatestPointerByAuthor.
     const verified = verifiedAuthoredEvents(events as NostrEvent[]);
     for (const author of validAuthors) {
-      const pointer = selectLatestPointerByAuthor(verified, author);
-      if (pointer) results.set(author, pointer);
+      const found = selectPointerLookup(verified, author);
+      if (found) results.set(author, found);
     }
   } catch {
     // Relay unreachable / fetch error — return whatever we have (empty on
