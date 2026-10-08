@@ -174,6 +174,47 @@ it('recipient side: the partner card name beats the short key', async () => {
   const bare = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('recipient', {}), isCurrent: () => true });
   expect(await nameOf(bare)).toBe(shortNpub(own));
 });
+// Found on two phones 2026-10-08: contacts made by an exchange before cards
+// existed were named with the short key, and re-adding them after a remove
+// kept that placeholder over the card name and the caption.
+const seedNamed = async (displayName: string, removed: boolean) => {
+  const contactId = '9'.repeat(32);
+  const make = (action: Parameters<typeof buildOperation>[0]['action'], value: unknown, clock: number) => buildOperation({
+    directoryId: 'owner', contactId, action, value, clock, actor, now: 1000, operationId: clock.toString(16).padStart(32, '0') });
+  await saveContactOperationsV2([make('add', { type: 'person', displayName, tier: 'kith' }, 1),
+    make('add-identity', { itemId: 'a'.repeat(32), pubkey: peer, provenance: 'direct', verification: 'unverified' }, 2),
+    ...(removed ? [make('remove', {}, 3)] : [])], key);
+  return contactId;
+};
+it('a removed contact named only with the short key comes back with the card name, else the caption', async () => {
+  const contactId = await seedNamed(shortNpub(peer), true);
+  expect(await recordCompletedContactExchange({ directoryId: 'owner', key, actor,
+    exchange: withCards('requester', { name: 'Card name' }, link('Caption name').origin), isCurrent: () => true })).toBe(contactId);
+  expect(await nameOf(contactId)).toBe('Card name');
+  await purgeAllUserData();
+  await seedNamed(shortNpub(peer), true);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }, link('Caption name').origin), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Caption name');
+});
+it('a live contact still named with the short key takes the card name, once', async () => {
+  const contactId = await seedNamed(shortNpub(peer), false);
+  const args = { directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true };
+  await recordCompletedContactExchange(args);
+  expect(await nameOf(contactId)).toBe('Card name');
+  const count = (await listContactOperationsV2('owner', key)).length;
+  await recordCompletedContactExchange(args);
+  expect(await listContactOperationsV2('owner', key)).toHaveLength(count);
+});
+it('a name the user chose survives a remove and re-add, and no card or caption means no rename', async () => {
+  const contactId = await seedNamed('Mum', true);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true });
+  expect(await nameOf(contactId)).toBe('Mum');
+  await purgeAllUserData();
+  await seedNamed(shortNpub(peer), false);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { photo }), isCurrent: () => true });
+  expect((await listContactOperationsV2('owner', key)).filter(op => op.action === 'rename')).toHaveLength(0);
+  expect(await nameOf(contactId)).toBe(shortNpub(peer));
+});
 it('an existing contact keeps its own name over a card name, and a card name over the UTF-16 cap falls through', async () => {
   const contactId = await seedExisting('unverified');
   await recordCompletedContactExchange({ directoryId: 'owner', key, actor, exchange: withCards('requester', { name: 'Card name' }), isCurrent: () => true });

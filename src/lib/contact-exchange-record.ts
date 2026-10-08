@@ -116,6 +116,12 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     // caption: existing contact name > card name > caption > short npub.
     const rawCardName = sanitizeDisplayName(partnerCardOf(e)?.name ?? '', CAP_NAME);
     const cardName = rawCardName && rawCardName.length <= CAP_NAME ? rawCardName : undefined;
+    // The short key is the placeholder an exchange with no name writes, not a
+    // name anyone chose, so it never outranks a card name or a caption — on a
+    // removed contact coming back, or on a live one still showing it.
+    const placeholder = shortNpub(peer.toLowerCase());
+    const chosenName = existing?.displayName && existing.displayName !== placeholder ? existing.displayName : undefined;
+    const displayName = chosenName ?? cardName ?? scannedName ?? placeholder;
     const contactId = existing?.contactId ?? id(seed + ':contact');
     let clock = frontierOf(ops).maxClock + 1;
     const now = e.reveal.createdAt * 1000;
@@ -127,9 +133,12 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     };
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
-      changes.push(make('add', { type: existing?.type ?? 'person', displayName: existing?.displayName ?? cardName ?? scannedName ?? shortNpub(peer.toLowerCase()),
+      changes.push(make('add', { type: existing?.type ?? 'person', displayName,
         tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
-    } else if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
+    } else {
+      if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
+      if (displayName !== existing.displayName) changes.push(make('rename', { displayName }, 'rename'));
+    }
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,
       provenance: 'direct', verification: 'unverified' }, 'identity'));
     changes.push(make('link-list', { ownerIdentityPubkey: own, contactExchangeId: exchangeId }, 'membership'));
