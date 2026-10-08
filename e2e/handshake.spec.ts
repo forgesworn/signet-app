@@ -5,6 +5,22 @@ import { privateRelays } from './helpers/private-relays';
 
 async function camera(context: Parameters<ReturnType<typeof privateRelays>['install']>[0]) {
   await context.addInitScript(() => {
+    const sockets = new Set<WebSocket>();
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        sockets.add(this);
+        this.addEventListener('close', () => sockets.delete(this));
+      }
+    };
+    (window as any).__closeHandshakeRelay = () => {
+      let closed = 0;
+      for (const socket of sockets) if (socket.url.includes('handshake.test') && socket.readyState === WebSocket.OPEN) {
+        socket.close(); closed++;
+      }
+      return closed;
+    };
     (window as any).__handshakeErrors = [];
     window.addEventListener('signet-handshake-error', event => (window as any).__handshakeErrors.push((event as CustomEvent).detail));
     Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async () => {
@@ -28,7 +44,7 @@ async function showFrame(page: Page, qr: Awaited<ReturnType<typeof readQR>>) {
     ctx.putImageData(new ImageData(new Uint8ClampedArray(qr.pixels), qr.width, qr.height), (frame.width - qr.width) / 2, (frame.height - qr.height) / 2);
   }, qr);
 }
-test('two real QR camera reads auto-seal one signed exchange, preserve Ken and keep identity text off screen', async ({ page, context, browser }) => {
+test('two real QR camera reads recover closed relays, auto-seal one signed exchange and preserve Ken', async ({ page, context, browser }) => {
   test.setTimeout(180000);
   const relays = privateRelays(); await relays.install(context); await camera(context);
   const otherContext = await browser.newContext({ ignoreHTTPSErrors: true, baseURL: new URL(test.info().project.use.baseURL!).origin, viewport: { width: 390, height: 844 } });
@@ -46,6 +62,11 @@ test('two real QR camera reads auto-seal one signed exchange, preserve Ken and k
     await expect(page.getByText('First private persona', { exact: true })).toHaveCount(0);
     await expect(other.getByText('Second private persona', { exact: true })).toHaveCount(0);
     const [qrA, qrB] = await Promise.all([readQR(page), readQR(other)]);
+    // The mailbox list stays unchanged when a connection dies. Recovery must
+    // restore the live subscriptions without another tap or a polling cycle.
+    for (const phone of [page, other]) {
+      expect(await phone.evaluate(() => (window as any).__closeHandshakeRelay())).toBeGreaterThan(0);
+    }
     await showFrame(page, qrB); await showFrame(other, qrA);
     for (const phone of [page, other]) {
       await expect(phone.getByText('Sealed', { exact: true })).toBeVisible({ timeout: 60000 });

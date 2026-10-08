@@ -742,7 +742,9 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 .jigsaw-sigil { width: 256px; height: 256px; display: block; }
 .jigsaw-sigil-left, .jigsaw-sigil-right { width: 50%; height: min(60vh, 400px); }
 .jigsaw-sigil-left { align-self: flex-end; }
-.jigsaw-sigil-right { align-self: flex-start; }
+/* People face each other: both use their right edge, with one phone turned
+   half a turn. Turn its half too so the shared picture joins in that position. */
+.jigsaw-sigil-right { align-self: flex-end; transform: rotate(180deg); }
 .handshake-screen:has(.jigsaw-sigil-left), .handshake-screen:has(.jigsaw-sigil-right) { margin-inline: -20px; }
 .handshake-tier { text-align: center; }
 .handshake-tier .btn { margin: 4px; }

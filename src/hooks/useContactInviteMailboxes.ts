@@ -20,6 +20,8 @@ export function useContactInviteMailboxes(options: {
   const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60000));
   const trigger = useRef<() => void>(() => {});
   const [planKey, setPlanKey] = useState('[]');
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const reconnectAttempts = useRef(0);
   const closing = useRef<Promise<unknown>>(Promise.resolve());
   useEffect(() => {
     if (!options.encryptionKey) return;
@@ -42,9 +44,22 @@ export function useContactInviteMailboxes(options: {
     })().catch(() => {});
     return () => { cancelled = true; };
   }, [options.encryptionKey, scopeKey, options.version, minute]);
+  useEffect(() => { reconnectAttempts.current = 0; }, [options.encryptionKey, scopeKey, planKey]);
   useEffect(() => {
     if (!options.encryptionKey) return;
     let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    const reconnect = () => {
+      if (cancelled || reconnectTimer !== undefined || planKey === '[]') return;
+      const delay = Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempts.current++, 5));
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined;
+        if (!cancelled) setConnectionEpoch(epoch => epoch + 1);
+      }, delay);
+    };
+    const foreground = () => { if (document.visibilityState === 'visible') reconnect(); };
+    window.addEventListener('online', reconnect);
+    document.addEventListener('visibilitychange', foreground);
     const pools: Array<{ pool: SimplePool; relays: Set<string>; stops: Array<() => Promise<void>> }> = [];
     const valid = () => !cancelled;
     let queue = Promise.resolve();
@@ -69,12 +84,17 @@ export function useContactInviteMailboxes(options: {
           let attempted = 0, live = false;
           const sub = owned.pool.subscribeMany(binding.relays, { kinds: [1059], '#p': [pubkey], since: now - 32 * 86400, limit: 128 }, {
             oneose: () => { live = true; trigger.current(); },
+            // A fresh pool retains the gift-wrap lookback. The pool's built-in
+            // reconnect advances `since` to lastEmitted, which can miss new
+            // NIP-59 messages whose timestamps are deliberately backdated.
+            onclose: reconnect,
             onevent: event => {
               if (!valid() || seen.has(event.id) || attempted++ >= 128) return;
               seen.add(event.id);
               const packet = openContactMailboxWrap(event, binding.secret);
               if (!packet) return;
-              const notify = live && binding.channel === 'invite' && !state.invites.find(i => i.id === binding.id)?.app;
+              const invitation = state.invites.find(i => i.id === binding.id);
+              const notify = live && binding.channel === 'invite' && !invitation?.app;
               queue = queue.then(async () => {
                 if (!valid()) return;
                 const result = await recordContactArrival(directoryId, options.encryptionKey!, {
@@ -83,7 +103,11 @@ export function useContactInviteMailboxes(options: {
                 });
                 if (result.arrivals.some(a => a.id === event.id)) {
                   changed(); trigger.current();
-                  if (notify && !result.exchanges.some(e => e.handshake && e.role === 'requester' && e.request.from === identity)) latest.current.onRequest?.(event.id);
+                  const opticalReply = invitation?.mode === 'single-use' && invitation.name === 'Handshake'
+                    && result.exchanges.some(e => e.handshake && e.role === 'requester' && e.request.from === identity
+                      && e.handshake.startedAt >= invitation.createdAt && e.phase !== 'declined'
+                      && e.request.expiresAt > Math.floor(Date.now() / 1000));
+                  if (notify && !opticalReply) latest.current.onRequest?.(event.id);
                 }
               }).catch(() => { /* Bounded local storage failure is retried on next subscription. */ });
             },
@@ -95,6 +119,9 @@ export function useContactInviteMailboxes(options: {
     void start().catch(() => { /* Local state remains; no identity work on arrival. */ });
     return () => {
       cancelled = true;
+      clearTimeout(reconnectTimer);
+      window.removeEventListener('online', reconnect);
+      document.removeEventListener('visibilitychange', foreground);
       // Each replacement waits for the previous pools to close; otherwise a
       // burst of state updates could briefly multiply the connection budget.
       const previous = closing.current;
@@ -103,7 +130,7 @@ export function useContactInviteMailboxes(options: {
         owned.pool.close([...owned.relays]);
       })));
     };
-  }, [options.encryptionKey, scopeKey, planKey]);
+  }, [options.encryptionKey, scopeKey, planKey, connectionEpoch]);
 
   useEffect(() => {
     if (!options.encryptionKey) return;
