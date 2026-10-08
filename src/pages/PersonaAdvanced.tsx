@@ -275,6 +275,9 @@ function formatPublishedAt(ts?: number): string {
 
 export function PersonaAdvanced(props: PersonaAdvancedProps) {
   const { slotTarget, depPubkey, identity, dependants, onBack } = props;
+  // The result of the last "Stop sharing", kept here because the block that
+  // produced it unmounts once the share key is cleared.
+  const [shareStopNote, setShareStopNote] = useState('');
 
   const dep = depPubkey ? dependants.find(d => d.id === depPubkey) : undefined;
   const slotKind = inferSlotKind(slotTarget, depPubkey);
@@ -375,7 +378,10 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
 
       {/* Stop sharing the picture with contacts — only while a share key exists. */}
       {slot.contactAvatarKey && slotKind !== 'professional-persona' && props.onStopContactAvatarShare && (
-        <StopAvatarShareBlock onStop={() => props.onStopContactAvatarShare!(slotTarget, depPubkey)} />
+        <StopAvatarShareBlock onStop={() => props.onStopContactAvatarShare!(slotTarget, depPubkey)} onNote={setShareStopNote} />
+      )}
+      {shareStopNote && (
+        <p role="status" className="card section" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{shareStopNote}</p>
       )}
 
       {/* Imported nsec note — extras (user + dep) only, if imported. */}
@@ -772,15 +778,16 @@ function PrimaryKeypairBlock({
   );
 }
 
-function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<string | void> }) {
+/** `onNote` receives the one-line result of deleting the share copy (R5/R6).
+ * The page holds it, because a successful stop clears the key and this block
+ * unmounts with it. */
+function StopAvatarShareBlock({ onStop, onNote }: { onStop: () => Promise<string | void>; onNote: (note: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  // The one-line result of deleting the share copy from Blossom (R5/R6).
-  const [note, setNote] = useState('');
   const stop = async () => {
     if (busy) return;
-    setBusy(true); setError(''); setNote('');
-    try { const result = await onStop(); if (typeof result === 'string') setNote(result); }
+    setBusy(true); setError(''); onNote('');
+    try { const result = await onStop(); if (typeof result === 'string') onNote(result); }
     catch { setError('Could not stop sharing. Try again.'); }
     finally { setBusy(false); }
   };
@@ -794,7 +801,6 @@ function StopAvatarShareBlock({ onStop }: { onStop: () => Promise<string | void>
         {busy ? 'Stopping…' : 'Stop sharing my picture with contacts'}
       </button>
       {error && <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.85rem', marginTop: 8 }}>{error}</p>}
-      {note && <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: 8 }}>{note}</p>}
     </div>
   );
 }

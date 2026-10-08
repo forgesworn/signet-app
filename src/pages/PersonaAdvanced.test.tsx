@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PersonaAdvanced } from './PersonaAdvanced';
 import type { DependantIdentity, SignetIdentity } from '../types';
 
@@ -117,5 +117,20 @@ describe('PersonaAdvanced stop sharing picture', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop sharing my picture with contacts' }));
     expect((await screen.findByRole('alert')).textContent).toBe('Could not stop sharing. Try again.');
     expect(stop).toHaveBeenCalledWith('persona', undefined);
+  });
+  // Found on the OnePlus 2026-10-08: stopping clears the key, which unmounted
+  // the block, so the delete result was never seen.
+  it('keeps the delete result on screen after the key is cleared and the block goes', async () => {
+    const ownerWithKey = { ...identity, persona: { ...identity.persona, contactAvatarKey: 'k'.repeat(64) } };
+    const stop = vi.fn(async () => 'Shared picture deleted from nostr.download.');
+    const page = (who: typeof identity) => <PersonaAdvanced slotTarget="persona" identity={who} dependants={[]}
+      onPublishProfile={vi.fn(async () => ({ ok: true }))} onDisablePublicProfile={vi.fn(async () => {})}
+      onStopContactAvatarShare={stop} onBack={() => {}} />;
+    const { rerender } = render(page(ownerWithKey));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop sharing my picture with contacts' }));
+    await waitFor(() => expect(stop).toHaveBeenCalled());
+    rerender(page(identity));
+    expect(screen.queryByRole('button', { name: 'Stop sharing my picture with contacts' })).toBeNull();
+    expect((await screen.findByRole('status')).textContent).toBe('Shared picture deleted from nostr.download.');
   });
 });
