@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createContactAcceptance, createContactRequest } from '@forgesworn/signet-contacts';
+import { beginContactExchange, confirmContactRevealSent, createContactAcceptance, createContactRequest, receiveContactAcceptance } from '@forgesworn/signet-contacts';
 import { useHandshake, type HandshakeHost } from './useHandshake';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import type { ContactInviteVault, StoredContactExchange, StoredContactInvite } from '../lib/contact-invite-store';
@@ -112,4 +112,29 @@ it('sends nothing when the picture cannot be prepared, and goes on without it on
   await waitFor(() => expect(state.vault.exchanges).toHaveLength(1));
   expect(card).toHaveBeenLastCalledWith({ withoutPhoto: true });
   expect(hook.result.current.view.photoFailed).toBe(false);
+});
+it('runs again when woken during the pass that completes the exchange, sealing on the proof that just landed', async () => {
+  const state = setup();
+  const received = receiveContactAcceptance(beginContactExchange(state.request, '5'.repeat(64)), state.exchange.acceptance!, state.now);
+  const complete: StoredContactExchange = { ...confirmContactRevealSent(received), handshake: { startedAt: state.now } };
+  state.service.request.mockImplementation(async () => { state.vault.exchanges = [complete]; return contactExchangeKey(state.request); });
+  let kicked = false, stale = false;
+  const confirmHandshake = vi.fn(async () => 'c'.repeat(32));
+  Object.assign(state.service, { confirmHandshake });
+  const hook = renderHook(({ version }) => useHandshake({ ...state.host, version, nearby: null }), { initialProps: { version: 0 } });
+  // The wake-up arrives mid-pass; the pass's own read still predates the proof.
+  state.service.flush.mockImplementation(async () => {
+    if (state.vault.exchanges.length && !kicked) { kicked = true; hook.rerender({ version: 1 }); await new Promise(r => setTimeout(r, 0)); stale = true; }
+  });
+  state.service.read.mockImplementation(async () => {
+    if (!stale) return state.vault;
+    stale = false;
+    const snapshot = structuredClone(state.vault);
+    complete.handshake!.opticalAcceptanceAt = state.now;
+    return snapshot;
+  });
+  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
+  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(confirmHandshake).toHaveBeenCalledTimes(1);
 });

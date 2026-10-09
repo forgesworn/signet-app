@@ -10,6 +10,7 @@ import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
 import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
 import { isValidRelayUrl } from './relay-url';
 import type { ChildRulesPayload } from './child-rules-wire';
@@ -758,6 +759,29 @@ export async function listContactOperationsV2(directoryId: string, encryptionKey
   const db = await getDB();
   const rows = await db.getAllFromIndex('contactOpsV2', 'directoryId', directoryId) as EncryptedRow[];
   return decryptOperationRows(rows, encryptionKey);
+}
+
+/**
+ * The last decrypt of each directory's operation log, reused only while the
+ * stored rows (ids and ciphertexts) are byte-for-byte the ones it came from.
+ * Decrypting costs a PBKDF2 derivation per distinct salt, and singly-written
+ * operations each have their own, so a policy check that re-read the log paid
+ * seconds every time. Any added, removed or rewritten row is a miss. Held for
+ * one unlock: cleared on lock and on purge, bound to a digest of the key.
+ */
+let contactOperationsCache = new Map<string, { keyId: string; fingerprint: string; ops: ContactOperation[] }>();
+export function forgetContactOperationsCache() { contactOperationsCache = new Map(); }
+export async function listContactOperationsV2Cached(directoryId: string, encryptionKey: string): Promise<ContactOperation[]> {
+  const db = await getDB();
+  const rows = await db.getAllFromIndex('contactOpsV2', 'directoryId', directoryId) as EncryptedRow[];
+  const text = new TextEncoder();
+  const fingerprint = bytesToHex(sha256(text.encode(rows.map(row => `${String(row.operationId)}:${String(row.encryptedData)}`).sort().join('\n'))));
+  const keyId = bytesToHex(sha256(text.encode(`signet:contact-ops-cache:${encryptionKey}`)));
+  const hit = contactOperationsCache.get(directoryId);
+  if (hit && hit.keyId === keyId && hit.fingerprint === fingerprint) return structuredClone(hit.ops);
+  const ops = await decryptOperationRows(rows, encryptionKey);
+  contactOperationsCache.set(directoryId, { keyId, fingerprint, ops: structuredClone(ops) });
+  return ops;
 }
 
 export async function listAllContactOperationsV2(encryptionKey: string): Promise<ContactOperation[]> {
@@ -2533,6 +2557,7 @@ export async function purgeAllUserData(): Promise<void> {
   }
   if (db.objectStoreNames.contains('contactRecordsV2')) await db.clear('contactRecordsV2');
   if (db.objectStoreNames.contains('contactOpsV2')) await db.clear('contactOpsV2');
+  forgetContactOperationsCache();
   if (db.objectStoreNames.contains('contactImportSources')) await db.clear('contactImportSources');
   // R-22 (fix round 1, minor 1): the grant wipe rides the SAME queue as every
   // other grant write. Outside it, a write already queued when the purge

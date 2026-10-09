@@ -15,12 +15,14 @@ import { buildOperation } from './contacts-v2-mutations';
 import type { MutationActor } from './contacts-v2-mutations';
 import { frontierOf } from './contacts-v2-clock';
 import { verificationUpgrade } from './contacts-v2-verification';
-import { listContactOperationsV2, saveContactOperationsV2, saveContactAvatar, getContactAvatar } from './db';
+import { listContactOperationsV2Cached, saveContactOperationsV2, saveContactAvatar, getContactAvatar } from './db';
 import { partnerCardOf } from './contact-card-share';
 import type { ContactOperation } from '../types';
 const id = (value: string) => bytesToHex(sha256(new TextEncoder().encode(value))).slice(0, 32);
+/** Checked against the current log on every call; the decrypt is reused only
+ * while the stored rows are unchanged, so a new block applies at once. */
 export async function contactPeerAllowed(directoryId: string, key: string, peer: string): Promise<boolean> {
-  const records = applyOperations(await listContactOperationsV2(directoryId, key));
+  const records = applyOperations(await listContactOperationsV2Cached(directoryId, key));
   return ![...records.values()].some(r => r.identities.some(i => i.pubkey === peer)
     && resolveEffective(r, { activeGuardianPubkeys: [], defaultChildCeiling: 'ken', directoryIsDependant: directoryId !== 'owner' }).blocked);
 }
@@ -73,7 +75,7 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     const own = e.role === 'requester' ? e.request.from : e.request.to;
     const peer = e.role === 'requester' ? e.request.to : e.request.from;
     contactVerificationWords(e.request, e.acceptance, e.reveal, own);
-    const ops = await listContactOperationsV2(args.directoryId, args.key);
+    const ops = await listContactOperationsV2Cached(args.directoryId, args.key);
     const exchangeId = contactExchangeKey(e.request);
     const seed = `contact-exchange:${args.directoryId}:${exchangeId}`;
     const saved = ops.find(op => op.action === 'link-list' && (op.value as { contactExchangeId?: string }).contactExchangeId === exchangeId);

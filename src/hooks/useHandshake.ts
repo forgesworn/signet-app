@@ -18,6 +18,9 @@ export interface HandshakeHost {
   onSaved?(contactId: string): void;
   /** The Bluetooth pipe; defaults to the APK's, none in a browser. */
   nearby?: NearbyNative | null;
+  /** Prepare what the policy checks read (the contacts log), while the user
+   * is still aiming the camera, so the first check after a scan is quick. */
+  warm?(): void;
 }
 export interface HandshakeView {
   invite?: ContactInvite; peer?: ContactInvite; name?: string; sigil?: string;
@@ -117,7 +120,10 @@ export function useHandshake(host: HandshakeHost) {
               if (readAt !== undefined && scanned && handshakeRole(host.persona, scanned.invite.recipient) === currentExchange.role
                 && (currentExchange.role === 'recipient' || currentExchange.handshake?.opticalAcceptanceAt !== undefined)) await seal(true);
               else publish({ phase: oneWay || !scanned || scanned.invite.expiresAt === undefined ? 'checking' : 'waiting' });
-              return;
+              // A wake-up during this pass (the return proof just landed) runs
+              // another pass at once instead of waiting for the next trigger.
+              if (sealed) return;
+              continue;
             }
           }
           if (now() >= own.invite.expiresAt!) { publish({ phase: 'expired' }); finishNearby(); return; }
@@ -154,6 +160,7 @@ export function useHandshake(host: HandshakeHost) {
       withoutPhoto() { if (closed || noPhoto) return; noPhoto = true; publish({ photoFailed: false }); void run(); },
       confirm() { if (!running && currentExchange?.phase === 'complete') void contactInviteWork(() => seal(false)).catch(() => publish({ phase: 'failed' })); },
     };
+    latest.current.warm?.();
     void (async () => {
       try {
         own = await service.create(host.persona, 'Handshake', host.relays, 'single-use', now(), now() + 120);

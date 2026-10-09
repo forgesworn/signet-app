@@ -33,7 +33,7 @@ import { contactConnectionNotifier } from './lib/contact-connection-notification
 import { uncheckedAppConnection } from './lib/contact-app-notice';
 import { useContactAppInvites } from './hooks/useContactAppInvites';
 import { ContactInviteQRCard } from './components/ContactInviteQRCard';
-import { getOrCreateContactsDeviceId } from './lib/db';
+import { forgetContactOperationsCache, getOrCreateContactsDeviceId } from './lib/db';
 import { BotCarouselCard } from './components/BotCarouselCard';
 import { useBotInventory } from './hooks/useBotInventory';
 import { publishToRelays } from './lib/sync-relays';
@@ -4597,6 +4597,7 @@ export function App() {
       // encrypted rows stay in IDB — only the derived key is forgotten, so a
       // locked device can't read the cached sync plaintexts.
       forgetSyncCacheKeys();
+      forgetContactOperationsCache();
       // A52: and the decrypted child-rule memo.
       forgetChildRuleCache();
       // Contact pictures: the derived key and the decrypted thumbnails.
@@ -11632,6 +11633,7 @@ export function App() {
         info={pendingHandshake.info} choose={pendingHandshake.choose} encryptionKey={encryptionKey}
         version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
         service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid)}
+        warm={() => { void contactPeerAllowed(contactsScope.directoryId ?? 'owner', encryptionKey, pendingHandshake.persona).catch(() => {}); }}
         buildCard={choice => contactCardFor(pendingHandshake.persona, choice)} pairedChild={isPairedChild}
         onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(pendingHandshake.persona); }}
         onOpenContact={async contactId => {
