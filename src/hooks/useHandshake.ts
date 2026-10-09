@@ -43,15 +43,20 @@ export function useHandshake(host: HandshakeHost) {
   const kick = useRef<() => void>(() => {});
   useEffect(() => {
     let closed = false, running = false, queued = false, oneWay = false, sending = false, doubleBuzz = false, sealed = false, sealing = false, noPhoto = false;
-    let nearby: HandshakeNearby | undefined;
+    let nearby: HandshakeNearby | undefined, radioEnded = false, backgrounded = false;
+    const nearbyBudget = { events: 0 };
     let own: StoredContactInvite | undefined, scanned: HandshakeQR | undefined, readAt: number | undefined;
     let exchangeId: string | undefined, currentExchange: StoredContactExchange | undefined, arrivalId: string | undefined;
     const service = latest.current.service(() => !closed);
     const now = () => Math.floor(Date.now() / 1000);
     const publish = (patch: Partial<HandshakeView>) => { if (!closed) setView(v => ({ ...v, ...patch })); };
     const card = () => latest.current.card(noPhoto ? { withoutPhoto: true } : undefined);
-    const finishNearby = () => { if (nearby) { clearActiveHandshakeNearby(nearby); void nearby.close(); } };
-    const dial = () => { if (scanned) nearby?.connect({ pubkey: scanned.invite.recipient, secret: scanned.invite.secret }); };
+    const finishNearby = () => { if (nearby) { clearActiveHandshakeNearby(nearby); void nearby.close(); nearby = undefined; } };
+    /** Sealed, expired, failed or left: the radio stays off for good. */
+    const endNearby = () => { radioEnded = true; finishNearby(); };
+    // The requester never needs an incoming link, so it stops advertising as it dials.
+    const dial = () => { if (scanned) nearby?.connect({ pubkey: scanned.invite.recipient, secret: scanned.invite.secret },
+      { quiet: handshakeRole(host.persona, scanned.invite.recipient) === 'requester' }); };
     const confirmScans = () => {
       if (doubleBuzz) return;
       doubleBuzz = true; publish({ scansConfirmed: true }); handshakeHaptic('double');
@@ -65,7 +70,7 @@ export function useHandshake(host: HandshakeHost) {
       if (closed) return;
       sealed = true;
       handshakeHaptic('thud'); publish({ phase: 'sealed', contactId, sigil: handshakeSigil(currentExchange) });
-      finishNearby();
+      endNearby();
       latest.current.onSaved?.(contactId);
       } finally { sealing = false; }
     };
@@ -77,7 +82,9 @@ export function useHandshake(host: HandshakeHost) {
         await contactInviteWork(async () => {
         do {
           queued = false;
-          if (!own || closed) return;
+          // A pass woken while the seal was saving (the save bumps the app's
+          // version) waited for it here; it must not undo "Sealed".
+          if (!own || closed || sealed) return;
           const state = await service.read();
           if (closed) return;
           const arrivals = state.arrivals.filter(a => a.inviteId === own!.id && a.dismissedAt === undefined);
@@ -119,14 +126,19 @@ export function useHandshake(host: HandshakeHost) {
                 : currentExchange.role === 'requester' ? 'right' : 'left' });
               if (readAt !== undefined && scanned && handshakeRole(host.persona, scanned.invite.recipient) === currentExchange.role
                 && (currentExchange.role === 'recipient' || currentExchange.handshake?.opticalAcceptanceAt !== undefined)) await seal(true);
-              else publish({ phase: oneWay || !scanned || scanned.invite.expiresAt === undefined ? 'checking' : 'waiting' });
+              else {
+                const checking = oneWay || !scanned || scanned.invite.expiresAt === undefined;
+                publish({ phase: checking ? 'checking' : 'waiting' });
+                // Nothing more crosses for a seam check: the radio can go.
+                if (checking) endNearby();
+              }
               // A wake-up during this pass (the return proof just landed) runs
               // another pass at once instead of waiting for the next trigger.
               if (sealed) return;
               continue;
             }
           }
-          if (now() >= own.invite.expiresAt!) { publish({ phase: 'expired' }); finishNearby(); return; }
+          if (now() >= own.invite.expiresAt!) { publish({ phase: 'expired' }); endNearby(); return; }
         } while (queued && !closed);
         });
       } catch (error) {
@@ -134,7 +146,7 @@ export function useHandshake(host: HandshakeHost) {
         // Nothing was signed or sent: the card is built after every check and
         // before the message. The user decides whether to go on without it.
         if (error instanceof ContactCardPhotoError && !noPhoto) publish({ photoFailed: true });
-        else if (!closed) { publish({ phase: 'failed' }); finishNearby(); }
+        else if (!closed) { publish({ phase: 'failed' }); endNearby(); }
       }
       finally { running = false; }
     };
@@ -160,35 +172,53 @@ export function useHandshake(host: HandshakeHost) {
       withoutPhoto() { if (closed || noPhoto) return; noPhoto = true; publish({ photoFailed: false }); void run(); },
       confirm() { if (!running && currentExchange?.phase === 'complete') void contactInviteWork(() => seal(false)).catch(() => publish({ phase: 'failed' })); },
     };
+    /** Bluetooth runs only while this screen is visible. The always-on bunker
+     * suspends hide-lock, so the screen can stay mounted behind another app;
+     * the radio stops then and a fresh session starts if the user returns. */
+    const startNearby = () => {
+      const invite = own;
+      const native = latest.current.nearby === undefined ? nativeNearby() : latest.current.nearby;
+      if (closed || radioEnded || backgrounded || nearby || !invite || !native || document.visibilityState === 'hidden') return;
+      const carrier = nearby = new HandshakeNearby(native, {
+        ownSecret: invite.invite.secret, budget: nearbyBudget,
+        onEvent: event => service.receiveDirect(event, { identity: host.persona, inviteId: invite.id, now: now() }),
+        onChange: () => {
+          if (nearby !== carrier) return;
+          publish({ nearby: carrier.linked ? 'linked' : carrier.availability === 'off' || carrier.availability === 'denied' ? carrier.availability : undefined });
+          void run();
+        },
+      });
+      setActiveHandshakeNearby(carrier);
+      void carrier.open(takeNearbyEnablePrompt());
+      if (scanned && (oneWay || handshakeRole(host.persona, scanned.invite.recipient) === 'requester')) dial();
+    };
+    const away = () => { finishNearby(); publish({ nearby: undefined }); };
+    const visibility = () => { if (document.visibilityState === 'hidden') away(); else startNearby(); };
+    document.addEventListener('visibilitychange', visibility);
+    let stopLifecycle: (() => void) | undefined;
+    const lifecycleNative = latest.current.nearby === undefined ? nativeNearby() : latest.current.nearby;
+    // The shell's word wins: the always-on bunker re-marks a backgrounded
+    // page visible, so only the shell's foreground may restart the radio.
+    void lifecycleNative?.lifecycle?.(state => { backgrounded = state === 'background'; if (backgrounded) away(); else startNearby(); })
+      .then(stop => { if (closed) stop(); else stopLifecycle = stop; }).catch(() => {});
     latest.current.warm?.();
     void (async () => {
       try {
         own = await service.create(host.persona, 'Handshake', host.relays, 'single-use', now(), now() + 120);
         if (closed) { await service.setEnabled(own.id, false, now()); return; }
         publish({ invite: own.invite });
-        const native = latest.current.nearby === undefined ? nativeNearby() : latest.current.nearby;
-        if (native) {
-          const invite = own;
-          const carrier = nearby = new HandshakeNearby(native, {
-            ownSecret: invite.invite.secret,
-            onEvent: event => service.receiveDirect(event, { identity: host.persona, inviteId: invite.id, now: now() }),
-            onChange: () => {
-              publish({ nearby: carrier.linked ? 'linked' : carrier.availability === 'off' || carrier.availability === 'denied' ? carrier.availability : undefined });
-              void run();
-            },
-          });
-          setActiveHandshakeNearby(carrier);
-          void carrier.open(takeNearbyEnablePrompt());
-        }
+        startNearby();
         await run();
       } catch { publish({ phase: 'failed' }); }
     })();
     const expiry = setInterval(() => {
-      if (own && now() >= own.invite.expiresAt! && !sealed && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); finishNearby(); }
+      if (own && now() >= own.invite.expiresAt! && !sealed && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); endNearby(); }
     }, 1000);
     return () => {
       cancelHandshakeHaptics();
-      finishNearby();
+      endNearby();
+      document.removeEventListener('visibilitychange', visibility);
+      stopLifecycle?.();
       closed = true; clearInterval(expiry); kick.current = () => {};
       if (own) {
         const retiring = latest.current.service(() => true);

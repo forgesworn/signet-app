@@ -37,11 +37,11 @@ function secretBytes(secret: string): Uint8Array {
 }
 function tagged(tag: Uint8Array, secret: string): Uint8Array {
   const bytes = secretBytes(secret);
+  const input = new Uint8Array(tag.length + bytes.length);
   try {
-    const input = new Uint8Array(tag.length + bytes.length);
     input.set(tag); input.set(bytes, tag.length);
     return sha256(input);
-  } finally { bytes.fill(0); }
+  } finally { bytes.fill(0); input.fill(0); }
 }
 function concat(...parts: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));

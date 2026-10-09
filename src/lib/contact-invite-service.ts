@@ -13,8 +13,8 @@ import type { ContactInviteVault, ContactInviteOutbox, StoredContactExchange, Co
 export type ChildExchangeCancelReason = 'repair' | 'expired' | 'withdrawn';
 import { publishToRelays } from './sync-relays';
 import type { NostrEvent } from 'signet-protocol';
-import type { DirectCarrier } from './handshake-nearby';
-import { getPublicKey } from 'nostr-tools/pure';
+import type { DirectCarrier, NearbyReceipt } from './handshake-nearby';
+import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
 
 /** Calls never publish before their encrypted state/outbox has been persisted. */
 /**
@@ -266,14 +266,19 @@ export class ContactInviteService {
    * matched only against that handshake's own mailboxes (its single-use
    * invitation and its exchanges' reply mailboxes) and then recorded exactly
    * like a relay arrival, still sealed: the identity seal is opened later by
-   * `openInbox`, with every SDK and policy gate. True when it is stored.
+   * `openInbox`, with every SDK and policy gate. The signature is checked
+   * first, before the vault is read and before any duplicate answer, so an
+   * event id alone proves nothing.
    */
-  async receiveDirect(event: NostrEvent, scope: { identity: string; inviteId: string; now: number }): Promise<boolean> {
+  async receiveDirect(received: NostrEvent, scope: { identity: string; inviteId: string; now: number }): Promise<NearbyReceipt> {
+    // A clean copy: nostr-tools caches a verified flag on the object it is given.
+    const event: NostrEvent = { id: received.id, pubkey: received.pubkey, created_at: received.created_at, kind: received.kind,
+      tags: received.tags, content: received.content, sig: received.sig };
+    if (!verifyEvent(event)) return 'rejected';
     const state = await this.read();
-    if (state.arrivals.some(a => a.id === event.id && a.identityPubkey === scope.identity)) return true;
     const invite = state.invites.find(i => i.id === scope.inviteId && i.identityPubkey === scope.identity && i.enabled
       && i.mode === 'single-use' && i.invite.expiresAt !== undefined && scope.now < i.invite.expiresAt);
-    if (!invite) return false;
+    if (!invite) return 'rejected';
     const conflicts = conflictedContactExchanges(state);
     const mailboxes = [
       { id: invite.id, secret: invite.invite.secret, channel: 'invite' as const },
@@ -287,16 +292,21 @@ export class ContactInviteService {
       const key = deriveContactMailboxSecret(m.secret);
       try { return getPublicKey(key) === tag; } finally { key.fill(0); }
     });
-    if (!mailbox) return false;
+    if (!mailbox) return 'rejected';
     const packet = openContactMailboxWrap(event, mailbox.secret);
-    if (!packet) return false;
+    if (!packet) return 'rejected';
+    if (state.arrivals.some(a => a.id === event.id && a.identityPubkey === scope.identity)) return 'duplicate';
     this.check();
+    // Stored by THIS call: the relay path may record the same wrap meanwhile,
+    // and only a store made here may vouch for the link that carried it.
+    const recorded = { added: false };
     const result = await recordContactArrival(this.options.directoryId, this.options.encryptionKey, {
-      id: event.id, inviteId: mailbox.id, identityPubkey: scope.identity, packet, receivedAt: scope.now, channel: mailbox.channel });
+      id: event.id, inviteId: mailbox.id, identityPubkey: scope.identity, packet, receivedAt: scope.now, channel: mailbox.channel }, recorded);
     this.check();
-    const stored = result.arrivals.some(a => a.id === event.id);
-    if (stored) this.options.onChanged();
-    return stored;
+    if (!result.arrivals.some(a => a.id === event.id)) return 'rejected';
+    if (!recorded.added) return 'duplicate';
+    this.options.onChanged();
+    return 'stored';
   }
   /** Explicit inbox opening consumes the same per-unlock budget across identities. */
   async openInbox(now: number, exchangesOnly = false, identityPubkey?: string, automaticArrivals?: ReadonlySet<string>) {

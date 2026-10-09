@@ -138,3 +138,73 @@ it('runs again when woken during the pass that completes the exchange, sealing o
   await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
   expect(confirmHandshake).toHaveBeenCalledTimes(1);
 });
+it('stays sealed when saving the contact wakes a pass that was waiting behind the seal', async () => {
+  const state = setup();
+  const received = receiveContactAcceptance(beginContactExchange(state.request, '5'.repeat(64)), state.exchange.acceptance!, state.now);
+  const complete: StoredContactExchange = { ...confirmContactRevealSent(received), handshake: { startedAt: state.now } };
+  state.service.request.mockImplementation(async () => { state.vault.exchanges = [complete]; return contactExchangeKey(state.request); });
+  const hook = renderHook(({ version }) => useHandshake({ ...state.host, version, nearby: null }), { initialProps: { version: 0 } });
+  // Saving the contact bumps the app's version, as App's onCompleted does.
+  const confirmHandshake = vi.fn(async () => { hook.rerender({ version: 1 }); await new Promise(r => setTimeout(r, 20)); return 'c'.repeat(32); });
+  Object.assign(state.service, { confirmHandshake });
+  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
+  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
+  act(() => hook.result.current.oneWay());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('checking'));
+  act(() => hook.result.current.confirm());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  await act(() => new Promise(r => setTimeout(r, 300)));
+  expect(hook.result.current.view.phase).toBe('sealed');
+  expect(confirmHandshake).toHaveBeenCalledTimes(1);
+});
+it('keeps Bluetooth off while the app is hidden and restarts it on return, re-dialling as the requester', async () => {
+  let visibility: DocumentVisibilityState = 'visible';
+  const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+  const turn = (value: DocumentVisibilityState) => { visibility = value; document.dispatchEvent(new Event('visibilitychange')); };
+  try {
+    const state = setup(), nearby = fakeNearby();
+    const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+    await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+    act(() => hook.result.current.scan(handshakeQR(state.peer)));
+    await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1));
+    act(() => turn('hidden'));
+    await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
+    act(() => turn('hidden'));
+    expect(nearby.advertise).toHaveBeenCalledTimes(1);
+    act(() => turn('visible'));
+    await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(2));
+    hook.unmount();
+    await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(2));
+    act(() => turn('visible'));
+    expect(nearby.advertise).toHaveBeenCalledTimes(2);
+  } finally { spy.mockRestore(); }
+});
+it('stops Bluetooth when the shell reports the app went to the background, even if the page still looks visible', async () => {
+  const state = setup(), nearby = fakeNearby();
+  let report: ((state: 'background' | 'foreground') => void) | undefined;
+  const lifecycle = vi.fn(async (handler: (state: 'background' | 'foreground') => void) => { report = handler; return () => { report = undefined; }; });
+  const hook = renderHook(() => useHandshake({ ...state.host, nearby: { ...nearby, lifecycle } }));
+  await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+  act(() => report!('background'));
+  await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
+  act(() => report!('foreground'));
+  await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(2));
+  hook.unmount();
+  expect(report).toBeUndefined();
+});
+it('turns Bluetooth off once only the seam check is left', async () => {
+  const state = setup(), nearby = fakeNearby();
+  const received = receiveContactAcceptance(beginContactExchange(state.request, '5'.repeat(64)), state.exchange.acceptance!, state.now);
+  const complete: StoredContactExchange = { ...confirmContactRevealSent(received), handshake: { startedAt: state.now } };
+  state.service.request.mockImplementation(async () => { state.vault.exchanges = [complete]; return contactExchangeKey(state.request); });
+  const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+  await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
+  expect(nearby.stop).not.toHaveBeenCalled();
+  act(() => hook.result.current.oneWay());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('checking'));
+  await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
+});

@@ -207,9 +207,11 @@ export function compactContactInviteVault(state: ContactInviteVault, now?: numbe
   };
 }
 
-/** Arrival processing stays local and never opens an identity seal. */
-export function recordContactArrival(directoryId: string, key: string, arrival: ContactArrival): Promise<ContactInviteVault> {
+/** Arrival processing stays local and never opens an identity seal.
+ * `recorded.added` says whether this call stored it (not another path). */
+export function recordContactArrival(directoryId: string, key: string, arrival: ContactArrival, recorded?: { added: boolean }): Promise<ContactInviteVault> {
   return updateContactInviteVault(directoryId, key, old => {
+    if (recorded) recorded.added = false;
     const state = compactContactInviteVault(old);
     if (!arrival.packet) return state;
     const digest = packetHash(arrival.packet);
@@ -221,6 +223,7 @@ export function recordContactArrival(directoryId: string, key: string, arrival: 
         || state.arrivals.some(a => a.id === arrival.id) || state.outbox.some(o => o.id === arrival.id)
         || state.arrivals.filter(a => a.channel === 'exchange' && a.inviteId === arrival.inviteId && a.dismissedAt === undefined).length >= CONTACT_INVITE_PENDING_LIMIT
         || state.arrivals.filter(a => a.packet !== undefined).length >= LIMIT || state.arrivals.length >= RECEIPT_LIMIT) return state;
+      if (recorded) recorded.added = true;
       return { ...state, arrivals: [...state.arrivals, arrival] };
     }
     const invite = state.invites.find(i => i.id === arrival.inviteId && i.identityPubkey === arrival.identityPubkey);
@@ -230,6 +233,7 @@ export function recordContactArrival(directoryId: string, key: string, arrival: 
     const count = rows.filter(a => a.dismissedAt === undefined).length;
     if (count >= CONTACT_INVITE_PENDING_LIMIT || state.arrivals.filter(a => a.packet !== undefined).length >= LIMIT || state.arrivals.length >= RECEIPT_LIMIT
       || (invite.mode === 'single-use' && rows.length > 0)) return state;
+    if (recorded) recorded.added = true;
     return { ...state, arrivals: [...state.arrivals, arrival] };
   });
 }

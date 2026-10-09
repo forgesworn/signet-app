@@ -12,6 +12,8 @@ export interface DirectCarrier {
   deliver(counterparty: string, event: NostrEvent): Promise<boolean>;
 }
 export type NearbyAvailability = 'ready' | 'unsupported' | 'denied' | 'off' | 'failed';
+/** What the receiver did with a wrap: only a fresh store may bind a link. */
+export type NearbyReceipt = 'stored' | 'duplicate' | 'rejected';
 
 /** The native byte pipe (Android 12+, LE L2CAP CoC). It parses nothing:
  * frames are length-prefixed and capped, small until `trust`. */
@@ -23,13 +25,18 @@ export interface NearbyNative {
   connect(opts: { token: string; timeoutMs: number }): Promise<{ link: string }>;
   send(opts: { link: string; data: string }): Promise<void>;
   trust(opts: { link: string }): Promise<void>;
-  close(opts: { link: string }): Promise<void>;
+  /** `avoid`: this outgoing link's device failed to authenticate; skip it on rescans. */
+  close(opts: { link: string; avoid?: boolean }): Promise<void>;
+  /** Stop advertising; existing links carry on. */
+  quiet?(): Promise<void>;
   stop(): Promise<void>;
   listen(handlers: {
     link(e: { link: string; direction: 'in' | 'out' }): void;
     frame(e: { link: string; data: string }): void;
     closed(e: { link: string }): void;
   }): Promise<() => void>;
+  /** The app left or returned to the screen, where the page cannot tell. */
+  lifecycle?(handler: (state: 'background' | 'foreground') => void): Promise<() => void>;
 }
 
 const toBase64 = (bytes: Uint8Array) => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
@@ -37,7 +44,7 @@ function fromBase64(text: string): Uint8Array | null {
   try { const s = atob(text); return Uint8Array.from(s, c => c.charCodeAt(0)); } catch { return null; }
 }
 const HEX64 = /^[0-9a-f]{64}$/;
-const MAX_LINKS = 2, MAX_EVENTS_PER_LINK = 64;
+const MAX_INCOMING = 2, MAX_OUTGOING = 1, MAX_EVENTS_PER_LINK = 64, MAX_EVENTS_PER_SESSION = 128, MAX_DIALS = 3;
 
 interface LinkState {
   id: string; link: NearbyLink; outgoing: boolean; peer?: string;
@@ -56,7 +63,7 @@ interface LinkState {
  */
 export class HandshakeNearby implements DirectCarrier {
   private links = new Map<string, LinkState>();
-  private target?: { pubkey: string; secret: string; holdUntil: number; failed: boolean; dialled: boolean };
+  private target?: { pubkey: string; secret: string; holdUntil: number; failed: boolean; dialling: boolean; dials: number };
   private closed = false;
   private stopListening?: () => void;
   private timers = new Set<ReturnType<typeof setTimeout>>();
@@ -64,12 +71,18 @@ export class HandshakeNearby implements DirectCarrier {
 
   constructor(private native: NearbyNative, private opts: {
     ownSecret: string;
-    /** Store one received wrap; true when it is (now or already) stored. */
-    onEvent(event: NostrEvent): Promise<boolean>;
+    /** Store one received wrap: `stored` now, a verified `duplicate` of one
+     * already stored, or `rejected`. */
+    onEvent(event: NostrEvent): Promise<NearbyReceipt>;
     onChange(): void;
     nowMs?(): number; random?(n: number): Uint8Array;
-    holdMs?: number; ackMs?: number; connectMs?: number;
+    holdMs?: number; ackMs?: number; connectMs?: number; authMs?: number; redialMs?: number;
+    /** Shared across the carriers of one handshake screen, so returning to
+     * the foreground does not refill the event allowance. */
+    budget?: { events: number };
   }) {}
+  private ownBudget = { events: 0 };
+  private get budget() { return this.opts.budget ?? this.ownBudget; }
   private now() { return this.opts.nowMs?.() ?? Date.now(); }
   private random(n: number) { return this.opts.random?.(n) ?? crypto.getRandomValues(new Uint8Array(n)); }
   private later(ms: number, fn: () => void) {
@@ -98,6 +111,7 @@ export class HandshakeNearby implements DirectCarrier {
       await this.native.advertise({ token: toBase64(nearbyToken(this.opts.ownSecret)) });
       if (this.closed) return 'failed';
       settle('ready');
+      if (this.quietWanted) this.quieten();
       this.dial();
       return 'ready';
     } catch { return settle('failed'); }
@@ -105,29 +119,47 @@ export class HandshakeNearby implements DirectCarrier {
   }
 
   /** Connect to the phone whose QR this one read. One attempt per screen;
-   * a scan made while the permission prompt is up connects once it is ready. */
-  connect(peer: { pubkey: string; secret: string }) {
+   * a scan made while the permission prompt is up connects once it is ready.
+   * `quiet`: this phone needs no incoming link, so it stops advertising. */
+  connect(peer: { pubkey: string; secret: string }, opts: { quiet?: boolean } = {}) {
     if (this.closed || this.target || !HEX64.test(peer.pubkey) || !HEX64.test(peer.secret)
       || (this.availability !== 'ready' && this.availability !== 'starting')) return;
     const hold = this.opts.holdMs ?? 5000;
-    this.target = { ...peer, holdUntil: this.now() + hold, failed: false as boolean, dialled: false as boolean };
+    this.target = { ...peer, holdUntil: this.now() + hold, failed: false as boolean, dialling: false as boolean, dials: 0 };
     this.later(hold, () => this.changed());
+    if (opts.quiet) { this.quietWanted = true; this.quieten(); }
     this.dial();
   }
+  private quietWanted = false;
+  private quieten() { if (this.availability === 'ready' && !this.closed) void this.native.quiet?.().catch(() => {}); }
+  /** Up to three dials: a copied advert or a dropped connection costs one,
+   * and the native scan skips a device whose link failed to authenticate. */
   private dial() {
     const target = this.target;
-    if (!target || target.dialled || target.failed || this.availability !== 'ready' || this.closed) return;
-    target.dialled = true;
+    if (!target || target.dialling || target.failed || this.availability !== 'ready' || this.closed) return;
+    if ([...this.links.values()].some(s => s.outgoing)) return;
+    if (target.dials >= MAX_DIALS) { target.failed = true; this.changed(); return; }
+    target.dials++;
+    target.dialling = true;
     this.native.connect({ token: toBase64(nearbyToken(target.secret)), timeoutMs: this.opts.connectMs ?? 30000 })
-      .catch(() => { target.failed = true; this.changed(); });
+      .then(() => { target.dialling = false; })
+      .catch(() => { target.dialling = false; this.redial(); });
+  }
+  private redial() {
+    const target = this.target;
+    if (!target || this.closed || target.failed) return;
+    if (target.dials >= MAX_DIALS) { target.failed = true; this.changed(); return; }
+    this.later(this.opts.redialMs ?? 300, () => this.dial());
   }
 
   /** The SDK opened `eventId` as a message signed by `peer`: the link that
    * carried it now speaks for that peer. */
   bind(eventId: string, peer: string) {
-    for (const state of this.links.values()) {
-      if (state.link.trusted && !state.peer && state.delivered.has(eventId)) { state.peer = peer; this.changed(); }
-    }
+    const all = [...this.links.values()];
+    // One link per peer: a later link cannot take over rows already routed.
+    if (all.some(s => s.peer === peer)) return;
+    const state = all.find(s => s.link.trusted && !s.peer && s.delivered.has(eventId));
+    if (state) { state.peer = peer; this.changed(); }
   }
 
   route(counterparty: string): NearbyRoute {
@@ -171,18 +203,22 @@ export class HandshakeNearby implements DirectCarrier {
   private send(state: LinkState, frame: Uint8Array) {
     void this.native.send({ link: state.id, data: toBase64(frame) }).catch(() => this.drop(state));
   }
-  private drop(state: LinkState) {
+  /** `avoid` only for our own judgement that the far end failed to
+   * authenticate (bad frame, bad MAC, silent past the deadline), never for a
+   * remote close: a busy or restarting real peer must not be skipped. */
+  private drop(state: LinkState, avoid = false) {
     if (!this.links.has(state.id)) return;
     this.links.delete(state.id);
     this.forget(state);
-    if (state.outgoing && !state.peer && this.target) this.target.failed = true;
-    void this.native.close({ link: state.id }).catch(() => {});
+    if (state.outgoing && !state.link.trusted) this.redial();
+    void this.native.close({ link: state.id, ...(avoid && state.outgoing && !state.link.trusted ? { avoid: true } : {}) }).catch(() => {});
     this.changed();
   }
   private onLink(e: { link: string; direction: 'in' | 'out' }) {
     const outgoing = e.direction === 'out';
     const secret = outgoing ? this.target?.secret : this.opts.ownSecret;
-    if (this.closed || typeof e.link !== 'string' || this.links.has(e.link) || this.links.size >= MAX_LINKS || !secret) {
+    const same = [...this.links.values()].filter(s => s.outgoing === outgoing).length;
+    if (this.closed || typeof e.link !== 'string' || this.links.has(e.link) || same >= (outgoing ? MAX_OUTGOING : MAX_INCOMING) || !secret) {
       void this.native.close({ link: e.link }).catch(() => {});
       return;
     }
@@ -191,35 +227,42 @@ export class HandshakeNearby implements DirectCarrier {
     this.links.set(e.link, state);
     state.link.setSecret(secret);
     this.send(state, state.link.hello());
+    // An idle or failing connection gives its slot back.
+    this.later(this.opts.authMs ?? 6000, () => { if (this.links.get(e.link) === state && !state.link.trusted) this.drop(state, true); });
   }
   private onFrame(e: { link: string; data: string }) {
     const state = this.links.get(e.link);
     const bytes = typeof e.data === 'string' ? fromBase64(e.data) : null;
     if (!state) { void this.native.close({ link: e.link }).catch(() => {}); return; }
-    if (!bytes) { this.drop(state); return; }
+    if (!bytes) { this.drop(state, true); return; }
     for (const step of state.link.receive(bytes)) this.step(state, step);
   }
   private step(state: LinkState, step: NearbyStep) {
     if (step.kind === 'send') this.send(state, step.frame);
-    else if (step.kind === 'drop') this.drop(state);
+    else if (step.kind === 'drop') this.drop(state, true);
     else if (step.kind === 'trusted') {
       void this.native.trust({ link: state.id }).catch(() => this.drop(state));
-      // The camera read this secret: an outgoing link speaks for that QR's owner.
-      if (state.outgoing && this.target) state.peer = this.target.pubkey;
+      // The camera read this secret: an outgoing link speaks for that QR's owner,
+      // unless a link already does. A phone with its own link needs no advert.
+      if (state.outgoing && this.target && ![...this.links.values()].some(s => s.peer === this.target!.pubkey)) {
+        state.peer = this.target.pubkey;
+        this.quieten();
+      }
       this.changed();
     } else if (step.kind === 'ack') {
       const resolve = state.acks.get(step.id);
       state.acks.delete(step.id);
       resolve?.(step.stored);
     } else if (step.kind === 'event') {
-      if (++state.events > MAX_EVENTS_PER_LINK) { this.drop(state); return; }
+      if (++state.events > MAX_EVENTS_PER_LINK || ++this.budget.events > MAX_EVENTS_PER_SESSION) { this.drop(state); return; }
       const event = step.event;
       state.queue = state.queue.then(async () => {
-        let stored = false;
-        try { stored = await this.opts.onEvent(event); } catch { stored = false; }
+        let receipt: NearbyReceipt = 'rejected';
+        try { receipt = await this.opts.onEvent(event); } catch { receipt = 'rejected'; }
         if (!this.links.has(state.id)) return;
-        if (stored) state.delivered.add(event.id);
-        this.send(state, state.link.ack(event.id, stored));
+        // Only a fresh store binds; a duplicate is acknowledged but proves nothing.
+        if (receipt === 'stored') state.delivered.add(event.id);
+        this.send(state, state.link.ack(event.id, receipt !== 'rejected'));
       });
     }
   }
@@ -253,6 +296,7 @@ export function nativeNearby(): NearbyNative | null {
     send: opts => SignetNative.nearbySend(opts),
     trust: opts => SignetNative.nearbyTrust(opts),
     close: opts => SignetNative.nearbyClose(opts),
+    quiet: () => SignetNative.nearbyQuiet(),
     stop: () => SignetNative.nearbyStop(),
     async listen(handlers) {
       const subs = await Promise.all([
@@ -261,6 +305,10 @@ export function nativeNearby(): NearbyNative | null {
         SignetNative.addListener('nearbyClosed', handlers.closed),
       ]);
       return () => { for (const sub of subs) void sub.remove(); };
+    },
+    async lifecycle(handler) {
+      const sub = await SignetNative.addListener('nearbyLifecycle', e => handler(e.state === 'background' ? 'background' : 'foreground'));
+      return () => { void sub.remove(); };
     },
   };
 }

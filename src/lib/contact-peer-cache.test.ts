@@ -74,3 +74,12 @@ it('keeps nothing across a lock or a different unlock key, and separates directo
   expect(await contactPeerAllowed(`dependant:${'d'.repeat(64)}`, key, peer)).toBe(true);
   expect(db.list).toHaveBeenCalledTimes(4);
 });
+
+it('is not refilled by a decrypt that was still running when the app locked', async () => {
+  await saveContactOperationsV2(friend(), key);
+  const inFlight = listContactOperationsV2Cached('owner', key);
+  forgetContactPeerCache();
+  expect(await inFlight).toHaveLength(2);
+  await listContactOperationsV2Cached('owner', key);
+  expect(db.list).toHaveBeenCalledTimes(2);
+});

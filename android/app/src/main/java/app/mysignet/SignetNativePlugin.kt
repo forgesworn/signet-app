@@ -86,6 +86,21 @@ class SignetNativePlugin : Plugin() {
         Nip55Requests.attach(deliverToPage, withdrawFromPage)
     }
 
+    // The handshake radio runs only while the app is on screen. The always-on
+    // bunker keeps the WebView believing it is visible in the background (see
+    // MainActivity), so the page cannot see this itself: stop here, then tell it.
+    override fun handleOnStop() {
+        super.handleOnStop()
+        nearby.pause()
+        notifyListeners("nearbyLifecycle", JSObject().put("state", "background"))
+    }
+
+    override fun handleOnStart() {
+        super.handleOnStart()
+        nearby.resume()
+        notifyListeners("nearbyLifecycle", JSObject().put("state", "foreground"))
+    }
+
     override fun handleOnDestroy() {
         nearby.stop()
         Nip55Requests.detach(deliverToPage, withdrawFromPage)
@@ -526,7 +541,13 @@ class SignetNativePlugin : Plugin() {
 
     @PluginMethod
     fun nearbyClose(call: PluginCall) {
-        call.getString("link")?.let { nearby.close(it) }
+        call.getString("link")?.let { nearby.close(it, call.getBoolean("avoid") ?: false) }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyQuiet(call: PluginCall) {
+        nearby.quiet()
         call.resolve()
     }
 

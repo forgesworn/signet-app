@@ -770,17 +770,22 @@ export async function listContactOperationsV2(directoryId: string, encryptionKey
  * one unlock: cleared on lock and on purge, bound to a digest of the key.
  */
 let contactOperationsCache = new Map<string, { keyId: string; fingerprint: string; ops: ContactOperation[] }>();
-export function forgetContactOperationsCache() { contactOperationsCache = new Map(); }
+/** Bumped by every forget, so a decrypt still running at lock cannot refill it. */
+let contactOperationsCacheGeneration = 0;
+export function forgetContactOperationsCache() { contactOperationsCache = new Map(); contactOperationsCacheGeneration++; }
 export async function listContactOperationsV2Cached(directoryId: string, encryptionKey: string): Promise<ContactOperation[]> {
+  const generation = contactOperationsCacheGeneration;
   const db = await getDB();
   const rows = await db.getAllFromIndex('contactOpsV2', 'directoryId', directoryId) as EncryptedRow[];
   const text = new TextEncoder();
-  const fingerprint = bytesToHex(sha256(text.encode(rows.map(row => `${String(row.operationId)}:${String(row.encryptedData)}`).sort().join('\n'))));
+  // Every field the decrypt takes from the row, in clear or not.
+  const fingerprint = bytesToHex(sha256(text.encode(rows.map(row => JSON.stringify([row.operationId, row.directoryId, row.contactId,
+    row.logicalClock, row.createdAt, row.encryptedData])).sort().join('\n'))));
   const keyId = bytesToHex(sha256(text.encode(`signet:contact-ops-cache:${encryptionKey}`)));
   const hit = contactOperationsCache.get(directoryId);
   if (hit && hit.keyId === keyId && hit.fingerprint === fingerprint) return structuredClone(hit.ops);
   const ops = await decryptOperationRows(rows, encryptionKey);
-  contactOperationsCache.set(directoryId, { keyId, fingerprint, ops: structuredClone(ops) });
+  if (generation === contactOperationsCacheGeneration) contactOperationsCache.set(directoryId, { keyId, fingerprint, ops: structuredClone(ops) });
   return ops;
 }
 

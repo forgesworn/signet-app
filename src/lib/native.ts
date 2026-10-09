@@ -33,12 +33,17 @@ export interface SignetNativePlugin {
   nearbySend(opts: { link: string; data: string }): Promise<void>;
   /** The link authenticated: lift the frame cap from the handshake size to an event's. */
   nearbyTrust(opts: { link: string }): Promise<void>;
-  nearbyClose(opts: { link: string }): Promise<void>;
+  /** `avoid`: the far end failed to authenticate; rescans skip that device. */
+  nearbyClose(opts: { link: string; avoid?: boolean }): Promise<void>;
+  /** Stop advertising and accepting; existing links carry on. */
+  nearbyQuiet(): Promise<void>;
   /** Stop advertising and scanning, close the channel and every link. */
   nearbyStop(): Promise<void>;
   addListener(eventName: 'nearbyLink', listener: (event: { link: string; direction: 'in' | 'out' }) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'nearbyFrame', listener: (event: { link: string; data: string }) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'nearbyClosed', listener: (event: { link: string }) => void): Promise<PluginListenerHandle>;
+  /** The activity left or returned to the screen. On `background` the shell has already stopped the radio. */
+  addListener(eventName: 'nearbyLifecycle', listener: (event: { state: 'background' | 'foreground' }) => void): Promise<PluginListenerHandle>;
   isBiometricAvailable(): Promise<{ available: boolean }>;
   /** Wrap the 64-hex master key with a biometric-gated Keystore key. */
   biometricEnroll(opts: { secret: string }): Promise<{ ok: boolean }>;
