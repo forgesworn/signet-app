@@ -853,6 +853,8 @@ export const HANDSHAKE_COPY = {
   nearbyDenied: 'Bluetooth is not allowed for My Signet, so this handshake needs the internet.',
   photoFailed: 'Your picture needs the internet the first time you share it. Nothing has been sent.',
   withoutPhoto: 'Go on without your picture',
+  outdated: 'Their app needs updating before you can shake hands.',
+  childCard: 'Ask them to show the QR on their contact card, and scan that.',
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;

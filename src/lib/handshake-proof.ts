@@ -1,48 +1,35 @@
-import { parseContactInvite } from '@forgesworn/signet-contacts';
 import type { ContactInvite, ContactRequest } from '@forgesworn/signet-contacts';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 import { parseContactInviteLink } from './contact-invite-link';
-import { compactHandshakeInvite, readCompactHandshakeInvite } from './handshake-optical';
+import { readSessionQR, type ScannedCode } from './handshake-reveal';
 
-/** Optical envelope only. The enclosed invite and every relay message use SDK v1. */
-export interface HandshakeQR { invite: ContactInvite; echo?: string }
-export function inviteFingerprint(invite: ContactInvite): string {
-  return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify([
-    'signet:handshake:optical:v1', invite.recipient, invite.secret, invite.expiresAt,
-  ]))));
-}
-export function handshakeQR(invite: ContactInvite, peer?: ContactInvite): string {
-  if (!peer) { const compact = compactHandshakeInvite(invite); if (compact) return compact; }
-  return JSON.stringify({ handshake: 1, invite, ...(peer ? { echo: inviteFingerprint(peer) } : {}) });
-}
-export function readHandshakeQR(raw: string, now: number): HandshakeQR | null {
-  if (raw.length > 8192) return null;
-  if (raw.startsWith('SGH1:')) {
-    const decoded = readCompactHandshakeInvite(raw);
-    const invite = decoded && parseContactInvite(JSON.stringify(decoded), now);
-    return invite?.expiresAt !== undefined && invite.expiresAt <= now + 120 ? { invite } : null;
-  }
+/** The invite a camera-bound proof speaks for: the peer's revealed invite,
+ * once its binding verified under the session this camera read. */
+export interface HandshakeQR { invite: ContactInvite }
+/**
+ * What the handshake camera read. A session code is the unlinkable handshake.
+ * A plain SDK invite link (a contact card, another app) can only ever lead to
+ * the one-way seam check. A code from an older build is refused: it would
+ * show a persona key to anyone who photographs the screen.
+ */
+export type HandshakeCode = ScannedCode | { kind: 'invite'; invite: ContactInvite };
+export function readHandshakeCode(raw: string, now: number): HandshakeCode | null {
+  if (typeof raw !== 'string' || raw.length > 8192) return null;
+  const session = readSessionQR(raw, now);
+  if (session) return session;
   try {
     const value: unknown = JSON.parse(raw);
-    if (value && typeof value === 'object' && 'handshake' in value) {
-      const v = value as { handshake: unknown; invite?: unknown; echo?: unknown; echoSeen?: unknown };
-      const invite = parseContactInvite(JSON.stringify(v.invite), now);
-      if (v.handshake !== 1 || !invite || invite.caption || invite.expiresAt === undefined
-        || invite.expiresAt > now + 120 || (v.echo !== undefined && (typeof v.echo !== 'string' || !/^[0-9a-f]{64}$/.test(v.echo)))) return null;
-      return { invite, ...(typeof v.echo === 'string' ? { echo: v.echo } : {}) };
-    }
-  } catch { /* A plain SDK invite or link may still be scanned for the one-way path. */ }
+    if (value && typeof value === 'object' && 'handshake' in value) return { kind: 'outdated' };
+  } catch { /* Not JSON: a plain invite link may still be scanned for the one-way path. */ }
   const invite = parseContactInviteLink(raw, now);
-  return invite ? { invite } : null;
+  return invite ? { kind: 'invite', invite } : null;
 }
 export function handshakeRole(own: string, peer: string): 'requester' | 'recipient' | null {
   if (!/^[0-9a-f]{64}$/.test(own) || !/^[0-9a-f]{64}$/.test(peer) || own === peer) return null;
   return own < peer ? 'requester' : 'recipient';
 }
 /** Call only with an SDK-opened (signature verified, author-bound) request
- * received on this screen’s optical invitation, never a standing mailbox.
- * That signed request proves possession of our QR secret; our camera pins its author. */
+ * received on this screen’s single-use invitation, and a `scanned` invite
+ * whose reveal binding verified under the session this camera read. */
 export function mayAutoAcceptHandshake(args: {
   own: ContactInvite; scanned: HandshakeQR; request: ContactRequest; now: number; receivedOnOwnInvite: boolean;
 }): boolean {
@@ -53,9 +40,4 @@ export function mayAutoAcceptHandshake(args: {
     && receivedOnOwnInvite
     && request.from === scanned.invite.recipient && request.to === own.recipient
     && request.createdAt <= now && request.expiresAt > now;
-}
-export function validHandshakeScan(own: ContactInvite, scanned: HandshakeQR, now: number): boolean {
-  return Number.isSafeInteger(now) && now >= 0 && !!handshakeRole(own.recipient, scanned.invite.recipient)
-    && own.expiresAt !== undefined && scanned.invite.expiresAt !== undefined
-    && now < own.expiresAt && now < scanned.invite.expiresAt;
 }

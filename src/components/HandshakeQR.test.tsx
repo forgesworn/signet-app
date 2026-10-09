@@ -2,13 +2,14 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { HandshakeQR } from './HandshakeQR';
-import { compactHandshakeInvite, createHandshakeFrameReader, handshakeFrames } from '../lib/handshake-optical';
+import { createHandshakeFrameReader, handshakeFrames } from '../lib/handshake-optical';
+import { sessionQR } from '../lib/handshake-reveal';
 vi.mock('./QRCode', () => ({ QRCode: ({ data }: { data: string }) => <canvas data-testid="qr" data-payload={data} /> }));
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 it('cycles coarse fragments slowly enough for camera sampling, resets for a new invite and stops on leaving', () => {
   vi.useFakeTimers();
-  const payload = compactHandshakeInvite({ v: 1, recipient: '1'.repeat(64), secret: '2'.repeat(64),
-    expiresAt: 1700000120, relays: ['wss://first.example/', 'wss://second.example/', 'wss://third.example/'] })!;
+  const payload = sessionQR({ publicKey: '1'.repeat(64), expiresAt: 1700000120,
+    relays: ['wss://first.example/', 'wss://second.example/', 'wss://third.example/'] })!;
   const frames = handshakeFrames(payload, true), read = createHandshakeFrameReader();
   const view = render(<HandshakeQR data={payload} />);
   const displayed = () => screen.getByTestId('qr').getAttribute('data-payload')!;

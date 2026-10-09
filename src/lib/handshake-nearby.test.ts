@@ -6,6 +6,7 @@ import { ContactIdentityDecryptBudget } from '@forgesworn/signet-contacts';
 import { ContactInviteService } from './contact-invite-service';
 import { contactExchangeKey } from './contact-exchange-key';
 import { HandshakeNearby, type NearbyNative, type NearbyReceipt } from './handshake-nearby';
+import { bindingTemplate, createHandshakeSession, openReveal, sealReveal, verifyRevealBinding, type RevealBody } from './handshake-reveal';
 import { NearbyLink, nearbyHello } from './handshake-nearby-wire';
 import { purgeAllUserData } from './db';
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
@@ -24,6 +25,7 @@ vi.mock('./aes-crypto', async importOriginal => {
   } };
 });
 const KEY = 'nearby handshake test', now = 1700000000;
+const S_A = createHandshakeSession(), S_B = createHandshakeSession(), S_C = createHandshakeSession();
 
 type Handlers = Parameters<NearbyNative['listen']>[0];
 /** Two phones' native pipes joined by an in-memory radio. Frames cross
@@ -80,77 +82,114 @@ function party(secret: string, directoryId: string, holder: { carrier?: Handshak
 }
 beforeEach(async () => { await purgeAllUserData(); publish.mockReset().mockResolvedValue(false); });
 
-describe('handshake over a nearby link, with no internet', () => {
-  it('completes a mutual handshake with no relay publish at all', async () => {
+describe('unlinkable handshake over a nearby link, with no internet', () => {
+  /** Two phones on handshake screens, each with an SDK invite and a session. */
+  async function phones() {
     const air = radio();
     const p = party('01'.repeat(32), 'owner', {}), q = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`, {});
     const [a, b] = p.pubkey < q.pubkey ? [p, q] : [q, p];
     const ai = await a.service.create(a.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
     const bi = await b.service.create(b.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
+    const sa = createHandshakeSession(), sb = createHandshakeSession();
+    const got: { a: RevealBody[]; b: RevealBody[] } = { a: [], b: [] };
     const na = air.phone(), nb = air.phone();
-    a.holder.carrier = new HandshakeNearby(na, { ownSecret: ai.invite.secret, onChange: () => {}, ackMs: 2000,
-      onEvent: event => a.service.receiveDirect(event, { identity: a.pubkey, inviteId: ai.id, now: now + 3 }) });
-    b.holder.carrier = new HandshakeNearby(nb, { ownSecret: bi.invite.secret, onChange: () => {}, ackMs: 2000,
-      onEvent: event => b.service.receiveDirect(event, { identity: b.pubkey, inviteId: bi.id, now: now + 3 }) });
+    const carrier = (who: typeof a, session: typeof sa, invite: typeof ai, inbox: RevealBody[], native: typeof na) =>
+      new HandshakeNearby(native, { session, onChange: () => {}, ackMs: 2000, onEvent: async event => {
+        if (event.tags[0]?.[1] === session.publicKey) {
+          const body = openReveal(event, session, now + 1);
+          if (!body) return 'rejected';
+          inbox.push(body); return 'stored';
+        }
+        return who.service.receiveDirect(event, { identity: who.pubkey, inviteId: invite.id, now: now + 3 });
+      } });
+    a.holder.carrier = carrier(a, sa, ai, got.a, na);
+    b.holder.carrier = carrier(b, sb, bi, got.b, nb);
     expect(await a.holder.carrier.open(true)).toBe('ready');
     expect(await b.holder.carrier.open(true)).toBe('ready');
+    const reveal = async (who: typeof a, own: typeof sa, peer: string, invite: typeof ai): Promise<RevealBody> =>
+      ({ v: 2, to: peer, invite: invite.invite, binding: await who.service.signRevealBinding(who.pubkey, bindingTemplate(own.publicKey, peer, invite.invite, now)) });
+    return { air, a, b, ai, bi, sa, sb, na, nb, got, reveal };
+  }
 
-    // The lower key read the higher key's QR and connects to its advert.
-    a.holder.carrier.connect({ pubkey: b.pubkey, secret: bi.invite.secret });
-    await vi.waitFor(() => expect(a.holder.carrier!.route(b.pubkey)).toBe('linked'));
-    expect(na.trusted.size).toBe(1);
-    await vi.waitFor(() => expect(nb.trusted.size).toBe(1));
-    // The advertiser cannot speak for anyone until an SDK message binds the link.
-    expect(b.holder.carrier.route(a.pubkey)).toBe('none');
+  it('reveals personas only to each other, then completes mutually with no relay publish at all', async () => {
+    const { a, b, ai, bi, sa, sb, na, nb, got, reveal } = await phones();
+    // Both cameras read the other screen. One phone dials; the other accepts only that session.
+    a.holder.carrier!.connect({ session: sb.publicKey });
+    b.holder.carrier!.expect(sa.publicKey);
+    await vi.waitFor(() => expect(a.holder.carrier!.reaches(sb.publicKey) && b.holder.carrier!.reaches(sa.publicKey)).toBe(true));
 
-    const exchangeId = (await a.service.request(a.pubkey, bi.invite, now + 1, undefined, undefined, true))!;
+    // Each sends its sealed reveal to the other's session over the link.
+    const ra = await reveal(a, sa, sb.publicKey, ai), rb = await reveal(b, sb, sa.publicKey, bi);
+    expect(await a.holder.carrier!.deliverSession(sb.publicKey, sealReveal(ra, sb.publicKey, now))).toBe(true);
+    expect(await b.holder.carrier!.deliverSession(sa.publicKey, sealReveal(rb, sa.publicKey, now))).toBe(true);
+    const [fromB] = got.a, [fromA] = got.b;
+    // Each verifies the other's persona under the session its own camera read.
+    expect(verifyRevealBinding(fromB, sb.publicKey, sa.publicKey)).toBe(true);
+    expect(verifyRevealBinding(fromA, sa.publicKey, sb.publicKey)).toBe(true);
+    a.holder.carrier!.bindSession(sb.publicKey, b.pubkey);
+    b.holder.carrier!.bindSession(sa.publicKey, a.pubkey);
+
+    // The unchanged SDK exchange runs on the revealed invites.
+    const exchangeId = (await a.service.request(a.pubkey, fromB.invite, now + 1, undefined, undefined, true))!;
     await a.service.flush(now + 2);
-    expect((await a.service.read()).outbox[0].acknowledgedAt).toBe(now + 2);
     const arrival = (await b.service.read()).arrivals.find(x => x.inviteId === bi.id)!;
-    expect(arrival).toBeDefined();
-
     await b.service.openInbox(now + 3, false, b.pubkey, new Set([arrival.id]));
-    const opened = (await b.service.read()).arrivals.find(x => x.id === arrival.id)!;
-    expect(opened.request?.from).toBe(a.pubkey);
-    b.holder.carrier.bind(arrival.id, opened.request!.from);
-    expect(b.holder.carrier.route(a.pubkey)).toBe('linked');
-    await b.service.acceptHandshake(arrival.id, bi.invite, { invite: ai.invite }, now + 4);
+    await b.service.acceptHandshake(arrival.id, bi.invite, { invite: fromA.invite }, now + 4);
     await b.service.flush(now + 5);
-    expect((await b.service.read()).outbox.every(o => o.acknowledgedAt === now + 5)).toBe(true);
-
     await a.service.openInbox(now + 6, true);
-    await a.service.openInbox(now + 6, false, a.pubkey);
     await a.service.flush(now + 7);
-    const ae = (await a.service.read()).exchanges[0];
-    expect(ae.handshake?.opticalAcceptanceAt).toBe(now + 6);
-    expect(ae.phase).toBe('complete');
-
+    expect((await a.service.read()).exchanges[0].phase).toBe('complete');
     await b.service.openInbox(now + 8, true);
     expect((await b.service.read()).exchanges[0].phase).toBe('complete');
-    await a.service.confirmHandshake(exchangeId, now + 9, { own: ai.invite, scanned: { invite: bi.invite }, readAt: now + 1 });
-    await b.service.confirmHandshake(exchangeId, now + 9, { own: bi.invite, scanned: { invite: ai.invite }, readAt: now + 1 });
+
+    await a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa.publicKey, cameraPeerSession: sb.publicKey,
+      peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 1 });
+    await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb.publicKey, cameraPeerSession: sa.publicKey,
+      peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 1 });
     expect((await a.service.read()).exchanges[0].handshake?.strength).toBe('mutual');
     expect((await b.service.read()).exchanges[0].handshake?.strength).toBe('mutual');
     expect(a.completed).toHaveBeenCalledTimes(1); expect(b.completed).toHaveBeenCalledTimes(1);
     expect(publish).not.toHaveBeenCalled();
     expect(contactExchangeKey((await b.service.read()).exchanges[0].request)).toBe(exchangeId);
-    await a.holder.carrier.close(); await b.holder.carrier.close();
+    await a.holder.carrier!.close(); await b.holder.carrier!.close();
     expect(na.stopped && nb.stopped).toBe(true);
   }, 30000);
 
+  it('cannot reach mutual when the peer never read this screen', async () => {
+    const { a, b, ai, bi, sa, sb, reveal } = await phones();
+    a.holder.carrier!.connect({ session: sb.publicKey });
+    await vi.waitFor(() => expect(a.holder.carrier!.reaches(sb.publicKey)).toBe(true));
+    const elsewhere = createHandshakeSession();
+    // B signed for some other session, not A's: B did not scan A.
+    const rb = await reveal(b, sb, elsewhere.publicKey, bi);
+    a.holder.carrier!.bindSession(sb.publicKey, b.pubkey);
+    const exchangeId = (await a.service.request(a.pubkey, rb.invite, now + 1, undefined, undefined, true))!;
+    await a.service.flush(now + 2);
+    const arrival = (await b.service.read()).arrivals.find(x => x.inviteId === bi.id)!;
+    await b.service.openInbox(now + 3, false, b.pubkey, new Set([arrival.id]));
+    await b.service.accept(arrival.id, now + 4, false, false, undefined, true);
+    b.holder.carrier!.bind(arrival.id, a.pubkey);
+    await b.service.flush(now + 5);
+    await a.service.openInbox(now + 6, true);
+    await a.service.flush(now + 7);
+    expect((await a.service.read()).exchanges[0].phase).toBe('complete');
+    await expect(a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa.publicKey, cameraPeerSession: sb.publicKey,
+      peerExpiresAt: now + 120, peerReveal: rb, readAt: now + 1 })).rejects.toThrow('proof');
+    await a.service.confirmHandshake(exchangeId, now + 9);
+    expect((await a.service.read()).exchanges[0].handshake?.strength).toBe('proven');
+    await a.holder.carrier!.close(); await b.holder.carrier!.close();
+  }, 30000);
+
   it('holds a handshake row from the relays while linking, then falls back when no link comes', async () => {
-    let clock = 0;
     const air = radio();
     const p = party('01'.repeat(32), 'owner', {}), q = party('02'.repeat(32), `dependant:${'c'.repeat(64)}`, {});
     const [a, b] = p.pubkey < q.pubkey ? [p, q] : [q, p];
-    const ai = await a.service.create(a.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
+    await a.service.create(a.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
     const bi = await b.service.create(b.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
     // The peer never advertises (a browser, or Bluetooth refused).
-    const changes = vi.fn();
-    a.holder.carrier = new HandshakeNearby(air.phone(), { ownSecret: ai.invite.secret, onChange: changes, nowMs: () => clock,
-      holdMs: 5000, onEvent: async () => 'rejected' as const });
+    a.holder.carrier = new HandshakeNearby(air.phone(), { session: S_A, onChange: () => {}, holdMs: 5000, redialMs: 1, onEvent: async () => 'rejected' as const });
     await a.holder.carrier.open(true);
-    a.holder.carrier.connect({ pubkey: b.pubkey, secret: bi.invite.secret });
+    a.holder.carrier.connect({ session: S_B.publicKey });
     await a.service.request(a.pubkey, bi.invite, now + 1, undefined, undefined, true);
     // Every dial fails at once here (three attempts), so the row is not held.
     await vi.waitFor(() => expect(a.holder.carrier!.route(b.pubkey)).toBe('none'));
@@ -167,9 +206,9 @@ describe('handshake over a nearby link, with no internet', () => {
     const [a, b] = p.pubkey < q.pubkey ? [p, q] : [q, p];
     await a.service.create(a.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
     const bi = await b.service.create(b.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
-    a.holder.carrier = new HandshakeNearby(native, { ownSecret: 'c'.repeat(64), onChange: () => {}, nowMs: () => clock, holdMs: 5000, onEvent: async () => 'rejected' as const });
+    a.holder.carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, nowMs: () => clock, holdMs: 5000, onEvent: async () => 'rejected' as const });
     await a.holder.carrier.open(true);
-    a.holder.carrier.connect({ pubkey: b.pubkey, secret: bi.invite.secret });
+    a.holder.carrier.connect({ session: S_B.publicKey });
     expect(a.holder.carrier.route(b.pubkey)).toBe('pending');
     await a.service.request(a.pubkey, bi.invite, now + 1, undefined, undefined, true);
     publish.mockResolvedValue(true);
@@ -184,16 +223,16 @@ describe('handshake over a nearby link, with no internet', () => {
 });
 
 describe('HandshakeNearby link admission', () => {
-  it('drops a link from a phone that did not read this QR, and stores nothing from it', async () => {
+  it('refuses a link from any session but the one this camera read, and stores nothing from it', async () => {
     const native = radio().phone();
     const onEvent = vi.fn(async () => 'stored' as const);
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, onEvent });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent });
     await carrier.open(true);
+    carrier.expect(S_B.publicKey);
     native.links.set('X', { peer: native, id: 'unused' });
     native.handlers!.link({ link: 'X', direction: 'in' });
-    // A stranger that knows only the advertised token, not the QR secret.
-    const stranger = new NearbyLink('connector', new Uint8Array(16).fill(9));
-    stranger.setSecret('b'.repeat(64));
+    // Someone who photographed both screens: it can speak only as its own session.
+    const stranger = new NearbyLink('connector', new Uint8Array(16).fill(9), S_C, S_A.publicKey);
     const toFrame = (bytes: Uint8Array) => ({ link: 'X', data: btoa(String.fromCharCode(...bytes)) });
     native.handlers!.frame(toFrame(stranger.hello()));
     const ownHello = native.sent[0];
@@ -207,12 +246,12 @@ describe('HandshakeNearby link admission', () => {
 
   it('refuses more than two links and frames for an unknown link', async () => {
     const native = radio().phone();
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, onEvent: async () => 'stored' as const });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent: async () => 'stored' as const });
     await carrier.open(true);
     const close = vi.spyOn(native, 'close');
     for (const link of ['A', 'B', 'C']) { native.links.set(link, { peer: native, id: link }); native.handlers!.link({ link, direction: 'in' }); }
     expect(close).toHaveBeenCalledWith({ link: 'C' });
-    native.handlers!.frame({ link: 'Z', data: btoa(String.fromCharCode(...nearbyHello(new Uint8Array(16)))) });
+    native.handlers!.frame({ link: 'Z', data: btoa(String.fromCharCode(...nearbyHello(new Uint8Array(16), S_C.publicKey))) });
     expect(close).toHaveBeenCalledWith({ link: 'Z' });
     await carrier.close();
   });
@@ -228,14 +267,14 @@ describe('HandshakeNearby link admission', () => {
       native.permission.mockResolvedValue({ granted: permission });
       native.enable.mockResolvedValue({ enabled: enable });
       const advertise = vi.spyOn(native, 'advertise');
-      const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, onEvent: async () => 'stored' as const });
+      const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent: async () => 'stored' as const });
       expect(await carrier.open(true)).toBe(expected);
       expect(advertise).not.toHaveBeenCalled();
       expect(carrier.route('b'.repeat(64))).toBe('none');
     }
     const native = radio().phone();
     native.statusValue = { supported: true, enabled: false, permitted: true };
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, onEvent: async () => 'stored' as const });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent: async () => 'stored' as const });
     expect(await carrier.open(false)).toBe('off');
     expect(native.enable).not.toHaveBeenCalled();
   });
@@ -243,16 +282,16 @@ describe('HandshakeNearby link admission', () => {
   it('treats a missing receipt as not delivered', async () => {
     const air = radio();
     const na = air.phone(), nb = air.phone();
-    const a = new HandshakeNearby(na, { ownSecret: 'a'.repeat(64), onChange: () => {}, ackMs: 50, onEvent: async () => 'stored' as const });
+    const a = new HandshakeNearby(na, { session: S_A, onChange: () => {}, ackMs: 50, onEvent: async () => 'stored' as const });
     // The peer never answers events: its handler never resolves.
-    const b = new HandshakeNearby(nb, { ownSecret: 'b'.repeat(64), onChange: () => {}, onEvent: () => new Promise<NearbyReceipt>(() => {}) });
+    const b = new HandshakeNearby(nb, { session: S_B, onChange: () => {}, onEvent: () => new Promise<NearbyReceipt>(() => {}) });
     await a.open(true); await b.open(true);
-    a.connect({ pubkey: '2'.repeat(64), secret: 'b'.repeat(64) });
-    await vi.waitFor(() => expect(a.route('2'.repeat(64))).toBe('linked'));
+    a.connect({ session: S_B.publicKey });
+    await vi.waitFor(() => expect(a.reaches(S_B.publicKey)).toBe(true));
     const event = { id: '1'.repeat(64), pubkey: '2'.repeat(64), sig: '3'.repeat(128), kind: 1059, created_at: 1,
       tags: [['p', '4'.repeat(64)]], content: 'x' };
-    expect(await a.deliver('2'.repeat(64), event)).toBe(false);
-    expect(await a.deliver('9'.repeat(64), event)).toBe(false);
+    expect(await a.deliverSession(S_B.publicKey, event)).toBe(false);
+    expect(await a.deliverSession(S_C.publicKey, event)).toBe(false);
     await a.close(); await b.close();
   });
 });
@@ -288,19 +327,19 @@ describe('HandshakeNearby review fixes', () => {
     const air = radio();
     const nb = air.phone();
     const stored = new Set<string>();
-    const b = new HandshakeNearby(nb, { ownSecret: 'b'.repeat(64), onChange: () => {},
+    const b = new HandshakeNearby(nb, { session: S_B, onChange: () => {},
       onEvent: async e => stored.has(e.id) ? 'duplicate' : (stored.add(e.id), 'stored') });
     await b.open(true);
     const connectors: Array<{ n: ReturnType<typeof air.phone>; c: HandshakeNearby; got: ReturnType<typeof vi.fn> }> = [];
     for (let i = 0; i < count; i++) {
       const n = air.phone(), got = vi.fn(async () => 'stored' as const);
-      const c = new HandshakeNearby(n, { ownSecret: String(i + 1).repeat(64), onChange: () => {}, onEvent: got });
+      const c = new HandshakeNearby(n, { session: createHandshakeSession(), onChange: () => {}, onEvent: got });
       await c.open(true);
       connectors.push({ n, c, got });
     }
     return { nb, b, connectors, connect: async (i: number) => {
-      connectors[i].c.connect({ pubkey: B, secret: 'b'.repeat(64) });
-      await vi.waitFor(() => expect(connectors[i].c.route(B)).toBe('linked'));
+      connectors[i].c.connect({ session: S_B.publicKey });
+      await vi.waitFor(() => expect(connectors[i].c.reaches(S_B.publicKey)).toBe(true));
     } };
   }
 
@@ -309,16 +348,16 @@ describe('HandshakeNearby review fixes', () => {
     await connect(0); await connect(1);
     const [first, second] = connectors;
     expect(first.n.quiet).toHaveBeenCalledTimes(1);
-    expect(await first.c.deliver(B, wrap('a'))).toBe(true);
+    expect(await first.c.deliverSession(S_B.publicKey, wrap('a'))).toBe(true);
     // The same id again from another link: acknowledged, but it proves nothing.
-    expect(await second.c.deliver(B, wrap('a'))).toBe(true);
+    expect(await second.c.deliverSession(S_B.publicKey, wrap('a'))).toBe(true);
     b.bind('a'.repeat(64), PEER);
     expect(b.route(PEER)).toBe('linked');
     await b.deliver(PEER, wrap('c'));
     expect(first.got).toHaveBeenCalledTimes(1);
     expect(second.got).not.toHaveBeenCalled();
     // A later fresh store on the other link cannot take the peer over.
-    expect(await second.c.deliver(B, wrap('d'))).toBe(true);
+    expect(await second.c.deliverSession(S_B.publicKey, wrap('d'))).toBe(true);
     b.bind('d'.repeat(64), PEER);
     await b.deliver(PEER, wrap('5'));
     expect(first.got).toHaveBeenCalledTimes(2);
@@ -328,7 +367,7 @@ describe('HandshakeNearby review fixes', () => {
 
   it('gives back the slot of a connection that never authenticates (M2)', async () => {
     const native = radio().phone();
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, authMs: 30, onEvent: async () => 'stored' as const });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, authMs: 30, onEvent: async () => 'stored' as const });
     await carrier.open(true);
     const close = vi.spyOn(native, 'close');
     native.links.set('idle', { peer: native, id: 'idle' });
@@ -340,9 +379,9 @@ describe('HandshakeNearby review fixes', () => {
   it('dials up to three times before giving up, so one copied advert cannot end Bluetooth (M2)', async () => {
     const native = radio().phone();
     native.connect = vi.fn(async () => { throw new Error('connect'); });
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, redialMs: 1, holdMs: 60000, onEvent: async () => 'stored' as const });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, redialMs: 1, holdMs: 60000, onEvent: async () => 'stored' as const });
     await carrier.open(true);
-    carrier.connect({ pubkey: B, secret: 'b'.repeat(64) });
+    carrier.connect({ session: S_B.publicKey });
     expect(carrier.route(B)).toBe('pending');
     await vi.waitFor(() => expect(carrier.route(B)).toBe('none'));
     expect(native.connect).toHaveBeenCalledTimes(3);
@@ -356,10 +395,10 @@ describe('HandshakeNearby review fixes', () => {
       await connect(i);
       for (let k = 0; k < 64 && accepted < 129; k++) {
         const id = (i * 64 + k).toString(16).padStart(64, '0');
-        if (await c.c.deliver(B, { ...wrap('a'), id })) accepted++; else break;
+        if (await c.c.deliverSession(S_B.publicKey, { ...wrap('a'), id })) accepted++; else break;
       }
       await c.c.close();
-      await vi.waitFor(() => expect(c.c.route(B)).toBe('none'));
+      await vi.waitFor(() => expect(c.c.reaches(S_B.publicKey)).toBe(false));
     }
     expect(accepted).toBe(128);
     await b.close();
@@ -367,7 +406,6 @@ describe('HandshakeNearby review fixes', () => {
 });
 
 describe('HandshakeNearby re-check fixes', () => {
-  const B = 'f'.repeat(64);
   const frame = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
   // Frames sent towards a peer with no listener simply vanish.
   const sink = radio().phone();
@@ -376,9 +414,9 @@ describe('HandshakeNearby re-check fixes', () => {
     let n = 0;
     native.connect = vi.fn(async () => { const link = `out${++n}`; native.links.set(link, { peer: sink, id: link }); native.handlers!.link({ link, direction: 'out' }); return { link }; });
     const close = vi.spyOn(native, 'close');
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, redialMs: 1, holdMs: 60000, onEvent: async () => 'stored' as const });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, redialMs: 1, holdMs: 60000, onEvent: async () => 'stored' as const });
     await carrier.open(true);
-    carrier.connect({ pubkey: B, secret: 'b'.repeat(64) });
+    carrier.connect({ session: S_B.publicKey });
     await vi.waitFor(() => expect(native.connect).toHaveBeenCalledTimes(1));
     // The far end hangs up (busy, restarting): no skip.
     native.handlers!.closed({ link: 'out1' });
@@ -394,11 +432,11 @@ describe('HandshakeNearby re-check fixes', () => {
     const native = radio().phone();
     native.connect = vi.fn(async () => { native.links.set('out', { peer: sink, id: 'out' }); native.handlers!.link({ link: 'out', direction: 'out' }); return { link: 'out' }; });
     const close = vi.spyOn(native, 'close');
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, onEvent: async () => 'stored' as const });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent: async () => 'stored' as const });
     await carrier.open(true);
     for (const link of ['in1', 'in2', 'in3']) { native.links.set(link, { peer: sink, id: link }); native.handlers!.link({ link, direction: 'in' }); }
     expect(close).toHaveBeenCalledWith({ link: 'in3' });
-    carrier.connect({ pubkey: B, secret: 'b'.repeat(64) }, { quiet: true });
+    carrier.connect({ session: S_B.publicKey }, { quiet: true });
     expect(native.quiet).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(native.connect).toHaveBeenCalledTimes(1));
     expect(close).not.toHaveBeenCalledWith({ link: 'out' });
@@ -409,12 +447,11 @@ describe('HandshakeNearby re-check fixes', () => {
     const native = radio().phone();
     const budget = { events: 127 };
     const onEvent = vi.fn(async () => 'stored' as const);
-    const carrier = new HandshakeNearby(native, { ownSecret: 'a'.repeat(64), onChange: () => {}, onEvent, budget });
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent, budget });
     await carrier.open(true);
     native.links.set('in', { peer: native, id: 'in' });
     native.handlers!.link({ link: 'in', direction: 'in' });
-    const peer = new NearbyLink('connector', new Uint8Array(16).fill(9));
-    peer.setSecret('a'.repeat(64));
+    const peer = new NearbyLink('connector', new Uint8Array(16).fill(9), S_C, S_A.publicKey);
     native.handlers!.frame({ link: 'in', data: frame(peer.hello()) });
     const auth = peer.receive(native.sent[0]).flatMap(s => s.kind === 'send' ? [s.frame] : []);
     native.handlers!.frame({ link: 'in', data: frame(auth[0]) });

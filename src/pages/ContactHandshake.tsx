@@ -4,7 +4,7 @@ import type { HandshakeHost } from '../hooks/useHandshake';
 import { useHandshake } from '../hooks/useHandshake';
 import { CONTACT_ACTION_FAILED_COPY, HANDSHAKE_COPY as COPY, handshakeWaiting } from '../lib/contacts-v2-copy';
 import { loadHandshakeChoice, saveHandshakeChoice } from '../lib/handshake-defaults';
-import { handshakeQR, readHandshakeQR } from '../lib/handshake-proof';
+import { readHandshakeCode } from '../lib/handshake-proof';
 import { encodeContactInvite } from '@forgesworn/signet-contacts';
 import { HandshakeCamera } from '../components/HandshakeCamera';
 import { QRCode } from '../components/QRCode';
@@ -69,14 +69,20 @@ function ScanComplete({ camera = false }: { camera?: boolean }) {
 }
 function ChildHandshake(props: Props) {
   const [facing, setFacing] = useState<'user' | 'environment'>(HANDSHAKE_DEFAULT_CAMERA);
+  const [note, setNote] = useState<string>();
   return <div className="handshake-screen">
     <QRCode data={encodeNpub(hexToBytes(props.persona))} size={280} />
     <HandshakeCamera facing={facing} active onScan={raw => {
-      const peer = readHandshakeQR(raw, Math.floor(Date.now() / 1000));
-      if (peer && peer.invite.recipient !== props.persona) props.onChildInvite(encodeContactInvite(peer.invite));
+      const code = readHandshakeCode(raw, Math.floor(Date.now() / 1000));
+      // A handshake screen names no one, so a guardian request needs the
+      // person's contact card instead.
+      if (code?.kind === 'session') setNote(COPY.childCard);
+      else if (code?.kind === 'outdated') setNote(COPY.outdated);
+      else if (code?.kind === 'invite' && code.invite.recipient !== props.persona) props.onChildInvite(encodeContactInvite(code.invite));
     }} />
     <CameraChoice facing={facing} change={() => setFacing(f => f === 'user' ? 'environment' : 'user')} />
     <p role="status">{COPY.child}</p>
+    {note && <p className="field-hint">{note}</p>}
   </div>;
 }
 function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
@@ -88,24 +94,23 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   const [opening, setOpening] = useState(false);
   const [openFailed, setOpenFailed] = useState(false);
   const active = view.phase === 'reading' || view.phase === 'waiting';
-  const waiting = view.phase === 'waiting' && !!view.peer;
-  const half = view.peer ? (props.persona < view.peer.recipient ? 'left' : 'right')
-    : 'right'; // A one-way request's recipient is the right half; requester overrides below.
-  // Both halves use canonical pubkey order, including the one-way path.
+  const waiting = view.phase === 'waiting' && !!view.scanned;
+  // Both halves use canonical pubkey order, set once the transcript exists.
+  const half = view.half ?? 'right';
   return <div className="handshake-screen">
     {view.sigil && (view.phase === 'checking' || view.phase === 'sealed')
-      ? <JigsawSigil digest={view.sigil} half={view.half ?? half} />
+      ? <JigsawSigil digest={view.sigil} half={half} />
       : active && view.scansConfirmed ? <ScanComplete />
-      : view.invite && active ? <HandshakeQR data={handshakeQR(view.invite)} /> : null}
+      : view.code && active ? <HandshakeQR data={view.code} /> : null}
     {active && <>
-      {view.peer ? <ScanComplete camera /> : <>
+      {view.scanned ? <ScanComplete camera /> : <>
         <HandshakeCamera facing={facing} active onScan={scan} />
         <CameraChoice facing={facing} change={() => setFacing(f => f === 'user' ? 'environment' : 'user')} />
       </>}
     </>}
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
-      <span>{active ? view.scansConfirmed ? COPY.finishing : view.peer ? handshakeWaiting(view.name) : COPY.scan
+      <span>{active ? view.scansConfirmed ? COPY.finishing : view.scanned ? handshakeWaiting(view.name) : COPY.scan
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
@@ -114,7 +119,8 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
       <p role="alert">{COPY.photoFailed}</p>
       <button className="btn btn-secondary" onClick={withoutPhoto}>{COPY.withoutPhoto}</button>
     </div>}
-    {active && view.peer && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
+    {active && view.outdated && <p role="alert">{COPY.outdated}</p>}
+    {active && view.scanned && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}
     {view.phase === 'sealed' && view.contactId && !tierChosen && <div className="handshake-tier">

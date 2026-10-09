@@ -1,11 +1,9 @@
-import { parseContactInvite, type ContactInvite } from '@forgesworn/signet-contacts';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 
-// RFC 9285 Base45 uses QR's alphanumeric mode. This is an optical wrapper;
-// decoding reconstructs the unchanged SDK v1 invite before any proof is used.
+// RFC 9285 Base45 uses QR's alphanumeric mode. The payload is a handshake
+// session code (handshake-reveal.ts): a session key, its relays and expiry.
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
-const PREFIX = 'SGH1:';
+const PREFIX = 'SGH2:';
 const FRAME_PREFIX = 'SGF1:';
 const MAX_TEXT = 8192;
 const MAX_FRAMES = 128;
@@ -39,54 +37,21 @@ export function decodeBase45(text: string): Uint8Array | null {
   return Uint8Array.from(bytes);
 }
 
-export function compactHandshakeInvite(value: ContactInvite): string | null {
-  const invite = parseContactInvite(JSON.stringify(value));
-  if (!invite || invite.caption !== undefined || invite.expiresAt === undefined || invite.expiresAt > 0xffffffff) return null;
-  const relays = invite.relays.map(url => new TextEncoder().encode(url.slice('wss://'.length)));
-  const size = 70 + relays.reduce((n, relay) => n + 2 + relay.length, 0);
-  if (size > 5460 || relays.some(relay => relay.length > 65535)) return null;
-  const bytes = new Uint8Array(size), view = new DataView(bytes.buffer);
-  bytes[0] = 1; bytes.set(hexToBytes(invite.recipient), 1); bytes.set(hexToBytes(invite.secret), 33);
-  view.setUint32(65, invite.expiresAt); bytes[69] = relays.length;
-  let offset = 70;
-  for (const relay of relays) { view.setUint16(offset, relay.length); bytes.set(relay, offset + 2); offset += 2 + relay.length; }
-  const raw = PREFIX + encodeBase45(bytes);
-  return raw.length <= MAX_TEXT ? raw : null;
-}
-export function readCompactHandshakeInvite(raw: string): ContactInvite | null {
-  if (!raw.startsWith(PREFIX)) return null;
-  const bytes = decodeBase45(raw.slice(PREFIX.length));
-  if (!bytes || bytes.length < 73 || bytes[0] !== 1 || bytes[69] < 1 || bytes[69] > 8) return null;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), relays: string[] = [];
-  let offset = 70;
-  try {
-    for (let i = 0; i < bytes[69]; i++) {
-      if (offset + 2 > bytes.length) return null;
-      const size = view.getUint16(offset); offset += 2;
-      if (!size || offset + size > bytes.length) return null;
-      relays.push('wss://' + new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(offset, offset + size)));
-      offset += size;
-    }
-    if (offset !== bytes.length) return null;
-    return parseContactInvite(JSON.stringify({ v: 1, recipient: bytesToHex(bytes.subarray(1, 33)),
-      secret: bytesToHex(bytes.subarray(33, 65)), expiresAt: view.getUint32(65), relays }));
-  } catch { return null; }
-}
 function frameDigest(raw: string): string {
   return encodeBase45(sha256(new TextEncoder().encode('signet:handshake:qr-frames:v1:' + raw)));
 }
 /** Coarse frames fit version 5 at M correction. The handshake requests
- * rotation even for a short invite; other callers may retain a static code. */
+ * rotation even for a short code; other callers may retain a static code. */
 export function handshakeFrames(raw: string, rotate = false): string[] {
   if (!raw.startsWith(PREFIX) || (!rotate && raw.length <= 154)) return [raw];
-  if (raw.length > MAX_TEXT) throw new Error('Handshake invite is too long');
+  if (raw.length > MAX_TEXT) throw new Error('Handshake code is too long');
   const count = Math.ceil(raw.length / CHUNK_SIZE);
   if (count > MAX_FRAMES) throw new Error('Too many handshake frames');
   const digest = frameDigest(raw);
   return Array.from({ length: count }, (_, index) => `${FRAME_PREFIX}${digest}:${index + 1}:${count}:${raw.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE)}`);
 }
-/** One bounded assembly, no partial invite or optical consent. All fragments
- * must match one full SHA-256 digest before the SDK validates the invite. */
+/** One bounded assembly, no partial code or optical consent. All fragments
+ * must match one full SHA-256 digest before the code is parsed. */
 export function createHandshakeFrameReader() {
   let session: { digest: string; count: number; started: number; parts: Map<number, string> } | undefined;
   return (raw: string, nowMs: number): string | null => {

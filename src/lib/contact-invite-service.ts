@@ -1,4 +1,5 @@
-import { handshakeRole, mayAutoAcceptHandshake, validHandshakeScan, type HandshakeQR } from './handshake-proof';
+import { handshakeRole, mayAutoAcceptHandshake, type HandshakeQR } from './handshake-proof';
+import { mutualRevealProof, type RevealBody } from './handshake-reveal';
 import { handshakeSigil } from './handshake-sigil';
 import { assertContactMailboxCapacity } from './contact-invite-limits';
 import { contactExchangeKey } from './contact-exchange-key';
@@ -26,6 +27,14 @@ import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
  */
 export type ContactCardSource = ContactCard | (() => Promise<ContactCard | undefined>);
 const resolveCard = (source: ContactCardSource | undefined) => typeof source === 'function' ? source() : Promise.resolve(source);
+
+/** What a phone holds when it claims `mutual` (handshake-reveal.ts). */
+export interface RevealEvidence {
+  /** This screen's handshake invite, whose creation opened the session. */
+  inviteId: string;
+  ownSession: string; cameraPeerSession: string; peerExpiresAt: number;
+  peerReveal: RevealBody; readAt: number;
+}
 
 export class ContactInviteService {
   constructor(private options: {
@@ -332,13 +341,7 @@ export class ContactInviteService {
         message = await openContactIdentityPacket(arrival.packet, signer); this.check();
       } catch { this.check(); continue; }
       if (!message) { await this.dismiss(arrival.id, now); continue; }
-      const opticalInvite = arrival.channel !== 'exchange'
-        ? state.invites.find(i => i.id === arrival.inviteId && i.identityPubkey === arrival.identityPubkey && i.mode === 'single-use'
-          && i.invite.expiresAt !== undefined && now < i.invite.expiresAt) : undefined;
-      const opticalExchange = opticalInvite && message.type === 'signet-contact-accept'
-        ? (await this.read()).exchanges.find(e => e.handshake && e.role === 'requester' && e.request.id === message.id
-          && e.request.from === message.to && e.request.to === message.from && e.handshake.startedAt >= opticalInvite.createdAt) : undefined;
-      if (arrival.channel !== 'exchange' && !opticalExchange) {
+      if (arrival.channel !== 'exchange') {
         const invite = (await this.read()).invites.find(row => row.id === arrival.inviteId && row.identityPubkey === arrival.identityPubkey);
         if (!invite) { await this.dismiss(arrival.id, now); continue; }
         if (message.type !== 'signet-contact-request' || now < message.createdAt || now >= message.expiresAt
@@ -350,7 +353,7 @@ export class ContactInviteService {
         });
       } else {
         const fresh = await this.read();
-        const old = opticalExchange ?? fresh.exchanges.find(e => contactExchangeKey(e.request) === arrival.inviteId);
+        const old = fresh.exchanges.find(e => contactExchangeKey(e.request) === arrival.inviteId);
         if (!old || conflictedContactExchanges(fresh).has(contactExchangeKey(old.request)) || !await this.options.mayConnect(old.role === 'requester' ? old.request.to : old.request.from)) continue;
         let next: ContactExchangeState;
         let outbox: ContactInviteOutbox | undefined;
@@ -365,7 +368,6 @@ export class ContactInviteService {
           try { next = receiveContactReveal(old, message, now); }
           catch { await this.dismiss(arrival.id, now); continue; }
         } else { await this.dismiss(arrival.id, now); continue; }
-        if (opticalExchange) next = { ...next, handshake: { ...opticalExchange.handshake!, opticalAcceptanceAt: now } } as StoredContactExchange;
         await this.update(current => {
           const existing = current.exchanges.find(e => contactExchangeKey(e.request) === contactExchangeKey(old.request));
           if (JSON.stringify(existing) !== JSON.stringify(old)) throw new Error('Contact exchange changed; reopen the inbox');
@@ -433,7 +435,8 @@ export class ContactInviteService {
     });
   }
   /** Camera-bound automatic acceptance. Signature verification happened in
-   * openInbox; this binds the opened author to the optical session. */
+   * openInbox; `scanned` is the peer's revealed invite, whose binding the
+   * caller verified under the session its camera read. */
   async acceptHandshake(arrivalId: string, own: ContactInvite, scanned: HandshakeQR, now: number, card?: ContactCardSource) {
     const state = await this.read();
     const arrival = state.arrivals.find(a => a.id === arrivalId);
@@ -442,47 +445,38 @@ export class ContactInviteService {
       || JSON.stringify(invite.invite) !== JSON.stringify(own)
       || !mayAutoAcceptHandshake({ own, scanned, request: arrival.request, now, receivedOnOwnInvite: true })) throw new Error('Handshake proof does not match');
     await this.accept(arrivalId, now, false, false, card, true);
-    await this.sendOpticalAcceptance(contactExchangeKey(arrival.request), scanned.invite, now);
   }
-  /** Reuse the SAME signed acceptance, additionally wrapped to the invitation
-   * the camera read. Its recipient mailbox capability proves the return scan;
-   * the signed seal pins the reader's key. No new SDK message or operation. */
-  async sendOpticalAcceptance(exchangeId: string, scanned: ContactInvite, now: number) {
-    const state = await this.read();
-    const e = state.exchanges.find(e => contactExchangeKey(e.request) === exchangeId);
-    if (!e?.handshake || e.phase === 'declined' || e.role !== 'recipient' || !e.acceptance || e.handshake.opticalAcceptanceSent) return;
-    if (!parseContactInvite(JSON.stringify(scanned), now) || scanned.recipient !== e.request.from) throw new Error('Handshake proof does not match');
-    const signer = await this.options.signer(e.request.to); this.check();
-    const event = await wrapContactExchange(e.acceptance, scanned.secret, signer); this.check();
-    await this.update(fresh => {
-      const current = fresh.exchanges.find(row => contactExchangeKey(row.request) === exchangeId);
-      if (!current?.handshake || current.handshake.opticalAcceptanceSent) return fresh;
-      return { ...fresh, exchanges: fresh.exchanges.map(row => contactExchangeKey(row.request) === exchangeId
-        ? { ...row, handshake: { ...row.handshake!, opticalAcceptanceSent: true } } : row),
-        outbox: [...fresh.outbox, { id: event.id, identityPubkey: e.request.to, event, relays: scanned.relays,
-          exchangeId, messageType: 'acceptance' }] };
-    });
+  /** The persona's signature over a reveal binding (handshake-reveal.ts),
+   * through whatever signer holds that persona, a bunker included. */
+  async signRevealBinding(identityPubkey: string, template: { kind: number; created_at: number; tags: string[][]; content: string }): Promise<NostrEvent> {
+    const signer = await this.options.signer(identityPubkey); this.check();
+    const event = await signer.signEvent({ ...template, pubkey: identityPubkey }) as NostrEvent; this.check();
+    if (event.pubkey !== identityPubkey || event.kind !== template.kind || event.content !== template.content) throw new Error('The signer returned a different event');
+    return event;
   }
-  /** Confirm only a completed, SDK-verified transcript. The optical proof is
-   * captured while both short-lived invitations are still valid. A human seam
-   * check records proven, never mutual. */
-  async confirmHandshake(exchangeId: string, now: number, optical?: { own: ContactInvite; scanned: HandshakeQR; readAt: number }) {
+  /** Confirm only a completed, SDK-verified transcript. `mutual` needs the
+   * reveal evidence, checked here by the one pure proof function; without it,
+   * a human seam check records proven, never mutual. */
+  async confirmHandshake(exchangeId: string, now: number, evidence?: RevealEvidence) {
     await this.update(state => ({ ...state, exchanges: state.exchanges.map(e => {
       if (contactExchangeKey(e.request) !== exchangeId) return e;
       if (!e.handshake || e.phase !== 'complete' || conflictedContactExchanges(state).has(exchangeId)) throw new Error('Handshake is incomplete');
       if (e.handshake.strength) return e;
-      if (optical) {
-        const localInvite = state.invites.find(i => JSON.stringify(i.invite) === JSON.stringify(optical.own));
+      if (evidence) {
+        const localInvite = state.invites.find(i => i.id === evidence.inviteId);
         const ownKey = e.role === 'requester' ? e.request.from : e.request.to;
         const peerKey = e.role === 'requester' ? e.request.to : e.request.from;
-        if (!localInvite
-          || (e.role === 'requester' ? e.handshake.opticalAcceptanceAt === undefined : e.handshake.inviteId !== localInvite.id)
-          || handshakeRole(ownKey, peerKey) !== e.role
-          || ownKey !== optical.own.recipient || peerKey !== optical.scanned.invite.recipient
-          || optical.readAt < localInvite.createdAt || optical.readAt > now
-          || !validHandshakeScan(optical.own, optical.scanned, optical.readAt)) throw new Error('Handshake proof does not match');
+        if (!localInvite || localInvite.mode !== 'single-use' || localInvite.identityPubkey !== ownKey || localInvite.invite.recipient !== ownKey
+          || localInvite.invite.expiresAt === undefined
+          // This exchange belongs to this screen's session: the requester began
+          // it during the session, the recipient accepted on this invitation.
+          || (e.role === 'requester' ? e.handshake.startedAt < localInvite.createdAt : e.handshake.inviteId !== localInvite.id)
+          || handshakeRole(ownKey, peerKey) !== e.role || evidence.readAt > now
+          || !mutualRevealProof({ ownSession: evidence.ownSession, cameraPeerSession: evidence.cameraPeerSession,
+            peerReveal: evidence.peerReveal, counterparty: peerKey, readAt: evidence.readAt, sessionStart: localInvite.createdAt,
+            sessionExpiresAt: localInvite.invite.expiresAt, peerExpiresAt: evidence.peerExpiresAt })) throw new Error('Handshake proof does not match');
       }
-      return { ...e, handshake: { ...e.handshake, strength: optical ? 'mutual' as const : 'proven' as const,
+      return { ...e, handshake: { ...e.handshake, strength: evidence ? 'mutual' as const : 'proven' as const,
         confirmedAt: now, sigil: handshakeSigil(e) } };
     }) }));
     return this.materialiseContact(exchangeId);

@@ -54,10 +54,9 @@ it('does not offer a contact before it is saved', async () => {
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
   expect(screen.queryByRole('button', { name: 'Open contact' })).not.toBeInTheDocument();
 });
-const opticalInvite = () => ({ v: 1 as const, recipient: '2'.repeat(64), secret: '3'.repeat(64),
-  relays: ['wss://relay.example/'], expiresAt: Math.floor(Date.now() / 1000) + 120 });
+const sessionCode = 'SGH2:CODE';
 it('replaces the finished camera with a tick while keeping the QR for their return scan', async () => {
-  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), peer: opticalInvite() }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   render(<ContactHandshake {...props()} />);
   await screen.findByText('Their QR scanned');
   expect(screen.queryByTestId('live-camera')).not.toBeInTheDocument();
@@ -68,7 +67,7 @@ it('replaces the finished camera with a tick while keeping the QR for their retu
   expect(screen.getByText('Let their phone scan your QR.')).toBeInTheDocument();
 });
 it('keeps both scans available after an incoming request until our camera pins the peer', async () => {
-  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), name: 'Other person' }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, name: 'Other person' }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
   expect(screen.getByTestId('invite-qr')).toBeInTheDocument();
   expect(screen.getByRole('status')).toHaveTextContent('Scan their QR');
@@ -76,7 +75,7 @@ it('keeps both scans available after an incoming request until our camera pins t
   expect(screen.queryByText('Your QR scanned')).not.toBeInTheDocument();
 });
 it('replaces both completed scans with ticks only after reciprocal proof and explains the remaining exchange', async () => {
-  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), peer: opticalInvite(), scansConfirmed: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true, scansConfirmed: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   render(<ContactHandshake {...props()} />); await screen.findByText('Their QR scanned');
   expect(screen.getByText('Your QR scanned')).toBeInTheDocument();
   expect(screen.queryByTestId('live-camera')).not.toBeInTheDocument();
@@ -86,7 +85,7 @@ it('replaces both completed scans with ticks only after reciprocal proof and exp
   expect(screen.queryByRole('button', { name: 'Open contact' })).not.toBeInTheDocument();
 });
 it('shows activity while waiting for the peer, and stops it at expiry', async () => {
-  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), peer: opticalInvite() }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   const p = props(), view = render(<ContactHandshake {...p} />);
   await screen.findByText('Their QR scanned');
   expect(view.container.querySelector('.handshake-wait')).toBeInTheDocument();

@@ -7,7 +7,7 @@ import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/inv
 import { ContactInviteService } from './contact-invite-service';
 import { recordContactArrival, mergeContactInviteVault } from './contact-invite-store';
 import { contactExchangeKey } from './contact-exchange-key';
-import { inviteFingerprint } from './handshake-proof';
+import { bindingTemplate, createHandshakeSession, openReveal, sealReveal, verifyRevealBinding, type RevealBody } from './handshake-reveal';
 import { handshakeSigil } from './handshake-sigil';
 import { purgeAllUserData } from './db';
 const publish = vi.hoisted(() => vi.fn(async () => true));
@@ -34,19 +34,28 @@ async function deliver(sender: Party, recipient: Party, index: number, bindingId
   return row.id;
 }
 beforeEach(async () => { await purgeAllUserData(); publish.mockClear(); });
-it('real signed exchange requires optical mailbox delivery and author binding, then saves identical mutual sigils without words', async () => {
+it('real signed exchange needs reveals bound to both camera reads and author binding, then saves identical mutual sigils without words', async () => {
   const p = party('01'.repeat(32), 'owner'), q = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`);
   const [a, b] = p.pubkey < q.pubkey ? [p, q] : [q, p];
   const ai = await a.service.create(a.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
   const bi = await b.service.create(b.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
-  const id = await a.service.request(a.pubkey, bi.invite, now + 1, undefined, undefined, true);
+  const sa = createHandshakeSession(), sb = createHandshakeSession();
+  // Each camera read the other's session; each persona signs for both sessions.
+  const sign = async (who: Party, own: string, peer: string, invite: typeof ai): Promise<RevealBody> =>
+    ({ v: 2, to: peer, invite: invite.invite, binding: await who.service.signRevealBinding(who.pubkey, bindingTemplate(own, peer, invite.invite, now)) });
+  const fromA = openReveal(sealReveal(await sign(a, sa.publicKey, sb.publicKey, ai), sb.publicKey, now), sb, now + 1)!;
+  const fromB = openReveal(sealReveal(await sign(b, sb.publicKey, sa.publicKey, bi), sa.publicKey, now), sa, now + 1)!;
+  expect(verifyRevealBinding(fromA, sa.publicKey, sb.publicKey) && verifyRevealBinding(fromB, sb.publicKey, sa.publicKey)).toBe(true);
+  const id = await a.service.request(a.pubkey, fromB.invite, now + 1, undefined, undefined, true);
   const pending = await a.service.read();
   const arrival = await deliver(a, b, 0, bi.id, bi.invite.secret, 'invite');
   await b.service.openInbox(now + 3);
-  await expect(b.service.acceptHandshake(arrival, { ...bi.invite, secret: 'f'.repeat(64) }, { invite: ai.invite }, now + 4)).rejects.toThrow('proof');
-  await expect(b.service.acceptHandshake(arrival, bi.invite, { invite: { ...ai.invite, recipient: 'c'.repeat(64) }, echo: inviteFingerprint(bi.invite) }, now + 4)).rejects.toThrow('proof');
-  await b.service.acceptHandshake(arrival, bi.invite, { invite: ai.invite, echo: inviteFingerprint(bi.invite) }, now + 4);
+  await expect(b.service.acceptHandshake(arrival, { ...bi.invite, secret: 'f'.repeat(64) }, { invite: fromA.invite }, now + 4)).rejects.toThrow('proof');
+  await expect(b.service.acceptHandshake(arrival, bi.invite, { invite: { ...fromA.invite, recipient: 'c'.repeat(64) } }, now + 4)).rejects.toThrow('proof');
+  await b.service.acceptHandshake(arrival, bi.invite, { invite: fromA.invite }, now + 4);
   expect((await b.service.read()).exchanges).toHaveLength(1);
+  // No second, optical acceptance exists any more: the reveal is the return-scan proof.
+  expect((await b.service.read()).outbox.filter(o => o.messageType === 'acceptance')).toHaveLength(1);
   const request = (await a.service.read()).exchanges[0].request;
   const exchangeId = contactExchangeKey(request);
   expect(id).toBe(exchangeId);
@@ -57,11 +66,13 @@ it('real signed exchange requires optical mailbox delivery and author binding, t
   await b.service.openInbox(now + 8, true); await b.service.flush(now + 8);
   expect(a.completed).not.toHaveBeenCalled(); expect(b.completed).not.toHaveBeenCalled();
   await expect(a.service.materialiseContact(exchangeId)).rejects.toThrow('not ready');
-  await expect(a.service.confirmHandshake(exchangeId, now + 9, { own: ai.invite, scanned: { invite: bi.invite }, readAt: now + 2 })).rejects.toThrow('proof');
-  await deliver(b, a, 1, ai.id, ai.invite.secret, 'invite');
-  await a.service.openInbox(now + 9, false, a.pubkey);
-  await a.service.confirmHandshake(exchangeId, now + 9, { own: ai.invite, scanned: { invite: bi.invite, echo: inviteFingerprint(ai.invite) }, readAt: now + 2 });
-  await b.service.confirmHandshake(exchangeId, now + 9, { own: bi.invite, scanned: { invite: ai.invite, echo: inviteFingerprint(bi.invite) }, readAt: now + 2 });
+  const evidenceA = { inviteId: ai.id, ownSession: sa.publicKey, cameraPeerSession: sb.publicKey, peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 2 };
+  // A wrong camera read, or a reveal not covering this session, is not mutual.
+  await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, cameraPeerSession: createHandshakeSession().publicKey })).rejects.toThrow('proof');
+  await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, ownSession: createHandshakeSession().publicKey })).rejects.toThrow('proof');
+  await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, inviteId: bi.id })).rejects.toThrow('proof');
+  await a.service.confirmHandshake(exchangeId, now + 9, evidenceA);
+  await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb.publicKey, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2 });
   const ae = (await a.service.read()).exchanges[0], be = (await b.service.read()).exchanges[0];
   expect(ae.handshake?.strength).toBe('mutual'); expect(be.handshake?.strength).toBe('mutual');
   const complete = await a.service.read();

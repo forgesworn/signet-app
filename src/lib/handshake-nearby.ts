@@ -47,6 +47,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const MAX_INCOMING = 2, MAX_OUTGOING = 1, MAX_EVENTS_PER_LINK = 64, MAX_EVENTS_PER_SESSION = 128, MAX_DIALS = 3;
 
 interface LinkState {
+  /** `peer`: the persona this link speaks for, once bound. */
   id: string; link: NearbyLink; outgoing: boolean; peer?: string;
   delivered: Set<string>; acks: Map<string, (stored: boolean) => void>;
   queue: Promise<void>; events: number;
@@ -54,23 +55,26 @@ interface LinkState {
 
 /**
  * One handshake screen's Bluetooth session. Every phone advertises a token
- * derived from its own QR secret; the phone that sends the first SDK message
- * (the requester, or the one-way scanner) connects to the token of the QR it
- * read. A link is used only after it authenticates under that QR's secret, and
- * for a counterparty only once it is bound: an outgoing link at once (camera-
- * read secret), an incoming one when a message it carried opens as an SDK
- * message signed by that counterparty (`bind`).
+ * derived from its session key; a phone that read its peer's session from the
+ * screen connects to that token (or, as the advertiser, accepts only that
+ * session). A link authenticates with the two session keys, carries reveals
+ * for a session (`deliverSession`), and speaks for a persona only once bound:
+ * when a reveal verified under the camera-read session names it
+ * (`bindSession`), or when a message it carried opens as an SDK message signed
+ * by that persona (`bind`).
  */
 export class HandshakeNearby implements DirectCarrier {
   private links = new Map<string, LinkState>();
-  private target?: { pubkey: string; secret: string; holdUntil: number; failed: boolean; dialling: boolean; dials: number };
+  private target?: { session: string; holdUntil: number; failed: boolean; dialling: boolean; dials: number };
+  private expected?: string;
   private closed = false;
   private stopListening?: () => void;
   private timers = new Set<ReturnType<typeof setTimeout>>();
   availability: NearbyAvailability | 'starting' = 'starting';
 
   constructor(private native: NearbyNative, private opts: {
-    ownSecret: string;
+    /** This screen's session: its key is advertised, its secret keys the links. */
+    session: { secret: Uint8Array; publicKey: string };
     /** Store one received wrap: `stored` now, a verified `duplicate` of one
      * already stored, or `rejected`. */
     onEvent(event: NostrEvent): Promise<NearbyReceipt>;
@@ -108,7 +112,7 @@ export class HandshakeNearby implements DirectCarrier {
         if (!status.enabled) return settle('off');
       }
       if (this.closed) return 'failed';
-      await this.native.advertise({ token: toBase64(nearbyToken(this.opts.ownSecret)) });
+      await this.native.advertise({ token: toBase64(nearbyToken(this.opts.session.publicKey)) });
       if (this.closed) return 'failed';
       settle('ready');
       if (this.quietWanted) this.quieten();
@@ -118,14 +122,15 @@ export class HandshakeNearby implements DirectCarrier {
     finally { if (this.availability !== 'ready' && this.target) this.target.failed = true; }
   }
 
-  /** Connect to the phone whose QR this one read. One attempt per screen;
-   * a scan made while the permission prompt is up connects once it is ready.
-   * `quiet`: this phone needs no incoming link, so it stops advertising. */
-  connect(peer: { pubkey: string; secret: string }, opts: { quiet?: boolean } = {}) {
-    if (this.closed || this.target || !HEX64.test(peer.pubkey) || !HEX64.test(peer.secret)
+  /** Connect to the session this phone read from its peer's screen. One
+   * target per screen; a scan made while the permission prompt is up connects
+   * once it is ready. `quiet`: this phone needs no incoming link. */
+  connect(peer: { session: string }, opts: { quiet?: boolean } = {}) {
+    if (this.closed || this.target || !HEX64.test(peer.session)
       || (this.availability !== 'ready' && this.availability !== 'starting')) return;
+    this.expect(peer.session);
     const hold = this.opts.holdMs ?? 5000;
-    this.target = { ...peer, holdUntil: this.now() + hold, failed: false as boolean, dialling: false as boolean, dials: 0 };
+    this.target = { session: peer.session, holdUntil: this.now() + hold, failed: false as boolean, dialling: false as boolean, dials: 0 };
     this.later(hold, () => this.changed());
     if (opts.quiet) { this.quietWanted = true; this.quieten(); }
     this.dial();
@@ -141,7 +146,7 @@ export class HandshakeNearby implements DirectCarrier {
     if (target.dials >= MAX_DIALS) { target.failed = true; this.changed(); return; }
     target.dials++;
     target.dialling = true;
-    this.native.connect({ token: toBase64(nearbyToken(target.secret)), timeoutMs: this.opts.connectMs ?? 30000 })
+    this.native.connect({ token: toBase64(nearbyToken(target.session)), timeoutMs: this.opts.connectMs ?? 30000 })
       .then(() => { target.dialling = false; })
       .catch(() => { target.dialling = false; this.redial(); });
   }
@@ -150,6 +155,26 @@ export class HandshakeNearby implements DirectCarrier {
     if (!target || this.closed || target.failed) return;
     if (target.dials >= MAX_DIALS) { target.failed = true; this.changed(); return; }
     this.later(this.opts.redialMs ?? 300, () => this.dial());
+  }
+
+  /** This phone read its peer's session from the screen: a link from any
+   * other session is dropped, now and later. */
+  expect(session: string) {
+    if (this.closed || !HEX64.test(session) || this.expected === session) return;
+    this.expected = session;
+    for (const state of [...this.links.values()]) if (!state.link.expect(session)) this.drop(state);
+  }
+  /** The link for `session` speaks for `persona`: a reveal verified under the
+   * session this phone's camera read named it. */
+  bindSession(session: string, persona: string) {
+    const all = [...this.links.values()];
+    if (all.some(s => s.peer === persona)) return;
+    const state = all.find(s => s.link.trusted && !s.peer && s.link.peerSession === session);
+    if (state) { state.peer = persona; this.changed(); }
+  }
+  /** True when a trusted link reaches this session. */
+  reaches(session: string): boolean {
+    return [...this.links.values()].some(s => s.link.trusted && s.link.peerSession === session);
   }
 
   /** The SDK opened `eventId` as a message signed by `peer`: the link that
@@ -165,14 +190,22 @@ export class HandshakeNearby implements DirectCarrier {
   route(counterparty: string): NearbyRoute {
     if (this.closed) return 'none';
     for (const state of this.links.values()) if (state.peer === counterparty && state.link.trusted) return 'linked';
+    // One peer per screen, whose persona is not known until its reveal: hold
+    // while a dial to its session is still being made.
     const t = this.target;
-    return t && t.pubkey === counterparty && !t.failed && this.now() < t.holdUntil ? 'pending' : 'none';
+    return t && !t.failed && this.now() < t.holdUntil && !this.reaches(t.session) ? 'pending' : 'none';
   }
 
-  get linked(): boolean { return [...this.links.values()].some(s => s.peer && s.link.trusted); }
+  get linked(): boolean { return [...this.links.values()].some(s => s.link.trusted); }
 
   async deliver(counterparty: string, event: NostrEvent): Promise<boolean> {
-    const state = [...this.links.values()].find(s => s.peer === counterparty && s.link.trusted);
+    return this.sendEvent([...this.links.values()].find(s => s.peer === counterparty && s.link.trusted), event);
+  }
+  /** A reveal for the peer's session, before anyone knows whose it is. */
+  async deliverSession(session: string, event: NostrEvent): Promise<boolean> {
+    return this.sendEvent([...this.links.values()].find(s => s.link.trusted && s.link.peerSession === session), event);
+  }
+  private async sendEvent(state: LinkState | undefined, event: NostrEvent): Promise<boolean> {
     const frame = state && nearbyEventFrame(event);
     if (!state || !frame || state.acks.has(event.id)) return false;
     const receipt = new Promise<boolean>(resolve => {
@@ -216,16 +249,15 @@ export class HandshakeNearby implements DirectCarrier {
   }
   private onLink(e: { link: string; direction: 'in' | 'out' }) {
     const outgoing = e.direction === 'out';
-    const secret = outgoing ? this.target?.secret : this.opts.ownSecret;
+    const expected = outgoing ? this.target?.session : this.expected;
     const same = [...this.links.values()].filter(s => s.outgoing === outgoing).length;
-    if (this.closed || typeof e.link !== 'string' || this.links.has(e.link) || same >= (outgoing ? MAX_OUTGOING : MAX_INCOMING) || !secret) {
+    if (this.closed || typeof e.link !== 'string' || this.links.has(e.link) || same >= (outgoing ? MAX_OUTGOING : MAX_INCOMING) || (outgoing && !expected)) {
       void this.native.close({ link: e.link }).catch(() => {});
       return;
     }
-    const state: LinkState = { id: e.link, link: new NearbyLink(outgoing ? 'connector' : 'advertiser', this.random(NEARBY_NONCE_BYTES)),
-      outgoing, delivered: new Set(), acks: new Map(), queue: Promise.resolve(), events: 0 };
+    const state: LinkState = { id: e.link, link: new NearbyLink(outgoing ? 'connector' : 'advertiser', this.random(NEARBY_NONCE_BYTES),
+      this.opts.session, expected), outgoing, delivered: new Set(), acks: new Map(), queue: Promise.resolve(), events: 0 };
     this.links.set(e.link, state);
-    state.link.setSecret(secret);
     this.send(state, state.link.hello());
     // An idle or failing connection gives its slot back.
     this.later(this.opts.authMs ?? 6000, () => { if (this.links.get(e.link) === state && !state.link.trusted) this.drop(state, true); });
@@ -242,12 +274,8 @@ export class HandshakeNearby implements DirectCarrier {
     else if (step.kind === 'drop') this.drop(state, true);
     else if (step.kind === 'trusted') {
       void this.native.trust({ link: state.id }).catch(() => this.drop(state));
-      // The camera read this secret: an outgoing link speaks for that QR's owner,
-      // unless a link already does. A phone with its own link needs no advert.
-      if (state.outgoing && this.target && ![...this.links.values()].some(s => s.peer === this.target!.pubkey)) {
-        state.peer = this.target.pubkey;
-        this.quieten();
-      }
+      // A phone with its own outgoing link needs no advert.
+      if (state.outgoing) this.quieten();
       this.changed();
     } else if (step.kind === 'ack') {
       const resolve = state.acks.get(step.id);

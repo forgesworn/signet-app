@@ -1,66 +1,206 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { beginContactExchange, confirmContactRevealSent, createContactAcceptance, createContactRequest, receiveContactAcceptance } from '@forgesworn/signet-contacts';
+import type { ContactInvite } from '@forgesworn/signet-contacts';
+import type { NostrEvent } from 'signet-protocol';
 import { useHandshake, type HandshakeHost } from './useHandshake';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import type { ContactInviteVault, StoredContactExchange, StoredContactInvite } from '../lib/contact-invite-store';
 import { contactExchangeKey } from '../lib/contact-exchange-key';
-import { handshakeQR } from '../lib/handshake-proof';
 import { ContactCardPhotoError } from '../lib/contact-card-share';
+import { bindingTemplate, openReveal, readSessionQR, sealReveal, sessionQR, verifyRevealBinding, type HandshakeSession } from '../lib/handshake-reveal';
 
 const haptics = vi.hoisted(() => ({ play: vi.fn(), cancel: vi.fn() }));
 vi.mock('../lib/handshake-haptics', () => ({ handshakeHaptic: haptics.play, cancelHandshakeHaptics: haptics.cancel }));
+// The hook makes its own session; each test chooses it, so dial order is known.
+const sessions = vi.hoisted(() => ({ next: undefined as HandshakeSession | undefined }));
+vi.mock('../lib/handshake-reveal', async importOriginal => {
+  const real = await importOriginal<typeof import('../lib/handshake-reveal')>();
+  return { ...real, createHandshakeSession: () => sessions.next ?? real.createHandshakeSession() };
+});
+const freshSession = (): HandshakeSession => { const secret = generateSecretKey(); return { secret, publicKey: getPublicKey(secret) }; };
+beforeEach(() => { sessions.next = undefined; });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-function setup(recipient = false) {
-  const now = Math.floor(Date.now() / 1000), lower = '1'.repeat(64), higher = '2'.repeat(64);
-  const own: StoredContactInvite = { id: 'a'.repeat(32), identityPubkey: recipient ? higher : lower,
-    name: 'Handshake', mode: 'single-use', enabled: true, createdAt: now, updatedAt: now,
-    invite: { v: 1, recipient: recipient ? higher : lower, secret: '3'.repeat(64), expiresAt: now + 120, relays: ['wss://relay.example/'] } };
-  const peer = { ...own.invite, recipient: recipient ? lower : higher, secret: '4'.repeat(64) };
-  const request = createContactRequest({ id: 'b'.repeat(32), from: lower, to: higher, nonce: '5'.repeat(64), now,
-    reply: { secret: '6'.repeat(64), relays: own.invite.relays }, expiresAt: now + 120 });
-  const exchange: StoredContactExchange = { role: recipient ? 'recipient' : 'requester', request, nonce: '5'.repeat(64),
-    phase: 'reveal-pending', acceptance: createContactAcceptance(request, '7'.repeat(64), now, { name: 'Other person' }), handshake: { startedAt: now } };
-  const vault: ContactInviteVault = { v: 1, directoryId: 'owner', invites: [own], arrivals: [], exchanges: [], outbox: [] };
+/** `recipient`: this phone holds the higher persona. `ownLowerSession`: this
+ * phone's session key sorts first, so it is the one that dials. */
+function setup(opts: { recipient?: boolean; ownLowerSession?: boolean } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const keys = [generateSecretKey(), generateSecretKey()].sort((x, y) => getPublicKey(x) < getPublicKey(y) ? -1 : 1);
+  const [ownSk, peerSk] = opts.recipient ? [keys[1], keys[0]] : [keys[0], keys[1]];
+  const ownPub = getPublicKey(ownSk), peerPub = getPublicKey(peerSk);
+  let own: HandshakeSession, peerSession: HandshakeSession;
+  do { own = freshSession(); peerSession = freshSession(); }
+  while ((own.publicKey < peerSession.publicKey) !== (opts.ownLowerSession ?? true));
+  sessions.next = own;
+  const relays = ['wss://relay.example/'];
+  const ownInvite: StoredContactInvite = { id: 'a'.repeat(32), identityPubkey: ownPub, name: 'Handshake', mode: 'single-use', enabled: true,
+    createdAt: now, updatedAt: now, invite: { v: 1, recipient: ownPub, secret: '3'.repeat(64), expiresAt: now + 120, relays } };
+  const peerInvite: ContactInvite = { v: 1, recipient: peerPub, secret: '4'.repeat(64), expiresAt: now + 120, relays };
+  const [low, high] = ownPub < peerPub ? [ownPub, peerPub] : [peerPub, ownPub];
+  const request = createContactRequest({ id: 'b'.repeat(32), from: low, to: high, nonce: '5'.repeat(64), now,
+    reply: { secret: '6'.repeat(64), relays }, expiresAt: now + 120 });
+  const acceptance = createContactAcceptance(request, '7'.repeat(64), now, { name: 'Other person' });
+  const complete: StoredContactExchange = { ...confirmContactRevealSent(receiveContactAcceptance(beginContactExchange(request, '5'.repeat(64)), acceptance, now)),
+    handshake: { startedAt: now } };
+  const vault: ContactInviteVault = { v: 1, directoryId: 'owner', invites: [ownInvite], arrivals: [], exchanges: [], outbox: [] };
   const service = {
-    create: vi.fn(async () => own), read: vi.fn(async () => vault), openInbox: vi.fn(async () => {}),
-    request: vi.fn(async () => { vault.exchanges = [exchange]; return contactExchangeKey(request); }),
-    acceptHandshake: vi.fn(async () => { throw new Error('Handshake proof failed'); }),
-    sendOpticalAcceptance: vi.fn(async () => {}), flush: vi.fn(async () => {}),
-    setEnabled: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
+    create: vi.fn(async () => ownInvite), read: vi.fn(async () => vault), openInbox: vi.fn(async () => {}),
+    request: vi.fn(async () => { vault.exchanges = [complete]; return contactExchangeKey(request); }),
+    acceptHandshake: vi.fn(async () => { vault.exchanges = [{ ...complete, role: 'recipient' }]; }),
+    accept: vi.fn(async () => { vault.exchanges = [{ ...complete, role: 'recipient' }]; }),
+    flush: vi.fn(async () => {}), setEnabled: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
+    confirmHandshake: vi.fn(async () => 'c'.repeat(32)),
+    signRevealBinding: vi.fn(async (_persona: string, template: Parameters<typeof finalizeEvent>[0]) => finalizeEvent(template, ownSk) as NostrEvent),
   };
-  const host: HandshakeHost = { persona: own.identityPubkey, version: 0, relays: own.invite.relays,
-    service: () => service as unknown as ContactInviteService, card: async () => undefined };
-  return { host, service, vault, exchange, request, own, peer, now };
+  let watcher: ((event: NostrEvent) => void) | undefined;
+  const revealRelays = {
+    watch: vi.fn((_relays: string[], _session: string, onEvent: (event: NostrEvent) => void) => { watcher = onEvent; return () => { watcher = undefined; }; }),
+    publish: vi.fn(async (_event: NostrEvent, _relays: string[]) => true),
+  };
+  const host: HandshakeHost = { persona: ownPub, version: 0, relays, service: () => service as unknown as ContactInviteService,
+    card: async () => undefined, nearby: null, revealRelays };
+  const peerCode = sessionQR({ publicKey: peerSession.publicKey, expiresAt: now + 120, relays })!;
+  /** The peer's sealed reveal, signed for its session and `forSession` (this phone's, if it scanned us). */
+  const peerReveal = (forSession = own.publicKey) => sealReveal({ v: 2, to: own.publicKey, invite: peerInvite,
+    binding: finalizeEvent(bindingTemplate(peerSession.publicKey, forSession, peerInvite, now), peerSk) as NostrEvent }, own.publicKey, now);
+  const deliver = (event: NostrEvent) => act(() => watcher!(event));
+  return { host, service, vault, revealRelays, own, peerSession, peerInvite, peerCode, peerReveal, deliver, now, ownInvite, request, complete, ownPub };
 }
-it('keeps the QR unfinished for an ordinary acceptance until the verified optical delivery arrives', async () => {
-  const state = setup();
-  const hook = renderHook(({ version }) => useHandshake({ ...state.host, version }), { initialProps: { version: 0 } });
-  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
-  await waitFor(() => expect(hook.result.current.view.name).toBe('Other person'));
-  expect(state.service.sendOpticalAcceptance).toHaveBeenCalled();
-  expect(hook.result.current.view.peer).toEqual(state.peer);
-  expect(hook.result.current.view.scansConfirmed).not.toBe(true);
+const ready = async (hook: { result: { current: ReturnType<typeof useHandshake> } }) =>
+  waitFor(() => expect(hook.result.current.view.code).toBeTruthy());
+
+it('shows only its session, and sends a reveal bound to both sessions once the camera reads the peer', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  expect(readSessionQR(hook.result.current.view.code!, s.now)).toEqual({ kind: 'session', card: { publicKey: s.own.publicKey, expiresAt: s.now + 120, relays: s.ownInvite.invite.relays } });
+  expect(hook.result.current.view.code).not.toContain(s.ownPub.slice(0, 10));
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(1));
+  const [sent, relays] = s.revealRelays.publish.mock.calls[0];
+  expect(relays).toEqual(['wss://relay.example/']);
+  const body = openReveal(sent, s.peerSession, s.now)!;
+  expect(body.invite).toEqual(s.ownInvite.invite);
+  expect(verifyRevealBinding(body, s.own.publicKey, s.peerSession.publicKey)).toBe(true);
+  expect(haptics.play).toHaveBeenCalledWith('tick');
   expect(haptics.play).not.toHaveBeenCalledWith('double');
-  state.exchange.handshake!.opticalAcceptanceAt = state.now;
-  hook.rerender({ version: 1 });
-  await waitFor(() => expect(hook.result.current.view.scansConfirmed).toBe(true));
-  expect(haptics.play).toHaveBeenCalledWith('double');
 });
-it('never marks the return scan complete when recipient proof verification rejects the request', async () => {
-  const state = setup(true);
-  state.vault.arrivals = [{ id: 'c'.repeat(64), inviteId: state.own.id, identityPubkey: state.own.identityPubkey,
-    receivedAt: state.now, channel: 'invite', request: state.request }];
-  const hook = renderHook(() => useHandshake(state.host));
-  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
-  await waitFor(() => expect(hook.result.current.view.phase).toBe('failed'));
-  expect(state.service.acceptHandshake).toHaveBeenCalled();
+
+it('confirms both scans only on a reveal bound to this session, then the lower persona sends and seals mutual', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+  expect(s.service.request).not.toHaveBeenCalled();
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(haptics.play).toHaveBeenCalledWith('double');
+  expect((s.service.request.mock.calls[0] as unknown[])[1]).toEqual(s.peerInvite);
+  const evidence = (s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as unknown as Record<string, unknown>;
+  expect(evidence).toMatchObject({ inviteId: s.ownInvite.id, ownSession: s.own.publicKey, cameraPeerSession: s.peerSession.publicKey });
+});
+
+it('a reveal not signed for this session proves nothing: no confirmation, no automatic exchange', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.scan(s.peerCode));
+  s.deliver(s.peerReveal(freshSession().publicKey));
+  await new Promise(r => setTimeout(r, 100));
   expect(hook.result.current.view.scansConfirmed).not.toBe(true);
   expect(haptics.play).not.toHaveBeenCalledWith('double');
+  expect(s.service.request).not.toHaveBeenCalled();
+});
+
+it('keeps a reveal that came before the scan, and acts on it once the camera confirms the session', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
+  expect(s.service.request).not.toHaveBeenCalled();
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+});
+
+it('auto-accepts as the higher persona only on a verified reveal', async () => {
+  const s = setup({ recipient: true });
+  s.vault.arrivals = [{ id: 'c'.repeat(64), inviteId: s.ownInvite.id, identityPubkey: s.ownPub, receivedAt: s.now, channel: 'invite', request: s.request }];
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+  expect(s.service.acceptHandshake).not.toHaveBeenCalled();
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(s.service.acceptHandshake).toHaveBeenCalledTimes(1));
+  expect(s.service.acceptHandshake.mock.calls[0]).toEqual(expect.arrayContaining([{ invite: s.peerInvite }]));
+  expect(s.service.request).not.toHaveBeenCalled();
+});
+
+it('refuses a handshake code from an older build', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.scan('SGH1:ABCDEF'));
+  await waitFor(() => expect(hook.result.current.view.outdated).toBe(true));
+  expect(hook.result.current.view.scanned).not.toBe(true);
+  expect(s.revealRelays.publish).not.toHaveBeenCalled();
+});
+
+it('one-way: without its own scan, the seam check uses the revealed invite and never claims mutual', async () => {
+  const s = setup({ recipient: true });
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
+  act(() => hook.result.current.oneWay());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('checking'));
+  expect((s.service.request.mock.calls[0] as unknown[])[1]).toEqual(s.peerInvite);
+  act(() => hook.result.current.confirm());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect((s.service.confirmHandshake.mock.calls[0] as unknown[])[2]).toBeUndefined();
+});
+
+it('sends nothing when the picture cannot be prepared, and goes on without it only when asked', async () => {
+  const s = setup();
+  const card = vi.fn(async (opts?: { withoutPhoto?: boolean }) => {
+    if (!opts?.withoutPhoto) throw new ContactCardPhotoError();
+    return { name: 'Me' };
+  });
+  s.service.request.mockImplementation(async (...args: unknown[]) => {
+    await (args[4] as () => Promise<unknown>)();
+    s.vault.exchanges = [s.complete];
+    return contactExchangeKey(s.request);
+  });
+  const hook = renderHook(() => useHandshake({ ...s.host, card }));
+  await ready(hook);
+  act(() => hook.result.current.scan(s.peerCode));
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.photoFailed).toBe(true));
+  expect(hook.result.current.view.phase).not.toBe('failed');
+  expect(s.vault.exchanges).toHaveLength(0);
+  act(() => hook.result.current.withoutPhoto());
+  await waitFor(() => expect(s.vault.exchanges).toHaveLength(1));
+  expect(card).toHaveBeenLastCalledWith({ withoutPhoto: true });
+});
+
+it('stays sealed when saving the contact wakes a pass that was waiting behind the seal', async () => {
+  const s = setup({ recipient: true });
+  const hook = renderHook(({ version }) => useHandshake({ ...s.host, version }), { initialProps: { version: 0 } });
+  s.service.confirmHandshake.mockImplementation(async () => { hook.rerender({ version: 1 }); await new Promise(r => setTimeout(r, 20)); return 'c'.repeat(32); });
+  await ready(hook);
+  s.deliver(s.peerReveal());
+  act(() => hook.result.current.oneWay());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('checking'));
+  act(() => hook.result.current.confirm());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  await act(() => new Promise(r => setTimeout(r, 300)));
+  expect(hook.result.current.view.phase).toBe('sealed');
+  expect(s.service.confirmHandshake).toHaveBeenCalledTimes(1);
 });
 
 function fakeNearby() {
@@ -69,104 +209,37 @@ function fakeNearby() {
     permission: vi.fn(async () => ({ granted: true })), enable: vi.fn(async () => ({ enabled: true })),
     advertise: vi.fn(async () => ({ psm: 0x80 })), connect: vi.fn(() => new Promise<{ link: string }>(() => {})),
     send: vi.fn(async () => {}), trust: vi.fn(async () => {}), close: vi.fn(async () => {}), stop: vi.fn(async () => {}),
-    listen: vi.fn(async () => () => {}),
+    quiet: vi.fn(async () => {}), listen: vi.fn(async () => () => {}),
   };
 }
-it('advertises its own QR token, dials the scanned QR as the requester and stops the radio on leaving', async () => {
-  const state = setup(), nearby = fakeNearby();
-  const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+it('advertises its session, dials the scanned session as the lower one and stops the radio on leaving', async () => {
+  const s = setup({ ownLowerSession: true }), nearby = fakeNearby();
+  const hook = renderHook(() => useHandshake({ ...s.host, nearby }));
   await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  act(() => hook.result.current.scan(s.peerCode));
   await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1));
-  expect(nearby.connect.mock.calls[0]).not.toEqual(nearby.advertise.mock.calls[0]);
+  expect(nearby.quiet).toHaveBeenCalled();
   hook.unmount();
   await waitFor(() => expect(nearby.stop).toHaveBeenCalled());
 });
-it('never dials as the recipient: it keeps advertising for the requester', async () => {
-  const state = setup(true), nearby = fakeNearby();
-  const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+it('as the higher session, waits for the other phone to dial, and dials itself only if it never does', async () => {
+  const s = setup({ ownLowerSession: false }), nearby = fakeNearby();
+  const hook = renderHook(() => useHandshake({ ...s.host, nearby }));
   await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
-  await waitFor(() => expect(state.service.flush).toHaveBeenCalled());
+  act(() => hook.result.current.scan(s.peerCode));
+  await new Promise(r => setTimeout(r, 200));
   expect(nearby.connect).not.toHaveBeenCalled();
-});
-it('sends nothing when the picture cannot be prepared, and goes on without it only when asked', async () => {
-  const state = setup();
-  const card = vi.fn(async (opts?: { withoutPhoto?: boolean }) => {
-    if (!opts?.withoutPhoto) throw new ContactCardPhotoError();
-    return { name: 'Me' };
-  });
-  state.service.request.mockImplementation(async (...args: unknown[]) => {
-    const source = args[4] as () => Promise<unknown>;
-    await source();
-    state.vault.exchanges = [state.exchange];
-    return contactExchangeKey(state.request);
-  });
-  const hook = renderHook(() => useHandshake({ ...state.host, card, nearby: null }));
-  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
-  await waitFor(() => expect(hook.result.current.view.photoFailed).toBe(true));
-  expect(hook.result.current.view.phase).not.toBe('failed');
-  expect(state.vault.exchanges).toHaveLength(0);
-  act(() => hook.result.current.withoutPhoto());
-  await waitFor(() => expect(state.vault.exchanges).toHaveLength(1));
-  expect(card).toHaveBeenLastCalledWith({ withoutPhoto: true });
-  expect(hook.result.current.view.photoFailed).toBe(false);
-});
-it('runs again when woken during the pass that completes the exchange, sealing on the proof that just landed', async () => {
-  const state = setup();
-  const received = receiveContactAcceptance(beginContactExchange(state.request, '5'.repeat(64)), state.exchange.acceptance!, state.now);
-  const complete: StoredContactExchange = { ...confirmContactRevealSent(received), handshake: { startedAt: state.now } };
-  state.service.request.mockImplementation(async () => { state.vault.exchanges = [complete]; return contactExchangeKey(state.request); });
-  let kicked = false, stale = false;
-  const confirmHandshake = vi.fn(async () => 'c'.repeat(32));
-  Object.assign(state.service, { confirmHandshake });
-  const hook = renderHook(({ version }) => useHandshake({ ...state.host, version, nearby: null }), { initialProps: { version: 0 } });
-  // The wake-up arrives mid-pass; the pass's own read still predates the proof.
-  state.service.flush.mockImplementation(async () => {
-    if (state.vault.exchanges.length && !kicked) { kicked = true; hook.rerender({ version: 1 }); await new Promise(r => setTimeout(r, 0)); stale = true; }
-  });
-  state.service.read.mockImplementation(async () => {
-    if (!stale) return state.vault;
-    stale = false;
-    const snapshot = structuredClone(state.vault);
-    complete.handshake!.opticalAcceptanceAt = state.now;
-    return snapshot;
-  });
-  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
-  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
-  expect(confirmHandshake).toHaveBeenCalledTimes(1);
-});
-it('stays sealed when saving the contact wakes a pass that was waiting behind the seal', async () => {
-  const state = setup();
-  const received = receiveContactAcceptance(beginContactExchange(state.request, '5'.repeat(64)), state.exchange.acceptance!, state.now);
-  const complete: StoredContactExchange = { ...confirmContactRevealSent(received), handshake: { startedAt: state.now } };
-  state.service.request.mockImplementation(async () => { state.vault.exchanges = [complete]; return contactExchangeKey(state.request); });
-  const hook = renderHook(({ version }) => useHandshake({ ...state.host, version, nearby: null }), { initialProps: { version: 0 } });
-  // Saving the contact bumps the app's version, as App's onCompleted does.
-  const confirmHandshake = vi.fn(async () => { hook.rerender({ version: 1 }); await new Promise(r => setTimeout(r, 20)); return 'c'.repeat(32); });
-  Object.assign(state.service, { confirmHandshake });
-  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
-  await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
-  act(() => hook.result.current.oneWay());
-  await waitFor(() => expect(hook.result.current.view.phase).toBe('checking'));
-  act(() => hook.result.current.confirm());
-  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
-  await act(() => new Promise(r => setTimeout(r, 300)));
-  expect(hook.result.current.view.phase).toBe('sealed');
-  expect(confirmHandshake).toHaveBeenCalledTimes(1);
-});
-it('keeps Bluetooth off while the app is hidden and restarts it on return, re-dialling as the requester', async () => {
+  await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1), { timeout: 4000 });
+}, 10000);
+it('keeps Bluetooth off while the app is hidden and restarts it on return, dialling again', async () => {
   let visibility: DocumentVisibilityState = 'visible';
   const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
   const turn = (value: DocumentVisibilityState) => { visibility = value; document.dispatchEvent(new Event('visibilitychange')); };
   try {
-    const state = setup(), nearby = fakeNearby();
-    const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+    const s = setup({ ownLowerSession: true }), nearby = fakeNearby();
+    const hook = renderHook(() => useHandshake({ ...s.host, nearby }));
     await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
-    act(() => hook.result.current.scan(handshakeQR(state.peer)));
+    act(() => hook.result.current.scan(s.peerCode));
     await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1));
     act(() => turn('hidden'));
     await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
@@ -182,10 +255,10 @@ it('keeps Bluetooth off while the app is hidden and restarts it on return, re-di
   } finally { spy.mockRestore(); }
 });
 it('stops Bluetooth when the shell reports the app went to the background, even if the page still looks visible', async () => {
-  const state = setup(), nearby = fakeNearby();
+  const s = setup(), nearby = fakeNearby();
   let report: ((state: 'background' | 'foreground') => void) | undefined;
   const lifecycle = vi.fn(async (handler: (state: 'background' | 'foreground') => void) => { report = handler; return () => { report = undefined; }; });
-  const hook = renderHook(() => useHandshake({ ...state.host, nearby: { ...nearby, lifecycle } }));
+  const hook = renderHook(() => useHandshake({ ...s.host, nearby: { ...nearby, lifecycle } }));
   await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
   act(() => report!('background'));
   await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
@@ -195,13 +268,10 @@ it('stops Bluetooth when the shell reports the app went to the background, even 
   expect(report).toBeUndefined();
 });
 it('turns Bluetooth off once only the seam check is left', async () => {
-  const state = setup(), nearby = fakeNearby();
-  const received = receiveContactAcceptance(beginContactExchange(state.request, '5'.repeat(64)), state.exchange.acceptance!, state.now);
-  const complete: StoredContactExchange = { ...confirmContactRevealSent(received), handshake: { startedAt: state.now } };
-  state.service.request.mockImplementation(async () => { state.vault.exchanges = [complete]; return contactExchangeKey(state.request); });
-  const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+  const s = setup({ recipient: true }), nearby = fakeNearby();
+  const hook = renderHook(() => useHandshake({ ...s.host, nearby }));
   await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
-  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  s.deliver(s.peerReveal());
   await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
   expect(nearby.stop).not.toHaveBeenCalled();
   act(() => hook.result.current.oneWay());
