@@ -339,3 +339,31 @@ it('fails closed if two personas both prove the session this camera read', async
   expect(s.service.request).not.toHaveBeenCalled();
   expect(s.service.confirmHandshake).not.toHaveBeenCalled();
 });
+it('junk reveals cannot crowd out the genuine one, and replays cost nothing (review N1)', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.scan(s.peerCode));
+  // A photo holder floods sealed junk to this session.
+  const junk = sealReveal({ v: 2, to: s.own.publicKey, invite: s.peerInvite,
+    binding: finalizeEvent(bindingTemplate(freshSession(), s.own.publicKey, s.peerInvite, s.now), generateSecretKey()) as NostrEvent }, s.own.publicKey, s.now);
+  for (let i = 0; i < 80; i++) s.deliver({ ...junk, id: i.toString(16).padStart(64, '0') });
+  for (let i = 0; i < 80; i++) s.deliver(junk);
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+});
+it('a second persona answering after the one-way tap, before anything is sent, stops the guess (review M2)', async () => {
+  const s = setup({ recipient: true });
+  s.service.request.mockImplementation(() => new Promise(() => {}));
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.oneWay());
+  const other = generateSecretKey(), otherInvite = { ...s.peerInvite, recipient: getPublicKey(other) };
+  // Both arrive in one go, before any pass could send.
+  act(() => {
+    s.deliver(s.peerReveal());
+    s.deliver(sealReveal({ v: 2, to: s.own.publicKey, invite: otherInvite,
+      binding: finalizeEvent(bindingTemplate(freshSession(), s.own.publicKey, otherInvite, s.now), other) as NostrEvent }, s.own.publicKey, s.now));
+  });
+  await waitFor(() => expect(hook.result.current.view.ambiguous).toBe(true));
+});

@@ -53,7 +53,7 @@ export interface HandshakeView {
   ambiguous?: boolean;
 }
 const defaultRelays = { watch: watchReveals, publish: (event: NostrEvent, relays: string[]) => publishToRelays(event, relays) };
-const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5000, MAX_CANDIDATES = 16, MAX_REVEALS = 64;
+const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5000, MAX_CANDIDATES = 16, MAX_FAILED_REVEALS = 512, MAX_SEEN = 1024;
 
 /** One unlinkable session, bounded to two minutes (handshake-reveal.ts). No
  * background or persisted optical consent: reopening always requires a fresh
@@ -79,7 +79,8 @@ export function useHandshake(host: HandshakeHost) {
     let peerReveal: RevealBody | undefined;
     const candidates: Array<{ body: RevealBody; eventId: string }> = [];
     let ownBinding: NostrEvent | undefined, ownRevealSent = false, lastRevealAt = 0, revealing = false, revealHoldUntil = 0;
-    let revealsSeen = 0, conflict = false;
+    let failedReveals = 0, conflict = false;
+    const seenReveals = new Set<string>();
     let exchangeId: string | undefined, currentExchange: StoredContactExchange | undefined, arrivalId: string | undefined;
     const service = latest.current.service(() => !closed);
     const now = () => Math.floor(Date.now() / 1000);
@@ -122,11 +123,14 @@ export function useHandshake(host: HandshakeHost) {
     /** A reveal sealed to this session. Kept only if it is for the screen this
      * camera read; before any scan, a few are held to check once it happens. */
     const acceptReveal = (event: NostrEvent): boolean => {
-      if (closed || sealed || conflict || ++revealsSeen > MAX_REVEALS) return false;
+      // Only failures count against the allowance, so junk cannot crowd out
+      // the genuine reveal; a relay replaying what it sent costs nothing.
+      if (closed || sealed || conflict || failedReveals >= MAX_FAILED_REVEALS || seenReveals.has(event.id)) return false;
+      if (seenReveals.size < MAX_SEEN) seenReveals.add(event.id);
       const body = openReveal(event, session, now());
-      if (!body || body.invite.recipient === host.persona) return false;
+      if (!body || body.invite.recipient === host.persona) { failedReveals++; return false; }
       if (peerCard) {
-        if (!verifyRevealBinding(body, peerCard.publicKey, session)) return false;
+        if (!verifyRevealBinding(body, peerCard.publicKey, session)) { failedReveals++; return false; }
         if (verified() && peerReveal!.invite.recipient !== body.invite.recipient) {
           // Two personas both proved the session this camera read: fail closed.
           conflict = true; publish({ phase: 'failed' }); endNearby(); return false;
@@ -135,7 +139,10 @@ export function useHandshake(host: HandshakeHost) {
       } else if (!candidates.some(c => c.body.binding.id === body.binding.id)) {
         if (candidates.length >= MAX_CANDIDATES) return false;
         candidates.push({ body, eventId: event.id });
-        if (oneWay && !peerReveal) takeUnverified(candidates[0]);
+        if (oneWay && peerReveal && peerReveal.invite.recipient !== body.invite.recipient && !exchangeId && !sending) {
+          // A second persona answered before anything was sent: stop guessing.
+          peerReveal = undefined; publish({ ambiguous: true });
+        } else if (oneWay && !peerReveal && new Set(candidates.map(c => c.body.invite.recipient)).size === 1) takeUnverified(candidates[0]);
         publish({ phase: 'waiting' });
       }
       void run();
@@ -146,7 +153,8 @@ export function useHandshake(host: HandshakeHost) {
      * sent again, freshly sealed, until the peer acts on it: a reveal the peer
      * dropped before scanning (a full store) then lands after its scan. */
     const sendReveal = async () => {
-      if (revealing || !peerCard || !own || closed || sealed || progressed()) return;
+      if (revealing || !peerCard || !own || closed || sealed || progressed()
+        || now() >= own.invite.expiresAt! || now() >= peerCard.expiresAt) return;
       if (ownRevealSent && Date.now() - lastRevealAt < RESEND_MS) return;
       revealing = true;
       let sent = false;
@@ -159,7 +167,7 @@ export function useHandshake(host: HandshakeHost) {
         if (sent) { ownRevealSent = true; lastRevealAt = Date.now(); }
       } finally {
         revealing = false;
-        if (!closed && !sealed && !progressed()) later(sent ? RESEND_MS : RETRY_MS, () => void run());
+        if (!closed && !sealed && !progressed() && now() < own.invite.expiresAt!) later(sent ? RESEND_MS : RETRY_MS, () => void run());
       }
     };
     const seal = async (mutual: boolean) => {
