@@ -1,4 +1,5 @@
 import { ContactHandshake } from './pages/ContactHandshake';
+import { handshakeDirect } from './lib/handshake-nearby';
 import { HANDSHAKE_COPY } from './lib/contacts-v2-copy';
 import { parseKinterestRequest } from './lib/kinterest-authority';
 import { useChildContactDirectory, useChildContactDirectoryPublisher } from './hooks/useChildContactDirectory';
@@ -2490,7 +2491,7 @@ export function App() {
       } catch { if (!current()) throw new Error('Contact invite session changed'); }
     };
     return new ContactInviteService({ directoryId, encryptionKey: key ?? '', budget: inviteBudget, isCurrent: current,
-      onChanged: bumpContactsV2,
+      onChanged: bumpContactsV2, direct: handshakeDirect,
       automaticAttempts: inviteAutomaticAttempts,
       appAllowed: async (app, own, action, automatic) => {
         if (!key || !current() || directoryId !== 'owner') return false;

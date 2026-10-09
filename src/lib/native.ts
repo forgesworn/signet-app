@@ -16,6 +16,29 @@ export function isNativeApp(): boolean {
 export interface SignetNativePlugin {
   handshakeAwake(opts: { active: boolean }): Promise<void>;
   handshakeHaptic(opts: { beat: 'tick' | 'double' | 'thud' }): Promise<void>;
+  /**
+   * Handshake Bluetooth carrier (Android 12+, LE L2CAP CoC, no pairing). A
+   * byte pipe only: JS authenticates the link and the contact SDK verifies
+   * every message. `supported` is false below Android 12 or without LE
+   * peripheral support; `permitted` is the Nearby devices permission.
+   */
+  nearbyStatus(): Promise<{ supported: boolean; enabled: boolean; permitted: boolean }>;
+  nearbyPermission(): Promise<{ granted: boolean }>;
+  /** The system "turn on Bluetooth" request. */
+  nearbyEnable(): Promise<{ enabled: boolean }>;
+  /** Listen on a fresh L2CAP channel and advertise `token` (8 bytes, base64) with its PSM. */
+  nearbyAdvertise(opts: { token: string }): Promise<{ psm: number }>;
+  /** Scan for `token`, then connect to the PSM it advertises. Resolves once connected. */
+  nearbyConnect(opts: { token: string; timeoutMs: number }): Promise<{ link: string }>;
+  nearbySend(opts: { link: string; data: string }): Promise<void>;
+  /** The link authenticated: lift the frame cap from the handshake size to an event's. */
+  nearbyTrust(opts: { link: string }): Promise<void>;
+  nearbyClose(opts: { link: string }): Promise<void>;
+  /** Stop advertising and scanning, close the channel and every link. */
+  nearbyStop(): Promise<void>;
+  addListener(eventName: 'nearbyLink', listener: (event: { link: string; direction: 'in' | 'out' }) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'nearbyFrame', listener: (event: { link: string; data: string }) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'nearbyClosed', listener: (event: { link: string }) => void): Promise<PluginListenerHandle>;
   isBiometricAvailable(): Promise<{ available: boolean }>;
   /** Wrap the 64-hex master key with a biometric-gated Keystore key. */
   biometricEnroll(opts: { secret: string }): Promise<{ ok: boolean }>;

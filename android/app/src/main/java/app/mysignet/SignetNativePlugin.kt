@@ -1,6 +1,7 @@
 package app.mysignet
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -23,6 +24,9 @@ import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import androidx.activity.result.ActivityResult
+import com.getcapacitor.PermissionState
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
@@ -34,7 +38,14 @@ import javax.crypto.spec.GCMParameterSpec
 
 @CapacitorPlugin(
     name = "SignetNative",
-    permissions = [Permission(strings = [Manifest.permission.CAMERA], alias = "camera")]
+    permissions = [
+        Permission(strings = [Manifest.permission.CAMERA], alias = "camera"),
+        // Android 12+ Nearby devices. Scan is declared neverForLocation.
+        Permission(
+            strings = [Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT],
+            alias = "nearby",
+        ),
+    ]
 )
 class SignetNativePlugin : Plugin() {
 
@@ -76,6 +87,7 @@ class SignetNativePlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
+        nearby.stop()
         Nip55Requests.detach(deliverToPage, withdrawFromPage)
         super.handleOnDestroy()
     }
@@ -420,5 +432,107 @@ class SignetNativePlugin : Plugin() {
     fun cameraPermCallback(call: PluginCall) {
         val granted = getPermissionState("camera") == com.getcapacitor.PermissionState.GRANTED
         call.resolve(JSObject().put("granted", granted))
+    }
+
+    // ── Handshake Bluetooth carrier ───────────────────────────────────────
+    //
+    // A byte pipe for the handshake screen (see HandshakeNearby). The page
+    // authenticates each link and the contact SDK verifies every message;
+    // nothing here decides who anyone is.
+    private val nearby by lazy {
+        HandshakeNearby(context) { event, fields ->
+            val data = JSObject()
+            for ((key, value) in fields) data.put(key, value)
+            notifyListeners(event, data)
+        }
+    }
+
+    private fun nearbyPermitted(): Boolean =
+        HandshakeNearby.platformSupported() && getPermissionState("nearby") == PermissionState.GRANTED
+
+    @PluginMethod
+    fun nearbyStatus(call: PluginCall) {
+        call.resolve(JSObject()
+            .put("supported", nearby.supported())
+            .put("enabled", nearby.enabled())
+            .put("permitted", nearbyPermitted()))
+    }
+
+    @PluginMethod
+    fun nearbyPermission(call: PluginCall) {
+        when {
+            !HandshakeNearby.platformSupported() -> call.resolve(JSObject().put("granted", false))
+            nearbyPermitted() -> call.resolve(JSObject().put("granted", true))
+            else -> requestPermissionForAlias("nearby", call, "nearbyPermCallback")
+        }
+    }
+
+    @PermissionCallback
+    fun nearbyPermCallback(call: PluginCall) {
+        call.resolve(JSObject().put("granted", nearbyPermitted()))
+    }
+
+    @PluginMethod
+    fun nearbyEnable(call: PluginCall) {
+        if (nearby.enabled()) { call.resolve(JSObject().put("enabled", true)); return }
+        if (!nearbyPermitted()) { call.resolve(JSObject().put("enabled", false)); return }
+        startActivityForResult(call, Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), "nearbyEnableResult")
+    }
+
+    @ActivityCallback
+    fun nearbyEnableResult(call: PluginCall?, result: ActivityResult) {
+        call?.resolve(JSObject().put("enabled", nearby.enabled()))
+    }
+
+    private fun nearbyBytes(call: PluginCall, key: String): ByteArray? = try {
+        call.getString(key)?.let { Base64.decode(it, Base64.NO_WRAP) }
+    } catch (_: IllegalArgumentException) { null }
+
+    @PluginMethod
+    fun nearbyAdvertise(call: PluginCall) {
+        val token = nearbyBytes(call, "token")
+        if (token == null || token.size != HandshakeNearby.TOKEN_BYTES) { call.reject("token must be 8 bytes"); return }
+        if (!nearbyPermitted()) { call.reject("permission"); return }
+        nearby.advertise(token) { psm, error ->
+            if (psm != null) call.resolve(JSObject().put("psm", psm)) else call.reject(error ?: "advertise")
+        }
+    }
+
+    @PluginMethod
+    fun nearbyConnect(call: PluginCall) {
+        val token = nearbyBytes(call, "token")
+        val timeoutMs = call.getInt("timeoutMs") ?: 30000
+        if (token == null || token.size != HandshakeNearby.TOKEN_BYTES) { call.reject("token must be 8 bytes"); return }
+        if (!nearbyPermitted()) { call.reject("permission"); return }
+        nearby.connect(token, timeoutMs.toLong()) { link, error ->
+            if (link != null) call.resolve(JSObject().put("link", link)) else call.reject(error ?: "connect")
+        }
+    }
+
+    @PluginMethod
+    fun nearbySend(call: PluginCall) {
+        val link = call.getString("link")
+        val data = nearbyBytes(call, "data")
+        if (link == null || data == null || !nearby.send(link, data)) { call.reject("closed"); return }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyTrust(call: PluginCall) {
+        val link = call.getString("link")
+        if (link == null || !nearby.trust(link)) { call.reject("closed"); return }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyClose(call: PluginCall) {
+        call.getString("link")?.let { nearby.close(it) }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyStop(call: PluginCall) {
+        nearby.stop()
+        call.resolve()
     }
 }

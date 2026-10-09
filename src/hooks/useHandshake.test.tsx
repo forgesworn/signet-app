@@ -7,6 +7,7 @@ import type { ContactInviteService } from '../lib/contact-invite-service';
 import type { ContactInviteVault, StoredContactExchange, StoredContactInvite } from '../lib/contact-invite-store';
 import { contactExchangeKey } from '../lib/contact-exchange-key';
 import { handshakeQR } from '../lib/handshake-proof';
+import { ContactCardPhotoError } from '../lib/contact-card-share';
 
 const haptics = vi.hoisted(() => ({ play: vi.fn(), cancel: vi.fn() }));
 vi.mock('../lib/handshake-haptics', () => ({ handshakeHaptic: haptics.play, cancelHandshakeHaptics: haptics.cancel }));
@@ -60,4 +61,55 @@ it('never marks the return scan complete when recipient proof verification rejec
   expect(state.service.acceptHandshake).toHaveBeenCalled();
   expect(hook.result.current.view.scansConfirmed).not.toBe(true);
   expect(haptics.play).not.toHaveBeenCalledWith('double');
+});
+
+function fakeNearby() {
+  return {
+    status: vi.fn(async () => ({ supported: true, enabled: true, permitted: true })),
+    permission: vi.fn(async () => ({ granted: true })), enable: vi.fn(async () => ({ enabled: true })),
+    advertise: vi.fn(async () => ({ psm: 0x80 })), connect: vi.fn(() => new Promise<{ link: string }>(() => {})),
+    send: vi.fn(async () => {}), trust: vi.fn(async () => {}), close: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    listen: vi.fn(async () => () => {}),
+  };
+}
+it('advertises its own QR token, dials the scanned QR as the requester and stops the radio on leaving', async () => {
+  const state = setup(), nearby = fakeNearby();
+  const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+  await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1));
+  expect(nearby.connect.mock.calls[0]).not.toEqual(nearby.advertise.mock.calls[0]);
+  hook.unmount();
+  await waitFor(() => expect(nearby.stop).toHaveBeenCalled());
+});
+it('never dials as the recipient: it keeps advertising for the requester', async () => {
+  const state = setup(true), nearby = fakeNearby();
+  const hook = renderHook(() => useHandshake({ ...state.host, nearby }));
+  await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  await waitFor(() => expect(state.service.flush).toHaveBeenCalled());
+  expect(nearby.connect).not.toHaveBeenCalled();
+});
+it('sends nothing when the picture cannot be prepared, and goes on without it only when asked', async () => {
+  const state = setup();
+  const card = vi.fn(async (opts?: { withoutPhoto?: boolean }) => {
+    if (!opts?.withoutPhoto) throw new ContactCardPhotoError();
+    return { name: 'Me' };
+  });
+  state.service.request.mockImplementation(async (...args: unknown[]) => {
+    const source = args[4] as () => Promise<unknown>;
+    await source();
+    state.vault.exchanges = [state.exchange];
+    return contactExchangeKey(state.request);
+  });
+  const hook = renderHook(() => useHandshake({ ...state.host, card, nearby: null }));
+  await waitFor(() => expect(hook.result.current.view.invite).toEqual(state.own.invite));
+  act(() => hook.result.current.scan(handshakeQR(state.peer)));
+  await waitFor(() => expect(hook.result.current.view.photoFailed).toBe(true));
+  expect(hook.result.current.view.phase).not.toBe('failed');
+  expect(state.vault.exchanges).toHaveLength(0);
+  act(() => hook.result.current.withoutPhoto());
+  await waitFor(() => expect(state.vault.exchanges).toHaveLength(1));
+  expect(card).toHaveBeenLastCalledWith({ withoutPhoto: true });
+  expect(hook.result.current.view.photoFailed).toBe(false);
 });

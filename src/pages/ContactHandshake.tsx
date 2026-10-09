@@ -55,7 +55,8 @@ export function ContactHandshake(props: Props) {
       void (async () => { if (saveDefault) await saveHandshakeChoice(props.persona, props.encryptionKey, choice); setChoosing(false); })().catch(() => setFailed(true));
     }}>{COPY.go}</button>
   </div>;
-  return props.pairedChild ? <ChildHandshake {...props} /> : <RunningHandshake {...props} card={() => props.buildCard(choice)} />;
+  return props.pairedChild ? <ChildHandshake {...props} />
+    : <RunningHandshake {...props} card={opts => props.buildCard(opts?.withoutPhoto ? { ...choice, photo: false } : choice)} />;
 }
 function CameraChoice({ facing, change }: { facing: 'user' | 'environment'; change(): void }) {
   return <button className="btn btn-ghost btn-sm" aria-label={COPY.switchCamera} onClick={change}>{facing === 'user' ? COPY.front : COPY.rear}</button>;
@@ -79,7 +80,7 @@ function ChildHandshake(props: Props) {
   </div>;
 }
 function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
-  const { view, scan, oneWay, confirm } = useHandshake(props);
+  const { view, scan, oneWay, confirm, withoutPhoto } = useHandshake(props);
   const [facing, setFacing] = useState<'user' | 'environment'>(HANDSHAKE_DEFAULT_CAMERA);
   const [tierBusy, setTierBusy] = useState(false);
   const [tierChosen, setTierChosen] = useState(false);
@@ -108,6 +109,11 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
+    {active && view.nearby && <p className="field-hint">{view.nearby === 'linked' ? COPY.nearbyLinked : view.nearby === 'off' ? COPY.nearbyOff : COPY.nearbyDenied}</p>}
+    {active && view.photoFailed && <div className="handshake-photo-failed">
+      <p role="alert">{COPY.photoFailed}</p>
+      <button className="btn btn-secondary" onClick={withoutPhoto}>{COPY.withoutPhoto}</button>
+    </div>}
     {active && view.peer && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}

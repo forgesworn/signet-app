@@ -4,15 +4,17 @@ import { assertContactMailboxCapacity } from './contact-invite-limits';
 import { contactExchangeKey } from './contact-exchange-key';
 import { randomBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { createContactRequest, beginContactExchange, acceptContactExchange, receiveContactAcceptance,
-  receiveContactReveal, confirmContactRevealSent, parseContactInvite, contactVerificationWords, CONTACT_SENDER_PENDING_LIMIT } from '@forgesworn/signet-contacts';
+  receiveContactReveal, confirmContactRevealSent, parseContactInvite, contactVerificationWords, deriveContactMailboxSecret, CONTACT_SENDER_PENDING_LIMIT } from '@forgesworn/signet-contacts';
 import type { ContactCard, ContactIdentityDecryptBudget, ContactInvite, ContactExchangeState } from '@forgesworn/signet-contacts';
-import { wrapContactExchange, openContactIdentityPacket } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
+import { wrapContactExchange, openContactIdentityPacket, openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
 import type { ContactIdentitySigner } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
-import { compactContactInviteVault, conflictedContactExchanges, createStoredContactInvite, isChildContactExchange, loadContactInviteVault, updateContactInviteVault } from './contact-invite-store';
+import { compactContactInviteVault, conflictedContactExchanges, createStoredContactInvite, isChildContactExchange, loadContactInviteVault, recordContactArrival, updateContactInviteVault } from './contact-invite-store';
 import type { ContactInviteVault, ContactInviteOutbox, StoredContactExchange, ContactInviteAppOrigin, ChildExchangePairing } from './contact-invite-store';
 export type ChildExchangeCancelReason = 'repair' | 'expired' | 'withdrawn';
 import { publishToRelays } from './sync-relays';
 import type { NostrEvent } from 'signet-protocol';
+import type { DirectCarrier } from './handshake-nearby';
+import { getPublicKey } from 'nostr-tools/pure';
 
 /** Calls never publish before their encrypted state/outbox has been persisted. */
 /**
@@ -47,6 +49,10 @@ export class ContactInviteService {
      * publish or record: `go` only when the plan is approved and the receipt
      * approved or completed; `wait` while the receipt is still pending. */
     childAuthority?(exchange: StoredContactExchange): Promise<'go' | 'wait' | 'withdraw'>;
+    /** A nearby carrier for in-person handshakes (Bluetooth on the APK). It
+     * carries the same signed outbox events as a relay, after the same
+     * guards, and its authenticated receipt stands in for a relay's. */
+    direct?: DirectCarrier;
   }) {}
   /** Child exchanges whose stamp no longer matches the live pairing. An
    * unstamped child row always counts as mismatched. */
@@ -254,6 +260,43 @@ export class ContactInviteService {
   }
   async dismiss(arrivalId: string, now: number) {
     await this.update(state => compactContactInviteVault({ ...state, arrivals: state.arrivals.map(a => a.id === arrivalId ? { ...a, dismissedAt: now } : a) }));
+  }
+  /**
+   * A wrap that arrived over a nearby link for an open handshake. It is
+   * matched only against that handshake's own mailboxes (its single-use
+   * invitation and its exchanges' reply mailboxes) and then recorded exactly
+   * like a relay arrival, still sealed: the identity seal is opened later by
+   * `openInbox`, with every SDK and policy gate. True when it is stored.
+   */
+  async receiveDirect(event: NostrEvent, scope: { identity: string; inviteId: string; now: number }): Promise<boolean> {
+    const state = await this.read();
+    if (state.arrivals.some(a => a.id === event.id && a.identityPubkey === scope.identity)) return true;
+    const invite = state.invites.find(i => i.id === scope.inviteId && i.identityPubkey === scope.identity && i.enabled
+      && i.mode === 'single-use' && i.invite.expiresAt !== undefined && scope.now < i.invite.expiresAt);
+    if (!invite) return false;
+    const conflicts = conflictedContactExchanges(state);
+    const mailboxes = [
+      { id: invite.id, secret: invite.invite.secret, channel: 'invite' as const },
+      ...state.exchanges.filter(e => e.handshake && e.handshake.startedAt >= invite.createdAt
+        && (e.role === 'requester' ? e.request.from : e.request.to) === scope.identity
+        && e.phase !== 'complete' && e.phase !== 'declined' && e.request.expiresAt > scope.now && !conflicts.has(contactExchangeKey(e.request)))
+        .map(e => ({ id: contactExchangeKey(e.request), secret: e.request.reply.secret, channel: 'exchange' as const })),
+    ];
+    const tag = event.tags?.[0]?.[0] === 'p' ? event.tags[0][1] : undefined;
+    const mailbox = mailboxes.find(m => {
+      const key = deriveContactMailboxSecret(m.secret);
+      try { return getPublicKey(key) === tag; } finally { key.fill(0); }
+    });
+    if (!mailbox) return false;
+    const packet = openContactMailboxWrap(event, mailbox.secret);
+    if (!packet) return false;
+    this.check();
+    const result = await recordContactArrival(this.options.directoryId, this.options.encryptionKey, {
+      id: event.id, inviteId: mailbox.id, identityPubkey: scope.identity, packet, receivedAt: scope.now, channel: mailbox.channel });
+    this.check();
+    const stored = result.arrivals.some(a => a.id === event.id);
+    if (stored) this.options.onChanged();
+    return stored;
   }
   /** Explicit inbox opening consumes the same per-unlock budget across identities. */
   async openInbox(now: number, exchangesOnly = false, identityPubkey?: string, automaticArrivals?: ReadonlySet<string>) {
@@ -478,8 +521,13 @@ export class ContactInviteService {
       }
       const conflicts = conflictedContactExchanges(fresh);
       if ( (row.exchangeId ? conflicts.has(row.exchangeId) : conflicts.size > 0)) continue;
+      // An in-person handshake row goes over the nearby link when one is up,
+      // and waits (briefly, bounded by the carrier) while one is being made.
+      const counterparty = exchange?.handshake ? (exchange.role === 'requester' ? exchange.request.to : exchange.request.from) : undefined;
+      const route = counterparty && this.options.direct ? this.options.direct.route(counterparty) : 'none';
+      if (route === 'pending') continue;
       this.check();
-      if (!await publishToRelays(row.event, row.relays, {
+      const guard = {
         isCurrent: this.options.isCurrent,
         beforeSend: async () => {
           const latest = await this.read();
@@ -497,7 +545,13 @@ export class ContactInviteService {
           this.check();
           if (live && live.request.expiresAt <= publicationTime()) throw new Error('Contact exchange expired during publication');
         },
-      })) continue;
+      };
+      let delivered = false;
+      if (route === 'linked' && counterparty) {
+        try { await guard.beforeSend(); this.check(); } catch { this.check(); continue; }
+        delivered = await this.options.direct!.deliver(counterparty, row.event);
+      }
+      if (!delivered && !await publishToRelays(row.event, row.relays, guard)) continue;
       this.check();
       await this.update(state => ({ ...state, outbox: state.outbox.map(o => o.id === row.id ? { ...o, acknowledgedAt: now } : o) }));
     }

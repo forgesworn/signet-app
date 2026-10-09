@@ -849,6 +849,10 @@ export const HANDSHAKE_COPY = {
   joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
   keepTier: 'Keep current tier', kith: 'Kith', kin: 'Kin', tier: 'Choose how you know them',
   openContact: 'Open contact',
+  nearbyLinked: 'Connected over Bluetooth', nearbyOff: 'Bluetooth is off, so this handshake needs the internet.',
+  nearbyDenied: 'Bluetooth is not allowed for My Signet, so this handshake needs the internet.',
+  photoFailed: 'Your picture needs the internet the first time you share it. Nothing has been sent.',
+  withoutPhoto: 'Go on without your picture',
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;
