@@ -11,6 +11,7 @@ import { QRCode } from '../components/QRCode';
 import { HandshakeQR } from '../components/HandshakeQR';
 import { JigsawIcon } from '../components/JigsawIcon';
 import { JigsawSigil } from '../components/JigsawSigil';
+import { Icon } from '../components/Icon';
 import { useScreenWakeLock } from '../hooks/useScreenWakeLock';
 import { isNativeApp, SignetNative } from '../lib/native';
 import { encodeNpub, hexToBytes } from '../lib/signet';
@@ -59,6 +60,12 @@ export function ContactHandshake(props: Props) {
 function CameraChoice({ facing, change }: { facing: 'user' | 'environment'; change(): void }) {
   return <button className="btn btn-ghost btn-sm" aria-label={COPY.switchCamera} onClick={change}>{facing === 'user' ? COPY.front : COPY.rear}</button>;
 }
+function ScanComplete({ camera = false }: { camera?: boolean }) {
+  return <div className={`handshake-scan-complete${camera ? ' handshake-camera-complete' : ''}`}>
+    <Icon name="checkCircle" size={64} />
+    <span>{camera ? COPY.cameraDone : COPY.qrDone}</span>
+  </div>;
+}
 function ChildHandshake(props: Props) {
   const [facing, setFacing] = useState<'user' | 'environment'>(HANDSHAKE_DEFAULT_CAMERA);
   return <div className="handshake-screen">
@@ -86,17 +93,21 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   return <div className="handshake-screen">
     {view.sigil && (view.phase === 'checking' || view.phase === 'sealed')
       ? <JigsawSigil digest={view.sigil} half={view.half ?? half} />
+      : active && view.scansConfirmed ? <ScanComplete />
       : view.invite && active ? <HandshakeQR data={handshakeQR(view.invite)} /> : null}
     {active && <>
-      <HandshakeCamera facing={facing} active reading={!view.peer} onScan={scan} />
-      <CameraChoice facing={facing} change={() => setFacing(f => f === 'user' ? 'environment' : 'user')} />
+      {view.peer ? <ScanComplete camera /> : <>
+        <HandshakeCamera facing={facing} active onScan={scan} />
+        <CameraChoice facing={facing} change={() => setFacing(f => f === 'user' ? 'environment' : 'user')} />
+      </>}
     </>}
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : 'closing'} />
-      {view.phase === 'reading' ? COPY.reading : view.phase === 'waiting' ? handshakeWaiting(view.name)
+      {active ? view.scansConfirmed ? COPY.finishing : view.peer ? handshakeWaiting(view.name) : COPY.scan
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}
     </div>
-    {view.phase === 'waiting' && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
+    {active && view.peer && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
+    {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}
     {view.phase === 'sealed' && view.contactId && !tierChosen && <div className="handshake-tier">
       <p>{COPY.tier}</p>

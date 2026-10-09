@@ -19,6 +19,7 @@ export interface HandshakeView {
   invite?: ContactInvite; peer?: ContactInvite; name?: string; sigil?: string;
   phase: 'reading' | 'waiting' | 'checking' | 'sealed' | 'expired' | 'failed';
   contactId?: string; half?: 'left' | 'right';
+  scansConfirmed?: boolean;
 }
 /** One optical session, bounded to two minutes. No background or persisted
  * optical consent: reopening always requires a fresh QR and camera reads. */
@@ -34,6 +35,10 @@ export function useHandshake(host: HandshakeHost) {
     const service = latest.current.service(() => !closed);
     const now = () => Math.floor(Date.now() / 1000);
     const publish = (patch: Partial<HandshakeView>) => { if (!closed) setView(v => ({ ...v, ...patch })); };
+    const confirmScans = () => {
+      if (doubleBuzz) return;
+      doubleBuzz = true; publish({ scansConfirmed: true }); handshakeHaptic('double');
+    };
     const seal = async (optical: boolean) => {
       if (!exchangeId || !own || !currentExchange || closed || sealed || sealing) return;
       sealing = true;
@@ -69,7 +74,7 @@ export function useHandshake(host: HandshakeHost) {
             if (!exchangeId && scanned && readAt !== undefined && handshakeRole(host.persona, scanned.invite.recipient) === 'recipient') {
               await service.acceptHandshake(arrival.id, own.invite, scanned, now(), () => latest.current.card());
               exchangeId = contactExchangeKey(arrival.request);
-              if (!doubleBuzz) { handshakeHaptic('double'); doubleBuzz = true; }
+              confirmScans();
             } else if (!exchangeId && oneWay) {
               await service.accept(arrival.id, now(), false, false, () => latest.current.card(), true);
               exchangeId = contactExchangeKey(arrival.request);
@@ -86,7 +91,7 @@ export function useHandshake(host: HandshakeHost) {
           currentExchange = fresh.exchanges.find(e => contactExchangeKey(e.request) === exchangeId);
           if (currentExchange) {
             publish({ name: partnerCardOf(currentExchange)?.name });
-            if (readAt !== undefined && currentExchange.acceptance && (currentExchange.role === 'recipient' || currentExchange.handshake?.opticalAcceptanceAt !== undefined) && !doubleBuzz) { handshakeHaptic('double'); doubleBuzz = true; }
+            if (readAt !== undefined && currentExchange.acceptance && (currentExchange.role === 'recipient' || currentExchange.handshake?.opticalAcceptanceAt !== undefined)) confirmScans();
             if (currentExchange.phase === 'complete') {
               publish({ sigil: handshakeSigil(currentExchange), half: currentExchange.request.from < currentExchange.request.to
                 ? currentExchange.role === 'requester' ? 'left' : 'right'

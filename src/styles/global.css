@@ -736,6 +736,8 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 .handshake-camera { width: min(100%, 280px, 30dvh); aspect-ratio: 1; background: #05070b; position: relative; overflow: hidden; border-radius: var(--radius-sm); }
 .handshake-camera video { width: 100%; height: 100%; object-fit: cover; }
 .handshake-camera p { position: absolute; inset: 0; padding: 12px; color: #fff; }
+.handshake-scan-complete { width: min(100%, 280px); aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--accent); }
+.handshake-camera-complete { width: min(100%, 280px, 30dvh); }
 .handshake-status { display: flex; align-items: center; gap: 10px; text-align: center; }
 .jigsaw-closing { animation: jigsaw-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes jigsaw-pulse { to { opacity: .4; } }

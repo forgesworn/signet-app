@@ -54,3 +54,34 @@ it('does not offer a contact before it is saved', async () => {
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
   expect(screen.queryByRole('button', { name: 'Open contact' })).not.toBeInTheDocument();
 });
+const opticalInvite = () => ({ v: 1 as const, recipient: '2'.repeat(64), secret: '3'.repeat(64),
+  relays: ['wss://relay.example/'], expiresAt: Math.floor(Date.now() / 1000) + 120 });
+it('replaces the finished camera with a tick while keeping the QR for their return scan', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), peer: opticalInvite() }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  render(<ContactHandshake {...props()} />);
+  await screen.findByText('Their QR scanned');
+  expect(screen.queryByTestId('live-camera')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Switch camera' })).not.toBeInTheDocument();
+  expect(screen.getByTestId('invite-qr')).toBeInTheDocument();
+  expect(screen.queryByText('Your QR scanned')).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Waiting for their scan confirmation…');
+  expect(screen.getByText('Let their phone scan your QR.')).toBeInTheDocument();
+});
+it('keeps both scans available after an incoming request until our camera pins the peer', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), name: 'Other person' }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
+  expect(screen.getByTestId('invite-qr')).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Scan their QR');
+  expect(screen.queryByText('Their QR scanned')).not.toBeInTheDocument();
+  expect(screen.queryByText('Your QR scanned')).not.toBeInTheDocument();
+});
+it('replaces both completed scans with ticks only after reciprocal proof and explains the remaining exchange', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), peer: opticalInvite(), scansConfirmed: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  render(<ContactHandshake {...props()} />); await screen.findByText('Their QR scanned');
+  expect(screen.getByText('Your QR scanned')).toBeInTheDocument();
+  expect(screen.queryByTestId('live-camera')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('invite-qr')).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('Both scans confirmed. Finishing the exchange…');
+  expect(screen.queryByRole('button', { name: 'Use Jigsaw' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Open contact' })).not.toBeInTheDocument();
+});

@@ -105,13 +105,18 @@ test('two real QR camera reads recover closed relays, auto-seal one signed excha
     expect(qrA.length).toBeGreaterThan(1); expect(qrB.length).toBeGreaterThan(1);
     await showFrames(page, qrB, true);
     await page.waitForTimeout(qrB.length * 500 + 500);
-    await expect(page.locator('.handshake-status')).toHaveText('Reading');
+    await expect(page.locator('.handshake-status')).toHaveText('Scan their QR');
     // The mailbox list stays unchanged when a connection dies. Recovery must
     // restore the live subscriptions without another tap or a polling cycle.
     for (const phone of [page, other]) {
       expect(await phone.evaluate(() => (window as any).__closeHandshakeRelay())).toBeGreaterThan(0);
     }
-    await showFrames(page, qrB); await showFrames(other, qrA);
+    await showFrames(page, qrB);
+    await expect(page.getByText('Their QR scanned', { exact: true })).toBeVisible();
+    await expect(page.locator('.handshake-camera video')).toHaveCount(0);
+    await expect(page.locator('.handshake-screen > canvas')).toBeVisible();
+    await expect(page.locator('.handshake-status')).toContainText('scan confirmation');
+    await showFrames(other, qrA);
     for (const phone of [page, other]) {
       await expect(phone.getByText('Sealed', { exact: true })).toBeVisible({ timeout: 60000 });
       await expect(phone.getByRole('img', { name: 'Handshake sigil' })).toBeVisible();

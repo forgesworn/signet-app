@@ -838,7 +838,9 @@ export function requestFromNamedCopy(name: string): string {
 }
 
 export const HANDSHAKE_COPY = {
-  title: 'Handshake', reading: 'Reading', sealed: 'Sealed', waiting: 'Waiting for their phone…',
+  title: 'Handshake', reading: 'Reading', sealed: 'Sealed', waiting: 'Waiting for their scan confirmation…',
+  scan: 'Scan their QR', cameraDone: 'Their QR scanned', qrDone: 'Your QR scanned',
+  scanYours: 'Let their phone scan your QR.', finishing: 'Both scans confirmed. Finishing the exchange…',
   expired: 'Expired — go back and start a new handshake.', failed: 'Handshake could not finish. Go back and try again.',
   chooser: "They’ll see", name: 'Your name', npub: 'Your npub', photo: 'Your picture',
   keyRequired: 'Your npub is needed to connect.', saveDefault: 'Save as default', go: 'Go',
@@ -852,5 +854,5 @@ export const HANDSHAKE_COPY = {
 } as const;
 export function handshakeWaiting(name?: string): string {
   const safe = sanitizeDisplayName(name ?? '', 100);
-  return safe ? `Waiting for ${safe}’s phone…` : HANDSHAKE_COPY.waiting;
+  return safe ? `Waiting for ${safe}’s phone to confirm its scan…` : HANDSHAKE_COPY.waiting;
 }
