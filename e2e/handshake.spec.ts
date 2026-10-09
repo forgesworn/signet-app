@@ -116,9 +116,15 @@ test('two real QR camera reads recover closed relays, auto-seal one signed excha
     await expect(page.locator('.handshake-camera video')).toHaveCount(0);
     await expect(page.locator('.handshake-screen > canvas')).toBeVisible();
     await expect(page.locator('.handshake-status')).toContainText('scan confirmation');
+    await expect(page.locator('.handshake-wait')).toBeVisible();
+    expect(await page.locator('.handshake-wait i').first().evaluate(node => getComputedStyle(node).animationName)).toBe('handshake-wait-dot');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    expect(await page.locator('.handshake-wait i').first().evaluate(node => getComputedStyle(node).animationName)).toBe('none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     await showFrames(other, qrA);
     for (const phone of [page, other]) {
       await expect(phone.getByText('Sealed', { exact: true })).toBeVisible({ timeout: 60000 });
+      await expect(phone.locator('.handshake-wait')).toHaveCount(0);
       await expect(phone.getByRole('img', { name: 'Handshake sigil' })).toBeVisible();
       await expect(phone.getByText('You say:', { exact: false })).toHaveCount(0);
     }

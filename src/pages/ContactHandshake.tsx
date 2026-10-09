@@ -87,6 +87,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   const [opening, setOpening] = useState(false);
   const [openFailed, setOpenFailed] = useState(false);
   const active = view.phase === 'reading' || view.phase === 'waiting';
+  const waiting = view.phase === 'waiting' && !!view.peer;
   const half = view.peer ? (props.persona < view.peer.recipient ? 'left' : 'right')
     : 'right'; // A one-way request's recipient is the right half; requester overrides below.
   // Both halves use canonical pubkey order, including the one-way path.
@@ -102,9 +103,10 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
       </>}
     </>}
     <div className="handshake-status" role="status">
-      <JigsawIcon state={view.phase === 'sealed' ? 'joined' : 'closing'} />
-      {active ? view.scansConfirmed ? COPY.finishing : view.peer ? handshakeWaiting(view.name) : COPY.scan
-        : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}
+      <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
+      <span>{active ? view.scansConfirmed ? COPY.finishing : view.peer ? handshakeWaiting(view.name) : COPY.scan
+        : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
+      {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
     {active && view.peer && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}

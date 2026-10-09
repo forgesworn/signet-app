@@ -85,3 +85,15 @@ it('replaces both completed scans with ticks only after reciprocal proof and exp
   expect(screen.queryByRole('button', { name: 'Use Jigsaw' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Open contact' })).not.toBeInTheDocument();
 });
+it('shows activity while waiting for the peer, and stops it at expiry', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', invite: opticalInvite(), peer: opticalInvite() }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  const p = props(), view = render(<ContactHandshake {...p} />);
+  await screen.findByText('Their QR scanned');
+  expect(view.container.querySelector('.handshake-wait')).toBeInTheDocument();
+  expect(view.container.querySelector('.jigsaw-closing')).toBeInTheDocument();
+  mocks.handshake.mockReturnValue({ view: { phase: 'expired' }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  view.rerender(<ContactHandshake {...p} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Expired');
+  expect(view.container.querySelector('.handshake-wait')).not.toBeInTheDocument();
+  expect(view.container.querySelector('.jigsaw-closing')).not.toBeInTheDocument();
+});
