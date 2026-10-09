@@ -848,6 +848,8 @@ export const HANDSHAKE_COPY = {
   oneWay: 'Use Jigsaw', compare: 'Put the phones edge to edge. Do all the lines join?',
   joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
   tapped: 'Tapped in person', scanOrTap: 'Scan their QR, or tap the phones back to back',
+  tapDone: 'Their code received by tap', tapYoursDone: 'Their phone has your code',
+  tapWaiting: 'Waiting for their phone to confirm the tap…', tapFinishing: 'Tap confirmed on both phones. Finishing the exchange…',
   keepTier: 'Keep current tier', kith: 'Kith', kin: 'Kin', tier: 'Choose how you know them',
   openContact: 'Open contact',
   nearbyLinked: 'Connected over Bluetooth', nearbyOff: 'Bluetooth is off, so this handshake needs the internet.',
@@ -860,7 +862,8 @@ export const HANDSHAKE_COPY = {
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;
-export function handshakeWaiting(name?: string): string {
+export function handshakeWaiting(name?: string, tapped = false): string {
   const safe = sanitizeDisplayName(name ?? '', 100);
+  if (tapped) return safe ? `Waiting for ${safe}’s phone to confirm the tap…` : HANDSHAKE_COPY.tapWaiting;
   return safe ? `Waiting for ${safe}’s phone to confirm its scan…` : HANDSHAKE_COPY.waiting;
 }

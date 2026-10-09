@@ -61,10 +61,10 @@ export function ContactHandshake(props: Props) {
 function CameraChoice({ facing, change }: { facing: 'user' | 'environment'; change(): void }) {
   return <button className="btn btn-ghost btn-sm" aria-label={COPY.switchCamera} onClick={change}>{facing === 'user' ? COPY.front : COPY.rear}</button>;
 }
-function ScanComplete({ camera = false }: { camera?: boolean }) {
+function ScanComplete({ camera = false, tapped = false }: { camera?: boolean; tapped?: boolean }) {
   return <div className={`handshake-scan-complete${camera ? ' handshake-camera-complete' : ''}`}>
     <Icon name="checkCircle" size={64} />
-    <span>{camera ? COPY.cameraDone : COPY.qrDone}</span>
+    <span>{tapped ? camera ? COPY.tapDone : COPY.tapYoursDone : camera ? COPY.cameraDone : COPY.qrDone}</span>
   </div>;
 }
 function ChildHandshake(props: Props) {
@@ -95,22 +95,23 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   const [openFailed, setOpenFailed] = useState(false);
   const active = view.phase === 'reading' || view.phase === 'waiting';
   const waiting = view.phase === 'waiting' && !!view.scanned;
+  const tapped = view.via === 'tap';
   // Both halves use canonical pubkey order, set once the transcript exists.
   const half = view.half ?? 'right';
   return <div className="handshake-screen">
     {view.sigil && (view.phase === 'checking' || view.phase === 'sealed')
       ? <JigsawSigil digest={view.sigil} half={half} />
-      : active && view.scansConfirmed ? <ScanComplete />
+      : active && view.scansConfirmed ? <ScanComplete tapped={tapped} />
       : view.code && active ? <HandshakeQR data={view.code} /> : null}
     {active && <>
-      {view.scanned ? <ScanComplete camera /> : <>
+      {view.scanned ? <ScanComplete camera tapped={tapped} /> : <>
         <HandshakeCamera facing={facing} active onScan={scan} />
         <CameraChoice facing={facing} change={() => setFacing(f => f === 'user' ? 'environment' : 'user')} />
       </>}
     </>}
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
-      <span>{active ? view.scansConfirmed ? COPY.finishing : view.scanned ? handshakeWaiting(view.name) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
+      <span>{active ? view.scansConfirmed ? tapped ? COPY.tapFinishing : COPY.finishing : view.scanned ? handshakeWaiting(view.name, tapped) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
@@ -121,7 +122,8 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     </div>}
     {active && view.outdated && <p role="alert">{COPY.outdated}</p>}
     {active && view.ambiguous && <p role="alert">{COPY.ambiguous}</p>}
-    {active && view.scanned && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
+    {/* A tap crossed both codes at once: there is nothing more to scan. */}
+    {active && view.scanned && !view.scansConfirmed && !tapped && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}
     {view.phase === 'sealed' && view.contactId && !tierChosen && <div className="handshake-tier">

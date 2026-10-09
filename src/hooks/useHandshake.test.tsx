@@ -380,6 +380,7 @@ it('an NFC tap reads the other session like a camera, and the contact is recorde
   act(() => tapped!(s.peerCode));
   await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
   expect(haptics.play).toHaveBeenCalledWith('tick');
+  expect(hook.result.current.view.via).toBe('tap');
   s.deliver(s.peerReveal());
   await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
   expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');

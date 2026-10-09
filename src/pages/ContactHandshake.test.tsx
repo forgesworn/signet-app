@@ -79,6 +79,20 @@ it('says the phones can tap back to back only where NFC is on', async () => {
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
   expect(screen.getByRole('status')).toHaveTextContent('Scan their QR, or tap the phones back to back');
 });
+it('after a tap, says the codes crossed by tap rather than by a QR scan', async () => {
+  const handshake = (view: Partial<HandshakeView>) => ({ view: { phase: 'waiting', code: sessionCode, scanned: true, via: 'tap', ...view } as HandshakeView,
+    scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  mocks.handshake.mockReturnValue(handshake({}));
+  const view = render(<ContactHandshake {...props()} />);
+  await screen.findByText('Their code received by tap');
+  expect(screen.getByRole('status')).toHaveTextContent('Waiting for their phone to confirm the tap…');
+  expect(screen.queryByText('Let their phone scan your QR.')).not.toBeInTheDocument();
+  mocks.handshake.mockReturnValue(handshake({ scansConfirmed: true }));
+  view.rerender(<ContactHandshake {...props()} />);
+  await screen.findByText('Their phone has your code');
+  expect(screen.getByRole('status')).toHaveTextContent('Tap confirmed on both phones. Finishing the exchange…');
+  expect(screen.queryByText(/QR scanned|scan confirmation|Both scans/)).not.toBeInTheDocument();
+});
 it('replaces both completed scans with ticks only after reciprocal proof and explains the remaining exchange', async () => {
   mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true, scansConfirmed: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   render(<ContactHandshake {...props()} />); await screen.findByText('Their QR scanned');

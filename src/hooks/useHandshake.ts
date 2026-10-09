@@ -40,8 +40,8 @@ export interface HandshakeView {
   code?: string; name?: string; sigil?: string;
   phase: 'reading' | 'waiting' | 'checking' | 'sealed' | 'expired' | 'failed';
   contactId?: string; half?: 'left' | 'right';
-  /** This phone's camera read the other screen. */
-  scanned?: boolean;
+  /** This phone read the other screen's code: by its camera, or by a tap (`via`). */
+  scanned?: boolean; via?: 'camera' | 'tap';
   scansConfirmed?: boolean;
   /** `linked`: finishing over Bluetooth. `off`/`denied`: the user can fix it
    * to finish without the internet. Absent: no nearby status to show. */
@@ -289,7 +289,7 @@ export function useHandshake(host: HandshakeHost) {
       if (new Set(proven.map(c => c.body.invite.recipient)).size > 1) { conflict = true; publish({ phase: 'failed' }); endNearby(); return; }
       peerReveal = proven[0]?.body ?? peerReveal;
       if (peerReveal && verified()) nearby?.bindSession(scannedCard.publicKey, peerReveal.invite.recipient);
-      handshakeHaptic('tick'); publish({ scanned: true, phase: 'waiting', outdated: false });
+      handshakeHaptic('tick'); publish({ scanned: true, via: how, phase: 'waiting', outdated: false });
       revealHoldUntil = Date.now() + REVEAL_HOLD_MS;
       later(REVEAL_HOLD_MS, () => void run());
       dial();
