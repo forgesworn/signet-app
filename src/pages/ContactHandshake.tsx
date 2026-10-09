@@ -110,7 +110,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     </>}
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
-      <span>{active ? view.scansConfirmed ? COPY.finishing : view.scanned ? handshakeWaiting(view.name) : COPY.scan
+      <span>{active ? view.scansConfirmed ? COPY.finishing : view.scanned ? handshakeWaiting(view.name) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
@@ -121,7 +121,6 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     </div>}
     {active && view.outdated && <p role="alert">{COPY.outdated}</p>}
     {active && view.ambiguous && <p role="alert">{COPY.ambiguous}</p>}
-    {active && !view.scanned && view.tapAvailable && <p className="field-hint">{COPY.tapHint}</p>}
     {active && view.scanned && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}

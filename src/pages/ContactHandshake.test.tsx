@@ -74,6 +74,11 @@ it('keeps both scans available after an incoming request until our camera pins t
   expect(screen.queryByText('Their QR scanned')).not.toBeInTheDocument();
   expect(screen.queryByText('Your QR scanned')).not.toBeInTheDocument();
 });
+it('says the phones can tap back to back only where NFC is on', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'reading', code: sessionCode, tapAvailable: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
+  expect(screen.getByRole('status')).toHaveTextContent('Scan their QR, or tap the phones back to back');
+});
 it('replaces both completed scans with ticks only after reciprocal proof and explains the remaining exchange', async () => {
   mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true, scansConfirmed: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   render(<ContactHandshake {...props()} />); await screen.findByText('Their QR scanned');
