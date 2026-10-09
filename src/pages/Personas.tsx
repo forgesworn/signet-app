@@ -602,83 +602,87 @@ export function Personas({
           }}
           onClick={(e) => { if (e.target === e.currentTarget && !importBusy) closeImport(); }}
         >
-          <div role="dialog" aria-modal="true" aria-label="Import an existing Nostr account" className="card section" style={{ maxWidth: 480, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
-            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Import an existing Nostr account</h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-              Paste your nsec key. We'll add it as a Persona alongside your existing personas.
-            </p>
+          {/* Fixed descendants belong to the desktop phone frame, which is
+              shorter than the window. Size against the overlay, not vh. */}
+          <div role="dialog" aria-modal="true" aria-label="Import an existing Nostr account" className="card section" style={{ maxWidth: 480, width: '100%', maxHeight: '100%', minHeight: 0, marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ minHeight: 0, overflowY: 'auto' }}>
+              <h3 style={{ marginTop: 0, marginBottom: 8 }}>Import an existing Nostr account</h3>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+                Paste your nsec key. We'll add it as a Persona alongside your existing personas.
+              </p>
 
-            {importError && (
-              <div role="alert" style={{
-                padding: '10px 12px',
-                background: 'var(--danger-light)',
-                color: 'var(--danger)',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '0.85rem',
-                marginBottom: 12,
-              }}>{importError}</div>
-            )}
+              {importError && (
+                <div role="alert" style={{
+                  padding: '10px 12px',
+                  background: 'var(--danger-light)',
+                  color: 'var(--danger)',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.85rem',
+                  marginBottom: 12,
+                }}>{importError}</div>
+              )}
 
-            <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Nsec key</label>
-            <textarea
-              className="input"
-              rows={2}
-              placeholder="nsec1..."
-              value={importNsecInput}
-              onChange={e => { setImportNsecInput(e.target.value); if (importLookedUpFor) resetImportLookup(); }}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', resize: 'none', marginTop: 4, marginBottom: 12 }}
-              disabled={importBusy}
-            />
-
-            {importLooking && (
-              <div role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-                Looking for an existing Nostr profile…
-              </div>
-            )}
-            {importMatch && (
-              <ExistingProfilePanel
-                profile={importMatch.profile}
-                choice={importChoice}
-                onChoice={setImportChoice}
+              <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Nsec key</label>
+              <textarea
+                className="input"
+                rows={2}
+                placeholder="nsec1..."
+                value={importNsecInput}
+                onChange={e => { setImportNsecInput(e.target.value); if (importLookedUpFor) resetImportLookup(); }}
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', resize: 'none', marginTop: 4, marginBottom: 12 }}
                 disabled={importBusy}
               />
-            )}
 
-            <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Display name</label>
-            <input
-              className="input"
-              placeholder="What should we call this persona?"
-              value={importDisplayName}
-              onChange={e => setImportDisplayName(e.target.value)}
-              maxLength={100}
-              style={{ marginTop: 4, marginBottom: 14 }}
-              disabled={importBusy}
-            />
-
-            <div className="card section" style={{ background: 'var(--danger-light)', borderColor: 'var(--danger)', marginBottom: 14 }}>
-              <p style={{ fontSize: '0.85rem', lineHeight: 1.5, margin: '0 0 8px' }}>
-                <Icon name="alertTriangle" size={14} className="icon-inline" /><strong>This Nostr account isn't derived from your Signet seed phrase.</strong>
-              </p>
-              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 10px' }}>
-                If you lose this device and restore Signet from your recovery words, this imported persona won't come back — your normal Signet personas will, but this one is a separate keypair.
-                Make sure you have your nsec backed up somewhere safe (a password manager, a written copy) before importing.
-              </p>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.85rem', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={importBackupConfirmed}
-                  onChange={e => setImportBackupConfirmed(e.target.checked)}
-                  style={{ marginTop: 3 }}
+              {importLooking && (
+                <div role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
+                  Looking for an existing Nostr profile…
+                </div>
+              )}
+              {importMatch && (
+                <ExistingProfilePanel
+                  profile={importMatch.profile}
+                  choice={importChoice}
+                  onChoice={setImportChoice}
                   disabled={importBusy}
                 />
-                <span>I've backed up my nsec separately.</span>
-              </label>
-            </div>
+              )}
 
-            <div style={{ display: 'flex', gap: 8 }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Display name</label>
+              <input
+                className="input"
+                placeholder="What should we call this persona?"
+                value={importDisplayName}
+                onChange={e => setImportDisplayName(e.target.value)}
+                maxLength={100}
+                style={{ marginTop: 4, marginBottom: 14 }}
+                disabled={importBusy}
+              />
+
+              <div className="card section" style={{ background: 'var(--danger-light)', borderColor: 'var(--danger)', marginBottom: 14 }}>
+                <p style={{ fontSize: '0.85rem', lineHeight: 1.5, margin: '0 0 8px' }}>
+                  <Icon name="alertTriangle" size={14} className="icon-inline" /><strong>This Nostr account isn't derived from your Signet seed phrase.</strong>
+                </p>
+                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 10px' }}>
+                  If you lose this device and restore Signet from your recovery words, this imported persona won't come back — your normal Signet personas will, but this one is a separate keypair.
+                  Make sure you have your nsec backed up somewhere safe (a password manager, a written copy) before importing.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.85rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={importBackupConfirmed}
+                    onChange={e => setImportBackupConfirmed(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                    disabled={importBusy}
+                  />
+                  <span>I've backed up my nsec separately.</span>
+                </label>
+              </div>
+
+            </div>
+            <div style={{ display: 'flex', gap: 8, paddingTop: 12, flexShrink: 0 }}>
               <button className="btn" onClick={closeImport} disabled={importBusy} style={{ flex: 1 }}>Cancel</button>
               <button
                 className="btn btn-primary"
