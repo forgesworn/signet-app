@@ -11,7 +11,7 @@ const sent = (steps: NearbyStep[]) => steps.flatMap(s => s.kind === 'send' ? [s.
 
 /** Run two links against each other until neither has anything to send. */
 function pair(adv: HandshakeSession, conn: HandshakeSession, expect: { adv?: string; conn?: string } = {}, nonces: [number, number] = [1, 2]) {
-  const a = new NearbyLink('advertiser', nonce(nonces[0]), adv, expect.adv), c = new NearbyLink('connector', nonce(nonces[1]), conn, expect.conn);
+  const a = new NearbyLink('advertiser', nonce(nonces[0]), adv, expect.adv), c = new NearbyLink('connector', nonce(nonces[1]), conn, expect.conn ?? adv.publicKey);
   let toA = [c.hello()], toC = [a.hello()];
   while (toA.length || toC.length) {
     const nextA: Uint8Array[] = [], nextC: Uint8Array[] = [];
@@ -57,6 +57,16 @@ describe('NearbyLink authentication', () => {
   it('takes any session while the advertiser has read nothing (the one-way case)', () => {
     const adv = createHandshakeSession(), conn = createHandshakeSession();
     expect(pair(adv, conn, { conn: adv.publicKey }).a.trusted).toBe(true);
+  });
+  it('never puts the advertiser\'s session key on the air, and a stranger who saw only the token cannot link', () => {
+    const adv = createHandshakeSession(), conn = createHandshakeSession();
+    const hello = new NearbyLink('advertiser', nonce(1), adv).hello();
+    expect(hello).toHaveLength(17);
+    expect(Buffer.from(hello).toString('hex')).not.toContain(adv.publicKey);
+    // Without the advertiser's key a connector can only guess one: AUTH fails.
+    const { a, c } = pair(adv, conn, { conn: createHandshakeSession().publicKey });
+    expect(a.trusted || c.trusted).toBe(false);
+    expect(() => new NearbyLink('connector', nonce(2), conn)).toThrow();
   });
   it('drops a connector that reached the wrong advertiser', () => {
     const adv = createHandshakeSession(), conn = createHandshakeSession(), other = createHandshakeSession();

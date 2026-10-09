@@ -11,6 +11,7 @@ import type { ContactInviteVault, StoredContactExchange, StoredContactInvite } f
 import { contactExchangeKey } from '../lib/contact-exchange-key';
 import { ContactCardPhotoError } from '../lib/contact-card-share';
 import { bindingTemplate, openReveal, readSessionQR, sealReveal, sessionQR, verifyRevealBinding, type HandshakeSession } from '../lib/handshake-reveal';
+import { HandshakeNearby } from '../lib/handshake-nearby';
 
 const haptics = vi.hoisted(() => ({ play: vi.fn(), cancel: vi.fn() }));
 vi.mock('../lib/handshake-haptics', () => ({ handshakeHaptic: haptics.play, cancelHandshakeHaptics: haptics.cancel }));
@@ -65,7 +66,7 @@ function setup(opts: { recipient?: boolean; ownLowerSession?: boolean } = {}) {
   const peerCode = sessionQR({ publicKey: peerSession.publicKey, expiresAt: now + 120, relays })!;
   /** The peer's sealed reveal, signed for its session and `forSession` (this phone's, if it scanned us). */
   const peerReveal = (forSession = own.publicKey) => sealReveal({ v: 2, to: own.publicKey, invite: peerInvite,
-    binding: finalizeEvent(bindingTemplate(peerSession.publicKey, forSession, peerInvite, now), peerSk) as NostrEvent }, own.publicKey, now);
+    binding: finalizeEvent(bindingTemplate(peerSession, forSession, peerInvite, now), peerSk) as NostrEvent }, own.publicKey, now);
   const deliver = (event: NostrEvent) => act(() => watcher!(event));
   return { host, service, vault, revealRelays, own, peerSession, peerInvite, peerCode, peerReveal, deliver, now, ownInvite, request, complete, ownPub };
 }
@@ -84,7 +85,7 @@ it('shows only its session, and sends a reveal bound to both sessions once the c
   expect(relays).toEqual(['wss://relay.example/']);
   const body = openReveal(sent, s.peerSession, s.now)!;
   expect(body.invite).toEqual(s.ownInvite.invite);
-  expect(verifyRevealBinding(body, s.own.publicKey, s.peerSession.publicKey)).toBe(true);
+  expect(verifyRevealBinding(body, s.own.publicKey, s.peerSession)).toBe(true);
   expect(haptics.play).toHaveBeenCalledWith('tick');
   expect(haptics.play).not.toHaveBeenCalledWith('double');
 });
@@ -101,7 +102,8 @@ it('confirms both scans only on a reveal bound to this session, then the lower p
   expect(haptics.play).toHaveBeenCalledWith('double');
   expect((s.service.request.mock.calls[0] as unknown[])[1]).toEqual(s.peerInvite);
   const evidence = (s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as unknown as Record<string, unknown>;
-  expect(evidence).toMatchObject({ inviteId: s.ownInvite.id, ownSession: s.own.publicKey, cameraPeerSession: s.peerSession.publicKey });
+  expect(evidence).toMatchObject({ inviteId: s.ownInvite.id, cameraPeerSession: s.peerSession.publicKey });
+  expect(evidence.ownSession).toBe(s.own);
 });
 
 it('a reveal not signed for this session proves nothing: no confirmation, no automatic exchange', async () => {
@@ -133,7 +135,8 @@ it('auto-accepts as the higher persona only on a verified reveal', async () => {
   const hook = renderHook(() => useHandshake(s.host));
   await ready(hook);
   act(() => hook.result.current.scan(s.peerCode));
-  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+  // The peer's request already names our invite, so it has our reveal.
+  await new Promise(r => setTimeout(r, 100));
   expect(s.service.acceptHandshake).not.toHaveBeenCalled();
   s.deliver(s.peerReveal());
   await waitFor(() => expect(s.service.acceptHandshake).toHaveBeenCalledTimes(1));
@@ -277,4 +280,62 @@ it('turns Bluetooth off once only the seam check is left', async () => {
   act(() => hook.result.current.oneWay());
   await waitFor(() => expect(hook.result.current.view.phase).toBe('checking'));
   await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
+});
+it('one-way: the link that carried the chosen reveal speaks for its persona, so the request can go back over it', async () => {
+  const bind = vi.spyOn(HandshakeNearby.prototype, 'bind');
+  try {
+    const s = setup({ recipient: true }), nearby = fakeNearby();
+    const hook = renderHook(() => useHandshake({ ...s.host, nearby }));
+    await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+    const reveal = s.peerReveal();
+    s.deliver(reveal);
+    await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
+    expect(bind).not.toHaveBeenCalledWith(reveal.id, s.peerInvite.recipient);
+    act(() => hook.result.current.oneWay());
+    await waitFor(() => expect(bind).toHaveBeenCalledWith(reveal.id, s.peerInvite.recipient));
+  } finally { bind.mockRestore(); }
+});
+it('sends its reveal again, freshly sealed, until the peer acts on it (review M1)', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(2), { timeout: 7000 });
+  const [first, second] = s.revealRelays.publish.mock.calls.map(c => c[0]);
+  expect(second.id).not.toBe(first.id);
+  expect(openReveal(second, s.peerSession, s.now)!.binding.id).toBe(openReveal(first, s.peerSession, s.now)!.binding.id);
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  const sent = s.revealRelays.publish.mock.calls.length;
+  await new Promise(r => setTimeout(r, 5500));
+  expect(s.revealRelays.publish.mock.calls.length).toBe(sent);
+}, 20000);
+it('one-way refuses to guess when more than one persona answered before any scan (review M2)', async () => {
+  const s = setup({ recipient: true });
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  s.deliver(s.peerReveal());
+  const other = generateSecretKey(), otherInvite = { ...s.peerInvite, recipient: getPublicKey(other) };
+  s.deliver(sealReveal({ v: 2, to: s.own.publicKey, invite: otherInvite,
+    binding: finalizeEvent(bindingTemplate(freshSession(), s.own.publicKey, otherInvite, s.now), other) as NostrEvent }, s.own.publicKey, s.now));
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('waiting'));
+  act(() => hook.result.current.oneWay());
+  await waitFor(() => expect(hook.result.current.view.ambiguous).toBe(true));
+  await new Promise(r => setTimeout(r, 100));
+  expect(s.service.request).not.toHaveBeenCalled();
+});
+it('fails closed if two personas both prove the session this camera read', async () => {
+  const s = setup();
+  const hook = renderHook(() => useHandshake(s.host));
+  await ready(hook);
+  s.deliver(s.peerReveal());
+  const other = generateSecretKey(), otherInvite = { ...s.peerInvite, recipient: getPublicKey(other) };
+  // Only the holder of the peer's session secret could make this second proof.
+  s.deliver(sealReveal({ v: 2, to: s.own.publicKey, invite: otherInvite,
+    binding: finalizeEvent(bindingTemplate(s.peerSession, s.own.publicKey, otherInvite, s.now), other) as NostrEvent }, s.own.publicKey, s.now));
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('failed'));
+  expect(s.service.request).not.toHaveBeenCalled();
+  expect(s.service.confirmHandshake).not.toHaveBeenCalled();
 });

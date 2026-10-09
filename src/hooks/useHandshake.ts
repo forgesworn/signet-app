@@ -48,9 +48,12 @@ export interface HandshakeView {
   photoFailed?: boolean;
   /** The other phone showed a code from an older build. */
   outdated?: boolean;
+  /** More than one phone answered before this one scanned: the seam check
+   * cannot tell which is in front of you, so it asks for a scan instead. */
+  ambiguous?: boolean;
 }
 const defaultRelays = { watch: watchReveals, publish: (event: NostrEvent, relays: string[]) => publishToRelays(event, relays) };
-const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, MAX_CANDIDATES = 4;
+const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5000, MAX_CANDIDATES = 16, MAX_REVEALS = 64;
 
 /** One unlinkable session, bounded to two minutes (handshake-reveal.ts). No
  * background or persisted optical consent: reopening always requires a fresh
@@ -74,8 +77,9 @@ export function useHandshake(host: HandshakeHost) {
     let legacy: ContactInvite | undefined;
     /** The reveal this session acts on, and ones that came before this phone scanned. */
     let peerReveal: RevealBody | undefined;
-    const candidates: RevealBody[] = [];
-    let ownReveal: NostrEvent | undefined, ownRevealSent = false, revealing = false, revealHoldUntil = 0;
+    const candidates: Array<{ body: RevealBody; eventId: string }> = [];
+    let ownBinding: NostrEvent | undefined, ownRevealSent = false, lastRevealAt = 0, revealing = false, revealHoldUntil = 0;
+    let revealsSeen = 0, conflict = false;
     let exchangeId: string | undefined, currentExchange: StoredContactExchange | undefined, arrivalId: string | undefined;
     const service = latest.current.service(() => !closed);
     const now = () => Math.floor(Date.now() / 1000);
@@ -88,8 +92,11 @@ export function useHandshake(host: HandshakeHost) {
     const finishNearby = () => { if (nearby) { clearActiveHandshakeNearby(nearby); void nearby.close(); nearby = undefined; } };
     /** Sealed, expired, failed or left: the radio stays off for good. */
     const endNearby = () => { radioEnded = true; finishNearby(); };
-    /** Both screens read, and the peer's persona signed for both sessions. */
-    const verified = () => !!(peerCard && peerReveal && verifyRevealBinding(peerReveal, peerCard.publicKey, session.publicKey));
+    /** Both screens read, and the peer's persona signed for both sessions with
+     * a proof only the holder of the camera-read session could make. */
+    const verified = () => !conflict && !!(peerCard && peerReveal && verifyRevealBinding(peerReveal, peerCard.publicKey, session));
+    /** The peer acted on our invite: it has our reveal, so we can stop resending. */
+    const progressed = () => !!arrivalId || !!currentExchange?.acceptance;
     /** The invite the SDK exchange runs on: a verified reveal; an unverified
      * one only once the user chose the seam check; or a plain invite link. */
     const peerInvite = (): ContactInvite | undefined => verified() || (oneWay && peerReveal) ? peerReveal!.invite : legacy;
@@ -106,40 +113,53 @@ export function useHandshake(host: HandshakeHost) {
       if (doubleBuzz) return;
       doubleBuzz = true; publish({ scansConfirmed: true }); handshakeHaptic('double');
     };
+    /** The seam check acts on an unverified reveal: the link that carried it
+     * (if any) speaks for its persona, so the request can go back over it. */
+    const takeUnverified = (candidate: { body: RevealBody; eventId: string }) => {
+      peerReveal = candidate.body;
+      nearby?.bind(candidate.eventId, candidate.body.invite.recipient);
+    };
     /** A reveal sealed to this session. Kept only if it is for the screen this
      * camera read; before any scan, a few are held to check once it happens. */
     const acceptReveal = (event: NostrEvent): boolean => {
-      if (closed || sealed) return false;
+      if (closed || sealed || conflict || ++revealsSeen > MAX_REVEALS) return false;
       const body = openReveal(event, session, now());
       if (!body || body.invite.recipient === host.persona) return false;
       if (peerCard) {
-        if (!verifyRevealBinding(body, peerCard.publicKey, session.publicKey)) return false;
+        if (!verifyRevealBinding(body, peerCard.publicKey, session)) return false;
+        if (verified() && peerReveal!.invite.recipient !== body.invite.recipient) {
+          // Two personas both proved the session this camera read: fail closed.
+          conflict = true; publish({ phase: 'failed' }); endNearby(); return false;
+        }
         if (!peerReveal || !verified()) { peerReveal = body; nearby?.bindSession(peerCard.publicKey, body.invite.recipient); }
-      } else if (!candidates.some(c => c.binding.id === body.binding.id)) {
+      } else if (!candidates.some(c => c.body.binding.id === body.binding.id)) {
         if (candidates.length >= MAX_CANDIDATES) return false;
-        candidates.push(body);
+        candidates.push({ body, eventId: event.id });
+        if (oneWay && !peerReveal) takeUnverified(candidates[0]);
         publish({ phase: 'waiting' });
       }
       void run();
       return true;
     };
     /** Our own reveal, once our camera read the other screen. Bluetooth first;
-     * while a link may still form, it waits rather than touch a relay. */
+     * while a link may still form, it waits rather than touch a relay. It is
+     * sent again, freshly sealed, until the peer acts on it: a reveal the peer
+     * dropped before scanning (a full store) then lands after its scan. */
     const sendReveal = async () => {
-      if (revealing || ownRevealSent || !peerCard || !own) return;
+      if (revealing || !peerCard || !own || closed || sealed || progressed()) return;
+      if (ownRevealSent && Date.now() - lastRevealAt < RESEND_MS) return;
       revealing = true;
+      let sent = false;
       try {
-        if (!ownReveal) {
-          const binding = await service.signRevealBinding(host.persona, bindingTemplate(session.publicKey, peerCard.publicKey, own.invite, now()));
-          ownReveal = sealReveal({ v: 2, to: peerCard.publicKey, invite: own.invite, binding }, peerCard.publicKey, now());
-        }
-        if (nearby?.reaches(peerCard.publicKey)) {
-          if (await nearby.deliverSession(peerCard.publicKey, ownReveal)) { ownRevealSent = true; return; }
-        } else if (nearby?.availability === 'ready' && Date.now() < revealHoldUntil) return;
-        if (await relays.publish(ownReveal, peerCard.relays)) ownRevealSent = true;
+        ownBinding ??= await service.signRevealBinding(host.persona, bindingTemplate(session, peerCard.publicKey, own.invite, now()));
+        const event = sealReveal({ v: 2, to: peerCard.publicKey, invite: own.invite, binding: ownBinding }, peerCard.publicKey, now());
+        if (nearby?.reaches(peerCard.publicKey)) sent = await nearby.deliverSession(peerCard.publicKey, event);
+        else if (!ownRevealSent && nearby?.availability === 'ready' && Date.now() < revealHoldUntil) return;
+        if (!sent && !closed && !sealed) sent = await relays.publish(event, peerCard.relays);
+        if (sent) { ownRevealSent = true; lastRevealAt = Date.now(); }
       } finally {
         revealing = false;
-        if (!ownRevealSent && !closed && !sealed) later(RETRY_MS, () => void run());
+        if (!closed && !sealed && !progressed()) later(sent ? RESEND_MS : RETRY_MS, () => void run());
       }
     };
     const seal = async (mutual: boolean) => {
@@ -147,7 +167,7 @@ export function useHandshake(host: HandshakeHost) {
       sealing = true;
       try {
       const evidence = mutual && peerCard && peerReveal && readAt !== undefined
-        ? { inviteId: own.id, ownSession: session.publicKey, cameraPeerSession: peerCard.publicKey, peerExpiresAt: peerCard.expiresAt,
+        ? { inviteId: own.id, ownSession: session, cameraPeerSession: peerCard.publicKey, peerExpiresAt: peerCard.expiresAt,
           peerReveal, readAt } : undefined;
       const contactId = await service.confirmHandshake(exchangeId, now(), evidence);
       if (closed) return;
@@ -252,7 +272,9 @@ export function useHandshake(host: HandshakeHost) {
         // One peer per screen: a second code, or this phone's own reflected, is ignored.
         if (legacy || peerCard || scannedCard.publicKey === session.publicKey) return;
         peerCard = scannedCard; readAt = now();
-        peerReveal = candidates.find(c => verifyRevealBinding(c, scannedCard.publicKey, session.publicKey)) ?? peerReveal;
+        const proven = candidates.filter(c => verifyRevealBinding(c.body, scannedCard.publicKey, session));
+        if (new Set(proven.map(c => c.body.invite.recipient)).size > 1) { conflict = true; publish({ phase: 'failed' }); endNearby(); return; }
+        peerReveal = proven[0]?.body ?? peerReveal;
         if (peerReveal && verified()) nearby?.bindSession(scannedCard.publicKey, peerReveal.invite.recipient);
         handshakeHaptic('tick'); publish({ scanned: true, phase: 'waiting', outdated: false });
         revealHoldUntil = Date.now() + REVEAL_HOLD_MS;
@@ -261,8 +283,11 @@ export function useHandshake(host: HandshakeHost) {
         void run();
       },
       oneWay() {
+        // Without its own scan this phone cannot tell reveals apart: with more
+        // than one persona answering, it asks for a scan rather than guess.
+        if (!peerReveal && !peerCard && new Set(candidates.map(c => c.body.invite.recipient)).size > 1) { publish({ ambiguous: true }); return; }
         oneWay = true;
-        if (!peerReveal && !peerCard && candidates.length) peerReveal = candidates[0];
+        if (!peerReveal && !peerCard && candidates.length) takeUnverified(candidates[0]);
         if (peerCard || legacy || peerReveal || arrivalId) void run();
       },
       withoutPhoto() { if (closed || noPhoto) return; noPhoto = true; publish({ photoFailed: false }); void run(); },
@@ -270,7 +295,8 @@ export function useHandshake(host: HandshakeHost) {
     };
     /** Bluetooth runs only while this screen is visible. The always-on bunker
      * suspends hide-lock, so the screen can stay mounted behind another app;
-     * the radio stops then and a fresh session starts if the user returns. */
+     * the radio stops then, and a fresh carrier (same session) starts if the
+     * user returns. */
     const startNearby = () => {
       const invite = own;
       const native = latest.current.nearby === undefined ? nativeNearby() : latest.current.nearby;
@@ -283,6 +309,8 @@ export function useHandshake(host: HandshakeHost) {
         },
         onChange: () => {
           if (nearby !== carrier) return;
+          // A link that came up after the reveal verified speaks for it too.
+          if (verified()) carrier.bindSession(peerCard!.publicKey, peerReveal!.invite.recipient);
           publish({ nearby: carrier.linked ? 'linked' : carrier.availability === 'off' || carrier.availability === 'denied' ? carrier.availability : undefined });
           void run();
         },

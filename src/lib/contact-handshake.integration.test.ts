@@ -7,7 +7,7 @@ import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/inv
 import { ContactInviteService } from './contact-invite-service';
 import { recordContactArrival, mergeContactInviteVault } from './contact-invite-store';
 import { contactExchangeKey } from './contact-exchange-key';
-import { bindingTemplate, createHandshakeSession, openReveal, sealReveal, verifyRevealBinding, type RevealBody } from './handshake-reveal';
+import { bindingTemplate, createHandshakeSession, openReveal, sealReveal, verifyRevealBinding, type HandshakeSession, type RevealBody } from './handshake-reveal';
 import { handshakeSigil } from './handshake-sigil';
 import { purgeAllUserData } from './db';
 const publish = vi.hoisted(() => vi.fn(async () => true));
@@ -41,11 +41,11 @@ it('real signed exchange needs reveals bound to both camera reads and author bin
   const bi = await b.service.create(b.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
   const sa = createHandshakeSession(), sb = createHandshakeSession();
   // Each camera read the other's session; each persona signs for both sessions.
-  const sign = async (who: Party, own: string, peer: string, invite: typeof ai): Promise<RevealBody> =>
+  const sign = async (who: Party, own: HandshakeSession, peer: string, invite: typeof ai): Promise<RevealBody> =>
     ({ v: 2, to: peer, invite: invite.invite, binding: await who.service.signRevealBinding(who.pubkey, bindingTemplate(own, peer, invite.invite, now)) });
-  const fromA = openReveal(sealReveal(await sign(a, sa.publicKey, sb.publicKey, ai), sb.publicKey, now), sb, now + 1)!;
-  const fromB = openReveal(sealReveal(await sign(b, sb.publicKey, sa.publicKey, bi), sa.publicKey, now), sa, now + 1)!;
-  expect(verifyRevealBinding(fromA, sa.publicKey, sb.publicKey) && verifyRevealBinding(fromB, sb.publicKey, sa.publicKey)).toBe(true);
+  const fromA = openReveal(sealReveal(await sign(a, sa, sb.publicKey, ai), sb.publicKey, now), sb, now + 1)!;
+  const fromB = openReveal(sealReveal(await sign(b, sb, sa.publicKey, bi), sa.publicKey, now), sa, now + 1)!;
+  expect(verifyRevealBinding(fromA, sa.publicKey, sb) && verifyRevealBinding(fromB, sb.publicKey, sa)).toBe(true);
   const id = await a.service.request(a.pubkey, fromB.invite, now + 1, undefined, undefined, true);
   const pending = await a.service.read();
   const arrival = await deliver(a, b, 0, bi.id, bi.invite.secret, 'invite');
@@ -66,13 +66,13 @@ it('real signed exchange needs reveals bound to both camera reads and author bin
   await b.service.openInbox(now + 8, true); await b.service.flush(now + 8);
   expect(a.completed).not.toHaveBeenCalled(); expect(b.completed).not.toHaveBeenCalled();
   await expect(a.service.materialiseContact(exchangeId)).rejects.toThrow('not ready');
-  const evidenceA = { inviteId: ai.id, ownSession: sa.publicKey, cameraPeerSession: sb.publicKey, peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 2 };
+  const evidenceA = { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey, peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 2 };
   // A wrong camera read, or a reveal not covering this session, is not mutual.
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, cameraPeerSession: createHandshakeSession().publicKey })).rejects.toThrow('proof');
-  await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, ownSession: createHandshakeSession().publicKey })).rejects.toThrow('proof');
+  await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, ownSession: createHandshakeSession() })).rejects.toThrow('proof');
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, inviteId: bi.id })).rejects.toThrow('proof');
   await a.service.confirmHandshake(exchangeId, now + 9, evidenceA);
-  await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb.publicKey, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2 });
+  await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2 });
   const ae = (await a.service.read()).exchanges[0], be = (await b.service.read()).exchanges[0];
   expect(ae.handshake?.strength).toBe('mutual'); expect(be.handshake?.strength).toBe('mutual');
   const complete = await a.service.read();

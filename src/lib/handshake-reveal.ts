@@ -10,11 +10,14 @@ import { decodeBase45, encodeBase45 } from './handshake-optical';
 // session public key M, its relays and its expiry: never a persona key or a
 // secret, so a photograph of both screens shows two random keys. Each phone
 // then sends the other a sealed reveal: its unchanged SDK v1 single-use invite
-// and a persona signature over (its own M, the M it scanned). The reveal never
-// states the sender's own M, so only a phone that read the sender's screen can
-// check the signature, and a signature that names my M proves the sender read
-// mine. The SDK exchange then runs unchanged on the revealed invites, whose
-// mailbox secrets never appear on a screen.
+// and a persona signature over (its own M, the M it scanned, and a proof of
+// possession: a hash of the ECDH of its session secret and the scanned M).
+// Only the two session holders can compute that ECDH, so knowing both public
+// keys (from photos, a relay or Bluetooth) is not enough to forge a reveal.
+// The reveal never states the sender's own M: only a phone that read the
+// sender's screen can recompute the proof, and a proof made with my M shows
+// the sender read mine. The SDK exchange then runs unchanged on the revealed
+// invites, whose mailbox secrets never appear on a screen.
 
 export const SESSION_QR_PREFIX = 'SGH2:';
 const OUTDATED_PREFIX = 'SGH1:';
@@ -79,17 +82,38 @@ export function readSessionQR(raw: string, now: number): ScannedCode | null {
   return { kind: 'session', card: { publicKey, expiresAt, relays } };
 }
 
-/** What the persona signs: both session keys and the invite it reveals. */
-export function revealDigest(senderSession: string, receiverSession: string, invite: ContactInvite): string {
+/** Proof of possession: only the holder of one session's secret and the
+ * other's public key (or the reverse) can compute it. Never leaves the phone
+ * except hashed inside a sealed reveal. */
+export function revealProof(ownSecret: Uint8Array, peerSession: string): string {
+  if (!HEX64.test(peerSession)) throw new Error('Invalid handshake session');
+  const shared = nip44.v2.utils.getConversationKey(ownSecret, peerSession);
+  try {
+    const tag = new TextEncoder().encode('signet:handshake:reveal:pop:v2');
+    const input = new Uint8Array(tag.length + shared.length);
+    input.set(tag); input.set(shared, tag.length);
+    try { return bytesToHex(sha256(input)); } finally { input.fill(0); }
+  } finally { shared.fill(0); }
+}
+/** The invite fields exactly as the receiver will parse them. */
+function canonicalInvite(invite: ContactInvite): ContactInvite {
+  const parsed = parseContactInvite(JSON.stringify(invite));
+  if (!parsed) throw new Error('Invalid invite');
+  return parsed;
+}
+/** What the persona signs: both session keys, the proof and the invite. */
+export function revealDigest(senderSession: string, receiverSession: string, proof: string, invite: ContactInvite): string {
+  const i = canonicalInvite(invite);
   return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify([
-    'signet:handshake:reveal:v2', senderSession, receiverSession,
-    invite.recipient, invite.secret, invite.expiresAt ?? null, invite.relays,
+    'signet:handshake:reveal:v2', senderSession, receiverSession, proof,
+    i.recipient, i.secret, i.expiresAt ?? null, i.relays,
   ]))));
 }
 
 /** The unsigned binding the persona signs (through any signer, a bunker included). */
-export function bindingTemplate(senderSession: string, receiverSession: string, invite: ContactInvite, now: number) {
-  return { kind: REVEAL_BINDING_KIND, created_at: now, tags: [] as string[][], content: revealDigest(senderSession, receiverSession, invite) };
+export function bindingTemplate(sender: HandshakeSession, receiverSession: string, invite: ContactInvite, now: number) {
+  const proof = revealProof(sender.secret, receiverSession);
+  return { kind: REVEAL_BINDING_KIND, created_at: now, tags: [] as string[][], content: revealDigest(sender.publicKey, receiverSession, proof, invite) };
 }
 
 /** Sealed with a throwaway key to the receiver's session: only the holder of
@@ -137,12 +161,15 @@ export function openReveal(event: NostrEvent, session: HandshakeSession, now: nu
 }
 
 /** True when the persona named in the reveal signed THIS pair: the sender's
- * session as this phone's camera read it, and this phone's own session. */
-export function verifyRevealBinding(body: RevealBody, cameraSenderSession: string, ownSession: string): boolean {
-  if (!HEX64.test(cameraSenderSession) || !HEX64.test(ownSession) || cameraSenderSession === ownSession) return false;
+ * session as this phone's camera read it, this phone's own session, and the
+ * proof only the holder of the sender's session secret could compute. */
+export function verifyRevealBinding(body: RevealBody, cameraSenderSession: string, own: HandshakeSession): boolean {
+  if (!HEX64.test(cameraSenderSession) || !HEX64.test(own.publicKey) || cameraSenderSession === own.publicKey) return false;
+  let digest: string;
+  try { digest = revealDigest(cameraSenderSession, own.publicKey, revealProof(own.secret, cameraSenderSession), body.invite); } catch { return false; }
   const b = cleanEvent(body.binding);
   return b.kind === REVEAL_BINDING_KIND && b.pubkey === body.invite.recipient && b.tags.length === 0
-    && b.content === revealDigest(cameraSenderSession, ownSession, body.invite) && verifyEvent(b);
+    && b.content === digest && verifyEvent(b);
 }
 
 /**
@@ -152,7 +179,7 @@ export function verifyRevealBinding(body: RevealBody, cameraSenderSession: strin
  * the peer could only know by reading this screen.
  */
 export function mutualRevealProof(args: {
-  ownSession: string; cameraPeerSession: string; peerReveal: RevealBody; counterparty: string;
+  ownSession: HandshakeSession; cameraPeerSession: string; peerReveal: RevealBody; counterparty: string;
   readAt: number; sessionStart: number; sessionExpiresAt: number; peerExpiresAt: number;
 }): boolean {
   const { ownSession, cameraPeerSession, peerReveal, counterparty, readAt, sessionStart, sessionExpiresAt, peerExpiresAt } = args;

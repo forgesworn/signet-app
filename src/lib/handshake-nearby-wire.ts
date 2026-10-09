@@ -5,12 +5,15 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
 
 // Bluetooth is an untrusted carrier, like a relay. This module authenticates
-// the LINK with the two handshake session keys (handshake-reveal.ts): each end
-// sends its session public key in HELLO, and the link key is their ECDH, which
-// only the two session secret holders can compute. A phone that has read its
-// peer's session from the screen refuses any other session, so even someone
-// holding photographs of both screens cannot join. Everything a link carries
-// is verified by the receiver exactly as a relay event would be.
+// the LINK with the two handshake session keys (handshake-reveal.ts). The
+// connector dialled the session its camera read and sends its own session key
+// in HELLO; the advertiser sends only a nonce, so its key is never broadcast
+// over the air. The link key is the ECDH of the two, which needs a session
+// secret and the other's key: a stranger who saw only the advertised token
+// (a hash) cannot compute it, and a phone that read its peer's screen refuses
+// any other session, so even someone holding photographs of both screens
+// cannot join. Everything a link carries is verified by the receiver exactly
+// as a relay event would be.
 
 const TEXT = new TextEncoder();
 const TOKEN_TAG = TEXT.encode('signet:handshake:nearby:token:v1');
@@ -28,7 +31,7 @@ export const NEARBY_MAX_FRAME = 48 * 1024;
 export const NEARBY_MAX_PREAUTH_FRAME = 64;
 
 const HELLO = 1, AUTH = 2, EVENT = 3, ACK = 4;
-const HELLO_SIZE = 1 + NEARBY_NONCE_BYTES + 32, AUTH_SIZE = 33, ACK_SIZE = 1 + 32 + 1 + 16;
+const ADVERTISER_HELLO_SIZE = 1 + NEARBY_NONCE_BYTES, CONNECTOR_HELLO_SIZE = ADVERTISER_HELLO_SIZE + 32, AUTH_SIZE = 33, ACK_SIZE = 1 + 32 + 1 + 16;
 
 export type NearbyRole = 'advertiser' | 'connector';
 const roleByte = (role: NearbyRole) => role === 'advertiser' ? 0x41 : 0x43;
@@ -54,8 +57,8 @@ function equal(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-/** What the phone advertises: derived from its session public key, which is
- * on its screen, so it names no one and only a reader of that QR knows it. */
+/** What the phone advertises: a hash of its session public key, which is on
+ * its screen, so it names no one and does not give the key itself away. */
 export function nearbyToken(session: string): Uint8Array {
   if (!HEX64.test(session)) throw new Error('Invalid handshake session');
   return tagged(TOKEN_TAG, hexToBytes(session)).subarray(0, NEARBY_TOKEN_BYTES);
@@ -66,9 +69,10 @@ export function nearbyLinkKey(ownSecret: Uint8Array, peerSession: string): Uint8
   const shared = nip44.v2.utils.getConversationKey(ownSecret, peerSession);
   try { return tagged(KEY_TAG, shared); } finally { shared.fill(0); }
 }
-export function nearbyHello(nonce: Uint8Array, session: string): Uint8Array {
-  if (nonce.length !== NEARBY_NONCE_BYTES || !HEX64.test(session)) throw new Error('Invalid hello');
-  return concat(Uint8Array.of(HELLO), nonce, hexToBytes(session));
+/** A connector's HELLO carries its session key; an advertiser's does not. */
+export function nearbyHello(nonce: Uint8Array, session?: string): Uint8Array {
+  if (nonce.length !== NEARBY_NONCE_BYTES || (session !== undefined && !HEX64.test(session))) throw new Error('Invalid hello');
+  return session === undefined ? concat(Uint8Array.of(HELLO), nonce) : concat(Uint8Array.of(HELLO), nonce, hexToBytes(session));
 }
 function authMac(key: Uint8Array, sender: NearbyRole, advertiserNonce: Uint8Array, connectorNonce: Uint8Array): Uint8Array {
   return hmac(sha256, key, concat(AUTH_TAG, Uint8Array.of(roleByte(sender)), advertiserNonce, connectorNonce));
@@ -118,17 +122,19 @@ export class NearbyLink {
   private key?: Uint8Array;
   private expected?: string;
   private state: 'hello' | 'auth' | 'trusted' | 'dropped' = 'hello';
-  /** The peer's session key, from its HELLO. */
+  /** The peer's session key: the one a connector dialled, or the one in a
+   * connector's HELLO. */
   peerSession?: string;
   constructor(readonly role: NearbyRole, nonce: Uint8Array, private session: { secret: Uint8Array; publicKey: string }, expected?: string) {
     if (nonce.length !== NEARBY_NONCE_BYTES) throw new Error('Invalid nonce');
+    if (role === 'connector' && (expected === undefined || !HEX64.test(expected))) throw new Error('A connector dials a known session');
     this.ownNonce = Uint8Array.from(nonce);
     this.expected = expected;
   }
   get trusted() { return this.state === 'trusted'; }
   get dropped() { return this.state === 'dropped'; }
   /** The first frame this side sends, at once. */
-  hello(): Uint8Array { return nearbyHello(this.ownNonce, this.session.publicKey); }
+  hello(): Uint8Array { return nearbyHello(this.ownNonce, this.role === 'connector' ? this.session.publicKey : undefined); }
   /** The session this phone read from its peer's screen: no other may join.
    * True when the link may continue. */
   expect(peerSession: string): boolean {
@@ -147,9 +153,11 @@ export class NearbyLink {
   receive(frame: Uint8Array): NearbyStep[] {
     if (this.state === 'dropped') return [];
     if (this.state === 'hello') {
-      if (frame.length !== HELLO_SIZE || frame[0] !== HELLO) return this.drop();
+      // The advertiser hears the connector's session; the connector already has the advertiser's.
+      const size = this.role === 'advertiser' ? CONNECTOR_HELLO_SIZE : ADVERTISER_HELLO_SIZE;
+      if (frame.length !== size || frame[0] !== HELLO) return this.drop();
       this.peerNonce = frame.slice(1, 1 + NEARBY_NONCE_BYTES);
-      const peer = bytesToHex(frame.subarray(1 + NEARBY_NONCE_BYTES));
+      const peer = this.role === 'advertiser' ? bytesToHex(frame.subarray(1 + NEARBY_NONCE_BYTES)) : this.expected!;
       if (equal(this.peerNonce, this.ownNonce) || peer === this.session.publicKey
         || (this.expected !== undefined && peer !== this.expected)) return this.drop();
       this.peerSession = peer;

@@ -107,7 +107,7 @@ describe('unlinkable handshake over a nearby link, with no internet', () => {
     expect(await a.holder.carrier.open(true)).toBe('ready');
     expect(await b.holder.carrier.open(true)).toBe('ready');
     const reveal = async (who: typeof a, own: typeof sa, peer: string, invite: typeof ai): Promise<RevealBody> =>
-      ({ v: 2, to: peer, invite: invite.invite, binding: await who.service.signRevealBinding(who.pubkey, bindingTemplate(own.publicKey, peer, invite.invite, now)) });
+      ({ v: 2, to: peer, invite: invite.invite, binding: await who.service.signRevealBinding(who.pubkey, bindingTemplate(own, peer, invite.invite, now)) });
     return { air, a, b, ai, bi, sa, sb, na, nb, got, reveal };
   }
 
@@ -124,8 +124,8 @@ describe('unlinkable handshake over a nearby link, with no internet', () => {
     expect(await b.holder.carrier!.deliverSession(sa.publicKey, sealReveal(rb, sa.publicKey, now))).toBe(true);
     const [fromB] = got.a, [fromA] = got.b;
     // Each verifies the other's persona under the session its own camera read.
-    expect(verifyRevealBinding(fromB, sb.publicKey, sa.publicKey)).toBe(true);
-    expect(verifyRevealBinding(fromA, sa.publicKey, sb.publicKey)).toBe(true);
+    expect(verifyRevealBinding(fromB, sb.publicKey, sa)).toBe(true);
+    expect(verifyRevealBinding(fromA, sa.publicKey, sb)).toBe(true);
     a.holder.carrier!.bindSession(sb.publicKey, b.pubkey);
     b.holder.carrier!.bindSession(sa.publicKey, a.pubkey);
 
@@ -142,9 +142,9 @@ describe('unlinkable handshake over a nearby link, with no internet', () => {
     await b.service.openInbox(now + 8, true);
     expect((await b.service.read()).exchanges[0].phase).toBe('complete');
 
-    await a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa.publicKey, cameraPeerSession: sb.publicKey,
+    await a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey,
       peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 1 });
-    await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb.publicKey, cameraPeerSession: sa.publicKey,
+    await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey,
       peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 1 });
     expect((await a.service.read()).exchanges[0].handshake?.strength).toBe('mutual');
     expect((await b.service.read()).exchanges[0].handshake?.strength).toBe('mutual');
@@ -173,7 +173,7 @@ describe('unlinkable handshake over a nearby link, with no internet', () => {
     await a.service.openInbox(now + 6, true);
     await a.service.flush(now + 7);
     expect((await a.service.read()).exchanges[0].phase).toBe('complete');
-    await expect(a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa.publicKey, cameraPeerSession: sb.publicKey,
+    await expect(a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey,
       peerExpiresAt: now + 120, peerReveal: rb, readAt: now + 1 })).rejects.toThrow('proof');
     await a.service.confirmHandshake(exchangeId, now + 9);
     expect((await a.service.read()).exchanges[0].handshake?.strength).toBe('proven');

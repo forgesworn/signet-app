@@ -120,6 +120,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
       <button className="btn btn-secondary" onClick={withoutPhoto}>{COPY.withoutPhoto}</button>
     </div>}
     {active && view.outdated && <p role="alert">{COPY.outdated}</p>}
+    {active && view.ambiguous && <p role="alert">{COPY.ambiguous}</p>}
     {active && view.scanned && !view.scansConfirmed && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}

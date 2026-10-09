@@ -855,6 +855,7 @@ export const HANDSHAKE_COPY = {
   withoutPhoto: 'Go on without your picture',
   outdated: 'Their app needs updating before you can shake hands.',
   childCard: 'Ask them to show the QR on their contact card, and scan that.',
+  ambiguous: 'More than one phone answered. Scan their QR to be sure who you are adding.',
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;

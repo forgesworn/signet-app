@@ -32,7 +32,8 @@ const resolveCard = (source: ContactCardSource | undefined) => typeof source ===
 export interface RevealEvidence {
   /** This screen's handshake invite, whose creation opened the session. */
   inviteId: string;
-  ownSession: string; cameraPeerSession: string; peerExpiresAt: number;
+  /** This screen's session, secret included: the proof is recomputed here. */
+  ownSession: { secret: Uint8Array; publicKey: string }; cameraPeerSession: string; peerExpiresAt: number;
   peerReveal: RevealBody; readAt: number;
 }
 
@@ -470,7 +471,8 @@ export class ContactInviteService {
           || localInvite.invite.expiresAt === undefined
           // This exchange belongs to this screen's session: the requester began
           // it during the session, the recipient accepted on this invitation.
-          || (e.role === 'requester' ? e.handshake.startedAt < localInvite.createdAt : e.handshake.inviteId !== localInvite.id)
+          || (e.role === 'requester' ? e.handshake.startedAt < localInvite.createdAt || e.handshake.startedAt >= localInvite.invite.expiresAt
+            : e.handshake.inviteId !== localInvite.id)
           || handshakeRole(ownKey, peerKey) !== e.role || evidence.readAt > now
           || !mutualRevealProof({ ownSession: evidence.ownSession, cameraPeerSession: evidence.cameraPeerSession,
             peerReveal: evidence.peerReveal, counterparty: peerKey, readAt: evidence.readAt, sessionStart: localInvite.createdAt,
