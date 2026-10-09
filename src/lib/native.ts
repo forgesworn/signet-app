@@ -37,6 +37,12 @@ export interface SignetNativePlugin {
   nearbyClose(opts: { link: string; avoid?: boolean }): Promise<void>;
   /** Stop advertising and accepting; existing links carry on. */
   nearbyQuiet(): Promise<void>;
+  /** Handshake NFC tap: host card emulation plus reader mode, alternating. */
+  nfcStatus(): Promise<{ supported: boolean; enabled: boolean }>;
+  /** Offer `code` (this screen's session code) to a phone held against this one, and read theirs. */
+  nfcStart(opts: { code: string }): Promise<void>;
+  nfcStop(): Promise<void>;
+  addListener(eventName: 'nfcPeer', listener: (event: { code: string }) => void): Promise<PluginListenerHandle>;
   /** Stop advertising and scanning, close the channel and every link. */
   nearbyStop(): Promise<void>;
   addListener(eventName: 'nearbyLink', listener: (event: { link: string; direction: 'in' | 'out' }) => void): Promise<PluginListenerHandle>;

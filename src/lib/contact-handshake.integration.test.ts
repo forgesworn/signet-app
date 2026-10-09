@@ -71,17 +71,22 @@ it('real signed exchange needs reveals bound to both camera reads and author bin
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, cameraPeerSession: createHandshakeSession().publicKey })).rejects.toThrow('proof');
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, ownSession: createHandshakeSession() })).rejects.toThrow('proof');
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, inviteId: bi.id })).rejects.toThrow('proof');
-  await a.service.confirmHandshake(exchangeId, now + 9, evidenceA);
+  // A's phone got B's session by an NFC tap: the same proof, recorded one rung lower.
+  await a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, via: 'tap' });
   await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2 });
   const ae = (await a.service.read()).exchanges[0], be = (await b.service.read()).exchanges[0];
-  expect(ae.handshake?.strength).toBe('mutual'); expect(be.handshake?.strength).toBe('mutual');
+  expect(ae.handshake?.strength).toBe('tapped'); expect(be.handshake?.strength).toBe('mutual');
   const complete = await a.service.read();
   const { handshake: _mark, ...legacyComplete } = ae;
   const legacy = { ...complete, exchanges: [legacyComplete] };
   expect(mergeContactInviteVault(pending, legacy).exchanges[0].handshake?.startedAt).toBe(now + 1);
   expect(mergeContactInviteVault(legacy, pending).exchanges[0].handshake?.startedAt).toBe(now + 1);
-  expect(mergeContactInviteVault(legacy, complete).exchanges[0].handshake?.strength).toBe('mutual');
-  expect(mergeContactInviteVault(complete, legacy).exchanges[0].handshake?.strength).toBe('mutual');
+  expect(mergeContactInviteVault(legacy, complete).exchanges[0].handshake?.strength).toBe('tapped');
+  expect(mergeContactInviteVault(complete, legacy).exchanges[0].handshake?.strength).toBe('tapped');
+  // Merging two confirmations keeps the stronger: mutual over tapped.
+  const mutualCopy = { ...complete, exchanges: [{ ...ae, handshake: { ...ae.handshake!, strength: 'mutual' as const } }] };
+  expect(mergeContactInviteVault(complete, mutualCopy).exchanges[0].handshake?.strength).toBe('mutual');
+  expect(mergeContactInviteVault(mutualCopy, complete).exchanges[0].handshake?.strength).toBe('mutual');
   expect(ae.wordsConfirmedAt).toBeUndefined(); expect(handshakeSigil(ae)).toBe(handshakeSigil(be));
   expect(a.completed).toHaveBeenCalledTimes(1); expect(b.completed).toHaveBeenCalledTimes(1);
 }, 30000);

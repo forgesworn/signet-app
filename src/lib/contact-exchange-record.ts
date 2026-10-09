@@ -98,9 +98,11 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
       // Without confirmed words (a pasted link may have travelled through the
       // very chat in question) nothing here touches verification.
       const peerIdentity = contact.identities.find(identity => identity.pubkey === peer)!;
-      if (verificationUpgrade(peerIdentity.verification, confirmation)) {
+      // A tap is one rung below a two-way camera read: the identity is proven.
+      const verification = confirmation === 'mutual' ? 'mutual' : 'proven';
+      if (verificationUpgrade(peerIdentity.verification, verification)) {
         const confirm = { ...buildOperation({ directoryId: args.directoryId, contactId, action: 'update-identity',
-          value: { itemId: peerIdentity.itemId, verification: confirmation }, clock: baseClock + 1, actor: args.actor,
+          value: { itemId: peerIdentity.itemId, verification }, clock: baseClock + 1, actor: args.actor,
           now: confirmationAt * 1000, operationId: id(seed + ':words-confirm') }), ownerIdentityPubkey: own };
         confirm.operationId = id(JSON.stringify(confirm));
         batch.push(confirm);

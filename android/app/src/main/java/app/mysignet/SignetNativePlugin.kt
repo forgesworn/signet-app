@@ -94,17 +94,20 @@ class SignetNativePlugin : Plugin() {
     override fun handleOnStop() {
         super.handleOnStop()
         nearby.pause()
+        HandshakeNfc.pause()
         notifyListeners("nearbyLifecycle", JSObject().put("state", "background"))
     }
 
     override fun handleOnStart() {
         super.handleOnStart()
         nearby.resume()
+        HandshakeNfc.resume()
         notifyListeners("nearbyLifecycle", JSObject().put("state", "foreground"))
     }
 
     override fun handleOnDestroy() {
         nearby.stop()
+        HandshakeNfc.stop()
         Nip55Requests.detach(deliverToPage, withdrawFromPage)
         super.handleOnDestroy()
     }
@@ -544,6 +547,27 @@ class SignetNativePlugin : Plugin() {
     @PluginMethod
     fun nearbyClose(call: PluginCall) {
         call.getString("link")?.let { nearby.close(it, call.getBoolean("avoid") ?: false) }
+        call.resolve()
+    }
+
+    // ── Handshake NFC tap ─────────────────────────────────────────────────
+    @PluginMethod
+    fun nfcStatus(call: PluginCall) {
+        call.resolve(JSObject().put("supported", HandshakeNfc.supported(context)).put("enabled", HandshakeNfc.enabled(context)))
+    }
+
+    @PluginMethod
+    fun nfcStart(call: PluginCall) {
+        val code = call.getString("code")
+        if (code == null || !HandshakeApdu.validCode(code.toByteArray(Charsets.US_ASCII))) { call.reject("invalid code"); return }
+        if (!HandshakeNfc.supported(context)) { call.reject("unsupported"); return }
+        HandshakeNfc.start(activity, code) { peer -> notifyListeners("nfcPeer", JSObject().put("code", peer)) }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nfcStop(call: PluginCall) {
+        HandshakeNfc.stop()
         call.resolve()
     }
 

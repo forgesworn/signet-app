@@ -14,6 +14,7 @@ import { cancelHandshakeHaptics, handshakeHaptic } from '../lib/handshake-haptic
 import { handshakeSigil } from '../lib/handshake-sigil';
 import { ContactCardPhotoError, partnerCardOf } from '../lib/contact-card-share';
 import { clearActiveHandshakeNearby, HandshakeNearby, nativeNearby, setActiveHandshakeNearby, takeNearbyEnablePrompt, type NearbyNative } from '../lib/handshake-nearby';
+import { nativeNfc, type HandshakeNfc } from '../lib/handshake-nfc';
 
 export interface HandshakeHost {
   persona: string; version: number; relays: string[];
@@ -23,6 +24,8 @@ export interface HandshakeHost {
   onSaved?(contactId: string): void;
   /** The Bluetooth pipe; defaults to the APK's, none in a browser. */
   nearby?: NearbyNative | null;
+  /** The NFC tap; defaults to the APK's, none in a browser. */
+  nfc?: HandshakeNfc | null;
   /** Prepare what the policy checks read (the contacts log), while the user
    * is still aiming the camera, so the first check after a scan is quick. */
   warm?(): void;
@@ -51,6 +54,8 @@ export interface HandshakeView {
   /** More than one phone answered before this one scanned: the seam check
    * cannot tell which is in front of you, so it asks for a scan instead. */
   ambiguous?: boolean;
+  /** A tap works here too: hold the phones back to back. */
+  tapAvailable?: boolean;
 }
 const defaultRelays = { watch: watchReveals, publish: (event: NostrEvent, relays: string[]) => publishToRelays(event, relays) };
 const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5000, MAX_CANDIDATES = 16, MAX_FAILED_REVEALS = 512, MAX_SEEN = 1024;
@@ -61,7 +66,7 @@ const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5
 export function useHandshake(host: HandshakeHost) {
   const latest = useRef(host); latest.current = host;
   const [view, setView] = useState<HandshakeView>({ phase: 'reading' });
-  const commands = useRef<{ scan(raw: string): void; oneWay(): void; confirm(): void; withoutPhoto(): void }>(null);
+  const commands = useRef<{ scan(raw: string): void; tap(raw: string): void; oneWay(): void; confirm(): void; withoutPhoto(): void }>(null);
   const kick = useRef<() => void>(() => {});
   useEffect(() => {
     let closed = false, running = false, queued = false, oneWay = false, sending = false, doubleBuzz = false, sealed = false, sealing = false, noPhoto = false;
@@ -71,8 +76,9 @@ export function useHandshake(host: HandshakeHost) {
     const relays = latest.current.revealRelays ?? defaultRelays;
     const timers = new Set<ReturnType<typeof setTimeout>>();
     let own: StoredContactInvite | undefined;
-    /** The other screen's session as this camera read it, and when. */
-    let peerCard: SessionCard | undefined, readAt: number | undefined;
+    /** The other screen's session as this phone read it (camera or tap), and when. */
+    let peerCard: SessionCard | undefined, readAt: number | undefined, via: 'camera' | 'tap' = 'camera';
+    let stopNfc: (() => void) | undefined;
     /** A plain invite link the camera read: only ever the one-way seam check. */
     let legacy: ContactInvite | undefined;
     /** The reveal this session acts on, and ones that came before this phone scanned. */
@@ -91,8 +97,8 @@ export function useHandshake(host: HandshakeHost) {
     const publish = (patch: Partial<HandshakeView>) => { if (!closed) setView(v => ({ ...v, ...patch })); };
     const card = () => latest.current.card(noPhoto ? { withoutPhoto: true } : undefined);
     const finishNearby = () => { if (nearby) { clearActiveHandshakeNearby(nearby); void nearby.close(); nearby = undefined; } };
-    /** Sealed, expired, failed or left: the radio stays off for good. */
-    const endNearby = () => { radioEnded = true; finishNearby(); };
+    /** Sealed, expired, failed or left: the radios stay off for good. */
+    const endNearby = () => { radioEnded = true; finishNearby(); stopNfc?.(); stopNfc = undefined; };
     /** Both screens read, and the peer's persona signed for both sessions with
      * a proof only the holder of the camera-read session could make. */
     const verified = () => !conflict && !!(peerCard && peerReveal && verifyRevealBinding(peerReveal, peerCard.publicKey, session));
@@ -176,7 +182,7 @@ export function useHandshake(host: HandshakeHost) {
       try {
       const evidence = mutual && peerCard && peerReveal && readAt !== undefined
         ? { inviteId: own.id, ownSession: session, cameraPeerSession: peerCard.publicKey, peerExpiresAt: peerCard.expiresAt,
-          peerReveal, readAt } : undefined;
+          peerReveal, readAt, via } : undefined;
       const contactId = await service.confirmHandshake(exchangeId, now(), evidence);
       if (closed) return;
       sealed = true;
@@ -262,6 +268,21 @@ export function useHandshake(host: HandshakeHost) {
       }
       finally { running = false; }
     };
+    /** The other phone's session, read by this camera or crossed by a tap. */
+    const takeSession = (scannedCard: SessionCard, how: 'camera' | 'tap') => {
+      // One peer per screen: a second code, or this phone's own reflected, is ignored.
+      if (legacy || peerCard || scannedCard.publicKey === session.publicKey) return;
+      peerCard = scannedCard; readAt = now(); via = how;
+      const proven = candidates.filter(c => verifyRevealBinding(c.body, scannedCard.publicKey, session));
+      if (new Set(proven.map(c => c.body.invite.recipient)).size > 1) { conflict = true; publish({ phase: 'failed' }); endNearby(); return; }
+      peerReveal = proven[0]?.body ?? peerReveal;
+      if (peerReveal && verified()) nearby?.bindSession(scannedCard.publicKey, peerReveal.invite.recipient);
+      handshakeHaptic('tick'); publish({ scanned: true, phase: 'waiting', outdated: false });
+      revealHoldUntil = Date.now() + REVEAL_HOLD_MS;
+      later(REVEAL_HOLD_MS, () => void run());
+      dial();
+      void run();
+    };
     kick.current = () => { void run(); };
     commands.current = {
       scan(raw) {
@@ -276,19 +297,13 @@ export function useHandshake(host: HandshakeHost) {
           void run();
           return;
         }
-        const scannedCard = code.card;
-        // One peer per screen: a second code, or this phone's own reflected, is ignored.
-        if (legacy || peerCard || scannedCard.publicKey === session.publicKey) return;
-        peerCard = scannedCard; readAt = now();
-        const proven = candidates.filter(c => verifyRevealBinding(c.body, scannedCard.publicKey, session));
-        if (new Set(proven.map(c => c.body.invite.recipient)).size > 1) { conflict = true; publish({ phase: 'failed' }); endNearby(); return; }
-        peerReveal = proven[0]?.body ?? peerReveal;
-        if (peerReveal && verified()) nearby?.bindSession(scannedCard.publicKey, peerReveal.invite.recipient);
-        handshakeHaptic('tick'); publish({ scanned: true, phase: 'waiting', outdated: false });
-        revealHoldUntil = Date.now() + REVEAL_HOLD_MS;
-        later(REVEAL_HOLD_MS, () => void run());
-        dial();
-        void run();
+        takeSession(code.card, 'camera');
+      },
+      /** An NFC tap delivered the other phone's session code. */
+      tap(raw) {
+        if (!own || closed || now() >= own.invite.expiresAt!) return;
+        const code = readHandshakeCode(raw, now());
+        if (code?.kind === 'session') takeSession(code.card, 'tap');
       },
       oneWay() {
         // Without its own scan this phone cannot tell reveals apart: with more
@@ -346,6 +361,14 @@ export function useHandshake(host: HandshakeHost) {
         if (!code) throw new Error('No relay for the handshake code');
         publish({ code });
         stopWatching = relays.watch(own.invite.relays, session.publicKey, event => { acceptReveal(event); });
+        const nfc = latest.current.nfc === undefined ? nativeNfc() : latest.current.nfc;
+        if (nfc) void (async () => {
+          const status = await nfc.status();
+          if (!status.supported || !status.enabled || closed || radioEnded) return;
+          const stop = await nfc.start(code, raw => commands.current?.tap(raw));
+          if (closed || radioEnded) { stop(); return; }
+          stopNfc = stop; publish({ tapAvailable: true });
+        })().catch(() => {});
         startNearby();
         await run();
       } catch { publish({ phase: 'failed' }); }

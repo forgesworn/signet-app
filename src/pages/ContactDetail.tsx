@@ -292,7 +292,7 @@ export function ContactDetail(props: Props) {
         {(contact.checks ?? []).filter(check => !props.checkOwnerIdentityPubkey || check.ownerIdentityPubkey === props.checkOwnerIdentityPubkey)
           .filter(check => readHandshakeEvidence(check.evidence)).slice(-1).map(check => <p key={check.id} className="handshake-status">
             <JigsawIcon state="joined" />
-            {readHandshakeEvidence(check.evidence)!.strength === 'mutual' ? HANDSHAKE_COPY.met : HANDSHAKE_COPY.checked}
+            {HANDSHAKE_COPY[({ mutual: 'met', tapped: 'tapped', proven: 'checked' } as const)[readHandshakeEvidence(check.evidence)!.strength]]}
             {' · '}{new Date(check.checkedAt).toLocaleDateString()}
           </p>)}
         <div style={{ marginBottom: 8 }}>

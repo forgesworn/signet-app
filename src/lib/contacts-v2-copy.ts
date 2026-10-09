@@ -847,6 +847,7 @@ export const HANDSHAKE_COPY = {
   front: 'Front camera', rear: 'Rear camera', switchCamera: 'Switch camera',
   oneWay: 'Use Jigsaw', compare: 'Put the phones edge to edge. Do all the lines join?',
   joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
+  tapped: 'Tapped in person', tapHint: 'Or hold the phones back to back.',
   keepTier: 'Keep current tier', kith: 'Kith', kin: 'Kin', tier: 'Choose how you know them',
   openContact: 'Open contact',
   nearbyLinked: 'Connected over Bluetooth', nearbyOff: 'Bluetooth is off, so this handshake needs the internet.',

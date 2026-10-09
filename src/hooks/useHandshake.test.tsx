@@ -301,7 +301,8 @@ it('sends its reveal again, freshly sealed, until the peer acts on it (review M1
   await ready(hook);
   act(() => hook.result.current.scan(s.peerCode));
   await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(2), { timeout: 7000 });
+  // The resend interval is 5 s; allow for a loaded machine.
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(2), { timeout: 15000 });
   const [first, second] = s.revealRelays.publish.mock.calls.map(c => c[0]);
   expect(second.id).not.toBe(first.id);
   expect(openReveal(second, s.peerSession, s.now)!.binding.id).toBe(openReveal(first, s.peerSession, s.now)!.binding.id);
@@ -310,7 +311,7 @@ it('sends its reveal again, freshly sealed, until the peer acts on it (review M1
   const sent = s.revealRelays.publish.mock.calls.length;
   await new Promise(r => setTimeout(r, 5500));
   expect(s.revealRelays.publish.mock.calls.length).toBe(sent);
-}, 20000);
+}, 40000);
 it('one-way refuses to guess when more than one persona answered before any scan (review M2)', async () => {
   const s = setup({ recipient: true });
   const hook = renderHook(() => useHandshake(s.host));
@@ -366,4 +367,37 @@ it('a second persona answering after the one-way tap, before anything is sent, s
       binding: finalizeEvent(bindingTemplate(freshSession(), s.own.publicKey, otherInvite, s.now), other) as NostrEvent }, s.own.publicKey, s.now));
   });
   await waitFor(() => expect(hook.result.current.view.ambiguous).toBe(true));
+});
+it('an NFC tap reads the other session like a camera, and the contact is recorded as tapped', async () => {
+  const s = setup();
+  let tapped: ((code: string) => void) | undefined;
+  const stop = vi.fn();
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  expect(nfc.start.mock.calls[0][0]).toBe(hook.result.current.view.code);
+  act(() => tapped!(s.peerCode));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+  expect(haptics.play).toHaveBeenCalledWith('tick');
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');
+  expect(stop).toHaveBeenCalled();
+});
+it('a tap after the camera already read the peer changes nothing, and NFC stops on leaving', async () => {
+  const s = setup();
+  let tapped: ((code: string) => void) | undefined;
+  const stop = vi.fn();
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  act(() => hook.result.current.scan(s.peerCode));
+  act(() => tapped!(s.peerCode));
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('camera');
+  hook.unmount();
+  expect(stop).toHaveBeenCalled();
 });

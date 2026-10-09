@@ -7,6 +7,7 @@ import { buildOperation } from './contacts-v2-mutations';
 import { shortNpub } from './nostr-follows';
 import { getContactAvatar } from './db';
 import { openDB } from 'idb';
+import { handshakeSigil, readHandshakeEvidence } from './handshake-sigil';
 const key = 'exchange contact test', own = '1'.repeat(64), peer = '2'.repeat(64);
 const actor = { actorPubkey: own, actorRole: 'owner' as const, actorDeviceId: '3'.repeat(32) };
 function exchange() {
@@ -283,4 +284,15 @@ it('a human Jigsaw check records proven and preserves an existing tier', async (
     exchange: { ...checked, handshake: { startedAt: 100, strength: 'proven', confirmedAt: 103, sigil: handshakeSigil(checked) } } });
   const contact = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!;
   expect(contact.tier).toBe('kith'); expect(contact.identities[0].verification).toBe('proven');
+});
+it('a tapped handshake proves the key (one rung below mutual) and records the tap', async () => {
+  const contactId = await seedExisting('unverified');
+  const e = exchange();
+  const sigil = handshakeSigil(e);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
+    exchange: { ...e, handshake: { startedAt: 100, strength: 'tapped', confirmedAt: 103, sigil } } });
+  expect((await identityOf(contactId)).verification).toBe('proven');
+  const check = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.checks![0];
+  expect(check.method).toBe('in-person');
+  expect(readHandshakeEvidence(check.evidence)).toEqual({ strength: 'tapped', sigil });
 });

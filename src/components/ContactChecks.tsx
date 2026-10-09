@@ -40,7 +40,7 @@ export function ContactChecks({ checks, identities, onRecord, onUpdate, onRemove
       <p>{METHODS[check.method]} · {new Date(check.checkedAt).toLocaleDateString()} · {shortNpub(check.identityPubkey)}</p>
       {check.source && <p>Private source: {SOURCES[check.source]}</p>}
       {readHandshakeEvidence(check.evidence) ? <div className="handshake-mark">
-        <span><JigsawIcon state="joined" />{readHandshakeEvidence(check.evidence)!.strength === 'mutual' ? HANDSHAKE_COPY.met : HANDSHAKE_COPY.checked}</span>
+        <span><JigsawIcon state="joined" />{HANDSHAKE_COPY[({ mutual: 'met', tapped: 'tapped', proven: 'checked' } as const)[readHandshakeEvidence(check.evidence)!.strength]]}</span>
         <JigsawSigil digest={readHandshakeEvidence(check.evidence)!.sigil} />
       </div> : check.evidence && <p style={{ whiteSpace: 'pre-wrap' }}>{check.evidence}</p>}
       {onUpdate && <button className="btn btn-ghost" disabled={busy} onClick={() => {

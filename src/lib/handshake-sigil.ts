@@ -27,12 +27,14 @@ export function sigilPaths(digest: string) {
       colour: colours[bytes[i * 4 + 3] % colours.length], width: 5 + bytes[i * 4 + 2] % 6 };
   });
 }
-export type HandshakeStrength = 'mutual' | 'proven';
+/** `mutual`: both screens read by camera. `tapped`: both sessions crossed by
+ * an NFC tap (quicker, one rung lower). `proven`: a one-way seam check. */
+export type HandshakeStrength = 'mutual' | 'tapped' | 'proven';
 export function handshakeEvidence(strength: HandshakeStrength, sigil: string) {
   if (!/^[0-9a-f]{64}$/.test(sigil)) throw new Error('Invalid sigil');
   return `signet:handshake:v1:${strength}:${sigil}`;
 }
 export function readHandshakeEvidence(evidence?: string): { strength: HandshakeStrength; sigil: string } | null {
-  const match = /^signet:handshake:v1:(mutual|proven):([0-9a-f]{64})$/.exec(evidence ?? '');
+  const match = /^signet:handshake:v1:(mutual|tapped|proven):([0-9a-f]{64})$/.exec(evidence ?? '');
   return match ? { strength: match[1] as HandshakeStrength, sigil: match[2] } : null;
 }

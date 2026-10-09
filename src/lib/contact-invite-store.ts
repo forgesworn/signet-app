@@ -42,7 +42,7 @@ export interface ContactInviteOutbox {
 /** The child pairing a guardian-managed child exchange was approved under
  * (D5): the dependant's endpoint pubkey and its authorised client pubkey. */
 export interface ChildExchangePairing { endpoint: string; client: string }
-export interface HandshakeRecord { startedAt: number; inviteId?: string; opticalAcceptanceAt?: number; opticalAcceptanceSent?: boolean; strength?: 'mutual' | 'proven'; confirmedAt?: number; sigil?: string }
+export interface HandshakeRecord { startedAt: number; inviteId?: string; opticalAcceptanceAt?: number; opticalAcceptanceSent?: boolean; strength?: 'mutual' | 'tapped' | 'proven'; confirmedAt?: number; sigil?: string }
 export interface StoredContactExchange extends ContactExchangeState { handshake?: HandshakeRecord; app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing }
 /** Child-originated: stamped at `requestChildPlan`, or an older unstamped row
  * written by that path (requester with an accepted-request origin). */
@@ -79,7 +79,7 @@ function validExchange(state: StoredContactExchange): boolean {
       || (state.handshake.opticalAcceptanceAt !== undefined && !stamp(state.handshake.opticalAcceptanceAt))
       || (state.handshake.opticalAcceptanceSent !== undefined && typeof state.handshake.opticalAcceptanceSent !== 'boolean')
       || (state.handshake.strength === undefined && (state.handshake.confirmedAt !== undefined || state.handshake.sigil !== undefined)) || (state.handshake.strength !== undefined
-      && (!['mutual', 'proven'].includes(state.handshake.strength) || !stamp(state.handshake.confirmedAt)
+      && (!['mutual', 'tapped', 'proven'].includes(state.handshake.strength) || !stamp(state.handshake.confirmedAt)
         || state.phase !== 'complete' || state.handshake.sigil !== handshakeSigil(state))))) return false;
     if (state.wordsRecordedAt !== undefined && (!stamp(state.wordsRecordedAt) || state.wordsRecordedAt !== state.wordsConfirmedAt)) return false;
     if ((state.contactId !== undefined && !ID.test(state.contactId)) || (state.wordsConfirmedAt !== undefined && !stamp(state.wordsConfirmedAt))) return false;
@@ -283,8 +283,9 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
     // An older build may advance the SDK transcript without retaining optical
     // metadata. Losing this marker would bypass the handshake confirmation gate.
     const marks = [old?.handshake, row.handshake].filter((mark): mark is HandshakeRecord => !!mark);
+    const strongest = { mutual: 0, tapped: 1, proven: 2 } as const;
     const confirmed = marks.filter(mark => mark.strength).sort((a, b) =>
-      (a.strength === b.strength ? (a.confirmedAt ?? 0) - (b.confirmedAt ?? 0) : a.strength === 'mutual' ? -1 : 1))[0];
+      (a.strength === b.strength ? (a.confirmedAt ?? 0) - (b.confirmedAt ?? 0) : strongest[a.strength!] - strongest[b.strength!]))[0];
     const handshake = marks.length ? { startedAt: Math.min(...marks.map(mark => mark.startedAt)),
       inviteId: marks.map(mark => mark.inviteId).filter((value): value is string => !!value).sort()[0],
       opticalAcceptanceAt: marks.map(mark => mark.opticalAcceptanceAt).filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],

@@ -35,6 +35,9 @@ export interface RevealEvidence {
   /** This screen's session, secret included: the proof is recomputed here. */
   ownSession: { secret: Uint8Array; publicKey: string }; cameraPeerSession: string; peerExpiresAt: number;
   peerReveal: RevealBody; readAt: number;
+  /** How this phone got the peer's session: its camera (mutual) or an NFC tap
+   * (tapped, one rung lower). The proof is the same; the record says which. */
+  via?: 'camera' | 'tap';
 }
 
 export class ContactInviteService {
@@ -478,7 +481,7 @@ export class ContactInviteService {
             peerReveal: evidence.peerReveal, counterparty: peerKey, readAt: evidence.readAt, sessionStart: localInvite.createdAt,
             sessionExpiresAt: localInvite.invite.expiresAt, peerExpiresAt: evidence.peerExpiresAt })) throw new Error('Handshake proof does not match');
       }
-      return { ...e, handshake: { ...e.handshake, strength: evidence ? 'mutual' as const : 'proven' as const,
+      return { ...e, handshake: { ...e.handshake, strength: evidence ? evidence.via === 'tap' ? 'tapped' as const : 'mutual' as const : 'proven' as const,
         confirmedAt: now, sigil: handshakeSigil(e) } };
     }) }));
     return this.materialiseContact(exchangeId);
