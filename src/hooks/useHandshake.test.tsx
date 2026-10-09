@@ -401,3 +401,28 @@ it('a tap after the camera already read the peer changes nothing, and NFC stops 
   hook.unmount();
   expect(stop).toHaveBeenCalled();
 });
+it('a different session arriving after the peer was read fails the screen closed, by tap or camera (NFC review M1)', async () => {
+  for (const second of ['tap', 'camera'] as const) {
+    const s = setup();
+    let tapped: ((code: string) => void) | undefined;
+    const stop = vi.fn();
+    const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
+      start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+    const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+    await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+    act(() => hook.result.current.scan(s.peerCode));
+    await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+    // Another phone or card, brushed past while the screen was open.
+    const stranger = sessionQR({ publicKey: freshSession().publicKey, expiresAt: s.now + 120, relays: ['wss://elsewhere.example/'] })!;
+    act(() => { if (second === 'tap') tapped!(stranger); else hook.result.current.scan(stranger); });
+    await waitFor(() => expect(hook.result.current.view.phase).toBe('failed'));
+    expect(stop).toHaveBeenCalled();
+    // The genuine reveal after that cannot seal, and nothing went to the stranger.
+    s.deliver(s.peerReveal());
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+    expect(hook.result.current.view.phase).toBe('failed');
+    expect(s.service.confirmHandshake).not.toHaveBeenCalled();
+    expect(s.revealRelays.publish.mock.calls.every(call => !call[1].includes('wss://elsewhere.example/'))).toBe(true);
+    hook.unmount(); cleanup(); vi.clearAllMocks();
+  }
+});

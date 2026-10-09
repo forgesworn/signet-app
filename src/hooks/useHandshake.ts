@@ -94,7 +94,12 @@ export function useHandshake(host: HandshakeHost) {
       const t = setTimeout(() => { timers.delete(t); if (!closed) fn(); }, ms);
       timers.add(t);
     };
-    const publish = (patch: Partial<HandshakeView>) => { if (!closed) setView(v => ({ ...v, ...patch })); };
+    const publish = (patch: Partial<HandshakeView>) => {
+      if (closed) return;
+      // Failed closed stays failed: a pass already in flight cannot move it on.
+      if (conflict && patch.phase && patch.phase !== 'failed') { const { phase: _phase, ...rest } = patch; patch = rest; }
+      setView(v => ({ ...v, ...patch }));
+    };
     const card = () => latest.current.card(noPhoto ? { withoutPhoto: true } : undefined);
     const finishNearby = () => { if (nearby) { clearActiveHandshakeNearby(nearby); void nearby.close(); nearby = undefined; } };
     /** Sealed, expired, failed or left: the radios stay off for good. */
@@ -159,7 +164,7 @@ export function useHandshake(host: HandshakeHost) {
      * sent again, freshly sealed, until the peer acts on it: a reveal the peer
      * dropped before scanning (a full store) then lands after its scan. */
     const sendReveal = async () => {
-      if (revealing || !peerCard || !own || closed || sealed || progressed()
+      if (revealing || !peerCard || !own || closed || sealed || conflict || progressed()
         || now() >= own.invite.expiresAt! || now() >= peerCard.expiresAt) return;
       if (ownRevealSent && Date.now() - lastRevealAt < RESEND_MS) return;
       revealing = true;
@@ -177,7 +182,7 @@ export function useHandshake(host: HandshakeHost) {
       }
     };
     const seal = async (mutual: boolean) => {
-      if (!exchangeId || !own || !currentExchange || closed || sealed || sealing) return;
+      if (!exchangeId || !own || !currentExchange || closed || sealed || sealing || conflict) return;
       sealing = true;
       try {
       const evidence = mutual && peerCard && peerReveal && readAt !== undefined
@@ -192,7 +197,8 @@ export function useHandshake(host: HandshakeHost) {
       } finally { sealing = false; }
     };
     const run = async () => {
-      if (closed || sealed) return;
+      // Failed closed (a conflict): nothing more is sent, and "failed" stays.
+      if (closed || sealed || conflict) return;
       if (running) { queued = true; return; }
       running = true;
       try {
@@ -201,7 +207,7 @@ export function useHandshake(host: HandshakeHost) {
           queued = false;
           // A pass woken while the seal was saving (the save bumps the app's
           // version) waited for it here; it must not undo "Sealed".
-          if (!own || closed || sealed) return;
+          if (!own || closed || sealed || conflict) return;
           await sendReveal();
           if (verified()) confirmScans();
           const invite = peerInvite();
@@ -270,8 +276,14 @@ export function useHandshake(host: HandshakeHost) {
     };
     /** The other phone's session, read by this camera or crossed by a tap. */
     const takeSession = (scannedCard: SessionCard, how: 'camera' | 'tap') => {
-      // One peer per screen: a second code, or this phone's own reflected, is ignored.
-      if (legacy || peerCard || scannedCard.publicKey === session.publicKey) return;
+      // This phone's own code reflected back, or the same peer read again (a tap
+      // repeats while the phones touch): nothing new.
+      if (legacy || conflict || sealed || sealing || scannedCard.publicKey === session.publicKey
+        || scannedCard.publicKey === peerCard?.publicKey) return;
+      // A second, different session: another screen or card reached this one.
+      // One peer per screen, so fail closed rather than let the first code
+      // silently win (an NFC device brushed past could have been first).
+      if (peerCard) { conflict = true; publish({ phase: 'failed' }); endNearby(); return; }
       peerCard = scannedCard; readAt = now(); via = how;
       const proven = candidates.filter(c => verifyRevealBinding(c.body, scannedCard.publicKey, session));
       if (new Set(proven.map(c => c.body.invite.recipient)).size > 1) { conflict = true; publish({ phase: 'failed' }); endNearby(); return; }
@@ -374,7 +386,7 @@ export function useHandshake(host: HandshakeHost) {
       } catch { publish({ phase: 'failed' }); }
     })();
     const expiry = setInterval(() => {
-      if (own && now() >= own.invite.expiresAt! && !sealed && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); endNearby(); }
+      if (own && now() >= own.invite.expiresAt! && !sealed && !conflict && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); endNearby(); }
     }, 1000);
     return () => {
       cancelHandshakeHaptics();

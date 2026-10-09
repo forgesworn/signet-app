@@ -5,7 +5,7 @@ import { nip44 } from 'nostr-tools';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { ContactIdentityDecryptBudget, contactVerificationWords } from '@forgesworn/signet-contacts';
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
-import { ContactInviteService } from './contact-invite-service';
+import { ContactInviteService, evidenceStrength, type RevealEvidence } from './contact-invite-service';
 import { recordContactArrival, updateContactInviteVault } from './contact-invite-store';
 import { purgeAllUserData } from './db';
 const publish = vi.hoisted(() => vi.fn(async () => true));
@@ -21,6 +21,15 @@ function party(secret: string, directoryId: string, extra: Partial<ConstructorPa
   return { pubkey, service, signer, directoryId };
 }
 beforeEach(async () => { await purgeAllUserData(); publish.mockReset().mockResolvedValue(true); });
+
+it('records mutual only for an explicit camera read: evidence that does not say how falls a rung (NFC review L3)', () => {
+  const evidence = { inviteId: 'a'.repeat(32) } as RevealEvidence;
+  expect(evidenceStrength({ ...evidence, via: 'camera' })).toBe('mutual');
+  expect(evidenceStrength({ ...evidence, via: 'tap' })).toBe('tapped');
+  expect(evidenceStrength({ ...evidence, via: undefined } as unknown as RevealEvidence)).toBe('tapped');
+  expect(evidenceStrength({ ...evidence, via: 'Camera' } as unknown as RevealEvidence)).toBe('tapped');
+  expect(evidenceStrength(undefined)).toBe('proven');
+});
 it('persists and retries a child plan under its scoped exchange storage key', async () => {
   const pairing = { endpoint: 'e'.repeat(64), client: 'f'.repeat(64) };
   const a = party('01'.repeat(32), `dependant:${'a'.repeat(64)}`, { childPairing: async () => pairing }), b = party('02'.repeat(32), 'owner');

@@ -94,7 +94,9 @@ class HandshakeNfcService : HostApduService() {
 @SuppressLint("MissingPermission")
 object HandshakeNfc {
     @Volatile private var code: ByteArray? = null
-    @Volatile private var paused = false
+    /** Written only by the activity's own start/stop, synchronously on the main
+     * thread, so a late start() can never re-arm a card the activity left. */
+    @Volatile private var foreground = false
     @Volatile private var listener: ((String) -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
     private val random = SecureRandom()
@@ -105,15 +107,15 @@ object HandshakeNfc {
     fun supported(context: Context): Boolean =
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION) && NfcAdapter.getDefaultAdapter(context) != null
     fun enabled(context: Context): Boolean = NfcAdapter.getDefaultAdapter(context)?.isEnabled == true
-    fun cardCode(): ByteArray? = if (paused) null else code
-    fun deliver(peer: String) { if (!paused) listener?.invoke(peer) }
+    fun cardCode(): ByteArray? = if (foreground) code else null
+    fun deliver(peer: String) { if (foreground) listener?.invoke(peer) }
 
     fun start(activity: Activity, ownCode: String, onPeer: (String) -> Unit) {
         val bytes = ownCode.toByteArray(Charsets.US_ASCII)
         require(HandshakeApdu.validCode(bytes))
         main.post {
             stopNow()
-            code = bytes; listener = onPeer; paused = false
+            code = bytes; listener = onPeer
             this.activity = WeakReference(activity)
             cycle()
         }
@@ -121,7 +123,8 @@ object HandshakeNfc {
     private fun cycle() {
         val act = activity?.get() ?: return
         val adapter = NfcAdapter.getDefaultAdapter(act) ?: return
-        if (code == null || paused) { readerOff(act, adapter); return }
+        main.removeCallbacks(cycler)
+        if (code == null || !foreground) { readerOff(act, adapter); return }
         if (reading) readerOff(act, adapter) else readerOn(act, adapter)
         main.postDelayed(cycler, 300L + random.nextInt(500))
     }
@@ -150,11 +153,11 @@ object HandshakeNfc {
         }
     }
     /** The activity left the screen: offer nothing, read nothing, until it returns. */
-    fun pause() { paused = true; main.post { main.removeCallbacks(cycler); offNow() } }
-    fun resume() { main.post { if (code != null && paused) { paused = false; cycle() } } }
+    fun pause() { foreground = false; main.post { main.removeCallbacks(cycler); offNow() } }
+    fun resume() { foreground = true; main.post { if (code != null && foreground) cycle() } }
     fun stop() { main.post { stopNow() } }
     private fun stopNow() {
-        code = null; listener = null; paused = false
+        code = null; listener = null
         main.removeCallbacks(cycler)
         offNow()
         activity = null

@@ -66,14 +66,14 @@ it('real signed exchange needs reveals bound to both camera reads and author bin
   await b.service.openInbox(now + 8, true); await b.service.flush(now + 8);
   expect(a.completed).not.toHaveBeenCalled(); expect(b.completed).not.toHaveBeenCalled();
   await expect(a.service.materialiseContact(exchangeId)).rejects.toThrow('not ready');
-  const evidenceA = { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey, peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 2 };
+  const evidenceA = { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey, peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 2, via: 'camera' as const };
   // A wrong camera read, or a reveal not covering this session, is not mutual.
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, cameraPeerSession: createHandshakeSession().publicKey })).rejects.toThrow('proof');
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, ownSession: createHandshakeSession() })).rejects.toThrow('proof');
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, inviteId: bi.id })).rejects.toThrow('proof');
   // A's phone got B's session by an NFC tap: the same proof, recorded one rung lower.
   await a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, via: 'tap' });
-  await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2 });
+  await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2, via: 'camera' });
   const ae = (await a.service.read()).exchanges[0], be = (await b.service.read()).exchanges[0];
   expect(ae.handshake?.strength).toBe('tapped'); expect(be.handshake?.strength).toBe('mutual');
   const complete = await a.service.read();

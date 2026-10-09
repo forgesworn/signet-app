@@ -37,6 +37,16 @@ describe('session QR', () => {
     expect(readSessionQR('nostr:npub1x', now)).toBeNull();
     expect(readSessionQR('S'.repeat(9000), now)).toBeNull();
   });
+  it('drops relays on private, loopback or link-local hosts, and refuses a code with no other (NFC review M1)', () => {
+    const s = createHandshakeSession();
+    const card = { publicKey: s.publicKey, expiresAt: now + 120 };
+    const read = (relays: string[]) => readSessionQR(sessionQR({ ...card, relays })!, now);
+    expect(read(['wss://192.168.1.10', 'wss://relay.example/', 'wss://[::1]:7777'])).toEqual({ kind: 'session',
+      card: { ...card, relays: ['wss://relay.example/'] } });
+    for (const host of ['wss://localhost', 'wss://127.0.0.1:4869', 'wss://10.0.0.2', 'wss://169.254.169.254', 'wss://[fe80::1]', 'wss://0x7f000001']) {
+      expect(read([host])).toBeNull();
+    }
+  });
 });
 
 describe('sealed reveal', () => {

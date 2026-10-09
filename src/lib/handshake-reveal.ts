@@ -5,6 +5,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
 import { decodeBase45, encodeBase45 } from './handshake-optical';
+import { isPrivateOrInternalHost } from './safe-url';
 
 // The unlinkable handshake (design D11, §5a). The QR shows only a fresh
 // session public key M, its relays and its expiry: never a persona key or a
@@ -73,11 +74,13 @@ export function readSessionQR(raw: string, now: number): ScannedCode | null {
       const host = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(offset + 1, offset + 1 + size));
       const url = new URL('wss://' + host);
       if (url.protocol !== 'wss:' || url.username || url.password) return null;
-      relays.push('wss://' + host);
+      // The reveal is published to these relays. A code that arrived without
+      // being aimed at (a tap) must not steer that onto this phone's network.
+      if (!isPrivateOrInternalHost(url.hostname)) relays.push('wss://' + host);
       offset += 1 + size;
     }
   } catch { return null; }
-  if (offset !== bytes.length) return null;
+  if (offset !== bytes.length || !relays.length) return null;
   const publicKey = bytesToHex(bytes.subarray(1, 33));
   return { kind: 'session', card: { publicKey, expiresAt, relays } };
 }

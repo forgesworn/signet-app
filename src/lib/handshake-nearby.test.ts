@@ -143,9 +143,9 @@ describe('unlinkable handshake over a nearby link, with no internet', () => {
     expect((await b.service.read()).exchanges[0].phase).toBe('complete');
 
     await a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey,
-      peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 1 });
+      peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 1, via: 'camera' });
     await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey,
-      peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 1 });
+      peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 1, via: 'camera' });
     expect((await a.service.read()).exchanges[0].handshake?.strength).toBe('mutual');
     expect((await b.service.read()).exchanges[0].handshake?.strength).toBe('mutual');
     expect(a.completed).toHaveBeenCalledTimes(1); expect(b.completed).toHaveBeenCalledTimes(1);
@@ -174,7 +174,7 @@ describe('unlinkable handshake over a nearby link, with no internet', () => {
     await a.service.flush(now + 7);
     expect((await a.service.read()).exchanges[0].phase).toBe('complete');
     await expect(a.service.confirmHandshake(exchangeId, now + 9, { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey,
-      peerExpiresAt: now + 120, peerReveal: rb, readAt: now + 1 })).rejects.toThrow('proof');
+      peerExpiresAt: now + 120, peerReveal: rb, readAt: now + 1, via: 'camera' })).rejects.toThrow('proof');
     await a.service.confirmHandshake(exchangeId, now + 9);
     expect((await a.service.read()).exchanges[0].handshake?.strength).toBe('proven');
     await a.holder.carrier!.close(); await b.holder.carrier!.close();
