@@ -84,6 +84,8 @@ class SignetNativePlugin : Plugin() {
     override fun load() {
         super.load()
         Nip55Requests.attach(deliverToPage, withdrawFromPage)
+        // A handshake that ended in a crash may have left the phone named "Phone".
+        HandshakeName.restoreLater(context)
     }
 
     // The handshake radio runs only while the app is on screen. The always-on

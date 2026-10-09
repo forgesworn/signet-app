@@ -170,6 +170,10 @@ class HandshakeNearby(
         val advertiser = a?.bluetoothLeAdvertiser
         if (paused) { done(null, "background"); return }
         if (a == null || advertiser == null || !a.isEnabled || token.size != TOKEN_BYTES) { done(null, "unavailable"); return }
+        // A connected stranger can read the Bluetooth name: call the phone
+        // "Phone" first. Best effort; the handshake works either way.
+        HandshakeName.maskBeforeAdvertising(context)
+        if (paused) { done(null, "background"); return }
         stopAdvertising()
         val gen = generation
         val socket = try { a.listenUsingInsecureL2capChannel() } catch (e: IOException) { done(null, "listen"); return }
@@ -303,6 +307,7 @@ class HandshakeNearby(
         stopAdvertising()
         for (link in links.values) link.closeAfterWrites()
         avoid.clear()
+        HandshakeName.restoreLater(context)
     }
 
     /** The activity left the screen: nothing may start until it returns. */
