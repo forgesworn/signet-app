@@ -24,14 +24,29 @@ public class MainActivity extends BridgeActivity {
      *
      * A swiped-away app cannot be kept: the WebView is detached from any
      * window and no visibility signal reaches it. onDestroy says so instead.
+     *
+     * A pulse, not a hold: held visible, the stopped WebView asked for a frame
+     * on every vsync that it could never draw (Chromium's begin-frame source
+     * on the main thread, ~13% of a core in the background, measured
+     * 2026-10-10). Marking it visible for a moment every 30 s still resets the
+     * 60 s freeze, and the frame requests stop in between.
      */
     private static final long KEEP_VISIBLE_MS = 30_000;
+    private static final long PULSE_MS = 1_000;
     private final Handler keepVisibleHandler = new Handler(Looper.getMainLooper());
+    private boolean started = false;
+    private final Runnable hideAgain = new Runnable() {
+        @Override
+        public void run() {
+            if (!started && bridge != null) bridge.getWebView().dispatchWindowVisibilityChanged(View.INVISIBLE);
+        }
+    };
     private final Runnable keepVisible = new Runnable() {
         @Override
         public void run() {
             if (bridge != null && BunkerForegroundService.isAlwaysOn(MainActivity.this)) {
                 bridge.getWebView().dispatchWindowVisibilityChanged(View.VISIBLE);
+                keepVisibleHandler.postDelayed(hideAgain, PULSE_MS);
             }
             keepVisibleHandler.postDelayed(this, KEEP_VISIBLE_MS);
         }
@@ -51,19 +66,26 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onStart() {
         super.onStart();
+        started = true;
         keepVisibleHandler.removeCallbacks(keepVisible);
+        keepVisibleHandler.removeCallbacks(hideAgain);
+        // A pulse may have left it marked invisible; on screen, it is visible.
+        if (bridge != null) bridge.getWebView().dispatchWindowVisibilityChanged(View.VISIBLE);
     }
 
     @Override
     public void onStop() {
         super.onStop();
+        started = false;
         keepVisibleHandler.removeCallbacks(keepVisible);
+        keepVisibleHandler.removeCallbacks(hideAgain);
         keepVisibleHandler.postDelayed(keepVisible, 1_000);
     }
 
     @Override
     public void onDestroy() {
         keepVisibleHandler.removeCallbacks(keepVisible);
+        keepVisibleHandler.removeCallbacks(hideAgain);
         // Swiped away (or otherwise finished) while serving: signing stops
         // with the page, so say so now rather than after the heartbeat lapses.
         if (!isChangingConfigurations() && BunkerForegroundService.isServingPersistently(this)) {

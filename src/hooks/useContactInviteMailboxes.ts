@@ -7,6 +7,7 @@ import { deriveContactMailboxSecret } from '@forgesworn/signet-contacts';
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
 import { loadContactInviteVault, recordContactArrival } from '../lib/contact-invite-store';
 import type { ContactInviteService } from '../lib/contact-invite-service';
+import { useAppForeground } from './useAppForeground';
 
 export interface ContactInviteScope { directoryId: string; identities: string[] }
 /** Separate pools per identity; never subscribe an identity key itself. */
@@ -22,6 +23,16 @@ export function useContactInviteMailboxes(options: {
   const [planKey, setPlanKey] = useState('[]');
   const [connectionEpoch, setConnectionEpoch] = useState(0);
   const reconnectAttempts = useRef(0);
+  // Reconnect when the user actually comes back. Not on every page
+  // visibility change: the always-on bunker briefly marks a backgrounded
+  // page visible every 30 s to stop Chromium freezing it.
+  const foreground = useAppForeground();
+  const reconnectOnReturn = useRef<() => void>(() => {});
+  const wasForeground = useRef(foreground);
+  useEffect(() => {
+    if (foreground && !wasForeground.current) reconnectOnReturn.current();
+    wasForeground.current = foreground;
+  }, [foreground]);
   const closing = useRef<Promise<unknown>>(Promise.resolve());
   useEffect(() => {
     if (!options.encryptionKey) return;
@@ -57,9 +68,8 @@ export function useContactInviteMailboxes(options: {
         if (!cancelled) setConnectionEpoch(epoch => epoch + 1);
       }, delay);
     };
-    const foreground = () => { if (document.visibilityState === 'visible') reconnect(); };
+    reconnectOnReturn.current = reconnect;
     window.addEventListener('online', reconnect);
-    document.addEventListener('visibilitychange', foreground);
     const pools: Array<{ pool: SimplePool; relays: Set<string>; stops: Array<() => Promise<void>> }> = [];
     const valid = () => !cancelled;
     let queue = Promise.resolve();
@@ -121,7 +131,7 @@ export function useContactInviteMailboxes(options: {
       cancelled = true;
       clearTimeout(reconnectTimer);
       window.removeEventListener('online', reconnect);
-      document.removeEventListener('visibilitychange', foreground);
+
       // Each replacement waits for the previous pools to close; otherwise a
       // burst of state updates could briefly multiply the connection budget.
       const previous = closing.current;
