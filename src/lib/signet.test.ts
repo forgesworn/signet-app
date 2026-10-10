@@ -4,9 +4,35 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import { deriveDependantIdentity, deriveKeypair, importFromLiteMnemonic } from './signet';
 import { createNewIdentity, importFromMnemonic, importFromNsec } from './signet';
 import { nip19 } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
+import { signAuthChallenge } from './signet';
+import { LocalSigningBackend } from './signing-backend';
 
 const MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const TEST_NSEC = nip19.nsecEncode(new Uint8Array(32).fill(1));
+
+describe('signAuthChallenge', () => {
+  it('cryptographically binds the requested app name with the challenge and origin', async () => {
+    const backend = new LocalSigningBackend('1'.repeat(64));
+    try {
+      const { authEvent } = await signAuthChallenge(backend, 'a'.repeat(64), 'https://consumer.example', undefined, 'Consumer App');
+      expect(authEvent.tags).toEqual([['challenge', 'a'.repeat(64)], ['origin', 'https://consumer.example'], ['app', 'Consumer App']]);
+      expect(verifyEvent(authEvent)).toBe(true);
+      const tampered = JSON.parse(JSON.stringify(authEvent));
+      tampered.tags = authEvent.tags.map(t => t[0] === 'app' ? ['app', 'Another app'] : t);
+      expect(verifyEvent(tampered)).toBe(false);
+    } finally { backend.destroy(); }
+  });
+
+  it('keeps unnamed requests compatible', async () => {
+    const backend = new LocalSigningBackend('1'.repeat(64));
+    try {
+      const { authEvent } = await signAuthChallenge(backend, 'a'.repeat(64), 'https://consumer.example');
+      expect(authEvent.tags.some(t => t[0] === 'app')).toBe(false);
+      expect(verifyEvent(authEvent)).toBe(true);
+    } finally { backend.destroy(); }
+  });
+});
 
 function litePubkey(mnemonic: string, name: string): string {
   const root = fromMnemonic(mnemonic);

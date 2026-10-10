@@ -76,6 +76,7 @@ test.describe('Sign in with Signet — cross-device relay delivery', () => {
     const originTag = result.authEvent.tags.find(t => t[0] === 'origin');
     expect(challengeTag?.[1]).toBe(challenge);
     expect(originTag?.[1]).toBe(ORIGIN);
+    expect(result.authEvent.tags.find(t => t[0] === 'app')?.[1]).toBe('E2E Cross-Device');
   });
 
   test('deny publishes rejection via relay; consumer sees denied', async ({ page }) => {

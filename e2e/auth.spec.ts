@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createIdentityAndUnlock, clearDatabase, unlockWithPin, confirmRealNameIfPrompted, navigateViaHarness } from './fixtures';
+import { verifyEvent } from 'nostr-tools/pure';
 
 function buildAuthUrl(overrides?: { challenge?: string; timestamp?: number }) {
   const challenge = overrides?.challenge ?? 'a'.repeat(64);
@@ -49,6 +50,15 @@ test.describe('Sign in with Signet', () => {
     expect(url).toContain('pubkey=');
     expect(url).toContain('signature=');
     expect(url).toContain('npub=');
+    // Reconstruct the event exactly as a consumer does. A response without
+    // the requested app tag was rejected by sites that enforce the app name.
+    const params = new URL(url).searchParams;
+    expect(verifyEvent({
+      pubkey: params.get('pubkey')!, kind: 21236,
+      created_at: Number(params.get('t')), content: '',
+      tags: [['challenge', 'a'.repeat(64)], ['origin', 'https://example.com'], ['app', 'TestSite']],
+      id: params.get('eventId')!, sig: params.get('signature')!,
+    })).toBe(true);
   });
 
   test('deny auth redirects with error=denied', async ({ page }) => {

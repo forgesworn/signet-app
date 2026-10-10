@@ -432,12 +432,15 @@ export async function signAuthChallenge(
    * the 2026-05-16 avatars sequence.
    */
   avatar?: { hash: string; blossomUrl: string; keyHex: string } | undefined,
+  /** The consumer's requested app name, bound into the signed response. */
+  appName?: string,
 ): Promise<{ pubkey: string; signature: string; eventId: string; authEvent: import('signet-protocol').NostrEvent }> {
   const pubkey = backend.activePublicKeyHex;
   const tags: string[][] = [
     ['challenge', challenge],
     ['origin', origin],
   ];
+  if (appName) tags.push(['app', appName]);
   if (avatar && avatar.hash && avatar.blossomUrl && avatar.keyHex) {
     tags.push(['avatar_hash', avatar.hash]);
     tags.push(['avatar_url', avatar.blossomUrl]);

@@ -8119,7 +8119,7 @@ export function App() {
         // Sign the kind-21236 event. Works with every backend (local, bunker, NIP-07).
         // pickedAvatar (if any) becomes avatar_hash / avatar_url / avatar_key tags
         // on the event — Phase 4 of per-persona-avatars.
-        const { authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar);
+        const { authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar, urlAuthSiteName || undefined);
 
         // Find credential for login+verify flows
         const credential = authResponseCredentialForSigner(pendingAuthRequest, authEvent.pubkey);
@@ -8331,7 +8331,7 @@ export function App() {
       // ── Redirect mode (no relay) ──────────────────────────────────────────────
       // pickedAvatar (if any) becomes tags on the kind-21236 event AND URL
       // params on the callback redirect — see buildAuthCallbackUrl below.
-      const { signature, eventId, authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar);
+      const { signature, eventId, authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar, urlAuthSiteName || undefined);
 
       // Find credential for login+verify flows
       const credential = authResponseCredentialForSigner(pendingAuthRequest, authEvent.pubkey);
