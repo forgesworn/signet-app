@@ -97,6 +97,34 @@ it('persists each exchange step, opens on demand and completes matching words th
   expect(contactVerificationWords(cleaned.exchanges[0].request, cleaned.exchanges[0].acceptance!, cleaned.exchanges[0].reveal!, a.pubkey)).toEqual(aw);
 }, 30000);
 
+it('a handshake publishes only to the other phone\'s public relays, on both sides (review L1)', async () => {
+  const a = party('01'.repeat(32), 'owner'), b = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`);
+  const now = 1700000000;
+  const lan = ['wss://192.168.1.5', 'wss://nas', 'wss://printer.local'];
+  const invite = await b.service.create(b.pubkey, 'Handshake', [...lan, 'wss://relay.example'], 'single-use', now);
+  // As the SDK stores them (it normalises the URLs).
+  const all = invite.invite.relays, publicOnly = all.filter(url => url.includes('relay.example'));
+  expect(publicOnly).toHaveLength(1);
+  // Requester side: the invite's LAN relays are dropped from the request and its reply relays.
+  await a.service.request(a.pubkey, invite.invite, now + 1, undefined, undefined, true);
+  const sent = (await a.service.read()).outbox[0];
+  expect(sent.relays).toEqual(publicOnly);
+  expect((await a.service.read()).exchanges[0].request.reply.relays).toEqual(publicOnly);
+  // Nothing public left: refused outright.
+  const lanOnly = await b.service.create(b.pubkey, 'Handshake', lan, 'single-use', now);
+  await expect(a.service.request(a.pubkey, lanOnly.invite, now + 1, undefined, undefined, true)).rejects.toThrow('No public relay');
+  // Outside a handshake the invite's relays stand as before.
+  const c = party('03'.repeat(32), `dependant:${'c'.repeat(64)}`);
+  await c.service.request(c.pubkey, invite.invite, now + 1);
+  expect((await c.service.read()).outbox[0].relays).toEqual(all);
+  // Accepting side: a request whose reply relays point at the LAN, accepted in a handshake.
+  const request = (await c.service.read()).outbox[0];
+  await recordContactArrival(b.directoryId, KEY, { id: request.id, inviteId: invite.id, identityPubkey: b.pubkey,
+    packet: openContactMailboxWrap(request.event, invite.invite.secret)!, receivedAt: now + 2 });
+  await b.service.openInbox(now + 3);
+  await b.service.accept(request.id, now + 4, false, false, undefined, true);
+  expect((await b.service.read()).outbox.find(o => o.messageType === 'acceptance')!.relays).toEqual(publicOnly);
+});
 it('does not send expired or silently cancelled pending requests', async () => {
   const a = party('01'.repeat(32), 'owner'), b = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`);
   const expired = await b.service.create(b.pubkey, 'Short lived', ['wss://relay.example'], 'single-use', 100, 102);

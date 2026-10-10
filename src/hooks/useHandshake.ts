@@ -145,6 +145,8 @@ export function useHandshake(host: HandshakeHost) {
       if (peerCard) {
         if (!verifyRevealBinding(body, peerCard.publicKey, session)) { failedReveals++; return false; }
         if (verified() && peerReveal!.invite.recipient !== body.invite.recipient) {
+          // The verified one is already being saved: a late second one cannot undo that.
+          if (sealing) return false;
           // Two personas both proved the session this camera read: fail closed.
           conflict = true; publish({ phase: 'failed' }); endNearby(); return false;
         }
@@ -173,10 +175,12 @@ export function useHandshake(host: HandshakeHost) {
       let sent = false;
       try {
         ownBinding ??= await service.signRevealBinding(host.persona, bindingTemplate(session, peerCard.publicKey, own.invite, now()));
+        // A conflict while the signer was busy: send nothing more.
+        if (conflict || closed || sealed) return;
         const event = sealReveal({ v: 2, to: peerCard.publicKey, invite: own.invite, binding: ownBinding }, peerCard.publicKey, now());
         if (nearby?.reaches(peerCard.publicKey)) sent = await nearby.deliverSession(peerCard.publicKey, event);
         else if (!ownRevealSent && nearby?.availability === 'ready' && Date.now() < revealHoldUntil) return;
-        if (!sent && !closed && !sealed) sent = await relays.publish(event, peerCard.relays);
+        if (!sent && !closed && !sealed && !conflict) sent = await relays.publish(event, peerCard.relays);
         if (sent) { ownRevealSent = true; lastRevealAt = Date.now(); }
       } finally {
         revealing = false;

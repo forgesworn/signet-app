@@ -30,6 +30,32 @@ export interface HandshakeSession { secret: Uint8Array; publicKey: string }
 export interface SessionCard { publicKey: string; expiresAt: number; relays: string[] }
 export interface RevealBody { v: 2; to: string; invite: ContactInvite; binding: NostrEvent }
 
+const LAN_SUFFIXES = ['.local', '.lan', '.internal', '.home.arpa', '.localhost', '.localdomain'];
+/**
+ * A relay host the OTHER phone chose, that this phone may publish to. A code
+ * or invite that arrived without being aimed at (a tap) must not steer this
+ * phone onto its own network, so: no private, loopback or link-local address,
+ * no IP literal at all, no single-label name and no LAN suffix. The same rule
+ * as for servers a contact chooses (`isSafeContactBlossomBase`).
+ */
+export function isPublicRelayHost(hostname: string): boolean {
+  let host = hostname.toLowerCase();
+  if (host.startsWith('[') || host.includes(':')) return false; // IPv6 literal
+  while (host.endsWith('.')) host = host.slice(0, -1);
+  if (!host || isPrivateOrInternalHost(host) || !host.includes('.')) return false;
+  if (/^[0-9.]+$/.test(host)) return false; // IPv4 literal
+  return !LAN_SUFFIXES.some(suffix => host.endsWith(suffix));
+}
+/** The other phone's relays this phone may publish to (see isPublicRelayHost). */
+export function handshakeRelays(relays: string[]): string[] {
+  return relays.filter(url => {
+    try {
+      const u = new URL(url);
+      return u.protocol === 'wss:' && !u.username && !u.password && isPublicRelayHost(u.hostname);
+    } catch { return false; }
+  });
+}
+
 /** Fresh per handshake screen; the secret never leaves memory. */
 export function createHandshakeSession(): HandshakeSession {
   const secret = generateSecretKey();
@@ -76,7 +102,7 @@ export function readSessionQR(raw: string, now: number): ScannedCode | null {
       if (url.protocol !== 'wss:' || url.username || url.password) return null;
       // The reveal is published to these relays. A code that arrived without
       // being aimed at (a tap) must not steer that onto this phone's network.
-      if (!isPrivateOrInternalHost(url.hostname)) relays.push('wss://' + host);
+      if (isPublicRelayHost(url.hostname)) relays.push('wss://' + host);
       offset += 1 + size;
     }
   } catch { return null; }

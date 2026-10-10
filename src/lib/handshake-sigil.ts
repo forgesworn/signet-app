@@ -102,12 +102,15 @@ export function sigilMotion(digest: string): SigilLineMotion[] {
 export function sigilWave(w: SigilWave, nowMs: number): number {
   return w.amplitude * Math.sin((2 * Math.PI * (nowMs % w.periodMs)) / w.periodMs + w.phase);
 }
-/** The paths at wall-clock time `nowMs`, for drawing frame by frame. */
-export function sigilAnimator(digest: string): (nowMs: number) => string[] {
+/** The paths at wall-clock time `nowMs`, for drawing frame by frame.
+ * `seamOnly` (reduced motion): only what meets at the seam keeps moving,
+ * gently, so a pair still joins when the other phone animates in full; the
+ * turns and ends, which only this phone shows, stay still. */
+export function sigilAnimator(digest: string, options: { seamOnly?: boolean } = {}): (nowMs: number) => string[] {
   const shape = sigilShape(digest), motion = sigilMotion(digest);
   return nowMs => shape.map((l, i) => {
-    const m = motion[i], at = (w: SigilWave) => sigilWave(w, nowMs);
-    return pathD(l.x + at(m.drift), l.slope + at(m.slope), l.bend + at(m.bend), l.turn1 + at(m.turn1), l.turn2 + at(m.turn2));
+    const m = motion[i], at = (w: SigilWave) => sigilWave(w, nowMs), free = (w: SigilWave) => options.seamOnly ? 0 : at(w);
+    return pathD(l.x + at(m.drift), l.slope + at(m.slope), l.bend + free(m.bend), l.turn1 + free(m.turn1), l.turn2 + free(m.turn2));
   });
 }
 /** `mutual`: both screens read by camera. `tapped`: both sessions crossed by

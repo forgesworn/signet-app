@@ -3,7 +3,7 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import type { ContactInvite } from '@forgesworn/signet-contacts';
 import type { NostrEvent } from 'signet-protocol';
-import { bindingTemplate, createHandshakeSession, mutualRevealProof, openReveal, readSessionQR, revealDigest, revealProof, sealReveal, sessionDialler,
+import { bindingTemplate, createHandshakeSession, handshakeRelays, isPublicRelayHost, mutualRevealProof, openReveal, readSessionQR, revealDigest, revealProof, sealReveal, sessionDialler,
   sessionQR, verifyRevealBinding, REVEAL_BINDING_KIND, type HandshakeSession, type RevealBody } from './handshake-reveal';
 import { encodeBase45 } from './handshake-optical';
 
@@ -36,6 +36,15 @@ describe('session QR', () => {
     expect(readSessionQR('SGH1:ABC', now)).toEqual({ kind: 'outdated' });
     expect(readSessionQR('nostr:npub1x', now)).toBeNull();
     expect(readSessionQR('S'.repeat(9000), now)).toBeNull();
+  });
+  it('takes only public relay hosts from the other phone: no LAN names, IP literals or single labels (review L1)', () => {
+    for (const host of ['relay.example', 'nos.lol', 'Relay.Example.', 'a.b.c.example']) expect(isPublicRelayHost(host)).toBe(true);
+    for (const host of ['nas', 'printer.local', 'router.lan', 'metadata.google.internal', 'box.home.arpa', 'x.localhost',
+      '8.8.8.8', '224.0.0.1', '255.255.255.255', '192.168.1.1', '[2001:db8::1]', '2001:db8::1', 'localhost', '127.0.0.1.', '']) {
+      expect(isPublicRelayHost(host)).toBe(false);
+    }
+    expect(handshakeRelays(['wss://relay.example', 'wss://nas', 'ws://relay.example', 'wss://u:p@relay.example', 'nonsense', 'wss://8.8.8.8:443']))
+      .toEqual(['wss://relay.example']);
   });
   it('drops relays on private, loopback or link-local hosts, and refuses a code with no other (NFC review M1)', () => {
     const s = createHandshakeSession();

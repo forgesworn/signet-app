@@ -29,8 +29,10 @@ export function JigsawSigil({ digest, half = 'whole' }: { digest: string; half?:
     return () => observer.disconnect();
   }, [half]);
   useEffect(() => {
-    if (half === 'whole' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
-    const pathsAt = sigilAnimator(digest);
+    if (half === 'whole') return;
+    // Each phone shows only its own half, so the seam is all the two compare:
+    // it keeps moving under reduced motion too, or a pair would look broken.
+    const pathsAt = sigilAnimator(digest, { seamOnly: !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches });
     let frame = 0;
     const draw = () => {
       pathsAt(Date.now()).forEach((d, i) => lines.current[i]?.setAttribute('d', d));

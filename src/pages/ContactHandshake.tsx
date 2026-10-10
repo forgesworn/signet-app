@@ -136,7 +136,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     </>}
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
-      <span>{active ? view.scansConfirmed ? tapped ? COPY.tapFinishing : COPY.finishing : view.scanned ? handshakeWaiting(view.name, tapped) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
+      <span>{active ? view.scansConfirmed ? tapped ? COPY.tapFinishing : COPY.finishing : view.scanned ? handshakeWaiting(props.blurArrival ? undefined : view.name, tapped) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>

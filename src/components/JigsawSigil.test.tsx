@@ -68,7 +68,7 @@ it('changes what meets at the seam slowly, so clocks a third of a second apart s
     }
   }
 });
-it('animates the lines of a half with the clock, but keeps the whole sigil and reduced motion still', () => {
+it('animates the lines of a half with the clock, but keeps the whole sigil still', () => {
   vi.useFakeTimers({ toFake: ['Date', 'requestAnimationFrame', 'cancelAnimationFrame'] });
   vi.setSystemTime(1_700_000_000_000);
   const still = sigilPaths(digest)[0].d;
@@ -80,8 +80,25 @@ it('animates the lines of a half with the clock, but keeps the whole sigil and r
   cleanup();
   expect(render(<JigsawSigil digest={digest} />).container.querySelector('path')!.getAttribute('d')).toBe(still);
   cleanup();
+});
+it('under reduced motion keeps the seam moving with the other phone, and stills only this phone\'s turns and ends (review L3)', () => {
+  vi.useFakeTimers({ toFake: ['Date', 'requestAnimationFrame', 'cancelAnimationFrame'] });
   vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce') }));
-  expect(render(<JigsawSigil digest={digest} half="top" />).container.querySelector('path')!.getAttribute('d')).toBe(still);
+  const full = sigilAnimator(digest), calm = sigilAnimator(digest, { seamOnly: true }), still = sigilPaths(digest);
+  for (const t of [1_700_000_000_000, 1_700_000_003_210]) {
+    vi.setSystemTime(t);
+    const shown = render(<JigsawSigil digest={digest} half="top" />).container.querySelectorAll('path');
+    shown.forEach((path, i) => {
+      const p = parts(path.getAttribute('d')!), moving = parts(full(t)[i]), rest = parts(still[i].d);
+      expect(path.getAttribute('d')).toBe(calm(t)[i]);
+      // What the other phone also shows, the seam crossing, matches its full animation exactly.
+      expect([p.seamX, p.slope]).toEqual([moving.seamX, moving.slope]);
+      // The turns and ends sit where they rest, relative to the seam.
+      expect(p.turn1 - p.seamX).toBeCloseTo(rest.turn1 - rest.seamX, 1);
+      expect(p.topEnd - p.seamX).toBeCloseTo(rest.topEnd - rest.seamX, 1);
+    });
+    cleanup();
+  }
 });
 it('starts each half beyond the seam by the hidden strip, the same physical distance on phones of different widths', () => {
   const at = (width: number, half: 'top' | 'bottom') => {

@@ -1,5 +1,5 @@
 import { handshakeRole, mayAutoAcceptHandshake, type HandshakeQR } from './handshake-proof';
-import { mutualRevealProof, type RevealBody } from './handshake-reveal';
+import { handshakeRelays, mutualRevealProof, type RevealBody } from './handshake-reveal';
 import { handshakeSigil } from './handshake-sigil';
 import { assertContactMailboxCapacity } from './contact-invite-limits';
 import { contactExchangeKey } from './contact-exchange-key';
@@ -203,7 +203,10 @@ export class ContactInviteService {
     }
     const parsed = parseContactInvite(JSON.stringify(invite), now);
     if (!parsed || !await this.options.mayConnect(parsed.recipient)) throw new Error('This contact is not allowed by the contact policy');
-    assertContactMailboxCapacity(await this.read(), identityPubkey, now, parsed.relays, 'exchange');
+    // A handshake invite came from the other phone: publish only to its public relays.
+    const relays = handshake ? handshakeRelays(parsed.relays) : parsed.relays;
+    if (!relays.length) throw new Error('No public relay for this contact');
+    assertContactMailboxCapacity(await this.read(), identityPubkey, now, relays, 'exchange');
     if (app && this.options.automaticAttempts) {
       const attempt = `request:${this.options.directoryId}:${identityPubkey}:${app.grantId}:${app.requestId}`;
       if (this.options.automaticAttempts.has(attempt)) throw new Error('App handover already attempted during this unlock');
@@ -216,7 +219,7 @@ export class ContactInviteService {
     const card = await resolveCard(cardSource); this.check();
     const nonce = bytesToHex(randomBytes(32));
     const request = createContactRequest({ id: bytesToHex(randomBytes(16)), from: identityPubkey, to: parsed.recipient,
-      nonce, reply: { secret: bytesToHex(randomBytes(32)), relays: parsed.relays }, now,
+      nonce, reply: { secret: bytesToHex(randomBytes(32)), relays }, now,
       expiresAt: Math.min(now + 30 * 86400, parsed.expiresAt ?? Infinity), ...(card ? { card } : {}) });
     const signer = await this.options.signer(identityPubkey); this.check();
     const event = await wrapContactExchange(request, parsed.secret, signer); this.check();
@@ -232,9 +235,9 @@ export class ContactInviteService {
         }
         if (state.invites.filter(i => i.app?.grantId === app.grantId).length + state.exchanges.filter(e => e.app?.grantId === app.grantId).length >= 500) throw new Error('This app has reached its introduction limit');
       }
-      assertContactMailboxCapacity(state, identityPubkey, now, parsed.relays, 'exchange');
+      assertContactMailboxCapacity(state, identityPubkey, now, relays, 'exchange');
       return { ...state, exchanges: [...state.exchanges, exchange],
-        outbox: [...state.outbox, { id: event.id, identityPubkey, event, relays: parsed.relays, exchangeId: contactExchangeKey(request), messageType: 'request' }] };
+        outbox: [...state.outbox, { id: event.id, identityPubkey, event, relays, exchangeId: contactExchangeKey(request), messageType: 'request' }] };
     });
     return contactExchangeKey(request);
   }
@@ -421,7 +424,10 @@ export class ContactInviteService {
     if (!acceptDifferentRecipient && invite?.intendedPubkey && invite.intendedPubkey !== request?.from) throw new Error('This invite is for a different contact');
     if (!request || arrival.dismissedAt !== undefined || !await this.options.mayConnect(request.from)) throw new Error('Request cannot be accepted');
     if (state.exchanges.some(e => contactExchangeKey(e.request) === contactExchangeKey(request))) return;
-    assertContactMailboxCapacity(state, request.to, now, request.reply.relays, 'exchange');
+    // A handshake's reply relays came from the other phone: only its public ones.
+    const replyRelays = handshake ? handshakeRelays(request.reply.relays) : request.reply.relays;
+    if (!replyRelays.length) throw new Error('No public relay for this contact');
+    assertContactMailboxCapacity(state, request.to, now, replyRelays, 'exchange');
     // Every refusal above has passed; only now may the card be built (M3).
     const card = await resolveCard(cardSource); this.check();
     const next: StoredContactExchange = { ...acceptContactExchange(request, bytesToHex(randomBytes(32)), now, card), ...(handshake ? { handshake: { startedAt: now, ...(invite ? { inviteId: invite.id } : {}) } } : {}), ...(invite?.app ? { app: invite.app } : {}),
@@ -439,9 +445,9 @@ export class ContactInviteService {
       if (!currentArrival?.request || currentArrival.dismissedAt !== undefined
         || JSON.stringify(currentArrival.request) !== JSON.stringify(request)) throw new Error('Request changed; reopen the inbox');
       if (!acceptDifferentRecipient && currentInvite?.intendedPubkey && currentInvite.intendedPubkey !== request.from) throw new Error('This invite is for a different contact');
-      assertContactMailboxCapacity(fresh, request.to, now, request.reply.relays, 'exchange');
+      assertContactMailboxCapacity(fresh, request.to, now, replyRelays, 'exchange');
       return { ...fresh, exchanges: [...fresh.exchanges, next],
-        outbox: [...fresh.outbox, { id: event.id, identityPubkey: request.to, event, relays: request.reply.relays, exchangeId: contactExchangeKey(request), messageType: 'acceptance' }],
+        outbox: [...fresh.outbox, { id: event.id, identityPubkey: request.to, event, relays: replyRelays, exchangeId: contactExchangeKey(request), messageType: 'acceptance' }],
         arrivals: fresh.arrivals.map(a => a.id === arrivalId ? { ...a, dismissedAt: now } : a) };
     });
   }

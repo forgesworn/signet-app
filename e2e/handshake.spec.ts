@@ -84,7 +84,7 @@ async function showFrames(page: Page, qrs: Awaited<ReturnType<typeof readAllQRs>
     if (qrs.length > 1) (window as any).__cameraPlayback = setInterval(() => { index = (index + 1) % qrs.length; draw(qrs[index]); }, 500);
   }, { qrs, extra: second ? { size: extra.modules.size, data: Array.from(extra.modules.data) } : null });
 }
-test('two real QR camera reads recover closed relays, auto-seal one signed exchange and preserve Ken', async ({ page, context, browser }) => {
+test('two real QR camera reads recover closed relays, auto-seal one signed exchange and save them as Kith', async ({ page, context, browser }) => {
   test.setTimeout(180000);
   const relays = privateRelays(); await relays.install(context); await camera(context);
   const otherContext = await browser.newContext({ ignoreHTTPSErrors: true, baseURL: new URL(test.info().project.use.baseURL!).origin, viewport: { width: 390, height: 844 } });
@@ -128,17 +128,25 @@ test('two real QR camera reads recover closed relays, auto-seal one signed excha
       await expect(phone.getByRole('img', { name: 'Handshake sigil' })).toBeVisible();
       await expect(phone.getByText('You say:', { exact: false })).toHaveCount(0);
     }
-    const paths = await Promise.all([page, other].map(phone => phone.locator('.jigsaw-sigil path').evaluateAll(elements => elements.map(e => e.getAttribute('d')))));
-    expect(paths[0]).toEqual(paths[1]);
+    // The lines move with the clock, and the two pages are read a moment
+    // apart: the same paths, to within a fraction of a unit (of 256).
+    const paths = await Promise.all([page, other].map(phone => phone.locator('.jigsaw-sigil path').evaluateAll(elements => elements.map(e => e.getAttribute('d')!))));
+    const numbers = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    expect(paths[0]).toHaveLength(8); expect(paths[1]).toHaveLength(8);
+    paths[0].forEach((d, i) => {
+      const a = numbers(d), b = numbers(paths[1][i]);
+      expect(a).toHaveLength(b.length);
+      a.forEach((v, k) => expect(Math.abs(v - b[k])).toBeLessThan(1));
+    });
     await other.getByRole('button', { name: 'Open contact', exact: true }).click();
-    await expect(other.getByText('Ken', { exact: true }).first()).toBeVisible();
+    await expect(other.getByText('Kith', { exact: true }).first()).toBeVisible();
     await expect(other.locator('.handshake-status')).toContainText('Met in person');
     await page.screenshot({ path: 'e2e/results/handshake-sealed.png' });
-    await page.getByRole('button', { name: 'Go back' }).click();
+    // The Jigsaw half covers the header (its seam is the top edge), so leave by navigation.
     await page.evaluate(() => (window as any).__TEST__.setPage('contacts'));
     await expect(page.getByRole('button', { name: /^Open Second private persona/ })).toBeVisible();
     await page.getByRole('button', { name: /^Open Second private persona/ }).click();
-    await expect(page.getByText('Ken', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Kith', { exact: true }).first()).toBeVisible();
     await expect(page.locator('.handshake-status')).toContainText('Met in person');
     await expect(page.getByText(/^Confirmed in person/)).toBeVisible();
     expect((await page.evaluate(() => (window as any).__TEST__.getContactInviteProgress())).exchanges[0].handshake.strength).toBe('mutual');

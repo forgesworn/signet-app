@@ -65,6 +65,16 @@ it('shows who arrived under the seal, and says they went straight to contacts', 
   expect(screen.getByText('Saved straight to your contacts. You can change Kith or Kin on their contact page.')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Tap to show who you added' })).not.toBeInTheDocument();
 });
+it('keeps their name out of the status line too when the user blurs identities (review L2)', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true, name: 'Sam' } as HandshakeView,
+    scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  const view = render(<ContactHandshake {...props()} blurArrival />);
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Waiting for their scan confirmation…'));
+  expect(screen.queryByText(/Sam/)).not.toBeInTheDocument();
+  view.unmount();
+  render(<ContactHandshake {...props()} />);
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Sam'));
+});
 it('arrives blurred, shown on a tap, when the user blurs identities', async () => {
   mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam' }));
   const view = render(<ContactHandshake {...props()} blurArrival />);
