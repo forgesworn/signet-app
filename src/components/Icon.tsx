@@ -31,7 +31,9 @@ export type IconName =
   | 'scan'
   | 'qr'
   | 'qrScan'
-  | 'download';
+  | 'download'
+  | 'bluetooth'
+  | 'nfc';
 
 const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
   home: (
@@ -186,6 +188,15 @@ const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
       <path d="M12 3v12" />
       <path d="M7 10l5 5 5-5" />
       <path d="M4.5 19.5h15" />
+    </>
+  ),
+  bluetooth: <path d="M7 7l10 10-5 5V2l5 5L7 17" />,
+  nfc: (
+    <>
+      <path d="M9 6.5a8 8 0 0 1 0 11" />
+      <path d="M12.5 4a12 12 0 0 1 0 16" />
+      <path d="M16 1.5a16 16 0 0 1 0 21" />
+      <circle cx="5.5" cy="12" r="1" />
     </>
   ),
 };

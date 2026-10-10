@@ -39,6 +39,10 @@ export interface SignetNativePlugin {
   nearbyQuiet(): Promise<void>;
   /** Handshake NFC tap: host card emulation plus reader mode, alternating. */
   nfcStatus(): Promise<{ supported: boolean; enabled: boolean }>;
+  /** Open the system screen to turn NFC on, or this app's own settings (to allow Nearby devices). */
+  radioSettings(opts: { which: 'nfc' | 'app' }): Promise<void>;
+  /** NFC or Bluetooth was switched on or off. */
+  addListener(eventName: 'radioState', listener: (event: { nfc: { supported: boolean; enabled: boolean }; bluetooth: { supported: boolean; enabled: boolean; permitted: boolean } }) => void): Promise<PluginListenerHandle>;
   /** Whether the activity is on screen right now (see app-foreground.ts). */
   lifecycleState(): Promise<{ state: 'background' | 'foreground' }>;
   /** Offer `code` (this screen's session code) to a phone held against this one, and read theirs. */

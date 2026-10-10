@@ -12,6 +12,8 @@ import { HandshakeQR } from '../components/HandshakeQR';
 import { JigsawIcon } from '../components/JigsawIcon';
 import { JigsawSigil } from '../components/JigsawSigil';
 import { Icon } from '../components/Icon';
+import { useRadioStatus } from '../hooks/useRadioStatus';
+import { refreshRadioStatus } from '../lib/radio-status';
 import { useScreenWakeLock } from '../hooks/useScreenWakeLock';
 import { isNativeApp, SignetNative } from '../lib/native';
 import { encodeNpub, hexToBytes, shortNpub } from '../lib/signet';
@@ -79,12 +81,37 @@ export function ContactHandshake(props: Props) {
     <p className="field-hint">{COPY.keyRequired}</p>
     <label><input type="checkbox" checked={choice.photo} disabled={!props.info.hasPhoto} onChange={e => setChoice({ ...choice, photo: e.target.checked })} /> {COPY.photo}</label>
     <label><input type="checkbox" checked={saveDefault} onChange={e => setSaveDefault(e.target.checked)} /> {COPY.saveDefault}</label>
+    <RadioControls />
     <button className="btn btn-primary" onClick={() => {
       void (async () => { if (saveDefault) await saveHandshakeChoice(props.persona, props.encryptionKey, choice); setChoosing(false); })().catch(() => setFailed(true));
     }}>{COPY.go}</button>
   </div>;
   return props.pairedChild ? <ChildHandshake {...props} />
     : <RunningHandshake {...props} card={opts => props.buildCard(opts?.withoutPhoto ? { ...choice, photo: false } : choice)} />;
+}
+/** Explicit taps, so not behind the once-per-run automatic Bluetooth ask in useHandshake. */
+function RadioControls() {
+  const radio = useRadioStatus();
+  const [appSettings, setAppSettings] = useState(false);
+  if (!radio) return null;
+  const done = () => refreshRadioStatus();
+  const allow = () => void SignetNative.nearbyPermission().then(r => { if (!r.granted) setAppSettings(true); }).catch(() => {}).then(done);
+  const turnOn = () => void SignetNative.nearbyEnable().catch(() => {}).then(done);
+  const open = (which: 'nfc' | 'app') => void SignetNative.radioSettings({ which }).catch(() => {});
+  const row = (text: string, label?: string, act?: () => void) => <div className="handshake-radio-row">
+    <span>{text}</span>{label && <button type="button" className="btn btn-ghost btn-sm" onClick={act}>{label}</button>}
+  </div>;
+  const bluetooth = radio.bluetooth === 'on' ? row(COPY.btOn)
+    : radio.bluetooth === 'off' ? row(COPY.btOff, COPY.turnOn, turnOn)
+    : radio.bluetooth === 'denied' ? appSettings ? row(COPY.btDenied, COPY.appSettings, () => open('app')) : row(COPY.btDenied, COPY.allow, allow)
+    : null;
+  const nfc = radio.nfc === 'on' ? row(COPY.nfcOn) : radio.nfc === 'off' ? row(COPY.nfcOff, COPY.turnOnNfc, () => open('nfc')) : null;
+  if (!bluetooth && !nfc) return null;
+  return <div className="handshake-radio-controls">
+    <h3>{COPY.radios}</h3>
+    {bluetooth}{nfc}
+    {(radio.bluetooth === 'off' || radio.bluetooth === 'denied' || radio.nfc === 'off') && <p className="field-hint">{COPY.hint}</p>}
+  </div>;
 }
 function CameraChoice({ facing, change }: { facing: 'user' | 'environment'; change(): void }) {
   return <button className="btn btn-ghost btn-sm" aria-label={COPY.switchCamera} onClick={change}>{facing === 'user' ? COPY.front : COPY.rear}</button>;

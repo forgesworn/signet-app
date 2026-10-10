@@ -2,7 +2,11 @@ package app.mysignet
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
+import android.nfc.NfcAdapter
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -88,6 +92,19 @@ class SignetNativePlugin : Plugin() {
         HandshakeName.restoreLater(context)
         // Nor should a crash leave the handshake AID offered to readers.
         HandshakeNfc.clearStale(context)
+        // Tell the page when NFC or Bluetooth is switched, so the Handshake button follows it.
+        ContextCompat.registerReceiver(context, radioReceiver, IntentFilter().apply {
+            addAction(NfcAdapter.ACTION_ADAPTER_STATE_CHANGED)
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    private val radioReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            notifyListeners("radioState", JSObject()
+                .put("nfc", nfcState())
+                .put("bluetooth", nearbyState()))
+        }
     }
 
     // The handshake radio runs only while the app is on screen. The always-on
@@ -119,6 +136,7 @@ class SignetNativePlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
+        try { context.unregisterReceiver(radioReceiver) } catch (_: IllegalArgumentException) {}
         nearby.stop()
         HandshakeNfc.stop()
         Nip55Requests.detach(deliverToPage, withdrawFromPage)
@@ -483,12 +501,14 @@ class SignetNativePlugin : Plugin() {
     private fun nearbyPermitted(): Boolean =
         HandshakeNearby.platformSupported() && getPermissionState("nearby") == PermissionState.GRANTED
 
+    private fun nearbyState(): JSObject = JSObject()
+        .put("supported", nearby.supported())
+        .put("enabled", nearby.enabled())
+        .put("permitted", nearbyPermitted())
+
     @PluginMethod
     fun nearbyStatus(call: PluginCall) {
-        call.resolve(JSObject()
-            .put("supported", nearby.supported())
-            .put("enabled", nearby.enabled())
-            .put("permitted", nearbyPermitted()))
+        call.resolve(nearbyState())
     }
 
     @PluginMethod
@@ -564,9 +584,28 @@ class SignetNativePlugin : Plugin() {
     }
 
     // ── Handshake NFC tap ─────────────────────────────────────────────────
+    private fun nfcState(): JSObject =
+        JSObject().put("supported", HandshakeNfc.supported(context)).put("enabled", HandshakeNfc.enabled(context))
+
     @PluginMethod
     fun nfcStatus(call: PluginCall) {
-        call.resolve(JSObject().put("supported", HandshakeNfc.supported(context)).put("enabled", HandshakeNfc.enabled(context)))
+        call.resolve(nfcState())
+    }
+
+    /** Open the system screen to turn NFC on (`nfc`) or to change this app's permissions (`app`). */
+    @PluginMethod
+    fun radioSettings(call: PluginCall) {
+        val intent = when (call.getString("which")) {
+            "nfc" -> Intent(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) Settings.Panel.ACTION_NFC else Settings.ACTION_NFC_SETTINGS)
+            "app" -> Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+            else -> { call.reject("unknown settings screen"); return }
+        }
+        try {
+            activity.startActivity(intent)
+            call.resolve()
+        } catch (_: ActivityNotFoundException) {
+            call.reject("settings unavailable")
+        }
     }
 
     @PluginMethod

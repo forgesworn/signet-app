@@ -9,6 +9,12 @@ vi.mock('../lib/handshake-defaults', () => ({ loadHandshakeChoice: mocks.load, s
 vi.mock('../hooks/useHandshake', () => ({ useHandshake: mocks.handshake }));
 vi.mock('../components/HandshakeCamera', () => ({ HandshakeCamera: () => <video data-testid="live-camera" /> }));
 vi.mock('../components/QRCode', () => ({ QRCode: () => <canvas data-testid="invite-qr" /> }));
+const radio = vi.hoisted(() => ({ value: null as null | { nfc: string; bluetooth: string }, refresh: vi.fn(),
+  nearbyPermission: vi.fn(), nearbyEnable: vi.fn(), radioSettings: vi.fn() }));
+vi.mock('../hooks/useRadioStatus', () => ({ useRadioStatus: () => radio.value }));
+vi.mock('../lib/radio-status', () => ({ refreshRadioStatus: radio.refresh }));
+vi.mock('../lib/native', () => ({ isNativeApp: () => false,
+  SignetNative: { nearbyPermission: radio.nearbyPermission, nearbyEnable: radio.nearbyEnable, radioSettings: radio.radioSettings } }));
 vi.mock('../hooks/useScreenWakeLock', () => ({ useScreenWakeLock: vi.fn() }));
 vi.mock('../hooks/useContactAvatar', () => ({ useContactAvatar: vi.fn(() => null) }));
 vi.mock('../hooks/useContactPicture', () => ({ useContactPicture: vi.fn(() => ({ url: null, badgeUrl: null })) }));
@@ -17,7 +23,7 @@ const props = () => ({ persona: '1'.repeat(64), encryptionKey: 'test', version: 
   buildCard: vi.fn(async () => undefined), onChildInvite: vi.fn(), onOpenContact: vi.fn(async () => {}),
   relayUrl: 'wss://relay.example/', directoryId: 'owner' });
 afterEach(() => {
-  cleanup(); vi.clearAllMocks();
+  cleanup(); vi.clearAllMocks(); radio.value = null;
   mocks.handshake.mockImplementation((_host: HandshakeHost) => ({ view: { phase: 'reading' }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() }));
 });
 it('starts with remembered sharing choices, without displaying the persona name, key or picture', async () => {
@@ -152,4 +158,40 @@ it('shows activity while waiting for the peer, and stops it at expiry', async ()
   expect(screen.getByRole('status')).toHaveTextContent('Expired');
   expect(view.container.querySelector('.handshake-wait')).not.toBeInTheDocument();
   expect(view.container.querySelector('.jigsaw-closing')).not.toBeInTheDocument();
+});
+it('chooser shows no radio section on the web', async () => {
+  render(<ContactHandshake {...props()} choose />);
+  await screen.findByText('They’ll see');
+  expect(screen.queryByText('Phone radios')).not.toBeInTheDocument();
+});
+it('chooser says what is on, with no buttons or hint', async () => {
+  radio.value = { nfc: 'on', bluetooth: 'on' };
+  render(<ContactHandshake {...props()} choose />);
+  await screen.findByText('Phone radios');
+  expect(screen.getByText('Bluetooth is on')).toBeInTheDocument();
+  expect(screen.getByText('NFC is on, so you can tap phones')).toBeInTheDocument();
+  expect(screen.queryByText('Without these, the handshake uses the camera and the internet.')).not.toBeInTheDocument();
+});
+it('chooser turns Bluetooth and NFC on by explicit taps', async () => {
+  radio.value = { nfc: 'off', bluetooth: 'off' };
+  radio.nearbyEnable.mockResolvedValue({ enabled: true }); radio.radioSettings.mockResolvedValue(undefined);
+  render(<ContactHandshake {...props()} choose />);
+  await screen.findByText('Bluetooth is off');
+  expect(screen.getByText('Without these, the handshake uses the camera and the internet.')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Turn on' }));
+  await waitFor(() => expect(radio.nearbyEnable).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(radio.refresh).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole('button', { name: 'Turn on NFC' }));
+  expect(radio.radioSettings).toHaveBeenCalledWith({ which: 'nfc' });
+});
+it('chooser asks for the Bluetooth permission, then points to app settings if it is refused', async () => {
+  radio.value = { nfc: 'none', bluetooth: 'denied' };
+  radio.nearbyPermission.mockResolvedValue({ granted: false }); radio.radioSettings.mockResolvedValue(undefined);
+  render(<ContactHandshake {...props()} choose />);
+  await screen.findByText('Bluetooth is not allowed');
+  fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+  await waitFor(() => expect(radio.nearbyPermission).toHaveBeenCalledTimes(1));
+  fireEvent.click(await screen.findByRole('button', { name: 'Open app settings' }));
+  expect(radio.radioSettings).toHaveBeenCalledWith({ which: 'app' });
+  expect(radio.nearbyEnable).not.toHaveBeenCalled();
 });

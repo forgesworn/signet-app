@@ -861,6 +861,10 @@ export const HANDSHAKE_COPY = {
   childCard: 'Ask them to show the QR on their contact card, and scan that.',
   ambiguous: 'More than one phone answered. Scan their QR to be sure who you are adding.',
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
+  radios: 'Phone radios', hint: 'Without these, the handshake uses the camera and the internet.',
+  btOn: 'Bluetooth is on', btOff: 'Bluetooth is off', btDenied: 'Bluetooth is not allowed',
+  nfcOn: 'NFC is on, so you can tap phones', nfcOff: 'NFC is off',
+  allow: 'Allow', turnOn: 'Turn on', turnOnNfc: 'Turn on NFC', appSettings: 'Open app settings',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;
 export function handshakeWaiting(name?: string, tapped = false): string {
