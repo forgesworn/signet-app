@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { JigsawSigil } from './JigsawSigil';
-import { SIGIL_HEIGHT, SIGIL_SEAM, SIGIL_WIDTH, sigilAnimator, sigilMotion, sigilPaths, sigilWave } from '../lib/handshake-sigil';
+import { JigsawSigil, SEAM_GAP_DP } from './JigsawSigil';
+import { SIGIL_HEIGHT, SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_WIDTH, sigilAnimator, sigilMotion, sigilPaths, sigilWave } from '../lib/handshake-sigil';
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const digest = 'ab'.repeat(32);
 const box = (half: 'top' | 'bottom' | 'whole') => {
@@ -22,9 +22,9 @@ it('splits the sigil across the seam into two full-width halves that tile it exa
 it('runs every line from top to bottom through the seam, inside the width', () => {
   for (const path of sigilPaths(digest)) {
     const n = path.d.match(/-?\d+(\.\d+)?/g)!.map(Number);
-    expect(n[1]).toBe(0);
+    expect(n[1]).toBe(-SIGIL_OVERHANG);
     expect(n[7]).toBe(SIGIL_SEAM);
-    expect(n[n.length - 1]).toBe(SIGIL_HEIGHT);
+    expect(n[n.length - 1]).toBe(SIGIL_HEIGHT + SIGIL_OVERHANG);
     for (const x of [n[0], n[2], n[4], n[6], n[8], n[10]]) expect(x >= 0 && x <= SIGIL_WIDTH).toBe(true);
   }
 });
@@ -46,7 +46,7 @@ it('flexes the curves, not just slides them: the slope through the seam and the 
     expect(new Set(seen.map(s => s.bend.toFixed(1))).size).toBeGreaterThan(5);
     // Every line still crosses the seam, and starts and ends at the top and bottom.
     const n = numbers(at(777)[i]);
-    expect([n[1], n[7], n[n.length - 1]]).toEqual([0, SIGIL_SEAM, SIGIL_HEIGHT]);
+    expect([n[1], n[7], n[n.length - 1]]).toEqual([-SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_HEIGHT + SIGIL_OVERHANG]);
   }
 });
 it('changes what meets at the seam slowly, so clocks a third of a second apart still join', () => {
@@ -72,4 +72,21 @@ it('animates the lines of a half with the clock, but keeps the whole sigil and r
   cleanup();
   vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce') }));
   expect(render(<JigsawSigil digest={digest} half="top" />).container.querySelector('path')!.getAttribute('d')).toBe(still);
+});
+it('starts each half beyond the seam by the hidden strip, the same physical distance on phones of different widths', () => {
+  const at = (width: number, half: 'top' | 'bottom') => {
+    const spy = vi.spyOn(SVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ width } as DOMRect);
+    const [, y] = render(<JigsawSigil digest={digest} half={half} />).container.querySelector('svg')!.getAttribute('viewBox')!.split(' ').map(Number);
+    cleanup(); spy.mockRestore();
+    return y;
+  };
+  for (const width of [384, 411]) {
+    const gap = SEAM_GAP_DP * SIGIL_WIDTH / width;
+    expect(at(width, 'bottom')).toBeCloseTo(SIGIL_SEAM + gap, 1);
+    expect(at(width, 'top')).toBeCloseTo(-gap, 1);
+    // In screen units the strip is SEAM_GAP_DP on either width.
+    expect((at(width, 'bottom') - SIGIL_SEAM) * width / SIGIL_WIDTH).toBeCloseTo(SEAM_GAP_DP, 0);
+  }
+  // Never beyond the lines' overhang, even on a very narrow screen.
+  expect(at(100, 'bottom')).toBeCloseTo(SIGIL_SEAM + SIGIL_OVERHANG, 1);
 });

@@ -15,10 +15,13 @@ export function handshakeSigil(exchange: ContactExchangeState): string {
 }
 /** The whole sigil is SIGIL_WIDTH by SIGIL_HEIGHT; the seam runs across it at SIGIL_SEAM. */
 export const SIGIL_WIDTH = 256, SIGIL_HEIGHT = 400, SIGIL_SEAM = 200;
+/** The lines run this far beyond the top and bottom, so a half shifted away
+ * from the seam (to allow for the phones' status bars) is never left blank. */
+export const SIGIL_OVERHANG = 60;
 const COLOURS = ['#ffcd52', '#73dfad', '#65c7ff', '#c2a0ff', '#ff8899', '#f3f3ee', '#ffac63', '#66e1dc'];
 const pathD = (x: number, slope: number, bend: number) => {
   const n = (v: number) => Number(v.toFixed(2));
-  return `M ${n(x + bend)} 0 C ${n(x - slope)} 94 ${n(x - slope)} 153 ${n(x)} ${SIGIL_SEAM} S ${n(x + slope)} 306 ${n(x - bend)} ${SIGIL_HEIGHT}`;
+  return `M ${n(x + bend)} ${-SIGIL_OVERHANG} C ${n(x - slope)} 74 ${n(x - slope)} 153 ${n(x)} ${SIGIL_SEAM} S ${n(x + slope)} 326 ${n(x - bend)} ${SIGIL_HEIGHT + SIGIL_OVERHANG}`;
 };
 function sigilShape(digest: string) {
   if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error('Invalid sigil');
