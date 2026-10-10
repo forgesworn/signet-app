@@ -93,7 +93,7 @@ jobs:
         run: npx playwright install --with-deps chromium webkit
 
       - name: Browser regression tests
-        run: npx playwright test --project=mobile-chromium --workers=3 --reporter=line e2e/auth.spec.ts e2e/verification.spec.ts e2e/approve-connect.spec.ts e2e/identity-management.spec.ts e2e/identity-recovery.spec.ts e2e/nsec-import-layout.spec.ts
+        run: npx playwright test --project=mobile-chromium --workers=3 --reporter=line e2e/auth.spec.ts e2e/verification.spec.ts e2e/approve-connect.spec.ts e2e/identity-management.spec.ts e2e/identity-recovery.spec.ts e2e/nsec-import-layout.spec.ts e2e/relay-health.spec.ts
 
       - name: Mobile WebKit QR/paste regression
         run: npm run test:e2e:webkit

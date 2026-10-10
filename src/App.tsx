@@ -222,6 +222,8 @@ import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
 import type { AuthSelection } from './pages/ApproveAuth';
 import { RelayAuthAck } from './pages/RelayAuthAck';
+import { getRelayDeliveryStatus } from './lib/relay-delivery-status';
+import { relayHostLabel } from './lib/relay-url';
 import { AuthScreen } from './pages/AuthScreen';
 import { AppShell } from './components/AppShell';
 import { SetupAuth } from './pages/SetupAuth';
@@ -1228,7 +1230,7 @@ export function App() {
   type RelayAuthAckState =
     | { status: 'approved'; siteName: string; postUrl?: string }
     | { status: 'denied'; siteName: string }
-    | { status: 'failed'; relayHost: string; retry: () => Promise<void> };
+    | { status: 'failed'; relayHost: string; requestedRelay?: string; primaryRelay?: string; failureReason?: string; siteName?: string; retry: () => Promise<void> };
   const [relayAuthAckState, setRelayAuthAckState] = useState<RelayAuthAckState | null>(null);
 
   // Transient confirmation chip rendered on a dependant's card after the user
@@ -8312,6 +8314,10 @@ export function App() {
             setRelayAuthAckState({
               status: 'failed',
               relayHost,
+              requestedRelay: relayHostLabel(relayUrl),
+              primaryRelay: userRelay ? relayHostLabel(userRelay) : undefined,
+              failureReason: realErr || getRelayDeliveryStatus(relayUrl)?.reason,
+              siteName: capturedSiteName,
               retry: doPublish,
             });
             navigateReplace('relay-auth-ack');
@@ -11950,6 +11956,10 @@ export function App() {
           <RelayAuthAck
             state="failed"
             relayHost={relayAuthAckState.relayHost}
+            requestedRelay={relayAuthAckState.requestedRelay}
+            primaryRelay={relayAuthAckState.primaryRelay}
+            failureReason={relayAuthAckState.failureReason}
+            siteName={relayAuthAckState.siteName}
             onRetry={async () => { await relayAuthAckState.retry(); }}
             onCancel={clearAck}
           />

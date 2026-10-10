@@ -26,6 +26,7 @@ import type { SigningBackend } from './signing-backend';
 import { LocalSigningBackend } from './signing-backend';
 import type { VerifyResponse } from './presentation';
 import type { AuthResponse } from './relay-publish';
+import { getRelayDeliveryStatus } from './relay-delivery-status';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -207,7 +208,7 @@ function buildErrorWsMock() {
  * event id. Default ok-status is true; pass `okStatus: false` to simulate
  * a relay rejection (rate-limited, blocked, malformed, etc.).
  */
-function buildOpenWsMock(sent: { value: string | null }, okStatus = true) {
+function buildOpenWsMock(sent: { value: string | null }, okStatus = true, reason = '') {
   return class MockWebSocket {
     onopen: (() => void) | null = null;
     onmessage: ((msg: { data: string }) => void) | null = null;
@@ -223,7 +224,7 @@ function buildOpenWsMock(sent: { value: string | null }, okStatus = true) {
         const eventId = parsed?.[1]?.id;
         if (typeof eventId === 'string') {
           setTimeout(() => {
-            this.onmessage?.({ data: JSON.stringify(['OK', eventId, okStatus, '']) });
+            this.onmessage?.({ data: JSON.stringify(['OK', eventId, okStatus, reason]) });
           }, 0);
         }
       } catch { /* non-JSON send — let the publish-side timeout */ }
@@ -429,11 +430,12 @@ describe('publishToRelay — OK frame handling', () => {
   it('resolves false on `OK <id> false` (relay rejected)', async () => {
     vi.useFakeTimers();
     sent = { value: null };
-    vi.stubGlobal('WebSocket', buildOpenWsMock(sent, false));
+    vi.stubGlobal('WebSocket', buildOpenWsMock(sent, false, 'auth-required: authenticate before publishing'));
     const backend = makeBackend();
     const promise = publishVerifyResponseToRelay(makeVerifyResponse(), 'wss://relay.example.com', backend, RECIPIENT_PUB);
     await vi.runAllTimersAsync();
     expect(await promise).toBe(false);
+    expect(getRelayDeliveryStatus('wss://relay.example.com/')).toMatchObject({ ok: false, reason: 'auth-required: authenticate before publishing' });
   });
 
   it('resolves false when the relay never sends an OK frame (timeout)', async () => {
@@ -445,6 +447,7 @@ describe('publishToRelay — OK frame handling', () => {
     // Advance well past the 10 s publish timeout so the watchdog fires.
     await vi.advanceTimersByTimeAsync(15_000);
     expect(await promise).toBe(false);
+    expect(getRelayDeliveryStatus('wss://relay.example.com')).toMatchObject({ ok: false, reason: expect.stringContaining('Timed out') });
   });
 
   it('ignores OK frames addressed to a different event id', async () => {

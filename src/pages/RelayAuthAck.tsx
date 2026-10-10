@@ -41,6 +41,10 @@ interface SuccessProps {
 interface FailureProps {
   state: 'failed';
   relayHost: string;
+  requestedRelay?: string;
+  primaryRelay?: string;
+  failureReason?: string;
+  siteName?: string;
   /**
    * Re-publish the same already-signed event to the same relay. Returns
    * the publish result so the component can flip out of pending state
@@ -116,6 +120,13 @@ export function RelayAuthAck(props: Props) {
             Couldn&apos;t deliver response to{' '}
             <strong>{props.relayHost.slice(0, 128)}</strong>. Try again?
           </p>
+
+          {props.failureReason && <p role="alert" style={{ color: 'var(--warning)', fontSize: '0.85rem' }}>{props.failureReason}</p>}
+          {props.requestedRelay && <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 24 }}>
+            {props.siteName || 'The requesting app'} chose <strong>{props.requestedRelay}</strong> for this sign-in.
+            {props.primaryRelay && props.primaryRelay !== props.requestedRelay && <> Your primary relay is <strong>{props.primaryRelay}</strong>, but the app is listening for this response on its chosen relay.</>}
+            {' '}To use a different relay, start a new sign-in in the requesting app.
+          </p>}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button

@@ -10,6 +10,8 @@ import type { OperatorImportOutcome } from '../hooks/useHeartwoodOperator';
 import type { DeviceStatus } from '../lib/heartwood-mgmt-types';
 import { describePushResult, type PolicyPushResult } from '../lib/policy-push';
 import { shortDeviceLabel } from '../lib/heartwood-operator-import';
+import { useRelayHealth } from '../hooks/useRelayHealth';
+import { getRelayDeliveryStatus } from '../lib/relay-delivery-status';
 
 /** Operator-key + rules-push state bundle from App.tsx (C3, family-bunker §11.1.4/9). */
 export interface HeartwoodOperatorSettingsProps {
@@ -83,6 +85,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   const relayAtCap = relayList.length >= MAX_RELAYS;
   const relayDup = relayList.some(r => r.url === relayDraft.trim());
   const writeCount = relayList.filter(r => r.enabled && r.write).length;
+  const relayHealth = useRelayHealth(relayList);
 
   function updateRelay(url: string, patch: Partial<RelayConfig>) {
     onSetRelays(relayList.map(r => (r.url === url ? { ...r, ...patch } : r)));
@@ -192,13 +195,19 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
       <div className="card section">
         <div className="section-title">Relays</div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-          The app publishes to every enabled relay with write on, and reads from every enabled relay with read on. The first enabled write relay is your primary (used for pairing codes and remote signing).
+          The app publishes to every enabled relay with write on, and reads from every enabled relay with read on. The first enabled write relay is your primary (used for pairing codes and remote signing). A sign-in started by another app replies on the relay that app requested.
         </p>
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+          Status checks test connection and reading. A reachable relay can still reject publishing. Read-only is your setting, not a health result.
+        </p>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={relayHealth.check} style={{ width: 'auto', marginBottom: 12 }}>Check relays</button>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
           {relayList.map((r, idx) => {
             const isPrimary = idx === relayList.findIndex(x => x.enabled && x.write);
             const isLastWrite = r.enabled && r.write && writeCount === 1;
+            const health = relayHealth.health[r.url];
+            const delivery = getRelayDeliveryStatus(r.url);
             return (
               <div key={r.url} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -216,6 +225,18 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
                     <Icon name="x" size={14} />
                   </button>
                 </div>
+                <div role="status" style={{ fontSize: '0.8rem', marginTop: 8, color: !r.enabled || !health || health === 'checking' ? 'var(--text-muted)' : health.status === 'reachable' ? 'var(--success)' : 'var(--warning)' }}>
+                  {!r.enabled ? 'Disabled' : !health ? 'Not checked' : health === 'checking' ? 'Checking…' : <>
+                    {health.status === 'reachable' ? 'Reachable' : health.status === 'restricted' ? 'Connected · read check failed' : 'Unavailable'}
+                    {' · '}{health.latencyMs} ms
+                    <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>{health.detail}</div>
+                    <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>Checked {new Date(health.checkedAt).toLocaleTimeString()}</div>
+                  </>}
+                </div>
+                {delivery && <div style={{ fontSize: '0.8rem', marginTop: 8, color: delivery.ok ? 'var(--success)' : 'var(--warning)' }}>
+                  Last delivery: {delivery.ok ? 'accepted' : 'failed'} · {new Date(delivery.checkedAt).toLocaleTimeString()}
+                  <div style={{ color: 'var(--text-secondary)' }}>{delivery.reason}</div>
+                </div>}
                 <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
                   <label
                     title={isLastWrite ? 'Cannot disable your only write relay' : undefined}
