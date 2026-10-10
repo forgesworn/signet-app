@@ -836,3 +836,39 @@ export const ACCEPT_WITHOUT_PHOTO_LABEL = 'Accept without your photo';
 export function requestFromNamedCopy(name: string): string {
   return `Request from someone calling themselves “${sanitizeDisplayName(name, 100)}”`;
 }
+
+export const HANDSHAKE_COPY = {
+  title: 'Handshake', reading: 'Reading', sealed: 'Sealed', waiting: 'Waiting for their scan confirmation…',
+  scan: 'Scan their QR', cameraDone: 'Their QR scanned', qrDone: 'Your QR scanned',
+  scanYours: 'Let their phone scan your QR.', finishing: 'Both scans confirmed. Finishing the exchange…',
+  expired: 'Expired — go back and start a new handshake.', failed: 'Handshake could not finish. Go back and try again.',
+  chooser: "They’ll see", name: 'Your name', npub: 'Your npub', photo: 'Your picture',
+  keyRequired: 'Your npub is needed to connect.', saveDefault: 'Save as default', go: 'Go',
+  front: 'Front camera', rear: 'Rear camera', switchCamera: 'Switch camera',
+  oneWay: 'Use Jigsaw', compare: 'Put the phones top to top. Do all the lines join?',
+  joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
+  tapped: 'Tapped in person', scanOrTap: 'Scan their QR, or tap the phones back to back',
+  tapDone: 'Their code received by tap', tapYoursDone: 'Their phone has your code',
+  tapWaiting: 'Waiting for their phone to confirm the tap…', tapFinishing: 'Tap confirmed on both phones. Finishing the exchange…',
+  added: 'Saved straight to your contacts. You can change Kith or Kin on their contact page.',
+  reveal: 'Tap to show who you added', noName: 'No name shared',
+  openContact: 'Open contact',
+  nearbyLinked: 'Connected over Bluetooth', nearbyOff: 'Bluetooth is off, so this handshake needs the internet.',
+  nearbyDenied: 'Bluetooth is not allowed for My Signet, so this handshake needs the internet.',
+  photoFailed: 'Your picture needs the internet the first time you share it. Nothing has been sent.',
+  withoutPhoto: 'Go on without your picture',
+  outdated: 'Their app needs updating before you can shake hands.',
+  childCard: 'Ask them to show the QR on their contact card, and scan that.',
+  ambiguous: 'More than one phone answered. Scan their QR to be sure who you are adding.',
+  child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
+  radios: 'Phone radios', hint: 'Without these, the handshake uses the camera and the internet.',
+  btOn: 'Bluetooth is on', btOff: 'Bluetooth is off', btDenied: 'Bluetooth is not allowed',
+  nfcOn: 'NFC is on, so you can tap phones', nfcOff: 'NFC is off',
+  allow: 'Allow', turnOn: 'Turn on', turnOnNfc: 'Turn on NFC', appSettings: 'Open app settings',
+  requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
+} as const;
+export function handshakeWaiting(name?: string, tapped = false): string {
+  const safe = sanitizeDisplayName(name ?? '', 100);
+  if (tapped) return safe ? `Waiting for ${safe}’s phone to confirm the tap…` : HANDSHAKE_COPY.tapWaiting;
+  return safe ? `Waiting for ${safe}’s phone to confirm its scan…` : HANDSHAKE_COPY.waiting;
+}

@@ -7,6 +7,7 @@ import { buildOperation } from './contacts-v2-mutations';
 import { shortNpub } from './nostr-follows';
 import { getContactAvatar } from './db';
 import { openDB } from 'idb';
+import { handshakeSigil, readHandshakeEvidence } from './handshake-sigil';
 const key = 'exchange contact test', own = '1'.repeat(64), peer = '2'.repeat(64);
 const actor = { actorPubkey: own, actorRole: 'owner' as const, actorDeviceId: '3'.repeat(32) };
 function exchange() {
@@ -258,4 +259,40 @@ it('M4: a replayed older exchange never overwrites a newer received key; a newer
   expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: newer.key, fallback: { server: newer.server, hash: newer.hash } });
   await run(at(1_700_000_900, { ...photo, hash: 'c'.repeat(64) })); // a genuinely newer card wins
   expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: photo.key, fallback: { hash: 'c'.repeat(64) } });
+});
+
+it('records a mutual Handshake using existing operations, as Kith', async () => {
+  const { handshakeSigil, readHandshakeEvidence } = await import('./handshake-sigil');
+  const e = exchange();
+  const contactId = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
+    exchange: { ...e, handshake: { startedAt: 100, strength: 'mutual', confirmedAt: 103, sigil: handshakeSigil(e) } } });
+  const ops = await listContactOperationsV2('owner', key);
+  const contact = applyOperations(ops).get(`owner/${contactId}`)!;
+  expect(contact.tier).toBe('kith');
+  expect(contact.identities[0].verification).toBe('mutual');
+  expect(contact.checks?.[0].method).toBe('in-person');
+  expect(readHandshakeEvidence(contact.checks?.[0].evidence)).toEqual({ strength: 'mutual', sigil: handshakeSigil(e) });
+  expect(ops.map(op => op.action)).toEqual(expect.arrayContaining(['add', 'add-identity', 'link-list', 'record-check', 'update-identity']));
+});
+it('a human Jigsaw check records proven and preserves an existing tier', async () => {
+  const { handshakeSigil } = await import('./handshake-sigil');
+  const contactId = await record();
+  const e = exchange();
+  // Confirm the existing exchange without changing the contact's tier.
+  const checked = { ...e, request: { ...e.request } };
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
+    exchange: { ...checked, handshake: { startedAt: 100, strength: 'proven', confirmedAt: 103, sigil: handshakeSigil(checked) } } });
+  const contact = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!;
+  expect(contact.tier).toBe('kith'); expect(contact.identities[0].verification).toBe('proven');
+});
+it('a tapped handshake proves the key (one rung below mutual) and records the tap', async () => {
+  const contactId = await seedExisting('unverified');
+  const e = exchange();
+  const sigil = handshakeSigil(e);
+  await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
+    exchange: { ...e, handshake: { startedAt: 100, strength: 'tapped', confirmedAt: 103, sigil } } });
+  expect((await identityOf(contactId)).verification).toBe('proven');
+  const check = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.checks![0];
+  expect(check.method).toBe('in-person');
+  expect(readHandshakeEvidence(check.evidence)).toEqual({ strength: 'tapped', sigil });
 });

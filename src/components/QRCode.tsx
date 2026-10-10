@@ -4,19 +4,20 @@ import QRCodeLib from 'qrcode';
 interface Props {
   data: string;
   size?: number;
+  margin?: number;
 }
 
-export function QRCode({ data, size = 200 }: Props) {
+export function QRCode({ data, size = 200, margin = 1 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     if (!canvasRef.current) return;
     QRCodeLib.toCanvas(canvasRef.current, data, {
       width: size,
-      margin: 1,
+      margin,
       color: { dark: '#1A1A2E', light: '#FFFFFF' },
     });
-  }, [data, size]);
+  }, [data, size, margin]);
 
   return (
     <canvas

@@ -1,13 +1,21 @@
 package app.mysignet
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
+import android.nfc.NfcAdapter
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.WindowManager
 import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -20,6 +28,9 @@ import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import androidx.activity.result.ActivityResult
+import com.getcapacitor.PermissionState
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
@@ -31,7 +42,14 @@ import javax.crypto.spec.GCMParameterSpec
 
 @CapacitorPlugin(
     name = "SignetNative",
-    permissions = [Permission(strings = [Manifest.permission.CAMERA], alias = "camera")]
+    permissions = [
+        Permission(strings = [Manifest.permission.CAMERA], alias = "camera"),
+        // Android 12+ Nearby devices. Scan is declared neverForLocation.
+        Permission(
+            strings = [Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT],
+            alias = "nearby",
+        ),
+    ]
 )
 class SignetNativePlugin : Plugin() {
 
@@ -70,11 +88,93 @@ class SignetNativePlugin : Plugin() {
     override fun load() {
         super.load()
         Nip55Requests.attach(deliverToPage, withdrawFromPage)
+        // A handshake that ended in a crash may have left the phone named "Phone".
+        HandshakeName.restoreLater(context)
+        // Nor should a crash leave the handshake AID offered to readers.
+        HandshakeNfc.clearStale(context)
+        // Tell the page when NFC or Bluetooth is switched, so the Handshake button follows it.
+        // Exported: the NFC service sends its broadcast from its own process, which a
+        // not-exported receiver drops (checked on device). Both actions are protected, so
+        // only the platform can send them, and the receiver re-reads the state anyway.
+        ContextCompat.registerReceiver(context, radioReceiver, IntentFilter().apply {
+            addAction(NfcAdapter.ACTION_ADAPTER_STATE_CHANGED)
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+        }, ContextCompat.RECEIVER_EXPORTED)
+    }
+
+    private val radioReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            notifyListeners("radioState", JSObject()
+                .put("nfc", nfcState())
+                .put("bluetooth", nearbyState()))
+        }
+    }
+
+    // The handshake radio runs only while the app is on screen. The always-on
+    // bunker keeps the WebView believing it is visible in the background (see
+    // MainActivity), so the page cannot see this itself: stop here, then tell it.
+    /** Whether the activity is started (on screen). The page asks once at start-up,
+     * since a lifecycle event sent before it listened is not replayed. */
+    @Volatile private var activityStarted = false
+
+    @PluginMethod
+    fun lifecycleState(call: PluginCall) {
+        call.resolve(JSObject().put("state", if (activityStarted) "foreground" else "background"))
+    }
+
+    override fun handleOnStop() {
+        super.handleOnStop()
+        activityStarted = false
+        nearby.pause()
+        HandshakeNfc.pause()
+        notifyListeners("nearbyLifecycle", JSObject().put("state", "background"))
+    }
+
+    override fun handleOnStart() {
+        super.handleOnStart()
+        activityStarted = true
+        nearby.resume()
+        HandshakeNfc.resume()
+        notifyListeners("nearbyLifecycle", JSObject().put("state", "foreground"))
     }
 
     override fun handleOnDestroy() {
+        try { context.unregisterReceiver(radioReceiver) } catch (_: IllegalArgumentException) {}
+        nearby.stop()
+        HandshakeNfc.stop()
         Nip55Requests.detach(deliverToPage, withdrawFromPage)
         super.handleOnDestroy()
+    }
+
+    /** Foreground screen only; does not keep keys alive when the app is hidden. */
+    @PluginMethod
+    fun handshakeAwake(call: PluginCall) {
+        val active = call.getBoolean("active") ?: false
+        activity.runOnUiThread {
+            if (active) activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            call.resolve()
+        }
+    }
+
+    @PluginMethod
+    fun handshakeHaptic(call: PluginCall) {
+        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        val beat = call.getString("beat")
+        if (beat !in listOf("tick", "double", "thud")) { call.reject("Unknown handshake beat"); return }
+        // Predefined ticks were too faint during the two-phone scan test.
+        // Keep the three beats distinct, with a full-strength scan pulse.
+        val duration = if (beat == "tick") 65L else 180L
+        val doublePattern = longArrayOf(0, 90, 120, 90)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val effect = if (beat == "double") VibrationEffect.createWaveform(doublePattern, intArrayOf(0, 255, 0, 255), -1)
+            else VibrationEffect.createOneShot(duration, 255)
+            vibrator.vibrate(effect)
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(if (beat == "double") doublePattern else longArrayOf(0, duration), -1)
+        }
+        call.resolve()
     }
 
     @PluginMethod
@@ -386,5 +486,155 @@ class SignetNativePlugin : Plugin() {
     fun cameraPermCallback(call: PluginCall) {
         val granted = getPermissionState("camera") == com.getcapacitor.PermissionState.GRANTED
         call.resolve(JSObject().put("granted", granted))
+    }
+
+    // ── Handshake Bluetooth carrier ───────────────────────────────────────
+    //
+    // A byte pipe for the handshake screen (see HandshakeNearby). The page
+    // authenticates each link and the contact SDK verifies every message;
+    // nothing here decides who anyone is.
+    private val nearby by lazy {
+        HandshakeNearby(context) { event, fields ->
+            val data = JSObject()
+            for ((key, value) in fields) data.put(key, value)
+            notifyListeners(event, data)
+        }
+    }
+
+    private fun nearbyPermitted(): Boolean =
+        HandshakeNearby.platformSupported() && getPermissionState("nearby") == PermissionState.GRANTED
+
+    private fun nearbyState(): JSObject = JSObject()
+        .put("supported", nearby.supported())
+        .put("enabled", nearby.enabled())
+        .put("permitted", nearbyPermitted())
+
+    @PluginMethod
+    fun nearbyStatus(call: PluginCall) {
+        call.resolve(nearbyState())
+    }
+
+    @PluginMethod
+    fun nearbyPermission(call: PluginCall) {
+        when {
+            !HandshakeNearby.platformSupported() -> call.resolve(JSObject().put("granted", false))
+            nearbyPermitted() -> call.resolve(JSObject().put("granted", true))
+            else -> requestPermissionForAlias("nearby", call, "nearbyPermCallback")
+        }
+    }
+
+    @PermissionCallback
+    fun nearbyPermCallback(call: PluginCall) {
+        call.resolve(JSObject().put("granted", nearbyPermitted()))
+    }
+
+    @PluginMethod
+    fun nearbyEnable(call: PluginCall) {
+        if (nearby.enabled()) { call.resolve(JSObject().put("enabled", true)); return }
+        if (!nearbyPermitted()) { call.resolve(JSObject().put("enabled", false)); return }
+        startActivityForResult(call, Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), "nearbyEnableResult")
+    }
+
+    @ActivityCallback
+    fun nearbyEnableResult(call: PluginCall?, result: ActivityResult) {
+        call?.resolve(JSObject().put("enabled", nearby.enabled()))
+    }
+
+    private fun nearbyBytes(call: PluginCall, key: String): ByteArray? = try {
+        call.getString(key)?.let { Base64.decode(it, Base64.NO_WRAP) }
+    } catch (_: IllegalArgumentException) { null }
+
+    @PluginMethod
+    fun nearbyAdvertise(call: PluginCall) {
+        val token = nearbyBytes(call, "token")
+        if (token == null || token.size != HandshakeNearby.TOKEN_BYTES) { call.reject("token must be 8 bytes"); return }
+        if (!nearbyPermitted()) { call.reject("permission"); return }
+        nearby.advertise(token) { psm, error ->
+            if (psm != null) call.resolve(JSObject().put("psm", psm)) else call.reject(error ?: "advertise")
+        }
+    }
+
+    @PluginMethod
+    fun nearbyConnect(call: PluginCall) {
+        val token = nearbyBytes(call, "token")
+        val timeoutMs = call.getInt("timeoutMs") ?: 30000
+        if (token == null || token.size != HandshakeNearby.TOKEN_BYTES) { call.reject("token must be 8 bytes"); return }
+        if (!nearbyPermitted()) { call.reject("permission"); return }
+        nearby.connect(token, timeoutMs.toLong()) { link, error ->
+            if (link != null) call.resolve(JSObject().put("link", link)) else call.reject(error ?: "connect")
+        }
+    }
+
+    @PluginMethod
+    fun nearbySend(call: PluginCall) {
+        val link = call.getString("link")
+        val data = nearbyBytes(call, "data")
+        if (link == null || data == null || !nearby.send(link, data)) { call.reject("closed"); return }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyTrust(call: PluginCall) {
+        val link = call.getString("link")
+        if (link == null || !nearby.trust(link)) { call.reject("closed"); return }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyClose(call: PluginCall) {
+        call.getString("link")?.let { nearby.close(it, call.getBoolean("avoid") ?: false) }
+        call.resolve()
+    }
+
+    // ── Handshake NFC tap ─────────────────────────────────────────────────
+    private fun nfcState(): JSObject =
+        JSObject().put("supported", HandshakeNfc.supported(context)).put("enabled", HandshakeNfc.enabled(context))
+
+    @PluginMethod
+    fun nfcStatus(call: PluginCall) {
+        call.resolve(nfcState())
+    }
+
+    /** Open the system screen to turn NFC on (`nfc`) or to change this app's permissions (`app`). */
+    @PluginMethod
+    fun radioSettings(call: PluginCall) {
+        val intent = when (call.getString("which")) {
+            "nfc" -> Intent(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) Settings.Panel.ACTION_NFC else Settings.ACTION_NFC_SETTINGS)
+            "app" -> Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+            else -> { call.reject("unknown settings screen"); return }
+        }
+        try {
+            activity.startActivity(intent)
+            call.resolve()
+        } catch (_: ActivityNotFoundException) {
+            call.reject("settings unavailable")
+        }
+    }
+
+    @PluginMethod
+    fun nfcStart(call: PluginCall) {
+        val code = call.getString("code")
+        if (code == null || !HandshakeApdu.validCode(code.toByteArray(Charsets.US_ASCII))) { call.reject("invalid code"); return }
+        if (!HandshakeNfc.supported(context)) { call.reject("unsupported"); return }
+        HandshakeNfc.start(activity, code) { peer -> notifyListeners("nfcPeer", JSObject().put("code", peer)) }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nfcStop(call: PluginCall) {
+        HandshakeNfc.stop()
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyQuiet(call: PluginCall) {
+        nearby.quiet()
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun nearbyStop(call: PluginCall) {
+        nearby.stop()
+        call.resolve()
     }
 }

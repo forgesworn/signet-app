@@ -535,6 +535,7 @@ describe('module source vocabulary check', () => {
       'ContactChecks.tsx',
       'ContactConfirm.tsx',
       'ContactDetail.tsx',
+      'ContactHandshake.tsx',
       'ContactInviteSend.tsx',
       'ContactInvites.tsx',
       'ContactInviteQRCard.tsx',

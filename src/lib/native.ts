@@ -14,6 +14,48 @@ export function isNativeApp(): boolean {
 }
 
 export interface SignetNativePlugin {
+  handshakeAwake(opts: { active: boolean }): Promise<void>;
+  handshakeHaptic(opts: { beat: 'tick' | 'double' | 'thud' }): Promise<void>;
+  /**
+   * Handshake Bluetooth carrier (Android 12+, LE L2CAP CoC, no pairing). A
+   * byte pipe only: JS authenticates the link and the contact SDK verifies
+   * every message. `supported` is false below Android 12 or without LE
+   * peripheral support; `permitted` is the Nearby devices permission.
+   */
+  nearbyStatus(): Promise<{ supported: boolean; enabled: boolean; permitted: boolean }>;
+  nearbyPermission(): Promise<{ granted: boolean }>;
+  /** The system "turn on Bluetooth" request. */
+  nearbyEnable(): Promise<{ enabled: boolean }>;
+  /** Listen on a fresh L2CAP channel and advertise `token` (8 bytes, base64) with its PSM. */
+  nearbyAdvertise(opts: { token: string }): Promise<{ psm: number }>;
+  /** Scan for `token`, then connect to the PSM it advertises. Resolves once connected. */
+  nearbyConnect(opts: { token: string; timeoutMs: number }): Promise<{ link: string }>;
+  nearbySend(opts: { link: string; data: string }): Promise<void>;
+  /** The link authenticated: lift the frame cap from the handshake size to an event's. */
+  nearbyTrust(opts: { link: string }): Promise<void>;
+  /** `avoid`: the far end failed to authenticate; rescans skip that device. */
+  nearbyClose(opts: { link: string; avoid?: boolean }): Promise<void>;
+  /** Stop advertising and accepting; existing links carry on. */
+  nearbyQuiet(): Promise<void>;
+  /** Handshake NFC tap: host card emulation plus reader mode, alternating. */
+  nfcStatus(): Promise<{ supported: boolean; enabled: boolean }>;
+  /** Open the system screen to turn NFC on, or this app's own settings (to allow Nearby devices). */
+  radioSettings(opts: { which: 'nfc' | 'app' }): Promise<void>;
+  /** NFC or Bluetooth was switched on or off. */
+  addListener(eventName: 'radioState', listener: (event: { nfc: { supported: boolean; enabled: boolean }; bluetooth: { supported: boolean; enabled: boolean; permitted: boolean } }) => void): Promise<PluginListenerHandle>;
+  /** Whether the activity is on screen right now (see app-foreground.ts). */
+  lifecycleState(): Promise<{ state: 'background' | 'foreground' }>;
+  /** Offer `code` (this screen's session code) to a phone held against this one, and read theirs. */
+  nfcStart(opts: { code: string }): Promise<void>;
+  nfcStop(): Promise<void>;
+  addListener(eventName: 'nfcPeer', listener: (event: { code: string }) => void): Promise<PluginListenerHandle>;
+  /** Stop advertising and scanning, close the channel and every link. */
+  nearbyStop(): Promise<void>;
+  addListener(eventName: 'nearbyLink', listener: (event: { link: string; direction: 'in' | 'out' }) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'nearbyFrame', listener: (event: { link: string; data: string }) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'nearbyClosed', listener: (event: { link: string }) => void): Promise<PluginListenerHandle>;
+  /** The activity left or returned to the screen. On `background` the shell has already stopped the radio. */
+  addListener(eventName: 'nearbyLifecycle', listener: (event: { state: 'background' | 'foreground' }) => void): Promise<PluginListenerHandle>;
   isBiometricAvailable(): Promise<{ available: boolean }>;
   /** Wrap the 64-hex master key with a biometric-gated Keystore key. */
   biometricEnroll(opts: { secret: string }): Promise<{ ok: boolean }>;

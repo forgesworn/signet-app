@@ -10,6 +10,9 @@ class BootReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                // Undo a handshake name mask a crash or power-off left behind
+                // (a no-op if the radio is not on yet; the next app start retries).
+                HandshakeName.restoreLater(context)
                 val prefs = context.getSharedPreferences("signet_bunker_service", Context.MODE_PRIVATE)
                 if (prefs.getBoolean("enabled", false)) {
                     val pubkeys = prefs.getString("pubkeysCsv", "") ?: ""

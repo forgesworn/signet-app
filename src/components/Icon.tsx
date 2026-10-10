@@ -31,7 +31,9 @@ export type IconName =
   | 'scan'
   | 'qr'
   | 'qrScan'
-  | 'download';
+  | 'download'
+  | 'bluetooth'
+  | 'nfc';
 
 const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
   home: (
@@ -188,7 +190,22 @@ const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
       <path d="M4.5 19.5h15" />
     </>
   ),
+  bluetooth: <path d="M7 7l10 10-5 5V2l5 5L7 17" />,
+  // The letters NFC with two arcs off the top-left and bottom-right corners,
+  // so it can't be read as a Wi-Fi mark on its side. 30 wide (see WIDTHS).
+  nfc: (
+    <>
+      <path d="M7.25 17V7l3.5 10V7" />
+      <path d="M13.25 17V7h3M13.25 12h2.5" />
+      <path d="M22.75 7.8A2.6 5 0 1 0 22.75 16.2" />
+      <path d="M3.5 6.5A3 3 0 0 1 6.5 3.5M1 6.5A5.5 5.5 0 0 1 6.5 1" />
+      <path d="M26.5 17.5A3 3 0 0 1 23.5 20.5M29 17.5A5.5 5.5 0 0 1 23.5 23" />
+    </>
+  ),
 };
+
+/** Icons wider than the usual 24-unit square; `size` stays the height. */
+const WIDTHS: Partial<Record<IconName, number>> = { nfc: 30 };
 
 export interface IconProps {
   name: IconName;
@@ -206,11 +223,12 @@ export interface IconProps {
  */
 export function Icon({ name, size = 20, className, title }: IconProps) {
   const decorative = !title;
+  const width = WIDTHS[name] ?? 24;
   return (
     <svg
-      width={size}
+      width={size * width / 24}
       height={size}
-      viewBox="0 0 24 24"
+      viewBox={`0 0 ${width} 24`}
       fill="none"
       stroke="currentColor"
       strokeWidth={1.75}

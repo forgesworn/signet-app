@@ -1,7 +1,7 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { getDb } from './db';
-import { encryptSecret, decryptSecret } from './crypto-store';
+import { encryptSecret, encryptSecretAhead, encryptsAhead, decryptSecret } from './crypto-store';
 import { privateVaultQueue } from './private-vault-queue';
 import type { PreparedVaultSnapshot } from './private-vault';
 
@@ -12,17 +12,25 @@ export interface VaultBackupState {
 interface StateRow { id: string; generation: number; encrypted: string }
 const HEX = /^[0-9a-f]{64}$/;
 
+/** Optional for callers that keep a decoded copy keyed by ciphertext. */
+export interface PrivateStateCodec<T> {
+  /** Read the stored ciphertext; defaults to decrypt + JSON.parse. */
+  decode?(encrypted: string): Promise<T>;
+  /** The ciphertext just committed and the value it holds. */
+  committed?(encrypted: string, value: T): void;
+}
+
 /** Crypto happens outside IDB transactions. Generation compare-and-swap protects
  * another tab's pending backup or confirmation from a stale asynchronous write.
  */
-export async function updateEncryptedPrivateState<T>(id: string, key: string, change: (value: T | undefined) => T | Promise<T>, beforeCommit?: () => void): Promise<T> {
+export async function updateEncryptedPrivateState<T>(id: string, key: string, change: (value: T | undefined) => T | Promise<T>, beforeCommit?: () => void, codec?: PrivateStateCodec<T>): Promise<T> {
   const db = await getDb();
   for (let retry = 0; retry < 8; retry++) {
     const old: StateRow | undefined = await db.get('privateVaultState', id);
-    const previous = old ? JSON.parse(await decryptSecret(old.encrypted, key)) as T : undefined;
+    const previous = old ? codec?.decode ? await codec.decode(old.encrypted) : JSON.parse(await decryptSecret(old.encrypted, key)) as T : undefined;
     const value = await change(previous);
     if (previous !== undefined && value === previous) return value;
-    const encrypted = await encryptSecret(JSON.stringify(value), key);
+    const encrypted = await (encryptsAhead(key) ? encryptSecretAhead : encryptSecret)(JSON.stringify(value), key);
     const tx = db.transaction('privateVaultState', 'readwrite');
     const current: StateRow | undefined = await tx.store.get(id);
     if (current?.generation !== old?.generation) {
@@ -36,6 +44,7 @@ export async function updateEncryptedPrivateState<T>(id: string, key: string, ch
     try { beforeCommit?.(); } catch (error) { tx.abort(); await tx.done.catch(() => {}); throw error; }
     await tx.store.put({ id, generation, encrypted });
     await tx.done;
+    codec?.committed?.(encrypted, value);
     return value;
   }
   throw new Error('Private backup changed concurrently; retry');

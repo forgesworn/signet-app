@@ -1,3 +1,6 @@
+import { ContactHandshake } from './pages/ContactHandshake';
+import { handshakeDirect } from './lib/handshake-nearby';
+import { HANDSHAKE_COPY } from './lib/contacts-v2-copy';
 import { parseKinterestRequest } from './lib/kinterest-authority';
 import { useChildContactDirectory, useChildContactDirectoryPublisher } from './hooks/useChildContactDirectory';
 import { useChildContactReplyInbox } from './hooks/useChildContactReplyInbox';
@@ -30,7 +33,8 @@ import { contactConnectionNotifier } from './lib/contact-connection-notification
 import { uncheckedAppConnection } from './lib/contact-app-notice';
 import { useContactAppInvites } from './hooks/useContactAppInvites';
 import { ContactInviteQRCard } from './components/ContactInviteQRCard';
-import { getOrCreateContactsDeviceId } from './lib/db';
+import { forgetContactOperationsCache, getOrCreateContactsDeviceId } from './lib/db';
+import { forgetContactInviteVaultCache } from './lib/contact-invite-vault-cache';
 import { BotCarouselCard } from './components/BotCarouselCard';
 import { useBotInventory } from './hooks/useBotInventory';
 import { publishToRelays } from './lib/sync-relays';
@@ -292,6 +296,8 @@ import {
 } from './lib/db';
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
+import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
+import { isAppInForeground, subscribeAppForeground } from './lib/app-foreground';
 import { resolveSyncRelays } from './lib/sync-relays';
 import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, listChildRules, tombstoneChildRule, type ApprovedOnceKinds } from './lib/db';
 import type { ChildRule } from './types/child-rules';
@@ -460,6 +466,8 @@ function formatNostrConnectServeStatus(
 export function App() {
   // Auth state (must be declared before hooks that depend on encryptionKey)
   const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
+  // Vault keys derived from this unlock key are remembered until lock (crypto-store).
+  useEffect(() => { if (encryptionKey) rememberDerivedKeysFor(encryptionKey); }, [encryptionKey]);
   const [pendingEncryptionKey, setPendingEncryptionKey] = useState<string | null>(null);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Every auto-lock path goes through this: when a relay publish is armed or
@@ -472,6 +480,7 @@ export function App() {
     hasPending: hasPendingPublishes,
     flush: flushPendingPublishes,
   }));
+  const handshakeForegroundRef = useRef(false);
   const inactivityTimeoutRef = useRef(INACTIVITY_TIMEOUT_MS);
 
   // Stay-awake window — foreground-only; holds off the inactivity auto-lock.
@@ -847,6 +856,7 @@ export function App() {
   needRefreshRef.current = needRefresh;
 
   const [page, setPage] = useState<Page>('home');
+  handshakeForegroundRef.current = page === 'contact-handshake' && !!encryptionKey;
   // Refs threaded into useNavigation so hardware/browser back can be PIN-gated
   // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
   // are defined later in the function body — assignment at render time is enough
@@ -896,6 +906,7 @@ export function App() {
    * Set when the carousel `gear-fab` is tapped (`onNavigateDeepPage` below)
    * and consumed by the `persona-advanced` render branch.
    */
+  const [pendingHandshake, setPendingHandshake] = useState<{ persona: string; choose: boolean; info: { name: string; hasPhoto: boolean } } | null>(null);
   const [pendingPersonaAdvancedTarget, setPendingPersonaAdvancedTarget] = useState<import('./types').PersonaAdvancedRoute | null>(null);
   // Where activation returns to. Set by every gate and by the sign-in
   // np-dormant empty state; null means "return to the new real-identity card".
@@ -2382,7 +2393,9 @@ export function App() {
     const notifier = contactConnectionNotifier({ port: LocalNotifications, native: isNativeApp,
       current: () => !!key && !!owner && mode !== 'paired-child' && inviteSession.current.key === key
         && inviteSession.current.owner === owner && inviteSession.current.mode === mode,
-      background: () => document.visibilityState !== 'visible',
+      // The shell's word, not the page's: the always-on pulse marks a
+      // backgrounded page visible for a second every 30 s.
+      background: () => !isAppInForeground(),
     });
     inviteNotifications.current = notifier;
     return () => { inviteNotifications.current = null; void notifier.stop(); };
@@ -2487,7 +2500,7 @@ export function App() {
       } catch { if (!current()) throw new Error('Contact invite session changed'); }
     };
     return new ContactInviteService({ directoryId, encryptionKey: key ?? '', budget: inviteBudget, isCurrent: current,
-      onChanged: bumpContactsV2,
+      onChanged: bumpContactsV2, direct: handshakeDirect,
       automaticAttempts: inviteAutomaticAttempts,
       appAllowed: async (app, own, action, automatic) => {
         if (!key || !current() || directoryId !== 'owner') return false;
@@ -2616,11 +2629,11 @@ export function App() {
       } });
   }, [encryptionKey, guardianChildTransport, makeInviteService]);
   guardianChildLifecycle.current = { cancel: guardianChildCancel, retry: guardianChildRetry };
-  useContactAppInvites({ encryptionKey, enabled: !!identity && !isPairedChild,
+  useContactAppInvites({ encryptionKey, enabled: !!identity && !isPairedChild, serveInBackground: backgroundServing,
     identities: inviteScopes[0]?.identities ?? [], relays: syncRelays.write.filter(url => url.startsWith('wss:')),
     service: valid => makeInviteService('owner', valid) });
   useContactInviteMailboxes({ encryptionKey, scopes: inviteScopes, version: contactsV2Version,
-    service: makeInviteService, onChanged: bumpContactsV2 });
+    service: makeInviteService, onChanged: bumpContactsV2, onRequest: id => { void inviteNotifications.current?.requested(id); } });
   const [pendingContactInvite, setPendingContactInvite] = useState<string | undefined>(() => {
     const value = new URLSearchParams(window.location.hash.slice(1)).get('contact-invite');
     return value && value.length <= 8192 ? value : undefined;
@@ -3836,7 +3849,7 @@ export function App() {
       // Native: raise a local notification when the app isn't visible —
       // the screen-off guardian must learn a human decision is needed.
       // Foregrounded, the in-app modal is already showing; skip the banner.
-      if (!isNativeApp() || document.visibilityState === 'visible') return;
+      if (!isNativeApp() || isAppInForeground()) return;
       const who = entry.route.dependantId
         ? (dependants.find(d => d.id === entry.route.dependantId)?.displayName ?? 'Your child')
         : entry.client.appName;
@@ -4389,7 +4402,7 @@ export function App() {
     dropOnce: dropChildOnce,
     onRulesChanged: () => { void reloadChildRules(); },
     onNewAsk: (p: PendingChildAsk) => {
-      if (!isNativeApp() || document.visibilityState === 'visible') return;
+      if (!isNativeApp() || isAppInForeground()) return;
       const id = 0x40000000 + (parseInt(p.ask.id.slice(0, 7), 16) % 0x10000000);
       notifiedChildAsksRef.current.set(p.ask.id, id);
       void LocalNotifications.schedule({
@@ -4486,6 +4499,18 @@ export function App() {
       // moment the public (still-encrypted) record is what the pages hold.
       isIdentityDecrypted: () => encryptionKeyRef.current !== null && identityRef.current?.encrypted === false,
       getActivePubkey: () => identityRef.current ? getActivePubkey(identityRef.current) : null,
+      getContactInviteProgress: async () => {
+        const key = benchRef.current.encryptionKey;
+        if (!key) return null;
+        const { loadContactInviteVault } = await import('./lib/contact-invite-store');
+        const state = await loadContactInviteVault('owner', key);
+        return {
+          invites: state.invites.map(i => ({ id: i.id, enabled: i.enabled, expiresAt: i.invite.expiresAt })),
+          arrivals: state.arrivals.map(a => ({ id: a.id, channel: a.channel, dismissedAt: a.dismissedAt, opened: !!a.request })),
+          exchanges: state.exchanges.map(e => ({ phase: e.phase, role: e.role, handshake: e.handshake })),
+          outbox: state.outbox.map(o => ({ type: o.messageType, acknowledgedAt: o.acknowledgedAt })),
+        };
+      },
       addCredential: (cred: Parameters<typeof addCredentialRef.current>[0]) => addCredentialRef.current(cred),
       injectGetVerifiedSaved: (eventJsons: string[]) => getVerifiedSavedInjectorRef.current?.(eventJsons),
       // Hardware-bench helpers — go through the real setters so the change
@@ -4581,6 +4606,10 @@ export function App() {
       // encrypted rows stay in IDB — only the derived key is forgotten, so a
       // locked device can't read the cached sync plaintexts.
       forgetSyncCacheKeys();
+      forgetContactOperationsCache();
+      forgetContactInviteVaultCache();
+      // The vault keys derived from the unlock key this session.
+      forgetDerivedKeys();
       // A52: and the decrypted child-rule memo.
       forgetChildRuleCache();
       // Contact pictures: the derived key and the decrypted thumbnails.
@@ -4990,7 +5019,7 @@ export function App() {
   const resetInactivityTimer = useCallback(() => {
     if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
     inactivityTimer.current = setTimeout(function fire() {
-      if (backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current)) {
+      if (handshakeForegroundRef.current || backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current)) {
         // Stay-awake window or native always-on serving active — hold off the
         // foreground auto-lock, but RE-ARM so the idle countdown resumes after
         // the window. (A bare return left the app unlocked forever once this
@@ -5208,6 +5237,10 @@ export function App() {
           requestHideLock();
         }
       } else {
+        // The always-on pulse marks a backgrounded page visible for a second:
+        // not the user coming back, so the grace keeps running. A real return
+        // is handled here once the shell agrees (the subscription below).
+        if (!isAppInForeground()) return;
         // Back in front, perhaps thawed from a freeze that stopped the timer
         // ending the phone-apps window: if the window ran out meanwhile, lock
         // now, as the timer would have. `hiddenAt` is left set so a NIP-55
@@ -5222,6 +5255,9 @@ export function App() {
     const handleResume = () => { if (phoneAppsKeyExpiredNow()) lockExpiredPhoneAppsKey(); };
     document.addEventListener('visibilitychange', handleVisibility);
     document.addEventListener('resume', handleResume);
+    // The page may turn visible before the shell reports the return (or the
+    // other way round): whichever comes second completes it.
+    const stopForeground = subscribeAppForeground(() => { if (document.visibilityState !== 'hidden' && isAppInForeground()) handleVisibility(); });
     // A dependency change while hidden (the approve handler moving to the
     // code page, an inbound auth request) re-runs this effect, and the
     // cleanup below has just cancelled the grace timer. No visibilitychange
@@ -5233,6 +5269,7 @@ export function App() {
       events.forEach(ev => window.removeEventListener(ev, handler));
       document.removeEventListener('visibilitychange', handleVisibility);
       document.removeEventListener('resume', handleResume);
+      stopForeground();
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       if (graceTimer) clearTimeout(graceTimer);
     };
@@ -11614,6 +11651,25 @@ export function App() {
     );
   }
 
+  if (page === 'contact-handshake' && pendingHandshake && encryptionKey) {
+    return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack}>
+      <ContactHandshake key={encryptionKey + pendingHandshake.persona} persona={pendingHandshake.persona}
+        info={pendingHandshake.info} choose={pendingHandshake.choose} encryptionKey={encryptionKey}
+        version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
+        service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid)}
+        warm={() => { void contactPeerAllowed(contactsScope.directoryId ?? 'owner', encryptionKey, pendingHandshake.persona).catch(() => {}); }}
+        buildCard={choice => contactCardFor(pendingHandshake.persona, choice)} pairedChild={isPairedChild}
+        onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(pendingHandshake.persona); }}
+        onOpenContact={async contactId => {
+          await contactsV2.reload();
+          setContactsIdentityChoice(pendingHandshake.persona);
+          setSelectedContactId(contactId); navigateTo('contact-detail');
+        }}
+        relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL} directoryId={contactsScope.directoryId ?? 'owner'}
+        blurArrival={blurIdentityNames} />
+    </Layout>;
+  }
+
   // D6: paired-child branch of the contact-invite intake — ask the
   // guardian to connect instead of connecting directly.
   if (page === 'child-contact-ask' && isPairedChild && pendingContactInvite) {
@@ -12965,6 +13021,15 @@ export function App() {
           </div> : null;
         })}
       <Carousel
+        onHandshake={async (resolved, choose) => {
+          const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
+          if (!key || !resolved.publicKey) return;
+          setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
+          setContactsIdentityChoice(resolved.publicKey);
+          const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
+          setPendingHandshake({ persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
+          navigateTo('contact-handshake');
+        }}
         renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}

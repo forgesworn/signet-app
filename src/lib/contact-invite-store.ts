@@ -1,3 +1,4 @@
+import { handshakeSigil } from './handshake-sigil';
 import { validContactOrigin, normaliseContactOrigin, type ContactOrigin } from './contact-origins';
 import { contactExchangeKey } from './contact-exchange-key';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
@@ -13,6 +14,7 @@ import { recordPartnerCardPhoto } from './contact-exchange-record';
 import { decryptSecret } from './crypto-store';
 import { privateVaultQueue } from './private-vault-queue';
 import { updateEncryptedPrivateState } from './private-vault-store';
+import { cachedContactInviteVault, checkedContactExchange, contactInviteVaultCacheGeneration, rememberContactInviteVault } from './contact-invite-vault-cache';
 
 export interface ContactInviteAppOrigin {
   grantId: string; requestId: string; requestHash: string; appName: string;
@@ -41,7 +43,8 @@ export interface ContactInviteOutbox {
 /** The child pairing a guardian-managed child exchange was approved under
  * (D5): the dependant's endpoint pubkey and its authorised client pubkey. */
 export interface ChildExchangePairing { endpoint: string; client: string }
-export interface StoredContactExchange extends ContactExchangeState { app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing }
+export interface HandshakeRecord { startedAt: number; inviteId?: string; opticalAcceptanceAt?: number; opticalAcceptanceSent?: boolean; strength?: 'mutual' | 'tapped' | 'proven'; confirmedAt?: number; sigil?: string }
+export interface StoredContactExchange extends ContactExchangeState { handshake?: HandshakeRecord; app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing }
 /** Child-originated: stamped at `requestChildPlan`, or an older unstamped row
  * written by that path (requester with an accepted-request origin). */
 export function isChildContactExchange(exchange: StoredContactExchange): boolean {
@@ -68,10 +71,17 @@ function packetHash(packet: SealedContactPacket): string {
 }
 function arrivalPacketHash(arrival: ContactArrival): string | undefined { return arrival.packet ? packetHash(arrival.packet) : arrival.packetHash; }
 const stamp = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
-function validExchange(state: StoredContactExchange): boolean {
+function checkExchange(state: StoredContactExchange): boolean {
   try {
     if (!state || !['requester', 'recipient'].includes(state.role) || !HEX.test(state.nonce)
       || !['requested', 'accepted', 'reveal-pending', 'complete', 'declined'].includes(state.phase)) return false;
+    if (state.handshake !== undefined && (!state.handshake || typeof state.handshake !== 'object' || !stamp(state.handshake.startedAt)
+      || (state.handshake.inviteId !== undefined && !ID.test(state.handshake.inviteId))
+      || (state.handshake.opticalAcceptanceAt !== undefined && !stamp(state.handshake.opticalAcceptanceAt))
+      || (state.handshake.opticalAcceptanceSent !== undefined && typeof state.handshake.opticalAcceptanceSent !== 'boolean')
+      || (state.handshake.strength === undefined && (state.handshake.confirmedAt !== undefined || state.handshake.sigil !== undefined)) || (state.handshake.strength !== undefined
+      && (!['mutual', 'tapped', 'proven'].includes(state.handshake.strength) || !stamp(state.handshake.confirmedAt)
+        || state.phase !== 'complete' || state.handshake.sigil !== handshakeSigil(state))))) return false;
     if (state.wordsRecordedAt !== undefined && (!stamp(state.wordsRecordedAt) || state.wordsRecordedAt !== state.wordsConfirmedAt)) return false;
     if ((state.contactId !== undefined && !ID.test(state.contactId)) || (state.wordsConfirmedAt !== undefined && !stamp(state.wordsConfirmedAt))) return false;
     const request = parseContactExchangeMessage(JSON.stringify(state.request));
@@ -138,6 +148,7 @@ export async function parseContactInviteVault(raw: string, directoryId: string):
       row.request = request;
     }
   }
+  const validExchange = (state: StoredContactExchange) => checkedContactExchange(state, checkExchange);
   if (!value.exchanges.every(validExchange) || !(value.conflicts ?? []).every(validExchange)) throw new Error('Invalid contact exchange state');
   for (const row of value.outbox) {
     if (!HEX.test(row.id) || row.id !== row.event?.id || row.event.kind !== 1059 || row.event.content.length > 32000
@@ -149,18 +160,41 @@ export async function parseContactInviteVault(raw: string, directoryId: string):
   }
   return value;
 }
+/** The vault this ciphertext holds, validated in full. Only a value that
+ * passed `parseContactInviteVault` for exactly this ciphertext and key is
+ * reused (contact-invite-vault-cache.ts). `lenient`: a stored vault that no
+ * longer validates comes back as plain JSON instead of throwing. */
+async function decodeContactInviteVault(directoryId: string, key: string, encrypted: string, since: number, lenient = false): Promise<ContactInviteVault> {
+  const record = recordId(directoryId);
+  const hit = cachedContactInviteVault<ContactInviteVault>(record, key, encrypted);
+  if (hit) return hit;
+  const raw = await decryptSecret(encrypted, key);
+  let value: ContactInviteVault;
+  try { value = await parseContactInviteVault(raw, directoryId); }
+  catch (error) { if (lenient) return JSON.parse(raw) as ContactInviteVault; throw error; }
+  rememberContactInviteVault(record, key, encrypted, value, since);
+  return value;
+}
 export async function loadContactInviteVault(directoryId: string, key: string): Promise<ContactInviteVault> {
+  const since = contactInviteVaultCacheGeneration();
   const row = await (await getDb()).get('privateVaultState', recordId(directoryId));
-  return row ? parseContactInviteVault(await decryptSecret(row.encrypted, key), directoryId) : empty(directoryId);
+  return row ? decodeContactInviteVault(directoryId, key, row.encrypted, since) : empty(directoryId);
 }
 export function updateContactInviteVault(directoryId: string, key: string,
   change: (state: ContactInviteVault) => ContactInviteVault): Promise<ContactInviteVault> {
   return privateVaultQueue.run(async () => {
+    const since = contactInviteVaultCacheGeneration();
     // The synchronous change is re-run on CAS collision; it must have no effects.
     const next = await updateEncryptedPrivateState<ContactInviteVault>(recordId(directoryId), key, async old => {
       const next = change(old ?? empty(directoryId));
       if (old && JSON.stringify(next) === JSON.stringify(old)) return old;
       return parseContactInviteVault(JSON.stringify(next), directoryId);
+    }, undefined, {
+      // An update always read the stored vault as plain JSON; a vault that no
+      // longer validates still does. The change's result is validated below.
+      decode: encrypted => decodeContactInviteVault(directoryId, key, encrypted, since, true),
+      // Every committed value is a `parseContactInviteVault` result.
+      committed: (encrypted, value) => rememberContactInviteVault(recordId(directoryId), key, encrypted, value, since),
     });
     return next;
   });
@@ -198,9 +232,11 @@ export function compactContactInviteVault(state: ContactInviteVault, now?: numbe
   };
 }
 
-/** Arrival processing stays local and never opens an identity seal. */
-export function recordContactArrival(directoryId: string, key: string, arrival: ContactArrival): Promise<ContactInviteVault> {
+/** Arrival processing stays local and never opens an identity seal.
+ * `recorded.added` says whether this call stored it (not another path). */
+export function recordContactArrival(directoryId: string, key: string, arrival: ContactArrival, recorded?: { added: boolean }): Promise<ContactInviteVault> {
   return updateContactInviteVault(directoryId, key, old => {
+    if (recorded) recorded.added = false;
     const state = compactContactInviteVault(old);
     if (!arrival.packet) return state;
     const digest = packetHash(arrival.packet);
@@ -212,6 +248,7 @@ export function recordContactArrival(directoryId: string, key: string, arrival: 
         || state.arrivals.some(a => a.id === arrival.id) || state.outbox.some(o => o.id === arrival.id)
         || state.arrivals.filter(a => a.channel === 'exchange' && a.inviteId === arrival.inviteId && a.dismissedAt === undefined).length >= CONTACT_INVITE_PENDING_LIMIT
         || state.arrivals.filter(a => a.packet !== undefined).length >= LIMIT || state.arrivals.length >= RECEIPT_LIMIT) return state;
+      if (recorded) recorded.added = true;
       return { ...state, arrivals: [...state.arrivals, arrival] };
     }
     const invite = state.invites.find(i => i.id === arrival.inviteId && i.identityPubkey === arrival.identityPubkey);
@@ -221,6 +258,7 @@ export function recordContactArrival(directoryId: string, key: string, arrival: 
     const count = rows.filter(a => a.dismissedAt === undefined).length;
     if (count >= CONTACT_INVITE_PENDING_LIMIT || state.arrivals.filter(a => a.packet !== undefined).length >= LIMIT || state.arrivals.length >= RECEIPT_LIMIT
       || (invite.mode === 'single-use' && rows.length > 0)) return state;
+    if (recorded) recorded.added = true;
     return { ...state, arrivals: [...state.arrivals, arrival] };
   });
 }
@@ -267,7 +305,18 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
     }
     if (!old || rank[row.phase] > rank[old.phase]) exchanges.set(contactExchangeKey(row.request), row);
     const chosen = exchanges.get(contactExchangeKey(row.request))!;
-    exchanges.set(contactExchangeKey(row.request), { ...chosen, origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
+    // An older build may advance the SDK transcript without retaining optical
+    // metadata. Losing this marker would bypass the handshake confirmation gate.
+    const marks = [old?.handshake, row.handshake].filter((mark): mark is HandshakeRecord => !!mark);
+    const strongest = { mutual: 0, tapped: 1, proven: 2 } as const;
+    const confirmed = marks.filter(mark => mark.strength).sort((a, b) =>
+      (a.strength === b.strength ? (a.confirmedAt ?? 0) - (b.confirmedAt ?? 0) : strongest[a.strength!] - strongest[b.strength!]))[0];
+    const handshake = marks.length ? { startedAt: Math.min(...marks.map(mark => mark.startedAt)),
+      inviteId: marks.map(mark => mark.inviteId).filter((value): value is string => !!value).sort()[0],
+      opticalAcceptanceAt: marks.map(mark => mark.opticalAcceptanceAt).filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
+      opticalAcceptanceSent: marks.some(mark => mark.opticalAcceptanceSent),
+      ...(confirmed ? { strength: confirmed.strength, confirmedAt: confirmed.confirmedAt, sigil: confirmed.sigil } : {}) } : undefined;
+    exchanges.set(contactExchangeKey(row.request), { ...chosen, ...(handshake ? { handshake } : {}), origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
       wordsConfirmedAt: Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) || undefined,
       wordsRecordedAt: Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) === Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) ? Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) || undefined : undefined });
   }

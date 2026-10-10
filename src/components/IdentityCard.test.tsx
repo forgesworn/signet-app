@@ -310,3 +310,14 @@ describe('IdentityCard — public kind-0 picture', () => {
     expect(within(blurred).getByAltText("Alice's image")).toBeDefined();
   });
 });
+
+it('Handshake remains outside the blur layer and works on a dormant child card', () => {
+  const onHandshake = vi.fn();
+  const { container } = render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null}
+    childMode childDormant blurIdentityNames onHandshake={onHandshake} />);
+  const button = within(container).getByRole('button', { name: 'Handshake' });
+  const blur = within(container).getByLabelText('Tap to reveal identity');
+  expect(blur).not.toContainElement(button);
+  fireEvent.click(button); expect(onHandshake).toHaveBeenCalledWith(false);
+  expect(blur).toHaveStyle({ filter: 'blur(6px)' });
+});

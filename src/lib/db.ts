@@ -10,7 +10,11 @@ import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
 import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
-import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { encryptSecret, encryptSecretAhead, decryptSecret, isEncrypted, encryptSecretsBatch, encryptSecretsBatchAhead, encryptsAhead, decryptSecretsBatch, forgetDerivedKeys } from './crypto-store';
+import { forgetContactInviteVaultCache } from './contact-invite-vault-cache';
+import { contactOpRowDigest, readContactOpsSnapshot, writeContactOpsSnapshot } from './contact-ops-snapshot';
+import { forgetSyncCacheKeys } from './sync-decrypt-cache';
 import { isValidRelayUrl } from './relay-url';
 import type { ChildRulesPayload } from './child-rules-wire';
 import { liftDependantPublicProfileConfig } from './lift-public-profile-config';
@@ -709,7 +713,7 @@ export async function saveContactOperationsV2(ops: ContactOperation[], encryptio
     const { operationId, directoryId, contactId, logicalClock, createdAt, ...sensitive } = op;
     return JSON.stringify(sensitive);
   });
-  const encryptedDataList = await encryptSecretsBatch(sensitivePayloads, encryptionKey);
+  const encryptedDataList = await (encryptsAhead(encryptionKey) ? encryptSecretsBatchAhead : encryptSecretsBatch)(sensitivePayloads, encryptionKey);
   const db = await getDB();
   const tx = db.transaction('contactOpsV2', 'readwrite');
   for (let i = 0; i < ops.length; i += 1) {
@@ -719,6 +723,42 @@ export async function saveContactOperationsV2(ops: ContactOperation[], encryptio
   await tx.done;
 }
 
+const contactOpsSnapshotStore = { get: getSyncCacheEntry, put: putSyncCacheEntry };
+
+/**
+ * Each row's plaintext, exactly as `decryptSecretsBatch` returns it, with the
+ * rows a persisted snapshot already holds taken from it (contact-ops-snapshot.ts)
+ * and only the rest decrypted, in one batch call. The snapshot is used only
+ * while the app is unlocked with this key (`encryptsAhead`: switched on at
+ * unlock, off at lock and purge), so a read running after lock neither uses
+ * nor refills it. Any snapshot failure is a miss: the full decrypt, as before.
+ */
+async function decryptOperationPlaintexts(rows: EncryptedRow[], encryptionKey: string): Promise<(string | null)[]> {
+  const live = () => encryptsAhead(encryptionKey);
+  if (!live() || rows.length === 0) return decryptSecretsBatch(rows.map((row) => String(row.encryptedData)), encryptionKey);
+  // A row whose clear fields will not serialise skips the snapshot: the full decrypt, as before.
+  let digests: string[];
+  try { digests = rows.map(contactOpRowDigest); } catch { return decryptSecretsBatch(rows.map((row) => String(row.encryptedData)), encryptionKey); }
+  const directories = [...new Set(rows.map((row) => String(row.directoryId)))];
+  const snapshots = new Map(await Promise.all(directories.map(async (directoryId) =>
+    [directoryId, await readContactOpsSnapshot(directoryId, encryptionKey, contactOpsSnapshotStore, live)] as const)));
+  const plaintexts: (string | null)[] = rows.map((row, i) => snapshots.get(String(row.directoryId))?.get(digests[i]) ?? null);
+  const misses = plaintexts.flatMap((plaintext, i) => (plaintext === null ? [i] : []));
+  const decrypted = await decryptSecretsBatch(misses.map((i) => String(rows[i].encryptedData)), encryptionKey);
+  misses.forEach((i, j) => { plaintexts[i] = decrypted[j]; });
+  // Refresh a directory's snapshot when it gained a row or holds one no longer
+  // stored. Not awaited: the write queues behind other Web Crypto work, and
+  // the caller has its answer already.
+  for (const directoryId of directories) {
+    const entries = new Map<string, string>();
+    rows.forEach((row, i) => { const plaintext = plaintexts[i]; if (String(row.directoryId) === directoryId && plaintext !== null) entries.set(digests[i], plaintext); });
+    const held = snapshots.get(directoryId)!;
+    if (entries.size === held.size && [...entries.keys()].every((digest) => held.has(digest))) continue;
+    void writeContactOpsSnapshot(directoryId, encryptionKey, entries, contactOpsSnapshotStore, live);
+  }
+  return plaintexts;
+}
+
 /**
  * Decrypt, validate and reassemble a batch of operation rows, sharing one
  * derived key per distinct salt across the whole batch (I2 perf fix) rather
@@ -726,7 +766,7 @@ export async function saveContactOperationsV2(ops: ContactOperation[], encryptio
  * validate is DROPPED — never thrown out of a load.
  */
 async function decryptOperationRows(rows: EncryptedRow[], encryptionKey: string): Promise<ContactOperation[]> {
-  const plaintexts = await decryptSecretsBatch(rows.map((row) => String(row.encryptedData)), encryptionKey);
+  const plaintexts = await decryptOperationPlaintexts(rows, encryptionKey);
   const out: ContactOperation[] = [];
   for (let i = 0; i < rows.length; i += 1) {
     const plaintext = plaintexts[i];
@@ -758,6 +798,48 @@ export async function listContactOperationsV2(directoryId: string, encryptionKey
   const db = await getDB();
   const rows = await db.getAllFromIndex('contactOpsV2', 'directoryId', directoryId) as EncryptedRow[];
   return decryptOperationRows(rows, encryptionKey);
+}
+
+/**
+ * The last decrypt of each directory's operation log, reused only while the
+ * stored rows (ids and ciphertexts) are byte-for-byte the ones it came from.
+ * Decrypting costs a PBKDF2 derivation per distinct salt, and singly-written
+ * operations each have their own, so a policy check that re-read the log paid
+ * seconds every time. Any added, removed or rewritten row is a miss. Held for
+ * one unlock: cleared on lock and on purge, bound to a digest of the key.
+ */
+let contactOperationsCache = new Map<string, { keyId: string; fingerprint: string; ops: ContactOperation[] }>();
+/** Bumped by every forget, so a decrypt still running at lock cannot refill it. */
+let contactOperationsCacheGeneration = 0;
+/** A decrypt of the same rows already running (the handshake's warm-up), which a
+ * concurrent read joins instead of walking the log a second time. */
+let contactOperationsInFlight = new Map<string, { keyId: string; fingerprint: string; generation: number; ops: Promise<ContactOperation[]> }>();
+export function forgetContactOperationsCache() { contactOperationsCache = new Map(); contactOperationsInFlight = new Map(); contactOperationsCacheGeneration++; }
+export async function listContactOperationsV2Cached(directoryId: string, encryptionKey: string): Promise<ContactOperation[]> {
+  const generation = contactOperationsCacheGeneration;
+  const db = await getDB();
+  const rows = await db.getAllFromIndex('contactOpsV2', 'directoryId', directoryId) as EncryptedRow[];
+  const text = new TextEncoder();
+  // Every field the decrypt takes from the row, in clear or not.
+  const fingerprint = bytesToHex(sha256(text.encode(rows.map(row => JSON.stringify([row.operationId, row.directoryId, row.contactId,
+    row.logicalClock, row.createdAt, row.encryptedData])).sort().join('\n'))));
+  const keyId = bytesToHex(sha256(text.encode(`signet:contact-ops-cache:${encryptionKey}`)));
+  const hit = contactOperationsCache.get(directoryId);
+  if (hit && hit.keyId === keyId && hit.fingerprint === fingerprint) return structuredClone(hit.ops);
+  const running = contactOperationsInFlight.get(directoryId);
+  if (running && running.keyId === keyId && running.fingerprint === fingerprint && running.generation === generation) {
+    return structuredClone(await running.ops);
+  }
+  const entry = { keyId, fingerprint, generation, ops: decryptOperationRows(rows, encryptionKey) };
+  contactOperationsInFlight.set(directoryId, entry);
+  try {
+    // Every caller, the first included, gets its own copy of the shared result.
+    const ops = await entry.ops;
+    if (generation === contactOperationsCacheGeneration) contactOperationsCache.set(directoryId, { keyId, fingerprint, ops: structuredClone(ops) });
+    return structuredClone(ops);
+  } finally {
+    if (contactOperationsInFlight.get(directoryId) === entry) contactOperationsInFlight.delete(directoryId);
+  }
 }
 
 export async function listAllContactOperationsV2(encryptionKey: string): Promise<ContactOperation[]> {
@@ -1344,9 +1426,10 @@ export interface ContactAvatarRecord {
 
 /** Save a recipient-side contact-share key. shareKey (and any fallback) encrypted at rest. */
 export async function saveContactAvatar(rec: ContactAvatarRecord, encryptionKey: string): Promise<void> {
-  const encrypted = await encryptSecret(rec.shareKey, encryptionKey);
+  const encrypt = encryptsAhead(encryptionKey) ? encryptSecretAhead : encryptSecret;
+  const encrypted = await encrypt(rec.shareKey, encryptionKey);
   const { fallback, ...rest } = rec;
-  const sealedFallback = fallback ? await encryptSecret(JSON.stringify({ server: fallback.server, hash: fallback.hash }), encryptionKey) : undefined;
+  const sealedFallback = fallback ? await encrypt(JSON.stringify({ server: fallback.server, hash: fallback.hash }), encryptionKey) : undefined;
   const db = await getDB();
   await db.put('contactAvatars', { ...rest, shareKey: encrypted, ...(sealedFallback ? { fallback: sealedFallback } : {}) });
 }
@@ -2479,6 +2562,8 @@ export async function deleteProPersonaRecord(): Promise<void> {
  * Called during identity deletion to ensure no orphaned PII remains.
  */
 export async function purgeAllUserData(): Promise<void> {
+  forgetDerivedKeys();
+  forgetSyncCacheKeys();
   clearQrCardPrefs();
   const db = await getDB();
   await db.clear('identity');
@@ -2533,6 +2618,8 @@ export async function purgeAllUserData(): Promise<void> {
   }
   if (db.objectStoreNames.contains('contactRecordsV2')) await db.clear('contactRecordsV2');
   if (db.objectStoreNames.contains('contactOpsV2')) await db.clear('contactOpsV2');
+  forgetContactOperationsCache();
+  forgetContactInviteVaultCache();
   if (db.objectStoreNames.contains('contactImportSources')) await db.clear('contactImportSources');
   // R-22 (fix round 1, minor 1): the grant wipe rides the SAME queue as every
   // other grant write. Outside it, a write already queued when the purge

@@ -5,7 +5,7 @@ import { nip44 } from 'nostr-tools';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { ContactIdentityDecryptBudget, contactVerificationWords } from '@forgesworn/signet-contacts';
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
-import { ContactInviteService } from './contact-invite-service';
+import { ContactInviteService, evidenceStrength, type RevealEvidence } from './contact-invite-service';
 import { recordContactArrival, updateContactInviteVault } from './contact-invite-store';
 import { purgeAllUserData } from './db';
 const publish = vi.hoisted(() => vi.fn(async () => true));
@@ -21,6 +21,15 @@ function party(secret: string, directoryId: string, extra: Partial<ConstructorPa
   return { pubkey, service, signer, directoryId };
 }
 beforeEach(async () => { await purgeAllUserData(); publish.mockReset().mockResolvedValue(true); });
+
+it('records mutual only for an explicit camera read: evidence that does not say how falls a rung (NFC review L3)', () => {
+  const evidence = { inviteId: 'a'.repeat(32) } as RevealEvidence;
+  expect(evidenceStrength({ ...evidence, via: 'camera' })).toBe('mutual');
+  expect(evidenceStrength({ ...evidence, via: 'tap' })).toBe('tapped');
+  expect(evidenceStrength({ ...evidence, via: undefined } as unknown as RevealEvidence)).toBe('tapped');
+  expect(evidenceStrength({ ...evidence, via: 'Camera' } as unknown as RevealEvidence)).toBe('tapped');
+  expect(evidenceStrength(undefined)).toBe('proven');
+});
 it('persists and retries a child plan under its scoped exchange storage key', async () => {
   const pairing = { endpoint: 'e'.repeat(64), client: 'f'.repeat(64) };
   const a = party('01'.repeat(32), `dependant:${'a'.repeat(64)}`, { childPairing: async () => pairing }), b = party('02'.repeat(32), 'owner');
@@ -88,6 +97,34 @@ it('persists each exchange step, opens on demand and completes matching words th
   expect(contactVerificationWords(cleaned.exchanges[0].request, cleaned.exchanges[0].acceptance!, cleaned.exchanges[0].reveal!, a.pubkey)).toEqual(aw);
 }, 30000);
 
+it('a handshake publishes only to the other phone\'s public relays, on both sides (review L1)', async () => {
+  const a = party('01'.repeat(32), 'owner'), b = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`);
+  const now = 1700000000;
+  const lan = ['wss://192.168.1.5', 'wss://nas', 'wss://printer.local'];
+  const invite = await b.service.create(b.pubkey, 'Handshake', [...lan, 'wss://relay.example'], 'single-use', now);
+  // As the SDK stores them (it normalises the URLs).
+  const all = invite.invite.relays, publicOnly = all.filter(url => url.includes('relay.example'));
+  expect(publicOnly).toHaveLength(1);
+  // Requester side: the invite's LAN relays are dropped from the request and its reply relays.
+  await a.service.request(a.pubkey, invite.invite, now + 1, undefined, undefined, true);
+  const sent = (await a.service.read()).outbox[0];
+  expect(sent.relays).toEqual(publicOnly);
+  expect((await a.service.read()).exchanges[0].request.reply.relays).toEqual(publicOnly);
+  // Nothing public left: refused outright.
+  const lanOnly = await b.service.create(b.pubkey, 'Handshake', lan, 'single-use', now);
+  await expect(a.service.request(a.pubkey, lanOnly.invite, now + 1, undefined, undefined, true)).rejects.toThrow('No public relay');
+  // Outside a handshake the invite's relays stand as before.
+  const c = party('03'.repeat(32), `dependant:${'c'.repeat(64)}`);
+  await c.service.request(c.pubkey, invite.invite, now + 1);
+  expect((await c.service.read()).outbox[0].relays).toEqual(all);
+  // Accepting side: a request whose reply relays point at the LAN, accepted in a handshake.
+  const request = (await c.service.read()).outbox[0];
+  await recordContactArrival(b.directoryId, KEY, { id: request.id, inviteId: invite.id, identityPubkey: b.pubkey,
+    packet: openContactMailboxWrap(request.event, invite.invite.secret)!, receivedAt: now + 2 });
+  await b.service.openInbox(now + 3);
+  await b.service.accept(request.id, now + 4, false, false, undefined, true);
+  expect((await b.service.read()).outbox.find(o => o.messageType === 'acceptance')!.relays).toEqual(publicOnly);
+});
 it('does not send expired or silently cancelled pending requests', async () => {
   const a = party('01'.repeat(32), 'owner'), b = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`);
   const expired = await b.service.create(b.pubkey, 'Short lived', ['wss://relay.example'], 'single-use', 100, 102);
@@ -472,4 +509,19 @@ it('M3: a refused accept builds no card; an allowed one builds it once and sends
   await b.service.accept(outbox.id, now + 4, false, false, builder);
   expect(builder).toHaveBeenCalledTimes(1);
   expect((await b.service.read()).exchanges[0].acceptance?.card).toEqual({ name: 'Bea' });
+});
+
+it('an owner directory spends no vault read on the child guard; a dependant directory still guards', async () => {
+  const now = 1700000000;
+  const owner = party('01'.repeat(32), 'owner');
+  const ownerRead = vi.spyOn(owner.service, 'read');
+  await owner.service.openInbox(now);
+  await owner.service.flush(now);
+  expect(ownerRead).toHaveBeenCalledTimes(2);
+  const childPairing = vi.fn(async () => ({ endpoint: 'e'.repeat(64), client: 'f'.repeat(64) }));
+  const child = party('02'.repeat(32), `dependant:${'a'.repeat(64)}`, { childPairing, childAuthority: async () => 'go' as const });
+  const childRead = vi.spyOn(child.service, 'read');
+  await child.service.openInbox(now);
+  await child.service.flush(now);
+  expect(childRead).toHaveBeenCalledTimes(4);
 });
