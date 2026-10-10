@@ -751,17 +751,18 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 @keyframes jigsaw-close-left { 0%, 100% { translate: -3px 0; } 50% { translate: 0 0; } }
 @keyframes jigsaw-close-right { 0%, 100% { translate: 3px 0; } 50% { translate: 0 0; } }
 @keyframes jigsaw-pulse { to { opacity: .4; } }
-.jigsaw-sigil { width: 256px; height: 256px; display: block; }
-.jigsaw-sigil-left, .jigsaw-sigil-right { width: 50%; height: min(60vh, 400px); }
-.jigsaw-sigil-left { align-self: flex-end; }
-/* People face each other: both use their right edge, with one phone turned
-   half a turn. Turn its half too so the shared picture joins in that position. */
-.jigsaw-sigil-right { align-self: flex-end; transform: rotate(180deg); }
-.handshake-screen:has(.jigsaw-sigil-left), .handshake-screen:has(.jigsaw-sigil-right) { margin-inline: -20px; }
+.jigsaw-sigil { width: 164px; aspect-ratio: 256 / 400; height: auto; display: block; }
+/* The phones go top to top, people facing each other. Each half runs the full
+   width and is pulled up over the page padding and the header (56px + border)
+   so the seam is the top edge of the app. Above the sticky header, below the nav. */
+.jigsaw-sigil-top, .jigsaw-sigil-bottom { width: calc(100% + 32px); max-width: none; aspect-ratio: 256 / 200;
+  margin: calc(-16px - 58px) -16px 0; position: relative; z-index: 60; flex-shrink: 0; }
+/* That phone faces the other way: its half turns with it, seam still at its top. */
+.jigsaw-sigil-top { transform: rotate(180deg); }
 .handshake-tier { text-align: center; }
 .handshake-tier .btn { margin: 4px; }
 .handshake-open-contact { margin-top: 16px; text-align: center; width: 100%; }
 .handshake-open-contact > .btn { width: min(100%, 280px); }
 .handshake-mark > span { display: flex; align-items: center; gap: 8px; }
-.handshake-mark .jigsaw-sigil { width: 120px; height: 120px; margin-top: 8px; }
+.handshake-mark .jigsaw-sigil { width: 77px; margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) { .jigsaw-closing, .jigsaw-closing path, .handshake-wait i { animation: none; } }

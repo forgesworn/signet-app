@@ -845,7 +845,7 @@ export const HANDSHAKE_COPY = {
   chooser: "They’ll see", name: 'Your name', npub: 'Your npub', photo: 'Your picture',
   keyRequired: 'Your npub is needed to connect.', saveDefault: 'Save as default', go: 'Go',
   front: 'Front camera', rear: 'Rear camera', switchCamera: 'Switch camera',
-  oneWay: 'Use Jigsaw', compare: 'Put the phones edge to edge. Do all the lines join?',
+  oneWay: 'Use Jigsaw', compare: 'Put the phones top to top. Do all the lines join?',
   joins: 'The lines join', broken: 'The seam is broken', sigil: 'Handshake sigil', met: 'Met in person', checked: 'Checked in person',
   tapped: 'Tapped in person', scanOrTap: 'Scan their QR, or tap the phones back to back',
   tapDone: 'Their code received by tap', tapYoursDone: 'Their phone has your code',

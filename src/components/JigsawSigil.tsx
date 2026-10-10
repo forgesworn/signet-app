@@ -1,9 +1,14 @@
-import { sigilPaths } from '../lib/handshake-sigil';
+import { SIGIL_HEIGHT, SIGIL_SEAM, SIGIL_WIDTH, sigilPaths } from '../lib/handshake-sigil';
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
-export function JigsawSigil({ digest, half = 'whole' }: { digest: string; half?: 'left' | 'right' | 'whole' }) {
-  return <svg role="img" aria-label={HANDSHAKE_COPY.sigil} viewBox={half === 'whole' ? '0 0 256 256' : `${half === 'left' ? 0 : 128} 0 128 256`}
-    className={`jigsaw-sigil jigsaw-sigil-${half}`} preserveAspectRatio="none">
-    <rect x="0" y="0" width="256" height="256" fill="#101724" />
+
+/** The phones go top to top. Each shows one half at full width, with the seam
+ * at its own top edge: the top half is turned half a turn, because that phone
+ * faces the other way. */
+export function JigsawSigil({ digest, half = 'whole' }: { digest: string; half?: 'top' | 'bottom' | 'whole' }) {
+  const viewBox = half === 'whole' ? `0 0 ${SIGIL_WIDTH} ${SIGIL_HEIGHT}`
+    : `0 ${half === 'top' ? 0 : SIGIL_SEAM} ${SIGIL_WIDTH} ${SIGIL_SEAM}`;
+  return <svg role="img" aria-label={HANDSHAKE_COPY.sigil} viewBox={viewBox} className={`jigsaw-sigil jigsaw-sigil-${half}`}>
+    <rect x="0" y="0" width={SIGIL_WIDTH} height={SIGIL_HEIGHT} fill="#101724" />
     {sigilPaths(digest).map((path, i) => <path key={i} d={path.d} stroke={path.colour} strokeWidth={path.width} fill="none" />)}
   </svg>;
 }

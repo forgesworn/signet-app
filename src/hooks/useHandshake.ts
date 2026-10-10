@@ -39,7 +39,7 @@ export interface HandshakeView {
   /** The session code this screen shows. It names no one. */
   code?: string; name?: string; sigil?: string;
   phase: 'reading' | 'waiting' | 'checking' | 'sealed' | 'expired' | 'failed';
-  contactId?: string; half?: 'left' | 'right';
+  contactId?: string; half?: 'top' | 'bottom';
   /** This phone read the other screen's code: by its camera, or by a tap (`via`). */
   scanned?: boolean; via?: 'camera' | 'tap';
   scansConfirmed?: boolean;
@@ -248,8 +248,8 @@ export function useHandshake(host: HandshakeHost) {
             publish({ name: partnerCardOf(currentExchange)?.name });
             if (currentExchange.phase === 'complete') {
               publish({ sigil: handshakeSigil(currentExchange), half: currentExchange.request.from < currentExchange.request.to
-                ? currentExchange.role === 'requester' ? 'left' : 'right'
-                : currentExchange.role === 'requester' ? 'right' : 'left' });
+                ? currentExchange.role === 'requester' ? 'top' : 'bottom'
+                : currentExchange.role === 'requester' ? 'bottom' : 'top' });
               if (verified() && readAt !== undefined && role === currentExchange.role) await seal(true);
               else {
                 publish({ phase: 'checking' });

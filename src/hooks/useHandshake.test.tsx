@@ -296,21 +296,26 @@ it('one-way: the link that carried the chosen reveal speaks for its persona, so 
   } finally { bind.mockRestore(); }
 });
 it('sends its reveal again, freshly sealed, until the peer acts on it (review M1)', async () => {
-  const s = setup();
-  const hook = renderHook(() => useHandshake(s.host));
-  await ready(hook);
-  act(() => hook.result.current.scan(s.peerCode));
-  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(1));
-  // The resend interval is 5 s; allow for a loaded machine.
-  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(2), { timeout: 15000 });
-  const [first, second] = s.revealRelays.publish.mock.calls.map(c => c[0]);
-  expect(second.id).not.toBe(first.id);
-  expect(openReveal(second, s.peerSession, s.now)!.binding.id).toBe(openReveal(first, s.peerSession, s.now)!.binding.id);
-  s.deliver(s.peerReveal());
-  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
-  const sent = s.revealRelays.publish.mock.calls.length;
-  await new Promise(r => setTimeout(r, 5500));
-  expect(s.revealRelays.publish.mock.calls.length).toBe(sent);
+  // Real time still flows (crypto, waitFor); the 5 s resend interval is jumped
+  // rather than waited out, so a loaded machine cannot make it race the clock.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const s = setup();
+    const hook = renderHook(() => useHandshake(s.host));
+    await ready(hook);
+    act(() => hook.result.current.scan(s.peerCode));
+    await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(1), { timeout: 10000 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalledTimes(2), { timeout: 10000 });
+    const [first, second] = s.revealRelays.publish.mock.calls.map(c => c[0]);
+    expect(second.id).not.toBe(first.id);
+    expect(openReveal(second, s.peerSession, s.now)!.binding.id).toBe(openReveal(first, s.peerSession, s.now)!.binding.id);
+    s.deliver(s.peerReveal());
+    await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'), { timeout: 10000 });
+    const sent = s.revealRelays.publish.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5500); });
+    expect(s.revealRelays.publish.mock.calls.length).toBe(sent);
+  } finally { vi.useRealTimers(); }
 }, 40000);
 it('one-way refuses to guess when more than one persona answered before any scan (review M2)', async () => {
   const s = setup({ recipient: true });

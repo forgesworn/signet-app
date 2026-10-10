@@ -97,7 +97,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   const waiting = view.phase === 'waiting' && !!view.scanned;
   const tapped = view.via === 'tap';
   // Both halves use canonical pubkey order, set once the transcript exists.
-  const half = view.half ?? 'right';
+  const half = view.half ?? 'bottom';
   return <div className="handshake-screen">
     {view.sigil && (view.phase === 'checking' || view.phase === 'sealed')
       ? <JigsawSigil digest={view.sigil} half={half} />
