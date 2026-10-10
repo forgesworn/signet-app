@@ -122,6 +122,10 @@ export function Personas({
   const [importBackupConfirmed, setImportBackupConfirmed] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState('');
+  const [importSuccess, setImportSuccess] = useState<{ pubkey: string; name: string } | null>(null);
+  const importBodyRef = useRef<HTMLDivElement | null>(null);
+  const importReviewRef = useRef<HTMLDivElement | null>(null);
+  const importSuccessRef = useRef<HTMLDivElement | null>(null);
   // "Match it" — an existing public kind-0 found for the pasted key.
   const [importLooking, setImportLooking] = useState(false);
   const [importMatch, setImportMatch] = useState<ExistingProfile | null>(null);
@@ -131,6 +135,22 @@ export function Personas({
   const [importNote, setImportNote] = useState('');
   // Offered after a successful import: read the new persona's Nostr follows.
   const [followsOffer, setFollowsOffer] = useState<{ pubkey: string; name: string } | null>(null);
+
+  useEffect(() => {
+    if (!importMatch || !importBodyRef.current || !importReviewRef.current) return;
+    // Checking the backup box scrolls to the bottom. Reveal the new decision
+    // instead of leaving it above the visible part of the form.
+    importReviewRef.current.focus({ preventScroll: true });
+    importBodyRef.current.scrollTop = importReviewRef.current.offsetTop;
+  }, [importMatch]);
+
+  useEffect(() => {
+    if (importSuccess) importSuccessRef.current?.focus();
+  }, [importSuccess]);
+
+  useEffect(() => {
+    if (importError && importBodyRef.current) importBodyRef.current.scrollTop = 0;
+  }, [importError]);
 
   function resetImportLookup() {
     setImportLooking(false);
@@ -201,6 +221,7 @@ export function Personas({
       }
       if (result.added) {
         // Success — reset + close modal.
+        setImportSuccess({ pubkey: result.pubkey, name: importDisplayName.trim() });
         setFollowsOffer({ pubkey: result.pubkey, name: importDisplayName.trim() });
         setImportingNostr(false);
         setImportNsecInput('');
@@ -399,6 +420,16 @@ export function Personas({
 
   return (
     <div className="fade-in" role="main">
+      {importSuccess && (
+        <div ref={importSuccessRef} tabIndex={-1} role="status" className="block" style={{ marginBottom: 12 }}>
+          Imported {importSuccess.name}. Your account is saved on this device.
+          {onOpenPersona && (
+            <button type="button" className="btn btn-secondary btn-sm" style={{ width: 'auto', marginTop: 8 }} onClick={() => onOpenPersona(importSuccess.pubkey)}>
+              Open imported identity
+            </button>
+          )}
+        </div>
+      )}
       {followsOffer && followsOfferHandlers && (
         <FollowsImportPanel
           variant="offer"
@@ -572,7 +603,7 @@ export function Personas({
               {onImportNostrAccount && (
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => setImportingNostr(true)}
+                  onClick={() => { setImportSuccess(null); setImportNote(''); setImportingNostr(true); }}
                   style={{ width: '100%', marginTop: 6 }}
                 >
                   Import an existing Nostr account
@@ -605,7 +636,7 @@ export function Personas({
           {/* Fixed descendants belong to the desktop phone frame, which is
               shorter than the window. Size against the overlay, not vh. */}
           <div role="dialog" aria-modal="true" aria-label="Import an existing Nostr account" className="card section" style={{ maxWidth: 480, width: '100%', maxHeight: '100%', minHeight: 0, marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ minHeight: 0, overflowY: 'auto' }}>
+            <div ref={importBodyRef} style={{ minHeight: 0, overflowY: 'auto', position: 'relative' }}>
               <h3 style={{ marginTop: 0, marginBottom: 8 }}>Import an existing Nostr account</h3>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
                 Paste your nsec key. We'll add it as a Persona alongside your existing personas.
@@ -642,12 +673,17 @@ export function Personas({
                 </div>
               )}
               {importMatch && (
-                <ExistingProfilePanel
-                  profile={importMatch.profile}
-                  choice={importChoice}
-                  onChoice={setImportChoice}
-                  disabled={importBusy}
-                />
+                <div ref={importReviewRef} tabIndex={-1}>
+                  <p role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
+                    Your account has not been imported yet. Choose how to use its existing profile, then press Confirm import to save it.
+                  </p>
+                  <ExistingProfilePanel
+                    profile={importMatch.profile}
+                    choice={importChoice}
+                    onChoice={setImportChoice}
+                    disabled={importBusy}
+                  />
+                </div>
               )}
 
               <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Display name</label>
@@ -690,7 +726,7 @@ export function Personas({
                 disabled={importBusy || !importBackupConfirmed || !importNsecInput.trim() || !importDisplayName.trim()}
                 style={{ flex: 1 }}
               >
-                {importLooking ? 'Looking…' : importBusy ? 'Importing…' : 'Import'}
+                {importLooking ? 'Looking…' : importBusy ? 'Importing…' : importMatch ? 'Confirm import' : 'Import'}
               </button>
             </div>
           </div>
