@@ -39,7 +39,7 @@ describe('session QR', () => {
   });
   it('takes only public relay hosts from the other phone: no LAN names, IP literals or single labels (review L1)', () => {
     for (const host of ['relay.example', 'nos.lol', 'Relay.Example.', 'a.b.c.example']) expect(isPublicRelayHost(host)).toBe(true);
-    for (const host of ['nas', 'printer.local', 'router.lan', 'metadata.google.internal', 'box.home.arpa', 'x.localhost',
+    for (const host of ['nas', 'printer.local', 'router.lan', 'metadata.google.internal', 'box.home.arpa', 'x.localhost', 'nas.home', 'git.corp', 'fritz.box', 'myrouter.fritz.box',
       '8.8.8.8', '224.0.0.1', '255.255.255.255', '192.168.1.1', '[2001:db8::1]', '2001:db8::1', 'localhost', '127.0.0.1.', '']) {
       expect(isPublicRelayHost(host)).toBe(false);
     }

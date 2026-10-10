@@ -30,7 +30,7 @@ export interface HandshakeSession { secret: Uint8Array; publicKey: string }
 export interface SessionCard { publicKey: string; expiresAt: number; relays: string[] }
 export interface RevealBody { v: 2; to: string; invite: ContactInvite; binding: NostrEvent }
 
-const LAN_SUFFIXES = ['.local', '.lan', '.internal', '.home.arpa', '.localhost', '.localdomain'];
+const LAN_SUFFIXES = ['.local', '.lan', '.internal', '.home.arpa', '.localhost', '.localdomain', '.home', '.corp', '.intranet', '.fritz.box'];
 /**
  * A relay host the OTHER phone chose, that this phone may publish to. A code
  * or invite that arrived without being aimed at (a tap) must not steer this
@@ -44,7 +44,8 @@ export function isPublicRelayHost(hostname: string): boolean {
   while (host.endsWith('.')) host = host.slice(0, -1);
   if (!host || isPrivateOrInternalHost(host) || !host.includes('.')) return false;
   if (/^[0-9.]+$/.test(host)) return false; // IPv4 literal
-  return !LAN_SUFFIXES.some(suffix => host.endsWith(suffix));
+  // A leading dot so that the bare name (fritz.box) is caught as well as its subdomains.
+  return !LAN_SUFFIXES.some(suffix => ('.' + host).endsWith(suffix));
 }
 /** The other phone's relays this phone may publish to (see isPublicRelayHost). */
 export function handshakeRelays(relays: string[]): string[] {

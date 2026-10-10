@@ -128,16 +128,14 @@ test('two real QR camera reads recover closed relays, auto-seal one signed excha
       await expect(phone.getByRole('img', { name: 'Handshake sigil' })).toBeVisible();
       await expect(phone.getByText('You say:', { exact: false })).toHaveCount(0);
     }
-    // The lines move with the clock, and the two pages are read a moment
-    // apart: the same paths, to within a fraction of a unit (of 256).
-    const paths = await Promise.all([page, other].map(phone => phone.locator('.jigsaw-sigil path').evaluateAll(elements => elements.map(e => e.getAttribute('d')!))));
-    const numbers = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number);
-    expect(paths[0]).toHaveLength(8); expect(paths[1]).toHaveLength(8);
-    paths[0].forEach((d, i) => {
-      const a = numbers(d), b = numbers(paths[1][i]);
-      expect(a).toHaveLength(b.length);
-      a.forEach((v, k) => expect(Math.abs(v - b[k])).toBeLessThan(1));
-    });
+    // The lines move with each phone's clock. Fix both clocks at the same
+    // instant (frames keep running): the two halves must then draw the same paths.
+    const instant = new Date(Date.now() + 5000);
+    await Promise.all([page, other].map(phone => phone.clock.setFixedTime(instant)));
+    await Promise.all([page, other].map(phone => phone.waitForTimeout(300)));
+    const paths = await Promise.all([page, other].map(phone => phone.locator('.jigsaw-sigil path').evaluateAll(elements => elements.map(e => e.getAttribute('d')))));
+    expect(paths[0]).toHaveLength(8);
+    expect(paths[0]).toEqual(paths[1]);
     await other.getByRole('button', { name: 'Open contact', exact: true }).click();
     await expect(other.getByText('Kith', { exact: true }).first()).toBeVisible();
     await expect(other.locator('.handshake-status')).toContainText('Met in person');
