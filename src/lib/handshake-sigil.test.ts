@@ -30,6 +30,9 @@ it('gives each half identical seam geometry; independently varied transcripts ch
   const variants = Array.from({ length: 20 }, (_, i) => sigilPaths(bytesToHex(sha256(new TextEncoder().encode(`fixture:${i}`)))));
   expect(new Set(variants.map(v => JSON.stringify(v))).size).toBe(20);
   expect(() => sigilPaths('bad')).toThrow();
+  // Every line has its own colour, and the digest decides which.
+  for (const v of variants) expect(new Set(v.map(p => p.colour)).size).toBe(8);
+  expect(new Set(variants.map(v => v.map(p => p.colour).join())).size).toBeGreaterThan(15);
 });
 it('round trips private check evidence without introducing any contact method', () => {
   const sigil = handshakeSigil(transcript().a);
