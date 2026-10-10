@@ -1,20 +1,19 @@
 import { useEffect, useRef } from 'react';
-import { SIGIL_HEIGHT, SIGIL_SEAM, SIGIL_WIDTH, sigilMotion, sigilOffset, sigilPaths } from '../lib/handshake-sigil';
+import { SIGIL_HEIGHT, SIGIL_SEAM, SIGIL_WIDTH, sigilAnimator, sigilPaths } from '../lib/handshake-sigil';
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
 
 /** The phones go top to top. Each shows one half at full width, with the seam
  * at its own top edge: the top half is turned half a turn, because that phone
- * faces the other way. On the halves the lines drift slowly in time with the
- * clock, so the two phones move together across the seam. */
+ * faces the other way. On the halves the lines drift and flex slowly in time
+ * with the clock, so the two phones move together across the seam. */
 export function JigsawSigil({ digest, half = 'whole' }: { digest: string; half?: 'top' | 'bottom' | 'whole' }) {
   const lines = useRef<Array<SVGPathElement | null>>([]);
   useEffect(() => {
     if (half === 'whole' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
-    const motion = sigilMotion(digest);
+    const pathsAt = sigilAnimator(digest);
     let frame = 0;
     const draw = () => {
-      const now = Date.now();
-      motion.forEach((m, i) => lines.current[i]?.setAttribute('transform', `translate(${sigilOffset(m, now).toFixed(2)} 0)`));
+      pathsAt(Date.now()).forEach((d, i) => lines.current[i]?.setAttribute('d', d));
       frame = requestAnimationFrame(draw);
     };
     draw();

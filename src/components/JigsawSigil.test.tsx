@@ -2,7 +2,7 @@
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { JigsawSigil } from './JigsawSigil';
-import { SIGIL_HEIGHT, SIGIL_SEAM, SIGIL_WIDTH, sigilMotion, sigilOffset, sigilPaths } from '../lib/handshake-sigil';
+import { SIGIL_HEIGHT, SIGIL_SEAM, SIGIL_WIDTH, sigilAnimator, sigilMotion, sigilPaths, sigilWave } from '../lib/handshake-sigil';
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const digest = 'ab'.repeat(32);
 const box = (half: 'top' | 'bottom' | 'whole') => {
@@ -28,29 +28,48 @@ it('runs every line from top to bottom through the seam, inside the width', () =
     for (const x of [n[0], n[2], n[4], n[6], n[8], n[10]]) expect(x >= 0 && x <= SIGIL_WIDTH).toBe(true);
   }
 });
-it('moves the same on both phones at the same moment, slowly and within a small swing, and differently for another digest', () => {
-  const a = sigilMotion(digest), b = sigilMotion(digest), other = sigilMotion('cd'.repeat(32));
-  expect(a).toEqual(b);
-  expect(other).not.toEqual(a);
-  for (const m of a) {
-    for (const t of [0, 1234, 1_700_000_000_123]) expect(Math.abs(sigilOffset(m, t))).toBeLessThanOrEqual(14);
-    // A third of a second between two clocks moves a line by under 1 of 256.
-    const worst = Math.max(...Array.from({ length: 200 }, (_, k) => Math.abs(sigilOffset(m, k * 50 + 333) - sigilOffset(m, k * 50))));
-    expect(worst).toBeLessThan(1.1 * (2 * Math.PI * m.amplitude * 333) / m.periodMs + 0.01);
-    expect(2 * Math.PI * m.amplitude * 333 / m.periodMs).toBeLessThan(4.2);
+const numbers = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+it('moves the same on both phones at the same moment, and differently for another digest', () => {
+  const a = sigilAnimator(digest), b = sigilAnimator(digest), other = sigilAnimator('cd'.repeat(32));
+  for (const t of [0, 1234, 1_700_000_000_123]) {
+    expect(a(t)).toEqual(b(t));
+    expect(other(t)).not.toEqual(a(t));
+  }
+  expect(sigilMotion(digest)).toEqual(sigilMotion(digest));
+});
+it('flexes the curves, not just slides them: the slope through the seam and the bend at the ends both change', () => {
+  const at = sigilAnimator(digest);
+  for (let i = 0; i < 8; i++) {
+    const shape = (t: number) => { const n = numbers(at(t)[i]); return { seam: n[6], slope: n[6] - n[4], bend: n[0] - n[6] }; };
+    const seen = Array.from({ length: 60 }, (_, k) => shape(k * 500));
+    expect(new Set(seen.map(s => s.slope.toFixed(1))).size).toBeGreaterThan(5);
+    expect(new Set(seen.map(s => s.bend.toFixed(1))).size).toBeGreaterThan(5);
+    // Every line still crosses the seam, and starts and ends at the top and bottom.
+    const n = numbers(at(777)[i]);
+    expect([n[1], n[7], n[n.length - 1]]).toEqual([0, SIGIL_SEAM, SIGIL_HEIGHT]);
   }
 });
-it('drifts the lines of a half with the clock, but keeps the whole sigil and reduced motion still', () => {
+it('changes what meets at the seam slowly, so clocks a third of a second apart still join', () => {
+  for (const m of sigilMotion(digest)) {
+    for (const w of [m.drift, m.slope]) {
+      expect(Math.abs(sigilWave(w, 1_700_000_000_123))).toBeLessThanOrEqual(w.amplitude);
+      // The fastest a third of a second can move it: under 4.5 of 256.
+      expect(2 * Math.PI * w.amplitude * 333 / w.periodMs).toBeLessThan(4.5);
+    }
+  }
+});
+it('animates the lines of a half with the clock, but keeps the whole sigil and reduced motion still', () => {
   vi.useFakeTimers({ toFake: ['Date', 'requestAnimationFrame', 'cancelAnimationFrame'] });
   vi.setSystemTime(1_700_000_000_000);
+  const still = sigilPaths(digest)[0].d;
   const moving = render(<JigsawSigil digest={digest} half="bottom" />).container.querySelector('path')!;
-  const first = moving.getAttribute('transform');
-  expect(first).toMatch(/^translate\(-?\d+\.\d{2} 0\)$/);
+  const first = moving.getAttribute('d');
+  expect(first).toBe(sigilAnimator(digest)(1_700_000_000_000)[0]);
   vi.setSystemTime(1_700_000_002_000); vi.advanceTimersToNextFrame();
-  expect(moving.getAttribute('transform')).not.toBe(first);
+  expect(moving.getAttribute('d')).not.toBe(first);
   cleanup();
-  expect(render(<JigsawSigil digest={digest} />).container.querySelector('path')!.getAttribute('transform')).toBeNull();
+  expect(render(<JigsawSigil digest={digest} />).container.querySelector('path')!.getAttribute('d')).toBe(still);
   cleanup();
   vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce') }));
-  expect(render(<JigsawSigil digest={digest} half="top" />).container.querySelector('path')!.getAttribute('transform')).toBeNull();
+  expect(render(<JigsawSigil digest={digest} half="top" />).container.querySelector('path')!.getAttribute('d')).toBe(still);
 });
