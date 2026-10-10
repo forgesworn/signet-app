@@ -25,7 +25,7 @@ export function HandshakeButton({ onStart }: { onStart(choose: boolean): void })
     onClick={e => { e.stopPropagation(); clear(); if (!held.current) onStart(false); held.current = false; }}>
     <JigsawIcon />{HANDSHAKE_COPY.title}
     {radio && (radio.nfc !== 'none' || radio.bluetooth !== 'none') && <span className="handshake-radios">
-      {radio.nfc !== 'none' && <Icon name="nfc" size={16} className={`handshake-radio${radio.nfc === 'on' ? '' : ' is-off'}`} />}
+      {radio.nfc !== 'none' && <Icon name="nfc" size={20} className={`handshake-radio${radio.nfc === 'on' ? '' : ' is-off'}`} />}
       {radio.bluetooth !== 'none' && <Icon name="bluetooth" size={16} className={`handshake-radio${radio.bluetooth === 'on' ? '' : ' is-off'}`} />}
     </span>}
   </button>;

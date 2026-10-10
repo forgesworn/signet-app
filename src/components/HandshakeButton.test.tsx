@@ -38,5 +38,5 @@ it('hides the icon of a radio the phone does not have, and greys a refused permi
   const { container } = render(<HandshakeButton onStart={vi.fn()} />);
   const icons = container.querySelectorAll('.handshake-radio');
   expect(icons).toHaveLength(1); expect(icons[0]).toHaveClass('is-off');
-  expect(screen.getByRole('button', { name: 'Handshake' })).toHaveAttribute('aria-description', 'Bluetooth off.');
+  expect(screen.getByRole('button', { name: 'Handshake' })).toHaveAttribute('aria-description', 'Bluetooth not allowed.');
 });
