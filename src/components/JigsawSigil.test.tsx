@@ -19,16 +19,26 @@ it('splits the sigil across the seam into two full-width halves that tile it exa
   expect(top.svg.classList.contains('jigsaw-sigil-top')).toBe(true);
   expect(bottom.svg.classList.contains('jigsaw-sigil-bottom')).toBe(true);
 });
-it('runs every line from top to bottom through the seam, inside the width', () => {
+/** A line's named points: ends, the two turns and the seam crossing. */
+const parts = (d: string) => {
+  const n = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+  expect(n).toHaveLength(24);
+  return { topY: n[1], turn1: n[6], seamX: n[12], seamY: n[13], slope: n[12] - n[10], turn2: n[16], bottomY: n[23], topEnd: n[0], bottomEnd: n[22] };
+};
+it('runs every line from top to bottom through the seam, crossing it inside the width', () => {
   for (const path of sigilPaths(digest)) {
-    const n = path.d.match(/-?\d+(\.\d+)?/g)!.map(Number);
-    expect(n[1]).toBe(-SIGIL_OVERHANG);
-    expect(n[7]).toBe(SIGIL_SEAM);
-    expect(n[n.length - 1]).toBe(SIGIL_HEIGHT + SIGIL_OVERHANG);
-    for (const x of [n[0], n[2], n[4], n[6], n[8], n[10]]) expect(x >= 0 && x <= SIGIL_WIDTH).toBe(true);
+    const p = parts(path.d);
+    expect([p.topY, p.seamY, p.bottomY]).toEqual([-SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_HEIGHT + SIGIL_OVERHANG]);
+    expect(p.seamX > 0 && p.seamX < SIGIL_WIDTH).toBe(true);
   }
 });
-const numbers = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+it('snakes: the turn above the seam and the turn below it swing to opposite sides', () => {
+  for (const d of ['ab'.repeat(32), 'cd'.repeat(32), '01'.repeat(32)]) for (const path of sigilPaths(d)) {
+    const p = parts(path.d);
+    expect(Math.sign(p.turn1 - p.seamX)).toBe(-Math.sign(p.turn2 - p.seamX));
+    expect(Math.abs(p.turn1 - p.seamX)).toBeGreaterThanOrEqual(18);
+  }
+});
 it('moves the same on both phones at the same moment, and differently for another digest', () => {
   const a = sigilAnimator(digest), b = sigilAnimator(digest), other = sigilAnimator('cd'.repeat(32));
   for (const t of [0, 1234, 1_700_000_000_123]) {
@@ -37,16 +47,16 @@ it('moves the same on both phones at the same moment, and differently for anothe
   }
   expect(sigilMotion(digest)).toEqual(sigilMotion(digest));
 });
-it('flexes the curves, not just slides them: the slope through the seam and the bend at the ends both change', () => {
+it('flexes the curves, not just slides them: the slope, the turns and the ends all change', () => {
   const at = sigilAnimator(digest);
   for (let i = 0; i < 8; i++) {
-    const shape = (t: number) => { const n = numbers(at(t)[i]); return { seam: n[6], slope: n[6] - n[4], bend: n[0] - n[6] }; };
-    const seen = Array.from({ length: 60 }, (_, k) => shape(k * 500));
-    expect(new Set(seen.map(s => s.slope.toFixed(1))).size).toBeGreaterThan(5);
-    expect(new Set(seen.map(s => s.bend.toFixed(1))).size).toBeGreaterThan(5);
+    const seen = Array.from({ length: 60 }, (_, k) => parts(at(k * 500)[i]));
+    for (const key of ['slope', 'turn1', 'turn2', 'topEnd'] as const) {
+      expect(new Set(seen.map(p => (p[key] - p.seamX).toFixed(1))).size).toBeGreaterThan(5);
+    }
     // Every line still crosses the seam, and starts and ends at the top and bottom.
-    const n = numbers(at(777)[i]);
-    expect([n[1], n[7], n[n.length - 1]]).toEqual([-SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_HEIGHT + SIGIL_OVERHANG]);
+    const p = parts(at(777)[i]);
+    expect([p.topY, p.seamY, p.bottomY]).toEqual([-SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_HEIGHT + SIGIL_OVERHANG]);
   }
 });
 it('changes what meets at the seam slowly, so clocks a third of a second apart still join', () => {
