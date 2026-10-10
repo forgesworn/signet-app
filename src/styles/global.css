@@ -764,7 +764,9 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 .handshake-arrival-body p { margin: 0; }
 .handshake-arrival-name { font-weight: 600; font-size: 1.1rem; overflow-wrap: anywhere; }
 .handshake-arrival-key { color: var(--text-secondary); font-size: .85rem; }
-.handshake-arrival.is-hidden .handshake-arrival-body { filter: blur(12px); user-select: none; }
+/* Hidden for onlookers: blurred hard and drained of colour, so neither the
+   picture's shapes nor its colours show until the tap. */
+.handshake-arrival.is-hidden .handshake-arrival-body { filter: grayscale(1) blur(22px); user-select: none; }
 .handshake-arrival-reveal { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); }
 .handshake-open-contact { margin-top: 16px; text-align: center; width: 100%; }
 .handshake-open-contact > .btn { width: min(100%, 280px); }
