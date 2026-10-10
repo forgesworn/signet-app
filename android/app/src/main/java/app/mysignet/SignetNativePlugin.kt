@@ -93,10 +93,13 @@ class SignetNativePlugin : Plugin() {
         // Nor should a crash leave the handshake AID offered to readers.
         HandshakeNfc.clearStale(context)
         // Tell the page when NFC or Bluetooth is switched, so the Handshake button follows it.
+        // Exported: the NFC service sends its broadcast from its own process, which a
+        // not-exported receiver drops (checked on device). Both actions are protected, so
+        // only the platform can send them, and the receiver re-reads the state anyway.
         ContextCompat.registerReceiver(context, radioReceiver, IntentFilter().apply {
             addAction(NfcAdapter.ACTION_ADAPTER_STATE_CHANGED)
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
-        }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }, ContextCompat.RECEIVER_EXPORTED)
     }
 
     private val radioReceiver = object : BroadcastReceiver() {
