@@ -11,7 +11,7 @@ import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch } from './crypto-store';
+import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch, forgetDerivedKeys } from './crypto-store';
 import { isValidRelayUrl } from './relay-url';
 import type { ChildRulesPayload } from './child-rules-wire';
 import { liftDependantPublicProfileConfig } from './lift-public-profile-config';
@@ -2508,6 +2508,7 @@ export async function deleteProPersonaRecord(): Promise<void> {
  * Called during identity deletion to ensure no orphaned PII remains.
  */
 export async function purgeAllUserData(): Promise<void> {
+  forgetDerivedKeys();
   clearQrCardPrefs();
   const db = await getDB();
   await db.clear('identity');

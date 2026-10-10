@@ -9,6 +9,41 @@
 
 import { deriveAesKey, aesEncrypt, aesDecrypt, SALT_LENGTH, IV_LENGTH } from './aes-crypto';
 
+/**
+ * Keys derived for reading stored rows, kept until the app locks.
+ *
+ * Every read used to re-run the full PBKDF2 derivation, and background pollers
+ * read the same rows every few seconds, so the phone spent most of its idle
+ * CPU there. A row's salt never changes, so its key is derived once per unlock.
+ * Only for the 256-bit random unlock key: a passphrase shorter than
+ * MIN_REMEMBERED_PASSPHRASE (a PIN) is never remembered. The keys are
+ * non-extractable CryptoKeys, and the unlock key that yields them is already
+ * held while unlocked, so remembering them exposes nothing new. Cleared by
+ * forgetDerivedKeys() on lock.
+ */
+const remembered = new Map<string, Promise<CryptoKey>>();
+const REMEMBER_MAX = 512;
+const MIN_REMEMBERED_PASSPHRASE = 32;
+let rememberedFor: string | undefined;
+function rememberedKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
+  if (passphrase.length < MIN_REMEMBERED_PASSPHRASE) return deriveAesKey(passphrase, salt);
+  // One unlock key at a time: another one starts afresh.
+  if (rememberedFor !== passphrase) { remembered.clear(); rememberedFor = passphrase; }
+  const id = saltKey(salt);
+  const hit = remembered.get(id);
+  if (hit) { remembered.delete(id); remembered.set(id, hit); return hit; }
+  const key = deriveAesKey(passphrase, salt);
+  remembered.set(id, key);
+  key.catch(() => { if (remembered.get(id) === key) remembered.delete(id); });
+  while (remembered.size > REMEMBER_MAX) remembered.delete(remembered.keys().next().value!);
+  return key;
+}
+/** On lock: forget every remembered key, and which unlock key they came from. */
+export function forgetDerivedKeys(): void {
+  remembered.clear();
+  rememberedFor = undefined;
+}
+
 export async function encryptSecret(plaintext: string, passphrase: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
   const key = await deriveAesKey(passphrase, salt);
@@ -35,7 +70,7 @@ export async function decryptSecret(encrypted: string, passphrase: string): Prom
   const iv = combined.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
   const ciphertext = combined.slice(SALT_LENGTH + IV_LENGTH);
 
-  const key = await deriveAesKey(passphrase, salt);
+  const key = await rememberedKey(passphrase, salt);
   return aesDecrypt(iv, ciphertext, key);
 }
 
@@ -116,7 +151,7 @@ export async function decryptSecretsBatch(encrypted: string[], passphrase: strin
       const cacheKey = saltKey(salt);
       let keyPromise = keyCache.get(cacheKey);
       if (!keyPromise) {
-        keyPromise = deriveAesKey(passphrase, salt);
+        keyPromise = rememberedKey(passphrase, salt);
         keyCache.set(cacheKey, keyPromise);
       }
       results[i] = await aesDecrypt(iv, ciphertext, await keyPromise);

@@ -293,6 +293,7 @@ import {
 } from './lib/db';
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
+import { forgetDerivedKeys } from './lib/crypto-store';
 import { resolveSyncRelays } from './lib/sync-relays';
 import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, listChildRules, tombstoneChildRule, type ApprovedOnceKinds } from './lib/db';
 import type { ChildRule } from './types/child-rules';
@@ -4598,6 +4599,8 @@ export function App() {
       // locked device can't read the cached sync plaintexts.
       forgetSyncCacheKeys();
       forgetContactOperationsCache();
+      // The vault keys derived from the unlock key this session.
+      forgetDerivedKeys();
       // A52: and the decrypted child-rule memo.
       forgetChildRuleCache();
       // Contact pictures: the derived key and the decrypted thumbnails.

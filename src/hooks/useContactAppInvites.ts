@@ -4,6 +4,12 @@ import { listContactGrantsV2 } from '../lib/db';
 import { fetchNewestFromRelays } from '../lib/sync-relays';
 import { handleContactAppInvite } from '../lib/contact-app-invites';
 import type { ContactInviteService } from '../lib/contact-invite-service';
+import { useAppForeground } from './useAppForeground';
+
+/** Each poll asks a relay per grant and decrypts the grants: every 30 s while
+ * the app is on screen, and not at all in the background (it was every 5 s,
+ * always, which kept the phone's CPU and radio busy). */
+export const APP_INVITE_POLL_MS = 30_000;
 
 /** Bounded polling of authenticated app slots. No identity mailbox is shared. */
 export function useContactAppInvites(options: {
@@ -12,9 +18,10 @@ export function useContactAppInvites(options: {
 }) {
   const latest = useRef(options); latest.current = options;
   const scope = JSON.stringify(options.identities);
+  const foreground = useAppForeground();
   useEffect(() => {
     const key = options.encryptionKey;
-    if (!key || !options.enabled) return;
+    if (!key || !options.enabled || !foreground) return;
     let cancelled = false, running = false;
     const seen = new Set<string>();
     const valid = () => !cancelled && latest.current.encryptionKey === key && latest.current.enabled;
@@ -42,7 +49,7 @@ export function useContactAppInvites(options: {
       } finally { running = false; }
     };
     void run().catch(() => {});
-    const timer = setInterval(() => { void run().catch(() => {}); }, 5000);
+    const timer = setInterval(() => { void run().catch(() => {}); }, APP_INVITE_POLL_MS);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [options.encryptionKey, options.enabled, scope]);
+  }, [options.encryptionKey, options.enabled, scope, foreground]);
 }

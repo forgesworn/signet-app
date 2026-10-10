@@ -272,29 +272,39 @@ describe('useContactGrantsRail — publish', () => {
     await db.saveContactGrantV2(grant(), KEY);
 
     const { result, rerender } = renderRail({ onBackupStateChange });
-    await waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockPublish).toHaveBeenCalled());
     await waitFor(() => expect(result.current.backupState).toBe('too-large'));
     expect(onBackupStateChange).toHaveBeenCalledWith('too-large');
+    // Start-up can make more than one attempt (the effect re-arms as the
+    // fetch settles, and 'too-large' seeds nothing); count from here.
+    await realWait(50);
+    const before = mockPublish.mock.calls.length;
 
     // Unseeded hash: bumping grantsVersion re-arms the SAME hook instance's
     // publish effect, and it tries again with the identical content — proof
     // 'too-large' never poisoned the dedupe hash the way a successful
     // publish would have.
     rerender({ onBackupStateChange, grantsVersion: 1 });
-    await waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(before + 1));
   });
 
   it('a "published" outcome clears a prior too-large backupState', async () => {
-    mockPublish.mockResolvedValueOnce('too-large').mockResolvedValueOnce('published');
+    // 'too-large' until the local change below, then 'published' — however
+    // many attempts start-up makes.
+    let tooLarge = true;
+    mockPublish.mockImplementation(async () => tooLarge ? 'too-large' : 'published');
     await db.saveContactGrantV2(grant(), KEY);
 
     const { result, rerender } = renderRail();
     await waitFor(() => expect(result.current.backupState).toBe('too-large'));
+    await realWait(50);
+    const before = mockPublish.mock.calls.length;
 
     // A local change (grantsVersion bump) re-arms the debounce; this time the
     // outcome is 'published'.
+    tooLarge = false;
     rerender({ grantsVersion: 1 });
-    await waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(before + 1));
     await waitFor(() => expect(result.current.backupState).toBe('ok'));
   });
 

@@ -56,3 +56,38 @@ describe('isEncrypted', () => {
     expect(isEncrypted('not!valid@base64###')).toBe(false);
   });
 });
+
+describe('derived keys remembered until lock', () => {
+  const unlockKey = 'ab'.repeat(32);
+  it('derives a stored row\'s key once per unlock, again after forgetDerivedKeys, and never for a PIN', async () => {
+    const { forgetDerivedKeys } = await import('./crypto-store');
+    const { vi } = await import('vitest');
+    forgetDerivedKeys();
+    const sealed = await encryptSecret('row', unlockKey);
+    const spy = vi.spyOn(crypto.subtle, 'deriveKey');
+    try {
+      for (let i = 0; i < 3; i++) expect(await decryptSecret(sealed, unlockKey)).toBe('row');
+      expect(spy).toHaveBeenCalledTimes(1);
+      // Another row (its own salt) needs its own key.
+      await decryptSecret(await encryptSecret('other', unlockKey), unlockKey);
+      expect(spy).toHaveBeenCalledTimes(3);
+      forgetDerivedKeys();
+      await decryptSecret(sealed, unlockKey);
+      expect(spy).toHaveBeenCalledTimes(4);
+      // A short passphrase (a PIN) is derived every time, never remembered.
+      const pinSealed = await encryptSecret('pin row', '123456');
+      spy.mockClear();
+      await decryptSecret(pinSealed, '123456'); await decryptSecret(pinSealed, '123456');
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally { spy.mockRestore(); forgetDerivedKeys(); }
+  });
+  it('a different unlock key never reuses a remembered key', async () => {
+    const { forgetDerivedKeys } = await import('./crypto-store');
+    forgetDerivedKeys();
+    const sealed = await encryptSecret('row', unlockKey);
+    expect(await decryptSecret(sealed, unlockKey)).toBe('row');
+    await expect(decryptSecret(sealed, 'cd'.repeat(32))).rejects.toThrow();
+    expect(await decryptSecret(sealed, unlockKey)).toBe('row');
+    forgetDerivedKeys();
+  });
+});

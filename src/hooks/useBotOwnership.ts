@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { loadBotRegistry } from '../lib/bot-registry';
 import type { BotOwnershipService } from '../lib/bot-ownership-service';
+import { useAppForeground } from './useAppForeground';
 /** Existing ownership claims may renew while unlocked. Hardware signing remains
  * an ordinary device approval; failed attempts are durably throttled per bot. */
 export function useBotOwnership(options: {
@@ -8,8 +9,10 @@ export function useBotOwnership(options: {
   service(isCurrent: () => boolean): BotOwnershipService;
 }) {
   const latest = useRef(options); latest.current = options;
+  // Renewal can wait until the user is back: nothing runs in the background.
+  const foreground = useAppForeground();
   useEffect(() => {
-    if (!options.root || !options.encryptionKey) return;
+    if (!options.root || !options.encryptionKey || !foreground) return;
     let stopped = false, running = false;
     const current = () => !stopped;
     const run = async () => {
@@ -33,5 +36,5 @@ export function useBotOwnership(options: {
     const online = () => { void run(); };
     window.addEventListener('online', online);
     return () => { stopped = true; clearInterval(timer); window.removeEventListener('online', online); };
-  }, [options.root, options.encryptionKey, options.session]);
+  }, [options.root, options.encryptionKey, options.session, foreground]);
 }
