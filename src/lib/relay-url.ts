@@ -14,3 +14,7 @@
 export function isValidRelayUrl(url: string): boolean {
   return /^wss:\/\//i.test(url) || /^ws:\/\/(localhost|127\.0\.0\.1)([:\/]|$)/i.test(url);
 }
+
+export function relayHostLabel(url: string): string {
+  try { return new URL(url).host; } catch { return url.slice(0, 128); }
+}

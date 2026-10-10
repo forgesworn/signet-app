@@ -17,6 +17,7 @@ import { generateSecretKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { recordRelayDelivery } from './relay-delivery-status';
 
 /**
  * Auth response payload published via relay (cross-device flow).
@@ -200,25 +201,27 @@ export function publishToRelay(signedEvent: NostrEvent, relayUrl: string): Promi
     try {
       ws = new WebSocket(relayUrl);
     } catch {
+      recordRelayDelivery(relayUrl, false, 'Could not open a WebSocket connection.');
       resolve(false);
       return;
     }
 
-    const finish = (ok: boolean) => {
+    const finish = (ok: boolean, reason: string) => {
       if (resolved) return;
       resolved = true;
+      recordRelayDelivery(relayUrl, ok, reason);
       try { ws.close(); } catch { /* already closing */ }
       clearTimeout(timeout);
       resolve(ok);
     };
 
-    const timeout = setTimeout(() => finish(false), RELAY_PUBLISH_TIMEOUT_MS);
+    const timeout = setTimeout(() => finish(false, 'Timed out waiting for the relay to acknowledge delivery.'), RELAY_PUBLISH_TIMEOUT_MS);
 
     ws.onopen = () => {
       try {
         ws.send(JSON.stringify(['EVENT', signedEvent]));
       } catch {
-        finish(false);
+        finish(false, 'Could not send the response to the relay.');
       }
     };
 
@@ -234,16 +237,17 @@ export function publishToRelay(signedEvent: NostrEvent, relayUrl: string): Promi
       // a REQ on this socket so they shouldn't arrive, but be defensive.
       if (!Array.isArray(parsed) || parsed[0] !== 'OK') return;
       if (parsed[1] !== signedEvent.id) return;
-      finish(parsed[2] === true);
+      const ok = parsed[2] === true;
+      finish(ok, typeof parsed[3] === 'string' && parsed[3] ? parsed[3] : ok ? 'Relay accepted the event.' : 'Relay refused the event without giving a reason.');
     };
 
-    ws.onerror = () => finish(false);
+    ws.onerror = () => finish(false, 'WebSocket connection failed.');
     // If the relay closes the socket before sending an OK frame for our
     // event, treat as failure. NIP-20-compliant relays always send OK
     // before closing; a close-without-OK is either a non-compliant relay
     // or a transport drop, both of which we should report as failure
     // rather than silently assume success.
-    ws.onclose = () => finish(false);
+    ws.onclose = () => finish(false, 'Connection closed before the relay acknowledged delivery.');
   });
 }
 
