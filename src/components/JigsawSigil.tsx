@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SIGIL_HEIGHT, SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_WIDTH, sigilAnimator, sigilPaths } from '../lib/handshake-sigil';
 
 /** Between the two screens, top to top, each phone hides a strip: its status
- * bar and top bezel. Assumed about 58 dp each (40 to 50 dp of status bar and
- * 2 to 3 mm of bezel on the phones it was tried on). Each half starts that far
- * beyond the seam, so the lines carry on across the gap and the eye joins them. */
-export const SEAM_GAP_DP = 58;
+ * bar and top bezel. Assumed 80 dp each: measured, it is 40 to 50 dp of status
+ * bar and 2 to 3 mm of bezel on the phones it was tried on, but by eye the
+ * lines joined better with a wider allowance. Each half starts that far beyond
+ * the seam, so the lines carry on across the gap and the eye joins them. */
+export const SEAM_GAP_DP = 80;
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
 
 /** The phones go top to top. Each shows one half at full width, with the seam

@@ -17,7 +17,7 @@ export function handshakeSigil(exchange: ContactExchangeState): string {
 export const SIGIL_WIDTH = 256, SIGIL_HEIGHT = 400, SIGIL_SEAM = 200;
 /** The lines run this far beyond the top and bottom, so a half shifted away
  * from the seam (to allow for the phones' status bars) is never left blank. */
-export const SIGIL_OVERHANG = 60;
+export const SIGIL_OVERHANG = 90;
 /** Eight strongly different hues on the dark ground; each line gets its own. */
 const COLOURS = ['#ffffff', '#ffd400', '#ff8a00', '#ff2d55', '#e040fb', '#2f7bff', '#00e5ff', '#00e676'];
 /**
