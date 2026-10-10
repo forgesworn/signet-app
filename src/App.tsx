@@ -293,7 +293,8 @@ import {
 } from './lib/db';
 import { identityKeypairs } from './lib/contacts-sync';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
-import { forgetDerivedKeys } from './lib/crypto-store';
+import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
+import { isAppInForeground, subscribeAppForeground } from './lib/app-foreground';
 import { resolveSyncRelays } from './lib/sync-relays';
 import { deleteHeartwoodOperator, deleteHeartwoodVaultPubkeys, listAllChildRules, saveChildRule, clearChildDevice, addPendingChildRevoke, loadChildApprovedOnce, saveChildApprovedOnce, appendGuardianActing, listChildRules, tombstoneChildRule, type ApprovedOnceKinds } from './lib/db';
 import type { ChildRule } from './types/child-rules';
@@ -462,6 +463,8 @@ function formatNostrConnectServeStatus(
 export function App() {
   // Auth state (must be declared before hooks that depend on encryptionKey)
   const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
+  // Vault keys derived from this unlock key are remembered until lock (crypto-store).
+  useEffect(() => { if (encryptionKey) rememberDerivedKeysFor(encryptionKey); }, [encryptionKey]);
   const [pendingEncryptionKey, setPendingEncryptionKey] = useState<string | null>(null);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Every auto-lock path goes through this: when a relay publish is armed or
@@ -2387,7 +2390,9 @@ export function App() {
     const notifier = contactConnectionNotifier({ port: LocalNotifications, native: isNativeApp,
       current: () => !!key && !!owner && mode !== 'paired-child' && inviteSession.current.key === key
         && inviteSession.current.owner === owner && inviteSession.current.mode === mode,
-      background: () => document.visibilityState !== 'visible',
+      // The shell's word, not the page's: the always-on pulse marks a
+      // backgrounded page visible for a second every 30 s.
+      background: () => !isAppInForeground(),
     });
     inviteNotifications.current = notifier;
     return () => { inviteNotifications.current = null; void notifier.stop(); };
@@ -2621,7 +2626,7 @@ export function App() {
       } });
   }, [encryptionKey, guardianChildTransport, makeInviteService]);
   guardianChildLifecycle.current = { cancel: guardianChildCancel, retry: guardianChildRetry };
-  useContactAppInvites({ encryptionKey, enabled: !!identity && !isPairedChild,
+  useContactAppInvites({ encryptionKey, enabled: !!identity && !isPairedChild, serveInBackground: backgroundServing,
     identities: inviteScopes[0]?.identities ?? [], relays: syncRelays.write.filter(url => url.startsWith('wss:')),
     service: valid => makeInviteService('owner', valid) });
   useContactInviteMailboxes({ encryptionKey, scopes: inviteScopes, version: contactsV2Version,
@@ -3841,7 +3846,7 @@ export function App() {
       // Native: raise a local notification when the app isn't visible —
       // the screen-off guardian must learn a human decision is needed.
       // Foregrounded, the in-app modal is already showing; skip the banner.
-      if (!isNativeApp() || document.visibilityState === 'visible') return;
+      if (!isNativeApp() || isAppInForeground()) return;
       const who = entry.route.dependantId
         ? (dependants.find(d => d.id === entry.route.dependantId)?.displayName ?? 'Your child')
         : entry.client.appName;
@@ -4394,7 +4399,7 @@ export function App() {
     dropOnce: dropChildOnce,
     onRulesChanged: () => { void reloadChildRules(); },
     onNewAsk: (p: PendingChildAsk) => {
-      if (!isNativeApp() || document.visibilityState === 'visible') return;
+      if (!isNativeApp() || isAppInForeground()) return;
       const id = 0x40000000 + (parseInt(p.ask.id.slice(0, 7), 16) % 0x10000000);
       notifiedChildAsksRef.current.set(p.ask.id, id);
       void LocalNotifications.schedule({
@@ -5228,6 +5233,10 @@ export function App() {
           requestHideLock();
         }
       } else {
+        // The always-on pulse marks a backgrounded page visible for a second:
+        // not the user coming back, so the grace keeps running. A real return
+        // is handled here once the shell agrees (the subscription below).
+        if (!isAppInForeground()) return;
         // Back in front, perhaps thawed from a freeze that stopped the timer
         // ending the phone-apps window: if the window ran out meanwhile, lock
         // now, as the timer would have. `hiddenAt` is left set so a NIP-55
@@ -5242,6 +5251,9 @@ export function App() {
     const handleResume = () => { if (phoneAppsKeyExpiredNow()) lockExpiredPhoneAppsKey(); };
     document.addEventListener('visibilitychange', handleVisibility);
     document.addEventListener('resume', handleResume);
+    // The page may turn visible before the shell reports the return (or the
+    // other way round): whichever comes second completes it.
+    const stopForeground = subscribeAppForeground(() => { if (document.visibilityState !== 'hidden' && isAppInForeground()) handleVisibility(); });
     // A dependency change while hidden (the approve handler moving to the
     // code page, an inbound auth request) re-runs this effect, and the
     // cleanup below has just cancelled the grace timer. No visibilitychange
@@ -5253,6 +5265,7 @@ export function App() {
       events.forEach(ev => window.removeEventListener(ev, handler));
       document.removeEventListener('visibilitychange', handleVisibility);
       document.removeEventListener('resume', handleResume);
+      stopForeground();
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       if (graceTimer) clearTimeout(graceTimer);
     };

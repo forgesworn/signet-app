@@ -18,17 +18,23 @@ import { deriveAesKey, aesEncrypt, aesDecrypt, SALT_LENGTH, IV_LENGTH } from './
  * Only for the 256-bit random unlock key: a passphrase shorter than
  * MIN_REMEMBERED_PASSPHRASE (a PIN) is never remembered. The keys are
  * non-extractable CryptoKeys, and the unlock key that yields them is already
- * held while unlocked, so remembering them exposes nothing new. Cleared by
- * forgetDerivedKeys() on lock.
+ * held while unlocked, so remembering them exposes nothing new. Switched on
+ * for one unlock key by rememberDerivedKeysFor() at unlock, and off again by
+ * forgetDerivedKeys() on lock, so a read still running at lock cannot refill it.
  */
 const remembered = new Map<string, Promise<CryptoKey>>();
 const REMEMBER_MAX = 512;
 const MIN_REMEMBERED_PASSPHRASE = 32;
 let rememberedFor: string | undefined;
+/** At unlock: remember the keys derived from this unlock key until lock. */
+export function rememberDerivedKeysFor(unlockKey: string): void {
+  if (unlockKey.length < MIN_REMEMBERED_PASSPHRASE || rememberedFor === unlockKey) return;
+  remembered.clear();
+  rememberedFor = unlockKey;
+}
 function rememberedKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
-  if (passphrase.length < MIN_REMEMBERED_PASSPHRASE) return deriveAesKey(passphrase, salt);
-  // One unlock key at a time: another one starts afresh.
-  if (rememberedFor !== passphrase) { remembered.clear(); rememberedFor = passphrase; }
+  // Only the unlock key switched on at unlock; anything else (or after lock) derives afresh.
+  if (rememberedFor === undefined || passphrase !== rememberedFor) return deriveAesKey(passphrase, salt);
   const id = saltKey(salt);
   const hit = remembered.get(id);
   if (hit) { remembered.delete(id); remembered.set(id, hit); return hit; }

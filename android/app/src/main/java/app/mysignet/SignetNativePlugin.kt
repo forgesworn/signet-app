@@ -93,8 +93,18 @@ class SignetNativePlugin : Plugin() {
     // The handshake radio runs only while the app is on screen. The always-on
     // bunker keeps the WebView believing it is visible in the background (see
     // MainActivity), so the page cannot see this itself: stop here, then tell it.
+    /** Whether the activity is started (on screen). The page asks once at start-up,
+     * since a lifecycle event sent before it listened is not replayed. */
+    @Volatile private var activityStarted = false
+
+    @PluginMethod
+    fun lifecycleState(call: PluginCall) {
+        call.resolve(JSObject().put("state", if (activityStarted) "foreground" else "background"))
+    }
+
     override fun handleOnStop() {
         super.handleOnStop()
+        activityStarted = false
         nearby.pause()
         HandshakeNfc.pause()
         notifyListeners("nearbyLifecycle", JSObject().put("state", "background"))
@@ -102,6 +112,7 @@ class SignetNativePlugin : Plugin() {
 
     override fun handleOnStart() {
         super.handleOnStart()
+        activityStarted = true
         nearby.resume()
         HandshakeNfc.resume()
         notifyListeners("nearbyLifecycle", JSObject().put("state", "foreground"))

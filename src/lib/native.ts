@@ -39,6 +39,8 @@ export interface SignetNativePlugin {
   nearbyQuiet(): Promise<void>;
   /** Handshake NFC tap: host card emulation plus reader mode, alternating. */
   nfcStatus(): Promise<{ supported: boolean; enabled: boolean }>;
+  /** Whether the activity is on screen right now (see app-foreground.ts). */
+  lifecycleState(): Promise<{ state: 'background' | 'foreground' }>;
   /** Offer `code` (this screen's session code) to a phone held against this one, and read theirs. */
   nfcStart(opts: { code: string }): Promise<void>;
   nfcStop(): Promise<void>;

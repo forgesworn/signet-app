@@ -60,9 +60,10 @@ describe('isEncrypted', () => {
 describe('derived keys remembered until lock', () => {
   const unlockKey = 'ab'.repeat(32);
   it('derives a stored row\'s key once per unlock, again after forgetDerivedKeys, and never for a PIN', async () => {
-    const { forgetDerivedKeys } = await import('./crypto-store');
+    const { forgetDerivedKeys, rememberDerivedKeysFor } = await import('./crypto-store');
     const { vi } = await import('vitest');
     forgetDerivedKeys();
+    rememberDerivedKeysFor(unlockKey);
     const sealed = await encryptSecret('row', unlockKey);
     const spy = vi.spyOn(crypto.subtle, 'deriveKey');
     try {
@@ -72,8 +73,10 @@ describe('derived keys remembered until lock', () => {
       await decryptSecret(await encryptSecret('other', unlockKey), unlockKey);
       expect(spy).toHaveBeenCalledTimes(3);
       forgetDerivedKeys();
-      await decryptSecret(sealed, unlockKey);
-      expect(spy).toHaveBeenCalledTimes(4);
+      // Locked: nothing is remembered, so a read still running at lock cannot refill it.
+      await decryptSecret(sealed, unlockKey); await decryptSecret(sealed, unlockKey);
+      expect(spy).toHaveBeenCalledTimes(5);
+      rememberDerivedKeysFor(unlockKey);
       // A short passphrase (a PIN) is derived every time, never remembered.
       const pinSealed = await encryptSecret('pin row', '123456');
       spy.mockClear();
@@ -82,8 +85,9 @@ describe('derived keys remembered until lock', () => {
     } finally { spy.mockRestore(); forgetDerivedKeys(); }
   });
   it('a different unlock key never reuses a remembered key', async () => {
-    const { forgetDerivedKeys } = await import('./crypto-store');
+    const { forgetDerivedKeys, rememberDerivedKeysFor } = await import('./crypto-store');
     forgetDerivedKeys();
+    rememberDerivedKeysFor(unlockKey);
     const sealed = await encryptSecret('row', unlockKey);
     expect(await decryptSecret(sealed, unlockKey)).toBe('row');
     await expect(decryptSecret(sealed, 'cd'.repeat(32))).rejects.toThrow();
