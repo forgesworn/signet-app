@@ -2,7 +2,7 @@
 <host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/handshake_nfc"
     android:requireDeviceUnlock="true">
-    <aid-group android:description="@string/handshake_nfc" android:category="other">
-        <aid-filter android:name="F05349474E455448" />
-    </aid-group>
+    <!-- No static AID: HandshakeNfc registers it only while a handshake screen
+         is on show, so a reader cannot tell the app is installed, and a locked
+         phone shows no "tap again" dialog for it. -->
 </host-apdu-service>

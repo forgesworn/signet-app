@@ -11,6 +11,9 @@ class HandshakeApduTest {
     private val readerCode = "SGH2:ABC123 \$%*+-./:".toByteArray(Charsets.US_ASCII)
     private val cardCode = "SGH2:XYZ789".toByteArray(Charsets.US_ASCII)
 
+    @Test fun `the registered AID string is the AID the reader selects`() {
+        assertEquals(HandshakeApdu.AID.joinToString("") { "%02X".format(it) }, HandshakeApdu.AID_HEX)
+    }
     @Test fun `one touch swaps both codes`() {
         val heard = mutableListOf<String>()
         val read = HandshakeApdu.read({ HandshakeApdu.respond(it, cardCode) { peer -> heard += peer } }, readerCode)

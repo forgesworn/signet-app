@@ -2,10 +2,12 @@ package app.mysignet
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.cardemulation.CardEmulation
 import android.nfc.cardemulation.HostApduService
 import android.nfc.tech.IsoDep
 import android.os.Bundle
@@ -24,6 +26,7 @@ import java.security.SecureRandom
 object HandshakeApdu {
     /** Proprietary AID: F0 + "SIGNETH". */
     val AID = byteArrayOf(0xF0.toByte(), 0x53, 0x49, 0x47, 0x4E, 0x45, 0x54, 0x48)
+    const val AID_HEX = "F05349474E455448"
     private val OK = byteArrayOf(0x90.toByte(), 0x00)
     private val NOT_AVAILABLE = byteArrayOf(0x6A, 0x82.toByte())
     private val WRONG_DATA = byteArrayOf(0x6A, 0x80.toByte())
@@ -117,9 +120,29 @@ object HandshakeNfc {
             stopNow()
             code = bytes; listener = onPeer
             this.activity = WeakReference(activity)
+            if (foreground) offer(activity)
             cycle()
         }
     }
+
+    private fun component(context: Context) = ComponentName(context, HandshakeNfcService::class.java)
+    private fun cardEmulation(context: Context): CardEmulation? =
+        try { NfcAdapter.getDefaultAdapter(context)?.let { CardEmulation.getInstance(it) } } catch (_: Exception) { null }
+    /** Offer the AID to readers: only while a handshake screen is on show. */
+    private fun offer(act: Activity) {
+        val emulation = cardEmulation(act) ?: return
+        try { emulation.registerAidsForService(component(act), CardEmulation.CATEGORY_OTHER, listOf(HandshakeApdu.AID_HEX)) } catch (_: Exception) {}
+        // Wins over any other app claiming the same AID while this screen shows.
+        try { emulation.setPreferredService(act, component(act)) } catch (_: Exception) {}
+    }
+    /** Take the AID back, so nothing answers to it (dynamic AIDs outlive the process). */
+    private fun withdraw(context: Context, act: Activity?) {
+        val emulation = cardEmulation(context) ?: return
+        if (act != null) try { emulation.unsetPreferredService(act) } catch (_: Exception) {}
+        try { emulation.removeAidsForService(component(context), CardEmulation.CATEGORY_OTHER) } catch (_: Exception) {}
+    }
+    /** On start-up: a crash mid-handshake may have left the AID registered. */
+    fun clearStale(context: Context) { main.post { if (code == null) withdraw(context.applicationContext, null) } }
     private fun cycle() {
         val act = activity?.get() ?: return
         val adapter = NfcAdapter.getDefaultAdapter(act) ?: return
@@ -153,13 +176,14 @@ object HandshakeNfc {
         }
     }
     /** The activity left the screen: offer nothing, read nothing, until it returns. */
-    fun pause() { foreground = false; main.post { main.removeCallbacks(cycler); offNow() } }
-    fun resume() { foreground = true; main.post { if (code != null && foreground) cycle() } }
+    fun pause() { foreground = false; main.post { main.removeCallbacks(cycler); offNow(); activity?.get()?.let { withdraw(it, it) } } }
+    fun resume() { foreground = true; main.post { val act = activity?.get(); if (code != null && foreground && act != null) { offer(act); cycle() } } }
     fun stop() { main.post { stopNow() } }
     private fun stopNow() {
         code = null; listener = null
         main.removeCallbacks(cycler)
         offNow()
+        activity?.get()?.let { withdraw(it, it) }
         activity = null
     }
     private fun offNow() {
