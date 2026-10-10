@@ -10,9 +10,12 @@ vi.mock('../hooks/useHandshake', () => ({ useHandshake: mocks.handshake }));
 vi.mock('../components/HandshakeCamera', () => ({ HandshakeCamera: () => <video data-testid="live-camera" /> }));
 vi.mock('../components/QRCode', () => ({ QRCode: () => <canvas data-testid="invite-qr" /> }));
 vi.mock('../hooks/useScreenWakeLock', () => ({ useScreenWakeLock: vi.fn() }));
+vi.mock('../hooks/useContactAvatar', () => ({ useContactAvatar: vi.fn(() => null) }));
+vi.mock('../hooks/useContactPicture', () => ({ useContactPicture: vi.fn(() => ({ url: null, badgeUrl: null })) }));
 const props = () => ({ persona: '1'.repeat(64), encryptionKey: 'test', version: 0, relays: ['wss://relay.example/'],
   service: vi.fn(() => ({} as ContactInviteService)), info: { name: 'Private persona', hasPhoto: true }, choose: false,
-  buildCard: vi.fn(async () => undefined), onChildInvite: vi.fn(), onTier: vi.fn(async () => {}), onOpenContact: vi.fn(async () => {}) });
+  buildCard: vi.fn(async () => undefined), onChildInvite: vi.fn(), onOpenContact: vi.fn(async () => {}),
+  relayUrl: 'wss://relay.example/', directoryId: 'owner' });
 afterEach(() => {
   cleanup(); vi.clearAllMocks();
   mocks.handshake.mockImplementation((_host: HandshakeHost) => ({ view: { phase: 'reading' }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() }));
@@ -47,8 +50,33 @@ it('offers the saved contact below the seal without requiring a tier choice', as
   render(<ContactHandshake {...p} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Open contact' }));
   await waitFor(() => expect(p.onOpenContact).toHaveBeenCalledWith(contactId));
-  expect(p.onTier).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Kin' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Kith' })).not.toBeInTheDocument();
   expect(screen.getByRole('img', { name: 'Handshake sigil' })).toBeInTheDocument();
+});
+const partner = '3'.repeat(64);
+const sealedWith = (view: Partial<HandshakeView>) => ({ view: { phase: 'sealed', contactId: 'a'.repeat(32), sigil: 'b'.repeat(64), partner, ...view } as HandshakeView,
+  scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+it('shows who arrived under the seal, and says they went straight to contacts', async () => {
+  mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam' }));
+  render(<ContactHandshake {...props()} />);
+  expect(await screen.findByText('Sam')).toBeInTheDocument();
+  expect(screen.getByText(/^npub1/)).toBeInTheDocument();
+  expect(screen.getByText('Saved straight to your contacts. You can change Kith or Kin on their contact page.')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Tap to show who you added' })).not.toBeInTheDocument();
+});
+it('arrives blurred, shown on a tap, when the user blurs identities', async () => {
+  mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam' }));
+  const view = render(<ContactHandshake {...props()} blurArrival />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Tap to show who you added' }));
+  expect(view.container.querySelector('.handshake-arrival.is-hidden')).toBeNull();
+  expect(screen.getByText('Sam')).toBeVisible();
+});
+it('blurs the arrival before any tap', async () => {
+  mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam' }));
+  const view = render(<ContactHandshake {...props()} blurArrival />);
+  await screen.findByRole('button', { name: 'Tap to show who you added' });
+  expect(view.container.querySelector('.handshake-arrival.is-hidden .handshake-arrival-body')?.getAttribute('aria-hidden')).toBe('true');
 });
 it('does not offer a contact before it is saved', async () => {
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');

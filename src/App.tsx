@@ -11641,7 +11641,8 @@ export function App() {
           setContactsIdentityChoice(pendingHandshake.persona);
           setSelectedContactId(contactId); navigateTo('contact-detail');
         }}
-        onTier={async (contactId, tier) => { await contactsV2.reload(); await contactsV2.setTier(contactId, tier); }} />
+        relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL} directoryId={contactsScope.directoryId ?? 'owner'}
+        blurArrival={blurIdentityNames} />
     </Layout>;
   }
 

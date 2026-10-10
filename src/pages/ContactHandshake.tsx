@@ -14,14 +14,42 @@ import { JigsawSigil } from '../components/JigsawSigil';
 import { Icon } from '../components/Icon';
 import { useScreenWakeLock } from '../hooks/useScreenWakeLock';
 import { isNativeApp, SignetNative } from '../lib/native';
-import { encodeNpub, hexToBytes } from '../lib/signet';
+import { encodeNpub, hexToBytes, shortNpub } from '../lib/signet';
+import { ContactAvatar } from '../components/ContactAvatar';
+import { useContactAvatar } from '../hooks/useContactAvatar';
+import { useContactPicture } from '../hooks/useContactPicture';
 
 interface Props extends Omit<HandshakeHost, 'card'> {
   encryptionKey: string; info: ContactCardInfo; choose: boolean;
   buildCard(choice: ContactCardChoice): ReturnType<HandshakeHost['card']>;
   pairedChild?: boolean; onChildInvite(raw: string): void;
-  onTier(contactId: string, tier: 'kith' | 'kin'): Promise<void>;
   onOpenContact(contactId: string): Promise<void>;
+  /** For the arrived contact's picture. */
+  relayUrl: string; directoryId: string;
+  /** The user blurs identities on screen: the arrival comes blurred, shown on a tap. */
+  blurArrival?: boolean;
+}
+/** Who just arrived, so the new contact is felt to be on this phone: picture,
+ * the name they shared and their key. Blurred until tapped when the user
+ * blurs identities, for onlookers. */
+function HandshakeArrival(props: { partner: string; name?: string; relayUrl: string; directoryId: string; contactId: string;
+  encryptionKey: string; blur?: boolean }) {
+  const [shown, setShown] = useState(!props.blur);
+  const shared = useContactAvatar(props.partner, props.relayUrl, props.encryptionKey);
+  const picture = useContactPicture({ encryptionKey: props.encryptionKey, pubkey: props.partner, directoryId: props.directoryId,
+    contactId: props.contactId, sharedUrl: shared });
+  const name = props.name?.trim();
+  return <div className={`handshake-arrival${shown ? '' : ' is-hidden'}`}>
+    <div className="handshake-arrival-body" aria-hidden={!shown}>
+      <ContactAvatar url={picture.url} name={name || props.partner} pubkey={props.partner} size={64} />
+      <div>
+        <p className="handshake-arrival-name">{name || COPY.noName}</p>
+        <p className="handshake-arrival-key mono">{shortNpub(props.partner)}</p>
+      </div>
+    </div>
+    {!shown && <button type="button" className="btn btn-ghost handshake-arrival-reveal" onClick={() => setShown(true)}>{COPY.reveal}</button>}
+    <p className="field-hint">{COPY.added}</p>
+  </div>;
 }
 // S1 decides this value on the real screen. Rear is the working baseline.
 export const HANDSHAKE_DEFAULT_CAMERA = 'environment' as const;
@@ -88,9 +116,6 @@ function ChildHandshake(props: Props) {
 function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   const { view, scan, oneWay, confirm, withoutPhoto } = useHandshake(props);
   const [facing, setFacing] = useState<'user' | 'environment'>(HANDSHAKE_DEFAULT_CAMERA);
-  const [tierBusy, setTierBusy] = useState(false);
-  const [tierChosen, setTierChosen] = useState(false);
-  const [tierFailed, setTierFailed] = useState(false);
   const [opening, setOpening] = useState(false);
   const [openFailed, setOpenFailed] = useState(false);
   const active = view.phase === 'reading' || view.phase === 'waiting';
@@ -126,15 +151,9 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     {active && view.scanned && !view.scansConfirmed && !tapped && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}
-    {view.phase === 'sealed' && view.contactId && !tierChosen && <div className="handshake-tier">
-      <p>{COPY.tier}</p>
-      {(['kith', 'kin'] as const).map(tier => <button key={tier} className="btn btn-secondary" disabled={tierBusy} onClick={() => {
-        setTierBusy(true); setTierFailed(false);
-        void props.onTier(view.contactId!, tier).then(() => setTierChosen(true)).catch(() => setTierFailed(true)).finally(() => setTierBusy(false));
-      }}>{COPY[tier]}</button>)}
-      <button className="btn btn-ghost" onClick={() => setTierChosen(true)}>{COPY.keepTier}</button>
-      {tierFailed && <p role="alert">{CONTACT_ACTION_FAILED_COPY}</p>}
-    </div>}
+    {view.phase === 'sealed' && view.contactId && view.partner && <HandshakeArrival partner={view.partner} name={view.name}
+      relayUrl={props.relayUrl} directoryId={props.directoryId} contactId={view.contactId} encryptionKey={props.encryptionKey}
+      blur={props.blurArrival} />}
     {view.phase === 'sealed' && view.contactId && <div className="handshake-open-contact">
       <button className="btn btn-primary" disabled={opening} onClick={() => {
         setOpening(true); setOpenFailed(false);

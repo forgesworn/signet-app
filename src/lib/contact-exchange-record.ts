@@ -143,9 +143,11 @@ export function recordCompletedContactExchange(args: { directoryId: string; key:
     const changes: ContactOperation[] = [];
     if (!existing || existing.lifecycle === 'removed') {
       changes.push(make('add', { type: existing?.type ?? 'person', displayName,
-        tier: e.handshake ? existing?.tier ?? 'ken' : existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
+        // Someone you exchanged with (a Handshake included: you met them) is
+        // at least Kith; the user raises them to Kin on their contact page.
+        tier: existing?.tier === 'kin' ? 'kin' : 'kith', ownerIdentityPubkey: own }, 'add'));
     } else {
-      if (!e.handshake && existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
+      if (existing.tier === 'ken') changes.push(make('set-tier', { tier: 'kith' }, 'tier'));
       if (displayName !== existing.displayName) changes.push(make('rename', { displayName }, 'rename'));
     }
     if (!existing) changes.push(make('add-identity', { itemId: id(seed + ':identity'), pubkey: peer,

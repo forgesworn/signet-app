@@ -261,14 +261,14 @@ it('M4: a replayed older exchange never overwrites a newer received key; a newer
   expect(await getContactAvatar(peer, key)).toMatchObject({ shareKey: photo.key, fallback: { hash: 'c'.repeat(64) } });
 });
 
-it('records a mutual Handshake using existing operations, without promoting Ken', async () => {
+it('records a mutual Handshake using existing operations, as Kith', async () => {
   const { handshakeSigil, readHandshakeEvidence } = await import('./handshake-sigil');
   const e = exchange();
   const contactId = await recordCompletedContactExchange({ directoryId: 'owner', key, actor, isCurrent: () => true,
     exchange: { ...e, handshake: { startedAt: 100, strength: 'mutual', confirmedAt: 103, sigil: handshakeSigil(e) } } });
   const ops = await listContactOperationsV2('owner', key);
   const contact = applyOperations(ops).get(`owner/${contactId}`)!;
-  expect(contact.tier).toBe('ken');
+  expect(contact.tier).toBe('kith');
   expect(contact.identities[0].verification).toBe('mutual');
   expect(contact.checks?.[0].method).toBe('in-person');
   expect(readHandshakeEvidence(contact.checks?.[0].evidence)).toEqual({ strength: 'mutual', sigil: handshakeSigil(e) });

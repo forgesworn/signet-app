@@ -99,6 +99,7 @@ it('confirms both scans only on a reveal bound to this session, then the lower p
   expect(s.service.request).not.toHaveBeenCalled();
   s.deliver(s.peerReveal());
   await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(hook.result.current.view.partner).toBe(s.peerInvite.recipient);
   expect(haptics.play).toHaveBeenCalledWith('double');
   expect((s.service.request.mock.calls[0] as unknown[])[1]).toEqual(s.peerInvite);
   const evidence = (s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as unknown as Record<string, unknown>;

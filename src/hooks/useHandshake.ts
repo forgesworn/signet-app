@@ -40,6 +40,8 @@ export interface HandshakeView {
   code?: string; name?: string; sigil?: string;
   phase: 'reading' | 'waiting' | 'checking' | 'sealed' | 'expired' | 'failed';
   contactId?: string; half?: 'top' | 'bottom';
+  /** The other person's persona key, once their contact is saved. */
+  partner?: string;
   /** This phone read the other screen's code: by its camera, or by a tap (`via`). */
   scanned?: boolean; via?: 'camera' | 'tap';
   scansConfirmed?: boolean;
@@ -191,7 +193,8 @@ export function useHandshake(host: HandshakeHost) {
       const contactId = await service.confirmHandshake(exchangeId, now(), evidence);
       if (closed) return;
       sealed = true;
-      handshakeHaptic('thud'); publish({ phase: 'sealed', contactId, sigil: handshakeSigil(currentExchange) });
+      const partner = currentExchange.role === 'requester' ? currentExchange.request.to : currentExchange.request.from;
+      handshakeHaptic('thud'); publish({ phase: 'sealed', contactId, sigil: handshakeSigil(currentExchange), partner });
       endNearby();
       latest.current.onSaved?.(contactId);
       } finally { sealing = false; }
