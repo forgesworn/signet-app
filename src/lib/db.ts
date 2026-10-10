@@ -11,7 +11,8 @@ import type { AppGrantV2, ChildRule } from '../types';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { encryptSecret, decryptSecret, isEncrypted, encryptSecretsBatch, decryptSecretsBatch, forgetDerivedKeys } from './crypto-store';
+import { encryptSecret, encryptSecretAhead, decryptSecret, isEncrypted, encryptSecretsBatch, encryptSecretsBatchAhead, encryptsAhead, decryptSecretsBatch, forgetDerivedKeys } from './crypto-store';
+import { forgetContactInviteVaultCache } from './contact-invite-vault-cache';
 import { isValidRelayUrl } from './relay-url';
 import type { ChildRulesPayload } from './child-rules-wire';
 import { liftDependantPublicProfileConfig } from './lift-public-profile-config';
@@ -710,7 +711,7 @@ export async function saveContactOperationsV2(ops: ContactOperation[], encryptio
     const { operationId, directoryId, contactId, logicalClock, createdAt, ...sensitive } = op;
     return JSON.stringify(sensitive);
   });
-  const encryptedDataList = await encryptSecretsBatch(sensitivePayloads, encryptionKey);
+  const encryptedDataList = await (encryptsAhead(encryptionKey) ? encryptSecretsBatchAhead : encryptSecretsBatch)(sensitivePayloads, encryptionKey);
   const db = await getDB();
   const tx = db.transaction('contactOpsV2', 'readwrite');
   for (let i = 0; i < ops.length; i += 1) {
@@ -1373,9 +1374,10 @@ export interface ContactAvatarRecord {
 
 /** Save a recipient-side contact-share key. shareKey (and any fallback) encrypted at rest. */
 export async function saveContactAvatar(rec: ContactAvatarRecord, encryptionKey: string): Promise<void> {
-  const encrypted = await encryptSecret(rec.shareKey, encryptionKey);
+  const encrypt = encryptsAhead(encryptionKey) ? encryptSecretAhead : encryptSecret;
+  const encrypted = await encrypt(rec.shareKey, encryptionKey);
   const { fallback, ...rest } = rec;
-  const sealedFallback = fallback ? await encryptSecret(JSON.stringify({ server: fallback.server, hash: fallback.hash }), encryptionKey) : undefined;
+  const sealedFallback = fallback ? await encrypt(JSON.stringify({ server: fallback.server, hash: fallback.hash }), encryptionKey) : undefined;
   const db = await getDB();
   await db.put('contactAvatars', { ...rest, shareKey: encrypted, ...(sealedFallback ? { fallback: sealedFallback } : {}) });
 }
@@ -2564,6 +2566,7 @@ export async function purgeAllUserData(): Promise<void> {
   if (db.objectStoreNames.contains('contactRecordsV2')) await db.clear('contactRecordsV2');
   if (db.objectStoreNames.contains('contactOpsV2')) await db.clear('contactOpsV2');
   forgetContactOperationsCache();
+  forgetContactInviteVaultCache();
   if (db.objectStoreNames.contains('contactImportSources')) await db.clear('contactImportSources');
   // R-22 (fix round 1, minor 1): the grant wipe rides the SAME queue as every
   // other grant write. Outside it, a write already queued when the purge

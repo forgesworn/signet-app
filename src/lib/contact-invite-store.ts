@@ -14,6 +14,7 @@ import { recordPartnerCardPhoto } from './contact-exchange-record';
 import { decryptSecret } from './crypto-store';
 import { privateVaultQueue } from './private-vault-queue';
 import { updateEncryptedPrivateState } from './private-vault-store';
+import { cachedContactInviteVault, checkedContactExchange, contactInviteVaultCacheGeneration, rememberContactInviteVault } from './contact-invite-vault-cache';
 
 export interface ContactInviteAppOrigin {
   grantId: string; requestId: string; requestHash: string; appName: string;
@@ -70,7 +71,7 @@ function packetHash(packet: SealedContactPacket): string {
 }
 function arrivalPacketHash(arrival: ContactArrival): string | undefined { return arrival.packet ? packetHash(arrival.packet) : arrival.packetHash; }
 const stamp = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
-function validExchange(state: StoredContactExchange): boolean {
+function checkExchange(state: StoredContactExchange): boolean {
   try {
     if (!state || !['requester', 'recipient'].includes(state.role) || !HEX.test(state.nonce)
       || !['requested', 'accepted', 'reveal-pending', 'complete', 'declined'].includes(state.phase)) return false;
@@ -147,6 +148,7 @@ export async function parseContactInviteVault(raw: string, directoryId: string):
       row.request = request;
     }
   }
+  const validExchange = (state: StoredContactExchange) => checkedContactExchange(state, checkExchange);
   if (!value.exchanges.every(validExchange) || !(value.conflicts ?? []).every(validExchange)) throw new Error('Invalid contact exchange state');
   for (const row of value.outbox) {
     if (!HEX.test(row.id) || row.id !== row.event?.id || row.event.kind !== 1059 || row.event.content.length > 32000
@@ -158,18 +160,41 @@ export async function parseContactInviteVault(raw: string, directoryId: string):
   }
   return value;
 }
+/** The vault this ciphertext holds, validated in full. Only a value that
+ * passed `parseContactInviteVault` for exactly this ciphertext and key is
+ * reused (contact-invite-vault-cache.ts). `lenient`: a stored vault that no
+ * longer validates comes back as plain JSON instead of throwing. */
+async function decodeContactInviteVault(directoryId: string, key: string, encrypted: string, since: number, lenient = false): Promise<ContactInviteVault> {
+  const record = recordId(directoryId);
+  const hit = cachedContactInviteVault<ContactInviteVault>(record, key, encrypted);
+  if (hit) return hit;
+  const raw = await decryptSecret(encrypted, key);
+  let value: ContactInviteVault;
+  try { value = await parseContactInviteVault(raw, directoryId); }
+  catch (error) { if (lenient) return JSON.parse(raw) as ContactInviteVault; throw error; }
+  rememberContactInviteVault(record, key, encrypted, value, since);
+  return value;
+}
 export async function loadContactInviteVault(directoryId: string, key: string): Promise<ContactInviteVault> {
+  const since = contactInviteVaultCacheGeneration();
   const row = await (await getDb()).get('privateVaultState', recordId(directoryId));
-  return row ? parseContactInviteVault(await decryptSecret(row.encrypted, key), directoryId) : empty(directoryId);
+  return row ? decodeContactInviteVault(directoryId, key, row.encrypted, since) : empty(directoryId);
 }
 export function updateContactInviteVault(directoryId: string, key: string,
   change: (state: ContactInviteVault) => ContactInviteVault): Promise<ContactInviteVault> {
   return privateVaultQueue.run(async () => {
+    const since = contactInviteVaultCacheGeneration();
     // The synchronous change is re-run on CAS collision; it must have no effects.
     const next = await updateEncryptedPrivateState<ContactInviteVault>(recordId(directoryId), key, async old => {
       const next = change(old ?? empty(directoryId));
       if (old && JSON.stringify(next) === JSON.stringify(old)) return old;
       return parseContactInviteVault(JSON.stringify(next), directoryId);
+    }, undefined, {
+      // An update always read the stored vault as plain JSON; a vault that no
+      // longer validates still does. The change's result is validated below.
+      decode: encrypted => decodeContactInviteVault(directoryId, key, encrypted, since, true),
+      // Every committed value is a `parseContactInviteVault` result.
+      committed: (encrypted, value) => rememberContactInviteVault(recordId(directoryId), key, encrypted, value, since),
     });
     return next;
   });

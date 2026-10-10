@@ -94,6 +94,8 @@ export class ContactInviteService {
    * no longer approved is withdrawn; an expired one is reported before
    * compaction declines it, so its approved request can settle. */
   private async guardChildExchanges(now?: number): Promise<{ blocked: Set<string>; retired: Set<string> }> {
+    // Not a child directory: nothing to guard, and no read to pay for.
+    if (!this.options.childPairing && !this.options.childAuthority) return { blocked: new Set(), retired: new Set() };
     const state = await this.read();
     const stale = await this.staleChildExchanges(state.exchanges);
     const blocked = new Set(stale), retired = new Set(stale);

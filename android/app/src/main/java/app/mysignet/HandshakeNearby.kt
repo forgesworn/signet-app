@@ -20,8 +20,8 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Base64
 import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -95,14 +95,17 @@ class HandshakeNearby(
         @Volatile var trusted = false
         private val trustGate = CountDownLatch(1)
         private val writer = Executors.newSingleThreadExecutor()
-        private val out = DataOutputStream(socket.outputStream)
+        private val out = socket.outputStream
         private val closed = AtomicBoolean(false)
 
         fun send(bytes: ByteArray) {
             if (closed.get()) return
+            // Length and bytes in one write: on LE CoC each write is its own
+            // packet, so a separate 4-byte prefix cost four extra packets.
+            val frame = ByteBuffer.allocate(4 + bytes.size).putInt(bytes.size).put(bytes).array()
             try {
                 writer.execute {
-                    try { out.writeInt(bytes.size); out.write(bytes); out.flush() } catch (_: IOException) { close() }
+                    try { out.write(frame); out.flush() } catch (_: IOException) { close() }
                 }
             } catch (_: RejectedExecutionException) {
                 // Closed between the check and the call; the frame is moot.

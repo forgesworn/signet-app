@@ -34,6 +34,7 @@ import { uncheckedAppConnection } from './lib/contact-app-notice';
 import { useContactAppInvites } from './hooks/useContactAppInvites';
 import { ContactInviteQRCard } from './components/ContactInviteQRCard';
 import { forgetContactOperationsCache, getOrCreateContactsDeviceId } from './lib/db';
+import { forgetContactInviteVaultCache } from './lib/contact-invite-vault-cache';
 import { BotCarouselCard } from './components/BotCarouselCard';
 import { useBotInventory } from './hooks/useBotInventory';
 import { publishToRelays } from './lib/sync-relays';
@@ -4604,6 +4605,7 @@ export function App() {
       // locked device can't read the cached sync plaintexts.
       forgetSyncCacheKeys();
       forgetContactOperationsCache();
+      forgetContactInviteVaultCache();
       // The vault keys derived from the unlock key this session.
       forgetDerivedKeys();
       // A52: and the decrypted child-rule memo.

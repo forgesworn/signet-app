@@ -510,3 +510,18 @@ it('M3: a refused accept builds no card; an allowed one builds it once and sends
   expect(builder).toHaveBeenCalledTimes(1);
   expect((await b.service.read()).exchanges[0].acceptance?.card).toEqual({ name: 'Bea' });
 });
+
+it('an owner directory spends no vault read on the child guard; a dependant directory still guards', async () => {
+  const now = 1700000000;
+  const owner = party('01'.repeat(32), 'owner');
+  const ownerRead = vi.spyOn(owner.service, 'read');
+  await owner.service.openInbox(now);
+  await owner.service.flush(now);
+  expect(ownerRead).toHaveBeenCalledTimes(2);
+  const childPairing = vi.fn(async () => ({ endpoint: 'e'.repeat(64), client: 'f'.repeat(64) }));
+  const child = party('02'.repeat(32), `dependant:${'a'.repeat(64)}`, { childPairing, childAuthority: async () => 'go' as const });
+  const childRead = vi.spyOn(child.service, 'read');
+  await child.service.openInbox(now);
+  await child.service.flush(now);
+  expect(childRead).toHaveBeenCalledTimes(4);
+});
