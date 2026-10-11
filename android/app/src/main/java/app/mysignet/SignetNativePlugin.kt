@@ -616,19 +616,19 @@ class SignetNativePlugin : Plugin() {
         val code = call.getString("code")
         if (code == null || !HandshakeApdu.validCode(code.toByteArray(Charsets.US_ASCII))) { call.reject("invalid code"); return }
         if (!HandshakeNfc.supported(context)) { call.reject("unsupported"); return }
-        HandshakeNfc.start(activity, code) { peer -> notifyListeners("nfcPeer", JSObject().put("code", peer)) }
-        call.resolve()
+        val session = HandshakeNfc.start(activity, code) { peer -> notifyListeners("nfcPeer", JSObject().put("code", peer)) }
+        call.resolve(JSObject().put("session", session))
     }
 
     @PluginMethod
     fun nfcQuiet(call: PluginCall) {
-        HandshakeNfc.quiet()
+        HandshakeNfc.quiet(call.getInt("session"))
         call.resolve()
     }
 
     @PluginMethod
     fun nfcStop(call: PluginCall) {
-        HandshakeNfc.stop()
+        HandshakeNfc.stop(call.getInt("session"))
         call.resolve()
     }
 

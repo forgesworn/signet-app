@@ -75,3 +75,19 @@ class HandshakeNfcPlanTest {
         assertEquals(HandshakeNfcPlan.OFF, HandshakeNfcPlan.of(hasCode = false, quiet = false, foreground = true))
     }
 }
+
+class HandshakeNfcSessionTest {
+    @Test fun `only the current session may be quieted or stopped`() {
+        assertTrue(HandshakeNfcSession.accepts(current = 7, requested = 7))
+        assertFalse(HandshakeNfcSession.accepts(current = 7, requested = 6))
+        assertFalse(HandshakeNfcSession.accepts(current = 7, requested = 8))
+    }
+    @Test fun `no session running accepts no numbered call, so a late call after a stop does nothing`() {
+        assertFalse(HandshakeNfcSession.accepts(current = 0, requested = 7))
+        assertFalse(HandshakeNfcSession.accepts(current = 0, requested = 0))
+    }
+    @Test fun `the activity being destroyed always releases`() {
+        assertTrue(HandshakeNfcSession.accepts(current = 7, requested = null))
+        assertTrue(HandshakeNfcSession.accepts(current = 0, requested = null))
+    }
+}

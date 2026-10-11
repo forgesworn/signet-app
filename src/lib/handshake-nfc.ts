@@ -28,12 +28,15 @@ export function nativeNfc(): HandshakeNfc | null {
     status: () => SignetNative.nfcStatus(),
     async start(code, onPeer) {
       const sub = await SignetNative.addListener('nfcPeer', e => { if (typeof e.code === 'string') onPeer(e.code); });
-      try { await SignetNative.nfcStart({ code }); } catch (error) { void sub.remove(); throw error; }
-      let removed = false;
+      let session: number;
+      try { session = (await SignetNative.nfcStart({ code })).session; } catch (error) { void sub.remove(); throw error; }
+      let removed = false, quieted = false, stopped = false;
       const unlisten = () => { if (!removed) { removed = true; void sub.remove(); } };
+      // Each call carries this start's session number: native ignores one that is not
+      // the current session's, so a late call from an old screen cannot touch a newer one.
       return {
-        quiet: () => { unlisten(); void SignetNative.nfcQuiet().catch(() => {}); },
-        stop: () => { unlisten(); void SignetNative.nfcStop().catch(() => {}); },
+        quiet: () => { if (quieted || stopped) return; quieted = true; unlisten(); void SignetNative.nfcQuiet({ session }).catch(() => {}); },
+        stop: () => { if (stopped) return; stopped = true; unlisten(); void SignetNative.nfcStop({ session }).catch(() => {}); },
       };
     },
   };

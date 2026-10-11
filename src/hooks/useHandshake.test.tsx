@@ -569,10 +569,11 @@ it('a camera read confirming the scans leaves NFC running until the session ends
 });
 it('declining a tap keeps a quiet reader on and releases NFC only on leaving', async () => {
   const { hook, quiet, stop } = await tappedToConfirming();
-  quiet.mockClear();
+  // The crossed tap already quieted NFC; declining does not ask native again.
+  expect(quiet).toHaveBeenCalledTimes(1);
   act(() => hook.result.current.rejectTap());
   expect(hook.result.current.view.phase).toBe('declined');
-  expect(quiet).toHaveBeenCalled();
+  expect(quiet).toHaveBeenCalledTimes(1);
   expect(stop).not.toHaveBeenCalled();
   hook.unmount();
   expect(stop).toHaveBeenCalledTimes(1);
@@ -589,4 +590,38 @@ it('Start again (unmount, then a fresh mount) releases NFC and starts NFC afresh
   expect(t.nfc.start.mock.calls[1][0]).toBe(second.result.current.view.code);
   expect(t.quiet).not.toHaveBeenCalled();
   second.unmount();
+});
+
+it('an expired session quiets NFC once, however many times the one-second tick runs afterwards', async () => {
+  const s = setup();
+  const quiet = vi.fn(), stop = vi.fn();
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })), start: vi.fn(async () => ({ quiet, stop })) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  const real = Date.now;
+  vi.spyOn(Date, 'now').mockImplementation(() => real() + 5 * 60_000);
+  try {
+    await waitFor(() => expect(hook.result.current.view.phase).toBe('expired'));
+    await act(async () => { await new Promise(r => setTimeout(r, 3500)); });
+    expect(quiet).toHaveBeenCalledTimes(1);
+    expect(stop).not.toHaveBeenCalled();
+  } finally { vi.mocked(Date.now).mockRestore(); }
+  hook.unmount();
+  expect(stop).toHaveBeenCalledTimes(1);
+  expect(quiet).toHaveBeenCalledTimes(1);
+});
+it('nothing ticks after the screen is left: no NFC call follows an unmount', async () => {
+  const s = setup();
+  const quiet = vi.fn(), stop = vi.fn();
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })), start: vi.fn(async () => ({ quiet, stop })) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  hook.unmount();
+  const real = Date.now;
+  vi.spyOn(Date, 'now').mockImplementation(() => real() + 5 * 60_000);
+  try {
+    await act(async () => { await new Promise(r => setTimeout(r, 2500)); });
+    expect(quiet).not.toHaveBeenCalled();
+    expect(stop).toHaveBeenCalledTimes(1);
+  } finally { vi.mocked(Date.now).mockRestore(); }
 });

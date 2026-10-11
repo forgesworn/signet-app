@@ -117,7 +117,10 @@ export function useHandshake(host: HandshakeHost) {
      * quiet rather than off, so the phone keeps reading (and ignoring) the other
      * one while this screen shows; a phone that stopped outright would let the OS
      * dispatch the other phone's card as a tag and toast "no supported app". */
-    const endNearby = () => { radioEnded = true; finishNearby(); nfcHandle?.quiet(); };
+    const endNearby = () => { radioEnded = true; finishNearby(); quietNfc(); };
+    /** At most once a session: the expiry tick fires every second and must not reach the radio each time. */
+    let nfcQuieted = false;
+    const quietNfc = () => { if (nfcQuieted) return; nfcQuieted = true; nfcHandle?.quiet(); };
     /** Both screens read, and the peer's persona signed for both sessions with
      * a proof only the holder of the camera-read session could make. */
     const verified = () => !conflict && !!(peerCard && peerReveal && verifyRevealBinding(peerReveal, peerCard.publicKey, session));
@@ -139,7 +142,7 @@ export function useHandshake(host: HandshakeHost) {
       if (doubleBuzz) return;
       doubleBuzz = true; publish({ scansConfirmed: true }); handshakeHaptic('double');
       // The tap has crossed both ways: nothing more to offer or read over NFC.
-      if (via === 'tap') nfcHandle?.quiet();
+      if (via === 'tap') quietNfc();
     };
     /** The seam check acts on an unverified reveal: the link that carried it
      * (if any) speaks for its persona, so the request can go back over it. */
@@ -419,7 +422,7 @@ export function useHandshake(host: HandshakeHost) {
           const handle = await nfc.start(code, raw => commands.current?.tap(raw));
           if (closed) { handle.stop(); return; }
           nfcHandle = handle;
-          if (radioEnded) { handle.quiet(); return; }
+          if (radioEnded) { quietNfc(); return; }
           publish({ tapAvailable: true });
         })().catch(() => {});
         startNearby();
@@ -427,9 +430,14 @@ export function useHandshake(host: HandshakeHost) {
       } catch { publish({ phase: 'failed' }); }
     })();
     const expiry = setInterval(() => {
-      if (own && now() >= own.invite.expiresAt! && !sealed && !conflict && !confirming && !declined && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); endNearby(); }
+      if (own && now() >= own.invite.expiresAt! && !sealed && !conflict && !confirming && !declined && !(oneWay && currentExchange?.phase === 'complete')) {
+        // Expired is final: stop ticking, or every second re-publishes it and re-ends the radios.
+        clearInterval(expiry); publish({ phase: 'expired' }); endNearby();
+      }
     }, 1000);
     return () => {
+      // First, so nothing below can throw past it and leave the tick running.
+      closed = true; clearInterval(expiry);
       cancelHandshakeHaptics();
       // Leaving the screen is the one place the quiet reader is released.
       nfcHandle?.stop(); nfcHandle = undefined;
@@ -437,7 +445,7 @@ export function useHandshake(host: HandshakeHost) {
       stopWatching?.();
       document.removeEventListener('visibilitychange', visibility);
       stopLifecycle?.();
-      closed = true; clearInterval(expiry); kick.current = () => {};
+      kick.current = () => {};
       for (const t of timers) clearTimeout(t);
       timers.clear();
       // The session secret is the only proof this phone read the other screen.
