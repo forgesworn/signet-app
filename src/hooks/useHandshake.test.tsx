@@ -27,7 +27,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 /** `recipient`: this phone holds the higher persona. `ownLowerSession`: this
  * phone's session key sorts first, so it is the one that dials. */
-function setup(opts: { recipient?: boolean; ownLowerSession?: boolean } = {}) {
+function setup(opts: { recipient?: boolean; ownLowerSession?: boolean; partnerBlur?: boolean } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const keys = [generateSecretKey(), generateSecretKey()].sort((x, y) => getPublicKey(x) < getPublicKey(y) ? -1 : 1);
   const [ownSk, peerSk] = opts.recipient ? [keys[1], keys[0]] : [keys[0], keys[1]];
@@ -43,7 +43,7 @@ function setup(opts: { recipient?: boolean; ownLowerSession?: boolean } = {}) {
   const [low, high] = ownPub < peerPub ? [ownPub, peerPub] : [peerPub, ownPub];
   const request = createContactRequest({ id: 'b'.repeat(32), from: low, to: high, nonce: '5'.repeat(64), now,
     reply: { secret: '6'.repeat(64), relays }, expiresAt: now + 120 });
-  const acceptance = createContactAcceptance(request, '7'.repeat(64), now, { name: 'Other person' });
+  const acceptance = createContactAcceptance(request, '7'.repeat(64), now, { name: 'Other person', ...(opts.partnerBlur ? { blur: true as const } : {}) });
   const complete: StoredContactExchange = { ...confirmContactRevealSent(receiveContactAcceptance(beginContactExchange(request, '5'.repeat(64)), acceptance, now)),
     handshake: { startedAt: now } };
   const vault: ContactInviteVault = { v: 1, directoryId: 'owner', invites: [ownInvite], arrivals: [], exchanges: [], outbox: [] };
@@ -412,6 +412,20 @@ it('confirming a tap seals once, with strength-bearing tap evidence', async () =
   expect(s.service.confirmHandshake).toHaveBeenCalledTimes(1);
   expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');
   expect(hook.result.current.view.contactId).toBe('c'.repeat(32));
+});
+it('passes on the partner card\'s ask to be hidden, and only that', async () => {
+  for (const partnerBlur of [true, false]) {
+    const s = setup({ partnerBlur });
+    const hook = renderHook(() => useHandshake(s.host));
+    await ready(hook);
+    act(() => hook.result.current.scan(s.peerCode));
+    await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+    s.deliver(s.peerReveal());
+    await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+    expect(hook.result.current.view.name).toBe('Other person');
+    expect(hook.result.current.view.blur).toBe(partnerBlur);
+    hook.unmount(); cleanup(); vi.clearAllMocks();
+  }
 });
 it('declining a tap writes no contact, and nothing in this session can seal it afterwards', async () => {
   const { s, hook, tap } = await tappedToConfirming();

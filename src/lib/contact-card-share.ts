@@ -12,7 +12,11 @@ import type { SignetIdentity } from '../types';
 import { sanitizeDisplayName } from './text-sanitize';
 
 /** What the sender has ticked under "They'll see:". */
-export interface ContactCardChoice { name: boolean; photo: boolean }
+export interface ContactCardChoice {
+  name: boolean; photo: boolean;
+  /** Handshake only: ask the other app to hide this name and picture until they tap. Absent = no ask. */
+  blur?: boolean;
+}
 
 /** What a persona can offer: its name, and whether it has an in-app (private) picture. */
 export interface ContactCardInfo { name: string; hasPhoto: boolean }
@@ -71,6 +75,8 @@ export async function buildContactCard(choice: ContactCardChoice, info: ContactC
     draft.photo = { key: photo.key, server: photo.server, hash: photo.hash };
   }
   if (!draft.name && !draft.photo) return undefined;
+  // A display request only, and only ever `true`: nothing is sent to say "do not blur".
+  if (choice.blur) draft.blur = true;
   // Validate the way the wire will, so a refused photo is an error here and not
   // a throw from the library create function after the share copy went up.
   const parsed = parseContactCard(draft);

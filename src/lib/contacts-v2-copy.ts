@@ -865,6 +865,7 @@ export const HANDSHAKE_COPY = {
   btOn: 'Bluetooth is on', btOff: 'Bluetooth is off', btDenied: 'Bluetooth is not allowed',
   nfcOn: 'NFC is on, so you can tap phones', nfcOff: 'NFC is off',
   allow: 'Allow', turnOn: 'Turn on', turnOnNfc: 'Turn on NFC', appSettings: 'Open app settings',
+  hideMe: 'Hide me on their screen until they tap',
   confirmTitle: 'Is this them?', confirmStatus: 'Tapped. Check it is them before you save.', gaveName: 'The name they gave',
   confirmYes: 'Yes, save them', confirmNo: 'Not them',
   confirmHint: 'Not sure? Put the phones top to top: the lines join only with the phone you tapped.',

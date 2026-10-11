@@ -44,6 +44,17 @@ describe('buildContactCard', () => {
     expect(share).toHaveBeenCalledTimes(1);
     expect(card).toEqual({ name: 'Pip', photo });
   });
+  it('carries blur: true only when asked, never blur: false, and never a card of its own', async () => {
+    const share = vi.fn(async () => photo);
+    const info = { name: 'Pip', hasPhoto: true };
+    expect(await buildContactCard({ name: true, photo: false, blur: true }, info, share)).toEqual({ name: 'Pip', blur: true });
+    expect(await buildContactCard({ name: true, photo: true, blur: true }, info, share)).toEqual({ name: 'Pip', photo, blur: true });
+    for (const blur of [false, undefined]) {
+      const card = await buildContactCard({ name: true, photo: false, blur }, info, share);
+      expect(card).toEqual({ name: 'Pip' }); expect(card).not.toHaveProperty('blur');
+    }
+    expect(await buildContactCard({ name: false, photo: false, blur: true }, info, share)).toBeUndefined();
+  });
   it('omits a name that is switched off, and returns no card when nothing is chosen', async () => {
     const share = vi.fn(async () => photo);
     expect(await buildContactCard({ name: false, photo: true }, { name: 'Pip', hasPhoto: true }, share)).toEqual({ photo });

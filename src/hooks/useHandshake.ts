@@ -38,6 +38,8 @@ export interface HandshakeHost {
 export interface HandshakeView {
   /** The session code this screen shows. It names no one. */
   code?: string; name?: string; sigil?: string;
+  /** The other person asked this screen to hide their name and picture until tapped. */
+  blur?: boolean;
   phase: 'reading' | 'waiting' | 'checking' | 'confirming' | 'declined' | 'sealed' | 'expired' | 'failed';
   contactId?: string; half?: 'top' | 'bottom';
   /** The other person's persona key: in `confirming` before anything is saved,
@@ -237,7 +239,7 @@ export function useHandshake(host: HandshakeHost) {
           // The SDK opened it as signed by its sender: a link that carried it speaks for them.
           if (arrival?.request) nearby?.bind(arrival.id, arrival.request.from);
           if (arrival?.request) {
-            publish({ name: arrival.request.card?.name, phase: 'waiting' });
+            publish({ name: arrival.request.card?.name, blur: arrival.request.card?.blur === true, phase: 'waiting' });
             if (!exchangeId && verified() && role === 'recipient') {
               await service.acceptHandshake(arrival.id, own.invite, { invite: invite! }, now(), card);
               exchangeId = contactExchangeKey(arrival.request);
@@ -258,7 +260,7 @@ export function useHandshake(host: HandshakeHost) {
           fresh = await service.read();
           currentExchange = fresh.exchanges.find(e => contactExchangeKey(e.request) === exchangeId);
           if (currentExchange) {
-            publish({ name: partnerCardOf(currentExchange)?.name });
+            publish({ name: partnerCardOf(currentExchange)?.name, blur: partnerCardOf(currentExchange)?.blur === true });
             if (currentExchange.phase === 'complete') {
               publish({ sigil: handshakeSigil(currentExchange), half: currentExchange.request.from < currentExchange.request.to
                 ? currentExchange.role === 'requester' ? 'top' : 'bottom'

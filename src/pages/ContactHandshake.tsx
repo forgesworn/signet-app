@@ -29,7 +29,7 @@ interface Props extends Omit<HandshakeHost, 'card'> {
   onOpenContact(contactId: string): Promise<void>;
   /** For the arrived contact's picture. */
   relayUrl: string; directoryId: string;
-  /** The user blurs identities on screen: the arrival comes blurred, shown on a tap. */
+  /** The user blurs identities on screen: the arrival comes blurred, shown on a tap. Also where "Hide me" starts. */
   blurArrival?: boolean;
   /** This phone's Jigsaw edge distance in mm (Settings); the default when unset. */
   seamGapMm?: number;
@@ -96,7 +96,7 @@ export function ContactHandshake(props: Props) {
   }, []);
   useEffect(() => {
     let cancelled = false;
-    void loadHandshakeChoice(props.persona, props.encryptionKey, props.info).then(value => { if (!cancelled) setChoice(value); })
+    void loadHandshakeChoice(props.persona, props.encryptionKey, props.info, !!props.blurArrival).then(value => { if (!cancelled) setChoice(value); })
       .catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
   }, [props.persona, props.encryptionKey]);
@@ -109,6 +109,7 @@ export function ContactHandshake(props: Props) {
       <label><input type="checkbox" checked readOnly disabled /> {COPY.npub}</label>
       <p className="field-hint">{COPY.keyRequired}</p>
       <label><input type="checkbox" checked={choice.photo} disabled={!props.info.hasPhoto} onChange={e => setChoice({ ...choice, photo: e.target.checked })} /> {COPY.photo}</label>
+      <label><input type="checkbox" checked={!!choice.blur} onChange={e => setChoice({ ...choice, blur: e.target.checked })} /> {COPY.hideMe}</label>
       <label><input type="checkbox" checked={saveDefault} onChange={e => setSaveDefault(e.target.checked)} /> {COPY.saveDefault}</label>
     </div>
     <RadioControls />
@@ -178,6 +179,8 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onResta
   const active = view.phase === 'reading' || view.phase === 'waiting';
   const waiting = view.phase === 'waiting' && !!view.scanned;
   const tapped = view.via === 'tap';
+  // Their ask to be hidden counts like the user's own setting.
+  const hide = !!props.blurArrival || !!view.blur;
   // Both halves use canonical pubkey order, set once the transcript exists.
   const half = view.half ?? 'bottom';
   return <div className="handshake-screen">
@@ -193,7 +196,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onResta
     </>}
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
-      <span>{active ? view.scansConfirmed ? tapped ? COPY.tapFinishing : COPY.finishing : view.scanned ? handshakeWaiting(props.blurArrival ? undefined : view.name, tapped) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
+      <span>{active ? view.scansConfirmed ? tapped ? COPY.tapFinishing : COPY.finishing : view.scanned ? handshakeWaiting(hide ? undefined : view.name, tapped) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'confirming' ? COPY.confirmStatus : view.phase === 'declined' ? COPY.declined : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
@@ -208,14 +211,14 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onResta
     {active && view.scanned && !view.scansConfirmed && !tapped && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
     {view.phase === 'confirming' && view.partner && <>
-      <HandshakeConfirm partner={view.partner} name={view.name} blur={props.blurArrival} onYes={confirmTap} onNo={rejectTap} />
+      <HandshakeConfirm partner={view.partner} name={view.name} blur={hide} onYes={confirmTap} onNo={rejectTap} />
       {view.sigil && <p className="field-hint">{COPY.confirmHint}</p>}
     </>}
     {view.phase === 'declined' && <button className="btn btn-primary" onClick={props.onRestart}>{COPY.startAgain}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}
     {view.phase === 'sealed' && view.contactId && view.partner && <HandshakeArrival partner={view.partner} name={view.name}
       relayUrl={props.relayUrl} directoryId={props.directoryId} contactId={view.contactId} encryptionKey={props.encryptionKey}
-      blur={props.blurArrival} />}
+      blur={hide} />}
     {view.phase === 'sealed' && view.contactId && <div className="handshake-open-contact">
       <button className="btn btn-primary" disabled={opening} onClick={() => {
         setOpening(true); setOpenFailed(false);

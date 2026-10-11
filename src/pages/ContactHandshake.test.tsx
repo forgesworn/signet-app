@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HandshakeHost, HandshakeView } from '../hooks/useHandshake';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import { useState } from 'react';
@@ -9,7 +9,7 @@ import { useContactPicture } from '../hooks/useContactPicture';
 import { ContactHandshake } from './ContactHandshake';
 import { SEAM_GAP_DP } from '../lib/handshake-seam-gap';
 import { SIGIL_SEAM, SIGIL_WIDTH } from '../lib/handshake-sigil';
-const mocks = vi.hoisted(() => ({ load: vi.fn(async () => ({ name: true, photo: true })), save: vi.fn(async () => {}), handshake: vi.fn((_host: HandshakeHost) => ({ view: { phase: 'reading' } as HandshakeView, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() })) }));
+const mocks = vi.hoisted(() => ({ load: vi.fn(async (..._args: unknown[]): Promise<{ name: boolean; photo: boolean; blur?: boolean }> => ({ name: true, photo: true })), save: vi.fn(async () => {}), handshake: vi.fn((_host: HandshakeHost) => ({ view: { phase: 'reading' } as HandshakeView, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() })) }));
 vi.mock('../lib/handshake-defaults', () => ({ loadHandshakeChoice: mocks.load, saveHandshakeChoice: mocks.save }));
 vi.mock('../hooks/useHandshake', () => ({ useHandshake: mocks.handshake }));
 vi.mock('../components/HandshakeCamera', () => ({ HandshakeCamera: () => <video data-testid="live-camera" /> }));
@@ -263,7 +263,7 @@ it('chooser lists its checkboxes one per line, each with its text beside it', as
   const view = render(<ContactHandshake {...props()} choose />);
   await screen.findByText('They’ll see');
   const labels = [...view.container.querySelectorAll('.handshake-choices > label')];
-  expect(labels.map(l => l.textContent?.trim())).toEqual(['Your name', 'Your npub', 'Your picture', 'Save as default']);
+  expect(labels.map(l => l.textContent?.trim())).toEqual(['Your name', 'Your npub', 'Your picture', 'Hide me on their screen until they tap', 'Save as default']);
   for (const l of labels) expect(l.querySelector('input[type=checkbox]')).not.toBeNull();
   expect(view.container.querySelector('.handshake-choices .field-hint')?.textContent).toBe('Your npub is needed to connect.');
 });
@@ -281,4 +281,62 @@ it('draws the Jigsaw with this phone’s edge distance, or the default', async (
     expect(await strip(undefined)).toBeCloseTo(SEAM_GAP_DP, 0);
     expect(await strip(10)).toBeCloseTo(10 * 160 / 25.4, 0);
   } finally { spy.mockRestore(); }
+});
+describe('Hide me on their screen', () => {
+  it('starts from the user\'s own blur setting, and the chooser box saves with the default', async () => {
+    mocks.load.mockImplementation(async (...args: unknown[]) => ({ name: true, photo: false, ...(args[3] ? { blur: true } : {}) }));
+    const p = props();
+    const view = render(<ContactHandshake {...p} choose blurArrival />);
+    const box = await screen.findByLabelText('Hide me on their screen until they tap') as HTMLInputElement;
+    expect(mocks.load.mock.calls.at(-1)?.[3]).toBe(true);
+    expect(box.checked).toBe(true);
+    view.unmount();
+    render(<ContactHandshake {...p} choose />);
+    const off = await screen.findByLabelText('Hide me on their screen until they tap') as HTMLInputElement;
+    expect(mocks.load.mock.calls.at(-1)?.[3]).toBe(false);
+    expect(off.checked).toBe(false);
+    fireEvent.click(off);
+    fireEvent.click(screen.getByLabelText('Save as default'));
+    fireEvent.click(screen.getByRole('button', { name: 'Go' }));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledWith(p.persona, p.encryptionKey, { name: true, photo: false, blur: true }));
+    mocks.load.mockImplementation(async () => ({ name: true, photo: true }));
+  });
+  it('sends the ticked choice to the card builder, and nothing about blur when it is not ticked', async () => {
+    mocks.load.mockImplementation(async () => ({ name: true, photo: false, blur: true }));
+    const p = props();
+    const view = render(<ContactHandshake {...p} />);
+    await screen.findByTestId('live-camera');
+    await mocks.handshake.mock.calls.at(-1)![0].card();
+    expect(p.buildCard).toHaveBeenLastCalledWith({ name: true, photo: false, blur: true });
+    view.unmount();
+    mocks.load.mockImplementation(async () => ({ name: true, photo: false }));
+    render(<ContactHandshake {...p} />);
+    await screen.findByTestId('live-camera');
+    await mocks.handshake.mock.calls.at(-1)![0].card();
+    expect(p.buildCard).toHaveBeenLastCalledWith({ name: true, photo: false });
+    mocks.load.mockImplementation(async () => ({ name: true, photo: true }));
+  });
+  it('blurs the question, the arrival and the status name when their card asks, with the local setting off', async () => {
+    mocks.handshake.mockReturnValue(confirming({ blur: true }));
+    const view = render(<ContactHandshake {...props()} />);
+    await screen.findByRole('button', { name: 'Tap to show who you added' });
+    expect(view.container.querySelector('.handshake-confirm .handshake-arrival.is-hidden')).not.toBeNull();
+    view.unmount();
+    mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam', blur: true }));
+    const arrival = render(<ContactHandshake {...props()} />);
+    await screen.findByRole('button', { name: 'Tap to show who you added' });
+    expect(arrival.container.querySelector('.handshake-arrival.is-hidden')).not.toBeNull();
+    arrival.unmount();
+    mocks.handshake.mockReturnValue({ view: { phase: 'waiting', code: sessionCode, scanned: true, name: 'Sam', blur: true } as HandshakeView,
+      scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+    render(<ContactHandshake {...props()} />);
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Waiting for their scan confirmation…'));
+    expect(screen.queryByText(/Sam/)).not.toBeInTheDocument();
+  });
+  it('shows them plainly when neither side asks', async () => {
+    mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam', blur: false }));
+    const view = render(<ContactHandshake {...props()} />);
+    expect(await screen.findByText('Sam')).toBeVisible();
+    expect(view.container.querySelector('.is-hidden')).toBeNull();
+  });
 });
