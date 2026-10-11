@@ -50,13 +50,14 @@ test.describe('Sign in with Signet', () => {
     expect(url).toContain('pubkey=');
     expect(url).toContain('signature=');
     expect(url).toContain('npub=');
-    // Reconstruct the event exactly as a consumer does. A response without
-    // the requested app tag was rejected by sites that enforce the app name.
+    // Reconstruct the event exactly as a redirect consumer does (signet-login
+    // redirect.ts, vitark signin-proof.ts): challenge and origin, no app tag.
+    // The relay path carries the app tag instead; see cross-device-auth.spec.ts.
     const params = new URL(url).searchParams;
     expect(verifyEvent({
       pubkey: params.get('pubkey')!, kind: 21236,
       created_at: Number(params.get('t')), content: '',
-      tags: [['challenge', 'a'.repeat(64)], ['origin', 'https://example.com'], ['app', 'TestSite']],
+      tags: [['challenge', 'a'.repeat(64)], ['origin', 'https://example.com']],
       id: params.get('eventId')!, sig: params.get('signature')!,
     })).toBe(true);
   });
