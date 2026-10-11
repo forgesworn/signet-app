@@ -80,8 +80,6 @@ export function useHandshake(host: HandshakeHost) {
     let confirming = false, declined = false;
     let nearby: HandshakeNearby | undefined, radioEnded = false, backgrounded = false;
     const nearbyBudget = { events: 0 };
-    /** Shared by every carrier this screen makes: Android's scan-start limit is per app, not per carrier. */
-    const nearbyScanStarts: number[] = [];
     const session: HandshakeSession = createHandshakeSession();
     const relays = latest.current.revealRelays ?? defaultRelays;
     const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -283,6 +281,10 @@ export function useHandshake(host: HandshakeHost) {
                 // be fooled that way: it reads the screen the user aimed at.
                 if (via === 'tap' && !sealed && !sealing) {
                   confirming = true;
+                  // The exchange is complete and flushed: nothing more crosses, only the
+                  // user's answer is awaited. Leaving the radio up would rescan every
+                  // minute, advert on, for as long as the question stays open.
+                  radioEnded = true; finishNearby();
                   publish({ phase: 'confirming', partner: currentExchange.role === 'requester' ? currentExchange.request.to : currentExchange.request.from });
                 } else await seal(true);
               } else {
@@ -381,7 +383,7 @@ export function useHandshake(host: HandshakeHost) {
       const native = latest.current.nearby === undefined ? nativeNearby() : latest.current.nearby;
       if (closed || radioEnded || backgrounded || nearby || !invite || !native || document.visibilityState === 'hidden') return;
       const carrier = nearby = new HandshakeNearby(native, {
-        session, budget: nearbyBudget, scanStarts: nearbyScanStarts,
+        session, budget: nearbyBudget,
         onEvent: async event => {
           if (event.tags[0]?.[1] === session.publicKey) return acceptReveal(event) ? 'stored' : 'rejected';
           return service.receiveDirect(event, { identity: host.persona, inviteId: invite.id, now: now() });

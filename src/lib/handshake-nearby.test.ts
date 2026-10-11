@@ -5,9 +5,9 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import { ContactIdentityDecryptBudget } from '@forgesworn/signet-contacts';
 import { ContactInviteService } from './contact-invite-service';
 import { contactExchangeKey } from './contact-exchange-key';
-import { HandshakeNearby, type NearbyNative, type NearbyReceipt } from './handshake-nearby';
+import { HandshakeNearby, resetScanThrottleForTests, type NearbyNative, type NearbyReceipt } from './handshake-nearby';
 import { bindingTemplate, createHandshakeSession, openReveal, sealReveal, verifyRevealBinding, type RevealBody } from './handshake-reveal';
-import { NearbyLink, nearbyHello } from './handshake-nearby-wire';
+import { NearbyLink, nearbyHello, nearbyToken } from './handshake-nearby-wire';
 import { purgeAllUserData } from './db';
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
 import { recordContactArrival } from './contact-invite-store';
@@ -24,6 +24,7 @@ vi.mock('./aes-crypto', async importOriginal => {
     return real.importAesKeyRaw(sha256(material));
   } };
 });
+const PEER_X = 'e'.repeat(64);
 const KEY = 'nearby handshake test', now = 1700000000;
 const S_A = createHandshakeSession(), S_B = createHandshakeSession(), S_C = createHandshakeSession();
 
@@ -80,7 +81,7 @@ function party(secret: string, directoryId: string, holder: { carrier?: Handshak
     direct: { route: peer => holder.carrier?.route(peer) ?? 'none', deliver: (peer, event) => holder.carrier?.deliver(peer, event) ?? Promise.resolve(false) } });
   return { service, pubkey, directoryId, completed, holder };
 }
-beforeEach(async () => { await purgeAllUserData(); publish.mockReset().mockResolvedValue(false); });
+beforeEach(async () => { resetScanThrottleForTests(); await purgeAllUserData(); publish.mockReset().mockResolvedValue(false); });
 
 describe('unlinkable handshake over a nearby link, with no internet', () => {
   /** Two phones on handshake screens, each with an SDK invite and a session. */
@@ -428,7 +429,7 @@ describe('HandshakeNearby re-check fixes', () => {
     await carrier.close();
   });
 
-  it('keeps separate incoming and outgoing slots, and the requester stops advertising as it dials (N2)', async () => {
+  it('keeps separate incoming and outgoing slots, and the requester leaves its advert up as it dials (N2)', async () => {
     const native = radio().phone();
     native.connect = vi.fn(async () => { native.links.set('out', { peer: sink, id: 'out' }); native.handlers!.link({ link: 'out', direction: 'out' }); return { link: 'out' }; });
     const close = vi.spyOn(native, 'close');
@@ -460,6 +461,81 @@ describe('HandshakeNearby re-check fixes', () => {
     expect(native.quiet).not.toHaveBeenCalled();
     expect(native.connect).toHaveBeenCalledTimes(1);
     await carrier.close();
+  });
+
+  it('an outgoing link trusted before the advert is live leaves no advert up once advertising lands', async () => {
+    const air = radio(), na = air.phone(), nb = air.phone();
+    let advertised!: () => void;
+    na.advertise = vi.fn(() => new Promise<{ psm: number }>(resolve => { advertised = () => resolve({ psm: 0x80 }); }));
+    const a = new HandshakeNearby(na, { session: S_A, onChange: () => {}, onEvent: async () => 'stored' as const });
+    const b = new HandshakeNearby(nb, { session: S_B, onChange: () => {}, onEvent: async () => 'stored' as const });
+    await b.open(true);
+    b.expect(S_A.publicKey);
+    const opened = a.open(true);
+    a.connect({ session: S_B.publicKey });
+    await vi.waitFor(() => expect(a.reaches(S_B.publicKey)).toBe(true));
+    expect(a.availability).toBe('starting');
+    expect(na.quiet).not.toHaveBeenCalled();
+    advertised();
+    expect(await opened).toBe('ready');
+    expect(na.quiet).toHaveBeenCalledTimes(1);
+    await a.close(); await b.close();
+  });
+
+  it('shares the scan-start allowance across carriers, so a fresh one after Start again waits too', async () => {
+    vi.useFakeTimers();
+    try {
+      const starts: number[] = [];
+      const make = () => {
+        const native = radio().phone();
+        native.connect = vi.fn(async () => { starts.push(Date.now()); throw new Error('timeout'); });
+        return { native, carrier: new HandshakeNearby(native, { session: S_A, onChange: () => {}, redialMs: 300, holdMs: 1e9, onEvent: async () => 'stored' as const }) };
+      };
+      const first = make();
+      await first.carrier.open(true);
+      first.carrier.connect({ session: S_B.publicKey });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(starts.length).toBe(4);
+      await first.carrier.close();
+      // The screen is reopened: a new carrier, the same app, the same OS limit.
+      const second = make();
+      await second.carrier.open(true);
+      second.carrier.connect({ session: S_B.publicKey });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(second.native.connect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(26000);
+      expect(second.native.connect).toHaveBeenCalled();
+      await second.carrier.close();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a store finishing after its link lost the dedupe is recorded and acknowledged on the survivor', async () => {
+    const air = radio();
+    const wrap = (c: string) => ({ id: c.repeat(64), pubkey: '2'.repeat(64), sig: '3'.repeat(128), kind: 1059, created_at: 1,
+      tags: [['p', '4'.repeat(64)]], content: 'x' });
+    // The lower session keeps the link it dialled, so make its first (incoming) link the loser.
+    const [low, high] = S_A.publicKey < S_B.publicKey ? [S_A, S_B] : [S_B, S_A];
+    let release!: () => void;
+    const slow = vi.fn(() => new Promise<'stored'>(resolve => { release = () => resolve('stored'); }));
+    const nl = air.phone(), nh = air.phone();
+    const receiver = new HandshakeNearby(nl, { session: low, onChange: () => {}, onEvent: slow });
+    const sender = new HandshakeNearby(nh, { session: high, onChange: () => {}, onEvent: async () => 'stored' as const });
+    await receiver.open(true); await sender.open(true);
+    receiver.expect(high.publicKey);
+    sender.connect({ session: low.publicKey });
+    await vi.waitFor(() => expect(receiver.reaches(high.publicKey)).toBe(true));
+    void sender.deliverSession(low.publicKey, wrap('a'));
+    await vi.waitFor(() => expect(slow).toHaveBeenCalledTimes(1));
+    // The lower phone's own dial lands too (its scan began before the first link trusted):
+    // its outgoing link wins and the first one closes mid-store.
+    receiver.connect({ session: high.publicKey });
+    await nl.connect({ token: btoa(String.fromCharCode(...nearbyToken(high.publicKey))) });
+    await vi.waitFor(() => { expect(nl.links.size).toBe(1); expect(nh.links.size).toBe(1); });
+    expect([...nl.links.keys()][0]).toMatch(/^L/);
+    release();
+    // The survivor recorded the id, so the event's persona binds to it.
+    await vi.waitFor(() => { receiver.bind('a'.repeat(64), PEER_X); expect(receiver.route(PEER_X)).toBe('linked'); });
+    await receiver.close(); await sender.close();
   });
 
   it('keeps scanning past timeouts until the session ends, never faster than the OS allows scan starts', async () => {

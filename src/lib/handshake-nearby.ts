@@ -49,12 +49,21 @@ const MAX_INCOMING = 2, MAX_OUTGOING = 1, MAX_EVENTS_PER_LINK = 64, MAX_EVENTS_P
 /** Android refuses a scan start beyond 5 in 30 s (the app is silently
  * throttled, then every scan returns nothing), so stay a start under it. */
 const SCAN_WINDOW_MS = 30000, SCAN_STARTS_PER_WINDOW = 4;
+/** Scan-start times (ms) for the whole app: the OS limit is per app, so every
+ * carrier shares them, across Start again and reopening the screen. Without
+ * this a fresh carrier counts from zero while the OS still counts the old
+ * scans, and its scans silently return nothing. */
+const appScanStarts: number[] = [];
+/** Tests only. */
+export function resetScanThrottleForTests() { appScanStarts.length = 0; }
 
 interface LinkState {
   /** `peer`: the persona this link speaks for, once bound. */
   id: string; link: NearbyLink; outgoing: boolean; peer?: string;
   delivered: Set<string>; acks: Map<string, (stored: boolean) => void>;
   queue: Promise<void>; events: number;
+  /** Set when a twin link outlived this one: a store still in flight reports there. */
+  successor?: LinkState;
 }
 
 /**
@@ -88,12 +97,7 @@ export class HandshakeNearby implements DirectCarrier {
     /** Shared across the carriers of one handshake screen, so returning to
      * the foreground does not refill the event allowance. */
     budget?: { events: number };
-    /** Scan-start times (ms), shared like `budget`: the OS limit is per app, so
-     * a fresh carrier after a hide/show must not start counting from zero. */
-    scanStarts?: number[];
   }) {}
-  private ownScanStarts: number[] = [];
-  private get scanStarts() { return this.opts.scanStarts ?? this.ownScanStarts; }
   /** Permission and adapter are settled, so a scan may start. Deliberately not
    * `availability === 'ready'`, which waits for advertising: that goes through
    * a Bluetooth-name change and an advert start that can take seconds, and the
@@ -160,7 +164,13 @@ export class HandshakeNearby implements DirectCarrier {
   /** Set when an outgoing link is trusted; applied at once if the advert is up,
    * else when advertising finishes starting. */
   private quietWanted = false;
-  private quieten() { if (this.availability === 'ready' && !this.closed) void this.native.quiet?.().catch(() => {}); }
+  /** Scanning now starts before the advert is live, so a link can be trusted
+   * first: remember the wish, and `open()` honours it once advertising lands. */
+  private quieten() {
+    if (this.closed) return;
+    this.quietWanted = true;
+    if (this.availability === 'ready') void this.native.quiet?.().catch(() => {});
+  }
   /** Scan until linked or the session ends. Only real failures count against
    * `MAX_DIALS` (a connect that errored, or a link that never authenticated: a
    * copied advert costs one, and the native scan skips a device whose link
@@ -171,7 +181,7 @@ export class HandshakeNearby implements DirectCarrier {
     if (!target || target.dialling || target.failed || !this.scanOk || this.closed || this.dialPending) return;
     if ([...this.links.values()].some(s => s.outgoing) || this.reaches(target.session)) return;
     if (target.dials >= MAX_DIALS) { target.failed = true; this.changed(); return; }
-    const now = this.now(), starts = this.scanStarts;
+    const now = this.now(), starts = appScanStarts;
     while (starts.length && now - starts[0] >= SCAN_WINDOW_MS) starts.shift();
     if (starts.length >= SCAN_STARTS_PER_WINDOW) {
       this.dialPending = true;
@@ -326,10 +336,12 @@ export class HandshakeNearby implements DirectCarrier {
       state.queue = state.queue.then(async () => {
         let receipt: NearbyReceipt = 'rejected';
         try { receipt = await this.opts.onEvent(event); } catch { receipt = 'rejected'; }
-        if (!this.links.has(state.id)) return;
+        // A twin dedupe dropped this link mid-store: the survivor records and acknowledges it.
+        const live = this.links.has(state.id) ? state : state.successor && this.links.has(state.successor.id) ? state.successor : undefined;
+        if (!live) return;
         // Only a fresh store binds; a duplicate is acknowledged but proves nothing.
-        if (receipt === 'stored') state.delivered.add(event.id);
-        this.send(state, state.link.ack(event.id, receipt !== 'rejected'));
+        if (receipt === 'stored') live.delivered.add(event.id);
+        this.send(live, live.link.ack(event.id, receipt !== 'rejected'));
       });
     }
   }
@@ -347,6 +359,7 @@ export class HandshakeNearby implements DirectCarrier {
     const keep = state.outgoing === sessionDialler(this.opts.session.publicKey, peer) ? state : twin;
     const lose = keep === state ? twin : state;
     keep.peer ??= lose.peer;
+    lose.successor = keep;
     for (const id of lose.delivered) keep.delivered.add(id);
     this.drop(lose);
     return lose === state;

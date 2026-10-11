@@ -11,7 +11,7 @@ import type { ContactInviteVault, StoredContactExchange, StoredContactInvite } f
 import { contactExchangeKey } from '../lib/contact-exchange-key';
 import { ContactCardPhotoError } from '../lib/contact-card-share';
 import { bindingTemplate, openReveal, readSessionQR, sealReveal, sessionQR, verifyRevealBinding, type HandshakeSession } from '../lib/handshake-reveal';
-import { HandshakeNearby } from '../lib/handshake-nearby';
+import { HandshakeNearby, resetScanThrottleForTests } from '../lib/handshake-nearby';
 
 const haptics = vi.hoisted(() => ({ play: vi.fn(), cancel: vi.fn() }));
 vi.mock('../lib/handshake-haptics', () => ({ handshakeHaptic: haptics.play, cancelHandshakeHaptics: haptics.cancel }));
@@ -22,7 +22,7 @@ vi.mock('../lib/handshake-reveal', async importOriginal => {
   return { ...real, createHandshakeSession: () => sessions.next ?? real.createHandshakeSession() };
 });
 const freshSession = (): HandshakeSession => { const secret = generateSecretKey(); return { secret, publicKey: getPublicKey(secret) }; };
-beforeEach(() => { sessions.next = undefined; });
+beforeEach(() => { sessions.next = undefined; resetScanThrottleForTests(); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 /** `recipient`: this phone holds the higher persona. `ownLowerSession`: this
@@ -504,6 +504,23 @@ it('an NFC tap reads the other session like a camera, and the contact is recorde
   expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');
   expect(quiet).toHaveBeenCalled();
   expect(stop).not.toHaveBeenCalled();
+});
+it('ends Bluetooth (scan and advert) once "Is this them?" is up, so it does not rescan for as long as the question stays open', async () => {
+  const s = setup(), nearby = fakeNearby();
+  let tapped: ((code: string) => void) | undefined;
+  const handle = { quiet: vi.fn(), stop: vi.fn() };
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return handle; }) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc, nearby }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
+  act(() => tapped!(s.peerCode));
+  await waitFor(() => expect(hook.result.current.view.via).toBe('tap'));
+  expect(nearby.stop).not.toHaveBeenCalled();
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('confirming'));
+  await waitFor(() => expect(nearby.stop).toHaveBeenCalledTimes(1));
+  hook.unmount();
 });
 it('a tap after the camera already read the peer changes nothing, and NFC is released on leaving', async () => {
   const s = setup();
