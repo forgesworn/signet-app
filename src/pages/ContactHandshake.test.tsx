@@ -257,3 +257,11 @@ it('a declined tap says nothing was saved, and Start again begins a fresh sessio
   expect(mounts).toBe(2);
   expect(screen.queryByRole('button', { name: 'Start again' })).not.toBeInTheDocument();
 });
+it('chooser lists its checkboxes one per line, each with its text beside it', async () => {
+  const view = render(<ContactHandshake {...props()} choose />);
+  await screen.findByText('They’ll see');
+  const labels = [...view.container.querySelectorAll('.handshake-choices > label')];
+  expect(labels.map(l => l.textContent?.trim())).toEqual(['Your name', 'Your npub', 'Your picture', 'Save as default']);
+  for (const l of labels) expect(l.querySelector('input[type=checkbox]')).not.toBeNull();
+  expect(view.container.querySelector('.handshake-choices .field-hint')?.textContent).toBe('Your npub is needed to connect.');
+});

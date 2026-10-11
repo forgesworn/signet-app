@@ -101,11 +101,13 @@ export function ContactHandshake(props: Props) {
   if (!choice) return <p role="status">{COPY.reading}</p>;
   if (choosing) return <div className="card section">
     <h2>{COPY.chooser}</h2>
-    <label><input type="checkbox" checked={choice.name} disabled={!props.info.name} onChange={e => setChoice({ ...choice, name: e.target.checked })} /> {COPY.name}</label>
-    <label><input type="checkbox" checked readOnly disabled /> {COPY.npub}</label>
-    <p className="field-hint">{COPY.keyRequired}</p>
-    <label><input type="checkbox" checked={choice.photo} disabled={!props.info.hasPhoto} onChange={e => setChoice({ ...choice, photo: e.target.checked })} /> {COPY.photo}</label>
-    <label><input type="checkbox" checked={saveDefault} onChange={e => setSaveDefault(e.target.checked)} /> {COPY.saveDefault}</label>
+    <div className="handshake-choices">
+      <label><input type="checkbox" checked={choice.name} disabled={!props.info.name} onChange={e => setChoice({ ...choice, name: e.target.checked })} /> {COPY.name}</label>
+      <label><input type="checkbox" checked readOnly disabled /> {COPY.npub}</label>
+      <p className="field-hint">{COPY.keyRequired}</p>
+      <label><input type="checkbox" checked={choice.photo} disabled={!props.info.hasPhoto} onChange={e => setChoice({ ...choice, photo: e.target.checked })} /> {COPY.photo}</label>
+      <label><input type="checkbox" checked={saveDefault} onChange={e => setSaveDefault(e.target.checked)} /> {COPY.saveDefault}</label>
+    </div>
     <RadioControls />
     <button className="btn btn-primary" onClick={() => {
       void (async () => { if (saveDefault) await saveHandshakeChoice(props.persona, props.encryptionKey, choice); setChoosing(false); })().catch(() => setFailed(true));
