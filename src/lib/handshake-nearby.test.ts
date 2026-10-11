@@ -436,11 +436,74 @@ describe('HandshakeNearby re-check fixes', () => {
     await carrier.open(true);
     for (const link of ['in1', 'in2', 'in3']) { native.links.set(link, { peer: sink, id: link }); native.handlers!.link({ link, direction: 'in' }); }
     expect(close).toHaveBeenCalledWith({ link: 'in3' });
-    carrier.connect({ session: S_B.publicKey }, { quiet: true });
-    expect(native.quiet).toHaveBeenCalledTimes(1);
+    carrier.connect({ session: S_B.publicKey });
+    // Dialling leaves the advert up: the peer may be scanning for it. It goes quiet on a trusted outgoing link.
+    expect(native.quiet).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(native.connect).toHaveBeenCalledTimes(1));
     expect(close).not.toHaveBeenCalledWith({ link: 'out' });
     await carrier.close();
+  });
+
+  it('keeps its advert up while dialling, even if the advert is still starting, and scans without waiting for it', async () => {
+    const native = radio().phone();
+    let advertised!: () => void;
+    native.advertise = vi.fn(() => new Promise<{ psm: number }>(resolve => { advertised = () => resolve({ psm: 0x80 }); }));
+    native.connect = vi.fn(() => new Promise<{ link: string }>(() => {}));
+    const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, onEvent: async () => 'stored' as const });
+    const opened = carrier.open(true);
+    carrier.connect({ session: S_B.publicKey });
+    // The scan starts while advertising has not resolved.
+    await vi.waitFor(() => expect(native.connect).toHaveBeenCalledTimes(1));
+    expect(carrier.availability).toBe('starting');
+    advertised();
+    expect(await opened).toBe('ready');
+    expect(native.quiet).not.toHaveBeenCalled();
+    expect(native.connect).toHaveBeenCalledTimes(1);
+    await carrier.close();
+  });
+
+  it('keeps scanning past timeouts until the session ends, never faster than the OS allows scan starts', async () => {
+    vi.useFakeTimers();
+    try {
+      const native = radio().phone();
+      const starts: number[] = [];
+      native.connect = vi.fn(async () => { starts.push(Date.now()); throw new Error('timeout'); });
+      const carrier = new HandshakeNearby(native, { session: S_A, onChange: () => {}, redialMs: 300, holdMs: 1e9, onEvent: async () => 'stored' as const });
+      await carrier.open(true);
+      carrier.connect({ session: S_B.publicKey });
+      await vi.advanceTimersByTimeAsync(5000);
+      // A burst of timeouts stops at the per-window allowance, not at MAX_DIALS.
+      expect(native.connect).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(115000);
+      expect(starts.length).toBeGreaterThan(8);
+      for (let i = 0; i + 4 < starts.length; i++) expect(starts[i + 4] - starts[i]).toBeGreaterThanOrEqual(30000);
+      expect(carrier.route('f'.repeat(64))).toBe('pending');
+      await carrier.close();
+      const total = starts.length;
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(starts.length).toBe(total);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('two links made at once (both phones dialled): one survives, the exchange is processed once, the extra closes', async () => {
+    const air = radio(), na = air.phone(), nb = air.phone();
+    const wrap = (c: string) => ({ id: c.repeat(64), pubkey: '2'.repeat(64), sig: '3'.repeat(128), kind: 1059, created_at: 1,
+      tags: [['p', '4'.repeat(64)]], content: 'x' });
+    const gotA = vi.fn(async () => 'stored' as const), gotB = vi.fn(async () => 'stored' as const);
+    const a = new HandshakeNearby(na, { session: S_A, onChange: () => {}, onEvent: gotA });
+    const b = new HandshakeNearby(nb, { session: S_B, onChange: () => {}, onEvent: gotB });
+    await a.open(true); await b.open(true);
+    a.connect({ session: S_B.publicKey }); b.connect({ session: S_A.publicKey });
+    await vi.waitFor(() => expect(a.reaches(S_B.publicKey) && b.reaches(S_A.publicKey)).toBe(true));
+    // Both authenticated links settle to the one the lower session dialled, on both phones.
+    await vi.waitFor(() => { expect(na.links.size).toBe(1); expect(nb.links.size).toBe(1); });
+    expect(a.reaches(S_B.publicKey)).toBe(true);
+    expect(b.reaches(S_A.publicKey)).toBe(true);
+    expect(await a.deliverSession(S_B.publicKey, wrap('a'))).toBe(true);
+    expect(await b.deliverSession(S_A.publicKey, wrap('b'))).toBe(true);
+    expect(gotB).toHaveBeenCalledTimes(1);
+    expect(gotA).toHaveBeenCalledTimes(1);
+    await a.close(); await b.close();
   });
 
   it('shares one event allowance across the carriers of a screen (L6)', async () => {

@@ -1,6 +1,7 @@
 import type { NostrEvent } from 'signet-protocol';
 import { NearbyLink, NEARBY_NONCE_BYTES, nearbyEventFrame, nearbyToken, type NearbyStep } from './handshake-nearby-wire';
 import { isNativeApp, SignetNative } from './native';
+import { sessionDialler } from './handshake-reveal';
 
 /** How the contact outbox may reach one counterparty right now. `pending`
  * holds a handshake row back from the relays while a nearby link is being
@@ -45,6 +46,9 @@ function fromBase64(text: string): Uint8Array | null {
 }
 const HEX64 = /^[0-9a-f]{64}$/;
 const MAX_INCOMING = 2, MAX_OUTGOING = 1, MAX_EVENTS_PER_LINK = 64, MAX_EVENTS_PER_SESSION = 128, MAX_DIALS = 3;
+/** Android refuses a scan start beyond 5 in 30 s (the app is silently
+ * throttled, then every scan returns nothing), so stay a start under it. */
+const SCAN_WINDOW_MS = 30000, SCAN_STARTS_PER_WINDOW = 4;
 
 interface LinkState {
   /** `peer`: the persona this link speaks for, once bound. */
@@ -84,7 +88,18 @@ export class HandshakeNearby implements DirectCarrier {
     /** Shared across the carriers of one handshake screen, so returning to
      * the foreground does not refill the event allowance. */
     budget?: { events: number };
+    /** Scan-start times (ms), shared like `budget`: the OS limit is per app, so
+     * a fresh carrier after a hide/show must not start counting from zero. */
+    scanStarts?: number[];
   }) {}
+  private ownScanStarts: number[] = [];
+  private get scanStarts() { return this.opts.scanStarts ?? this.ownScanStarts; }
+  /** Permission and adapter are settled, so a scan may start. Deliberately not
+   * `availability === 'ready'`, which waits for advertising: that goes through
+   * a Bluetooth-name change and an advert start that can take seconds, and the
+   * peer is already advertising for us now. */
+  private scanOk = false;
+  private dialPending = false;
   private ownBudget = { events: 0 };
   private get budget() { return this.opts.budget ?? this.ownBudget; }
   private now() { return this.opts.nowMs?.() ?? Date.now(); }
@@ -112,9 +127,14 @@ export class HandshakeNearby implements DirectCarrier {
         if (!status.enabled) return settle('off');
       }
       if (this.closed) return 'failed';
+      // Scan while advertising comes up: a target recorded before this point
+      // dials now rather than after the slower of the two.
+      this.scanOk = true;
+      this.dial();
       await this.native.advertise({ token: toBase64(nearbyToken(this.opts.session.publicKey)) });
       if (this.closed) return 'failed';
       settle('ready');
+      // A link trusted while the advert was still starting already made it unnecessary.
       if (this.quietWanted) this.quieten();
       this.dial();
       return 'ready';
@@ -124,31 +144,49 @@ export class HandshakeNearby implements DirectCarrier {
 
   /** Connect to the session this phone read from its peer's screen. One
    * target per screen; a scan made while the permission prompt is up connects
-   * once it is ready. `quiet`: this phone needs no incoming link. */
-  connect(peer: { session: string }, opts: { quiet?: boolean } = {}) {
+   * once it is ready. The advert is NOT stopped here: the peer may be scanning
+   * for it (the higher session's late dial fires while the lower one's link is
+   * still authenticating, and both phones would then scan with nobody to find).
+   * It goes quiet only once an outgoing link is trusted. */
+  connect(peer: { session: string }) {
     if (this.closed || this.target || !HEX64.test(peer.session)
       || (this.availability !== 'ready' && this.availability !== 'starting')) return;
     this.expect(peer.session);
     const hold = this.opts.holdMs ?? 5000;
     this.target = { session: peer.session, holdUntil: this.now() + hold, failed: false as boolean, dialling: false as boolean, dials: 0 };
     this.later(hold, () => this.changed());
-    if (opts.quiet) { this.quietWanted = true; this.quieten(); }
     this.dial();
   }
+  /** Set when an outgoing link is trusted; applied at once if the advert is up,
+   * else when advertising finishes starting. */
   private quietWanted = false;
   private quieten() { if (this.availability === 'ready' && !this.closed) void this.native.quiet?.().catch(() => {}); }
-  /** Up to three dials: a copied advert or a dropped connection costs one,
-   * and the native scan skips a device whose link failed to authenticate. */
+  /** Scan until linked or the session ends. Only real failures count against
+   * `MAX_DIALS` (a connect that errored, or a link that never authenticated: a
+   * copied advert costs one, and the native scan skips a device whose link
+   * failed to authenticate). A scan that merely timed out finds nothing yet and
+   * simply starts again, but never faster than the OS allows scan starts. */
   private dial() {
     const target = this.target;
-    if (!target || target.dialling || target.failed || this.availability !== 'ready' || this.closed) return;
-    if ([...this.links.values()].some(s => s.outgoing)) return;
+    if (!target || target.dialling || target.failed || !this.scanOk || this.closed || this.dialPending) return;
+    if ([...this.links.values()].some(s => s.outgoing) || this.reaches(target.session)) return;
     if (target.dials >= MAX_DIALS) { target.failed = true; this.changed(); return; }
-    target.dials++;
+    const now = this.now(), starts = this.scanStarts;
+    while (starts.length && now - starts[0] >= SCAN_WINDOW_MS) starts.shift();
+    if (starts.length >= SCAN_STARTS_PER_WINDOW) {
+      this.dialPending = true;
+      this.later(Math.max(starts[0] + SCAN_WINDOW_MS - now, 1), () => { this.dialPending = false; this.dial(); });
+      return;
+    }
+    starts.push(now);
     target.dialling = true;
-    this.native.connect({ token: toBase64(nearbyToken(target.session)), timeoutMs: this.opts.connectMs ?? 30000 })
+    this.native.connect({ token: toBase64(nearbyToken(target.session)), timeoutMs: this.opts.connectMs ?? 60000 })
       .then(() => { target.dialling = false; })
-      .catch(() => { target.dialling = false; this.redial(); });
+      .catch((err: unknown) => {
+        target.dialling = false;
+        if ((err as { message?: unknown } | null)?.message !== 'timeout') target.dials++;
+        this.redial();
+      });
   }
   private redial() {
     const target = this.target;
@@ -243,7 +281,7 @@ export class HandshakeNearby implements DirectCarrier {
     if (!this.links.has(state.id)) return;
     this.links.delete(state.id);
     this.forget(state);
-    if (state.outgoing && !state.link.trusted) this.redial();
+    if (state.outgoing && !state.link.trusted) { if (this.target) this.target.dials++; this.redial(); }
     void this.native.close({ link: state.id, ...(avoid && state.outgoing && !state.link.trusted ? { avoid: true } : {}) }).catch(() => {});
     this.changed();
   }
@@ -273,6 +311,7 @@ export class HandshakeNearby implements DirectCarrier {
     if (step.kind === 'send') this.send(state, step.frame);
     else if (step.kind === 'drop') this.drop(state, true);
     else if (step.kind === 'trusted') {
+      if (this.dedupe(state)) return;
       void this.native.trust({ link: state.id }).catch(() => this.drop(state));
       // A phone with its own outgoing link needs no advert.
       if (state.outgoing) this.quieten();
@@ -293,6 +332,24 @@ export class HandshakeNearby implements DirectCarrier {
         this.send(state, state.link.ack(event.id, receipt !== 'rejected'));
       });
     }
+  }
+  /** Both phones can dial at once (the late dial, or a rescan), so two links
+   * to one peer session may both authenticate. Keep the one the lower session
+   * dialled, which both phones compute alike so they close the same link; a
+   * second link would otherwise carry its own copy of every exchange frame.
+   * The survivor inherits what the dropped one had earned. Returns true when
+   * `state` itself was the one dropped. */
+  private dedupe(state: LinkState): boolean {
+    const twin = [...this.links.values()].find(s => s !== state && s.link.trusted && s.link.peerSession === state.link.peerSession);
+    if (!twin) return false;
+    const peer = state.link.peerSession;
+    if (!peer) return false;
+    const keep = state.outgoing === sessionDialler(this.opts.session.publicKey, peer) ? state : twin;
+    const lose = keep === state ? twin : state;
+    keep.peer ??= lose.peer;
+    for (const id of lose.delivered) keep.delivered.add(id);
+    this.drop(lose);
+    return lose === state;
   }
   private onClosed(link: string) {
     const state = this.links.get(link);

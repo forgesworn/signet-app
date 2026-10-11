@@ -80,6 +80,8 @@ export function useHandshake(host: HandshakeHost) {
     let confirming = false, declined = false;
     let nearby: HandshakeNearby | undefined, radioEnded = false, backgrounded = false;
     const nearbyBudget = { events: 0 };
+    /** Shared by every carrier this screen makes: Android's scan-start limit is per app, not per carrier. */
+    const nearbyScanStarts: number[] = [];
     const session: HandshakeSession = createHandshakeSession();
     const relays = latest.current.revealRelays ?? defaultRelays;
     const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -134,9 +136,9 @@ export function useHandshake(host: HandshakeHost) {
     const dial = () => {
       const peer = peerCard?.publicKey;
       if (!peer || !nearby) return;
-      if (sessionDialler(session.publicKey, peer)) { nearby.connect({ session: peer }, { quiet: true }); return; }
+      if (sessionDialler(session.publicKey, peer)) { nearby.connect({ session: peer }); return; }
       nearby.expect(peer);
-      later(LATE_DIAL_MS, () => { if (nearby && !nearby.reaches(peer)) nearby.connect({ session: peer }, { quiet: true }); });
+      later(LATE_DIAL_MS, () => { if (nearby && !nearby.reaches(peer)) nearby.connect({ session: peer }); });
     };
     const confirmScans = () => {
       if (doubleBuzz) return;
@@ -379,7 +381,7 @@ export function useHandshake(host: HandshakeHost) {
       const native = latest.current.nearby === undefined ? nativeNearby() : latest.current.nearby;
       if (closed || radioEnded || backgrounded || nearby || !invite || !native || document.visibilityState === 'hidden') return;
       const carrier = nearby = new HandshakeNearby(native, {
-        session, budget: nearbyBudget,
+        session, budget: nearbyBudget, scanStarts: nearbyScanStarts,
         onEvent: async event => {
           if (event.tags[0]?.[1] === session.publicKey) return acceptReveal(event) ? 'stored' : 'rejected';
           return service.receiveDirect(event, { identity: host.persona, inviteId: invite.id, now: now() });

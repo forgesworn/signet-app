@@ -222,7 +222,8 @@ it('advertises its session, dials the scanned session as the lower one and stops
   await waitFor(() => expect(nearby.advertise).toHaveBeenCalledTimes(1));
   act(() => hook.result.current.scan(s.peerCode));
   await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1));
-  expect(nearby.quiet).toHaveBeenCalled();
+  // Dialling must not stop the advert: the peer may be scanning for it.
+  expect(nearby.quiet).not.toHaveBeenCalled();
   hook.unmount();
   await waitFor(() => expect(nearby.stop).toHaveBeenCalled());
 });
@@ -234,6 +235,8 @@ it('as the higher session, waits for the other phone to dial, and dials itself o
   await new Promise(r => setTimeout(r, 200));
   expect(nearby.connect).not.toHaveBeenCalled();
   await waitFor(() => expect(nearby.connect).toHaveBeenCalledTimes(1), { timeout: 4000 });
+  // The late fallback dial must leave its advert up, or the lower phone's scan finds nothing.
+  expect(nearby.quiet).not.toHaveBeenCalled();
 }, 10000);
 it('keeps Bluetooth off while the app is hidden and restarts it on return, dialling again', async () => {
   let visibility: DocumentVisibilityState = 'visible';
