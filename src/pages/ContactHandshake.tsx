@@ -53,6 +53,29 @@ function HandshakeArrival(props: { partner: string; name?: string; relayUrl: str
     <p className="field-hint">{COPY.added}</p>
   </div>;
 }
+/** Before a tapped contact is saved: initials only, because their picture is a
+ * pointer to a server they control and nothing is fetched until the user accepts
+ * (H1). Blurred, like the arrival, when `blur` says onlookers may be watching. */
+function HandshakeConfirm(props: { partner: string; name?: string; blur?: boolean; onYes(): void; onNo(): void }) {
+  const [shown, setShown] = useState(!props.blur);
+  const name = props.name?.trim();
+  return <div className="card section handshake-confirm">
+    <h2>{COPY.confirmTitle}</h2>
+    <div className={`handshake-arrival${shown ? '' : ' is-hidden'}`}>
+      <div className="handshake-arrival-body" aria-hidden={!shown}>
+        <ContactAvatar url={null} name={name || props.partner} pubkey={props.partner} size={64} />
+        <div>
+          <p className="field-hint">{COPY.gaveName}</p>
+          <p className="handshake-arrival-name">{name || COPY.noName}</p>
+          <p className="handshake-arrival-key mono">{shortNpub(props.partner)}</p>
+        </div>
+      </div>
+      {!shown && <button type="button" className="btn btn-ghost handshake-arrival-reveal" onClick={() => setShown(true)}>{COPY.reveal}</button>}
+    </div>
+    <button className="btn btn-primary" onClick={props.onYes}>{COPY.confirmYes}</button>
+    <button className="btn btn-secondary" onClick={props.onNo}>{COPY.confirmNo}</button>
+  </div>;
+}
 // S1 decides this value on the real screen. Rear is the working baseline.
 export const HANDSHAKE_DEFAULT_CAMERA = 'environment' as const;
 export function ContactHandshake(props: Props) {
@@ -60,6 +83,8 @@ export function ContactHandshake(props: Props) {
   const [choosing, setChoosing] = useState(props.choose);
   const [saveDefault, setSaveDefault] = useState(false);
   const [failed, setFailed] = useState(false);
+  // "Start again" remounts the running screen: a fresh session, since the crossed codes are burnt.
+  const [attempt, setAttempt] = useState(0);
   useScreenWakeLock(true);
   useEffect(() => {
     if (!isNativeApp()) return;
@@ -87,7 +112,7 @@ export function ContactHandshake(props: Props) {
     }}>{COPY.go}</button>
   </div>;
   return props.pairedChild ? <ChildHandshake {...props} />
-    : <RunningHandshake {...props} card={opts => props.buildCard(opts?.withoutPhoto ? { ...choice, photo: false } : choice)} />;
+    : <RunningHandshake key={attempt} {...props} onRestart={() => setAttempt(n => n + 1)} card={opts => props.buildCard(opts?.withoutPhoto ? { ...choice, photo: false } : choice)} />;
 }
 /** Explicit taps, so not behind the once-per-run automatic Bluetooth ask in useHandshake. */
 function RadioControls() {
@@ -140,8 +165,8 @@ function ChildHandshake(props: Props) {
     {note && <p className="field-hint">{note}</p>}
   </div>;
 }
-function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
-  const { view, scan, oneWay, confirm, withoutPhoto } = useHandshake(props);
+function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onRestart(): void }) {
+  const { view, scan, oneWay, confirm, withoutPhoto, confirmTap, rejectTap } = useHandshake(props);
   const [facing, setFacing] = useState<'user' | 'environment'>(HANDSHAKE_DEFAULT_CAMERA);
   const [opening, setOpening] = useState(false);
   const [openFailed, setOpenFailed] = useState(false);
@@ -151,7 +176,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
   // Both halves use canonical pubkey order, set once the transcript exists.
   const half = view.half ?? 'bottom';
   return <div className="handshake-screen">
-    {view.sigil && (view.phase === 'checking' || view.phase === 'sealed')
+    {view.sigil && (view.phase === 'checking' || view.phase === 'confirming' || view.phase === 'sealed')
       ? <JigsawSigil digest={view.sigil} half={half} />
       : active && view.scansConfirmed ? <ScanComplete tapped={tapped} />
       : view.code && active ? <HandshakeQR data={view.code} /> : null}
@@ -164,7 +189,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     <div className="handshake-status" role="status">
       <JigsawIcon state={view.phase === 'sealed' ? 'joined' : waiting ? 'closing' : 'apart'} size={40} />
       <span>{active ? view.scansConfirmed ? tapped ? COPY.tapFinishing : COPY.finishing : view.scanned ? handshakeWaiting(props.blurArrival ? undefined : view.name, tapped) : view.tapAvailable ? COPY.scanOrTap : COPY.scan
-        : view.phase === 'sealed' ? COPY.sealed : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
+        : view.phase === 'sealed' ? COPY.sealed : view.phase === 'confirming' ? COPY.confirmStatus : view.phase === 'declined' ? COPY.declined : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
     {active && view.nearby && <p className="field-hint">{view.nearby === 'linked' ? COPY.nearbyLinked : view.nearby === 'off' ? COPY.nearbyOff : COPY.nearbyDenied}</p>}
@@ -177,6 +202,11 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'>) {
     {/* A tap crossed both codes at once: there is nothing more to scan. */}
     {active && view.scanned && !view.scansConfirmed && !tapped && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}
+    {view.phase === 'confirming' && view.partner && <>
+      <HandshakeConfirm partner={view.partner} name={view.name} blur={props.blurArrival} onYes={confirmTap} onNo={rejectTap} />
+      {view.sigil && <p className="field-hint">{COPY.confirmHint}</p>}
+    </>}
+    {view.phase === 'declined' && <button className="btn btn-primary" onClick={props.onRestart}>{COPY.startAgain}</button>}
     {view.phase === 'checking' && <button className="btn btn-primary" onClick={confirm}>{COPY.joins}</button>}
     {view.phase === 'sealed' && view.contactId && view.partner && <HandshakeArrival partner={view.partner} name={view.name}
       relayUrl={props.relayUrl} directoryId={props.directoryId} contactId={view.contactId} encryptionKey={props.encryptionKey}

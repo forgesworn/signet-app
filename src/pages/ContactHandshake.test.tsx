@@ -3,6 +3,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest';
 import type { HandshakeHost, HandshakeView } from '../hooks/useHandshake';
 import type { ContactInviteService } from '../lib/contact-invite-service';
+import { useState } from 'react';
+import { useContactAvatar } from '../hooks/useContactAvatar';
+import { useContactPicture } from '../hooks/useContactPicture';
 import { ContactHandshake } from './ContactHandshake';
 const mocks = vi.hoisted(() => ({ load: vi.fn(async () => ({ name: true, photo: true })), save: vi.fn(async () => {}), handshake: vi.fn((_host: HandshakeHost) => ({ view: { phase: 'reading' } as HandshakeView, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() })) }));
 vi.mock('../lib/handshake-defaults', () => ({ loadHandshakeChoice: mocks.load, saveHandshakeChoice: mocks.save }));
@@ -194,4 +197,63 @@ it('chooser asks for the Bluetooth permission, then points to app settings if it
   fireEvent.click(await screen.findByRole('button', { name: 'Open app settings' }));
   expect(radio.radioSettings).toHaveBeenCalledWith({ which: 'app' });
   expect(radio.nearbyEnable).not.toHaveBeenCalled();
+});
+const confirming = (view: Partial<HandshakeView> = {}, actions: { confirmTap?: () => void; rejectTap?: () => void } = {}) => ({
+  view: { phase: 'confirming', partner, name: 'Sam', sigil: 'b'.repeat(64), half: 'top', via: 'tap', ...view } as HandshakeView,
+  scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn(), confirmTap: vi.fn(), rejectTap: vi.fn(), ...actions });
+it('asks "Is this them?" before a tapped contact is saved: their name, key and initials only, and no photo fetch', async () => {
+  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  mocks.handshake.mockReturnValue(confirming());
+  const view = render(<ContactHandshake {...props()} />);
+  expect(await screen.findByRole('heading', { name: 'Is this them?' })).toBeInTheDocument();
+  expect(screen.getByText('The name they gave')).toBeInTheDocument();
+  expect(screen.getByText('Sam')).toBeVisible();
+  expect(screen.getByText(/^npub1/)).toBeInTheDocument();
+  expect(view.container.querySelector('.handshake-confirm img:not([role])')).toBeNull();
+  expect(screen.getByRole('img', { name: 'Handshake sigil' })).toBeInTheDocument();
+  expect(screen.getByText(/the lines join only with the phone you tapped/)).toBeInTheDocument();
+  // H1: nothing contact-controlled is fetched or even looked up before the save.
+  expect(useContactAvatar).not.toHaveBeenCalled(); expect(useContactPicture).not.toHaveBeenCalled();
+  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Open contact' })).not.toBeInTheDocument();
+  fetchSpy.mockRestore();
+});
+it('without a shared name the question says so, and omits the Jigsaw hint when there is no sigil', async () => {
+  mocks.handshake.mockReturnValue(confirming({ name: undefined, sigil: undefined }));
+  render(<ContactHandshake {...props()} />);
+  await screen.findByRole('heading', { name: 'Is this them?' });
+  expect(screen.getByText('No name shared')).toBeInTheDocument();
+  expect(screen.queryByText(/the lines join only/)).not.toBeInTheDocument();
+});
+it('the question is blurred until tapped when the user blurs identities', async () => {
+  mocks.handshake.mockReturnValue(confirming());
+  const view = render(<ContactHandshake {...props()} blurArrival />);
+  await screen.findByRole('button', { name: 'Tap to show who you added' });
+  expect(view.container.querySelector('.handshake-confirm .handshake-arrival.is-hidden .handshake-arrival-body')?.getAttribute('aria-hidden')).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: 'Tap to show who you added' }));
+  expect(view.container.querySelector('.handshake-arrival.is-hidden')).toBeNull();
+  expect(screen.getByText('Sam')).toBeVisible();
+});
+it('"Yes, save them" and "Not them" call the tap actions', async () => {
+  const confirmTap = vi.fn(), rejectTap = vi.fn();
+  mocks.handshake.mockReturnValue(confirming({}, { confirmTap, rejectTap }));
+  render(<ContactHandshake {...props()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Yes, save them' }));
+  expect(confirmTap).toHaveBeenCalledTimes(1); expect(rejectTap).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Not them' }));
+  expect(rejectTap).toHaveBeenCalledTimes(1);
+});
+it('a declined tap says nothing was saved, and Start again begins a fresh session', async () => {
+  let mounts = 0;
+  mocks.handshake.mockImplementation(() => {
+    const [mount] = useState(() => ++mounts);
+    return { view: (mount === 1 ? { phase: 'declined', partner } : { phase: 'reading' }) as HandshakeView, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() };
+  });
+  render(<ContactHandshake {...props()} />);
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Not saved. They may still have saved you.'));
+  expect(screen.queryByRole('button', { name: 'Yes, save them' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Start again' }));
+  await screen.findByTestId('live-camera');
+  expect(mounts).toBe(2);
+  expect(screen.queryByRole('button', { name: 'Start again' })).not.toBeInTheDocument();
 });

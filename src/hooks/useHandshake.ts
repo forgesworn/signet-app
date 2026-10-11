@@ -38,9 +38,10 @@ export interface HandshakeHost {
 export interface HandshakeView {
   /** The session code this screen shows. It names no one. */
   code?: string; name?: string; sigil?: string;
-  phase: 'reading' | 'waiting' | 'checking' | 'sealed' | 'expired' | 'failed';
+  phase: 'reading' | 'waiting' | 'checking' | 'confirming' | 'declined' | 'sealed' | 'expired' | 'failed';
   contactId?: string; half?: 'top' | 'bottom';
-  /** The other person's persona key, once their contact is saved. */
+  /** The other person's persona key: in `confirming` before anything is saved,
+   * in `sealed` once their contact is. */
   partner?: string;
   /** This phone read the other screen's code: by its camera, or by a tap (`via`). */
   scanned?: boolean; via?: 'camera' | 'tap';
@@ -68,10 +69,13 @@ const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5
 export function useHandshake(host: HandshakeHost) {
   const latest = useRef(host); latest.current = host;
   const [view, setView] = useState<HandshakeView>({ phase: 'reading' });
-  const commands = useRef<{ scan(raw: string): void; tap(raw: string): void; oneWay(): void; confirm(): void; withoutPhoto(): void }>(null);
+  const commands = useRef<{ scan(raw: string): void; tap(raw: string): void; oneWay(): void; confirm(): void; withoutPhoto(): void;
+    confirmTap(): void; rejectTap(): void }>(null);
   const kick = useRef<() => void>(() => {});
   useEffect(() => {
     let closed = false, running = false, queued = false, oneWay = false, sending = false, doubleBuzz = false, sealed = false, sealing = false, noPhoto = false;
+    /** A tap met a complete transcript and waits for the user's "Is this them?"; a decline is final for this session. */
+    let confirming = false, declined = false;
     let nearby: HandshakeNearby | undefined, radioEnded = false, backgrounded = false;
     const nearbyBudget = { events: 0 };
     const session: HandshakeSession = createHandshakeSession();
@@ -100,6 +104,8 @@ export function useHandshake(host: HandshakeHost) {
       if (closed) return;
       // Failed closed stays failed: a pass already in flight cannot move it on.
       if (conflict && patch.phase && patch.phase !== 'failed') { const { phase: _phase, ...rest } = patch; patch = rest; }
+      // The question stays up while later passes republish earlier phases, or its blur and the user's tap reset.
+      else if ((confirming || declined) && patch.phase && !['confirming', 'sealed', 'declined', 'failed'].includes(patch.phase)) { const { phase: _phase, ...rest } = patch; patch = rest; }
       setView(v => ({ ...v, ...patch }));
     };
     const card = () => latest.current.card(noPhoto ? { withoutPhoto: true } : undefined);
@@ -188,7 +194,7 @@ export function useHandshake(host: HandshakeHost) {
       }
     };
     const seal = async (mutual: boolean) => {
-      if (!exchangeId || !own || !currentExchange || closed || sealed || sealing || conflict) return;
+      if (!exchangeId || !own || !currentExchange || closed || sealed || sealing || conflict || declined) return;
       sealing = true;
       try {
       const evidence = mutual && peerCard && peerReveal && readAt !== undefined
@@ -205,7 +211,7 @@ export function useHandshake(host: HandshakeHost) {
     };
     const run = async () => {
       // Failed closed (a conflict): nothing more is sent, and "failed" stays.
-      if (closed || sealed || conflict) return;
+      if (closed || sealed || conflict || declined) return;
       if (running) { queued = true; return; }
       running = true;
       try {
@@ -214,7 +220,7 @@ export function useHandshake(host: HandshakeHost) {
           queued = false;
           // A pass woken while the seal was saving (the save bumps the app's
           // version) waited for it here; it must not undo "Sealed".
-          if (!own || closed || sealed || conflict) return;
+          if (!own || closed || sealed || conflict || declined) return;
           await sendReveal();
           if (verified()) confirmScans();
           const invite = peerInvite();
@@ -257,8 +263,16 @@ export function useHandshake(host: HandshakeHost) {
               publish({ sigil: handshakeSigil(currentExchange), half: currentExchange.request.from < currentExchange.request.to
                 ? currentExchange.role === 'requester' ? 'top' : 'bottom'
                 : currentExchange.role === 'requester' ? 'bottom' : 'top' });
-              if (verified() && readAt !== undefined && role === currentExchange.role) await seal(true);
-              else {
+              if (declined) return;
+              if (verified() && readAt !== undefined && role === currentExchange.role) {
+                // Within a few centimetres whoever touches first is read, so a tap
+                // saves nothing until the user says it is them. The camera cannot
+                // be fooled that way: it reads the screen the user aimed at.
+                if (via === 'tap' && !sealed && !sealing) {
+                  confirming = true;
+                  publish({ phase: 'confirming', partner: currentExchange.role === 'requester' ? currentExchange.request.to : currentExchange.request.from });
+                } else await seal(true);
+              } else {
                 publish({ phase: 'checking' });
                 // Nothing more crosses for a seam check: the radio can go.
                 endNearby();
@@ -333,7 +347,15 @@ export function useHandshake(host: HandshakeHost) {
         if (peerCard || legacy || peerReveal || arrivalId) void run();
       },
       withoutPhoto() { if (closed || noPhoto) return; noPhoto = true; publish({ photoFailed: false }); void run(); },
-      confirm() { if (!running && currentExchange?.phase === 'complete') void contactInviteWork(() => seal(false)).catch(() => publish({ phase: 'failed' })); },
+      /** "Yes, save them": the tap's own proof, so the strength stays `tapped`. */
+      confirmTap() { if (confirming && !declined && !sealing && !sealed) void contactInviteWork(() => seal(true)).catch(() => publish({ phase: 'failed' })); },
+      /** "Not them": nothing is saved, and this session can no longer save this exchange. */
+      rejectTap() {
+        if (!confirming || declined || sealing || sealed) return;
+        declined = true; confirming = false; publish({ phase: 'declined' }); endNearby();
+        if (exchangeId) void latest.current.service(() => true).declineHandshake(exchangeId).catch(() => {});
+      },
+      confirm() { if (!running && !confirming && !declined && currentExchange?.phase === 'complete') void contactInviteWork(() => seal(false)).catch(() => publish({ phase: 'failed' })); },
     };
     /** Bluetooth runs only while this screen is visible. The always-on bunker
      * suspends hide-lock, so the screen can stay mounted behind another app;
@@ -393,7 +415,7 @@ export function useHandshake(host: HandshakeHost) {
       } catch { publish({ phase: 'failed' }); }
     })();
     const expiry = setInterval(() => {
-      if (own && now() >= own.invite.expiresAt! && !sealed && !conflict && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); endNearby(); }
+      if (own && now() >= own.invite.expiresAt! && !sealed && !conflict && !confirming && !declined && !(oneWay && currentExchange?.phase === 'complete')) { publish({ phase: 'expired' }); endNearby(); }
     }, 1000);
     return () => {
       cancelHandshakeHaptics();
@@ -417,5 +439,6 @@ export function useHandshake(host: HandshakeHost) {
   }, [host.persona]);
   useEffect(() => { kick.current(); }, [host.version]);
   return { view, scan: (raw: string) => commands.current?.scan(raw), oneWay: () => commands.current?.oneWay(), confirm: () => commands.current?.confirm(),
-    withoutPhoto: () => commands.current?.withoutPhoto() };
+    withoutPhoto: () => commands.current?.withoutPhoto(),
+    confirmTap: () => commands.current?.confirmTap(), rejectTap: () => commands.current?.rejectTap() };
 }

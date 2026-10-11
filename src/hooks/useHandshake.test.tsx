@@ -52,7 +52,7 @@ function setup(opts: { recipient?: boolean; ownLowerSession?: boolean } = {}) {
     request: vi.fn(async () => { vault.exchanges = [complete]; return contactExchangeKey(request); }),
     acceptHandshake: vi.fn(async () => { vault.exchanges = [{ ...complete, role: 'recipient' }]; }),
     accept: vi.fn(async () => { vault.exchanges = [{ ...complete, role: 'recipient' }]; }),
-    flush: vi.fn(async () => {}), setEnabled: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
+    flush: vi.fn(async () => {}), setEnabled: vi.fn(async () => {}), cancel: vi.fn(async () => {}), declineHandshake: vi.fn(async () => {}),
     confirmHandshake: vi.fn(async () => 'c'.repeat(32)),
     signRevealBinding: vi.fn(async (_persona: string, template: Parameters<typeof finalizeEvent>[0]) => finalizeEvent(template, ownSk) as NostrEvent),
   };
@@ -374,7 +374,79 @@ it('a second persona answering after the one-way tap, before anything is sent, s
   });
   await waitFor(() => expect(hook.result.current.view.ambiguous).toBe(true));
 });
-it('an NFC tap reads the other session like a camera, and the contact is recorded as tapped', async () => {
+const tapSetup = () => {
+  const s = setup();
+  let tapped: ((code: string) => void) | undefined;
+  const stop = vi.fn();
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+  return { s, nfc, stop, tap: (code: string) => act(() => tapped!(code)) };
+};
+/** A tap, then the peer's reveal: the exchange completes and the screen asks "Is this them?". */
+async function tappedToConfirming() {
+  const t = tapSetup();
+  const hook = renderHook(() => useHandshake({ ...t.s.host, nfc: t.nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  t.tap(t.s.peerCode);
+  await waitFor(() => expect(t.s.revealRelays.publish).toHaveBeenCalled());
+  t.s.deliver(t.s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('confirming'));
+  return { ...t, hook };
+}
+it('a tapped handshake saves nothing until the user says it is them (Is this them?)', async () => {
+  const { s, hook } = await tappedToConfirming();
+  expect(hook.result.current.view.partner).toBe(s.peerInvite.recipient);
+  expect(hook.result.current.view.name).toBe('Other person');
+  expect(hook.result.current.view.sigil).toBeTruthy();
+  // Later passes (a woken run, a new version) keep the question up and seal nothing.
+  hook.rerender(); s.host.version = 1; hook.rerender();
+  await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+  expect(hook.result.current.view.phase).toBe('confirming');
+  expect(s.service.confirmHandshake).not.toHaveBeenCalled();
+  expect(s.host.onSaved).toBeUndefined();
+});
+it('confirming a tap seals once, with strength-bearing tap evidence', async () => {
+  const { s, hook } = await tappedToConfirming();
+  act(() => { hook.result.current.confirmTap(); hook.result.current.confirmTap(); });
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(s.service.confirmHandshake).toHaveBeenCalledTimes(1);
+  expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');
+  expect(hook.result.current.view.contactId).toBe('c'.repeat(32));
+});
+it('declining a tap writes no contact, and nothing in this session can seal it afterwards', async () => {
+  const { s, hook, tap } = await tappedToConfirming();
+  const exchangeId = contactExchangeKey(s.request);
+  act(() => hook.result.current.rejectTap());
+  expect(hook.result.current.view.phase).toBe('declined');
+  expect(s.service.declineHandshake).toHaveBeenCalledWith(exchangeId);
+  // Re-entry by every route: the same reveal again, a new version, another tap, the seam check, a late yes.
+  s.deliver(s.peerReveal()); tap(s.peerCode);
+  s.host.version = 2; hook.rerender();
+  act(() => { hook.result.current.confirmTap(); hook.result.current.confirm(); hook.result.current.oneWay(); });
+  await act(async () => { await new Promise(r => setTimeout(r, 80)); });
+  expect(hook.result.current.view.phase).toBe('declined');
+  expect(s.service.confirmHandshake).not.toHaveBeenCalled();
+  expect(s.service.request).toHaveBeenCalledTimes(1);
+});
+it('leaving while the question is up saves nothing', async () => {
+  const { s, hook } = await tappedToConfirming();
+  hook.unmount();
+  expect(s.service.confirmHandshake).not.toHaveBeenCalled();
+});
+it('the question outlasts the two-minute session while the screen stays open', async () => {
+  const { s, hook } = await tappedToConfirming();
+  const real = Date.now;
+  vi.spyOn(Date, 'now').mockImplementation(() => real() + 5 * 60_000);
+  try {
+    // The session's expiry check ticks every second.
+    await act(async () => { await new Promise(r => setTimeout(r, 1300)); });
+    expect(hook.result.current.view.phase).toBe('confirming');
+    act(() => hook.result.current.confirmTap());
+    await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+    expect(s.service.confirmHandshake).toHaveBeenCalledTimes(1);
+  } finally { vi.mocked(Date.now).mockRestore(); }
+});
+it('an NFC tap reads the other session like a camera, and the contact is recorded as tapped once confirmed', async () => {
   const s = setup();
   let tapped: ((code: string) => void) | undefined;
   const stop = vi.fn();
@@ -388,6 +460,9 @@ it('an NFC tap reads the other session like a camera, and the contact is recorde
   expect(haptics.play).toHaveBeenCalledWith('tick');
   expect(hook.result.current.view.via).toBe('tap');
   s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('confirming'));
+  expect(s.service.confirmHandshake).not.toHaveBeenCalled();
+  act(() => hook.result.current.confirmTap());
   await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
   expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');
   expect(stop).toHaveBeenCalled();

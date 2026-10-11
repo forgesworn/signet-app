@@ -515,6 +515,13 @@ export class ContactInviteService {
     await this.update(state => ({ ...state, exchanges: state.exchanges.map(e => contactExchangeKey(e.request) === exchangeId
       && e.phase !== 'complete' ? { ...e, phase: 'declined' } : e) }));
   }
+  /** The user said a tapped handshake was not them. Only a complete, still
+   * unconfirmed handshake can be declined: once declined it can never be
+   * confirmed (confirmHandshake needs `complete`), whichever session asks. */
+  async declineHandshake(exchangeId: string) {
+    await this.update(state => ({ ...state, exchanges: state.exchanges.map(e => contactExchangeKey(e.request) === exchangeId
+      && e.handshake && !e.handshake.strength && e.phase === 'complete' ? { ...e, phase: 'declined' } : e) }));
+  }
   async confirmWords(exchangeId: string, heard: string, now: number) {
     const normalise = (value: string) => value.trim().toLocaleLowerCase('en').replace(/\s+/g, ' ');
     if (!Number.isSafeInteger(now) || now < 0 || heard.length > 200) throw new Error('Invalid word confirmation');

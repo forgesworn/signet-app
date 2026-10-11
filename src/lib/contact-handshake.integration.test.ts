@@ -72,7 +72,8 @@ it('real signed exchange needs reveals bound to both camera reads and author bin
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, ownSession: createHandshakeSession() })).rejects.toThrow('proof');
   await expect(a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, inviteId: bi.id })).rejects.toThrow('proof');
   // A's phone got B's session by an NFC tap: the same proof, recorded one rung lower.
-  await a.service.confirmHandshake(exchangeId, now + 9, { ...evidenceA, via: 'tap' });
+  // The user may take minutes over "Is this them?": the proof is the read time, not the save time.
+  await a.service.confirmHandshake(exchangeId, now + 300, { ...evidenceA, via: 'tap' });
   await b.service.confirmHandshake(exchangeId, now + 9, { inviteId: bi.id, ownSession: sb, cameraPeerSession: sa.publicKey, peerExpiresAt: now + 120, peerReveal: fromA, readAt: now + 2, via: 'camera' });
   const ae = (await a.service.read()).exchanges[0], be = (await b.service.read()).exchanges[0];
   expect(ae.handshake?.strength).toBe('tapped'); expect(be.handshake?.strength).toBe('mutual');
@@ -89,4 +90,33 @@ it('real signed exchange needs reveals bound to both camera reads and author bin
   expect(mergeContactInviteVault(mutualCopy, complete).exchanges[0].handshake?.strength).toBe('mutual');
   expect(ae.wordsConfirmedAt).toBeUndefined(); expect(handshakeSigil(ae)).toBe(handshakeSigil(be));
   expect(a.completed).toHaveBeenCalledTimes(1); expect(b.completed).toHaveBeenCalledTimes(1);
+}, 30000);
+
+it('a declined handshake can never be confirmed, and a flush saves nothing for an unconfirmed one', async () => {
+  const p = party('01'.repeat(32), 'owner'), q = party('02'.repeat(32), `dependant:${'b'.repeat(64)}`);
+  const [a, b] = p.pubkey < q.pubkey ? [p, q] : [q, p];
+  const ai = await a.service.create(a.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
+  const bi = await b.service.create(b.pubkey, 'Handshake', ['wss://relay.example'], 'single-use', now, now + 120);
+  const sa = createHandshakeSession(), sb = createHandshakeSession();
+  const sign = async (who: Party, own: HandshakeSession, peer: string, invite: typeof ai): Promise<RevealBody> =>
+    ({ v: 2, to: peer, invite: invite.invite, binding: await who.service.signRevealBinding(who.pubkey, bindingTemplate(own, peer, invite.invite, now)) });
+  const fromA = openReveal(sealReveal(await sign(a, sa, sb.publicKey, ai), sb.publicKey, now), sb, now + 1)!;
+  const fromB = openReveal(sealReveal(await sign(b, sb, sa.publicKey, bi), sa.publicKey, now), sa, now + 1)!;
+  const exchangeId = (await a.service.request(a.pubkey, fromB.invite, now + 1, undefined, undefined, true))!;
+  const request = (await a.service.read()).exchanges[0].request;
+  const arrival = await deliver(a, b, 0, bi.id, bi.invite.secret, 'invite');
+  await b.service.openInbox(now + 3);
+  await b.service.acceptHandshake(arrival, bi.invite, { invite: fromA.invite }, now + 4);
+  await b.service.flush(now + 5);
+  await deliver(b, a, 0, exchangeId, request.reply.secret, 'exchange');
+  await a.service.openInbox(now + 6, true); await a.service.flush(now + 7);
+  expect((await a.service.read()).exchanges[0].phase).toBe('complete');
+  await a.service.flush(now + 8);
+  expect(a.completed).not.toHaveBeenCalled();
+  await a.service.declineHandshake(exchangeId);
+  expect((await a.service.read()).exchanges[0].phase).toBe('declined');
+  const evidence = { inviteId: ai.id, ownSession: sa, cameraPeerSession: sb.publicKey, peerExpiresAt: now + 120, peerReveal: fromB, readAt: now + 2, via: 'tap' as const };
+  await expect(a.service.confirmHandshake(exchangeId, now + 9, evidence)).rejects.toThrow('incomplete');
+  await a.service.flush(now + 10);
+  expect(a.completed).not.toHaveBeenCalled();
 }, 30000);
