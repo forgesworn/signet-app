@@ -106,8 +106,9 @@ export function useHandshake(host: HandshakeHost) {
       if (closed) return;
       // Failed closed stays failed: a pass already in flight cannot move it on.
       if (conflict && patch.phase && patch.phase !== 'failed') { const { phase: _phase, ...rest } = patch; patch = rest; }
-      // The question stays up while later passes republish earlier phases, or its blur and the user's tap reset.
-      else if ((confirming || declined) && patch.phase && !['confirming', 'sealed', 'declined', 'failed'].includes(patch.phase)) { const { phase: _phase, ...rest } = patch; patch = rest; }
+      // The question stays up while later passes republish earlier phases, or its blur and the user's tap reset;
+      // "failed" still gets through it (a second phone, or the save itself failing). After a decline only "declined" shows.
+      else if ((confirming || declined) && patch.phase && !(declined ? ['declined'] : ['confirming', 'sealed', 'declined', 'failed']).includes(patch.phase)) { const { phase: _phase, ...rest } = patch; patch = rest; }
       setView(v => ({ ...v, ...patch }));
     };
     const card = () => latest.current.card(noPhoto ? { withoutPhoto: true } : undefined);
@@ -146,7 +147,7 @@ export function useHandshake(host: HandshakeHost) {
     const acceptReveal = (event: NostrEvent): boolean => {
       // Only failures count against the allowance, so junk cannot crowd out
       // the genuine reveal; a relay replaying what it sent costs nothing.
-      if (closed || sealed || conflict || failedReveals >= MAX_FAILED_REVEALS || seenReveals.has(event.id)) return false;
+      if (closed || sealed || conflict || declined || failedReveals >= MAX_FAILED_REVEALS || seenReveals.has(event.id)) return false;
       if (seenReveals.size < MAX_SEEN) seenReveals.add(event.id);
       const body = openReveal(event, session, now());
       if (!body || body.invite.recipient === host.persona) { failedReveals++; return false; }
@@ -293,7 +294,8 @@ export function useHandshake(host: HandshakeHost) {
         // Nothing was signed or sent: the card is built after every check and
         // before the message. The user decides whether to go on without it.
         if (error instanceof ContactCardPhotoError && !noPhoto) publish({ photoFailed: true });
-        else if (!closed) { publish({ phase: 'failed' }); endNearby(); }
+        // A background pass failing must not replace the question or the Start again button.
+        else if (!closed && !confirming && !declined) { publish({ phase: 'failed' }); endNearby(); }
       }
       finally { running = false; }
     };
@@ -301,7 +303,7 @@ export function useHandshake(host: HandshakeHost) {
     const takeSession = (scannedCard: SessionCard, how: 'camera' | 'tap') => {
       // This phone's own code reflected back, or the same peer read again (a tap
       // repeats while the phones touch): nothing new.
-      if (legacy || conflict || sealed || sealing || scannedCard.publicKey === session.publicKey
+      if (legacy || conflict || declined || sealed || sealing || scannedCard.publicKey === session.publicKey
         || scannedCard.publicKey === peerCard?.publicKey) return;
       // A second, different session: another screen or card reached this one.
       // One peer per screen, so fail closed rather than let the first code
@@ -321,7 +323,7 @@ export function useHandshake(host: HandshakeHost) {
     kick.current = () => { void run(); };
     commands.current = {
       scan(raw) {
-        if (!own || closed || now() >= own.invite.expiresAt!) return;
+        if (!own || closed || declined || now() >= own.invite.expiresAt!) return;
         const code = readHandshakeCode(raw, now());
         if (!code) return;
         if (code.kind === 'outdated') { publish({ outdated: true }); return; }
@@ -336,11 +338,12 @@ export function useHandshake(host: HandshakeHost) {
       },
       /** An NFC tap delivered the other phone's session code. */
       tap(raw) {
-        if (!own || closed || now() >= own.invite.expiresAt!) return;
+        if (!own || closed || declined || now() >= own.invite.expiresAt!) return;
         const code = readHandshakeCode(raw, now());
         if (code?.kind === 'session') takeSession(code.card, 'tap');
       },
       oneWay() {
+        if (declined) return;
         // Without its own scan this phone cannot tell reveals apart: with more
         // than one persona answering, it asks for a scan rather than guess.
         if (!peerReveal && !peerCard && new Set(candidates.map(c => c.body.invite.recipient)).size > 1) { publish({ ambiguous: true }); return; }

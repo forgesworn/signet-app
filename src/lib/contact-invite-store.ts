@@ -316,7 +316,10 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
       opticalAcceptanceAt: marks.map(mark => mark.opticalAcceptanceAt).filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0],
       opticalAcceptanceSent: marks.some(mark => mark.opticalAcceptanceSent),
       ...(confirmed ? { strength: confirmed.strength, confirmedAt: confirmed.confirmedAt, sigil: confirmed.sigil } : {}) } : undefined;
-    exchanges.set(contactExchangeKey(row.request), { ...chosen, ...(handshake ? { handshake } : {}), origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
+    // "Not them" is final for a handshake nobody confirmed: an older or remote copy still
+    // saying `complete` must not bring it back. A confirmed one (strength) still wins.
+    const unconfirmedDecline = chosen.phase === 'complete' && !!handshake && !handshake.strength && (old?.phase === 'declined' || row.phase === 'declined');
+    exchanges.set(contactExchangeKey(row.request), { ...chosen, ...(unconfirmedDecline ? { phase: 'declined' as const } : {}), ...(handshake ? { handshake } : {}), origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
       wordsConfirmedAt: Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) || undefined,
       wordsRecordedAt: Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) === Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) ? Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) || undefined : undefined });
   }
@@ -346,6 +349,7 @@ export async function restoreContactInviteVault(directoryId: string, key: string
   const remote = await parseContactInviteVault(raw, directoryId);
   await updateContactInviteVault(directoryId, key, local => mergeContactInviteVault(local, remote));
   for (const exchange of remote.exchanges) {
-    if (exchange.phase === 'complete') await recordPartnerCardPhoto({ exchange, key });
+    // An unconfirmed handshake (a tap nobody said was them) puts no photo key on this phone.
+    if (exchange.phase === 'complete' && (!exchange.handshake || exchange.handshake.strength)) await recordPartnerCardPhoto({ exchange, key });
   }
 }

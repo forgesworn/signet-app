@@ -442,10 +442,30 @@ it('declining a tap writes no contact, and nothing in this session can seal it a
   expect(s.service.confirmHandshake).not.toHaveBeenCalled();
   expect(s.service.request).toHaveBeenCalledTimes(1);
 });
-it('leaving while the question is up saves nothing', async () => {
+it('a background pass failing while the question is up does not replace it, but the save failing does', async () => {
   const { s, hook } = await tappedToConfirming();
-  hook.unmount();
+  s.service.read.mockRejectedValue(new Error('relay down'));
+  s.host.version = 3; hook.rerender();
+  await act(async () => { await new Promise(r => setTimeout(r, 80)); });
+  expect(s.service.read).toHaveBeenCalled();
+  expect(hook.result.current.view.phase).toBe('confirming');
+  s.service.confirmHandshake.mockRejectedValueOnce(new Error('could not save'));
+  act(() => hook.result.current.confirmTap());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('failed'));
+});
+it('after "Not them", new scans, taps and background failures change nothing until Start again', async () => {
+  const { s, hook, tap } = await tappedToConfirming();
+  act(() => hook.result.current.rejectTap());
+  expect(hook.result.current.view.phase).toBe('declined');
+  const stranger = sessionQR({ publicKey: freshSession().publicKey, expiresAt: s.now + 120, relays: ['wss://elsewhere.example/'] })!;
+  s.service.read.mockRejectedValue(new Error('relay down'));
+  act(() => { hook.result.current.scan(stranger); tap(stranger); });
+  s.host.version = 4; hook.rerender();
+  s.deliver(s.peerReveal());
+  await act(async () => { await new Promise(r => setTimeout(r, 80)); });
+  expect(hook.result.current.view.phase).toBe('declined');
   expect(s.service.confirmHandshake).not.toHaveBeenCalled();
+  expect(s.revealRelays.publish.mock.calls.every(call => !call[1].includes('wss://elsewhere.example/'))).toBe(true);
 });
 it('the question outlasts the two-minute session while the screen stays open', async () => {
   const { s, hook } = await tappedToConfirming();
