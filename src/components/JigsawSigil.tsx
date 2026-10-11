@@ -1,19 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { SEAM_GAP_DP } from '../lib/handshake-seam-gap';
 import { SIGIL_HEIGHT, SIGIL_OVERHANG, SIGIL_SEAM, SIGIL_WIDTH, sigilAnimator, sigilPaths } from '../lib/handshake-sigil';
-
-/** Between the two screens, top to top, each phone hides a strip: its status
- * bar and top bezel. Assumed 80 dp each: measured, it is 40 to 50 dp of status
- * bar and 2 to 3 mm of bezel on the phones it was tried on, but by eye the
- * lines joined better with a wider allowance. Each half starts that far beyond
- * the seam, so the lines carry on across the gap and the eye joins them. */
-export const SEAM_GAP_DP = 80;
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
+
+/** Kept here for the callers and tests that import it from the component. */
+export { SEAM_GAP_DP };
 
 /** The phones go top to top. Each shows one half at full width, with the seam
  * at its own top edge: the top half is turned half a turn, because that phone
  * faces the other way. On the halves the lines drift and flex slowly in time
  * with the clock, so the two phones move together across the seam. */
-export function JigsawSigil({ digest, half = 'whole' }: { digest: string; half?: 'top' | 'bottom' | 'whole' }) {
+export function JigsawSigil({ digest, half = 'whole', gapDp = SEAM_GAP_DP }: { digest: string; half?: 'top' | 'bottom' | 'whole'; gapDp?: number }) {
   const lines = useRef<Array<SVGPathElement | null>>([]);
   const svg = useRef<SVGSVGElement | null>(null);
   // The hidden strip in sigil units, from this screen's real width (CSS px are dp on Android).
@@ -21,13 +18,13 @@ export function JigsawSigil({ digest, half = 'whole' }: { digest: string; half?:
   useLayoutEffect(() => {
     const el = svg.current;
     if (half === 'whole' || !el) return;
-    const measure = () => { const width = el.getBoundingClientRect().width; setGap(width > 0 ? (SEAM_GAP_DP * SIGIL_WIDTH) / width : 0); };
+    const measure = () => { const width = el.getBoundingClientRect().width; setGap(width > 0 ? (gapDp * SIGIL_WIDTH) / width : 0); };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [half]);
+  }, [half, gapDp]);
   useEffect(() => {
     if (half === 'whole') return;
     // Each phone shows only its own half, so the seam is all the two compare:

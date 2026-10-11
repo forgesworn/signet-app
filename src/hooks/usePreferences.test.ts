@@ -406,3 +406,28 @@ describe('usePreferences — bunker restore fields', () => {
     expect(values).not.toHaveProperty('backgroundBunkerEnabled');
   });
 });
+
+describe('usePreferences — Handshake Jigsaw edge distance', () => {
+  it('saves a valid distance, clears it, and refuses anything out of range', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.preferences.handshakeSeamGapMm).toBeUndefined();
+    await act(async () => { await result.current.setHandshakeSeamGapMm(14.5); });
+    expect(result.current.preferences.handshakeSeamGapMm).toBe(14.5);
+    expect((await db.getPreferences()).handshakeSeamGapMm).toBe(14.5);
+    await act(async () => { await result.current.setHandshakeSeamGapMm(31); await result.current.setHandshakeSeamGapMm(-1); await result.current.setHandshakeSeamGapMm(Number.NaN); });
+    expect((await db.getPreferences()).handshakeSeamGapMm).toBe(14.5);
+    await act(async () => { await result.current.setHandshakeSeamGapMm(0); });
+    expect((await db.getPreferences()).handshakeSeamGapMm).toBe(0);
+    await act(async () => { await result.current.setHandshakeSeamGapMm(undefined); });
+    expect(result.current.preferences.handshakeSeamGapMm).toBeUndefined();
+    expect('handshakeSeamGapMm' in await db.getPreferences()).toBe(false);
+  });
+  it('is applied to a fresh read, so a setter fired alongside another keeps both', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await Promise.all([result.current.setHandshakeSeamGapMm(9), result.current.setBackgroundBunkerEnabled(true)]); });
+    const stored = await db.getPreferences();
+    expect(stored.handshakeSeamGapMm).toBe(9); expect(stored.backgroundBunkerEnabled).toBe(true);
+  });
+});

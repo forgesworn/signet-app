@@ -7,6 +7,8 @@ import { useState } from 'react';
 import { useContactAvatar } from '../hooks/useContactAvatar';
 import { useContactPicture } from '../hooks/useContactPicture';
 import { ContactHandshake } from './ContactHandshake';
+import { SEAM_GAP_DP } from '../lib/handshake-seam-gap';
+import { SIGIL_SEAM, SIGIL_WIDTH } from '../lib/handshake-sigil';
 const mocks = vi.hoisted(() => ({ load: vi.fn(async () => ({ name: true, photo: true })), save: vi.fn(async () => {}), handshake: vi.fn((_host: HandshakeHost) => ({ view: { phase: 'reading' } as HandshakeView, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() })) }));
 vi.mock('../lib/handshake-defaults', () => ({ loadHandshakeChoice: mocks.load, saveHandshakeChoice: mocks.save }));
 vi.mock('../hooks/useHandshake', () => ({ useHandshake: mocks.handshake }));
@@ -264,4 +266,19 @@ it('chooser lists its checkboxes one per line, each with its text beside it', as
   expect(labels.map(l => l.textContent?.trim())).toEqual(['Your name', 'Your npub', 'Your picture', 'Save as default']);
   for (const l of labels) expect(l.querySelector('input[type=checkbox]')).not.toBeNull();
   expect(view.container.querySelector('.handshake-choices .field-hint')?.textContent).toBe('Your npub is needed to connect.');
+});
+it('draws the Jigsaw with this phone’s edge distance, or the default', async () => {
+  const spy = vi.spyOn(SVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 400 } as DOMRect);
+  const strip = async (seamGapMm?: number) => {
+    mocks.handshake.mockReturnValue(sealedWith({}));
+    const view = render(<ContactHandshake {...props()} seamGapMm={seamGapMm} />);
+    const svg = await screen.findByRole('img', { name: 'Handshake sigil' });
+    const [, y] = svg.getAttribute('viewBox')!.split(' ').map(Number);
+    view.unmount();
+    return (y - SIGIL_SEAM) * 400 / SIGIL_WIDTH;
+  };
+  try {
+    expect(await strip(undefined)).toBeCloseTo(SEAM_GAP_DP, 0);
+    expect(await strip(10)).toBeCloseTo(10 * 160 / 25.4, 0);
+  } finally { spy.mockRestore(); }
 });

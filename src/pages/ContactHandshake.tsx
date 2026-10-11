@@ -11,6 +11,7 @@ import { QRCode } from '../components/QRCode';
 import { HandshakeQR } from '../components/HandshakeQR';
 import { JigsawIcon } from '../components/JigsawIcon';
 import { JigsawSigil } from '../components/JigsawSigil';
+import { seamGapDp } from '../lib/handshake-seam-gap';
 import { Icon } from '../components/Icon';
 import { useRadioStatus } from '../hooks/useRadioStatus';
 import { refreshRadioStatus } from '../lib/radio-status';
@@ -30,6 +31,8 @@ interface Props extends Omit<HandshakeHost, 'card'> {
   relayUrl: string; directoryId: string;
   /** The user blurs identities on screen: the arrival comes blurred, shown on a tap. */
   blurArrival?: boolean;
+  /** This phone's Jigsaw edge distance in mm (Settings); the default when unset. */
+  seamGapMm?: number;
 }
 /** Who just arrived, so the new contact is felt to be on this phone: picture,
  * the name they shared and their key. Blurred until tapped when the user
@@ -179,7 +182,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onResta
   const half = view.half ?? 'bottom';
   return <div className="handshake-screen">
     {view.sigil && (view.phase === 'checking' || view.phase === 'confirming' || view.phase === 'sealed')
-      ? <JigsawSigil digest={view.sigil} half={half} />
+      ? <JigsawSigil digest={view.sigil} half={half} gapDp={seamGapDp(props.seamGapMm)} />
       : active && view.scansConfirmed ? <ScanComplete tapped={tapped} />
       : view.code && active ? <HandshakeQR data={view.code} /> : null}
     {active && <>

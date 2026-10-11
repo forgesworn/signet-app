@@ -667,7 +667,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -10286,6 +10286,7 @@ export function App() {
         companionGrantCount={companionGrantCount}
         webUpdateReady={needRefresh}
         onApplyWebUpdate={() => updateServiceWorker(true)}
+        onSetHandshakeSeamGapMm={isPairedChild ? undefined : mm => { void setHandshakeSeamGapMm(mm); }}
       />
     ), topBanners);
   }
@@ -11660,7 +11661,7 @@ export function App() {
           setSelectedContactId(contactId); navigateTo('contact-detail');
         }}
         relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL} directoryId={contactsScope.directoryId ?? 'owner'}
-        blurArrival={blurIdentityNames} />
+        blurArrival={blurIdentityNames} seamGapMm={preferences.handshakeSeamGapMm} />
     </Layout>;
   }
 

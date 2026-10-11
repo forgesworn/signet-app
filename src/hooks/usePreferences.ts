@@ -4,6 +4,7 @@ import { primaryRelayUrl } from '../lib/relay-service';
 import { TIER_WORD_COUNT } from '../types';
 import * as db from '../lib/db';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
+import { validSeamGapMm } from '../lib/handshake-seam-gap';
 
 /**
  * Default-ON (spec §6, §11): the anonymous persona is the sign-in default
@@ -192,6 +193,18 @@ export function usePreferences() {
     });
   }, [applyFresh]);
 
+  /** `undefined` clears it back to the default. Out-of-range or non-finite values are refused. */
+  const setHandshakeSeamGapMm = useCallback(async (mm: number | undefined) => {
+    if (mm !== undefined && !validSeamGapMm(mm)) return;
+    await applyFresh(p => {
+      if (mm === undefined) {
+        if (p.handshakeSeamGapMm === undefined) return p;
+        const next = { ...p }; delete next.handshakeSeamGapMm; return next;
+      }
+      return p.handshakeSeamGapMm === mm ? p : { ...p, handshakeSeamGapMm: mm };
+    });
+  }, [applyFresh]);
+
   const setPreferPersonaForSignIns = useCallback(async (enabled: boolean) => {
     const updated = { ...preferences, preferPersonaForSignIns: enabled };
     setPreferences(updated);
@@ -286,5 +299,5 @@ export function usePreferences() {
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences };
 }

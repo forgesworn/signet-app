@@ -117,3 +117,14 @@ it('starts each half beyond the seam by the hidden strip, the same physical dist
   // Never beyond the lines' overhang, even on a very narrow screen.
   expect(at(100, 'bottom')).toBeCloseTo(SIGIL_SEAM + SIGIL_OVERHANG, 1);
 });
+it('uses the gap it is given, in dp, and the default when none is', () => {
+  const at = (gapDp?: number) => {
+    const spy = vi.spyOn(SVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 400 } as DOMRect);
+    const [, y] = render(<JigsawSigil digest={digest} half="bottom" gapDp={gapDp} />).container.querySelector('svg')!.getAttribute('viewBox')!.split(' ').map(Number);
+    cleanup(); spy.mockRestore();
+    return (y - SIGIL_SEAM) * 400 / SIGIL_WIDTH;
+  };
+  expect(at(undefined)).toBeCloseTo(SEAM_GAP_DP, 0);
+  expect(at(50)).toBeCloseTo(50, 0);
+  expect(at(0)).toBeCloseTo(0, 0);
+});

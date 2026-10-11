@@ -869,6 +869,8 @@ export const HANDSHAKE_COPY = {
   confirmYes: 'Yes, save them', confirmNo: 'Not them',
   confirmHint: 'Not sure? Put the phones top to top: the lines join only with the phone you tapped.',
   declined: 'Not saved. They may still have saved you.', startAgain: 'Start again',
+  settingsTitle: 'Handshake', seamGap: 'Jigsaw edge distance', seamGapUnit: 'mm', useDefault: 'Use default',
+  seamGapHint: 'From the top of the Jigsaw lines to the top edge of your phone. Change it if the lines don’t join across the two phones.',
   requestTitle: 'Contact request', requestBody: 'Someone wants to connect. Open Signet to review the request.',
 } as const;
 export function handshakeWaiting(name?: string, tapped = false): string {

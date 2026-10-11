@@ -145,6 +145,13 @@ export interface AppPreferences {
    *  Default OFF (opt-in). Absent = off; only an explicit `true` blurs. */
   blurIdentityNames?: boolean;
   /**
+   * Handshake Jigsaw: the distance, in mm, from the top of the Jigsaw lines to
+   * the top edge of THIS phone (0 to 30). Absent = the default (80 dp, about
+   * 12.7 mm). A property of this handset's bezel, so device-local: not in
+   * `portable-settings.ts`, never synced.
+   */
+  handshakeSeamGapMm?: number;
+  /**
    * Additional relays baked into dependant pairing QRs. The
    * primary `relayUrl` goes first; these fall in behind in order. If
    * the child's network blocks the primary, their BunkerSigner will try
