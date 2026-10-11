@@ -1,5 +1,8 @@
 package app.mysignet;
 
+import android.app.PendingIntent;
+import android.content.Intent;
+import android.nfc.NfcAdapter;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -61,6 +64,45 @@ public class MainActivity extends BridgeActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bridge != null) {
             bridge.getWebView().setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
+    }
+
+    /**
+     * While this app is on screen it takes every NFC tag the system would
+     * otherwise dispatch, and drops it. Two phones held back to back for a
+     * Handshake read each other as tags whenever My Signet is not in reader
+     * mode (before the screen opens, between its card slots); with nothing to
+     * open them, the system toasts "no supported app" (seen on the OnePlus 8T,
+     * 2026-10-11). Reader mode still wins while it is on, so Handshake reads
+     * are unaffected. The cost: a tag touched while My Signet is in front does
+     * nothing. Released in onPause, as Android requires.
+     */
+    @Override
+    public void onResume() {
+        super.onResume();
+        NfcAdapter adapter = NfcAdapter.getDefaultAdapter(this);
+        if (adapter == null) return;
+        Intent self = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        // Mutable: the system adds the tag to it.
+        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_MUTABLE : 0;
+        try {
+            adapter.enableForegroundDispatch(this, PendingIntent.getActivity(this, 0, self, flags), null, null);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onPause() {
+        NfcAdapter adapter = NfcAdapter.getDefaultAdapter(this);
+        if (adapter != null) try { adapter.disableForegroundDispatch(this); } catch (Exception ignored) {}
+        super.onPause();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        // A claimed tag: dropped here, so no plugin sees it as an app link.
+        String action = intent == null ? null : intent.getAction();
+        if (NfcAdapter.ACTION_TAG_DISCOVERED.equals(action) || NfcAdapter.ACTION_TECH_DISCOVERED.equals(action)
+                || NfcAdapter.ACTION_NDEF_DISCOVERED.equals(action)) return;
+        super.onNewIntent(intent);
     }
 
     @Override
