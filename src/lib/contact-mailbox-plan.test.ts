@@ -32,3 +32,19 @@ it('stops expired, disabled and consumed single-use mailboxes and normalizes rel
     id: data.invites[3].id, secret: data.invites[3].invite.secret, relays: ['wss://relay.test/'], channel: 'invite',
   }]);
 });
+it('listens only on the public reply relays of a handshake exchange (review P1)', async () => {
+  const { createContactRequest } = await import('@forgesworn/signet-contacts');
+  const exchange = (id: string, relays: string[], handshake: boolean) => ({
+    request: createContactRequest({ id: id.repeat(32), from: other, to: owner, nonce: '5'.repeat(64), now: 1,
+      reply: { secret: '6'.repeat(64), relays }, expiresAt: 1000 }),
+    role: 'recipient', phase: 'accepted', nonce: '5'.repeat(64), ...(handshake ? { handshake: { startedAt: 1 } } : {}),
+  }) as never;
+  const data: ContactInviteVault = { v: 1, directoryId: 'owner', invites: [], arrivals: [], outbox: [], exchanges: [
+    exchange('1', ['wss://192.168.1.5', 'wss://nas', 'wss://relay.example'], true),
+    exchange('2', ['wss://192.168.1.5', 'wss://relay.example'], false),
+    exchange('3', ['wss://printer.local'], true),
+  ] };
+  const relays = contactMailboxPlan(data, owner, 60).bindings.map(b => b.relays).sort((a, b) => a.length - b.length);
+  // The handshake listens on its public relay only; one with none is not opened; others are as before.
+  expect(relays).toEqual([['wss://relay.example/'], ['wss://192.168.1.5/', 'wss://relay.example/']]);
+});

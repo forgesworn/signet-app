@@ -136,7 +136,9 @@ describe('contact operations v2 storage', () => {
       for (const row of rows) {
         expect(row.encrypted).toBe(true);
         expect(row.value).toBeUndefined();
-        expect(JSON.stringify(row)).not.toContain('Row');
+        // "Row " with its space: a plaintext name can contain it, base64 ciphertext
+        // cannot, so random ciphertext (once "...YuRow1...") can't trip the check.
+        expect(JSON.stringify(row)).not.toContain('Row ');
       }
 
       const all = await db.listAllContactOperationsV2(KEY);

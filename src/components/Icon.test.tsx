@@ -39,7 +39,7 @@ describe('Icon', () => {
     const names: Array<Parameters<typeof Icon>[0]['name']> = [
       'home', 'users', 'user', 'key', 'settings', 'checkCircle', 'alertTriangle',
       'x', 'smartphone', 'idCard', 'link', 'puzzle', 'clipboard', 'globe',
-      'landmark', 'grid', 'scan', 'download',
+      'landmark', 'grid', 'scan', 'download', 'bluetooth', 'nfc',
     ];
     for (const name of names) {
       const { container } = render(<Icon name={name} />);

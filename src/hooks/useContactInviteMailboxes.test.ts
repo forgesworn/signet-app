@@ -20,6 +20,9 @@ it('waits for subscription closure before replacing pools or opening new connect
     service: () => service, onChanged: vi.fn() };
   const { rerender, unmount } = renderHook(({ version }) => useContactInviteMailboxes({ ...options, version }), { initialProps: { version: 0 } });
   await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledTimes(1));
+  // A version update only replaces pools when the mailbox plan changes.
+  mocks.plan.mockReturnValue({ bindings: [{ id: 'b'.repeat(32), secret: '02'.repeat(32),
+    relays: ['wss://relay.test'], channel: 'invite' }], deferred: 0 });
   rerender({ version: 1 });
   await act(async () => { await Promise.resolve(); });
   expect(mocks.close).not.toHaveBeenCalled();

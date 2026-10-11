@@ -1,3 +1,6 @@
+import { JigsawIcon } from '../components/JigsawIcon';
+import { readHandshakeEvidence } from '../lib/handshake-sigil';
+import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
 import { uncheckedAppConnection } from '../lib/contact-app-notice';
 import { ContactOrigins } from '../components/ContactOrigins';
 import { contactDisplayName } from '../lib/contacts-v2-name';
@@ -286,6 +289,12 @@ export function ContactDetail(props: Props) {
         {actionError?.scope === 'identities' && <p role="alert">{actionError.message}</p>}
       </div>}
       <div className="card section">
+        {(contact.checks ?? []).filter(check => !props.checkOwnerIdentityPubkey || check.ownerIdentityPubkey === props.checkOwnerIdentityPubkey)
+          .filter(check => readHandshakeEvidence(check.evidence)).slice(-1).map(check => <p key={check.id} className="handshake-status">
+            <JigsawIcon state="joined" />
+            {HANDSHAKE_COPY[({ mutual: 'met', tapped: 'tapped', proven: 'checked' } as const)[readHandshakeEvidence(check.evidence)!.strength]]}
+            {' · '}{new Date(check.checkedAt).toLocaleDateString()}
+          </p>)}
         <div style={{ marginBottom: 8 }}>
           {canSwap ? (
             <button

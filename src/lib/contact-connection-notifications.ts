@@ -1,8 +1,10 @@
+import { HANDSHAKE_COPY } from './contacts-v2-copy';
 import { contactExchangeKey } from './contact-exchange-key';
 import type { StoredContactExchange } from './contact-invite-store';
 
 // Separate from approval handles and escalation IDs (1,000,000–1,899,999).
 export const CONTACT_CONNECTION_NOTIFICATION_ID = 1_900_001;
+export const CONTACT_REQUEST_NOTIFICATION_ID = 1_900_002;
 interface NotificationPort {
   checkPermissions(): Promise<{ display: string }>;
   createChannel(channel: { id: string; name: string; description: string; importance: 3; visibility: 0 }): Promise<unknown>;
@@ -23,12 +25,28 @@ export function contactConnectionNotifier(options: {
   let stopped = false;
   const current = () => !stopped && options.native() && options.current();
   const cancel = async () => {
-    const notification = { notifications: [{ id: CONTACT_CONNECTION_NOTIFICATION_ID }] };
+    const notification = { notifications: [{ id: CONTACT_CONNECTION_NOTIFICATION_ID }, { id: CONTACT_REQUEST_NOTIFICATION_ID }] };
     // Capacitor distinguishes pending timers from notices already in the tray.
     try { await options.port.cancel(notification); }
-    finally { await options.port.removeDeliveredNotificationsById({ ids: [CONTACT_CONNECTION_NOTIFICATION_ID] }); }
+    finally { await options.port.removeDeliveredNotificationsById({ ids: [CONTACT_CONNECTION_NOTIFICATION_ID] });
+      await options.port.removeDeliveredNotificationsById({ ids: [CONTACT_REQUEST_NOTIFICATION_ID] }); }
   };
   return {
+    /** Live mailbox arrival only. Generic copy reveals no unverified sender. */
+    requested(arrivalId: string): Promise<void> {
+      return serial(async () => {
+        if (!current() || seen.has(arrivalId) || seen.size >= 512) return;
+        if ((await options.port.checkPermissions()).display !== 'granted' || !current()) return;
+        await options.port.createChannel({ id: 'signet-contacts', name: 'Contact connections',
+          description: 'Contact requests to review in Signet', importance: 3, visibility: 0 });
+        if (!current()) return;
+        await options.port.schedule({ notifications: [{ id: CONTACT_REQUEST_NOTIFICATION_ID, channelId: 'signet-contacts',
+          title: HANDSHAKE_COPY.requestTitle, body: HANDSHAKE_COPY.requestBody,
+          smallIcon: 'ic_stat_signet', isExactNotification: false }] });
+        if (!current()) { await cancel(); return; }
+        seen.add(arrivalId);
+      }).catch(() => {});
+    },
     /** Call only after the authenticated exchange's contact write succeeds.
      * Generic lock-screen copy: no names, keys, app names, IDs or deep links. */
     completed(exchange: StoredContactExchange): Promise<void> {

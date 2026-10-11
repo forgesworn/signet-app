@@ -1,5 +1,6 @@
 import { contactExchangeKey } from './contact-exchange-key';
 import { conflictedContactExchanges, type ContactInviteVault } from './contact-invite-store';
+import { handshakeRelays } from './handshake-reveal';
 export interface ContactMailboxBinding {
   id: string; secret: string; relays: string[]; channel: 'invite' | 'exchange';
 }
@@ -14,7 +15,10 @@ export function contactMailboxPlan(state: ContactInviteVault, identity: string, 
       .map(i => ({ id: i.id, secret: i.invite.secret, relays: i.invite.relays, channel: 'invite' as const })),
     ...state.exchanges.filter(e => (e.role === 'requester' ? e.request.from : e.request.to) === identity
       && !conflicts.has(contactExchangeKey(e.request)) && e.phase !== 'complete' && e.phase !== 'declined' && e.request.expiresAt > now)
-      .map(e => ({ id: contactExchangeKey(e.request), ...e.request.reply, channel: 'exchange' as const })),
+      // A handshake's reply relays were chosen by the other phone: listen only on its public ones.
+      .map(e => ({ id: contactExchangeKey(e.request), secret: e.request.reply.secret,
+        relays: e.handshake ? handshakeRelays(e.request.reply.relays) : e.request.reply.relays, channel: 'exchange' as const }))
+      .filter(binding => binding.relays.length > 0),
   ].sort((a, b) => a.id.localeCompare(b.id) || a.channel.localeCompare(b.channel));
   const start = candidates.length ? Math.floor(now / 60) % candidates.length : 0;
   const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];

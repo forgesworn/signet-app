@@ -4,17 +4,30 @@ import { listContactGrantsV2 } from '../lib/db';
 import { fetchNewestFromRelays } from '../lib/sync-relays';
 import { handleContactAppInvite } from '../lib/contact-app-invites';
 import type { ContactInviteService } from '../lib/contact-invite-service';
+import { useAppForeground } from './useAppForeground';
+
+/** Each poll asks a relay per grant and decrypts the grants: every 30 s while
+ * the app is on screen (it was every 5 s, always, which kept the phone's CPU
+ * and radio busy). In the background only when always-on serving is set, every
+ * 60 s: an app's request is valid for 300 s, and serving connected apps while
+ * closed is what always-on is for. */
+export const APP_INVITE_POLL_MS = 30_000;
+export const APP_INVITE_BACKGROUND_POLL_MS = 60_000;
 
 /** Bounded polling of authenticated app slots. No identity mailbox is shared. */
 export function useContactAppInvites(options: {
   encryptionKey: string | null; enabled: boolean; identities: string[]; relays: string[];
   service(isCurrent: () => boolean): ContactInviteService;
+  /** Always-on serving: keep answering apps while the app is closed. */
+  serveInBackground?: boolean;
 }) {
   const latest = useRef(options); latest.current = options;
   const scope = JSON.stringify(options.identities);
+  const foreground = useAppForeground();
+  const polling = foreground || !!options.serveInBackground;
   useEffect(() => {
     const key = options.encryptionKey;
-    if (!key || !options.enabled) return;
+    if (!key || !options.enabled || !polling) return;
     let cancelled = false, running = false;
     const seen = new Set<string>();
     const valid = () => !cancelled && latest.current.encryptionKey === key && latest.current.enabled;
@@ -42,7 +55,7 @@ export function useContactAppInvites(options: {
       } finally { running = false; }
     };
     void run().catch(() => {});
-    const timer = setInterval(() => { void run().catch(() => {}); }, 5000);
+    const timer = setInterval(() => { void run().catch(() => {}); }, foreground ? APP_INVITE_POLL_MS : APP_INVITE_BACKGROUND_POLL_MS);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [options.encryptionKey, options.enabled, scope]);
+  }, [options.encryptionKey, options.enabled, scope, foreground, polling]);
 }

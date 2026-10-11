@@ -1,7 +1,9 @@
 import { compactContactInviteVault, parseContactInviteVault } from './contact-invite-store';
 import { contactExchangeKey } from './contact-exchange-key';
 import { beforeEach, expect, it } from 'vitest';
-import { createContactRequest, beginContactExchange, acceptContactExchange } from '@forgesworn/signet-contacts';
+import { createContactRequest, beginContactExchange, acceptContactExchange, createContactAcceptance, receiveContactAcceptance, confirmContactRevealSent } from '@forgesworn/signet-contacts';
+import { getContactAvatar } from './db';
+import { handshakeSigil } from './handshake-sigil';
 import { getDb, purgeAllUserData } from './db';
 import { createStoredContactInvite, loadContactInviteVault, updateContactInviteVault,
   recordContactArrival, restoreContactInviteVault, mergeContactInviteVault, conflictedContactExchanges } from './contact-invite-store';
@@ -119,4 +121,50 @@ it('recognises a rewrapped dismissed packet without another identity decryption'
   const state = await loadContactInviteVault('owner', KEY);
   expect(state.arrivals).toHaveLength(1);
   expect(() => mergeContactInviteVault(state, { ...state, arrivals: [{ ...arrival, packet: { ...arrival.packet, ciphertext: 'changed' } }] })).toThrow('Inbox entry changed');
+});
+
+/** A finished handshake exchange whose partner shared a picture. */
+function completeHandshake(mark: { strength?: 'tapped' | 'mutual' | 'proven'; confirmedAt?: number } | null) {
+  const photo = { key: '8'.repeat(64), server: 'https://blossom.example.com/', hash: '9'.repeat(64) };
+  const request = createContactRequest({ id: '4'.repeat(32), from: OWNER, to: '2'.repeat(64), nonce: '3'.repeat(64),
+    reply: { secret: '5'.repeat(64), relays: ['wss://relay.example'] }, now: 100, expiresAt: 220 });
+  const acceptance = createContactAcceptance(request, '7'.repeat(64), 101, { name: 'Sam', photo });
+  const done = confirmContactRevealSent(receiveContactAcceptance(beginContactExchange(request, '3'.repeat(64)), acceptance, 102));
+  const handshake = mark ? { startedAt: 100, ...mark, ...(mark.strength ? { sigil: handshakeSigil(done) } : {}) } : undefined;
+  return { exchange: { ...done, ...(handshake ? { handshake } : {}) }, peer: '2'.repeat(64) };
+}
+it('a declined handshake nobody confirmed stays declined when an older or remote copy says complete, in either order', async () => {
+  const base = await loadContactInviteVault('owner', KEY);
+  const { exchange } = completeHandshake({});
+  const complete = { ...base, exchanges: [exchange] }, declined = { ...base, exchanges: [{ ...exchange, phase: 'declined' as const }] };
+  for (const [a, b] of [[complete, declined], [declined, complete]]) {
+    const merged = mergeContactInviteVault(a, b);
+    expect(merged.exchanges[0].phase).toBe('declined');
+    expect(merged.exchanges[0].handshake?.strength).toBeUndefined();
+  }
+  expect(mergeContactInviteVault(complete, declined)).toEqual(mergeContactInviteVault(declined, complete));
+});
+it('a confirmed handshake still wins over a declined copy, and an ordinary complete exchange is unaffected', async () => {
+  const base = await loadContactInviteVault('owner', KEY);
+  const confirmed = completeHandshake({ strength: 'tapped', confirmedAt: 110 }).exchange;
+  for (const [a, b] of [[confirmed, { ...confirmed, phase: 'declined' as const }], [{ ...confirmed, phase: 'declined' as const }, confirmed]]) {
+    expect(mergeContactInviteVault({ ...base, exchanges: [a] }, { ...base, exchanges: [b] }).exchanges[0].phase).toBe('complete');
+  }
+  const plain = completeHandshake(null).exchange;
+  expect(mergeContactInviteVault({ ...base, exchanges: [plain] }, { ...base, exchanges: [{ ...plain, phase: 'declined' }] }).exchanges[0].phase).toBe('complete');
+  // Declined on one side, confirmed (strength) on the other copy of the mark: the confirmation wins.
+  const unconfirmed = completeHandshake({}).exchange;
+  expect(mergeContactInviteVault({ ...base, exchanges: [{ ...unconfirmed, phase: 'declined' }] }, { ...base, exchanges: [confirmed] }).exchanges[0].phase).toBe('complete');
+});
+it('restoring a vault records the partner photo key only for exchanges that are not handshakes or were confirmed', async () => {
+  const base = await loadContactInviteVault('owner', KEY);
+  const restoreWith = async (mark: Parameters<typeof completeHandshake>[0]) => {
+    await purgeAllUserData();
+    const { exchange, peer } = completeHandshake(mark);
+    await restoreContactInviteVault('owner', KEY, JSON.stringify({ ...base, exchanges: [exchange] }));
+    return getContactAvatar(peer, KEY);
+  };
+  expect(await restoreWith({})).toBeNull();
+  expect(await restoreWith(null)).toMatchObject({ shareKey: '8'.repeat(64) });
+  expect(await restoreWith({ strength: 'tapped', confirmedAt: 110 })).toMatchObject({ shareKey: '8'.repeat(64) });
 });

@@ -72,3 +72,13 @@ it('removes the delivered notice even when cancelling its pending timer fails', 
   await notifier.stop();
   expect(port.removeDeliveredNotificationsById).toHaveBeenCalledWith({ ids: [CONTACT_CONNECTION_NOTIFICATION_ID] });
 });
+
+it('notifies once for a live person request with generic copy, only in the native app', async () => {
+  const { notifier, port, state } = setup();
+  state.native = false; await notifier.requested('live-request'); expect(port.schedule).not.toHaveBeenCalled();
+  state.native = true; state.background = false;
+  await notifier.requested('live-request'); await notifier.requested('live-request');
+  expect(port.schedule).toHaveBeenCalledTimes(1);
+  expect(port.schedule.mock.calls[0][0]).toMatchObject({ notifications: [{ title: 'Contact request', body: expect.stringContaining('Someone wants to connect.') }] });
+  await notifier.stop();
+});
