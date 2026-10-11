@@ -7,10 +7,19 @@ import { isNativeApp, SignetNative } from './native';
  * read. The codes carry no persona; everything after a tap is the same sealed
  * reveal and SDK exchange as after a camera read.
  */
+export interface HandshakeNfcHandle {
+  /** The session is over (tap crossed, sealed, declined, failed, expired): stop
+   * offering the code and stop reacting to tags, but keep reader mode on as a
+   * silent reader while the screen shows, so the OS tag dispatcher never reads
+   * the other phone and toasts "no supported app". Safe to call twice. */
+  quiet(): void;
+  /** Full release (leaving the screen): reader mode off too. */
+  stop(): void;
+}
 export interface HandshakeNfc {
   status(): Promise<{ supported: boolean; enabled: boolean }>;
-  /** Resolves with a stop function. */
-  start(code: string, onPeer: (code: string) => void): Promise<() => void>;
+  /** Resolves with the handle. Starting again re-keys the running session. */
+  start(code: string, onPeer: (code: string) => void): Promise<HandshakeNfcHandle>;
 }
 
 export function nativeNfc(): HandshakeNfc | null {
@@ -20,7 +29,12 @@ export function nativeNfc(): HandshakeNfc | null {
     async start(code, onPeer) {
       const sub = await SignetNative.addListener('nfcPeer', e => { if (typeof e.code === 'string') onPeer(e.code); });
       try { await SignetNative.nfcStart({ code }); } catch (error) { void sub.remove(); throw error; }
-      return () => { void sub.remove(); void SignetNative.nfcStop().catch(() => {}); };
+      let removed = false;
+      const unlisten = () => { if (!removed) { removed = true; void sub.remove(); } };
+      return {
+        quiet: () => { unlisten(); void SignetNative.nfcQuiet().catch(() => {}); },
+        stop: () => { unlisten(); void SignetNative.nfcStop().catch(() => {}); },
+      };
     },
   };
 }

@@ -55,3 +55,23 @@ class HandshakeApduTest {
         assertNull(HandshakeApdu.read(junkCard, readerCode))
     }
 }
+
+/** What the NFC hardware does at each transition (the Android calls themselves need a device). */
+class HandshakeNfcPlanTest {
+    @Test fun `a live session on screen cycles card and reader`() {
+        assertEquals(HandshakeNfcPlan.CYCLE, HandshakeNfcPlan.of(hasCode = true, quiet = false, foreground = true))
+    }
+    @Test fun `a finished session on screen keeps a silent reader and offers nothing`() {
+        assertEquals(HandshakeNfcPlan.QUIET_READER, HandshakeNfcPlan.of(hasCode = false, quiet = true, foreground = true))
+        // Even if a stale code were still held, a finished session never cycles.
+        assertEquals(HandshakeNfcPlan.QUIET_READER, HandshakeNfcPlan.of(hasCode = true, quiet = true, foreground = true))
+    }
+    @Test fun `off screen nothing runs, finished or not, so resuming re-enters the quiet reader not emulation`() {
+        assertEquals(HandshakeNfcPlan.OFF, HandshakeNfcPlan.of(hasCode = true, quiet = false, foreground = false))
+        assertEquals(HandshakeNfcPlan.OFF, HandshakeNfcPlan.of(hasCode = false, quiet = true, foreground = false))
+        assertEquals(HandshakeNfcPlan.QUIET_READER, HandshakeNfcPlan.of(hasCode = false, quiet = true, foreground = true))
+    }
+    @Test fun `no session and not finished is off`() {
+        assertEquals(HandshakeNfcPlan.OFF, HandshakeNfcPlan.of(hasCode = false, quiet = false, foreground = true))
+    }
+}

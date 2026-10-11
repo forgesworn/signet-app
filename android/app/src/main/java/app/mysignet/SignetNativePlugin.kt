@@ -621,6 +621,12 @@ class SignetNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun nfcQuiet(call: PluginCall) {
+        HandshakeNfc.quiet()
+        call.resolve()
+    }
+
+    @PluginMethod
     fun nfcStop(call: PluginCall) {
         HandshakeNfc.stop()
         call.resolve()

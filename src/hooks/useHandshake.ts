@@ -14,7 +14,7 @@ import { cancelHandshakeHaptics, handshakeHaptic } from '../lib/handshake-haptic
 import { handshakeSigil } from '../lib/handshake-sigil';
 import { ContactCardPhotoError, partnerCardOf } from '../lib/contact-card-share';
 import { clearActiveHandshakeNearby, HandshakeNearby, nativeNearby, setActiveHandshakeNearby, takeNearbyEnablePrompt, type NearbyNative } from '../lib/handshake-nearby';
-import { nativeNfc, type HandshakeNfc } from '../lib/handshake-nfc';
+import { nativeNfc, type HandshakeNfc, type HandshakeNfcHandle } from '../lib/handshake-nfc';
 
 export interface HandshakeHost {
   persona: string; version: number; relays: string[];
@@ -86,7 +86,7 @@ export function useHandshake(host: HandshakeHost) {
     let own: StoredContactInvite | undefined;
     /** The other screen's session as this phone read it (camera or tap), and when. */
     let peerCard: SessionCard | undefined, readAt: number | undefined, via: 'camera' | 'tap' = 'camera';
-    let stopNfc: (() => void) | undefined;
+    let nfcHandle: HandshakeNfcHandle | undefined;
     /** A plain invite link the camera read: only ever the one-way seam check. */
     let legacy: ContactInvite | undefined;
     /** The reveal this session acts on, and ones that came before this phone scanned. */
@@ -113,8 +113,11 @@ export function useHandshake(host: HandshakeHost) {
     };
     const card = () => latest.current.card(noPhoto ? { withoutPhoto: true } : undefined);
     const finishNearby = () => { if (nearby) { clearActiveHandshakeNearby(nearby); void nearby.close(); nearby = undefined; } };
-    /** Sealed, expired, failed or left: the radios stay off for good. */
-    const endNearby = () => { radioEnded = true; finishNearby(); stopNfc?.(); stopNfc = undefined; };
+    /** Sealed, declined, expired or failed: the radios stay off for good. NFC goes
+     * quiet rather than off, so the phone keeps reading (and ignoring) the other
+     * one while this screen shows; a phone that stopped outright would let the OS
+     * dispatch the other phone's card as a tag and toast "no supported app". */
+    const endNearby = () => { radioEnded = true; finishNearby(); nfcHandle?.quiet(); };
     /** Both screens read, and the peer's persona signed for both sessions with
      * a proof only the holder of the camera-read session could make. */
     const verified = () => !conflict && !!(peerCard && peerReveal && verifyRevealBinding(peerReveal, peerCard.publicKey, session));
@@ -135,6 +138,8 @@ export function useHandshake(host: HandshakeHost) {
     const confirmScans = () => {
       if (doubleBuzz) return;
       doubleBuzz = true; publish({ scansConfirmed: true }); handshakeHaptic('double');
+      // The tap has crossed both ways: nothing more to offer or read over NFC.
+      if (via === 'tap') nfcHandle?.quiet();
     };
     /** The seam check acts on an unverified reveal: the link that carried it
      * (if any) speaks for its persona, so the request can go back over it. */
@@ -411,9 +416,11 @@ export function useHandshake(host: HandshakeHost) {
         if (nfc) void (async () => {
           const status = await nfc.status();
           if (!status.supported || !status.enabled || closed || radioEnded) return;
-          const stop = await nfc.start(code, raw => commands.current?.tap(raw));
-          if (closed || radioEnded) { stop(); return; }
-          stopNfc = stop; publish({ tapAvailable: true });
+          const handle = await nfc.start(code, raw => commands.current?.tap(raw));
+          if (closed) { handle.stop(); return; }
+          nfcHandle = handle;
+          if (radioEnded) { handle.quiet(); return; }
+          publish({ tapAvailable: true });
         })().catch(() => {});
         startNearby();
         await run();
@@ -424,6 +431,8 @@ export function useHandshake(host: HandshakeHost) {
     }, 1000);
     return () => {
       cancelHandshakeHaptics();
+      // Leaving the screen is the one place the quiet reader is released.
+      nfcHandle?.stop(); nfcHandle = undefined;
       endNearby();
       stopWatching?.();
       document.removeEventListener('visibilitychange', visibility);

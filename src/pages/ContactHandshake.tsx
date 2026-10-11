@@ -73,7 +73,7 @@ function HandshakeConfirm(props: { partner: string; name?: string; blur?: boolea
           <p className="handshake-arrival-key mono">{shortNpub(props.partner)}</p>
         </div>
       </div>
-      {!shown && <button type="button" className="btn btn-ghost handshake-arrival-reveal" onClick={() => setShown(true)}>{COPY.reveal}</button>}
+      {!shown && <button type="button" className="btn btn-ghost handshake-arrival-reveal" onClick={() => setShown(true)}>{COPY.revealConfirm}</button>}
     </div>
     <button className="btn btn-primary" onClick={props.onYes}>{COPY.confirmYes}</button>
     <button className="btn btn-secondary" onClick={props.onNo}>{COPY.confirmNo}</button>

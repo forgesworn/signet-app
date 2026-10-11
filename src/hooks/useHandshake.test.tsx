@@ -377,10 +377,10 @@ it('a second persona answering after the one-way tap, before anything is sent, s
 const tapSetup = () => {
   const s = setup();
   let tapped: ((code: string) => void) | undefined;
-  const stop = vi.fn();
+  const stop = vi.fn(), quiet = vi.fn(), handle = { quiet, stop };
   const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
-    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
-  return { s, nfc, stop, tap: (code: string) => act(() => tapped!(code)) };
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return handle; }) };
+  return { s, nfc, stop, quiet, tap: (code: string) => act(() => tapped!(code)) };
 };
 /** A tap, then the peer's reveal: the exchange completes and the screen asks "Is this them?". */
 async function tappedToConfirming() {
@@ -483,9 +483,9 @@ it('the question outlasts the two-minute session while the screen stays open', a
 it('an NFC tap reads the other session like a camera, and the contact is recorded as tapped once confirmed', async () => {
   const s = setup();
   let tapped: ((code: string) => void) | undefined;
-  const stop = vi.fn();
+  const stop = vi.fn(), quiet = vi.fn(), handle = { quiet, stop };
   const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
-    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return handle; }) };
   const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
   await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
   expect(nfc.start.mock.calls[0][0]).toBe(hook.result.current.view.code);
@@ -499,14 +499,15 @@ it('an NFC tap reads the other session like a camera, and the contact is recorde
   act(() => hook.result.current.confirmTap());
   await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
   expect(((s.service.confirmHandshake.mock.calls[0] as unknown[])[2] as { via: string }).via).toBe('tap');
-  expect(stop).toHaveBeenCalled();
+  expect(quiet).toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
 });
-it('a tap after the camera already read the peer changes nothing, and NFC stops on leaving', async () => {
+it('a tap after the camera already read the peer changes nothing, and NFC is released on leaving', async () => {
   const s = setup();
   let tapped: ((code: string) => void) | undefined;
-  const stop = vi.fn();
+  const stop = vi.fn(), quiet = vi.fn(), handle = { quiet, stop };
   const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
-    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+    start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return handle; }) };
   const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
   await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
   act(() => hook.result.current.scan(s.peerCode));
@@ -521,9 +522,9 @@ it('a different session arriving after the peer was read fails the screen closed
   for (const second of ['tap', 'camera'] as const) {
     const s = setup();
     let tapped: ((code: string) => void) | undefined;
-    const stop = vi.fn();
+    const stop = vi.fn(), quiet = vi.fn(), handle = { quiet, stop };
     const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
-      start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return stop; }) };
+      start: vi.fn(async (_code: string, onPeer: (code: string) => void) => { tapped = onPeer; return handle; }) };
     const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
     await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
     act(() => hook.result.current.scan(s.peerCode));
@@ -532,7 +533,8 @@ it('a different session arriving after the peer was read fails the screen closed
     const stranger = sessionQR({ publicKey: freshSession().publicKey, expiresAt: s.now + 120, relays: ['wss://elsewhere.example/'] })!;
     act(() => { if (second === 'tap') tapped!(stranger); else hook.result.current.scan(stranger); });
     await waitFor(() => expect(hook.result.current.view.phase).toBe('failed'));
-    expect(stop).toHaveBeenCalled();
+    expect(quiet).toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
     // The genuine reveal after that cannot seal, and nothing went to the stranger.
     s.deliver(s.peerReveal());
     await act(async () => { await new Promise(r => setTimeout(r, 50)); });
@@ -541,4 +543,50 @@ it('a different session arriving after the peer was read fails the screen closed
     expect(s.revealRelays.publish.mock.calls.every(call => !call[1].includes('wss://elsewhere.example/'))).toBe(true);
     hook.unmount(); cleanup(); vi.clearAllMocks();
   }
+});
+
+it('NFC goes quiet once the tap has crossed both ways, and is released only on leaving', async () => {
+  const { hook, quiet, stop, nfc } = await tappedToConfirming();
+  await waitFor(() => expect(hook.result.current.view.scansConfirmed).toBe(true));
+  expect(quiet).toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+  expect(nfc.start).toHaveBeenCalledTimes(1);
+  hook.unmount();
+  expect(stop).toHaveBeenCalledTimes(1);
+});
+it('a camera read confirming the scans leaves NFC running until the session ends', async () => {
+  const s = setup();
+  const quiet = vi.fn(), stop = vi.fn();
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })), start: vi.fn(async () => ({ quiet, stop })) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  act(() => hook.result.current.scan(s.peerCode));
+  await waitFor(() => expect(s.revealRelays.publish).toHaveBeenCalled());
+  s.deliver(s.peerReveal());
+  await waitFor(() => expect(hook.result.current.view.phase).toBe('sealed'));
+  expect(quiet).toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+});
+it('declining a tap keeps a quiet reader on and releases NFC only on leaving', async () => {
+  const { hook, quiet, stop } = await tappedToConfirming();
+  quiet.mockClear();
+  act(() => hook.result.current.rejectTap());
+  expect(hook.result.current.view.phase).toBe('declined');
+  expect(quiet).toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+  hook.unmount();
+  expect(stop).toHaveBeenCalledTimes(1);
+});
+it('Start again (unmount, then a fresh mount) releases NFC and starts NFC afresh with the new code', async () => {
+  const t = tapSetup();
+  const first = renderHook(() => useHandshake({ ...t.s.host, nfc: t.nfc }));
+  await waitFor(() => expect(first.result.current.view.tapAvailable).toBe(true));
+  first.unmount();
+  expect(t.stop).toHaveBeenCalledTimes(1);
+  const second = renderHook(() => useHandshake({ ...t.s.host, nfc: t.nfc }));
+  await waitFor(() => expect(t.nfc.start).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(second.result.current.view.tapAvailable).toBe(true));
+  expect(t.nfc.start.mock.calls[1][0]).toBe(second.result.current.view.code);
+  expect(t.quiet).not.toHaveBeenCalled();
+  second.unmount();
 });

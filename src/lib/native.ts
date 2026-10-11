@@ -47,6 +47,8 @@ export interface SignetNativePlugin {
   lifecycleState(): Promise<{ state: 'background' | 'foreground' }>;
   /** Offer `code` (this screen's session code) to a phone held against this one, and read theirs. */
   nfcStart(opts: { code: string }): Promise<void>;
+  /** End the NFC session but keep a silent reader on while the screen shows (no emulation, no reads reported). */
+  nfcQuiet(): Promise<void>;
   nfcStop(): Promise<void>;
   addListener(eventName: 'nfcPeer', listener: (event: { code: string }) => void): Promise<PluginListenerHandle>;
   /** Stop advertising and scanning, close the channel and every link. */

@@ -88,11 +88,38 @@ class HandshakeNfcService : HostApduService() {
 }
 
 /**
+ * What the NFC hardware should be doing, from three facts. Pure, so it is tested
+ * on the JVM. A finished session (`quiet`) must not leave reader mode off while
+ * the screen shows: the OS tag dispatcher would then read the other phone's
+ * still-emulated card and toast "no supported app". So it keeps a silent reader
+ * on, offering nothing and reporting nothing, until the screen goes.
+ */
+enum class HandshakeNfcPlan {
+    /** Reader off, AID withdrawn: no session, or the app is not on screen. */
+    OFF,
+    /** Session live: offer the AID and alternate reader / card at random. */
+    CYCLE,
+    /** Session over, screen still up: AID withdrawn, reader on, every tag ignored. */
+    QUIET_READER;
+
+    companion object {
+        fun of(hasCode: Boolean, quiet: Boolean, foreground: Boolean): HandshakeNfcPlan = when {
+            !foreground -> OFF
+            quiet -> QUIET_READER
+            hasCode -> CYCLE
+            else -> OFF
+        }
+    }
+}
+
+/**
  * Reader mode turns card emulation off, so a phone cannot read and be read at
  * once. While the handshake screen is open each phone alternates at random
  * (300 to 800 ms a slot): two phones held back to back soon land one reading,
  * one being read, and a single touch swaps both codes. Nothing is offered or
- * read once the screen closes or the app leaves the screen.
+ * read once the screen closes or the app leaves the screen. When the session
+ * ends with the screen still up (`quiet`) the card is withdrawn at once but a
+ * silent reader stays on, so the system never reads the other phone as a tag.
  */
 @SuppressLint("MissingPermission")
 object HandshakeNfc {
@@ -100,6 +127,8 @@ object HandshakeNfc {
     /** Written only by the activity's own start/stop, synchronously on the main
      * thread, so a late start() can never re-arm a card the activity left. */
     @Volatile private var foreground = false
+    /** Session over, screen still showing: no card, no reports, a silent reader. */
+    @Volatile private var sessionOver = false
     @Volatile private var listener: ((String) -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
     private val random = SecureRandom()
@@ -120,8 +149,18 @@ object HandshakeNfc {
             stopNow()
             code = bytes; listener = onPeer
             this.activity = WeakReference(activity)
-            if (foreground) offer(activity)
-            cycle()
+            apply()
+        }
+    }
+
+    /** Reconcile the hardware with the state; the one place the plan is acted on. */
+    private fun apply() {
+        val act = activity?.get() ?: return
+        main.removeCallbacks(cycler)
+        when (HandshakeNfcPlan.of(code != null, sessionOver, foreground)) {
+            HandshakeNfcPlan.CYCLE -> { offer(act); cycle() }
+            HandshakeNfcPlan.QUIET_READER -> { withdraw(act, act); NfcAdapter.getDefaultAdapter(act)?.let { readerQuiet(act, it) } }
+            HandshakeNfcPlan.OFF -> { offNow(); withdraw(act, act) }
         }
     }
 
@@ -147,6 +186,7 @@ object HandshakeNfc {
         val act = activity?.get() ?: return
         val adapter = NfcAdapter.getDefaultAdapter(act) ?: return
         main.removeCallbacks(cycler)
+        if (sessionOver) return
         if (code == null || !foreground) { readerOff(act, adapter); return }
         if (reading) readerOff(act, adapter) else readerOn(act, adapter)
         main.postDelayed(cycler, 300L + random.nextInt(500))
@@ -156,6 +196,15 @@ object HandshakeNfc {
             NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
         try {
             adapter.enableReaderMode(act, { tag -> onTag(tag) }, flags, Bundle().apply { putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 250) })
+            reading = true
+        } catch (_: Exception) { reading = false }
+    }
+    /** A reader that claims every tag and does nothing with it: no sounds, no NDEF check, no connection. */
+    private fun readerQuiet(act: Activity, adapter: NfcAdapter) {
+        val flags = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or
+            NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+        try {
+            adapter.enableReaderMode(act, { _ -> }, flags, null)
             reading = true
         } catch (_: Exception) { reading = false }
     }
@@ -176,11 +225,20 @@ object HandshakeNfc {
         }
     }
     /** The activity left the screen: offer nothing, read nothing, until it returns. */
-    fun pause() { foreground = false; main.post { main.removeCallbacks(cycler); offNow(); activity?.get()?.let { withdraw(it, it) } } }
-    fun resume() { foreground = true; main.post { val act = activity?.get(); if (code != null && foreground && act != null) { offer(act); cycle() } } }
+    fun pause() { foreground = false; main.post { apply() } }
+    /** Back on screen: a live session cycles again; a finished one re-enters the quiet reader, never emulation. */
+    fun resume() { foreground = true; main.post { apply() } }
+    /** The session is over but the screen is not: withdraw the card, ignore tags, keep a silent reader on. */
+    fun quiet() {
+        main.post {
+            if (activity?.get() == null) return@post
+            code = null; listener = null; sessionOver = true
+            apply()
+        }
+    }
     fun stop() { main.post { stopNow() } }
     private fun stopNow() {
-        code = null; listener = null
+        code = null; listener = null; sessionOver = false
         main.removeCallbacks(cycler)
         offNow()
         activity?.get()?.let { withdraw(it, it) }

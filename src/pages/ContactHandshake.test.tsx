@@ -230,9 +230,9 @@ it('without a shared name the question says so, and omits the Jigsaw hint when t
 it('the question is blurred until tapped when the user blurs identities', async () => {
   mocks.handshake.mockReturnValue(confirming());
   const view = render(<ContactHandshake {...props()} blurArrival />);
-  await screen.findByRole('button', { name: 'Tap to show who you added' });
+  await screen.findByRole('button', { name: 'Tap to show who it is' });
   expect(view.container.querySelector('.handshake-confirm .handshake-arrival.is-hidden .handshake-arrival-body')?.getAttribute('aria-hidden')).toBe('true');
-  fireEvent.click(screen.getByRole('button', { name: 'Tap to show who you added' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Tap to show who it is' }));
   expect(view.container.querySelector('.handshake-arrival.is-hidden')).toBeNull();
   expect(screen.getByText('Sam')).toBeVisible();
 });
@@ -319,7 +319,7 @@ describe('Hide me on their screen', () => {
   it('blurs the question, the arrival and the status name when their card asks, with the local setting off', async () => {
     mocks.handshake.mockReturnValue(confirming({ blur: true }));
     const view = render(<ContactHandshake {...props()} />);
-    await screen.findByRole('button', { name: 'Tap to show who you added' });
+    await screen.findByRole('button', { name: 'Tap to show who it is' });
     expect(view.container.querySelector('.handshake-confirm .handshake-arrival.is-hidden')).not.toBeNull();
     view.unmount();
     mocks.handshake.mockReturnValue(sealedWith({ name: 'Sam', blur: true }));

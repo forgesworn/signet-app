@@ -851,7 +851,7 @@ export const HANDSHAKE_COPY = {
   tapDone: 'Their code received by tap', tapYoursDone: 'Their phone has your code',
   tapWaiting: 'Waiting for their phone to confirm the tap…', tapFinishing: 'Tap confirmed on both phones. Finishing the exchange…',
   added: 'Saved straight to your contacts. You can change Kith or Kin on their contact page.',
-  reveal: 'Tap to show who you added', noName: 'No name shared',
+  reveal: 'Tap to show who you added', revealConfirm: 'Tap to show who it is', noName: 'No name shared',
   openContact: 'Open contact',
   nearbyLinked: 'Connected over Bluetooth', nearbyOff: 'Bluetooth is off, so this handshake needs the internet.',
   nearbyDenied: 'Bluetooth is not allowed for My Signet, so this handshake needs the internet.',
