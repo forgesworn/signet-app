@@ -8368,7 +8368,11 @@ export function App() {
       // ── Redirect mode (no relay) ──────────────────────────────────────────────
       // pickedAvatar (if any) becomes tags on the kind-21236 event AND URL
       // params on the callback redirect — see buildAuthCallbackUrl below.
-      const { signature, eventId, authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar, urlAuthSiteName || undefined);
+      // No app tag here, unlike relay mode: a redirect consumer rebuilds the
+      // event from the callback URL as [challenge, origin, avatar_*] (signet-login
+      // redirect.ts, vitark signin-proof.ts), so an extra tag fails its event-ID
+      // check. Relay mode keeps it: the whole event travels and V4V checks it (#27).
+      const { signature, eventId, authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar);
 
       // Find credential for login+verify flows
       const credential = authResponseCredentialForSigner(pendingAuthRequest, authEvent.pubkey);
