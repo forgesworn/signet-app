@@ -277,3 +277,58 @@ describe('useChildGate — only the guardian\'s own No is "denied" (I1)', () => 
   });
 });
 
+describe('useChildGate — withdrawing an ask (M2)', () => {
+  const ask = (s: ReturnType<typeof setup>, abort: AbortSignal) => s.hook.result.current.authorise({
+    persona: PERSONA, appId: 'mysignet', appLabel: 'Twang Thang', siteOrigin: ORIGIN, method: 'sign_event',
+    template: statement(), appPermission: CLAIM, abort,
+  });
+
+  it('a held ask is withdrawn on abort, and a later Allow is never forwarded', async () => {
+    const probe = vi.fn(async () => true);
+    const s = setup({ beforeStamp: probe });
+    const ctrl = new AbortController();
+    let p!: ReturnType<typeof ask>;
+    await act(async () => { p = ask(s, ctrl.signal); await new Promise(r => setTimeout(r, 0)); });
+    const a = await lastAsk(s.published);
+    const sub = s.subs.find(x => x.filters[0]['#d']?.[0]?.endsWith(a.id))!;
+    await act(async () => { ctrl.abort(); await new Promise(r => setTimeout(r, 0)); });
+    expect(await p).toEqual({ ok: false, error: 'withdrawn' });
+    expect(sub.closed).toBe(true);
+    expect(s.hook.result.current.pendingAsks).toEqual([]);
+    expect(s.hook.result.current.askHistory[0]).toMatchObject({ id: a.id, state: 'withdrawn' });
+    // The guardian's card may still be answered: nothing reaches the Heartwood.
+    const ev = await buildVerdictEvent({ v: 1, id: a.id, verdict: 'once', decidedAt: Math.floor(NOW / 1000) }, railPriv, clientPub);
+    await act(async () => { sub.onEvent(ev); await new Promise(r => setTimeout(r, 0)); });
+    expect(probe).not.toHaveBeenCalled();
+    expect(s.activity.map(e => e.outcome)).not.toContain('approved');
+  });
+
+  it('an already-withdrawn request asks nothing, and forwardPassed refuses it', async () => {
+    const s = setup();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let out: unknown;
+    let passed: unknown;
+    await act(async () => {
+      out = await ask(s, ctrl.signal);
+      passed = await s.hook.result.current.forwardPassed({ persona: PERSONA, appId: 'mysignet', appLabel: 'My Signet', method: 'nip44_encrypt', peer: SESSION, abort: ctrl.signal });
+    });
+    expect(out).toEqual({ ok: false, error: 'withdrawn' });
+    expect(passed).toEqual({ ok: false, error: 'withdrawn' });
+    expect(s.published).toHaveLength(0);
+  });
+
+  it('withdrawn while the approved request waits on the ALLOW AS probe: not forwarded', async () => {
+    let release!: (v: boolean) => void;
+    const probe = vi.fn(() => new Promise<boolean>(r => { release = r; }));
+    const s = setup({ beforeStamp: probe });
+    const ctrl = new AbortController();
+    let p!: ReturnType<typeof ask>;
+    await act(async () => { p = ask(s, ctrl.signal); await new Promise(r => setTimeout(r, 0)); });
+    await sendVerdict(s.subs, (await lastAsk(s.published)).id, 'once');
+    expect(probe).toHaveBeenCalledTimes(1);
+    await act(async () => { ctrl.abort(); release(true); await new Promise(r => setTimeout(r, 0)); });
+    expect(await p).toEqual({ ok: false, error: 'withdrawn' });
+  });
+});
+

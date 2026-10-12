@@ -362,6 +362,7 @@ export const CHILD_PERMISSIONS_COPY = {
     approved: 'Allowed',
     denied: 'Not allowed',
     expired: 'No answer in time',
+    withdrawn: 'You cancelled',
   } as Record<string, string>,
   verdict: { once: 'Allowed once', always: 'Always allowed', deny: 'Denied' } as Record<string, string>,
   notSent: 'Not sent yet',

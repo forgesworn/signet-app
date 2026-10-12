@@ -115,6 +115,13 @@ export interface ChildGateRequest {
    * `site:<origin>`; on any other request it is ignored.
    */
   appPermission?: AppPermissionClaim;
+  /**
+   * M2: the caller withdrew the request (the person cancelled). A held ask
+   * is dropped at once — its verdict is no longer listened for, so a later
+   * Allow on the guardian's card is never forwarded to the Heartwood — and
+   * the request settles `withdrawn`. Nothing is sent to the guardian.
+   */
+  abort?: AbortSignal;
 }
 
 export interface ChildGateTransport {
@@ -160,8 +167,8 @@ export interface ChildGateAskRecord {
   scope: string;
   /** Unix seconds. */
   since: number;
-  /** `sent`: raised for a caller that could not wait (the answer applies to its next try). */
-  state: 'waiting' | 'sent' | 'approved' | 'denied' | 'expired';
+  /** `sent`: raised for a caller that could not wait (the answer applies to its next try). `withdrawn`: the child cancelled it. */
+  state: 'waiting' | 'sent' | 'approved' | 'denied' | 'expired' | 'withdrawn';
 }
 export const CHILD_GATE_ASK_HISTORY_MAX = 50;
 /** A60: a forwarded request whose result never comes back is forgotten after this. */
@@ -317,6 +324,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     if (probe) { try { probed = await probe(persona); } catch { probed = false; } }
     // As before the reorder: a refused probe is not a gate decision, so nothing is reported.
     if (!probed) return { ok: false, error: 'blocked' };
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
     if (probe) {
       // The probe can wait on the Heartwood's button: the record or the
       // rules may have changed meanwhile. An unprompted allow is re-decided
@@ -342,6 +350,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   }, [emit, touchApp]);
 
   const forwardPassed = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
     const p = prepare(req);
     if (!('at' in p)) return p;
     const early = preflight(p.at.rules, p.persona, req.appId, p.nowMs, rateRef.current);
@@ -354,6 +363,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   }, [prepare, forwardFor, emit]);
 
   const authorise = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
     const p = prepare(req);
     if (!('at' in p)) return p;
     const { at, rec, persona, nowMs, base, template, kind } = p;
@@ -404,6 +414,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'unsent' }; }
     if (live.current.recordKey !== at.recordKey || live.current.unpaired) return { ok: false, error: 'unpaired' };
     if (held.current.size >= CHILD_GATE_MAX_HELD) return { ok: false, error: 'busy' };
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
 
     const relays = at.relays;
     const clientPriv = rec.clientKeypair.privateKey;
@@ -415,11 +426,18 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       let done = false;
       let unsubscribe: (() => void) | null = null;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const abort = req.abort;
+      const onAbort = () => {
+        if (done) return;
+        answerAsk(id, 'withdrawn');
+        settle({ ok: false, error: 'withdrawn' });
+      };
       const settle = (outcome: ChildGateOutcome) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         unsubscribe?.();
+        abort?.removeEventListener('abort', onAbort);
         held.current.delete(id);
         setPendingAsks(prev => prev.filter(p => p.id !== id));
         resolve(outcome);
@@ -436,6 +454,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
         return;
       }
       held.current.set(id, { id, settle });
+      abort?.addEventListener('abort', onAbort);
       setPendingAsks(prev => [...prev, { id, targetLabel: ask.targetLabel, since: nowS }]);
       emit({ ...base, kind, outcome: 'asked', target });
       timer = setTimeout(() => {

@@ -72,6 +72,7 @@ export function routeAppPermission(i: AppPermissionRouteInput): AppPermissionRou
 export type AppPermissionFailure =
   | { kind: 'guardian-denied' }
   | { kind: 'retry'; message: string }
+  | { kind: 'withdrawn' }
   | { kind: 'other' };
 
 /**
@@ -80,13 +81,15 @@ export type AppPermissionFailure =
  * `denied`. A failure on this phone or the guardian's — the ask never sent,
  * the rate limit, no answer in time, the phone unpaired or locked, the
  * guardian's Allow that could not reach their Heartwood — sends the app
- * nothing: the request stays open and the child can try again. Anything else
+ * nothing: the request stays open and the child can try again. `withdrawn`
+ * is the person's own Cancel (already answered). Anything else
  * (blocked, busy, a signer error) keeps the message it already has.
  */
 export function classifyAppPermissionFailure(e: unknown): AppPermissionFailure {
   if (!(e instanceof ChildGateRefusedError)) return { kind: 'other' };
   switch (e.code) {
     case 'denied': return { kind: 'guardian-denied' };
+    case 'withdrawn': return { kind: 'withdrawn' };
     case 'device-unreachable': return { kind: 'retry', message: APP_PERMISSION_COPY.deviceUnreachable };
     case 'unsent': case 'rate-limited': case 'expired': case 'unpaired':
       return { kind: 'retry', message: APP_PERMISSION_COPY.guardianUnreachable };

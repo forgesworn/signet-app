@@ -1231,6 +1231,8 @@ export function App() {
   /** The request the unlock prompt was last raised for (once per request). */
   const appPermissionAuthAskedRef = useRef<AppPermissionRequest | null>(null);
   const appPermissionMarksRef = useRef(new WeakMap<AppPermissionRequest, 'approving' | 'answered'>());
+  /** M2: per request, withdraws a child's held ask on Cancel (a later Allow is never forwarded). */
+  const appPermissionWithdrawRef = useRef(new WeakMap<AppPermissionRequest, AbortController>());
   /** Current request's entry in the developer auth-request log. */
   const currentLogEntryRef = useRef<AuthRequestLogEntry | null>(null);
 
@@ -8849,6 +8851,9 @@ export function App() {
   const handleCancelAppPermission = useCallback(() => {
     const req = pendingAppPermissionRef.current;
     if (!req) { navigateReplace('home'); return; }
+    // M2: a child's ask held for the guardian is withdrawn first, so an Allow
+    // tapped on their card later never reaches the Heartwood.
+    appPermissionWithdrawRef.current.get(req)?.abort();
     // Already answered: just leave. An approval in flight is taken over, and
     // then delivers nothing.
     if (appPermissionMarksRef.current.get(req) === 'answered') { retireAppPermission(); navigateReplace('home'); return; }
@@ -8910,11 +8915,13 @@ export function App() {
         const label = req.name;
         const nowS0 = Math.floor(Date.now() / 1000);
         childGateRef.current.noteConnectedApp({ appId: childSiteAppId(req.origin), kind: 'site', label, url: req.origin, persona, firstSeen: nowS0, lastUsed: nowS0 });
+        const withdraw = new AbortController();
+        appPermissionWithdrawRef.current.set(req, withdraw);
         backend = answerSealingBackend({
           inner,
           gate: {
-            authorise: (r) => childGateRef.current.authorise(r),
-            forwardPassed: (r) => childGateRef.current.forwardPassed(r),
+            authorise: (r) => childGateRef.current.authorise({ ...r, abort: withdraw.signal }),
+            forwardPassed: (r) => childGateRef.current.forwardPassed({ ...r, abort: withdraw.signal }),
           },
           persona,
           appLabel: label,
@@ -8950,6 +8957,7 @@ export function App() {
         declineAppPermission(req);
         return;
       }
+      if (failure.kind === 'withdrawn') return; // the person's own Cancel already answered
       if (marks.get(req) === 'approving') marks.delete(req); // free to try again
       if (failure.kind === 'retry') throw new Error(failure.message);
       throw e;

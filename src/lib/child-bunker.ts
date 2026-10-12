@@ -35,11 +35,12 @@ export type ChildGateOutcome =
  * (I1), so a caller can tell "your guardian said no" from "try again":
  * `unsent` (the ask never reached the rail relay), `rate-limited` (this
  * phone's 10/min limit), `device-unreachable` (the guardian allowed it but
- * their phone could not update the Heartwood). On the NIP-46 wire they all
+ * their phone could not update the Heartwood). `withdrawn`: the caller
+ * cancelled the request (its `abort` signal, M2). On the NIP-46 wire they all
  * still read `denied` (`childGateWireError`).
  */
 export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'busy' | 'asked'
-  | 'unsent' | 'rate-limited' | 'device-unreachable';
+  | 'unsent' | 'rate-limited' | 'device-unreachable' | 'withdrawn';
 
 /**
  * The error string a third-party NIP-46 client is sent for a refused gate
@@ -47,7 +48,7 @@ export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'bu
  * same `denied` it always did.
  */
 export function childGateWireError(code: ChildGateError): string {
-  return code === 'unsent' || code === 'rate-limited' || code === 'device-unreachable' ? 'denied' : code;
+  return code === 'unsent' || code === 'rate-limited' || code === 'device-unreachable' || code === 'withdrawn' ? 'denied' : code;
 }
 
 export type ChildGateMethod = 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
@@ -293,6 +294,7 @@ export class ChildGateRefusedError extends Error {
       : code === 'unsent' ? 'Couldn\'t reach your guardian. Try again.'
       : code === 'rate-limited' ? 'Too many requests just now. Wait a moment, then try again.'
       : code === 'device-unreachable' ? 'Your guardian said yes, but their Heartwood couldn\'t be reached. Try again.'
+      : code === 'withdrawn' ? 'You cancelled this request.'
       : 'Your guardian has not allowed this.');
     this.name = 'ChildGateRefusedError';
   }

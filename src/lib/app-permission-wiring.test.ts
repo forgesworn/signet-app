@@ -49,7 +49,7 @@ describe('app-permission wiring in App.tsx', () => {
     const lines = app.split('\n').filter(l => l.includes('forwardPassed'));
     expect(lines).toHaveLength(1);
     const approve = between('const handleApproveAppPermission = useCallback(', '// ── Third-party add-dependant approval');
-    expect(approve).toContain('forwardPassed: (r) => childGateRef.current.forwardPassed(r)');
+    expect(approve).toContain('forwardPassed: (r) => childGateRef.current.forwardPassed({ ...r, abort: withdraw.signal })');
   });
 
   it('a single wrap is built per approval and never inside the publish retry', () => {
@@ -67,5 +67,13 @@ describe('app-permission wiring in App.tsx', () => {
     expect([...c.matchAll(/declineAppPermission\(/g)]).toHaveLength(1);
     expect(c).toContain("if (failure.kind === 'retry') throw new Error(failure.message);");
   });
-});
 
+  it('M2: Cancel withdraws the held ask before answering; both gate entries carry the signal', () => {
+    const approve = between('const handleApproveAppPermission = useCallback(', '// ── Third-party add-dependant approval');
+    expect(approve).toContain('authorise: (r) => childGateRef.current.authorise({ ...r, abort: withdraw.signal })');
+    expect(approve).toContain('appPermissionWithdrawRef.current.set(req, withdraw)');
+    const cancel = between('const handleCancelAppPermission = useCallback(', 'const handleApproveAppPermission = useCallback(');
+    expect(cancel.indexOf('appPermissionWithdrawRef.current.get(req)?.abort()')).toBeGreaterThan(-1);
+    expect(cancel.indexOf('appPermissionWithdrawRef.current.get(req)?.abort()')).toBeLessThan(cancel.indexOf('declineAppPermission(req)'));
+  });
+});
