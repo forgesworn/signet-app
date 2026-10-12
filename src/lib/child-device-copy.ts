@@ -311,6 +311,7 @@ export const CHILD_PERMISSIONS_COPY = {
     'upload-photo': 'Photo uploads',
     'mutate-identity': 'Profile changes',
     'pair-device': 'Device pairing',
+    'app-permission': 'App permissions',
   } as Record<string, string>,
   personasHeading: 'Identities on the phone',
   removePersona: (name: string) => `Remove from ${name}'s phone`,

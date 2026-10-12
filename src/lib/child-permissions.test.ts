@@ -69,6 +69,7 @@ describe('type names', () => {
   });
   it('names rule scopes', () => {
     expect(ruleTypeName('sign-in')).toBe('Sign-in');
+    expect(ruleTypeName('app-permission')).toBe('App permissions');
     expect(ruleTypeName('kind:30023')).toBe('Other type (30023)');
     expect(ruleTypeName('*')).toBe('Every type');
   });

@@ -60,7 +60,11 @@ export interface AnswerSealingInput {
   persona: string;
   /** The app's name, as the gate labels the request. */
   appLabel: string;
-  /** The app's origin: the gate decides as that site (as for Sign in with Signet). */
+  /**
+   * The app's origin: the gate decides as that site (as for Sign in with
+   * Signet). With `appPermission` it must be the claim's origin (it defaults
+   * to it): the guardian's "Always deny this" is a rule on that site.
+   */
   siteOrigin?: string;
   /** D6: the app's claim, sent with the `eligibleKind` signature only. */
   appPermission?: AppPermissionClaim;
@@ -84,12 +88,16 @@ export function answerSealingBackend(input: AnswerSealingInput): DecryptingSigni
   if (!HEX64.test(persona) || inner.activePublicKeyHex.toLowerCase() !== persona) {
     throw new Error('answerSealingBackend: the backend is not the persona\'s');
   }
+  const siteOrigin = input.siteOrigin ?? input.appPermission?.origin;
+  if (input.appPermission && siteOrigin !== input.appPermission.origin) {
+    throw new Error('answerSealingBackend: siteOrigin must be the claimed origin');
+  }
   const session = input.sessionPubkey.toLowerCase();
   const now = input.now ?? (() => Date.now());
   const { gate, eligibleKind, responseField } = input;
   const base = {
     persona, appId: CHILD_OWN_APP_ID, appLabel: input.appLabel,
-    ...(input.siteOrigin ? { siteOrigin: input.siteOrigin } : {}),
+    ...(siteOrigin ? { siteOrigin } : {}),
   };
   const request = (req: { method: ChildGateMethod; template?: UnsignedEvent; peer?: string }): ChildGateRequest => ({
     ...base, method: req.method,

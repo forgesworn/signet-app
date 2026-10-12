@@ -231,6 +231,20 @@ describe('answerSealingBackend — every mismatch takes the ordinary gated path'
     expect(s.gate.forwardPassed).not.toHaveBeenCalled();
   });
 
+  it('with a claim, the gate decides as the claimed origin: siteOrigin defaults to it and may not differ', async () => {
+    const s = setup();
+    const w = answerSealingBackend({
+      inner: s.inner, gate: s.gate, persona: PERSONA, appLabel: 'x', appPermission: CLAIM,
+      sessionPubkey: SESSION, eligibleKind: 30420, responseField: 'event',
+    });
+    await w.signEvent(statement());
+    expect(s.gate.authorise).toHaveBeenLastCalledWith(expect.objectContaining({ siteOrigin: ORIGIN, appPermission: CLAIM }));
+    expect(() => answerSealingBackend({
+      inner: s.inner, gate: s.gate, persona: PERSONA, appLabel: 'x', appPermission: CLAIM, siteOrigin: 'https://other.example',
+      sessionPubkey: SESSION, eligibleKind: 30420, responseField: 'event',
+    })).toThrow();
+  });
+
   it('refuses to build over a backend for another persona', () => {
     const s = setup();
     expect(() => answerSealingBackend({
