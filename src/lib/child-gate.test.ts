@@ -198,3 +198,54 @@ describe('childTargetsFor', () => {
     expect(childTargetsFor(TEMPLATES['post-public'], 'post-public', 'nip55:com.x')).toEqual(['app:nip55:com.x']);
   });
 });
+
+describe('app-permission pre-check (kind 30420: never silent, never "always")', () => {
+  const T = TEMPLATES['app-permission'];
+  const ORIGIN = 'https://twang.example';
+  const ASK = { verdict: 'ask', reason: 'stage', alwaysOffered: false };
+  const go = (rules: ChildRulesPayload | null, over: Partial<Parameters<typeof decideChildRequest>[0]> = {}) =>
+    decideChildRequest({ rules, persona: P1, template: T, appId: 'mysignet', siteOrigin: ORIGIN, nowMs: NOW, rateState: FRESH, ...over });
+  const withKind = (stage: AutonomyStage) => payload({ stage, ceilingKinds: stage === 'full-autonomy' ? [] : [30420] });
+
+  for (const stage of STAGES) {
+    it(`${stage}: asks, without "always", whatever the ceiling`, () => {
+      expect(go(payload({ stage }))).toEqual(ASK);
+      expect(go(withKind(stage))).toEqual(ASK);
+      expect(go(payload({ stage, ceilingKinds: [] }))).toEqual(ASK);
+    });
+    it(`${stage}: an allow rule is ignored — specific, kind, app, or * / *`, () => {
+      for (const r of [
+        rule({ scope: 'app-permission', target: `site:${ORIGIN}` }),
+        rule({ scope: 'kind:30420', target: `site:${ORIGIN}` }),
+        rule({ scope: 'app-permission', target: 'app:mysignet' }),
+        rule({ scope: '*', target: '*', persona: '*' }),
+        rule({ scope: '*', target: '*' }),
+      ]) expect(go({ ...withKind(stage), rules: [r] })).toEqual(ASK);
+    });
+    it(`${stage}: a deny rule on the origin is honoured`, () => {
+      const r = rule({ scope: 'app-permission', target: `site:${ORIGIN}`, decision: 'deny' });
+      expect(go({ ...withKind(stage), rules: [r] })).toEqual({ verdict: 'deny', reason: 'rule', ruleId: r.id });
+    });
+    it(`${stage}: a deny rule beats an allow rule at a more specific level`, () => {
+      const allow = rule({ scope: 'app-permission', target: `site:${ORIGIN}` });
+      const deny = rule({ scope: 'app-permission', target: '*', persona: '*', decision: 'deny' });
+      expect(go({ ...withKind(stage), rules: [allow, deny] })).toMatchObject({ verdict: 'deny', ruleId: deny.id });
+    });
+  }
+  it('a deny rule for another origin or another scope does not apply', () => {
+    const other = rule({ scope: 'app-permission', target: 'site:https://other.example', decision: 'deny' });
+    const signIn = rule({ scope: 'sign-in', target: `site:${ORIGIN}`, decision: 'deny' });
+    expect(go({ ...withKind('request-approve'), rules: [other, signIn] })).toEqual(ASK);
+  });
+  it('every 30420, whatever its shape, from any app', () => {
+    const odd = { ...T, tags: [['role', 'admin']], content: 'x' };
+    expect(go(withKind('full-autonomy'), { template: odd, appId: APP, siteOrigin: undefined })).toEqual(ASK);
+  });
+  it('the preflight still applies first: a disconnected app, the rate limit', () => {
+    expect(go({ ...withKind('full-autonomy'), disconnectedApps: [APP] }, { appId: APP })).toEqual({ verdict: 'deny', reason: 'disconnected-app' });
+    expect(go(withKind('full-autonomy'), { rateState: { count: 10, windowStart: NOW } })).toEqual({ verdict: 'deny', reason: 'rate-limit' });
+  });
+  it('no cached rules: asks, without "always"', () => {
+    expect(go(null)).toEqual(ASK);
+  });
+});
