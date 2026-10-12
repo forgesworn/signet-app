@@ -298,3 +298,36 @@ export const CHILD_PERMISSIONS_COPY = {
   unpairHeading: 'Unpair phone',
   cancel: 'Cancel',
 } as const;
+
+/** The "Before you pair" checklist on the guardian's Phone & Pairing card. Advisory only. */
+export const PAIR_READINESS_COPY = {
+  heading: 'Before you pair',
+  ok: 'Ready',
+  fail: 'Needs attention',
+  checking: 'checking…',
+  couldntCheck: "Couldn't check",
+  needsOperator: 'Needs the operator key first',
+  connected: {
+    label: 'Heartwood connected',
+    fix: "Check it's switched on and online.",
+  },
+  operator: {
+    label: 'Operator key imported',
+    fix: 'This phone needs your Heartwood operator key.',
+    action: 'Import operator key',
+  },
+  firmware: {
+    label: 'Heartwood firmware can pair phones',
+    fix: 'Update it in Sapwood.',
+  },
+  slots: {
+    label: 'Free slot on the Heartwood',
+    fix: 'Remove one in Sapwood.',
+  },
+  slotsInUse: (used: number, max: number) => `${used} of ${max} in use`,
+  persona: {
+    label: (name: string) => `${name} has an active persona`,
+    fix: 'Add or switch to a persona first.',
+    action: 'Go to personas',
+  },
+} as const;

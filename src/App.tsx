@@ -10207,6 +10207,15 @@ export function App() {
             onChangeAuditVisibility={handleUpdateAuditVisibility}
             onBeginCeremony={() => navigateTo('transition-ceremony')}
             onPairDevice={() => navigateTo('pair-dependant-device')}
+            pairReadiness={resolveSettingsViewer(preferences.signingMode, carousel.childMode) === 'guardian' ? {
+              signingMode: preferences.signingMode,
+              signerStatus,
+              operator: heartwoodOperator.client,
+              operatorLoading: heartwoodOperator.loading,
+              operatorStatus: heartwoodOperator.status,
+              operatorStatusError: heartwoodOperator.statusError,
+              onOpenOperatorImport: () => navigateTo('settings-advanced'),
+            } : undefined}
             onPairApp={() => navigateTo('pair-dependant-app')}
             onViewActivity={() => navigateTo('activity')}
             onOpenPermissions={() => navigateTo('child-permissions')}
