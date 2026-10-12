@@ -131,7 +131,7 @@ import { ChildPermissions, ChildPermissionsGuardianRoute } from './pages/ChildPe
 import { blockAppRules } from './lib/child-permissions';
 import { tombstonesForRemovedDependant } from './lib/child-rules';
 import { CHILD_PERMISSIONS_COPY } from './lib/child-device-copy';
-import { submitVerdict, resolveVerdictAvailability, pushChildCeilingLocked, removeOnceEntry, type OnceEntry, type PanelVerdictAction } from './lib/policy-push';
+import { submitVerdict, resolveVerdictAvailability, pushChildCeilingLocked, removeOnceEntry, onceEntries, type OnceEntry, type PanelVerdictAction } from './lib/policy-push';
 import { withOperatorLock } from './lib/operator-lock';
 import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -4369,7 +4369,7 @@ export function App() {
   // before a verdict is sent. A31/A32: under the operator lock, compiled from
   // fresh reads (the rule an "Always" just wrote is not in React state yet);
   // a failure removes only the approved-once entry this call added.
-  const pushChildCeiling = useCallback(async (depId: string, extraOnce?: OnceEntry): Promise<'ok' | 'failed'> => {
+  const pushChildCeiling = useCallback(async (depId: string, extraOnce?: OnceEntry | OnceEntry[]): Promise<'ok' | 'failed'> => {
     const c = heartwoodOperator.client;
     const key = encryptionKey;
     if (!c || !c.isOpen || !key) return 'failed';
@@ -4388,10 +4388,10 @@ export function App() {
       }),
     });
   }, [heartwoodOperator.client, encryptionKey, approvedOnceStore, loadFreshDependants, grantsForSync, policyPush.guardianClientPubkey]);
-  // A34: a `once` whose verdict never reached the child gives its entry back (A32 path).
-  const dropChildOnce = useCallback(async (depId: string, entry: OnceEntry) => {
+  // A34: a `once` whose verdict never reached the child gives its entries back (A32 path).
+  const dropChildOnce = useCallback(async (depId: string, entry: OnceEntry | OnceEntry[]) => {
     const cur = approvedOnceRef.current;
-    if (cur) await writeApprovedOnce(removeOnceEntry(cur, depId, entry));
+    if (cur) await writeApprovedOnce(onceEntries(entry).reduce((m, e) => removeOnceEntry(m, depId, e), cur));
   }, [writeApprovedOnce]);
 
   // Native: a child's fresh request raises the same "needs an approval"

@@ -452,3 +452,106 @@ describe('useChildAsks — verdicts', () => {
     expect(s.hook.result.current.asks).toHaveLength(0);
   });
 });
+
+describe('useChildAsks — app-permission (D5)', () => {
+  const ORIGIN = 'https://twang.example';
+  const CLAIM = { permission: 'online-play' as const, name: 'Twang Thang', origin: ORIGIN, reason: 'To play online with others.' };
+  function permissionAsk(): ChildSignAsk {
+    const nowS = Math.floor(clock / 1000);
+    const id = (n++).toString(16).padStart(32, '0');
+    return {
+      v: 1, id, dependantId: dep.id.toLowerCase(), persona: PERSONA, scope: 'app-permission', kind: 30420, method: 'sign_event',
+      target: `site:${ORIGIN}`, targetLabel: 'Twang Thang', appPermission: CLAIM,
+      template: { kind: 30420, pubkey: PERSONA, created_at: nowS, tags: [['d', 'twang'], ['role', 'player']], content: '' },
+      createdAt: nowS, expiresAt: nowS + 600,
+    };
+  }
+  async function withPermissionAsk(over: Partial<UseChildAsksOpts> = {}) {
+    const s = setup(over);
+    await flush();
+    const a = permissionAsk();
+    t.deliver(await askEv(a)); await flush();
+    expect(s.hook.result.current.asks).toHaveLength(1);
+    return { ...s, a };
+  }
+  const both = () => [{ kind: 30420, until: Math.floor(clock / 1000) + 600 }, { kind: 13, until: Math.floor(clock / 1000) + 600 }];
+
+  for (const stage of ['request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'] as const) {
+    it(`${stage}: "Always" is refused, nothing saved, pushed or sent`, async () => {
+      dep = makeDep({ autonomyStage: stage });
+      const s = await withPermissionAsk();
+      let r;
+      await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+      expect(r).toEqual({ sent: false, reason: 'always-unavailable' });
+      expect(mSaveRule).not.toHaveBeenCalled();
+      expect(s.pushCeiling).not.toHaveBeenCalled();
+      expect(t.published).toHaveLength(0);
+      expect(s.hook.result.current.asks).toHaveLength(1);
+    });
+  }
+
+  it('"Allow once" pushes approved-once for the 30420 AND the kind-13 seal, same window, in one push, before the verdict', async () => {
+    const s = await withPermissionAsk();
+    const order: string[] = [];
+    s.pushCeiling.mockImplementation(async () => { order.push('push'); return 'ok'; });
+    const pub = t.publish.bind(t);
+    t.publish = async (ev, relays) => { order.push('publish'); return pub(ev, relays); };
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(1);
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
+    expect(order).toEqual(['push', 'publish']);
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'once' });
+  });
+
+  it('a failed push answers deny / device-unreachable (the pusher removed both entries)', async () => {
+    const s = await withPermissionAsk();
+    s.pushCeiling.mockResolvedValue('failed');
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: true, reason: 'device-unreachable' });
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
+  });
+
+  it('a once whose verdict did not reach the child gives BOTH entries back', async () => {
+    const s = await withPermissionAsk();
+    t.ok = false;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: false, reason: 'publish-failed' });
+    expect(s.dropOnce).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
+  });
+
+  it('A5: when the ceiling cannot hold both kinds it is refused, nothing pushed', async () => {
+    // request-approve lists 22242 and 21235 (venue entry is auto there); 61 kind rules make 63 — room for one more kind, not two.
+    mListRules.mockResolvedValue(Array.from({ length: 61 }, (_, i) => ({
+      id: String(i).padStart(32, '0'), dependantId: dep.id, persona: '*', scope: `kind:${40000 + i}`, target: '*', decision: 'allow' as const,
+      createdAt: 1, updatedAt: 1 + i,
+    })));
+    const s = await withPermissionAsk();
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: true, reason: 'ceiling-full' });
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny' });
+  });
+
+  it('"Always deny this" saves a deny rule on the app\'s origin for this scope', async () => {
+    const s = await withPermissionAsk();
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'deny', { alwaysDeny: true }); });
+    expect(mSaveRule.mock.calls[0][0]).toMatchObject({ decision: 'deny', scope: 'app-permission', target: `site:${ORIGIN}`, persona: PERSONA });
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny', alwaysDeny: true });
+  });
+
+  it('a 30420 ask without the claim (generic card) gets the same treatment', async () => {
+    const s = setup();
+    await flush();
+    const a = { ...permissionAsk(), target: `app:${APP}` as const };
+    delete (a as Partial<ChildSignAsk>).appPermission;
+    t.deliver(await askEv(a)); await flush();
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(a.id, 'always'); });
+    expect(r).toEqual({ sent: false, reason: 'always-unavailable' });
+    await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
+  });
+});

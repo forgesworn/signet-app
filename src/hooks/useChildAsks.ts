@@ -94,12 +94,13 @@ export interface UseChildAsksOpts {
   approvedOnceKinds?: ApprovedOnceKinds;
   /**
    * Push the dependant's ceiling now (a no-op on the device when it already
-   * matches); `extraOnce` is added as approved-once first, and removed again
-   * by the pusher if the push fails.
+   * matches); `extraOnce` (one entry, or several that must land together) is
+   * added as approved-once first, and ALL of it removed again by the pusher
+   * if the push fails.
    */
-  pushCeiling(depId: string, extraOnce?: OnceEntry): Promise<'ok' | 'failed'>;
-  /** A34: give back an approved-once entry whose `once` verdict never reached the child. */
-  dropOnce?(depId: string, entry: OnceEntry): Promise<void>;
+  pushCeiling(depId: string, extraOnce?: OnceEntry | OnceEntry[]): Promise<'ok' | 'failed'>;
+  /** A34: give back the approved-once entries whose `once` verdict never reached the child. */
+  dropOnce?(depId: string, entry: OnceEntry | OnceEntry[]): Promise<void>;
   onRulesChanged(): void;
   onNewAsk?(a: PendingChildAsk): void;
   transport?: ChildAskTransport;
@@ -114,6 +115,8 @@ export interface UseChildAsks {
 
 export const CHILD_ASK_HISTORY_MAX = 200;
 export const CHILD_ASK_ONCE_WINDOW_S = 600;
+/** The NIP-59 seal: the answer to an approved app permission is sealed by the persona (D5). */
+const SEAL_KIND = 13;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 interface DirectChild {
@@ -165,8 +168,8 @@ function ceilingFor(dep: DependantIdentity, rules: ChildRule[], once: { kind: nu
  * now — the firmware holds at most 64, and the compiler would otherwise make
  * room by silently dropping an older rule's kind.
  */
-const fits = (current: number[] | 'all', widened: number[] | 'all', kind: number) =>
-  widened === 'all' || (widened.includes(kind) && (current === 'all' || current.every(k => widened.includes(k))));
+const fits = (current: number[] | 'all', widened: number[] | 'all', kinds: number[]) =>
+  widened === 'all' || (kinds.every(k => widened.includes(k)) && (current === 'all' || current.every(k => widened.includes(k))));
 
 const isChoice = (v: unknown): v is ChildVerdictChoice => v === 'once' || v === 'always' || v === 'deny';
 function isHistoryEntry(x: unknown): x is ChildAskHistoryEntry {
@@ -364,6 +367,8 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     // A34: once chosen, only the SAME verdict can be sent again.
     if (stored && (stored.chosen ?? stored.verdict.verdict) !== verdict) return { sent: false, reason: 'already-decided' };
     if (!stored && verdict === 'always' && dep.autonomyStage === 'full-control') return { sent: false, reason: 'always-unavailable' };
+    // D5: a standing app permission is one decision per request — never "Always", at any stage.
+    if (verdict === 'always' && ask.scope === 'app-permission') return { sent: false, reason: 'always-unavailable' };
     decidingRef.current.add(id);
     try {
       const nowMs = now();
@@ -393,7 +398,7 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
         ? { v: 1, id, verdict: entry.chosen as ChildVerdictChoice, decidedAt: entry.verdict.decidedAt }
         : entry.verdict;
       let reason: ChildAskDecideReason | undefined = original ? undefined : entry.reason;
-      let onceEntry: OnceEntry | undefined;
+      let onceAdded: OnceEntry[] | undefined;
       const refuse = (r: ChildAskDecideReason, wire?: ChildSignVerdict['reason']) => {
         reason = r;
         out = { v: 1, id, verdict: 'deny', decidedAt: entry.verdict.decidedAt, ...(wire ? { reason: wire } : {}) };
@@ -424,7 +429,7 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
           };
           const current = signs ? ceilingFor(dep, rules, onceFor, nowS) : 'all';
           // A5: the 64-kind ceiling must be able to hold it.
-          if (signs && !fits(current, ceilingFor(dep, [...rules.filter(r => r.id !== rule.id), rule], onceFor, nowS), ask.kind)) {
+          if (signs && !fits(current, ceilingFor(dep, [...rules.filter(r => r.id !== rule.id), rule], onceFor, nowS), [ask.kind])) {
             refuse('ceiling-full');
           } else {
             try { await saveChildRule(rule, key); } catch { return { sent: false, reason: 'publish-failed' }; }
@@ -434,13 +439,19 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
             if (signs && (await o.pushCeiling(c.id)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
           }
         } else if (signs) {
-          // once
-          const e: OnceEntry = { kind: ask.kind, until: nowS + CHILD_ASK_ONCE_WINDOW_S };
+          // once. D5: an app permission's answer is sealed (kind 13) by the
+          // same persona, so its window opens for the seal too — same
+          // `until`, both in one push or neither. The child's seal pass binds
+          // that seal to this one answer.
+          const until = nowS + CHILD_ASK_ONCE_WINDOW_S;
+          const es: OnceEntry[] = ask.scope === 'app-permission'
+            ? [{ kind: ask.kind, until }, { kind: SEAL_KIND, until }]
+            : [{ kind: ask.kind, until }];
           const current = ceilingFor(dep, rules, onceFor, nowS);
-          if (!fits(current, ceilingFor(dep, rules, [...onceFor, e], nowS), ask.kind)) refuse('ceiling-full');
-          // A33: always push; the pusher adds `e` and removes it again if the push fails.
-          else if ((await o.pushCeiling(c.id, e)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
-          else onceEntry = e;
+          if (!fits(current, ceilingFor(dep, rules, [...onceFor, ...es], nowS), es.map(e => e.kind))) refuse('ceiling-full');
+          // A33: always push; the pusher adds the entries and removes them all again if the push fails.
+          else if ((await o.pushCeiling(c.id, es.length === 1 ? es[0] : es)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
+          else onceAdded = es;
         }
       }
 
@@ -449,7 +460,9 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
       await recordHistory(entry);
 
       const giveBackOnce = async () => {
-        if (onceEntry && o.dropOnce) { try { await o.dropOnce(c.id, onceEntry); } catch { /* expires on its own */ } }
+        if (onceAdded && o.dropOnce) {
+          try { await o.dropOnce(c.id, onceAdded.length === 1 ? onceAdded[0] : onceAdded); } catch { /* expires on its own */ }
+        }
       };
       // A35: another guardian device answered while we were working — never a second answer.
       const repliedNow = repliedRef.current.get(id);
