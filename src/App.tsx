@@ -6430,11 +6430,21 @@ export function App() {
     }
   }, [encryptionKey]);
 
+  const HEARTWOOD_UNREACHABLE_DERIVE_COPY =
+    "Your Heartwood isn't reachable yet. Check it's switched on and online, then try again.";
+
   const dependantDeviceDerive = useMemo<DependantDeviceDerive | undefined>(() => {
     // Same paired-child exclusion as heartwoodRequestFn — a kid install can
     // have a non-null router, and undefined (not a throwing stub) is the right
     // shape there, so useDependants takes the local path and its own error.
-    if (!bunkerRouter || preferences.signingMode === 'paired-child') return undefined;
+    if (preferences.signingMode === 'paired-child') return undefined;
+    // Bunker mode with no router yet (the Heartwood was unreachable when this
+    // phone unlocked): there is no mnemonic to fall back to, so say what is
+    // actually wrong instead of letting useDependants report "no mnemonic".
+    if (!bunkerRouter) {
+      if (preferences.signingMode !== 'bunker') return undefined;
+      return async () => { throw new Error(HEARTWOOD_UNREACHABLE_DERIVE_COPY); };
+    }
     if (!heartwoodRequestFn) {
       return async () => { throw new Error("Your Heartwood signer isn't connected. Connect it in Settings → Advanced, then add the dependant."); };
     }
@@ -6442,7 +6452,11 @@ export function App() {
   }, [bunkerRouter, heartwoodRequestFn, preferences.signingMode]);
 
   const extraPersonaDeviceDerive = useMemo<ExtraPersonaDeviceDerive | undefined>(() => {
-    if (!bunkerRouter || preferences.signingMode === 'paired-child') return undefined; // see dependantDeviceDerive
+    if (preferences.signingMode === 'paired-child') return undefined; // see dependantDeviceDerive
+    if (!bunkerRouter) {
+      if (preferences.signingMode !== 'bunker') return undefined;
+      return async () => { throw new Error(HEARTWOOD_UNREACHABLE_DERIVE_COPY); };
+    }
     if (!heartwoodRequestFn) {
       return async () => { throw new Error("Your Heartwood signer isn't connected. Connect it in Settings → Advanced, then add the persona."); };
     }
