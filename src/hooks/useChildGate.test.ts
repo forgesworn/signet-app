@@ -163,6 +163,21 @@ describe('useChildGate', () => {
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
+  it('"Later": a block or unpair that lands while the probe waits on the Heartwood wins over the earlier allow', async () => {
+    for (const change of ['block', 'unpair'] as const) {
+      let release!: (ok: boolean) => void;
+      const probe = vi.fn(() => new Promise<boolean>((r) => { release = r; }));
+      const s = setup({ rules: rules({ rules: [allowApp()] }), beforeStamp: probe });
+      let p!: ReturnType<typeof s.hook.result.current.authorise>;
+      await act(async () => { p = s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() }); });
+      await waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
+      if (change === 'block') s.hook.rerender({ unpaired: false, rules: rules({ rules: [{ ...allowApp(), decision: 'deny' }] }) });
+      else s.hook.rerender({ unpaired: true, rules: rules({ rules: [allowApp()] }) });
+      await act(async () => { release(true); });
+      expect(await p).toEqual({ ok: false, error: change === 'block' ? 'denied' : 'unpaired' });
+    }
+  });
+
   it('A60: a Heartwood refusal after a forward is recorded as denied, never signed', async () => {
     const s = setup({ rules: rules({ rules: [allowApp()] }) });
     let out: Awaited<ReturnType<typeof s.hook.result.current.authorise>> | undefined;
