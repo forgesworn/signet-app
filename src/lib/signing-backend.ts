@@ -520,6 +520,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       });
       this.pool = pool;
       this.signer = signer;
+      this.signerKey = clientSk;
 
       // The signer's reply subscription must be live before the first
       // request, or the bunker's answer can arrive before the REQ and be
