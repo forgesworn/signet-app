@@ -453,14 +453,17 @@ describe('useNip55Server', () => {
         authorise: vi.fn(async (req: { template?: { kind: number } }) => ({ ok: true as const, requestCreatedAt: 1_900_000_000, ...(req.template ? { template: { ...req.template, pubkey } as never } : {}) })),
         forwardPassed: vi.fn(),
       };
-      renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate: childGate.authorise }));
+      const { unmount } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, gate: childGate.authorise }));
       await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
       const session = getPublicKey(generateSecretKey());
       const rumor = { kind: 29999, pubkey, created_at: 1, tags: [['session', 'ab'.repeat(32)], ['status', 'approved']], content: JSON.stringify({ event: { id: 'cd'.repeat(32) } }) };
       await act(async () => { listeners.nip55Request[0](request({ type: 'nip44_encrypt', payload: JSON.stringify(rumor), peerPubkey: session })); });
       await act(async () => { listeners.nip55Request[0](request({ payload: JSON.stringify({ kind: 13, content: 'x', tags: [], created_at: 1 }) })); });
       await waitFor(() => expect(childGate.authorise).toHaveBeenCalledTimes(2));
+      // Both answered before the next test starts (its own respond count must not see these).
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
       expect(childGate.forwardPassed).not.toHaveBeenCalled();
+      unmount();
     });
 
     it('a gate refusal is rejected; get_public_key does not go through the gate', async () => {
