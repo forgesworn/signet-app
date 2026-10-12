@@ -40,3 +40,30 @@ describe('handshake NFC handle', () => {
     expect(native.nfcQuiet).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('a child-pairing phone touching the Handshake screen', () => {
+  it('drops an SCP1 code, reports it, and passes SGH2 codes through unchanged', async () => {
+    native.nfcStart.mockResolvedValueOnce({ session: 9 });
+    let deliver: (e: { code?: unknown }) => void = () => {};
+    native.addListener.mockImplementationOnce(async (_n: string, cb: (e: { code?: unknown }) => void) => { deliver = cb; return { remove: native.remove }; });
+    const onPeer = vi.fn(), onPairingPeer = vi.fn();
+    await nativeNfc()!.start('SGH2:OWN', onPeer, { onPairingPeer });
+    deliver({ code: 'SCP1:ABC' });
+    expect(onPeer).not.toHaveBeenCalled();
+    expect(onPairingPeer).toHaveBeenCalledTimes(1);
+    deliver({ code: 'SGH2:PEER' });
+    expect(onPeer).toHaveBeenCalledWith('SGH2:PEER');
+    deliver({ code: 42 });
+    expect(onPeer).toHaveBeenCalledTimes(1);
+    expect(onPairingPeer).toHaveBeenCalledTimes(1);
+  });
+  it('ignores an SCP1 code gracefully when the screen gave no hook', async () => {
+    native.nfcStart.mockResolvedValueOnce({ session: 10 });
+    let deliver: (e: { code?: unknown }) => void = () => {};
+    native.addListener.mockImplementationOnce(async (_n: string, cb: (e: { code?: unknown }) => void) => { deliver = cb; return { remove: native.remove }; });
+    const onPeer = vi.fn();
+    await nativeNfc()!.start('SGH2:OWN', onPeer);
+    expect(() => deliver({ code: 'SCP1:ABC' })).not.toThrow();
+    expect(onPeer).not.toHaveBeenCalled();
+  });
+});

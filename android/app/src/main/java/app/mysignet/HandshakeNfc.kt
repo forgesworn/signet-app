@@ -35,7 +35,8 @@ object HandshakeApdu {
     private const val EXCHANGE_CLA = 0x80.toByte()
     private const val EXCHANGE_INS = 0x10.toByte()
     const val MAX_CODE = 250
-    private const val PREFIX = "SGH2:"
+    /** Handshake session codes, and child-pairing session codes (same wire, same cap, same AID). */
+    private val PREFIXES = listOf("SGH2:", "SCP1:")
     private const val ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 
     fun select(): ByteArray = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00, AID.size.toByte()) + AID + byteArrayOf(0x00)
@@ -44,9 +45,9 @@ object HandshakeApdu {
         return byteArrayOf(EXCHANGE_CLA, EXCHANGE_INS, 0x00, 0x00, code.size.toByte()) + code + byteArrayOf(0x00)
     }
     fun validCode(bytes: ByteArray): Boolean =
-        bytes.size in PREFIX.length + 1..MAX_CODE &&
+        bytes.size <= MAX_CODE &&
             bytes.all { b -> b.toInt() in 0x20..0x7E && ALPHABET.indexOf(b.toInt().toChar()) >= 0 } &&
-            String(bytes, Charsets.US_ASCII).startsWith(PREFIX)
+            String(bytes, Charsets.US_ASCII).let { text -> PREFIXES.any { text.startsWith(it) && text.length > it.length } }
 
     private fun isSelect(c: ByteArray): Boolean =
         c.size >= 5 + AID.size && c[0] == 0x00.toByte() && c[1] == 0xA4.toByte() && c[2] == 0x04.toByte() &&

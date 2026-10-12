@@ -21,6 +21,21 @@ class HandshakeApduTest {
         assertEquals(listOf("SGH2:ABC123 \$%*+-./:"), heard)
     }
 
+    @Test fun `child-pairing codes cross on the same wire and are bounded the same way`() {
+        val pairReader = "SCP1:ABC123".toByteArray(Charsets.US_ASCII)
+        val pairCard = "SCP1:XYZ789".toByteArray(Charsets.US_ASCII)
+        val heard = mutableListOf<String>()
+        assertEquals("SCP1:XYZ789", HandshakeApdu.read({ HandshakeApdu.respond(it, pairCard) { peer -> heard += peer } }, pairReader))
+        assertEquals(listOf("SCP1:ABC123"), heard)
+        // A handshake phone and a pairing phone still swap (JS refuses the foreign kind).
+        assertEquals("SCP1:XYZ789", HandshakeApdu.read({ HandshakeApdu.respond(it, pairCard) {} }, readerCode))
+        assertEquals("SGH2:XYZ789", HandshakeApdu.read({ HandshakeApdu.respond(it, cardCode) {} }, pairReader))
+        for (bad in listOf("SCP1:", "SCP2:ABC", "SCP1:abc", "SCP1:" + "A".repeat(246))) {
+            assertFalse(bad, HandshakeApdu.validCode(bad.toByteArray(Charsets.UTF_8)))
+        }
+        assertTrue(HandshakeApdu.validCode(("SCP1:" + "A".repeat(245)).toByteArray(Charsets.US_ASCII)))
+    }
+
     @Test fun `a phone with no handshake screen open offers nothing`() {
         var heard = false
         assertNull(HandshakeApdu.read({ HandshakeApdu.respond(it, null) { heard = true } }, readerCode))
