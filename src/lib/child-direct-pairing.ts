@@ -15,9 +15,10 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import type { AutonomyStage } from '../types/dependants';
 import {
-  buildChildPairRequestEvent, newPairCode, openChildPairReplyEvent, pairCheckWords, pairReplyDTag, CHILD_PAIR_TTL_S,
+  buildChildPairRequestEvent, newPairCode, openChildPairReplyEvent, pairCheckWords, pairReplyDTag, parseChildPairUri, CHILD_PAIR_TTL_S,
   type ChildPairOffer, type ChildPairReply,
 } from './child-pair-wire';
+import { eventMatchesFilter } from './child-pair-tap';
 import { generateBunkerClientSecret } from './signing-backend';
 
 /**
@@ -82,10 +83,86 @@ export function directBunkerUri(personaPubkey: string, hwRelays: string[]): stri
   return `bunker://${personaPubkey}?${p.toString()}`;
 }
 
+/**
+ * The child's end of a tap pairing: the Bluetooth link to the phone it tapped
+ * (a `ChildPairTap`). The offer arrives over it, the request goes out over it,
+ * and events from it feed the same reply handler as a relay's.
+ */
+export interface ChildTapChannel {
+  onOffer(handler: (uri: string) => void): () => void;
+  onEvent(handler: (event: NostrEvent) => void): () => void;
+  sendEvent(event: NostrEvent): Promise<boolean>;
+  /** Close the link and stop NFC. */
+  end(): void;
+}
+
+/**
+ * Wait for the tapped guardian's `signet-child:` offer and parse it with the
+ * same strict parser the QR path uses. Rejects `cancelled` on abort,
+ * `timeout` if none arrives in time, `refused` ('bad-offer') on a URI that
+ * does not parse or is not fresh.
+ */
+export function awaitTapOffer(
+  channel: Pick<ChildTapChannel, 'onOffer'>, nowS: () => number, opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<ChildPairOffer> {
+  return new Promise<ChildPairOffer>((resolve, reject) => {
+    let stop: (() => void) | null = null;
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (finish: () => void) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      stop?.();
+      finish();
+    };
+    const onAbort = () => done(() => reject(new ChildDirectPairError('cancelled')));
+    if (opts.signal?.aborted) { reject(new ChildDirectPairError('cancelled')); return; }
+    opts.signal?.addEventListener('abort', onAbort);
+    timer = setTimeout(() => done(() => reject(new ChildDirectPairError('timeout'))), opts.timeoutMs ?? CHILD_PAIR_RUN_TIMEOUT_MS);
+    stop = channel.onOffer(uri => {
+      const offer = parseChildPairUri(uri, nowS());
+      done(() => (offer ? resolve(offer) : reject(new ChildDirectPairError('refused', 'bad-offer'))));
+    });
+    // The offer may have been replayed synchronously, before `stop` was set.
+    if (finished) stop();
+  });
+}
+
+/**
+ * `publish`/`subscribe` for a tap pairing. The request goes over the link
+ * (relays ignored). The reply is awaited on the link AND on the offer's relay,
+ * because the guardian falls back to the relay if its link has dropped by
+ * reply time; the first valid reply wins and a duplicate is harmless.
+ */
+export function childTapDeps(
+  base: Pick<ChildDirectPairingDeps, 'subscribe'>,
+  channel: Pick<ChildTapChannel, 'onEvent' | 'sendEvent'>,
+): Pick<ChildDirectPairingDeps, 'publish' | 'subscribe'> {
+  return {
+    async publish(event) {
+      const acked = await channel.sendEvent(event).catch(() => false);
+      return acked ? { ok: true, message: 'link' } : { ok: false, message: 'link' };
+    },
+    subscribe(filters, relays, onEvent) {
+      const stopLink = channel.onEvent(ev => { if (filters.some(f => eventMatchesFilter(ev, f))) onEvent(ev); });
+      const stopRelay = base.subscribe(filters, relays, onEvent);
+      return () => { stopLink(); stopRelay(); };
+    },
+  };
+}
+
 export async function runChildDirectPairing(
   offer: ChildPairOffer,
   deps: ChildDirectPairingDeps,
-  opts: { onCheckWords(words: string[]): void; timeoutMs?: number; signal?: AbortSignal },
+  opts: {
+    onCheckWords(words: string[]): void; timeoutMs?: number; signal?: AbortSignal;
+    /** `'tap'`: the guardian confirms on its own screen, so no check words are shown here. */
+    via?: 'tap' | 'qr';
+    /** The request has been delivered; the guardian now decides. */
+    onRequestSent?(): void;
+  },
 ): Promise<ChildDirectPairingResult> {
   const timeoutMs = opts.timeoutMs ?? childPairRunTimeoutMs(offer.t, deps.nowS());
   // A28: never start on a code with no time left (the guardian would refuse it anyway).
@@ -130,7 +207,8 @@ export async function runChildDirectPairing(
       { v: 1, code: offer.code, nostrconnect, clientPubkey: clientPub, createdAt }, clientPriv, offer.rail);
     const pub = await Promise.race([deps.publish(reqEvent, [offer.relay]), stopped]);
     if (!pub.ok) throw new ChildDirectPairError('publish', pub.message);
-    opts.onCheckWords(pairCheckWords(offer.code, clientPub));
+    if (opts.via !== 'tap') opts.onCheckWords(pairCheckWords(offer.code, clientPub));
+    opts.onRequestSent?.();
 
     const answer = await Promise.race([reply, stopped]);
     if (!answer.ok) throw new ChildDirectPairError('refused', answer.reason ?? 'other');

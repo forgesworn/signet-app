@@ -167,7 +167,7 @@ import { ImportDependant } from './pages/ImportDependant';
 import { OnboardingApp } from './pages/OnboardingApp';
 import { Onboarding } from './pages/Onboarding';
 import { PairChildOnboarding, type DirectPairControl } from './pages/PairChildOnboarding';
-import { runChildDirectPairing, pairedChildSignerPubkey } from './lib/child-direct-pairing';
+import { runChildDirectPairing, pairedChildSignerPubkey, awaitTapOffer, childTapDeps, type ChildTapChannel } from './lib/child-direct-pairing';
 import type { ChildPairOffer } from './lib/child-pair-wire';
 import { useChildDeviceLink } from './hooks/useChildDeviceLink';
 import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
@@ -5961,87 +5961,100 @@ export function App() {
    * `repair` updates the existing install in place (same dependant, new
    * client keypair and slot); otherwise a fresh stub identity is written and
    * SetupAuth follows.
+   *
+   * `source` is the scanned/pasted offer (QR + relay), or a `{ tap }` channel
+   * (NFC tap then Bluetooth): the offer arrives over the link, the request goes
+   * over it, the reply is read off the link and the relay, and no check words
+   * are shown. Every check after that is the same code. The tap channel is
+   * closed however this ends.
    */
-  const handlePairChildDirect = useCallback(async (offer: ChildPairOffer, ctl: DirectPairControl, repair: boolean) => {
-    if (repair) {
-      if (!encryptionKey || !identity) throw new Error('Please unlock first.');
-      if (offer.dependant !== identity.id.toLowerCase()) throw new Error('This code is for a different account.');
-    }
-    const result = await runChildDirectPairing(offer, {
-      publish: (ev, relays) => publishEvent(ev, { relays }),
-      subscribe: (filters, relays, onEvent) => subscribeEvents(filters, relays, onEvent),
-      handshake: async (clientPriv, ncUri, expected, timeoutMs, signal) => {
-        const b = new BunkerSigningBackend(clientPriv);
-        try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
-        finally { b.destroy(); }
-      },
-      nowS: () => Math.floor(Date.now() / 1000),
-    }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal });
-
-    const now = Math.floor(Date.now() / 1000);
-    const personaName = result.personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
-    const record = {
-      bunkerUri: result.bunkerUri,
-      clientKeypair: result.clientKeypair,
-      dependantPubkey: offer.dependant,
-      dependantName: offer.name,
-      pairedAt: now,
-      guardianPubkey: offer.guardian,
-      hasPaired: true,
-      mode: 'heartwood-direct' as const,
-      railPubkey: offer.rail,
-      personaPubkey: offer.persona,
-      hwRelays: offer.hwRelays,
-      railRelay: offer.relay,
-      personas: result.personas,
-    };
-
-    if (repair && encryptionKey && identity) {
-      await saveIdentityEncrypted({
-        ...identity,
-        persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
-        // A50: a stale stub that put the bound persona in the NP slot is cleared.
-        ...(identity.naturalPerson.publicKey.toLowerCase() === offer.persona
-          ? { naturalPerson: { ...identity.naturalPerson, publicKey: '' }, naturalPersonActive: false } : {}),
-        primaryKeypair: 'persona',
-      }, encryptionKey);
-      // A27: retire the old pairing's router and backends BEFORE the new
-      // record is used — bump the generation so an in-flight probe for the
-      // old client cannot install itself afterwards.
-      bunkerRouterGenRef.current++;
-      setBunkerRouter((prev) => { prev?.destroy(); return null; });
-      setRouterProbeState(null);
-      if (bunkerBackend) {
-        bunkerBackend.destroy();
-        setBunkerBackend(null);
+  const handlePairChildDirect = useCallback(async (source: ChildPairOffer | { tap: ChildTapChannel }, ctl: DirectPairControl, repair: boolean) => {
+    const tap = 'tap' in source ? source.tap : null;
+    try {
+      const offer: ChildPairOffer = 'tap' in source ? await awaitTapOffer(source.tap, () => Math.floor(Date.now() / 1000), { signal: ctl.signal }) : source;
+      if (repair) {
+        if (!encryptionKey || !identity) throw new Error('Please unlock first.');
+        if (offer.dependant !== identity.id.toLowerCase()) throw new Error('This code is for a different account.');
       }
-      setSignerStatus(null);
-      await savePairedChild(record, encryptionKey);
-      await savePreferences(childDirectRelayPreferences(await getPreferences(), offer.relay)); // A56
-      await reloadPreferences();
-      await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
-      await setBackgroundBunkerEnabled(true).catch(() => { /* the toggle stays available */ });
-      await reloadIdentity();
-      setPairedChildBumpCounter(n => n + 1);
-      return;
-    }
+      const relayDeps = {
+        publish: (ev: import('signet-protocol').NostrEvent, relays: string[]) => publishEvent(ev, { relays }),
+        subscribe: (filters: import('signet-protocol').NostrFilter[], relays: string[], onEvent: (ev: import('signet-protocol').NostrEvent) => void) => subscribeEvents(filters, relays, onEvent),
+      };
+      const result = await runChildDirectPairing(offer, {
+        ...(tap ? childTapDeps(relayDeps, tap) : relayDeps),
+        handshake: async (clientPriv, ncUri, expected, timeoutMs, signal) => {
+          const b = new BunkerSigningBackend(clientPriv);
+          try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
+          finally { b.destroy(); }
+        },
+        nowS: () => Math.floor(Date.now() / 1000),
+      }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal, via: tap ? 'tap' : 'qr' });
 
-    const key = generateEncryptionKey();
-    // A50: the stub never puts the bound persona in the real-identity slot.
-    const identityRecord = childDirectStubIdentity(offer, result.personas, now);
-    await saveIdentityEncrypted(identityRecord, key);
-    await savePreferences({
-      // A56: every guardian→child rail is read on the offer's relay.
-      ...childDirectRelayPreferences(await getPreferences(), offer.relay),
-      activeAccountId: offer.dependant,
-      signingMode: 'paired-child',
-      // §8: the child's bunker keeps its games signed in with the screen off
-      // — on by default after a direct pairing (APK; ignored on the web).
-      backgroundBunkerEnabled: true,
-    });
-    await reloadPreferences();
-    await savePairedChild(record, key);
-    setPendingEncryptionKey(key);
+      const now = Math.floor(Date.now() / 1000);
+      const personaName = result.personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
+      const record = {
+        bunkerUri: result.bunkerUri,
+        clientKeypair: result.clientKeypair,
+        dependantPubkey: offer.dependant,
+        dependantName: offer.name,
+        pairedAt: now,
+        guardianPubkey: offer.guardian,
+        hasPaired: true,
+        mode: 'heartwood-direct' as const,
+        railPubkey: offer.rail,
+        personaPubkey: offer.persona,
+        hwRelays: offer.hwRelays,
+        railRelay: offer.relay,
+        personas: result.personas,
+      };
+
+      if (repair && encryptionKey && identity) {
+        await saveIdentityEncrypted({
+          ...identity,
+          persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
+          // A50: a stale stub that put the bound persona in the NP slot is cleared.
+          ...(identity.naturalPerson.publicKey.toLowerCase() === offer.persona
+            ? { naturalPerson: { ...identity.naturalPerson, publicKey: '' }, naturalPersonActive: false } : {}),
+          primaryKeypair: 'persona',
+        }, encryptionKey);
+        // A27: retire the old pairing's router and backends BEFORE the new
+        // record is used — bump the generation so an in-flight probe for the
+        // old client cannot install itself afterwards.
+        bunkerRouterGenRef.current++;
+        setBunkerRouter((prev) => { prev?.destroy(); return null; });
+        setRouterProbeState(null);
+        if (bunkerBackend) {
+          bunkerBackend.destroy();
+          setBunkerBackend(null);
+        }
+        setSignerStatus(null);
+        await savePairedChild(record, encryptionKey);
+        await savePreferences(childDirectRelayPreferences(await getPreferences(), offer.relay)); // A56
+        await reloadPreferences();
+        await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
+        await setBackgroundBunkerEnabled(true).catch(() => { /* the toggle stays available */ });
+        await reloadIdentity();
+        setPairedChildBumpCounter(n => n + 1);
+        return;
+      }
+
+      const key = generateEncryptionKey();
+      // A50: the stub never puts the bound persona in the real-identity slot.
+      const identityRecord = childDirectStubIdentity(offer, result.personas, now);
+      await saveIdentityEncrypted(identityRecord, key);
+      await savePreferences({
+        // A56: every guardian→child rail is read on the offer's relay.
+        ...childDirectRelayPreferences(await getPreferences(), offer.relay),
+        activeAccountId: offer.dependant,
+        signingMode: 'paired-child',
+        // §8: the child's bunker keeps its games signed in with the screen off
+        // — on by default after a direct pairing (APK; ignored on the web).
+        backgroundBunkerEnabled: true,
+      });
+      await reloadPreferences();
+      await savePairedChild(record, key);
+      setPendingEncryptionKey(key);
+    } finally { tap?.end(); }
   }, [encryptionKey, identity, bunkerBackend, reloadIdentity, reloadPreferences, setBackgroundBunkerEnabled]);
 
   const handleDeleteIdentity = useCallback(async () => {
