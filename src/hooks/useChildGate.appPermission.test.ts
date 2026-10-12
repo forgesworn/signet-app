@@ -39,11 +39,11 @@ const statement = (): UnsignedEvent => ({
 });
 const seal = (): UnsignedEvent => ({ kind: 13, created_at: 1_899_999_000, content: 'ciphertext', tags: [], pubkey: '' });
 
-function setup(opts: { rules?: ChildRulesPayload | null; beforeStamp?: (p: string) => Promise<boolean> } = {}) {
+function setup(opts: { rules?: ChildRulesPayload | null; beforeStamp?: (p: string) => Promise<boolean>; publishOk?: boolean } = {}) {
   const published: { ev: NostrEvent }[] = [];
   const subs: { filters: { '#d'?: string[] }[]; onEvent: (e: NostrEvent) => void; closed: boolean }[] = [];
   const t: ChildGateTransport = {
-    publish: async (ev) => { published.push({ ev }); return { ok: true, message: '' }; },
+    publish: async (ev) => { published.push({ ev }); return { ok: opts.publishOk !== false, message: '' }; },
     subscribe: (filters, _relays, onEvent) => {
       const s = { filters: filters as never, onEvent, closed: false };
       subs.push(s);
@@ -66,8 +66,8 @@ async function lastAsk(published: { ev: NostrEvent }[]) {
   if (!a) throw new Error('ask did not open');
   return a;
 }
-async function sendVerdict(subs: ReturnType<typeof setup>['subs'], id: string, verdict: ChildSignVerdict['verdict']) {
-  const ev = await buildVerdictEvent({ v: 1, id, verdict, decidedAt: Math.floor(NOW / 1000) }, railPriv, clientPub);
+async function sendVerdict(subs: ReturnType<typeof setup>['subs'], id: string, verdict: ChildSignVerdict['verdict'], extra: Partial<ChildSignVerdict> = {}) {
+  const ev = await buildVerdictEvent({ v: 1, id, verdict, decidedAt: Math.floor(NOW / 1000), ...extra }, railPriv, clientPub);
   const sub = subs.find(s => !s.closed && s.filters[0]['#d']?.[0]?.endsWith(id));
   if (!sub) throw new Error('no verdict subscription');
   await act(async () => { sub.onEvent(ev); await new Promise(r => setTimeout(r, 0)); });
@@ -178,7 +178,8 @@ describe('useChildGate.forwardPassed (D7)', () => {
       }
     });
     expect(outs.slice(0, 10).every(o => (o as { ok: boolean }).ok)).toBe(true);
-    expect(outs[10]).toEqual({ ok: false, error: 'denied' });
+    // I1: a local rate limit is not the guardian's "No".
+    expect(outs[10]).toEqual({ ok: false, error: 'rate-limited' });
   });
 
   it('keeps the beforeStamp probe (a refused probe blocks) and the persona check', async () => {
@@ -216,3 +217,63 @@ describe('useChildGate.forwardPassed (D7)', () => {
     expect(s.activity).toEqual([expect.objectContaining({ outcome: 'approved', method: 'nip44_encrypt', persona: PERSONA, requestCreatedAt: stamps[0] })]);
   });
 });
+
+describe('useChildGate — only the guardian\'s own No is "denied" (I1)', () => {
+  const ask = (s: ReturnType<typeof setup>, extra: { abort?: AbortSignal } = {}) => s.hook.result.current.authorise({
+    persona: PERSONA, appId: 'mysignet', appLabel: 'Twang Thang', siteOrigin: ORIGIN, method: 'sign_event',
+    template: statement(), appPermission: CLAIM, ...extra,
+  });
+
+  it('a guardian Deny is denied', async () => {
+    const s = setup();
+    let p!: ReturnType<typeof ask>;
+    await act(async () => { p = ask(s); await new Promise(r => setTimeout(r, 0)); });
+    await sendVerdict(s.subs, (await lastAsk(s.published)).id, 'deny');
+    expect(await p).toEqual({ ok: false, error: 'denied' });
+  });
+
+  it('a guardian Allow whose device push failed (deny + device-unreachable) is device-unreachable', async () => {
+    const s = setup();
+    let p!: ReturnType<typeof ask>;
+    await act(async () => { p = ask(s); await new Promise(r => setTimeout(r, 0)); });
+    await sendVerdict(s.subs, (await lastAsk(s.published)).id, 'deny', { reason: 'device-unreachable' });
+    expect(await p).toEqual({ ok: false, error: 'device-unreachable' });
+  });
+
+  it('a deny the guardian\'s phone sent because the ask ran out is expired', async () => {
+    const s = setup();
+    let p!: ReturnType<typeof ask>;
+    await act(async () => { p = ask(s); await new Promise(r => setTimeout(r, 0)); });
+    await sendVerdict(s.subs, (await lastAsk(s.published)).id, 'deny', { reason: 'expired' });
+    expect(await p).toEqual({ ok: false, error: 'expired' });
+  });
+
+  it('an ask that could not be published is unsent, not denied', async () => {
+    const s = setup({ publishOk: false });
+    let out: unknown;
+    await act(async () => { out = await ask(s); });
+    expect(s.published).toHaveLength(1);
+    expect(out).toEqual({ ok: false, error: 'unsent' });
+  });
+
+  it('the rate limit is rate-limited, not denied', async () => {
+    const s = setup({ rules: rules({ disconnectedApps: [] }) });
+    const outs: unknown[] = [];
+    await act(async () => {
+      for (let i = 0; i < 11; i++) {
+        outs.push(await s.hook.result.current.authorise({ persona: PERSONA, appId: 'mysignet', appLabel: 'My Signet', method: 'nip44_decrypt', peer: SESSION, wait: false }));
+      }
+    });
+    expect(outs[10]).toEqual({ ok: false, error: 'rate-limited' });
+  });
+
+  it('a matching "Always deny" rule is still denied at once', async () => {
+    const deny: ChildRule = { id: 'c3'.repeat(16), dependantId: DEP, persona: '*', scope: 'app-permission', target: `site:${ORIGIN}`, decision: 'deny', createdAt: 1, updatedAt: 1 };
+    const s = setup({ rules: rules({ rules: [deny] }) });
+    let out: unknown;
+    await act(async () => { out = await ask(s); });
+    expect(out).toEqual({ ok: false, error: 'denied' });
+    expect(s.published).toHaveLength(0);
+  });
+});
+

@@ -27,8 +27,28 @@ export type ChildGateOutcome =
   | { ok: true; requestCreatedAt: number; template?: UnsignedEvent }
   | { ok: false; error: ChildGateError };
 
-/** `asked`: an ask was raised but the caller could not wait (NIP-55 content provider). */
-export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'busy' | 'asked';
+/**
+ * `asked`: an ask was raised but the caller could not wait (NIP-55 content provider).
+ *
+ * `denied` is the guardian's own No only: their Deny, or one of their rules
+ * (a deny rule, a removed app). Purely local failures have their own codes
+ * (I1), so a caller can tell "your guardian said no" from "try again":
+ * `unsent` (the ask never reached the rail relay), `rate-limited` (this
+ * phone's 10/min limit), `device-unreachable` (the guardian allowed it but
+ * their phone could not update the Heartwood). On the NIP-46 wire they all
+ * still read `denied` (`childGateWireError`).
+ */
+export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'busy' | 'asked'
+  | 'unsent' | 'rate-limited' | 'device-unreachable';
+
+/**
+ * The error string a third-party NIP-46 client is sent for a refused gate
+ * outcome. The local-failure codes are new to this build; an app sees the
+ * same `denied` it always did.
+ */
+export function childGateWireError(code: ChildGateError): string {
+  return code === 'unsent' || code === 'rate-limited' || code === 'device-unreachable' ? 'denied' : code;
+}
 
 export type ChildGateMethod = 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
 
@@ -270,6 +290,9 @@ export class ChildGateRefusedError extends Error {
       : code === 'unpaired' ? 'This phone is no longer paired.'
       : code === 'busy' ? 'Too many requests are waiting for your guardian.'
       : code === 'asked' ? 'Your guardian has been asked.'
+      : code === 'unsent' ? 'Couldn\'t reach your guardian. Try again.'
+      : code === 'rate-limited' ? 'Too many requests just now. Wait a moment, then try again.'
+      : code === 'device-unreachable' ? 'Your guardian said yes, but their Heartwood couldn\'t be reached. Try again.'
       : 'Your guardian has not allowed this.');
     this.name = 'ChildGateRefusedError';
   }

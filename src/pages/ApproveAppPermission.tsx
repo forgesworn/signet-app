@@ -104,7 +104,7 @@ export function ApproveAppPermission({ request, route, personaName, onApprove, o
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button className="btn btn-primary" disabled={working} aria-busy={working || undefined} onClick={() => { void approve(); }}>
-              {working ? COPY.working : child ? COPY.askGuardian : COPY.allow}
+              {working ? COPY.working : child ? (error ? COPY.tryAgain : COPY.askGuardian) : COPY.allow}
             </button>
             <button className="btn btn-ghost" disabled={working} onClick={onCancel}>{COPY.cancel}</button>
           </div>

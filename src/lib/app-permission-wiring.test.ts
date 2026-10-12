@@ -58,4 +58,14 @@ describe('app-permission wiring in App.tsx', () => {
     const publish = between('const publishAppPermissionAnswer = useCallback(', 'const declineAppPermission = useCallback(');
     expect(publish).not.toMatch(/giftWrap\(/);
   });
+
+  it('I1: only the guardian\'s own No declines; every other failure rethrows and sends nothing', () => {
+    const approve = between('const handleApproveAppPermission = useCallback(', '// ── Third-party add-dependant approval');
+    const c = approve.slice(approve.indexOf('} catch (e) {'));
+    expect(c).toContain('classifyAppPermissionFailure(e)');
+    expect(c).toMatch(/if \(failure\.kind === 'guardian-denied' && stillOpen\(\)\) \{\s*declineAppPermission\(req/);
+    expect([...c.matchAll(/declineAppPermission\(/g)]).toHaveLength(1);
+    expect(c).toContain("if (failure.kind === 'retry') throw new Error(failure.message);");
+  });
 });
+

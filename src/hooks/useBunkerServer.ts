@@ -63,7 +63,7 @@ import type { AuditEventParams } from '../lib/audit';
 import { parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/persona-bunker-routes';
-import type { ChildRouteGate } from '../lib/child-bunker';
+import { childGateWireError, type ChildRouteGate } from '../lib/child-bunker';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
 import { isNativeApp } from '../lib/native';
@@ -1019,7 +1019,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
           clientPubkey: request.clientPubkey.toLowerCase(), method: request.method, peer: theirPubkey.toLowerCase(),
         });
         if (!outcome.ok) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
+          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, childGateWireError(outcome.error));
           return;
         }
         try {
@@ -1263,7 +1263,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         clientPubkey: request.clientPubkey.toLowerCase(), method: 'sign_event', template,
       });
       if (!outcome.ok) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, childGateWireError(outcome.error));
         return;
       }
       try {

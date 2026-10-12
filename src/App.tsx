@@ -321,7 +321,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, ChildGateRefusedError, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -387,7 +387,7 @@ import type { VerifyRequest, VerifyResponse } from './lib/presentation';
 import { buildVerifyResponse, sendResponseViaBroadcast, parseVerifyRequest } from './lib/presentation';
 import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } from './lib/pick-credential';
 import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError, giftWrap } from './lib/relay-publish';
-import { classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
+import { classifyAppPermissionFailure, classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
 import { APP_PERMISSION_COPY } from './lib/app-permission-copy';
 import { APP_PERMISSION_KIND, buildAppPermissionApprovedRumor, buildAppPermissionDeniedRumor } from './lib/app-permission';
 import type { AppPermissionRequest } from './lib/app-permission';
@@ -8942,12 +8942,16 @@ export function App() {
       marks.set(req, 'answered');
       await publishAppPermissionAnswer(req, wrap);
     } catch (e) {
-      if (e instanceof ChildGateRefusedError && e.code === 'denied' && stillOpen()) {
-        // The guardian said no: tell the app, like a Cancel.
+      // I1: only the guardian's own No (their Deny, or a deny rule) is final
+      // and answers the app. Any other failure sends nothing: the request
+      // stays open and Try again runs the flow afresh.
+      const failure = classifyAppPermissionFailure(e);
+      if (failure.kind === 'guardian-denied' && stillOpen()) {
         declineAppPermission(req);
         return;
       }
       if (marks.get(req) === 'approving') marks.delete(req); // free to try again
+      if (failure.kind === 'retry') throw new Error(failure.message);
       throw e;
     } finally {
       tempBackend?.destroy();

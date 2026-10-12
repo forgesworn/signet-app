@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { getPublicKey, generateSecretKey } from 'nostr-tools/pure';
-import { classifyAppPermissionSearch, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
+import { classifyAppPermissionSearch, classifyAppPermissionFailure, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
+import { ChildGateRefusedError } from './child-bunker';
+import { APP_PERMISSION_COPY } from './app-permission-copy';
 
 const NOW = 1_790_000_000;
 const PERSONA = getPublicKey(generateSecretKey());
@@ -69,3 +71,23 @@ describe('routeAppPermission (D9)', () => {
     expect(routeAppPermission({ ...base, persona: PERSONA.toUpperCase() }).mode).toBe('adult');
   });
 });
+
+describe('classifyAppPermissionFailure (I1)', () => {
+  it('only the guardian\'s own No answers the app', () => {
+    expect(classifyAppPermissionFailure(new ChildGateRefusedError('denied'))).toEqual({ kind: 'guardian-denied' });
+  });
+
+  it('local failures are a plain retry on the page, and send nothing', () => {
+    for (const code of ['unsent', 'rate-limited', 'expired', 'unpaired'] as const) {
+      expect(classifyAppPermissionFailure(new ChildGateRefusedError(code))).toEqual({ kind: 'retry', message: APP_PERMISSION_COPY.guardianUnreachable });
+    }
+    expect(classifyAppPermissionFailure(new ChildGateRefusedError('device-unreachable'))).toEqual({ kind: 'retry', message: APP_PERMISSION_COPY.deviceUnreachable });
+  });
+
+  it('anything else keeps its own message (blocked, busy, a signer error)', () => {
+    expect(classifyAppPermissionFailure(new ChildGateRefusedError('blocked'))).toEqual({ kind: 'other' });
+    expect(classifyAppPermissionFailure(new ChildGateRefusedError('busy'))).toEqual({ kind: 'other' });
+    expect(classifyAppPermissionFailure(new Error('timeout'))).toEqual({ kind: 'other' });
+  });
+});
+

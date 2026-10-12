@@ -4,6 +4,8 @@
  * App.tsx holds the state and the effects; nothing here touches React.
  */
 import { parseAppPermissionRequest, APP_PERMISSION_ACTION, type AppPermissionRefusal, type AppPermissionRequest } from './app-permission';
+import { ChildGateRefusedError } from './child-bunker';
+import { APP_PERMISSION_COPY } from './app-permission-copy';
 
 export type AppPermissionUrl =
   | { kind: 'not-ours' }
@@ -66,3 +68,29 @@ export function routeAppPermission(i: AppPermissionRouteInput): AppPermissionRou
   if (has(i.dependantPersonas, persona)) return { mode: 'refused', reason: 'dependant-on-guardian' };
   return { mode: 'refused', reason: 'persona-not-on-device' };
 }
+
+export type AppPermissionFailure =
+  | { kind: 'guardian-denied' }
+  | { kind: 'retry'; message: string }
+  | { kind: 'other' };
+
+/**
+ * What a failed child-direct approval means (I1). Only the guardian's own No
+ * (their Deny, or one of their deny rules) is final and answers the app
+ * `denied`. A failure on this phone or the guardian's — the ask never sent,
+ * the rate limit, no answer in time, the phone unpaired or locked, the
+ * guardian's Allow that could not reach their Heartwood — sends the app
+ * nothing: the request stays open and the child can try again. Anything else
+ * (blocked, busy, a signer error) keeps the message it already has.
+ */
+export function classifyAppPermissionFailure(e: unknown): AppPermissionFailure {
+  if (!(e instanceof ChildGateRefusedError)) return { kind: 'other' };
+  switch (e.code) {
+    case 'denied': return { kind: 'guardian-denied' };
+    case 'device-unreachable': return { kind: 'retry', message: APP_PERMISSION_COPY.deviceUnreachable };
+    case 'unsent': case 'rate-limited': case 'expired': case 'unpaired':
+      return { kind: 'retry', message: APP_PERMISSION_COPY.guardianUnreachable };
+    default: return { kind: 'other' };
+  }
+}
+

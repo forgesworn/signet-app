@@ -202,8 +202,10 @@ interface Prepared {
   kind: number | null;
 }
 
+/** A refusing verdict's code. Only the guardian's own rules are `denied` (I1). */
 function refusal(v: ChildGateVerdict): ChildGateError {
-  return v.verdict === 'blocked' ? 'blocked' : 'denied';
+  if (v.verdict === 'blocked') return 'blocked';
+  return v.verdict === 'deny' && v.reason === 'rate-limit' ? 'rate-limited' : 'denied';
 }
 
 export function useChildGate(opts: UseChildGateOpts): ChildGate {
@@ -387,7 +389,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     } else {
       target = peerTarget(req.peer!);
     }
-    if (!target) { emit({ ...base, kind, outcome: 'denied' }); return { ok: false, error: 'denied' }; }
+    if (!target) { emit({ ...base, kind, outcome: 'denied' }); return { ok: false, error: 'unsent' }; }
 
     const nowS = Math.floor(nowMs / 1000);
     const id = bytesToHex(randomBytes(16));
@@ -399,7 +401,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     };
     let ev: NostrEvent;
     try { ev = await buildAskEvent(ask, rec.clientKeypair.privateKey, rec.railPubkey); }
-    catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'denied' }; }
+    catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'unsent' }; }
     if (live.current.recordKey !== at.recordKey || live.current.unpaired) return { ok: false, error: 'unpaired' };
     if (held.current.size >= CHILD_GATE_MAX_HELD) return { ok: false, error: 'busy' };
 
@@ -451,7 +453,9 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
             if (v.verdict === 'deny') {
               emit({ ...base, kind, outcome: 'denied', target });
               answerAsk(id, 'denied');
-              settle({ ok: false, error: 'denied' });
+              // I1: a deny that carries a reason is the guardian's phone
+              // failing (or the ask running out), not their No.
+              settle({ ok: false, error: v.reason === 'device-unreachable' ? 'device-unreachable' : v.reason === 'expired' ? 'expired' : 'denied' });
               return;
             }
             // A12: the forwarded template is the one the guardian was asked
@@ -461,7 +465,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
           });
         },
       );
-      const unsent = () => { emit({ ...base, kind, outcome: 'denied', target }); answerAsk(id, 'denied'); settle({ ok: false, error: 'denied' }); };
+      const unsent = () => { emit({ ...base, kind, outcome: 'denied', target }); answerAsk(id, 'denied'); settle({ ok: false, error: 'unsent' }); };
       void transportRef.current.publish(ev, relays).then((r) => { if (!r.ok) unsent(); }).catch(unsent);
     });
   }, [prepare, forwardFor, emit, askTimeoutMs, noteAsk, answerAsk]);

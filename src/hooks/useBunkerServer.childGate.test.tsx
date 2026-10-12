@@ -188,6 +188,15 @@ describe('useBunkerServer — the child\'s gated persona routes', () => {
     hook.unmount();
   });
 
+  it.each(['unsent', 'rate-limited', 'device-unreachable'] as const)('I1: a local gate failure (%s) still reads "denied" to a NIP-46 app (no wire change)', async (error) => {
+    const authorise = vi.fn(async (): Promise<ChildGateOutcome> => ({ ok: false, error }));
+    const { route, transport } = gatedRoute({ authorise });
+    const { ws, hook } = await openServer(route, `wss://child-i1-${error}.example`);
+    const res = await ask(ws, generateSecretKey(), transport.activePublicKeyHex, 'i1', 'sign_event', [JSON.stringify({ kind: 1, created_at: 1, tags: [], content: '' })]);
+    expect(res).toEqual({ id: 'i1', error: 'denied' });
+    hook.unmount();
+  });
+
   it('a template naming another pubkey is refused before the gate', async () => {
     const authorise = vi.fn();
     const { route, transport } = gatedRoute({ authorise });

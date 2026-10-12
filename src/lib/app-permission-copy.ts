@@ -25,6 +25,7 @@ export const APP_PERMISSION_COPY = {
   validUntil: 'Valid until',
   allow: 'Allow',
   askGuardian: 'Ask my guardian',
+  tryAgain: 'Try again',
   cancel: 'Cancel',
   close: 'Close',
   working: 'Working…',
@@ -36,6 +37,10 @@ export const APP_PERMISSION_COPY = {
   ackFailedNoun: 'this request',
   keyUnavailable: 'The key for this permission is not available right now. Unlock again or reconnect your signer, then try again.',
   noLongerPending: 'This request is no longer waiting.',
+  /** I1: a local failure on a child phone; nothing was sent to the app. */
+  guardianUnreachable: 'Couldn\'t reach your guardian. Try again.',
+  /** I1: the guardian allowed it, but their phone could not update the Heartwood. */
+  deviceUnreachable: 'Your guardian said yes, but their phone couldn\'t reach the Heartwood. Try again.',
   invalidLink: 'That app permission link was not valid, so nothing was asked.',
   refusals: {
     'legacy-paired-child': 'This phone cannot give an app permission yet. Ask your guardian to do it from their phone.',

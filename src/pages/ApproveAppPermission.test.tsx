@@ -92,6 +92,19 @@ describe('ApproveAppPermission — a direct-paired child', () => {
   });
 });
 
+describe('ApproveAppPermission — a child\'s ask that did not get through (I1)', () => {
+  it('shows a plain retryable error, sends nothing, and Try again asks afresh', async () => {
+    const onApprove = vi.fn().mockRejectedValueOnce(new Error(COPY.guardianUnreachable)).mockImplementation(() => new Promise<void>(() => {}));
+    const { onCancel } = show(child, { onApprove });
+    fireEvent.click(screen.getByRole('button', { name: COPY.askGuardian }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(COPY.guardianUnreachable));
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: COPY.tryAgain }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(2));
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+});
+
 describe('ApproveAppPermission — refusals', () => {
   const base = { persona: PERSONA, signingMode: 'local', childDirect: false, ownerPersonas: [] as string[], dependantPersonas: [] as string[], childPersonas: [] as string[] };
   const cases: Array<[string, AppPermissionRoute]> = [
