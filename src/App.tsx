@@ -2119,8 +2119,20 @@ export function App() {
     unpaired: childDeviceLink.unpaired,
     onActivity: (e) => childActivitySinkRef.current(e),
   });
+  // A deferred persona ("Later") is approved on the Heartwood the first time a
+  // request is routed as it. The approval probe runs BEFORE the gate (so the
+  // gate's forced request stamp is not aged by the wait) and the gate still
+  // decides every request (A39).
+  const childEnsureApprovedRef = useRef(childDeviceLink.ensureApproved);
+  childEnsureApprovedRef.current = childDeviceLink.ensureApproved;
   const childGateRef = useRef(childGate);
-  childGateRef.current = childGate;
+  childGateRef.current = {
+    ...childGate,
+    authorise: async (req) => {
+      if (req.persona && !(await childEnsureApprovedRef.current(req.persona))) return { ok: false, error: 'blocked' };
+      return childGate.authorise(req);
+    },
+  };
   // Child → guardian rails (spec §9.1, §9.2): every gate decision, and the
   // connected-apps record, on the rail relay.
   const childActivityPublisher = useChildActivityPublisher({
@@ -9862,7 +9874,7 @@ export function App() {
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
       ) : null}
       {!childDeviceLink.unpaired && childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
-        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
+        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} onDefer={(pk) => childDeviceLink.deferApproval(pk)} />
       ) : null}
     </>
   ) : null;

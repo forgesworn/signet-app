@@ -124,6 +124,11 @@ export const CHILD_SIDE_COPY = {
     waiting: 'Waiting for the Heartwood',
     failed: 'Not approved yet',
     retry: 'Try again',
+    later: 'Later',
+    deferred: 'Later — approve when needed',
+    approveNow: 'Approve now',
+    finishedHeading: 'Some identities are set for later',
+    finishedBody: 'Your guardian will be asked to press ALLOW AS on the Heartwood the first time you use one.',
   },
 } as const;
 

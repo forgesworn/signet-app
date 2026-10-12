@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { NearbyLink, NEARBY_MAX_FRAME, nearbyEventFrame, nearbyHello, nearbyLinkKey, nearbyToken, readNearbyEvent, type NearbyStep } from './handshake-nearby-wire';
+import { bytesToHex } from '@noble/hashes/utils.js';
+import { getPublicKey } from 'nostr-tools/pure';
+import { NearbyLink, NEARBY_MAX_FRAME, nearbyEventFrame, nearbyHello, nearbyLinkKey, nearbyOfferFrame, nearbyOfferId, nearbyToken, readNearbyEvent, readNearbyOffer, type NearbyProfile, type NearbyStep } from './handshake-nearby-wire';
 import { createHandshakeSession, type HandshakeSession } from './handshake-reveal';
 
 const nonce = (n: number) => new Uint8Array(16).fill(n);
@@ -139,5 +141,93 @@ describe('nearby event frames', () => {
   it('drops unknown fields and refuses an oversized wrap', () => {
     expect(readNearbyEvent(nearbyEventFrame({ ...event(), extra: 'x' } as never)!)).toEqual(event());
     expect(nearbyEventFrame(event({ content: 'x'.repeat(NEARBY_MAX_FRAME) }) as never)).toBeNull();
+  });
+});
+
+describe('handshake profile is byte-identical to before profiles existed', () => {
+  // Pinned from the code as it stood before the child-pair profile was added.
+  const a = new Uint8Array(32).fill(1), b = new Uint8Array(32).fill(2);
+  it('keeps the token and link key vectors', () => {
+    expect(getPublicKey(a)).toBe('1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f');
+    expect(getPublicKey(b)).toBe('4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766');
+    expect(bytesToHex(nearbyToken(getPublicKey(a)))).toBe('4bd8b5f1c5a6b164');
+    expect(bytesToHex(nearbyLinkKey(a, getPublicKey(b)))).toBe('ccea96b188b6adab1d53cad989fd8e4c9c1592367ed9cf4e53d4acb4320058a3');
+    expect(bytesToHex(nearbyToken(getPublicKey(a), 'handshake'))).toBe('4bd8b5f1c5a6b164');
+  });
+  it('gives child-pair its own token and link key', () => {
+    expect(nearbyToken(getPublicKey(a), 'child-pair')).not.toEqual(nearbyToken(getPublicKey(a)));
+    expect(nearbyLinkKey(a, getPublicKey(b), 'child-pair')).not.toEqual(nearbyLinkKey(a, getPublicKey(b)));
+    expect(nearbyLinkKey(a, getPublicKey(b), 'child-pair')).toEqual(nearbyLinkKey(b, getPublicKey(a), 'child-pair'));
+  });
+});
+
+describe('child-pair profile', () => {
+  const D = 'd'.repeat(64), P = '4'.repeat(64);
+  const pairing = (over: Record<string, unknown> = {}) => ({
+    id: '1'.repeat(64), pubkey: '2'.repeat(64), sig: '3'.repeat(128), kind: 30078, created_at: 1700000000,
+    tags: [['d', D], ['p', P]], content: 'opaque', ...over,
+  });
+  const URI = 'signet-child:abc';
+  function pairP(adv: HandshakeSession, conn: HandshakeSession, pa: NearbyProfile, pc: NearbyProfile) {
+    const a = new NearbyLink('advertiser', nonce(1), adv, undefined, pa), c = new NearbyLink('connector', nonce(2), conn, adv.publicKey, pc);
+    let toA = [c.hello()], toC = [a.hello()];
+    while (toA.length || toC.length) {
+      const nextA: Uint8Array[] = [], nextC: Uint8Array[] = [];
+      for (const f of toA) for (const s of a.receive(f)) if (s.kind === 'send') nextC.push(s.frame);
+      for (const f of toC) for (const s of c.receive(f)) if (s.kind === 'send') nextA.push(s.frame);
+      toA = nextA; toC = nextC;
+    }
+    return { a, c };
+  }
+  const adv = createHandshakeSession(), conn = createHandshakeSession();
+
+  it('accepts a kind-30078 event with exactly one d and one p tag, in either order', () => {
+    expect(readNearbyEvent(nearbyEventFrame(pairing() as never)!, 'child-pair')).toEqual(pairing());
+    const swapped = pairing({ tags: [['p', P], ['d', D]] });
+    expect(readNearbyEvent(nearbyEventFrame(swapped as never)!, 'child-pair')).toEqual(swapped);
+    expect(readNearbyEvent(nearbyEventFrame(pairing({ content: 'x'.repeat(20000) }) as never)!, 'child-pair')).not.toBeNull();
+  });
+  it('rejects a 1059 wrap, extra, missing or repeated tags, oversize content and bad shapes', () => {
+    for (const bad of [pairing({ kind: 1059, tags: [['p', P]] }), pairing({ kind: 1059 }), pairing({ kind: 1 }),
+      pairing({ tags: [['d', D], ['p', P], ['e', P]] }), pairing({ tags: [['d', D]] }), pairing({ tags: [['p', P]] }),
+      pairing({ tags: [['d', D], ['d', D]] }), pairing({ tags: [['p', P], ['p', P]] }), pairing({ tags: [['d', 'D'.repeat(64)], ['p', P]] }),
+      pairing({ tags: [['d', 'short'], ['p', P]] }), pairing({ tags: [['d', D, 'x'], ['p', P]] }), pairing({ tags: [['d', D], ['p', 'A'.repeat(64)]] }),
+      pairing({ content: 'x'.repeat(20001) }), pairing({ id: 'X'.repeat(64) }), pairing({ sig: '3' }), pairing({ created_at: -1 })]) {
+      expect(readNearbyEvent(nearbyEventFrame(bad as never)!, 'child-pair')).toBeNull();
+    }
+  });
+  it('is the handshake profile that rejects a 30078 pairing event, and child-pair that rejects a 1059', () => {
+    expect(readNearbyEvent(nearbyEventFrame(pairing() as never)!)).toBeNull();
+    expect(readNearbyEvent(nearbyEventFrame(event() as never)!, 'child-pair')).toBeNull();
+  });
+  it('carries an offer and an event over a trusted link, with ACKs for each', () => {
+    const { a, c } = pairP(adv, conn, 'child-pair', 'child-pair');
+    expect(a.trusted && c.trusted).toBe(true);
+    const frame = nearbyOfferFrame(URI)!, id = nearbyOfferId(frame);
+    expect(c.receive(frame)).toEqual([{ kind: 'offer', uri: URI, id }]);
+    expect(a.receive(c.ack(id, true))).toEqual([{ kind: 'ack', id, stored: true }]);
+    expect(a.receive(nearbyEventFrame(pairing() as never)!)).toEqual([{ kind: 'event', event: pairing() }]);
+  });
+  it('drops a link on a non-signet-child, oversize or malformed offer', () => {
+    const raw = (text: string | Uint8Array) => Uint8Array.of(5, ...(typeof text === 'string' ? new TextEncoder().encode(text) : text));
+    for (const bad of [raw('https://evil.example/x'), raw('signet-child:' + 'x'.repeat(8192)), raw(Uint8Array.of(0xff, 0xfe)), Uint8Array.of(5)]) {
+      expect(pairP(adv, conn, 'child-pair', 'child-pair').c.receive(bad)).toEqual([{ kind: 'drop' }]);
+    }
+    const ok = raw('signet-child:' + 'x'.repeat(8192 - 13));
+    expect(pairP(adv, conn, 'child-pair', 'child-pair').c.receive(ok)).toMatchObject([{ kind: 'offer' }]);
+    expect(nearbyOfferFrame('https://x')).toBeNull();
+    expect(nearbyOfferFrame('signet-child:' + 'x'.repeat(8192))).toBeNull();
+    expect(readNearbyOffer(raw('nope'))).toBeNull();
+  });
+  it('the handshake profile treats the offer byte as invalid and drops the link', () => {
+    const frame = nearbyOfferFrame(URI)!;
+    expect(pairP(adv, conn, 'handshake', 'handshake').c.receive(frame)).toEqual([{ kind: 'drop' }]);
+  });
+  it('never authenticates a handshake peer with a child-pair peer, either way round', () => {
+    for (const [pa, pc] of [['handshake', 'child-pair'], ['child-pair', 'handshake']] as const) {
+      const { a, c } = pairP(adv, conn, pa, pc);
+      expect(a.trusted || c.trusted).toBe(false);
+      expect(a.dropped || c.dropped).toBe(true);
+    }
   });
 });

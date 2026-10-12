@@ -1,5 +1,5 @@
 import type { NostrEvent } from 'signet-protocol';
-import { NearbyLink, NEARBY_NONCE_BYTES, nearbyEventFrame, nearbyToken, type NearbyStep } from './handshake-nearby-wire';
+import { NearbyLink, NEARBY_NONCE_BYTES, nearbyEventFrame, nearbyOfferFrame, nearbyOfferId, nearbyToken, type NearbyProfile, type NearbyStep } from './handshake-nearby-wire';
 import { isNativeApp, SignetNative } from './native';
 import { sessionDialler } from './handshake-reveal';
 
@@ -97,7 +97,15 @@ export class HandshakeNearby implements DirectCarrier {
     /** Shared across the carriers of one handshake screen, so returning to
      * the foreground does not refill the event allowance. */
     budget?: { events: number };
+    /** What the links carry; 'handshake' unless a pairing screen says otherwise.
+     * Under 'child-pair' an ACK means "received and passed validation" (never
+     * a store receipt), and `onOffer` hears the peer's `signet-child:` URI. */
+    profile?: NearbyProfile;
+    onOffer?(uri: string): void;
   }) {}
+  private get profile(): NearbyProfile { return this.opts.profile ?? 'handshake'; }
+  /** True once every dial to the target has really failed: nothing more will connect. */
+  get dialsExhausted(): boolean { return !!this.target?.failed; }
   /** Permission and adapter are settled, so a scan may start. Deliberately not
    * `availability === 'ready'`, which waits for advertising: that goes through
    * a Bluetooth-name change and an advert start that can take seconds, and the
@@ -135,7 +143,7 @@ export class HandshakeNearby implements DirectCarrier {
       // dials now rather than after the slower of the two.
       this.scanOk = true;
       this.dial();
-      await this.native.advertise({ token: toBase64(nearbyToken(this.opts.session.publicKey)) });
+      await this.native.advertise({ token: toBase64(nearbyToken(this.opts.session.publicKey, this.profile)) });
       if (this.closed) return 'failed';
       settle('ready');
       // A link trusted while the advert was still starting already made it unnecessary.
@@ -190,7 +198,7 @@ export class HandshakeNearby implements DirectCarrier {
     }
     starts.push(now);
     target.dialling = true;
-    this.native.connect({ token: toBase64(nearbyToken(target.session)), timeoutMs: this.opts.connectMs ?? 60000 })
+    this.native.connect({ token: toBase64(nearbyToken(target.session, this.profile)), timeoutMs: this.opts.connectMs ?? 60000 })
       .then(() => { target.dialling = false; })
       .catch((err: unknown) => {
         target.dialling = false;
@@ -253,15 +261,25 @@ export class HandshakeNearby implements DirectCarrier {
   async deliverSession(session: string, event: NostrEvent): Promise<boolean> {
     return this.sendEvent([...this.links.values()].find(s => s.link.trusted && s.link.peerSession === session), event);
   }
+  /** child-pair only: the guardian's `signet-child:` URI for the peer's session. True once the peer ACKs it. */
+  async sendOffer(session: string, uri: string): Promise<boolean> {
+    if (this.profile !== 'child-pair') return false;
+    const frame = nearbyOfferFrame(uri);
+    const state = [...this.links.values()].find(s => s.link.trusted && s.link.peerSession === session);
+    return frame && state ? this.sendFrame(state, nearbyOfferId(frame), frame) : false;
+  }
   private async sendEvent(state: LinkState | undefined, event: NostrEvent): Promise<boolean> {
     const frame = state && nearbyEventFrame(event);
-    if (!state || !frame || state.acks.has(event.id)) return false;
+    return state && frame ? this.sendFrame(state, event.id, frame) : false;
+  }
+  private async sendFrame(state: LinkState, id: string, frame: Uint8Array): Promise<boolean> {
+    if (state.acks.has(id)) return false;
     const receipt = new Promise<boolean>(resolve => {
-      state.acks.set(event.id, resolve);
-      this.later(this.opts.ackMs ?? 6000, () => { if (state.acks.get(event.id) === resolve) { state.acks.delete(event.id); resolve(false); } });
+      state.acks.set(id, resolve);
+      this.later(this.opts.ackMs ?? 6000, () => { if (state.acks.get(id) === resolve) { state.acks.delete(id); resolve(false); } });
     });
     try { await this.native.send({ link: state.id, data: toBase64(frame) }); }
-    catch { state.acks.get(event.id)?.(false); state.acks.delete(event.id); return false; }
+    catch { state.acks.get(id)?.(false); state.acks.delete(id); return false; }
     return receipt;
   }
 
@@ -304,7 +322,7 @@ export class HandshakeNearby implements DirectCarrier {
       return;
     }
     const state: LinkState = { id: e.link, link: new NearbyLink(outgoing ? 'connector' : 'advertiser', this.random(NEARBY_NONCE_BYTES),
-      this.opts.session, expected), outgoing, delivered: new Set(), acks: new Map(), queue: Promise.resolve(), events: 0 };
+      this.opts.session, expected, this.profile), outgoing, delivered: new Set(), acks: new Map(), queue: Promise.resolve(), events: 0 };
     this.links.set(e.link, state);
     this.send(state, state.link.hello());
     // An idle or failing connection gives its slot back.
@@ -330,9 +348,23 @@ export class HandshakeNearby implements DirectCarrier {
       const resolve = state.acks.get(step.id);
       state.acks.delete(step.id);
       resolve?.(step.stored);
+    } else if (step.kind === 'offer') {
+      if (++state.events > MAX_EVENTS_PER_LINK || ++this.budget.events > MAX_EVENTS_PER_SESSION) { this.drop(state); return; }
+      state.queue = state.queue.then(() => {
+        try { this.opts.onOffer?.(step.uri); } catch { /* the frame was valid */ }
+        if (this.links.has(state.id)) this.send(state, state.link.ack(step.id, true));
+      });
     } else if (step.kind === 'event') {
       if (++state.events > MAX_EVENTS_PER_LINK || ++this.budget.events > MAX_EVENTS_PER_SESSION) { this.drop(state); return; }
       const event = step.event;
+      if (this.profile === 'child-pair') {
+        // Validated by the wire: acknowledge receipt. No store semantic, nothing to bind.
+        state.queue = state.queue.then(async () => {
+          try { await this.opts.onEvent(event); } catch { /* the caller's problem; the frame was valid */ }
+          if (this.links.has(state.id)) this.send(state, state.link.ack(event.id, true));
+        });
+        return;
+      }
       state.queue = state.queue.then(async () => {
         let receipt: NearbyReceipt = 'rejected';
         try { receipt = await this.opts.onEvent(event); } catch { receipt = 'rejected'; }

@@ -2809,7 +2809,7 @@ export async function savePairedChild(record: Omit<PairedChildRecord, 'id' | 'en
 }
 
 const STRICT_HEX64 = /^[0-9a-f]{64}$/;
-const APPROVAL_STATES: readonly string[] = ['approved', 'waiting', 'failed'];
+const APPROVAL_STATES: readonly string[] = ['approved', 'waiting', 'failed', 'deferred'];
 
 /**
  * Validate the child-direct fields (all routing metadata, stored in clear).
@@ -2834,10 +2834,10 @@ function directPairingFields(record: Omit<PairedChildRecord, 'id' | 'encrypted'>
   };
 }
 
-function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 'waiting' | 'failed'> {
-  const out: Record<string, 'approved' | 'waiting' | 'failed'> = {};
+function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'> {
+  const out: Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'> = {};
   for (const [k, v] of Object.entries(a)) {
-    if (STRICT_HEX64.test(k) && APPROVAL_STATES.includes(v)) out[k] = v as 'approved' | 'waiting' | 'failed';
+    if (STRICT_HEX64.test(k) && APPROVAL_STATES.includes(v)) out[k] = v as 'approved' | 'waiting' | 'failed' | 'deferred';
   }
   return out;
 }
@@ -2845,7 +2845,7 @@ function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 
 /** Persist the identity-approval ceremony state (clear routing metadata). */
 export async function setPairedChildIdentityApprovals(
   dependantPubkey: string,
-  approvals: Record<string, 'approved' | 'waiting' | 'failed'>,
+  approvals: Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'>,
 ): Promise<void> {
   if (!HEX64.test(dependantPubkey)) return;
   const db = await getDB();

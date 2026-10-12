@@ -108,7 +108,7 @@ export interface PairedChildRecord {
   /** Personas the guardian listed in its pairing reply (seed for the ceremony). */
   personas?: { pubkey: string; name: string; role: 'persona' | 'natural-person' | 'extra' }[];
   /** Identity-approval ceremony state per persona pubkey (§4 step 6). */
-  identityApprovals?: Record<string, 'approved' | 'waiting' | 'failed'>;
+  identityApprovals?: Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'>;
 }
 
 /**
