@@ -1297,7 +1297,9 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       // whole-client bearer credential — without this carve-out, a single
       // "Allow always for <app>" click would authorise that app to pair
       // further bunker clients or rename the guardian's identity silently.
-      const sensitiveForAllowAlways = kinterest || scope === 'pair-device' || scope === 'mutate-identity';
+      // M6: a standing app permission (kind 30420) is one decision per
+      // request, never covered by a remembered "allow always" either.
+      const sensitiveForAllowAlways = kinterest || scope === 'pair-device' || scope === 'mutate-identity' || scope === 'app-permission';
       if (existing?.allowAlways && !sensitiveForAllowAlways) {
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);

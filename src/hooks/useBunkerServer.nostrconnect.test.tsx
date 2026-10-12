@@ -862,3 +862,30 @@ describe('approval replies across socket reconnects', () => {
     expect(MockRelaySocket.instances.flatMap(ws => ws.published)).toHaveLength(0);
   });
 });
+
+describe('M6: an owner persona\'s remembered allow-always never signs an app permission (kind 30420)', () => {
+  afterEach(() => { MockRelaySocket.instances.length = 0; });
+  const statement = (pubkey: string) => ({
+    kind: 30420, created_at: Math.floor(Date.now() / 1000), content: '', pubkey,
+    tags: [['d', 'twang'], ['p', getPublicKey(generateSecretKey())], ['valid_from', '1'], ['valid_until', '2'], ['v', '1'], ['role', 'player'], ['expiration', '2']],
+  });
+
+  it('asks again for a 30420, while an ordinary kind still goes through on the grant', async () => {
+    const { result, ownerBackend, unmount } = renderOwnerServer('wss://m6-relay.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, 'wss://m6-relay.example');
+    const clientSk = generateSecretKey();
+    await saveConnectedClient({ clientPubkey: getPublicKey(clientSk), appName: 'Twang', connectedAt: 1, lastSeenAt: 1, allowAlways: true });
+    const signing = vi.spyOn(ownerBackend, 'signEvent');
+
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'perm', method: 'sign_event', params: [JSON.stringify(statement(ownerBackend.activePublicKeyHex))] })));
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(0);
+    expect(signing).not.toHaveBeenCalled();
+
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'note', method: 'sign_event', params: [JSON.stringify({ kind: 1, created_at: 1, tags: [], content: 'hi' })] })));
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toMatchObject({ id: 'note' });
+    unmount();
+  });
+});
+

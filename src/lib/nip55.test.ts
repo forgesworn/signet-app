@@ -69,6 +69,14 @@ describe('planNip55', () => {
     expect(planNip55(namedOther, false, grant, [A, B], A)).toEqual({ kind: 'ask', pubkey: B });
   });
 
+  it('M6: a remembered grant never signs an app permission (kind 30420): always asked', () => {
+    const grant = { pubkey: A, allowAlways: true, denyAlways: false, grantedAt: 1 };
+    const permission = parseNip55Request(raw({ payload: JSON.stringify({ kind: 30420, content: '', tags: [['d', 'twang']] }) }))!;
+    expect(permission).not.toBeNull();
+    expect(planNip55(permission, false, grant, [A], A)).toEqual({ kind: 'ask', pubkey: A });
+    expect(planNip55(permission, true, grant, [A], A)).toEqual({ kind: 'defer' });
+  });
+
   it('never signs under a key this phone does not hold', () => {
     expect(planNip55({ ...signIt, currentUser: 'c'.repeat(64) }, false, undefined, [A, B], A)).toEqual({ kind: 'reject', reason: 'unknown-identity' });
   });
