@@ -30,10 +30,10 @@ function request(): AppPermissionRequest {
 const adult: AppPermissionRoute = { mode: 'adult', persona: PERSONA };
 const child: AppPermissionRoute = { mode: 'child-direct', persona: PERSONA };
 
-function show(route: AppPermissionRoute, over: { onApprove?: () => Promise<void>; onCancel?: () => void } = {}) {
+function show(route: AppPermissionRoute, over: { onApprove?: (o: { realIdentityConfirmed: boolean }) => Promise<void>; onCancel?: () => void; confirmRealIdentity?: boolean } = {}) {
   const onApprove = over.onApprove ?? vi.fn(async () => {});
   const onCancel = over.onCancel ?? vi.fn();
-  render(<ApproveAppPermission request={request()} route={route} personaName="Sky" onApprove={onApprove} onCancel={onCancel} />);
+  render(<ApproveAppPermission request={request()} route={route} personaName="Sky" onApprove={onApprove} onCancel={onCancel} confirmRealIdentity={over.confirmRealIdentity} />);
   return { onApprove, onCancel };
 }
 
@@ -76,6 +76,30 @@ describe('ApproveAppPermission — adult', () => {
     fireEvent.click(screen.getByRole('button', { name: COPY.cancel }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onApprove).not.toHaveBeenCalled();
+  });
+});
+
+describe('ApproveAppPermission — the real-name identity (M5)', () => {
+  it('needs the same real-name confirmation as a sign-in before Allow works', async () => {
+    const { onApprove } = show(adult, { confirmRealIdentity: true });
+    const allow = screen.getByRole('button', { name: COPY.allow }) as HTMLButtonElement;
+    expect(allow.disabled).toBe(true);
+    fireEvent.click(allow);
+    expect(onApprove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, use my real-name identity' }));
+    expect(allow.disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(allow.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, use my real-name identity' }));
+    fireEvent.click(allow);
+    await waitFor(() => expect(onApprove).toHaveBeenCalledWith({ realIdentityConfirmed: true }));
+  });
+
+  it('a persona needs no confirmation', async () => {
+    const { onApprove } = show(adult);
+    expect(screen.queryByRole('button', { name: 'Yes, use my real-name identity' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: COPY.allow }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledWith({ realIdentityConfirmed: false }));
   });
 });
 

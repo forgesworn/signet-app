@@ -26,6 +26,13 @@ export const APP_PERMISSION_COPY = {
   allow: 'Allow',
   askGuardian: 'Ask my guardian',
   tryAgain: 'Try again',
+  /** M5: the sign-in guardrail's confirmation, worded for a permission. */
+  realIdentityConfirm: {
+    confirmed: 'Real-name identity confirmed.',
+    title: "You're about to give this permission as your real-name identity",
+    usuallyEnough: "Most apps don't need it — a persona is usually enough.",
+  },
+  realIdentityUnconfirmed: 'Confirm your real-name identity first.',
   cancel: 'Cancel',
   close: 'Close',
   working: 'Working…',

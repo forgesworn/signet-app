@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getPublicKey, generateSecretKey } from 'nostr-tools/pure';
-import { appPermissionRequestKey, classifyAppPermissionSearch, classifyAppPermissionFailure, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
+import { appPermissionNeedsRealIdentityConfirm, appPermissionRequestKey, classifyAppPermissionSearch, classifyAppPermissionFailure, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
 import { ChildGateRefusedError } from './child-bunker';
 import { APP_PERMISSION_COPY } from './app-permission-copy';
 
@@ -102,6 +102,18 @@ describe('appPermissionRequestKey (M4)', () => {
     if (a.kind !== 'request' || b.kind !== 'request') throw new Error('fixture');
     expect(appPermissionRequestKey(a.request)).not.toBe(appPermissionRequestKey(b.request));
     expect(appPermissionRequestKey(a.request)).toBe(appPermissionRequestKey({ ...a.request }));
+  });
+});
+
+describe('appPermissionNeedsRealIdentityConfirm (M5)', () => {
+  const NP = getPublicKey(generateSecretKey());
+  const identity = { naturalPerson: { publicKey: NP } };
+  it('only the adult real-name identity, only with the guardrail on', () => {
+    expect(appPermissionNeedsRealIdentityConfirm({ mode: 'adult', persona: NP }, identity, true)).toBe(true);
+    expect(appPermissionNeedsRealIdentityConfirm({ mode: 'adult', persona: NP }, identity, false)).toBe(false);
+    expect(appPermissionNeedsRealIdentityConfirm({ mode: 'adult', persona: PERSONA }, identity, true)).toBe(false);
+    expect(appPermissionNeedsRealIdentityConfirm({ mode: 'child-direct', persona: NP }, identity, true)).toBe(false);
+    expect(appPermissionNeedsRealIdentityConfirm({ mode: 'refused', reason: 'persona-not-on-device' }, identity, true)).toBe(false);
   });
 });
 

@@ -13,6 +13,7 @@ import type { AppPermissionRoute } from '../lib/app-permission-flow';
 import { APP_PERMISSION_COPY as COPY } from '../lib/app-permission-copy';
 import { friendlyApprovalError } from '../lib/signer-error-copy';
 import { PairedChildApprovalWaiting } from '../components/PairedChildApprovalWaiting';
+import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmSection';
 
 interface Props {
   request: AppPermissionRequest;
@@ -20,9 +21,15 @@ interface Props {
   /** The display name of the key the permission is for. */
   personaName: string;
   /** Resolves when the answer is on its way; a throw is shown here and the page stays. */
-  onApprove: () => Promise<void>;
+  onApprove: (opts: { realIdentityConfirmed: boolean }) => Promise<void>;
   /** Cancel, Close and the back chevron: the app is told it was declined. */
   onCancel: () => void;
+  /**
+   * M5: the key is the activated real-name identity and the
+   * `requireNpConfirmation` guardrail is on: Allow waits for the same
+   * two-step confirmation a sign-in asks for.
+   */
+  confirmRealIdentity?: boolean;
 }
 
 function hostOf(origin: string): string {
@@ -38,8 +45,9 @@ export function shortKey(hex: string): string {
   return `${hex.slice(0, 8)}…${hex.slice(-4)}`;
 }
 
-export function ApproveAppPermission({ request, route, personaName, onApprove, onCancel }: Props) {
+export function ApproveAppPermission({ request, route, personaName, onApprove, onCancel, confirmRealIdentity = false }: Props) {
   const [working, setWorking] = useState(false);
+  const [realIdentityConfirmed, setRealIdentityConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const host = useMemo(() => hostOf(request.origin), [request.origin]);
   const persona = personaName.slice(0, 64) || 'you';
@@ -60,12 +68,13 @@ export function ApproveAppPermission({ request, route, personaName, onApprove, o
   }
 
   const child = route.mode === 'child-direct';
+  const needsConfirm = !child && confirmRealIdentity && !realIdentityConfirmed;
   const approve = async () => {
-    if (working) return;
+    if (working || needsConfirm) return;
     setWorking(true);
     setError(null);
     try {
-      await onApprove();
+      await onApprove({ realIdentityConfirmed: !child && confirmRealIdentity && realIdentityConfirmed });
     } catch (e) {
       setWorking(false);
       setError(friendlyApprovalError(e));
@@ -98,12 +107,22 @@ export function ApproveAppPermission({ request, route, personaName, onApprove, o
             <div>{COPY.validUntil}: {until}</div>
           </details>
         </div>
+        {!child && (
+          <NaturalPersonConfirmSection
+            display={persona}
+            requireConfirm={confirmRealIdentity}
+            confirmed={realIdentityConfirmed}
+            onConfirm={() => setRealIdentityConfirmed(true)}
+            onUndo={() => setRealIdentityConfirmed(false)}
+            copy={COPY.realIdentityConfirm}
+          />
+        )}
         {error && <div role="alert" style={{ color: 'var(--danger)', fontSize: '0.9rem', fontWeight: 600 }}>{error}</div>}
         {child && working ? (
           <PairedChildApprovalWaiting onCancel={onCancel} direct />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <button className="btn btn-primary" disabled={working} aria-busy={working || undefined} onClick={() => { void approve(); }}>
+            <button className="btn btn-primary" disabled={working || needsConfirm} aria-busy={working || undefined} onClick={() => { void approve(); }}>
               {working ? COPY.working : child ? (error ? COPY.tryAgain : COPY.askGuardian) : COPY.allow}
             </button>
             <button className="btn btn-ghost" disabled={working} onClick={onCancel}>{COPY.cancel}</button>

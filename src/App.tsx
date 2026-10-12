@@ -387,7 +387,7 @@ import type { VerifyRequest, VerifyResponse } from './lib/presentation';
 import { buildVerifyResponse, sendResponseViaBroadcast, parseVerifyRequest } from './lib/presentation';
 import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } from './lib/pick-credential';
 import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError, giftWrap } from './lib/relay-publish';
-import { appPermissionRequestKey, classifyAppPermissionFailure, classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
+import { appPermissionNeedsRealIdentityConfirm, appPermissionRequestKey, classifyAppPermissionFailure, classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
 import { APP_PERMISSION_COPY } from './lib/app-permission-copy';
 import { APP_PERMISSION_KIND, buildAppPermissionApprovedRumor, buildAppPermissionDeniedRumor } from './lib/app-permission';
 import type { AppPermissionRequest } from './lib/app-permission';
@@ -8860,11 +8860,15 @@ export function App() {
     declineAppPermission(req);
   }, [declineAppPermission, retireAppPermission, navigateReplace]);
 
-  const handleApproveAppPermission = useCallback(async () => {
+  const handleApproveAppPermission = useCallback(async (opts?: { realIdentityConfirmed?: boolean }) => {
     const req = pendingAppPermissionRef.current;
     const route = appPermissionRoute;
     if (!req || !identity) throw new Error(APP_PERMISSION_COPY.noLongerPending);
     if (!route || route.mode === 'refused') throw new Error(APP_PERMISSION_COPY.noLongerPending);
+    // M5: the real-name identity needs the sign-in guardrail's confirmation.
+    if (appPermissionNeedsRealIdentityConfirm(route, identity, requireNpConfirmation) && opts?.realIdentityConfirmed !== true) {
+      throw new Error(APP_PERMISSION_COPY.realIdentityUnconfirmed);
+    }
     const marks = appPermissionMarksRef.current;
     if (marks.has(req)) throw new Error(APP_PERMISSION_COPY.noLongerPending);
     marks.set(req, 'approving');
@@ -8964,7 +8968,7 @@ export function App() {
     } finally {
       tempBackend?.destroy();
     }
-  }, [appPermissionRoute, identity, bunkerBackend, bunkerRouter, slotResolveOpts, signerStatus, npBunkerBackend, nip07Backend, backends, preferences.signingMode, encryptionKey, requestAuth, routedApprovalUnavailableMessage, acquireApprovalRoute, publishAppPermissionAnswer, declineAppPermission]);
+  }, [appPermissionRoute, identity, requireNpConfirmation, bunkerBackend, bunkerRouter, slotResolveOpts, signerStatus, npBunkerBackend, nip07Backend, backends, preferences.signingMode, encryptionKey, requestAuth, routedApprovalUnavailableMessage, acquireApprovalRoute, publishAppPermissionAnswer, declineAppPermission]);
 
   // ── Third-party add-dependant approval ─────────────────────────────
   //
@@ -12518,6 +12522,7 @@ export function App() {
             personaName={appPermissionPersonaName}
             onApprove={handleApproveAppPermission}
             onCancel={handleCancelAppPermission}
+            confirmRealIdentity={appPermissionNeedsRealIdentityConfirm(appPermissionRoute, identity, requireNpConfirmation)}
           />
         </Layout>
         {/* See approve-auth: the re-unlock prompt must be mountable after an auto-lock. */}

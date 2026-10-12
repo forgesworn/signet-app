@@ -102,3 +102,18 @@ export function appPermissionRequestKey(r: Pick<AppPermissionRequest, 'sessionPu
   return `${r.sessionPubkey}:${r.challenge}`;
 }
 
+/**
+ * M5: an adult giving the permission as their real-name identity, with the
+ * `requireNpConfirmation` guardrail on, confirms it first — the same
+ * two-step the sign-in path asks for (keypair-policy's app guardrail).
+ * A persona, or a child's route, never needs it.
+ */
+export function appPermissionNeedsRealIdentityConfirm(
+  route: AppPermissionRoute,
+  identity: { naturalPerson: { publicKey: string } },
+  requireNpConfirmation: boolean,
+): boolean {
+  return requireNpConfirmation && route.mode === 'adult'
+    && route.persona.toLowerCase() === identity.naturalPerson.publicKey.toLowerCase();
+}
+

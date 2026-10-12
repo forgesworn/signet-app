@@ -93,4 +93,13 @@ describe('app-permission wiring in App.tsx', () => {
     expect(branch).toContain('key={appPermissionRequestKey(pendingAppPermissionRequest)}');
     expect(branch).toContain('{appPermissionNoticeBanner}');
   });
+
+  it('M5: the handler refuses an unconfirmed real-name identity before anything is marked or signed', () => {
+    const approve = between('const handleApproveAppPermission = useCallback(', '// ── Third-party add-dependant approval');
+    const check = approve.indexOf('appPermissionNeedsRealIdentityConfirm(route, identity, requireNpConfirmation) && opts?.realIdentityConfirmed !== true');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(approve.indexOf("marks.set(req, 'approving')"));
+    const branch = between("if (page === 'approve-app-permission' && pendingAppPermissionRequest", '// Approve third-party Add Dependant');
+    expect(branch).toContain('confirmRealIdentity={appPermissionNeedsRealIdentityConfirm(appPermissionRoute, identity, requireNpConfirmation)}');
+  });
 });
