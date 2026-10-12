@@ -1,0 +1,71 @@
+import { describe, it, expect } from 'vitest';
+import { getPublicKey, generateSecretKey } from 'nostr-tools/pure';
+import { classifyAppPermissionSearch, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
+
+const NOW = 1_790_000_000;
+const PERSONA = getPublicKey(generateSecretKey());
+const INSTALL = getPublicKey(generateSecretKey());
+const SESSION = getPublicKey(generateSecretKey());
+const tags = [['d', 'twang'], ['p', INSTALL], ['valid_from', String(NOW)], ['valid_until', String(NOW + 86400)], ['v', '1'], ['role', 'player'], ['expiration', String(NOW + 86400)]];
+const b64url = (v: unknown) => Buffer.from(JSON.stringify(v), 'utf8').toString('base64url');
+function search(over: Record<string, string | null> = {}): string {
+  const base: Record<string, string> = {
+    action: 'app-permission', permission: 'online-play', origin: 'https://twang.example', name: 'Twang Thang',
+    reason: 'To play online.', template: b64url({ kind: 30420, pubkey: PERSONA, content: '', tags }),
+    relay: 'wss://relay.example', sessionPubkey: SESSION, challenge: 'ab'.repeat(32), t: String(NOW), callback: 'https://twang.example/back',
+  };
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries({ ...base, ...over })) if (v !== null) p.set(k, v);
+  return `?${p}`;
+}
+
+describe('classifyAppPermissionSearch', () => {
+  it('a good link is a request', () => {
+    const r = classifyAppPermissionSearch(search(), NOW);
+    expect(r.kind).toBe('request');
+    if (r.kind === 'request') expect(r.request).toMatchObject({ name: 'Twang Thang', origin: 'https://twang.example', relay: 'wss://relay.example' });
+  });
+  it('other carriers are not ours (so the caller falls through to the next one)', () => {
+    expect(classifyAppPermissionSearch('', NOW).kind).toBe('not-ours');
+    expect(classifyAppPermissionSearch('?action=add-dependant&x=1', NOW).kind).toBe('not-ours');
+    expect(classifyAppPermissionSearch('?nostrconnect=1', NOW).kind).toBe('not-ours');
+    expect(classifyAppPermissionSearch('?auth=1&challenge=' + 'a'.repeat(64), NOW).kind).toBe('not-ours');
+  });
+  it('an app-permission link that does not parse is consumed with a reason, never a request', () => {
+    expect(classifyAppPermissionSearch(search({ permission: 'post-as-me' }), NOW)).toEqual({ kind: 'refused', reason: 'permission' });
+    expect(classifyAppPermissionSearch(search({ relay: null }), NOW)).toEqual({ kind: 'refused', reason: 'relay' });
+    expect(classifyAppPermissionSearch(search({ t: String(NOW - 4000) }), NOW)).toEqual({ kind: 'refused', reason: 't' });
+    expect(classifyAppPermissionSearch(search({ template: b64url({ kind: 1, pubkey: PERSONA, content: '', tags: [] }) }), NOW)).toEqual({ kind: 'refused', reason: 'template' });
+  });
+});
+
+describe('routeAppPermission (D9)', () => {
+  const base: AppPermissionRouteInput = {
+    persona: PERSONA, signingMode: 'local', childDirect: false,
+    ownerPersonas: [PERSONA], dependantPersonas: [], childPersonas: [],
+  };
+  it('an adult signs as an owner persona', () => {
+    expect(routeAppPermission(base)).toEqual({ mode: 'adult', persona: PERSONA });
+    expect(routeAppPermission({ ...base, signingMode: 'bunker' })).toEqual({ mode: 'adult', persona: PERSONA });
+  });
+  it('a key that is not an owner persona is not on the device', () => {
+    expect(routeAppPermission({ ...base, ownerPersonas: [] })).toEqual({ mode: 'refused', reason: 'persona-not-on-device' });
+  });
+  it('a dependant\'s key held on the guardian\'s phone is refused', () => {
+    expect(routeAppPermission({ ...base, ownerPersonas: [], dependantPersonas: [PERSONA] })).toEqual({ mode: 'refused', reason: 'dependant-on-guardian' });
+  });
+  it('a guardian who has handed the phone to a child does not offer their own keys', () => {
+    expect(routeAppPermission({ ...base, guardianActingAsChild: true })).toEqual({ mode: 'refused', reason: 'child-mode' });
+  });
+  it('a direct-paired child asks its guardian, for its own persona only', () => {
+    const child = { ...base, signingMode: 'paired-child', childDirect: true, ownerPersonas: [], childPersonas: [PERSONA] };
+    expect(routeAppPermission(child)).toEqual({ mode: 'child-direct', persona: PERSONA });
+    expect(routeAppPermission({ ...child, childPersonas: [] })).toEqual({ mode: 'refused', reason: 'persona-not-on-device' });
+  });
+  it('a legacy phone-paired child is refused whatever the key (owner personas never reach it)', () => {
+    expect(routeAppPermission({ ...base, signingMode: 'paired-child', childDirect: false, childPersonas: [PERSONA] })).toEqual({ mode: 'refused', reason: 'legacy-paired-child' });
+  });
+  it('compares case-insensitively', () => {
+    expect(routeAppPermission({ ...base, persona: PERSONA.toUpperCase() }).mode).toBe('adult');
+  });
+});

@@ -133,6 +133,11 @@ describe('routeNativeUrl', () => {
     expect(routeNativeUrl(signInUrl({ callback: 'https://other.example/cb' })).type).toBe('root-carrier');
   });
 
+  it('an app-permission link arrives as root-carrier, for the app-permission consumer to pick up', () => {
+    const href = 'https://mysignet.app/?action=app-permission&permission=online-play&origin=https%3A%2F%2Ftwang.example';
+    expect(routeNativeUrl(href)).toEqual({ type: 'root-carrier', href });
+  });
+
   it('routes other root-path web carriers as root-carrier', () => {
     const verifyHref = 'https://mysignet.app/?verify=abc';
     expect(routeNativeUrl(verifyHref)).toEqual({ type: 'root-carrier', href: verifyHref });

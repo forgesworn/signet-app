@@ -80,9 +80,12 @@ describe('isOrphanedApprovalPage', () => {
     expect(isOrphanedApprovalPage('relay-auth-ack', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(true);
     expect(isOrphanedApprovalPage('relay-auth-ack', { hasAuthRequest: false, hasRelayAuthAck: true, hasAppPermissionRequest: false })).toBe(false);
   });
-  it('never flags ordinary pages', () => {
+  it('flags approve-app-permission once its request is gone, and leaves it while one is pending', () => {
     expect(isOrphanedApprovalPage('approve-app-permission', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(true);
     expect(isOrphanedApprovalPage('approve-app-permission', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: true })).toBe(false);
+    expect(isBarHiddenPage('approve-app-permission')).toBe(true);
+  });
+  it('never flags ordinary pages', () => {
     expect(isOrphanedApprovalPage('home', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(false);
   });
 });
