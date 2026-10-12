@@ -505,6 +505,20 @@ it('an NFC tap reads the other session like a camera, and the contact is recorde
   expect(quiet).toHaveBeenCalled();
   expect(stop).not.toHaveBeenCalled();
 });
+it('a phone on a child-pairing screen touching this one is flagged, not treated as a peer', async () => {
+  const s = setup();
+  let pairing: (() => void) | undefined;
+  const handle = { quiet: vi.fn(), stop: vi.fn() };
+  const nfc = { status: vi.fn(async () => ({ supported: true, enabled: true })),
+    start: vi.fn(async (_code: string, _onPeer: (code: string) => void, options?: { onPairingPeer?: () => void }) => { pairing = options?.onPairingPeer; return handle; }) };
+  const hook = renderHook(() => useHandshake({ ...s.host, nfc }));
+  await waitFor(() => expect(hook.result.current.view.tapAvailable).toBe(true));
+  expect(hook.result.current.view.pairingPeer).toBeUndefined();
+  act(() => pairing!());
+  expect(hook.result.current.view.pairingPeer).toBe(true);
+  expect(hook.result.current.view.phase).toBe('reading');
+  expect(s.revealRelays.publish).not.toHaveBeenCalled();
+});
 it('ends Bluetooth (scan and advert) once "Is this them?" is up, so it does not rescan for as long as the question stays open', async () => {
   const s = setup(), nearby = fakeNearby();
   let tapped: ((code: string) => void) | undefined;

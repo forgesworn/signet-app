@@ -7,6 +7,7 @@ import { isNativeApp } from '../lib/native';
 import type { PublicProfileBase, PublicProfileConfig } from '../types';
 import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import { BrandMark } from '../components/BrandMark';
+import { PAIR_WITH_GUARDIAN_LABEL } from '../lib/child-device-copy';
 
 interface Props {
   onImport: (mnemonic: string, displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean, guardianPubkey?: string) => Promise<void>;
@@ -451,7 +452,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             </button>
             {onStartChildPair && (
               <button className="btn btn-secondary" onClick={onStartChildPair}>
-                I have a pairing code from my guardian
+                {PAIR_WITH_GUARDIAN_LABEL}
               </button>
             )}
             <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: '12px 0 0' }}>

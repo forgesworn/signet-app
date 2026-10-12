@@ -84,7 +84,7 @@ test('delivers a scoped read-only directory to a paired child, withdraws blocked
     };
     await child.goto(android ? 'https://localhost/' : '/');
     await child.getByRole('button', { name: 'I already have a Signet' }).click();
-    await child.getByRole('button', { name: 'I have a pairing code from my guardian' }).click();
+    await child.getByRole('button', { name: "Pair with my guardian's phone" }).click();
     await child.getByRole('button', { name: 'Paste pairing code' }).click();
     await child.getByPlaceholder('bunker://...').fill(uri);
     await child.getByRole('button', { name: 'Continue', exact: true }).click();

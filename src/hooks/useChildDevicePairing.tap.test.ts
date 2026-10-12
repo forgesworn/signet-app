@@ -322,17 +322,20 @@ describe('useChildDevicePairing - tap mode', () => {
     expect(gNfc.stopped).toBeGreaterThan(0);
   });
 
-  it('with NFC off, start("tap") errors cleanly and the QR path stays available', async () => {
+  it('with NFC off, start("tap") falls back to the QR + relay pairing instead of an error', async () => {
     gNfc.statusValue = { supported: true, enabled: false };
     const g = guardian();
     await act(async () => { await g.hook.result.current.nearby.probe(); });
     expect(g.hook.result.current.nearby).toMatchObject({ available: false, reason: 'off' });
     act(() => g.hook.result.current.start('tap'));
-    await waitFor(() => expect(phase(g)).toBe('error'));
+    await waitFor(() => expect(phase(g)).toBe('offer'));
+    expect(g.hook.result.current.state).toMatchObject({ phase: 'offer', via: 'qr' });
+    expect(g.hook.result.current.nearby.reason).toBe('off');
+    // The request is now heard on the relay, exactly one subscription.
+    expect(guardianRelay.filters.length).toBe(1);
     act(() => g.hook.result.current.start());
     await waitFor(() => expect(phase(g)).toBe('offer'));
     expect(g.hook.result.current.state).toMatchObject({ phase: 'offer', via: 'qr' });
-    expect(guardianRelay.filters.length).toBe(1);
   });
 });
 

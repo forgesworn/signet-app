@@ -18,6 +18,8 @@ import { buildPairingURI, generatePairingSecret } from '../lib/pairing-uri';
 import { usesChildDirectPairing } from '../lib/child-device-pairing';
 import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
 import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
+import { isNativeApp, SignetNative } from '../lib/native';
+import type { TapRadioReason } from '../lib/child-pair-tap';
 
 const PAIRING_SECRET_TTL_MS = 5 * 60 * 1000;
 
@@ -388,12 +390,34 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
   onBackRef.current = onBack;
   const startRef = useRef(pairing.start);
   startRef.current = pairing.start;
+  const probeRef = useRef(pairing.nearby.probe);
+  probeRef.current = pairing.nearby.probe;
+
+  // Tap first. `probing` covers the radio check, `nfcOff` is the one case worth
+  // fixing on the spot, `qrReason` says why a QR code is shown when tap cannot be.
+  const [probing, setProbing] = useState(false);
+  const [nfcOff, setNfcOff] = useState(false);
+  const [probeReason, setProbeReason] = useState<TapRadioReason | null>(null);
+
+  /** Check the radios, then lead with the tap when this phone can; otherwise the QR code. */
+  const chooseAndStart = useCallback(async () => {
+    setProbing(true); setNfcOff(false); setProbeReason(null);
+    const radios = await probeRef.current();
+    if (radios.available) { setProbing(false); startRef.current('tap'); return; }
+    setProbing(false);
+    if (radios.reason === 'off') { setNfcOff(true); return; }
+    setProbeReason(radios.reason ?? 'failed');
+    startRef.current('qr');
+  }, []);
 
   const begin = useCallback(async () => {
     const key = await requestAuthRef.current();
     if (!key) { onBackRef.current(); return; }
-    startRef.current();
-  }, []);
+    await chooseAndStart();
+  }, [chooseAndStart]);
+
+  /** Switch from the tap to today's QR flow; the guardian already authenticated. */
+  const showQr = useCallback(() => { setNfcOff(false); setProbeReason(null); startRef.current('qr'); }, []);
 
   // A phone already paired shows its status first; otherwise start at once.
   useEffect(() => {
@@ -413,6 +437,23 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
       <div className="fade-in" style={pad}>
         <p style={muted}>{COPY.unpaired(name)}</p>
         <button className="btn btn-primary" onClick={onBack} style={{ ...wide, marginTop: 16 }}>{COPY.done}</button>
+      </div>
+    );
+  }
+
+  if (probing) {
+    return <div className="fade-in" style={{ ...pad, textAlign: 'center' }}><p style={muted}>{COPY.checking}</p></div>;
+  }
+
+  if (nfcOff && state.phase === 'idle') {
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.title(name)}</h2>
+        <p role="status" style={{ ...muted, marginBottom: 20 }}>{COPY.tap.nfcOff}</p>
+        <button className="btn btn-primary" onClick={() => { void SignetNative.radioSettings({ which: 'nfc' }).catch(() => {}); }} style={wide}>{COPY.tap.openNfc}</button>
+        <button className="btn" onClick={() => { void chooseAndStart(); }} style={wide}>{COPY.tap.checkAgain}</button>
+        <button className="btn" onClick={showQr} style={wide}>{COPY.tap.qrInstead}</button>
+        <button className="btn btn-ghost" onClick={onBack} style={{ width: '100%' }}>{COPY.back}</button>
       </div>
     );
   }
@@ -466,10 +507,40 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
     );
   }
 
+  const nearby = pairing.nearby;
+  /** Why a QR code is showing although tap was wanted (a native phone only: a browser never could). */
+  const qrReason = state.phase === 'offer' && state.via === 'qr' ? (nearby.reason ?? probeReason) : null;
+  const qrBecause = qrReason && (qrReason !== 'unsupported' || isNativeApp()) ? COPY.tap.qrBecause[qrReason] ?? COPY.tap.qrBecause.failed : null;
+  /** Another phone touched this one, or the tapped phone is on the Handshake screen. */
+  const tapNotices = (
+    <>
+      {nearby.secondPhone && <p role="alert" style={{ ...muted, color: 'var(--danger)', marginBottom: 12 }}>{COPY.tap.secondPhone(name)}</p>}
+      {nearby.wrongScreen === 'handshake' && <p role="alert" style={{ ...muted, color: 'var(--danger)', marginBottom: 12 }}>{COPY.tap.wrongScreen(name)}</p>}
+    </>
+  );
+
+  if (state.phase === 'offer' && state.via === 'tap') {
+    const progress = nearby.phase === 'linking' ? COPY.tap.linking
+      : nearby.phase === 'linked' ? COPY.tap.linked(name)
+      : nearby.phase === 'lost' ? COPY.tap.lost(name) : null;
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.tap.holdHeading(name)}</h2>
+        <p style={{ ...muted, marginBottom: 20 }}>{COPY.tap.holdBody}</p>
+        {tapNotices}
+        {progress && <p role="status" style={{ ...muted, marginBottom: 12 }}>{progress}</p>}
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', marginBottom: 20 }}>{COPY.offerExpires(countdown)}</div>
+        <button className="btn" onClick={showQr} style={wide}>{COPY.tap.qrInstead}</button>
+        <button className="btn btn-ghost" onClick={() => { pairing.cancel(); onBack(); }} style={{ width: '100%' }}>{COPY.cancel}</button>
+      </div>
+    );
+  }
+
   if (state.phase === 'offer') {
     return (
       <div className="fade-in" style={pad}>
         <h2 style={{ marginBottom: 8 }}>{COPY.title(name)}</h2>
+        {qrBecause && <p role="status" style={{ ...muted, marginBottom: 8 }}>{qrBecause}</p>}
         <p style={{ ...muted, marginBottom: 20 }}>{COPY.offerIntro(name)}</p>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <QRCode data={state.uri} size={260} />
@@ -477,6 +548,18 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
         </div>
         <p style={{ ...muted, fontSize: '0.8rem', marginBottom: 20 }}>{COPY.offerNoSecret}</p>
         <button className="btn" onClick={() => { pairing.cancel(); onBack(); }} style={{ width: '100%' }}>{COPY.cancel}</button>
+      </div>
+    );
+  }
+
+  if (state.phase === 'confirm' && state.via === 'tap') {
+    return (
+      <div className="fade-in" style={pad}>
+        <h2 style={{ marginBottom: 8 }}>{COPY.tap.confirmHeading(name)}</h2>
+        <p style={{ ...muted, marginBottom: 20 }}>{COPY.tap.confirmBody}</p>
+        {tapNotices}
+        <button className="btn btn-primary" onClick={() => { void pairing.confirmMatch(); }} style={wide}>{COPY.tap.confirmPair}</button>
+        <button className="btn" onClick={() => pairing.rejectMatch()} style={{ width: '100%' }}>{COPY.cancel}</button>
       </div>
     );
   }

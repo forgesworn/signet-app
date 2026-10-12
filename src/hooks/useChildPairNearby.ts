@@ -14,8 +14,8 @@ import { ChildPairTap, type ChildPairTapOptions, type ChildPairTapState, type Ta
 export interface UseChildPairNearby extends ChildPairTapState {
   /** The underlying object: stable for the life of the component. */
   tap: ChildPairTap;
-  /** Check NFC and Bluetooth support without starting anything. */
-  probe(): Promise<void>;
+  /** Check NFC and Bluetooth support without starting anything. Resolves with the resulting state. */
+  probe(): Promise<ChildPairTapState>;
   begin(options?: TapBeginOptions): Promise<boolean>;
   end(): void;
 }
@@ -36,7 +36,7 @@ export function useChildPairNearby(options: ChildPairTapOptions = {}): UseChildP
     return () => { mounted.current = false; tap.end(); };
   }, [tap]);
 
-  const probe = useCallback(async () => { await tap.probe(); }, [tap]);
+  const probe = useCallback(() => tap.probe(), [tap]);
   const begin = useCallback((o?: TapBeginOptions) => tap.begin(o), [tap]);
   const end = useCallback(() => tap.end(), [tap]);
   return { ...state, tap, probe, begin, end };

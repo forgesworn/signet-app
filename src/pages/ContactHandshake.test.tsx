@@ -128,6 +128,11 @@ it('says the phones can tap back to back only where NFC is on', async () => {
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
   expect(screen.getByRole('status')).toHaveTextContent('Scan their QR, or tap the phones back to back');
 });
+it('says so when a phone on a child-pairing screen is tapped', async () => {
+  mocks.handshake.mockReturnValue({ view: { phase: 'reading', code: sessionCode, tapAvailable: true, pairingPeer: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
+  render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
+  expect(screen.getByRole('alert')).toHaveTextContent('That phone is pairing a child’s phone, not on the Handshake screen.');
+});
 it('after a tap, says the codes crossed by tap rather than by a QR scan', async () => {
   const handshake = (view: Partial<HandshakeView>) => ({ view: { phase: 'waiting', code: sessionCode, scanned: true, via: 'tap', ...view } as HandshakeView,
     scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });

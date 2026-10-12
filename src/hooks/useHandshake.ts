@@ -61,6 +61,8 @@ export interface HandshakeView {
   ambiguous?: boolean;
   /** A tap works here too: hold the phones back to back. */
   tapAvailable?: boolean;
+  /** A phone on a child-pairing screen touched this one; its code was dropped. */
+  pairingPeer?: boolean;
 }
 const defaultRelays = { watch: watchReveals, publish: (event: NostrEvent, relays: string[]) => publishToRelays(event, relays) };
 const REVEAL_HOLD_MS = 5000, LATE_DIAL_MS = 3000, RETRY_MS = 3000, RESEND_MS = 5000, MAX_CANDIDATES = 16, MAX_FAILED_REVEALS = 512, MAX_SEEN = 1024;
@@ -423,7 +425,7 @@ export function useHandshake(host: HandshakeHost) {
         if (nfc) void (async () => {
           const status = await nfc.status();
           if (!status.supported || !status.enabled || closed || radioEnded) return;
-          const handle = await nfc.start(code, raw => commands.current?.tap(raw));
+          const handle = await nfc.start(code, raw => commands.current?.tap(raw), { onPairingPeer: () => publish({ pairingPeer: true }) });
           if (closed) { handle.stop(); return; }
           nfcHandle = handle;
           if (radioEnded) { quietNfc(); return; }

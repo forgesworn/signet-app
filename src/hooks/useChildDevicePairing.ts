@@ -294,33 +294,37 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
         uri = buildChildPairUri({ v: 2, rail: working.bunkerEndpoint!.publicKey, guardian: o.guardianNpPubkey, dependant: dep.id,
           persona, name: dep.displayName, relay: o.railRelay, hwRelays, code, t });
       } catch { setState(gen, { phase: 'error', message: COPY.errors.generic }); return; }
+      const relayTx: PairingTransport = { publish: (ev, relays) => transport().publish(ev, relays), subscribe: (f, r, cb) => transport().subscribe(f, r, cb) };
       const session: Session = {
         gen, code, expiresAtMs, railPub: working.bunkerEndpoint!.publicKey, railPriv: working.bunkerEndpoint!.privateKey,
         persona, label: childDirectSlotLabel(dep.id.toLowerCase()), dep: working, hwRelays, railRelay: o.railRelay,
         request: null, authors: new Set(), used: false, unsub: null, timer: null,
         via, tapAttempt: 0, pending: [],
         // Tap mode: requests come off the link only (no relay subscription), replies go over the link with a relay fallback.
-        tx: via === 'tap'
-          ? tapPairingTransport(nearbyRef.current.tap, { publish: (ev, relays) => transport().publish(ev, relays) })
-          : { publish: (ev, relays) => transport().publish(ev, relays), subscribe: (f, r, cb) => transport().subscribe(f, r, cb) },
+        tx: via === 'tap' ? tapPairingTransport(nearbyRef.current.tap, { publish: (ev, relays) => transport().publish(ev, relays) }) : relayTx,
       };
       sessionRef.current = session;
-      session.unsub = session.tx.subscribe(
-        [{ kinds: [30078], '#p': [session.railPub], '#d': [pairRequestDTag(code)], since: t - 60 }],
-        [o.railRelay],
-        (ev) => { void onRequestEvent(gen, ev); },
-      );
+      const listen = () => {
+        session.unsub = session.tx.subscribe(
+          [{ kinds: [30078], '#p': [session.railPub], '#d': [pairRequestDTag(code)], since: t - 60 }],
+          [o.railRelay],
+          (ev) => { void onRequestEvent(gen, ev); },
+        );
+      };
+      listen();
       if (via === 'tap') {
         // The offer is the same string the QR would show; it goes to the tapped phone once linked.
         const armed = await nearbyRef.current.tap.begin({ offerUri: uri });
         if (genRef.current !== gen || sessionRef.current !== session) return;
-        if (!armed) {
+        if (armed) {
+          session.tapAttempt = nearbyRef.current.tap.attempt;
+        } else {
+          // The radios could not be used (the reason is on `nearby`): carry on as the QR + relay pairing.
           stopListening(session);
-          sessionRef.current = null;
-          setState(gen, { phase: 'error', message: COPY.errors.generic });
-          return;
+          session.via = 'qr';
+          session.tx = relayTx;
+          listen();
         }
-        session.tapAttempt = nearbyRef.current.tap.attempt;
       }
       session.timer = setTimeout(() => {
         if (sessionRef.current !== session || session.used) return;
@@ -329,7 +333,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
         setState(gen, { phase: 'expired' });
         void endTap(session);
       }, expiresAtMs - offerMs);
-      setState(gen, { phase: 'offer', uri, expiresAt: expiresAtMs, via });
+      setState(gen, { phase: 'offer', uri, expiresAt: expiresAtMs, via: session.via });
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teardown, setState]);
