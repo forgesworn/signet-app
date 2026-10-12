@@ -88,6 +88,18 @@ describe('PairChildOnboarding — signet-child: direct pairing', () => {
     expect(onStartDirect).toHaveBeenCalledTimes(1);
   });
 
+  it('a Heartwood that never answered shows the unreachable copy, a wrong identity the signer copy', async () => {
+    for (const [code, copy] of [['device-unreachable', CHILD_SIDE_COPY.errors.deviceUnreachable], ['signer', CHILD_SIDE_COPY.errors.signer]] as const) {
+      const onStartDirect = vi.fn(async () => { throw new ChildDirectPairError(code); });
+      const view = render(<PairChildOnboarding onConfirm={vi.fn()} onStartDirect={onStartDirect} onCancel={() => {}} />);
+      pasteAndContinue(buildChildPairUri(offer()));
+      fireEvent.click(screen.getByText(CHILD_SIDE_COPY.confirmGo));
+      await waitFor(() => expect(screen.getByText(copy)).toBeTruthy());
+      view.unmount();
+    }
+    expect(CHILD_SIDE_COPY.errors.deviceUnreachable).toBe("Your Heartwood didn't answer this phone. Check it's on and online, then ask your guardian for a new code.");
+  });
+
   it('a guardian refusal with client-reused shows its copy', async () => {
     const onStartDirect = vi.fn(async () => { throw new ChildDirectPairError('refused', 'client-reused'); });
     render(<PairChildOnboarding onConfirm={vi.fn()} onStartDirect={onStartDirect} onCancel={() => {}} />);

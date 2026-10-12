@@ -19,7 +19,7 @@ import {
   type ChildPairOffer, type ChildPairReply,
 } from './child-pair-wire';
 import { eventMatchesFilter } from './child-pair-tap';
-import { generateBunkerClientSecret } from './signing-backend';
+import { BunkerPubkeyMismatchError, generateBunkerClientSecret } from './signing-backend';
 
 /**
  * Whole-run budget. Longer than the plan's 120 s: the guardian must compare
@@ -36,7 +36,19 @@ export function childPairRunTimeoutMs(offerT: number, nowS: number): number {
   return Math.max(0, Math.min(CHILD_PAIR_RUN_TIMEOUT_MS, leftMs));
 }
 
-export type ChildDirectPairErrorCode = 'timeout' | 'publish' | 'refused' | 'signer' | 'cancelled';
+/**
+ * `signer`: the Heartwood answered as the WRONG identity (a real pubkey
+ * mismatch). `device-unreachable`: it did not answer this phone at all, even
+ * though the guardian's reply proved the slot exists.
+ */
+export type ChildDirectPairErrorCode = 'timeout' | 'publish' | 'refused' | 'signer' | 'device-unreachable' | 'cancelled';
+
+/**
+ * After a valid ok reply the Heartwood's ACK was sent before the guardian
+ * replied, so a handshake still silent this long afterwards missed it (a
+ * socket that went quiet without closing, e.g. a screen-off throttle).
+ */
+export const CHILD_PAIR_ACK_GRACE_MS = 20_000;
 
 export class ChildDirectPairError extends Error {
   readonly code: ChildDirectPairErrorCode;
@@ -58,6 +70,13 @@ export interface ChildDirectPairingDeps {
    * every later reconnect; rejects on mismatch, timeout or abort.
    */
   handshake(clientPrivateKey: string, nostrconnectUri: string, expectedPubkey: string, timeoutMs: number, signal: AbortSignal): Promise<string>;
+  /**
+   * Recovery when `handshake` fails for a reason other than a pubkey mismatch
+   * (the ACK is ephemeral and can be missed): connect as an ordinary bunker
+   * client to `personaPubkey` on `relays` with the same client key, pinning
+   * `get_public_key`. Rejects with `BunkerPubkeyMismatchError` on a wrong identity.
+   */
+  connectPaired?(clientPrivateKey: string, personaPubkey: string, relays: string[], timeoutMs: number, signal: AbortSignal): Promise<string>;
   nowS(): number;
 }
 
@@ -171,11 +190,17 @@ export async function runChildDirectPairing(
   const clientPub = getPublicKey(hexToBytes(clientPriv));
   const nostrconnect = buildChildNostrConnectUri(clientPub, offer.hwRelays, newPairCode());
 
+  const startedAt = Date.now();
   const inner = new AbortController();
+  // The first handshake has its own signal so a silent one can be retired
+  // without ending the whole run.
+  const firstHandshake = new AbortController();
   const onOuterAbort = () => inner.abort();
+  inner.signal.addEventListener('abort', () => firstHandshake.abort());
   opts.signal?.addEventListener('abort', onOuterAbort);
   let unsubscribe: (() => void) | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
 
   // One failure channel for timeout / abort, raced against every wait below.
   const stopped = new Promise<never>((_, reject) => {
@@ -188,7 +213,7 @@ export async function runChildDirectPairing(
 
   try {
     // Listen for the ACK first: the guardian mints as soon as the words match.
-    const handshake = deps.handshake(clientPriv, nostrconnect, offer.persona, timeoutMs, inner.signal);
+    const handshake = deps.handshake(clientPriv, nostrconnect, offer.persona, timeoutMs, firstHandshake.signal);
     handshake.catch(() => { /* observed below */ });
 
     const reply = new Promise<ChildPairReply>((resolve) => {
@@ -215,10 +240,33 @@ export async function runChildDirectPairing(
 
     let bunkerUri: string;
     try {
-      bunkerUri = await Promise.race([handshake, stopped]);
+      // With a fallback to hand over to, a handshake silent this long after a
+      // valid reply is treated as a missed ACK rather than waited on to the end.
+      const grace = deps.connectPaired
+        ? new Promise<never>((_, reject) => {
+          graceTimer = setTimeout(() => { firstHandshake.abort(); reject(new Error('connect ACK missed')); }, CHILD_PAIR_ACK_GRACE_MS);
+        })
+        : null;
+      grace?.catch(() => { /* observed via the race below */ });
+      bunkerUri = await Promise.race(grace ? [handshake, grace, stopped] : [handshake, stopped]);
     } catch (err) {
       if (err instanceof ChildDirectPairError) throw err;
-      throw new ChildDirectPairError('signer');
+      if (opts.signal?.aborted || inner.signal.aborted) throw new ChildDirectPairError('cancelled');
+      if (err instanceof BunkerPubkeyMismatchError) throw new ChildDirectPairError('signer');
+      if (!deps.connectPaired) throw new ChildDirectPairError('device-unreachable');
+      // The reply proved the slot exists: connect as an ordinary bunker client.
+      const leftMs = timeoutMs - (Date.now() - startedAt);
+      if (leftMs <= 0) throw new ChildDirectPairError('timeout');
+      try {
+        bunkerUri = await Promise.race([deps.connectPaired(clientPriv, offer.persona, offer.hwRelays, leftMs, inner.signal), stopped]);
+      } catch (err2) {
+        if (err2 instanceof ChildDirectPairError) throw err2;
+        if (err2 instanceof BunkerPubkeyMismatchError) throw new ChildDirectPairError('signer');
+        if (opts.signal?.aborted || inner.signal.aborted) throw new ChildDirectPairError('cancelled');
+        throw new ChildDirectPairError('device-unreachable');
+      }
+    } finally {
+      clearTimeout(graceTimer);
     }
     return { clientKeypair: { publicKey: clientPub, privateKey: clientPriv }, bunkerUri, personas: answer.personas, stage: answer.stage };
   } catch (err) {

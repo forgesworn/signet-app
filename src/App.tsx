@@ -5980,6 +5980,11 @@ export function App() {
           try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
           finally { b.destroy(); }
         },
+        connectPaired: async (clientPriv, persona, relays, timeoutMs, signal) => {
+          const b = new BunkerSigningBackend(clientPriv);
+          try { return await b.connectAsPairedClient(persona, relays, timeoutMs, signal); }
+          finally { b.destroy(); }
+        },
         nowS: () => Math.floor(Date.now() / 1000),
       }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal, via: tap ? 'tap' : 'qr' });
 

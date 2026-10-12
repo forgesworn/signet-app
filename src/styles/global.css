@@ -746,6 +746,8 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 .handshake-camera-complete { width: min(100%, 280px, 30dvh); }
 .handshake-status { display: flex; align-items: center; gap: 10px; text-align: center; }
 .handshake-status > svg { flex-shrink: 0; }
+/* An error that must be seen without scrolling: sits right under the status line. */
+.handshake-alert { margin: 0; text-align: center; font-weight: 600; color: var(--danger); }
 .handshake-wait { display: flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--accent); }
 .handshake-wait i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: handshake-wait-dot 1.2s ease-in-out infinite; }
 .handshake-wait i:nth-child(2) { animation-delay: .2s; }

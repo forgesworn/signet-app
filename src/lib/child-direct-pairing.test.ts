@@ -7,9 +7,10 @@ import {
   type ChildPairOffer,
 } from './child-pair-wire';
 import { parseNostrConnectURI } from './nip46';
+import { BunkerPubkeyMismatchError } from './signing-backend';
 import {
   runChildDirectPairing, buildChildNostrConnectUri, directBunkerUri, ChildDirectPairError, pairedChildSignerPubkey, childPairRunTimeoutMs,
-  type ChildDirectPairingDeps,
+  CHILD_PAIR_ACK_GRACE_MS, type ChildDirectPairingDeps,
 } from './child-direct-pairing';
 
 const railSk = generateSecretKey();
@@ -31,14 +32,16 @@ interface Harness {
   published: { ev: NostrEvent; relays: string[] }[];
   subs: { filters: unknown[]; relays: string[]; onEvent: (e: NostrEvent) => void; closed: boolean }[];
   handshake: ReturnType<typeof vi.fn>;
+  connectPaired: ReturnType<typeof vi.fn>;
 }
 
-function harness(opts: { publishOk?: boolean; handshake?: (...a: unknown[]) => Promise<string> } = {}): Harness {
+function harness(opts: { publishOk?: boolean; handshake?: (...a: unknown[]) => Promise<string>; connectPaired?: ((...a: unknown[]) => Promise<string>) | null } = {}): Harness {
   const published: Harness['published'] = [];
   const subs: Harness['subs'] = [];
   const handshake = vi.fn(opts.handshake ?? (async () => `bunker://${PERSONA}?relay=wss%3A%2F%2Fhw1.example`));
+  const connectPaired = vi.fn(opts.connectPaired ?? (async () => `bunker://${PERSONA}?relay=wss%3A%2F%2Fhw1.example`));
   return {
-    published, subs, handshake,
+    published, subs, handshake, connectPaired,
     deps: {
       publish: async (ev, relays) => { published.push({ ev, relays }); return { ok: opts.publishOk ?? true, message: '' }; },
       subscribe: (filters, relays, onEvent) => {
@@ -47,6 +50,7 @@ function harness(opts: { publishOk?: boolean; handshake?: (...a: unknown[]) => P
         return () => { s.closed = true; };
       },
       handshake: handshake as unknown as ChildDirectPairingDeps['handshake'],
+      ...(opts.connectPaired === null ? {} : { connectPaired: connectPaired as unknown as ChildDirectPairingDeps['connectPaired'] }),
       nowS: () => NOW + 5,
     },
   };
@@ -141,12 +145,93 @@ describe('runChildDirectPairing', () => {
   });
 
   it('a signer that answers as a different pubkey fails the pairing', async () => {
-    const h = harness({ handshake: async () => { throw new Error('Bunker pubkey mismatch'); } });
+    const h = harness({ handshake: async () => { throw new BunkerPubkeyMismatchError(PERSONA, 'cd'.repeat(32)); } });
     const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000 });
     await tick();
     const req = await openChildPairRequestEvent(h.published[0].ev, railPriv, { code: offer().code, nowS: NOW + 5 });
     h.subs[0].onEvent(await buildChildPairReplyEvent({ v: 1, code: offer().code, ok: true, stage: 'full-control', personas: [] }, railPriv, req!.clientPubkey));
     await expect(p).rejects.toMatchObject({ code: 'signer' });
+    expect(h.connectPaired).not.toHaveBeenCalled();
+  });
+
+  async function replyTo(h: Harness, ok: boolean) {
+    const req = await openChildPairRequestEvent(h.published[0].ev, railPriv, { code: offer().code, nowS: NOW + 5 });
+    h.subs[0].onEvent(await buildChildPairReplyEvent(
+      ok ? { v: 1, code: offer().code, ok: true, stage: 'full-control', personas: [] } : { v: 1, code: offer().code, ok: false, reason: 'mint-failed', stage: 'full-control', personas: [] }, railPriv, req!.clientPubkey));
+  }
+  const dead = async () => { throw new Error('subscription closed before connection was established.'); };
+
+  describe('missed ACK recovery', () => {
+    it('a handshake that fails after an ok reply falls back to a bunker-client connect and returns its URI', async () => {
+      const h = harness({ handshake: dead });
+      const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000 });
+      await tick(); await replyTo(h, true);
+      const r = await p;
+      expect(r.bunkerUri).toBe(`bunker://${PERSONA}?relay=wss%3A%2F%2Fhw1.example`);
+      expect(h.connectPaired).toHaveBeenCalledTimes(1);
+      const [priv, persona, relays, timeoutMs, signal] = h.connectPaired.mock.calls[0];
+      expect(priv).toBe(r.clientKeypair.privateKey);
+      expect(persona).toBe(PERSONA);
+      expect(relays).toEqual(['wss://hw1.example', 'wss://hw2.example']);
+      expect(timeoutMs).toBeGreaterThan(0);
+      expect(timeoutMs).toBeLessThanOrEqual(5_000);
+      expect(signal).toBeInstanceOf(AbortSignal);
+    });
+    it('a fallback that answers as another identity is a real mismatch: signer', async () => {
+      const h = harness({ handshake: dead, connectPaired: async () => { throw new BunkerPubkeyMismatchError(PERSONA, 'cd'.repeat(32)); } });
+      const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000 });
+      await tick(); await replyTo(h, true);
+      await expect(p).rejects.toMatchObject({ code: 'signer' });
+    });
+    it('a fallback that also fails is device-unreachable, not signer', async () => {
+      const h = harness({ handshake: dead, connectPaired: async () => { throw new Error('Connection timed out'); } });
+      const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000 });
+      await tick(); await replyTo(h, true);
+      await expect(p).rejects.toMatchObject({ code: 'device-unreachable' });
+    });
+    it('a failed handshake with no fallback available is device-unreachable', async () => {
+      const h = harness({ handshake: dead, connectPaired: null });
+      const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000 });
+      await tick(); await replyTo(h, true);
+      await expect(p).rejects.toMatchObject({ code: 'device-unreachable' });
+    });
+    it('a refused reply never reaches the fallback', async () => {
+      const h = harness({ handshake: dead });
+      const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000 });
+      await tick(); await replyTo(h, false);
+      await expect(p).rejects.toMatchObject({ code: 'refused', reason: 'mint-failed' });
+      expect(h.connectPaired).not.toHaveBeenCalled();
+    });
+    it('an abort during the fallback cancels the run and aborts the fallback signal', async () => {
+      const h = harness({ handshake: dead, connectPaired: (async (...a: unknown[]) => new Promise<string>((_, rej) => {
+        (a[4] as AbortSignal).addEventListener('abort', () => rej(new Error('Connection cancelled')));
+      })) });
+      const ac = new AbortController();
+      const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 5_000, signal: ac.signal });
+      await tick(); await replyTo(h, true); await tick();
+      expect(h.connectPaired).toHaveBeenCalledTimes(1);
+      ac.abort();
+      await expect(p).rejects.toMatchObject({ code: 'cancelled' });
+      expect((h.connectPaired.mock.calls[0][4] as AbortSignal).aborted).toBe(true);
+      expect(h.subs[0].closed).toBe(true);
+    });
+    it('a handshake silent past the grace after an ok reply is retired and the fallback runs', async () => {
+      vi.useFakeTimers();
+      try {
+        let hsSignal: AbortSignal | undefined;
+        const h = harness({ handshake: (async (...a: unknown[]) => new Promise<string>(() => { hsSignal = a[4] as AbortSignal; })) });
+        const p = runChildDirectPairing(offer(), h.deps, { onCheckWords: () => {}, timeoutMs: 120_000 });
+        p.catch(() => {});
+        await vi.advanceTimersByTimeAsync(10);
+        await replyTo(h, true);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(h.connectPaired).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(CHILD_PAIR_ACK_GRACE_MS + 10);
+        const r = await p;
+        expect(r.bunkerUri).toContain(PERSONA);
+        expect(hsSignal?.aborted).toBe(true);
+      } finally { vi.useRealTimers(); }
+    });
   });
 
   it('abort cancels the run', async () => {

@@ -200,6 +200,7 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onResta
         : view.phase === 'sealed' ? COPY.sealed : view.phase === 'confirming' ? COPY.confirmStatus : view.phase === 'declined' ? COPY.declined : view.phase === 'expired' ? COPY.expired : view.phase === 'failed' ? COPY.failed : COPY.compare}</span>
       {waiting && <span className="handshake-wait" aria-hidden="true"><i /><i /><i /></span>}
     </div>
+    {active && view.pairingPeer && <p className="handshake-alert" role="alert">{COPY.pairingPeer}</p>}
     {active && view.nearby && <p className="field-hint">{view.nearby === 'linked' ? COPY.nearbyLinked : view.nearby === 'off' ? COPY.nearbyOff : COPY.nearbyDenied}</p>}
     {active && view.photoFailed && <div className="handshake-photo-failed">
       <p role="alert">{COPY.photoFailed}</p>
@@ -207,7 +208,6 @@ function RunningHandshake(props: Props & Pick<HandshakeHost, 'card'> & { onResta
     </div>}
     {active && view.outdated && <p role="alert">{COPY.outdated}</p>}
     {active && view.ambiguous && <p role="alert">{COPY.ambiguous}</p>}
-    {active && view.pairingPeer && <p role="alert">{COPY.pairingPeer}</p>}
     {/* A tap crossed both codes at once: there is nothing more to scan. */}
     {active && view.scanned && !view.scansConfirmed && !tapped && <p className="field-hint">{COPY.scanYours}</p>}
     {view.phase === 'waiting' && !view.scansConfirmed && <button className="btn btn-ghost" onClick={oneWay}>{COPY.oneWay}</button>}

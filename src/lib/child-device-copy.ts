@@ -136,6 +136,7 @@ export const CHILD_SIDE_COPY = {
     timeout: "Your guardian's phone did not answer in time. Nothing was set up — ask them for a new code.",
     publish: 'Could not reach the relay. Check your internet connection and try again.',
     signer: 'Your Heartwood did not connect as the right identity, so nothing was set up. Ask your guardian for a new code.',
+    deviceUnreachable: "Your Heartwood didn't answer this phone. Check it's on and online, then ask your guardian for a new code.",
     refused: {
       'check-mismatch': 'Your guardian said the words did not match, so nothing was set up. Ask them for a new code.',
       'two-requests': 'Another phone also answered this code, so nothing was set up. Ask your guardian for a new code.',

@@ -31,6 +31,7 @@ function directErrorCopy(err: unknown): string {
   if (err.code === 'timeout') return KID.errors.timeout;
   if (err.code === 'publish') return KID.errors.publish;
   if (err.code === 'signer') return KID.errors.signer;
+  if (err.code === 'device-unreachable') return KID.errors.deviceUnreachable;
   if (err.code === 'refused') return KID.errors.refused[err.reason ?? 'other'] ?? KID.errors.refused.other;
   return KID.errors.generic;
 }

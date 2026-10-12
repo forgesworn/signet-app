@@ -132,6 +132,10 @@ it('says so when a phone on a child-pairing screen is tapped', async () => {
   mocks.handshake.mockReturnValue({ view: { phase: 'reading', code: sessionCode, tapAvailable: true, pairingPeer: true }, scan: vi.fn(), oneWay: vi.fn(), confirm: vi.fn() });
   render(<ContactHandshake {...props()} />); await screen.findByTestId('live-camera');
   expect(screen.getByRole('alert')).toHaveTextContent('That phone is pairing a child’s phone, not on the Handshake screen.');
+  // Directly under the status line, in the error style, so it is seen without scrolling.
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveClass('handshake-alert');
+  expect(screen.getByRole('status').nextElementSibling).toBe(alert);
 });
 it('after a tap, says the codes crossed by tap rather than by a QR scan', async () => {
   const handshake = (view: Partial<HandshakeView>) => ({ view: { phase: 'waiting', code: sessionCode, scanned: true, via: 'tap', ...view } as HandshakeView,
