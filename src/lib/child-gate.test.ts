@@ -248,4 +248,23 @@ describe('app-permission pre-check (kind 30420: never silent, never "always")', 
   it('no cached rules: asks, without "always"', () => {
     expect(go(null)).toEqual(ASK);
   });
+  for (const stage of STAGES) {
+    it(`${stage}: a paused phone stays blocked — the pre-check never gets around a block`, () => {
+      const paused: GrantSchedule = { v: 1, tz: 'UTC', paused: true, weekly: {}, issuedAt: 1 };
+      expect(go({ ...withKind(stage), defaultSchedule: paused })).toEqual({ verdict: 'blocked', reason: 'schedule' });
+      const deny = rule({ scope: 'app-permission', target: `site:${ORIGIN}`, decision: 'deny' });
+      expect(go({ ...withKind(stage), defaultSchedule: paused, rules: [deny] })).toEqual({ verdict: 'blocked', reason: 'schedule' });
+    });
+  }
+  it('outside the allowed hours: blocked with the next allowed time; inside them: asks', () => {
+    const evening: GrantSchedule = { v: 1, tz: 'UTC', weekly: { tue: [{ start: '18:00', end: '20:00' }] }, issuedAt: 1 };
+    const v = go({ ...withKind('full-autonomy'), defaultSchedule: evening });
+    expect(v).toEqual({ verdict: 'blocked', reason: 'schedule', nextAllowedAt: Date.UTC(2026, 8, 29, 18, 0, 0) });
+    const noon: GrantSchedule = { v: 1, tz: 'UTC', weekly: { tue: [{ start: '11:00', end: '13:00' }] }, issuedAt: 1 };
+    expect(go({ ...withKind('full-autonomy'), defaultSchedule: noon })).toEqual(ASK);
+  });
+  it('the preflight still comes before the schedule', () => {
+    const paused: GrantSchedule = { v: 1, tz: 'UTC', paused: true, weekly: {}, issuedAt: 1 };
+    expect(go({ ...withKind('request-approve'), defaultSchedule: paused }, { rateState: { count: 10, windowStart: NOW } })).toEqual({ verdict: 'deny', reason: 'rate-limit' });
+  });
 });

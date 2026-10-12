@@ -146,13 +146,19 @@ export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
  * allow rule (of any scope, `*` included), not on the empty "every kind"
  * ceiling — and never offers "always". A matching deny rule (e.g. the
  * guardian's "Always deny this" on the app's origin) still refuses at once.
- * The schedule is not consulted here: the guardian decides, and a paused
- * phone's slot is locked on the Heartwood.
+ * It only removes silent signing; it never gets around a block, so the
+ * phone's schedule (paused, outside hours) is checked first.
  */
 function decideAppPermission(
   rules: ChildRulesPayload,
   q: { persona: string; nowMs: number; targets: ChildRuleTarget[] },
 ): ChildGateVerdict {
+  if (rules.defaultSchedule) {
+    const w = isWithinSchedule(rules.defaultSchedule, new Date(q.nowMs));
+    if (!w.allowed) {
+      return { verdict: 'blocked', reason: 'schedule', ...(w.nextAllowedAt ? { nextAllowedAt: w.nextAllowedAt.getTime() } : {}) };
+    }
+  }
   const deny = findRule(rules.rules.filter(r => r.decision === 'deny'), { persona: q.persona, scope: 'app-permission', targets: q.targets, nowMs: q.nowMs });
   if (deny) return { verdict: 'deny', reason: 'rule', ruleId: deny.id };
   return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
