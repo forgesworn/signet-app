@@ -41,7 +41,9 @@ describe('ApproveAppPermission — adult', () => {
   it('shows the app, its reason in its own words, My Signet\'s fixed explanation, the origin and the details', () => {
     show(adult);
     expect(screen.getByRole('heading').textContent).toBe(COPY.headingAdult('Twang Thang', 'Sky'));
-    expect(screen.getByTestId('app-permission-reason').textContent).toBe(COPY.appSays('Twang Thang shows the other players it is really you.'));
+    // M7: the reason is framed on its own under "The app says:", not run into My Signet's wording.
+    expect(screen.getByText(COPY.appSaysLabel)).toBeTruthy();
+    expect(screen.getByTestId('app-permission-reason').textContent).toBe('Twang Thang shows the other players it is really you.');
     expect(screen.getByTestId('app-permission-allows').textContent)
       .toBe(COPY.allowsAdult('Twang Thang', 'Sky', formatPermissionDate(UNTIL)));
     expect(screen.getByText(COPY.from('twang.example'))).toBeTruthy();

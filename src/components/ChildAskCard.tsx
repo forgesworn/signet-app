@@ -106,7 +106,12 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
       </div>
       {permission ? (
         <div data-testid="child-ask-app-permission" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div>{PC.appSays(permission.reason)}</div>
+          <div>
+            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>{PC.appSaysLabel}</div>
+            {/* M7: the app's own words, framed apart from My Signet's. */}
+            <div data-testid="child-ask-app-permission-reason" style={{ marginTop: 4, padding: 8, borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{permission.reason}</div>
+          </div>
           <div>
             <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>{PC.allowsTitle}</div>
             <div style={{ color: 'var(--text-primary)' }}>{PC.allows[permission.permission](clip(permission.name, 64), child, until)}</div>

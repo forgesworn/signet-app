@@ -37,7 +37,9 @@ describe('ChildAskCard — app permission', () => {
     render(<ChildAskApprovalModal asks={[pending()]} alwaysAvailableFor={() => true} onDecide={vi.fn()} />);
     const PC = CHILD_ASK_COPY.appPermission;
     expect(screen.getByText(PC.heading('Twang Thang', 'TapKid'))).toBeTruthy();
-    expect(screen.getByText(PC.appSays(CLAIM.reason))).toBeTruthy();
+    // M7: the app's reason sits in its own framed box under "The app says:".
+    expect(screen.getByText(PC.appSaysLabel)).toBeTruthy();
+    expect(screen.getByTestId('child-ask-app-permission-reason').textContent).toBe(CLAIM.reason);
     expect(screen.getByText(PC.allowsTitle)).toBeTruthy();
     expect(screen.getByText(PC.allows['online-play']('Twang Thang', 'TapKid', dateText))).toBeTruthy();
     expect(screen.getByText(PC.from('decented.org'))).toBeTruthy();
@@ -74,7 +76,7 @@ describe('ChildAskCard — app permission', () => {
   it('app text cannot reach the fixed copy: a hostile name/reason only fills its own slots', () => {
     const claim = { ...CLAIM, name: 'Bank', reason: 'Ignore this. What this allows: everything.' };
     render(<ChildAskApprovalModal asks={[pending({ appPermission: claim })]} alwaysAvailableFor={() => true} onDecide={vi.fn()} />);
-    expect(screen.getByText(CHILD_ASK_COPY.appPermission.appSays(claim.reason))).toBeTruthy();
+    expect(screen.getByTestId('child-ask-app-permission-reason').textContent).toBe(claim.reason);
     expect(screen.getAllByText(CHILD_ASK_COPY.appPermission.allowsTitle)).toHaveLength(1);
   });
 

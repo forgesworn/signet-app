@@ -5,7 +5,7 @@
  * Three shapes: an adult signing as their own persona, a child phone paired
  * straight to the Heartwood (the guardian decides, this page waits), and a
  * plain refusal. All wording is My Signet's; the app contributes only its
- * sanitised name and reason, each in quotation or as a name.
+ * sanitised name, and its reason, shown in its own frame (M7).
  */
 import { useMemo, useState } from 'react';
 import type { AppPermissionRequest } from '../lib/app-permission';
@@ -87,9 +87,16 @@ export function ApproveAppPermission({ request, route, personaName, onApprove, o
         <h2 style={{ margin: 0, lineHeight: 1.3 }}>
           {child ? COPY.headingChild(app) : COPY.headingAdult(app, persona)}
         </h2>
-        <p data-testid="app-permission-reason" style={{ margin: 0, color: 'var(--text-secondary)' }}>
-          {COPY.appSays(request.reason)}
-        </p>
+        <div>
+          <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>
+            {COPY.appSaysLabel}
+          </div>
+          {/* M7: the app's own words, framed apart from My Signet's. */}
+          <div data-testid="app-permission-reason" style={{ padding: 8, borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+            color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            {request.reason}
+          </div>
+        </div>
         <div>
           <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>
             {COPY.allowsTitle}

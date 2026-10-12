@@ -82,6 +82,29 @@ describe('parseAppPermissionRequest — accepts', () => {
   });
 });
 
+describe('name and reason: Unicode format characters too (M7)', () => {
+  const FORMAT = '\u061c\ufeff\u2060\u2061\u2062\u2063\u2064\u00ad\u180e';
+  it('strips them from name and reason, then trims', () => {
+    const r = parse({ name: `Twa${FORMAT}ng Thang ${FORMAT}`, reason: `${FORMAT} Play online` });
+    expect(r.ok && r.request.name).toBe('Twang Thang');
+    expect(r.ok && r.request.reason).toBe('Play online');
+  });
+  it('refuses a name or reason that is only format characters', () => {
+    expect(parse({ name: FORMAT })).toEqual({ ok: false, reason: 'name' });
+    expect(parse({ reason: ` ${FORMAT} ` })).toEqual({ ok: false, reason: 'reason' });
+  });
+  it('checks the length after stripping, and never cuts a long one short', () => {
+    expect(parse({ name: `${'n'.repeat(64)}${FORMAT}` }).ok).toBe(true);
+    expect(parse({ name: `${'n'.repeat(64)}\u00ad${'m'.repeat(10)}` })).toEqual({ ok: false, reason: 'name' });
+    expect(parse({ reason: `${'r'.repeat(200)}\u00ad${'s'.repeat(10)}` })).toEqual({ ok: false, reason: 'reason' });
+  });
+  it('the guardian\'s claim check strips them the same way', () => {
+    const claim = { permission: 'online-play', name: `Twang\u2060 Thang`, origin: 'https://twang.example', reason: `\ufeffTo play.` };
+    expect(checkAppPermissionClaim(claim)).toEqual({ ...claim, name: 'Twang Thang', reason: 'To play.' });
+    expect(checkAppPermissionClaim({ ...claim, name: FORMAT })).toBeNull();
+  });
+});
+
 describe('parseAppPermissionRequest — refuses', () => {
   const cases: [string, Record<string, string | null>, AppPermissionRefusal][] = [
     ['another action', { action: 'add-dependant' }, 'action'],

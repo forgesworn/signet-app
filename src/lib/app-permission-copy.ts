@@ -12,7 +12,8 @@ export const APP_PERMISSION_COPY = {
   headingAdult: (app: string, persona: string) => `${app} asks to show other players it is ${persona}`,
   /** Child: the guardian decides. */
   headingChild: (app: string) => `${app} asks: let you play online with other players`,
-  appSays: (reason: string) => `The app says: “${reason}”`,
+  /** M7: the label over the app's own reason, which is shown in its own frame. */
+  appSaysLabel: 'The app says:',
   allowsTitle: 'What this allows',
   allowsAdult: (app: string, persona: string, until: string) =>
     `Until ${until}, ${app} on this phone can prove to the other players in a game that it is ${persona}, so they will know ${persona} plays ${app}. It cannot post, message anyone or act as ${persona} anywhere else. My Signet cannot control what the app does with this proof; ${app} says it shows it only to players in a game with ${persona}.`,

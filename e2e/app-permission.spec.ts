@@ -72,7 +72,8 @@ test('adult allows: the app gets its exact template signed by the persona, seale
 
   // The page is My Signet's wording around the app's own name and reason.
   await expect(page.getByRole('heading', { name: /Twang Thang asks to show other players it is Sky/ })).toBeVisible();
-  await expect(page.getByTestId('app-permission-reason')).toContainText('The app says: “Twang Thang shows the other players in a game that it is really you.”');
+  await expect(page.getByText('The app says:')).toBeVisible();
+  await expect(page.getByTestId('app-permission-reason')).toHaveText('Twang Thang shows the other players in a game that it is really you.');
   await expect(page.getByTestId('app-permission-allows')).toContainText('It cannot post, message anyone or act as Sky anywhere else');
   await expect(page.getByText('From twang.example')).toBeVisible();
   // The link is gone from the address bar: a refresh must not ask again.

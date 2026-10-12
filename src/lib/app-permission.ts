@@ -140,12 +140,22 @@ export interface AppPermissionClaim {
 }
 
 /**
+ * Unicode format characters (General Category Cf: soft hyphen, U+061C,
+ * U+FEFF, U+2060–2064, …) and U+180E, which the shared sanitiser lets
+ * through (M7). Invisible, and some steer bidi layout: none belongs in an
+ * app's name or reason shown to a guardian.
+ */
+const FORMAT_CHARS = /[\p{Cf}\u180e]/gu;
+
+/**
  * Sanitise, then require 1..max code points. Over-long text is refused, not
- * cut: a reason cut short could read differently to the guardian.
+ * cut: a reason cut short could read differently to the guardian. The shared
+ * sanitiser runs uncapped here, so stripping the format characters after it
+ * can never let a cut-short string through; the length is counted last.
  */
 function boundedText(raw: unknown, max: number): string | null {
   if (typeof raw !== 'string') return null;
-  const clean = sanitizeDisplayName(raw, max + 1);
+  const clean = sanitizeDisplayName(raw, raw.length).replace(FORMAT_CHARS, '').trim();
   const n = Array.from(clean).length;
   return n >= 1 && n <= max ? clean : null;
 }

@@ -212,7 +212,8 @@ export const CHILD_ASK_COPY = {
    */
   appPermission: {
     heading: (app: string, child: string) => `${app} asks: let ${child} play online with other players`,
-    appSays: (reason: string) => `The app says: “${reason}”`,
+    /** M7: the label over the app's own reason, which is shown in its own frame. */
+    appSaysLabel: 'The app says:',
     allowsTitle: 'What this allows',
     allows: {
       'online-play': (app: string, child: string, until: string) =>
