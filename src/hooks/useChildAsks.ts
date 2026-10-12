@@ -75,7 +75,7 @@ export interface ChildAskHistoryEntry {
 
 export type ChildAskDecideReason =
   | 'device-unreachable' | 'ceiling-full' | 'paused' | 'expired' | 'publish-failed' | 'save-failed'
-  | 'always-unavailable' | 'already-decided' | 'not-found' | 'locked';
+  | 'always-unavailable' | 'always-app-permission' | 'already-decided' | 'not-found' | 'locked';
 
 export interface ChildAskTransport {
   publish(event: NostrEvent, relays: string[]): Promise<{ ok: boolean; message: string }>;
@@ -369,7 +369,7 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     if (stored && (stored.chosen ?? stored.verdict.verdict) !== verdict) return { sent: false, reason: 'already-decided' };
     if (!stored && verdict === 'always' && dep.autonomyStage === 'full-control') return { sent: false, reason: 'always-unavailable' };
     // D5: a standing app permission is one decision per request — never "Always", at any stage.
-    if (verdict === 'always' && ask.scope === 'app-permission') return { sent: false, reason: 'always-unavailable' };
+    if (verdict === 'always' && ask.scope === 'app-permission') return { sent: false, reason: 'always-app-permission' };
     decidingRef.current.add(id);
     try {
       const nowMs = now();

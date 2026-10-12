@@ -24,6 +24,7 @@ import type { ChildRule } from '../types/child-rules';
 import type { DependantIdentity } from '../types';
 import type { NostrEvent } from 'signet-protocol';
 import { useChildAsks, type ChildAskTransport, type UseChildAsksOpts } from './useChildAsks';
+import { CHILD_ASK_COPY } from '../lib/child-device-copy';
 
 const mListRules = vi.mocked(listChildRules), mSaveRule = vi.mocked(saveChildRule), mSaveHistory = vi.mocked(saveChildAskHistory);
 const RELAY = 'wss://rail.example.com';
@@ -476,6 +477,9 @@ describe('useChildAsks — app-permission (D5)', () => {
     expect(s.hook.result.current.asks).toHaveLength(1);
     return { ...s, a };
   }
+  it('the refusal has its own plain line, with no stage wording', () => {
+    expect(CHILD_ASK_COPY.reasons['always-app-permission']).toBe('App permissions are asked for every time.');
+  });
   const both = () => [{ kind: 30420, until: Math.floor(clock / 1000) + 600 }, { kind: 13, until: Math.floor(clock / 1000) + 600 }];
 
   for (const stage of ['request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'] as const) {
@@ -484,7 +488,7 @@ describe('useChildAsks — app-permission (D5)', () => {
       const s = await withPermissionAsk();
       let r;
       await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
-      expect(r).toEqual({ sent: false, reason: 'always-unavailable' });
+      expect(r).toEqual({ sent: false, reason: 'always-app-permission' });
       expect(mSaveRule).not.toHaveBeenCalled();
       expect(s.pushCeiling).not.toHaveBeenCalled();
       expect(t.published).toHaveLength(0);
@@ -552,7 +556,7 @@ describe('useChildAsks — app-permission (D5)', () => {
     t.deliver(await askEv(a)); await flush();
     let r;
     await act(async () => { r = await s.hook.result.current.decide(a.id, 'always'); });
-    expect(r).toEqual({ sent: false, reason: 'always-unavailable' });
+    expect(r).toEqual({ sent: false, reason: 'always-app-permission' });
     await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
     expect(s.pushCeiling).toHaveBeenCalledTimes(1);
     expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30420, until: Math.floor(clock / 1000) + 600 });

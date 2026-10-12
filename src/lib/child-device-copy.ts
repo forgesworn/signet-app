@@ -230,6 +230,7 @@ export const CHILD_ASK_COPY = {
     'publish-failed': 'Your answer has not reached their phone yet. Send it again.',
     'save-failed': 'Could not save your answer on this phone, so nothing was sent. Try again.',
     'always-unavailable': 'At this stage every request is asked for, so “Always” is not offered.',
+    'always-app-permission': 'App permissions are asked for every time.',
     'already-decided': 'This request has already been answered.',
     'not-found': 'This request is no longer waiting.',
     locked: 'Unlock to answer.',
