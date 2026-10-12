@@ -106,6 +106,8 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
       </div>
       {permission ? (
         <div data-testid="child-ask-app-permission" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {/* M8: which of the child's identities the statement binds. */}
+          <div>{COPY.as(persona)}</div>
           <div>
             <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>{PC.appSaysLabel}</div>
             {/* M7: the app's own words, framed apart from My Signet's. */}
@@ -114,7 +116,7 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
           </div>
           <div>
             <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>{PC.allowsTitle}</div>
-            <div style={{ color: 'var(--text-primary)' }}>{PC.allows[permission.permission](clip(permission.name, 64), child, until)}</div>
+            <div style={{ color: 'var(--text-primary)' }}>{PC.allows[permission.permission](clip(permission.name, 64), child, persona, until)}</div>
           </div>
           <div>
             <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{PC.from(target)}</div>

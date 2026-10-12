@@ -215,10 +215,17 @@ export const CHILD_ASK_COPY = {
     /** M7: the label over the app's own reason, which is shown in its own frame. */
     appSaysLabel: 'The app says:',
     allowsTitle: 'What this allows',
+    /**
+     * M8: `persona` is the identity the statement binds — who the other
+     * players will know. When it carries the child's own name (or none),
+     * the child's name is used throughout, as before.
+     */
     allows: {
-      'online-play': (app: string, child: string, until: string) =>
-        `Until ${until}, ${app} on ${child}’s phone can prove to the other players in a game that it is ${child}, so they will know ${child} plays ${app}. It cannot post, message anyone or act as ${child} anywhere else. My Signet cannot control what the app does with this proof; ${app} says it shows it only to players in a game with ${child}.`,
-    } as Record<string, (app: string, child: string, until: string) => string>,
+      'online-play': (app: string, child: string, persona: string, until: string) => {
+        const who = persona && persona.toLowerCase() !== child.toLowerCase() ? persona : child;
+        return `Until ${until}, ${app} on ${child}’s phone can prove to the other players in a game that it is ${who}, so they will know ${who} plays ${app}. It cannot post, message anyone or act as ${who} anywhere else. My Signet cannot control what the app does with this proof; ${app} says it shows it only to players in a game with ${who}.`;
+      },
+    } as Record<string, (app: string, child: string, persona: string, until: string) => string>,
     from: (host: string) => `From ${host}`,
     details: 'Details',
     appId: 'App id',

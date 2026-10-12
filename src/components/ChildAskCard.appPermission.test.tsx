@@ -41,9 +41,15 @@ describe('ChildAskCard — app permission', () => {
     expect(screen.getByText(PC.appSaysLabel)).toBeTruthy();
     expect(screen.getByTestId('child-ask-app-permission-reason').textContent).toBe(CLAIM.reason);
     expect(screen.getByText(PC.allowsTitle)).toBeTruthy();
-    expect(screen.getByText(PC.allows['online-play']('Twang Thang', 'TapKid', dateText))).toBeTruthy();
+    // M8: the persona the statement binds is named, and it is who the other players will know.
+    expect(screen.getByText(CHILD_ASK_COPY.as('Tap'))).toBeTruthy();
+    const allows = PC.allows['online-play']('Twang Thang', 'TapKid', 'Tap', dateText);
+    expect(screen.getByText(allows)).toBeTruthy();
+    expect(allows).toContain('so they will know Tap plays Twang Thang');
+    expect(allows).toContain('on TapKid’s phone');
+    expect(allows).not.toContain('TapKid plays');
     expect(screen.getByText(PC.from('decented.org'))).toBeTruthy();
-    // the generic heading and the persona / target lines are not used
+    // the generic heading and target line are not used
     expect(screen.queryByText(/wants to sign/)).toBeNull();
     expect(screen.queryByText(CHILD_ASK_COPY.on('decented.org'))).toBeNull();
   });
@@ -71,6 +77,15 @@ describe('ChildAskCard — app permission', () => {
     fireEvent.click(screen.getByLabelText(CHILD_ASK_COPY.alwaysDeny));
     fireEvent.click(screen.getByRole('button', { name: CHILD_ASK_COPY.deny }));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith(pending().ask.id, 'deny', { alwaysDeny: true }));
+  });
+
+  it('M8: when the persona carries the child\'s own name, the copy names them once, as before', () => {
+    const p = pending();
+    render(<ChildAskApprovalModal asks={[{ ...p, personaName: 'tapkid' }]} alwaysAvailableFor={() => true} onDecide={vi.fn()} />);
+    const PC = CHILD_ASK_COPY.appPermission;
+    expect(screen.getByText(PC.allows['online-play']('Twang Thang', 'TapKid', 'tapkid', dateText)))
+      .toBeTruthy();
+    expect(PC.allows['online-play']('Twang Thang', 'TapKid', 'tapkid', dateText)).toContain('so they will know TapKid plays Twang Thang');
   });
 
   it('app text cannot reach the fixed copy: a hostile name/reason only fills its own slots', () => {
