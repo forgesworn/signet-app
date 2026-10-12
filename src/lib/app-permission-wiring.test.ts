@@ -102,4 +102,16 @@ describe('app-permission wiring in App.tsx', () => {
     const branch = between("if (page === 'approve-app-permission' && pendingAppPermissionRequest", '// Approve third-party Add Dependant');
     expect(branch).toContain('confirmRealIdentity={appPermissionNeedsRealIdentityConfirm(appPermissionRoute, identity, requireNpConfirmation)}');
   });
+
+  it('M9: on a paired-child install, routing also waits for the paired-child record to load', () => {
+    const effect = between('// After unlock, show a pending app-permission request.', 'const handleSetupComplete = useCallback(');
+    const wait = "if (preferences.signingMode === 'paired-child' && pairedChildLoadedFor !== identity?.id) return;";
+    expect(effect).toContain(wait);
+    expect(effect.indexOf(wait)).toBeLessThan(effect.indexOf("navigateReplace('approve-app-permission')"));
+    expect(effect).toMatch(/\}, \[[^\]]*pairedChildLoadedFor[^\]]*\]\);/);
+    // The marker is set only once a load for this identity has settled, and cleared when it cannot be current.
+    const load = between('const [pairedChildClientKeypair, setPairedChildClientKeypair]', '// Child-direct Heartwood pairing');
+    expect([...load.matchAll(/setPairedChildLoadedFor\(identity\.id\)/g)]).toHaveLength(2);
+    expect([...load.matchAll(/setPairedChildLoadedFor\(null\)/g)].length).toBeGreaterThanOrEqual(3);
+  });
 });

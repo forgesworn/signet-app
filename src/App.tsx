@@ -2075,21 +2075,31 @@ export function App() {
   // addressed to the client pubkey. Cleared on lock — the privkey is
   // sensitive material.
   const [pairedChildClientKeypair, setPairedChildClientKeypair] = useState<{ publicKey: string; privateKey: string; guardianPubkey: string | null } | null>(null);
+  /**
+   * M9: the identity whose paired-child record load has settled (found or
+   * not) since the last unlock; null while it is loading or cannot be current.
+   * Anything that decides child-or-adult on a paired-child install waits for it.
+   */
+  const [pairedChildLoadedFor, setPairedChildLoadedFor] = useState<string | null>(null);
   useEffect(() => {
     if (preferences.signingMode !== 'paired-child') {
       setPairedChildClientKeypair(null);
       setPairedChildRecord(null);
+      setPairedChildLoadedFor(null);
       return;
     }
     if (!encryptionKey || !identity?.id) {
       setPairedChildClientKeypair(null);
       setPairedChildRecord(null);
+      setPairedChildLoadedFor(null);
       return;
     }
     let cancelled = false;
+    setPairedChildLoadedFor(null);
     loadPairedChild(identity.id, encryptionKey).then(record => {
       if (cancelled) return;
       setPairedChildRecord(record);
+      setPairedChildLoadedFor(identity.id);
       if (!record) {
         setPairedChildClientKeypair(null);
         return;
@@ -2104,6 +2114,7 @@ export function App() {
       if (cancelled) return;
       setPairedChildClientKeypair(null);
       setPairedChildRecord(null);
+      setPairedChildLoadedFor(identity.id);
     });
     return () => { cancelled = true; };
   }, [preferences.signingMode, encryptionKey, identity?.id, pairedChildBumpCounter]);
@@ -5613,8 +5624,11 @@ export function App() {
       return;
     }
     if (prefsLoading || identityLoading) return;
+    // M9: a paired-child phone's route also depends on its record (direct or
+    // legacy, and the child's persona): wait until it has loaded.
+    if (preferences.signingMode === 'paired-child' && pairedChildLoadedFor !== identity?.id) return;
     navigateReplace('approve-app-permission');
-  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading]);
+  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
