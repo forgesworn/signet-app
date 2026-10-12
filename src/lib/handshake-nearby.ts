@@ -274,12 +274,20 @@ export class HandshakeNearby implements DirectCarrier {
   }
   private async sendFrame(state: LinkState, id: string, frame: Uint8Array): Promise<boolean> {
     if (state.acks.has(id)) return false;
+    // Sealed here, right before the send, so counters go out in order (child-pair).
+    const wire = state.link.wire(frame);
+    if (!wire) return false;
     const receipt = new Promise<boolean>(resolve => {
       state.acks.set(id, resolve);
       this.later(this.opts.ackMs ?? 6000, () => { if (state.acks.get(id) === resolve) { state.acks.delete(id); resolve(false); } });
     });
-    try { await this.native.send({ link: state.id, data: toBase64(frame) }); }
-    catch { state.acks.get(id)?.(false); state.acks.delete(id); return false; }
+    try { await this.native.send({ link: state.id, data: toBase64(wire) }); }
+    catch {
+      state.acks.get(id)?.(false); state.acks.delete(id);
+      // A sealed frame took a counter the peer will never see: the link cannot continue.
+      if (state.link.seals) this.drop(state);
+      return false;
+    }
     return receipt;
   }
 
@@ -352,7 +360,7 @@ export class HandshakeNearby implements DirectCarrier {
       if (++state.events > MAX_EVENTS_PER_LINK || ++this.budget.events > MAX_EVENTS_PER_SESSION) { this.drop(state); return; }
       state.queue = state.queue.then(() => {
         try { this.opts.onOffer?.(step.uri); } catch { /* the frame was valid */ }
-        if (this.links.has(state.id)) this.send(state, state.link.ack(step.id, true));
+        this.sendSealedAck(state, step.id);
       });
     } else if (step.kind === 'event') {
       if (++state.events > MAX_EVENTS_PER_LINK || ++this.budget.events > MAX_EVENTS_PER_SESSION) { this.drop(state); return; }
@@ -361,7 +369,7 @@ export class HandshakeNearby implements DirectCarrier {
         // Validated by the wire: acknowledge receipt. No store semantic, nothing to bind.
         state.queue = state.queue.then(async () => {
           try { await this.opts.onEvent(event); } catch { /* the caller's problem; the frame was valid */ }
-          if (this.links.has(state.id)) this.send(state, state.link.ack(event.id, true));
+          this.sendSealedAck(state, event.id);
         });
         return;
       }
@@ -376,6 +384,13 @@ export class HandshakeNearby implements DirectCarrier {
         this.send(live, live.link.ack(event.id, receipt !== 'rejected'));
       });
     }
+  }
+  /** child-pair: acknowledge receipt; a link that cannot seal one more frame is dropped. */
+  private sendSealedAck(state: LinkState, id: string) {
+    if (!this.links.has(state.id)) return;
+    let frame: Uint8Array;
+    try { frame = state.link.ack(id, true); } catch { this.drop(state); return; }
+    this.send(state, frame);
   }
   /** Both phones can dial at once (the late dial, or a rescan), so two links
    * to one peer session may both authenticate. Keep the one the lower session

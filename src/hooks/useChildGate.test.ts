@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -55,13 +55,14 @@ function fakeTransport(publishOk = true) {
   return { t, published, subs };
 }
 
-function setup(opts: { rules?: ChildRulesPayload | null; unpaired?: boolean; publishOk?: boolean; askTimeoutMs?: number } = {}) {
+function setup(opts: { rules?: ChildRulesPayload | null; unpaired?: boolean; publishOk?: boolean; askTimeoutMs?: number; beforeStamp?: (p: string) => Promise<boolean> } = {}) {
   const tr = fakeTransport(opts.publishOk);
   const clock = { t: NOW };
   const activity: ChildActivityEntry[] = [];
   const hook = renderHook((p: { unpaired: boolean; rules: ChildRulesPayload | null }) => useChildGate({
     record: record(), rules: p.rules, relays: ['wss://rail.example'], unpaired: p.unpaired,
     onActivity: (e) => activity.push(e), transport: tr.t, now: () => clock.t, askTimeoutMs: opts.askTimeoutMs,
+    beforeStamp: opts.beforeStamp,
   }), { initialProps: { unpaired: opts.unpaired ?? false, rules: opts.rules === undefined ? rules() : opts.rules } });
   return { ...tr, activity, hook, clock };
 }
@@ -109,6 +110,57 @@ describe('useChildGate', () => {
     expect(s.activity).toEqual([]);
     await act(async () => { await signWith(out!.ok ? out!.requestCreatedAt : 0, null); });
     expect(s.activity).toEqual([expect.objectContaining({ outcome: 'signed', persona: PERSONA, kind: 1, appId: APP, requestCreatedAt: Math.floor(NOW / 1000) })]);
+  });
+
+  it('"Later": a request the gate refuses never runs the ALLOW AS probe; an allowed one runs it once, then takes its stamp', async () => {
+    const order: string[] = [];
+    const probe = vi.fn(async (p: string) => { order.push(`probe:${p}`); s.clock.t += 20_000; return true; });
+    const deny: ChildRule = { ...allowApp(), decision: 'deny' };
+    const s = setup({ rules: rules({ rules: [deny] }), beforeStamp: probe });
+    let out: Awaited<ReturnType<typeof s.hook.result.current.authorise>> | undefined;
+    await act(async () => {
+      out = await s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() });
+    });
+    expect(out).toEqual({ ok: false, error: 'denied' });
+    expect(probe).not.toHaveBeenCalled();
+
+    s.hook.rerender({ unpaired: false, rules: rules({ rules: [allowApp()] }) });
+    await act(async () => {
+      out = await s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() });
+    });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(PERSONA);
+    // The stamp is taken after the (slow) probe: the wait did not age it.
+    expect(out).toMatchObject({ ok: true, requestCreatedAt: Math.floor(NOW / 1000) + 20 });
+  });
+
+  it('"Later": a probe that fails or throws blocks an allowed request and reports nothing', async () => {
+    for (const probe of [vi.fn(async () => false), vi.fn(async () => { throw new Error('no'); })]) {
+      const s = setup({ rules: rules({ rules: [allowApp()] }), beforeStamp: probe });
+      let out: Awaited<ReturnType<typeof s.hook.result.current.authorise>> | undefined;
+      await act(async () => {
+        out = await s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() });
+      });
+      expect(out).toEqual({ ok: false, error: 'blocked' });
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(s.activity).toEqual([]);
+    }
+  });
+
+  it('"Later": a guardian-denied ask never runs the probe; an approved one does', async () => {
+    const probe = vi.fn(async () => true);
+    const s = setup({ beforeStamp: probe });
+    let p!: ReturnType<typeof s.hook.result.current.authorise>;
+    await act(async () => { p = s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() }); });
+    await waitFor(() => expect(s.published).toHaveLength(1));
+    await sendVerdict(s.subs, (await openLastAsk(s.published)).id, 'deny');
+    expect(await p).toEqual({ ok: false, error: 'denied' });
+    expect(probe).not.toHaveBeenCalled();
+    await act(async () => { p = s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note('again') }); });
+    await waitFor(() => expect(s.published).toHaveLength(2));
+    await sendVerdict(s.subs, (await openLastAsk(s.published)).id, 'once');
+    expect(await p).toMatchObject({ ok: true });
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it('A60: a Heartwood refusal after a forward is recorded as denied, never signed', async () => {

@@ -1,4 +1,6 @@
 import { hmac } from '@noble/hashes/hmac.js';
+import { hkdf } from '@noble/hashes/hkdf.js';
+import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { nip44 } from 'nostr-tools';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -30,8 +32,24 @@ const KEY_TAGS: Record<NearbyProfile, Uint8Array> = {
   'child-pair': TEXT.encode('signet:child-pair:nearby:link:v1'),
 };
 const AUTH_TAG = TEXT.encode('auth');
+/** child-pair only: every frame after AUTH is sealed (ChaCha20-Poly1305) under
+ * a per-direction key from the link key, so a relaying middle that forwarded
+ * HELLO and AUTH can neither read, alter, inject, replay nor reorder anything. */
+const FRAME_AAD_TAG = TEXT.encode('signet:child-pair:nearby:frame:v1');
+const FRAME_KEY_INFO: Record<NearbyRole, Uint8Array> = {
+  advertiser: TEXT.encode('signet:child-pair:nearby:frame:v1:adv'),
+  connector: TEXT.encode('signet:child-pair:nearby:frame:v1:conn'),
+};
+const SEAL_COUNTER_BYTES = 8, SEAL_TAG_BYTES = 16;
+/** A sealed frame's bytes beyond its plaintext body. */
+export const NEARBY_SEAL_OVERHEAD = SEAL_COUNTER_BYTES + SEAL_TAG_BYTES;
+/** Sealed frames per direction per link. The native pipe carries at most 512
+ * frames a link and a link at most 64 events, so a counter never comes close;
+ * reaching this refuses to send and drops on receive, never wraps. */
+export const NEARBY_MAX_SEALED_FRAMES = 1024;
 const ACK_TAG = TEXT.encode('ack');
 const HEX64 = /^[0-9a-f]{64}$/;
+export type NearbyRole = 'advertiser' | 'connector';
 
 export const NEARBY_TOKEN_BYTES = 8;
 export const NEARBY_NONCE_BYTES = 16;
@@ -49,7 +67,7 @@ const CHILD_PAIR_KIND = 30078;
 const HELLO = 1, AUTH = 2, EVENT = 3, ACK = 4, OFFER = 5;
 const ADVERTISER_HELLO_SIZE = 1 + NEARBY_NONCE_BYTES, CONNECTOR_HELLO_SIZE = ADVERTISER_HELLO_SIZE + 32, AUTH_SIZE = 33, ACK_SIZE = 1 + 32 + 1 + 16;
 
-export type NearbyRole = 'advertiser' | 'connector';
+
 const roleByte = (role: NearbyRole) => role === 'advertiser' ? 0x41 : 0x43;
 const other = (role: NearbyRole): NearbyRole => role === 'advertiser' ? 'connector' : 'advertiser';
 
@@ -152,17 +170,37 @@ export type NearbyStep =
   | { kind: 'ack'; id: string; stored: boolean }
   | { kind: 'drop' };
 
+function sealNonce(counter: Uint8Array): Uint8Array { return concat(new Uint8Array(4), counter); }
+function sealAad(type: number, counter: Uint8Array): Uint8Array { return concat(FRAME_AAD_TAG, Uint8Array.of(type), counter); }
+function counterBytes(n: number): Uint8Array {
+  const out = new Uint8Array(SEAL_COUNTER_BYTES);
+  new DataView(out.buffer).setBigUint64(0, BigInt(n), false);
+  return out;
+}
+
 /**
  * One link's state. Frames before authentication have fixed sizes and are
  * compared, never parsed. The first frame each way is HELLO (a nonce and the
  * sender's session key), the second AUTH; anything else, a session other than
  * the one expected, or a MAC that fails, drops the link. After both AUTHs only
- * EVENT and authenticated ACK frames are accepted.
+ * EVENT and authenticated ACK frames are accepted (and OFFER under child-pair).
+ *
+ * Under 'child-pair' every frame after AUTH is sealed:
+ * `type || counter (8 bytes BE) || ChaCha20-Poly1305(body)`, with the key for
+ * the sender's direction (HKDF-SHA256 of the link key, salt = the two HELLO
+ * nonces), nonce = 4 zero bytes || counter, AAD = tag || type || counter. Each
+ * direction counts from 0 and the receiver takes exactly the next counter, so
+ * a forged, altered, replayed, reordered or reflected frame drops the link.
+ * The 'handshake' profile's frames are unchanged: its wraps are sealed end to end.
  */
 export class NearbyLink {
   private ownNonce: Uint8Array;
   private peerNonce?: Uint8Array;
   private key?: Uint8Array;
+  private sendKey?: Uint8Array;
+  private recvKey?: Uint8Array;
+  private sendCounter = 0;
+  private recvCounter = 0;
   private expected?: string;
   private state: 'hello' | 'auth' | 'trusted' | 'dropped' = 'hello';
   /** The peer's session key: the one a connector dialled, or the one in a
@@ -176,6 +214,8 @@ export class NearbyLink {
   }
   get trusted() { return this.state === 'trusted'; }
   get dropped() { return this.state === 'dropped'; }
+  /** True when frames after AUTH are sealed (the child-pair profile). */
+  get seals() { return this.profile === 'child-pair'; }
   /** The first frame this side sends, at once. */
   hello(): Uint8Array { return nearbyHello(this.ownNonce, this.role === 'connector' ? this.session.publicKey : undefined); }
   /** The session this phone read from its peer's screen: no other may join.
@@ -192,7 +232,48 @@ export class NearbyLink {
     const [a, c] = this.nonces();
     return { kind: 'send', frame: concat(Uint8Array.of(AUTH), authMac(this.key!, this.role, a, c)) };
   }
-  private drop(): NearbyStep[] { this.state = 'dropped'; this.key?.fill(0); return [{ kind: 'drop' }]; }
+  private wipe() {
+    this.key?.fill(0); this.sendKey?.fill(0); this.recvKey?.fill(0);
+    this.key = this.sendKey = this.recvKey = undefined;
+  }
+  private drop(): NearbyStep[] { this.state = 'dropped'; this.wipe(); return [{ kind: 'drop' }]; }
+  /** child-pair: the two per-direction frame keys, once AUTH has passed. */
+  private deriveFrameKeys() {
+    const [a, c] = this.nonces();
+    const salt = concat(a, c);
+    this.sendKey = hkdf(sha256, this.key!, salt, FRAME_KEY_INFO[this.role], 32);
+    this.recvKey = hkdf(sha256, this.key!, salt, FRAME_KEY_INFO[other(this.role)], 32);
+    salt.fill(0);
+  }
+  /** Ready to put on the wire: a plaintext frame (type byte + body) as-is
+   * under 'handshake', sealed under 'child-pair'. Null when the link is not
+   * trusted, the sealed frame would not fit or the counter is spent. Call it
+   * only immediately before sending: under child-pair it takes a counter. */
+  wire(frame: Uint8Array): Uint8Array | null {
+    if (this.state !== 'trusted' || frame.length < 1) return null;
+    if (!this.seals) return frame;
+    const type = frame[0];
+    if ((type !== EVENT && type !== OFFER && type !== ACK) || !this.sendKey) return null;
+    if (frame.length + NEARBY_SEAL_OVERHEAD > NEARBY_MAX_FRAME || this.sendCounter >= NEARBY_MAX_SEALED_FRAMES) return null;
+    const counter = counterBytes(this.sendCounter);
+    const sealed = chacha20poly1305(this.sendKey, sealNonce(counter), sealAad(type, counter)).encrypt(frame.subarray(1));
+    this.sendCounter++;
+    return concat(Uint8Array.of(type), counter, sealed);
+  }
+  /** child-pair: the plaintext frame inside a sealed one, or null (drop). */
+  private open(frame: Uint8Array): Uint8Array | null {
+    if (!this.recvKey || frame.length < 1 + NEARBY_SEAL_OVERHEAD || frame.length > NEARBY_MAX_FRAME) return null;
+    const type = frame[0];
+    if (type !== EVENT && type !== OFFER && type !== ACK) return null;
+    if (this.recvCounter >= NEARBY_MAX_SEALED_FRAMES) return null;
+    const counter = frame.subarray(1, 1 + SEAL_COUNTER_BYTES);
+    if (!equal(counter, counterBytes(this.recvCounter))) return null;
+    let body: Uint8Array;
+    try { body = chacha20poly1305(this.recvKey, sealNonce(counter), sealAad(type, counter)).decrypt(frame.subarray(1 + SEAL_COUNTER_BYTES)); }
+    catch { return null; }
+    this.recvCounter++;
+    return concat(Uint8Array.of(type), body);
+  }
   receive(frame: Uint8Array): NearbyStep[] {
     if (this.state === 'dropped') return [];
     if (this.state === 'hello') {
@@ -212,8 +293,14 @@ export class NearbyLink {
       if (!this.key || frame.length !== AUTH_SIZE || frame[0] !== AUTH) return this.drop();
       const [a, c] = this.nonces();
       if (!equal(frame.subarray(1), authMac(this.key, other(this.role), a, c))) return this.drop();
+      if (this.seals) this.deriveFrameKeys();
       this.state = 'trusted';
       return [{ kind: 'trusted' }];
+    }
+    if (this.seals) {
+      const plain = this.open(frame);
+      if (!plain) return this.drop();
+      frame = plain;
     }
     if (frame[0] === EVENT) {
       const event = readNearbyEvent(frame, this.profile);
@@ -231,11 +318,15 @@ export class NearbyLink {
     }
     return this.drop();
   }
+  /** The receipt for `eventId`, ready for the wire (sealed under child-pair). */
   ack(eventId: string, stored: boolean): Uint8Array {
     if (this.state !== 'trusted' || !HEX64.test(eventId)) throw new Error('Link is not ready');
     const id = hexToBytes(eventId);
     const [a, c] = this.nonces();
-    return concat(Uint8Array.of(ACK), id, Uint8Array.of(stored ? 1 : 0), ackMac(this.key!, this.role, a, c, id, stored));
+    const frame = concat(Uint8Array.of(ACK), id, Uint8Array.of(stored ? 1 : 0), ackMac(this.key!, this.role, a, c, id, stored));
+    const out = this.wire(frame);
+    if (!out) throw new Error('Link is not ready');
+    return out;
   }
-  close() { this.state = 'dropped'; this.key?.fill(0); }
+  close() { this.state = 'dropped'; this.wipe(); }
 }

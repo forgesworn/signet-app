@@ -131,6 +131,14 @@ export interface UseChildGateOpts {
   now?: () => number;
   /** Test seam: how long an ask is held (default the ask TTL). */
   askTimeoutMs?: number;
+  /**
+   * Run once the gate has allowed a request (signed, or an ask approved) and
+   * BEFORE its request stamp is reserved: a deferred ("Later") persona's
+   * ALLOW AS probe. A refused request never reaches it, and the stamp is taken
+   * after it, so waiting on the device button never ages a stamp or lets a
+   * later request's stamp go out first (A58). False ⇒ `blocked`.
+   */
+  beforeStamp?(persona: string): Promise<boolean>;
 }
 
 export interface PendingChildGateAsk { id: string; targetLabel: string; since: number }
@@ -179,6 +187,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   const nowRef = useRef(opts.now ?? (() => Date.now()));
   nowRef.current = opts.now ?? (() => Date.now());
   const askTimeoutMs = opts.askTimeoutMs ?? CHILD_SIGN_ASK_TTL_S * 1000;
+  const beforeStampRef = useRef(opts.beforeStamp);
+  beforeStampRef.current = opts.beforeStamp;
 
   const rateRef = useRef<RateLimitState>({ count: 0, windowStart: 0 });
   const held = useRef(new Map<string, Held>());
@@ -265,6 +275,11 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     rateRef.current = checkRateLimit(rateRef.current, nowMs).newState;
 
     const forward = async (outcome: 'signed' | 'approved', target?: string): Promise<ChildGateOutcome> => {
+      const probe = beforeStampRef.current;
+      let probed = true;
+      if (probe) { try { probed = await probe(persona); } catch { probed = false; } }
+      // As before the reorder: a refused probe is not a gate decision, so nothing is reported.
+      if (!probed) return { ok: false, error: 'blocked' };
       const requestCreatedAt = await reserveRequestCreatedAt(persona, { now: () => nowRef.current() });
       const t = nowRef.current();
       for (const [k, v] of pendingReports.current) if (t - v.addedAt > PENDING_REPORT_TTL_MS) pendingReports.current.delete(k);

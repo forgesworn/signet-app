@@ -6,7 +6,7 @@ import { createHandshakeSession } from './handshake-reveal';
 type Handlers = Parameters<NearbyNative['listen']>[0];
 /** Two phones' native pipes joined by an in-memory radio; frames cross
  * asynchronously and in order, like an L2CAP stream. */
-function radio() {
+function radio(middle?: (bytes: Uint8Array) => Uint8Array[]) {
   const adverts = new Map<string, Phone>();
   let next = 0;
   class Phone implements NearbyNative {
@@ -28,7 +28,9 @@ function radio() {
     async send({ link, data }: { link: string; data: string }) {
       const route = this.links.get(link);
       if (!route) throw new Error('closed');
-      setTimeout(() => route.peer.handlers?.frame({ link: route.id, data }), 0);
+      // A frame-rewriting middle: what it returns is what arrives (nothing, a changed frame, extras).
+      const out = middle ? middle(Uint8Array.from(atob(data), ch => ch.charCodeAt(0))).map(b => btoa(String.fromCharCode(...b))) : [data];
+      for (const d of out) setTimeout(() => route.peer.handlers?.frame({ link: route.id, data: d }), 0);
     }
     async trust() {}
     async close({ link }: { link: string }) {
@@ -83,6 +85,50 @@ describe('ChildPairLink', () => {
     expect(g.states.at(-1)).toEqual(['closed', undefined]);
     expect(g.link.linked).toBe(false);
     expect(await g.link.sendOffer(URI)).toBe(false);
+  });
+
+  it('a relaying middle cannot read, swap, inject or replay a post-AUTH frame; any tampering closes the link', async () => {
+    const OFFER = 5, EVENT = 3;
+    const plainEvent = (ev: object) => Uint8Array.of(EVENT, ...new TextEncoder().encode(JSON.stringify(ev)));
+    const attacks: Array<{ name: string; rewrite: (b: Uint8Array) => Uint8Array[] }> = [
+      { name: 'flip a bit in the offer', rewrite: b => b[0] === OFFER ? [Uint8Array.from(b, (x, i) => i === b.length - 3 ? x ^ 1 : x)] : [b] },
+      { name: 'swap the offer for a plaintext one', rewrite: b => b[0] === OFFER ? [Uint8Array.of(OFFER, ...new TextEncoder().encode('signet-child:attacker'))] : [b] },
+      { name: 'replay the offer', rewrite: b => b[0] === OFFER ? [b, b] : [b] },
+      { name: 'swap the child request for an injected one', rewrite: b => b[0] === EVENT ? [plainEvent(pairing('9'))] : [b] },
+      { name: 'swallow the offer, pass the rest', rewrite: b => b[0] === OFFER ? [] : [b] },
+    ];
+    for (const attack of attacks) {
+      resetScanThrottleForTests();
+      const seen: Uint8Array[] = [];
+      const air = radio(b => { seen.push(b); return attack.rewrite(b); });
+      const gs = createHandshakeSession(), cs = createHandshakeSession();
+      const g = end(gs, cs.publicKey, air.phone()), c = end(cs, gs.publicKey, air.phone());
+      await Promise.all([g.link.open(false), c.link.open(false)]);
+      await waitFor(() => g.link.linked && c.link.linked);
+      const offering = g.link.sendOffer(URI);
+      if (attack.name.startsWith('swallow')) {
+        // The child's next frame is fine; the guardian's ACK for it shows the gap.
+        await c.link.sendEvent(pairing('1'));
+        expect(await offering).toBe(false);
+      } else if (!attack.name.startsWith('swap the child')) {
+        await offering;
+        await c.link.sendEvent(pairing('1')).catch(() => false);
+      } else {
+        expect(await offering).toBe(true);
+        expect(await c.link.sendEvent(pairing('1'))).toBe(false);
+      }
+      await new Promise(r => setTimeout(r, 30));
+      // Nothing the middle made up or changed was ever delivered...
+      expect(c.offers.filter(u => u !== URI), attack.name).toEqual([]);
+      expect(c.offers.length, attack.name).toBeLessThanOrEqual(1);
+      expect(g.events.filter(e => (e as { id: string }).id !== '1'.repeat(64)), attack.name).toEqual([]);
+      // ...the link it touched is gone...
+      expect(g.link.linked && c.link.linked, attack.name).toBe(false);
+      // ...and the offer never crossed in clear.
+      const clear = new TextEncoder().encode('abc123');
+      expect(seen.some(b => Buffer.from(b).includes(Buffer.from(clear))), attack.name).toBe(false);
+      g.link.close(); c.link.close();
+    }
   });
 
   it('refuses an offer that is not a signet-child: URI without sending anything', async () => {

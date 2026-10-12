@@ -2118,21 +2118,14 @@ export function App() {
     relays: pairedChildRecord?.railRelay ? [pairedChildRecord.railRelay] : [],
     unpaired: childDeviceLink.unpaired,
     onActivity: (e) => childActivitySinkRef.current(e),
+    // A deferred persona ("Later") is approved on the Heartwood the first time
+    // a request is routed as it. The gate decides first (A39): only a request
+    // it allows runs the ALLOW AS probe, and the request stamp is taken after
+    // the probe, so the wait never ages it.
+    beforeStamp: childDeviceLink.ensureApproved,
   });
-  // A deferred persona ("Later") is approved on the Heartwood the first time a
-  // request is routed as it. The approval probe runs BEFORE the gate (so the
-  // gate's forced request stamp is not aged by the wait) and the gate still
-  // decides every request (A39).
-  const childEnsureApprovedRef = useRef(childDeviceLink.ensureApproved);
-  childEnsureApprovedRef.current = childDeviceLink.ensureApproved;
   const childGateRef = useRef(childGate);
-  childGateRef.current = {
-    ...childGate,
-    authorise: async (req) => {
-      if (req.persona && !(await childEnsureApprovedRef.current(req.persona))) return { ok: false, error: 'blocked' };
-      return childGate.authorise(req);
-    },
-  };
+  childGateRef.current = childGate;
   // Child → guardian rails (spec §9.1, §9.2): every gate decision, and the
   // connected-apps record, on the rail relay.
   const childActivityPublisher = useChildActivityPublisher({
