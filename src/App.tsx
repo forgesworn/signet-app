@@ -862,6 +862,9 @@ export function App() {
   needRefreshRef.current = needRefresh;
 
   const [page, setPage] = useState<Page>('home');
+  /** The page on screen, for callbacks that must not navigate away from somewhere else (M11). */
+  const pageRef = useRef<Page>(page);
+  pageRef.current = page;
   handshakeForegroundRef.current = page === 'contact-handshake' && !!encryptionKey;
   // Refs threaded into useNavigation so hardware/browser back can be PIN-gated
   // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
@@ -8843,8 +8846,12 @@ export function App() {
   const declineAppPermission = useCallback((req: AppPermissionRequest) => {
     appPermissionMarksRef.current.set(req, 'answered');
     const refusal = new LocalSigningBackend(generateBunkerClientSecret());
-    setRelayAuthAckState({ status: 'denied', siteName: req.name, variant: 'app-permission' });
-    navigateReplace('relay-auth-ack');
+    // M11: a guardian's Deny can land while the person is elsewhere: the
+    // "Declined" screen replaces only the app-permission page itself.
+    if (pageRef.current === 'approve-app-permission') {
+      setRelayAuthAckState({ status: 'denied', siteName: req.name, variant: 'app-permission' });
+      navigateReplace('relay-auth-ack');
+    }
     setPendingAppPermissionRequest(null);
     // Declining must work offline and while locked: the screen above does not
     // wait for the network, and a lost answer is covered by the app's timeout.

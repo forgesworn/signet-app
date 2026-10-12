@@ -114,4 +114,19 @@ describe('app-permission wiring in App.tsx', () => {
     expect([...load.matchAll(/setPairedChildLoadedFor\(identity\.id\)/g)]).toHaveLength(2);
     expect([...load.matchAll(/setPairedChildLoadedFor\(null\)/g)].length).toBeGreaterThanOrEqual(3);
   });
+
+  it('M11: a decline shows the ack only when the app-permission page is on screen; elsewhere it is silent', () => {
+    const decline = between('const declineAppPermission = useCallback(', 'const handleCancelAppPermission = useCallback(');
+    const guard = decline.indexOf("if (pageRef.current === 'approve-app-permission') {");
+    expect(guard).toBeGreaterThan(-1);
+    const shown = decline.slice(guard, decline.indexOf('\n    }\n', guard));
+    expect(shown).toContain('setRelayAuthAckState(');
+    expect(shown).toContain("navigateReplace('relay-auth-ack')");
+    expect([...decline.matchAll(/navigateReplace\(/g)]).toHaveLength(1);
+    expect([...decline.matchAll(/setRelayAuthAckState\(/g)]).toHaveLength(1);
+    // the answer still goes out, and the request is still retired
+    expect(decline).toContain('setPendingAppPermissionRequest(null)');
+    expect(decline).toContain('giftWrap(rumor, req.sessionPubkey, refusal)');
+    expect(app).toContain('const pageRef = useRef<Page>(page);');
+  });
 });
