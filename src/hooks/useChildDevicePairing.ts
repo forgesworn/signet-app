@@ -49,13 +49,18 @@ import {
 } from '../lib/child-device-pairing';
 import { withOperatorLock } from '../lib/operator-lock';
 import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
+import { tapPairingTransport, type ChildPairTapOptions } from '../lib/child-pair-tap';
+import { useChildPairNearby, type UseChildPairNearby } from './useChildPairNearby';
+
+/** How the offer reaches the child: a QR code over the relay, or an NFC tap then a Bluetooth link. */
+export type PairVia = 'tap' | 'qr';
 
 export type ChildPairingState =
   | { phase: 'idle' }
   | { phase: 'checking' }
   | { phase: 'blocked'; reason: PairBlockReason; labels?: string[] }
-  | { phase: 'offer'; uri: string; expiresAt: number }
-  | { phase: 'confirm'; words: string[]; clientPubkey: string; expiresAt: number }
+  | { phase: 'offer'; uri: string; expiresAt: number; via: PairVia }
+  | { phase: 'confirm'; words: string[]; clientPubkey: string; expiresAt: number; via: PairVia }
   | { phase: 'minting' }
   | { phase: 'paired'; clientPubkey: string; warning?: string }
   | { phase: 'aborted'; reason: 'mismatch' | 'two-requests' }
@@ -96,11 +101,16 @@ export interface UseChildDevicePairingOpts {
   clearChildDevice?(id: string): Promise<void>;
   transport?: PairingTransport;
   now?: () => number;
+  /** Tap mode's radios (NFC, Bluetooth, keep-awake); tests inject fakes. */
+  nearby?: ChildPairTapOptions;
 }
 
 export interface UseChildDevicePairing {
   state: ChildPairingState;
-  start(): void;
+  /** `via` defaults to the QR + relay path; `'tap'` carries the offer and request over NFC + Bluetooth instead. */
+  start(via?: PairVia): void;
+  /** Tap-mode radios: `available`/`reason` (probe first, lead with tap or fall back to QR), `secondPhone`, `wrongScreen`. */
+  nearby: UseChildPairNearby;
   cancel(): void;
   confirmMatch(): Promise<void>;
   rejectMatch(): void;
@@ -123,6 +133,13 @@ interface Session {
   used: boolean;
   unsub: (() => void) | null;
   timer: ReturnType<typeof setTimeout> | null;
+  via: PairVia;
+  /** Where this attempt's request is heard and its replies go (the link with a relay fallback in tap mode). */
+  tx: PairingTransport;
+  /** The tap attempt to end when this one is over (0 in QR mode). */
+  tapAttempt: number;
+  /** Replies still in flight: the link stays up until they settle. */
+  pending: Promise<unknown>[];
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -142,6 +159,9 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
   const genRef = useRef(0);
   const sessionRef = useRef<Session | null>(null);
   const mountedRef = useRef(true);
+  const nearby = useChildPairNearby(opts.nearby);
+  const nearbyRef = useRef(nearby);
+  nearbyRef.current = nearby;
 
   const setState = useCallback((gen: number, s: ChildPairingState) => {
     if (!mountedRef.current || genRef.current !== gen) return;
@@ -157,9 +177,19 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     if (s.timer) { clearTimeout(s.timer); s.timer = null; }
   };
 
+  /** End the tap attempt (link, NFC, keep-awake) once nothing is still being sent over it. */
+  const endTap = async (s: Session) => {
+    if (s.via !== 'tap') return;
+    await Promise.allSettled(s.pending);
+    nearbyRef.current.tap.end(s.tapAttempt);
+  };
+
   const teardown = useCallback(() => {
-    stopListening(sessionRef.current);
+    const s = sessionRef.current;
+    stopListening(s);
     sessionRef.current = null;
+    // Cancel, restart or unmount: the tap attempt goes too, whatever the ceremony was doing.
+    nearbyRef.current.tap.end();
   }, []);
 
   useEffect(() => {
@@ -172,9 +202,15 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     for (const client of clientPubkeys) {
       try {
         const ev = await buildChildPairReplyEvent({ v: 1, code: s.code, ok: false, reason, personas: [], stage: s.dep.autonomyStage }, s.railPriv, client);
-        await transport().publish(ev, [s.railRelay]);
+        await s.tx.publish(ev, [s.railRelay]);
       } catch { /* best effort */ }
     }
+  };
+  /** A failure reply that the tap link waits for before it closes. */
+  const failReply = (s: Session, clientPubkeys: string[], reason: string) => {
+    const sent = replyFailure(s, clientPubkeys, reason);
+    s.pending.push(sent);
+    return sent;
   };
 
   const onRequestEvent = async (gen: number, ev: NostrEvent) => {
@@ -186,7 +222,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     if (!s.request) {
       s.request = req;
       s.authors.add(req.clientPubkey);
-      setState(gen, { phase: 'confirm', words: pairCheckWords(s.code, req.clientPubkey), clientPubkey: req.clientPubkey, expiresAt: s.expiresAtMs });
+      setState(gen, { phase: 'confirm', words: pairCheckWords(s.code, req.clientPubkey), clientPubkey: req.clientPubkey, expiresAt: s.expiresAtMs, via: s.via });
       return;
     }
     if (req.clientPubkey === s.request.clientPubkey) return; // the same phone again
@@ -196,10 +232,12 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     stopListening(s);
     sessionRef.current = null;
     setState(gen, { phase: 'aborted', reason: 'two-requests' });
-    await replyFailure(s, [...s.authors], 'two-requests');
+    await failReply(s, [...s.authors], 'two-requests');
+    await endTap(s);
   };
 
-  const start = useCallback(() => {
+  const start = useCallback((viaArg?: PairVia) => {
+    const via: PairVia = viaArg === 'tap' ? 'tap' : 'qr';
     const gen = ++genRef.current;
     teardown();
     setState(gen, { phase: 'checking' });
@@ -256,24 +294,46 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
         uri = buildChildPairUri({ v: 2, rail: working.bunkerEndpoint!.publicKey, guardian: o.guardianNpPubkey, dependant: dep.id,
           persona, name: dep.displayName, relay: o.railRelay, hwRelays, code, t });
       } catch { setState(gen, { phase: 'error', message: COPY.errors.generic }); return; }
+      const relayTx: PairingTransport = { publish: (ev, relays) => transport().publish(ev, relays), subscribe: (f, r, cb) => transport().subscribe(f, r, cb) };
       const session: Session = {
         gen, code, expiresAtMs, railPub: working.bunkerEndpoint!.publicKey, railPriv: working.bunkerEndpoint!.privateKey,
         persona, label: childDirectSlotLabel(dep.id.toLowerCase()), dep: working, hwRelays, railRelay: o.railRelay,
         request: null, authors: new Set(), used: false, unsub: null, timer: null,
+        via, tapAttempt: 0, pending: [],
+        // Tap mode: requests come off the link only (no relay subscription), replies go over the link with a relay fallback.
+        tx: via === 'tap' ? tapPairingTransport(nearbyRef.current.tap, { publish: (ev, relays) => transport().publish(ev, relays) }) : relayTx,
       };
       sessionRef.current = session;
-      session.unsub = transport().subscribe(
-        [{ kinds: [30078], '#p': [session.railPub], '#d': [pairRequestDTag(code)], since: t - 60 }],
-        [o.railRelay],
-        (ev) => { void onRequestEvent(gen, ev); },
-      );
+      const listen = () => {
+        session.unsub = session.tx.subscribe(
+          [{ kinds: [30078], '#p': [session.railPub], '#d': [pairRequestDTag(code)], since: t - 60 }],
+          [o.railRelay],
+          (ev) => { void onRequestEvent(gen, ev); },
+        );
+      };
+      listen();
+      if (via === 'tap') {
+        // The offer is the same string the QR would show; it goes to the tapped phone once linked.
+        const armed = await nearbyRef.current.tap.begin({ offerUri: uri });
+        if (genRef.current !== gen || sessionRef.current !== session) return;
+        if (armed) {
+          session.tapAttempt = nearbyRef.current.tap.attempt;
+        } else {
+          // The radios could not be used (the reason is on `nearby`): carry on as the QR + relay pairing.
+          stopListening(session);
+          session.via = 'qr';
+          session.tx = relayTx;
+          listen();
+        }
+      }
       session.timer = setTimeout(() => {
         if (sessionRef.current !== session || session.used) return;
         stopListening(session);
         sessionRef.current = null;
         setState(gen, { phase: 'expired' });
+        void endTap(session);
       }, expiresAtMs - offerMs);
-      setState(gen, { phase: 'offer', uri, expiresAt: expiresAtMs });
+      setState(gen, { phase: 'offer', uri, expiresAt: expiresAtMs, via: session.via });
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teardown, setState]);
@@ -291,13 +351,12 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     stopListening(s);
     sessionRef.current = null;
     setState(s.gen, { phase: 'aborted', reason: 'mismatch' });
-    void replyFailure(s, [...s.authors], 'check-mismatch');
+    void failReply(s, [...s.authors], 'check-mismatch').then(() => endTap(s));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setState]);
 
-  const confirmMatch = useCallback(async () => {
-    const s = sessionRef.current;
-    if (!s || !s.request || s.used) return;
+  const confirmInner = useCallback(async (s: Session) => {
+    if (!s.request || s.used) return;
     const gen = s.gen;
     // A9: burn the code BEFORE anything is minted; expiry is our own offer time.
     s.used = true;
@@ -308,7 +367,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     // nostrconnect handshake would be stale by the time the device answers).
     if (Math.floor(now() / 1000) - s.request.createdAt > PAIR_REQUEST_MAX_AGE_S) {
       setState(gen, { phase: 'error', message: COPY.errors.stale });
-      void replyFailure(s, [s.request.clientPubkey], 'stale');
+      void failReply(s, [s.request.clientPubkey], 'stale');
       return;
     }
     const o = optsRef.current;
@@ -334,12 +393,12 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       const before = await listClients(op);
       if (clientKeyInUse(before, req.clientPubkey)) {
         setState(gen, { phase: 'error', message: COPY.errors.clientReused });
-        void replyFailure(s, [req.clientPubkey], 'client-reused');
+        void failReply(s, [req.clientPubkey], 'client-reused');
         return;
       }
     } catch {
       setState(gen, { phase: 'blocked', reason: 'offline' });
-      void replyFailure(s, [req.clientPubkey], 'mint-failed');
+      void failReply(s, [req.clientPubkey], 'mint-failed');
       return;
     }
 
@@ -396,7 +455,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
           }
         } catch { clean = false; }
         setState(gen, { phase: 'error', message: clean ? COPY.errors.mint : COPY.errors.mintUnconfirmed });
-        void replyFailure(s, [req.clientPubkey], 'mint-failed');
+        void failReply(s, [req.clientPubkey], 'mint-failed');
         return null;
       }
 
@@ -413,7 +472,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       if (!slots || !verified) {
         const ok = await revokeMinted();
         setState(gen, { phase: 'error', message: ok ? COPY.errors.verify : COPY.errors.mintUnconfirmed });
-        void replyFailure(s, [req.clientPubkey], 'verify-failed');
+        void failReply(s, [req.clientPubkey], 'verify-failed');
         return null;
       }
 
@@ -433,7 +492,7 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
       } catch {
         const ok = await revokeMinted();
         setState(gen, { phase: 'error', message: ok ? COPY.errors.save : COPY.errors.mintUnconfirmed });
-        void replyFailure(s, [req.clientPubkey], 'save-failed');
+        void failReply(s, [req.clientPubkey], 'save-failed');
         return null;
       }
 
@@ -451,12 +510,19 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     try {
       const reply = await buildChildPairReplyEvent({ v: 1, code: s.code, ok: true, personas: replyPersonas(dep), stage: dep.autonomyStage },
         s.railPriv, req.clientPubkey);
-      await transport().publish(reply, [s.railRelay]);
+      await s.tx.publish(reply, [s.railRelay]);
     } catch { /* the child retries its fetch; the slot is live either way */ }
 
     setState(gen, { phase: 'paired', clientPubkey: req.clientPubkey, ...(warning ? { warning } : {}) });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setState]);
+
+  const confirmMatch = useCallback(async () => {
+    const s = sessionRef.current;
+    if (!s || !s.request || s.used) return;
+    try { await confirmInner(s); } finally { await endTap(s); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmInner]);
 
   const unpair = useCallback(async () => {
     const o = optsRef.current;
@@ -491,5 +557,5 @@ export function useChildDevicePairing(opts: UseChildDevicePairingOpts): UseChild
     setState(gen, { phase: 'idle' });
   }, [teardown, setState]);
 
-  return { state, start, cancel, confirmMatch, rejectMatch, unpair };
+  return { state, start, nearby, cancel, confirmMatch, rejectMatch, unpair };
 }

@@ -7,6 +7,14 @@ import { isNativeApp, SignetNative } from './native';
  * read. The codes carry no persona; everything after a tap is the same sealed
  * reveal and SDK exchange as after a camera read.
  */
+/** The NFC code prefix a child-pairing screen offers (child-pair-nfc.ts). The wire is shared; this screen never acts on it. */
+export const CHILD_PAIR_NFC_PREFIX = 'SCP1:';
+
+export interface HandshakeNfcStartOptions {
+  /** A phone on a child-pairing screen touched this one. Its code is dropped (never passed to `onPeer`);
+   * the screen may use this to say "That phone is pairing a child's phone, not on the Handshake screen". */
+  onPairingPeer?: () => void;
+}
 export interface HandshakeNfcHandle {
   /** The session is over (tap crossed, sealed, declined, failed, expired): stop
    * offering the code and stop reacting to tags, but keep reader mode on as a
@@ -19,15 +27,21 @@ export interface HandshakeNfcHandle {
 export interface HandshakeNfc {
   status(): Promise<{ supported: boolean; enabled: boolean }>;
   /** Resolves with the handle. Starting again re-keys the running session. */
-  start(code: string, onPeer: (code: string) => void): Promise<HandshakeNfcHandle>;
+  start(code: string, onPeer: (code: string) => void, options?: HandshakeNfcStartOptions): Promise<HandshakeNfcHandle>;
 }
 
 export function nativeNfc(): HandshakeNfc | null {
   if (!isNativeApp()) return null;
   return {
     status: () => SignetNative.nfcStatus(),
-    async start(code, onPeer) {
-      const sub = await SignetNative.addListener('nfcPeer', e => { if (typeof e.code === 'string') onPeer(e.code); });
+    async start(code, onPeer, options) {
+      // Only a Handshake screen (own code not SCP1) drops a pairing phone's code; a pairing screen gets every raw peer code.
+      const pairing = code.startsWith(CHILD_PAIR_NFC_PREFIX);
+      const sub = await SignetNative.addListener('nfcPeer', e => { 
+        if (typeof e.code !== 'string') return;
+        if (!pairing && e.code.startsWith(CHILD_PAIR_NFC_PREFIX)) { options?.onPairingPeer?.(); return; }
+        onPeer(e.code);
+      });
       let session: number;
       try { session = (await SignetNative.nfcStart({ code })).session; } catch (error) { void sub.remove(); throw error; }
       let removed = false, quieted = false, stopped = false;

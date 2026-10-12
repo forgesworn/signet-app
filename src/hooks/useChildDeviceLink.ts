@@ -13,6 +13,14 @@
  *             at a time, once per persona that has no recorded state, after
  *             the router is up — and again when a new persona appears.
  *             A failed persona waits for `retryApproval`.
+ *             "Later" (`deferApproval`): a persona may be put off. The choice is
+ *             stored on the paired-child record (`identityApprovals`, so it
+ *             survives a restart) and the ceremony counts as finished once every
+ *             persona is approved or deferred. A deferred persona is approved
+ *             on first use: `ensureApproved(persona)` runs the same single
+ *             self-probe (ALLOW AS on the Heartwood) before the request is
+ *             routed, and the request proceeds only if it succeeds. "Approve
+ *             now" is `retryApproval`.
  *
  *   unpaired  (spec §9.4, Review Focus 5) set by the guardian's
  *             `signet:child-unpaired:v1` notice (authored by the rail key,
@@ -42,7 +50,7 @@ import { subscribeEvents } from '../lib/relay-service';
 
 export const APPROVE_IDENTITY_PLAINTEXT = 'signet:approve-identity:v1';
 
-type Approval = 'approved' | 'waiting' | 'failed';
+type Approval = 'approved' | 'waiting' | 'failed' | 'deferred';
 
 export interface ChildLinkTransport {
   subscribe(filters: NostrFilter[], relays: string[], onEvent: (ev: NostrEvent) => void): () => void;
@@ -66,7 +74,18 @@ export interface UseChildDeviceLinkOpts {
 export interface ChildDeviceLink {
   rules: ChildRulesPayload | null;
   personas: { pubkey: string; name: string; approval: Approval }[];
+  /** Also "Approve now" for a deferred persona. */
   retryApproval(persona: string): Promise<void>;
+  /** Put a pending persona off ("Later"); it is approved when first needed. */
+  deferApproval(persona: string): void;
+  /**
+   * Resolves true when `persona` may be routed to the Heartwood: it is not
+   * deferred, or its approval probe just succeeded. Awaits a probe already in
+   * flight for that persona. Never skips `childGate`; callers run it first.
+   */
+  ensureApproved(persona: string): Promise<boolean>;
+  /** Every persona is approved or deferred. */
+  ceremonyFinished: boolean;
   /** Set by the unpaired signal (Task 12). */
   unpaired: boolean;
 }
@@ -190,6 +209,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const approvalsRef = useRef<Record<string, Approval>>({});
   const attempted = useRef(new Set<string>());
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const inflight = useRef(new Map<string, Promise<boolean>>());
   const recordKey = direct ? `${direct.id}:${clientPub}` : '';
 
   useEffect(() => {
@@ -197,6 +217,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     approvalsRef.current = initial;
     setApprovals(initial);
     attempted.current = new Set();
+    inflight.current = new Map();
   }, [recordKey]);
 
   const allowedKey = rules?.personas ? rules.personas.join(',') : '*';
@@ -221,21 +242,29 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     if (rec && state !== 'waiting') void onUpdatedRef.current({ ...rec, identityApprovals: next }).catch(() => { /* re-run next start */ });
   }, []);
 
-  const approve = useCallback((persona: string): Promise<void> => {
-    const run = queue.current.then(async () => {
+  /** `force` is an explicit "Approve now" / first use: it overrides a deferral. */
+  const approve = useCallback((persona: string, force = false): Promise<boolean> => {
+    const run = queue.current.then(async (): Promise<boolean> => {
+      if (!force && approvalsRef.current[persona] === 'deferred') return false;
       const r = routerRef.current;
       const current = !!r && r.primaryClientPubkeyHex === recordRef.current?.clientKeypair.publicKey;
       const backend = current ? r.backendFor(persona) : null;
-      if (!backend) { setApproval(persona, 'failed'); return; }
+      if (!backend) { setApproval(persona, 'failed'); return false; }
       setApproval(persona, 'waiting');
       try {
         await backend.nip44Encrypt(persona, APPROVE_IDENTITY_PLAINTEXT);
         setApproval(persona, 'approved');
+        return true;
       } catch {
+        // "Later" pressed while the probe was in flight: keep the deferral.
+        if (!force && approvalsRef.current[persona] === 'deferred') return false;
         setApproval(persona, 'failed');
+        return false;
       }
     });
-    queue.current = run.catch(() => { /* keep the chain alive */ });
+    queue.current = run.then(() => {}, () => {});
+    inflight.current.set(persona, run);
+    void run.then(() => { if (inflight.current.get(persona) === run) inflight.current.delete(persona); });
     return run;
   }, [setApproval]);
 
@@ -248,7 +277,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     for (const { pubkey } of candidates) {
       if (pubkey === bound || attempted.current.has(pubkey)) continue;
       const state = approvalsRef.current[pubkey];
-      if (state === 'approved' || state === 'failed') continue;
+      if (state === 'approved' || state === 'failed' || state === 'deferred') continue;
       attempted.current.add(pubkey);
       void approve(pubkey);
     }
@@ -262,12 +291,31 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     if (!HEX64.test(persona) || persona === bound) return;
     if (!candidatesRef.current.some(c => c.pubkey === persona)) return;
     attempted.current.add(persona);
-    await approve(persona);
+    await approve(persona, true);
   }, [approve, bound]);
+
+  const deferApproval = useCallback((persona: string) => {
+    if (!HEX64.test(persona) || persona === bound) return;
+    if (!candidatesRef.current.some(c => c.pubkey === persona)) return;
+    if (approvalsRef.current[persona] === 'approved') return;
+    attempted.current.add(persona);
+    setApproval(persona, 'deferred');
+  }, [bound, setApproval]);
+
+  const ensureApproved = useCallback((persona: string): Promise<boolean> => {
+    const p = (persona ?? '').toLowerCase();
+    const running = inflight.current.get(p);
+    if (running) return running;
+    if (approvalsRef.current[p] !== 'deferred') return Promise.resolve(true);
+    attempted.current.add(p);
+    return approve(p, true);
+  }, [approve]);
 
   const personas = useMemo(() => candidates.map(({ pubkey, name }) => ({
     pubkey, name, approval: (pubkey === bound ? 'approved' : approvals[pubkey] ?? 'waiting') as Approval,
   })), [candidates, approvals, bound]);
 
-  return { rules, personas, retryApproval, unpaired };
+  const ceremonyFinished = personas.every(p => p.approval === 'approved' || p.approval === 'deferred');
+
+  return { rules, personas, retryApproval, deferApproval, ensureApproved, ceremonyFinished, unpaired };
 }

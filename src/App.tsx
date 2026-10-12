@@ -167,7 +167,7 @@ import { ImportDependant } from './pages/ImportDependant';
 import { OnboardingApp } from './pages/OnboardingApp';
 import { Onboarding } from './pages/Onboarding';
 import { PairChildOnboarding, type DirectPairControl } from './pages/PairChildOnboarding';
-import { runChildDirectPairing, pairedChildSignerPubkey } from './lib/child-direct-pairing';
+import { runChildDirectPairing, pairedChildSignerPubkey, awaitTapOffer, childTapDeps, type ChildTapChannel } from './lib/child-direct-pairing';
 import type { ChildPairOffer } from './lib/child-pair-wire';
 import { useChildDeviceLink } from './hooks/useChildDeviceLink';
 import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
@@ -2118,6 +2118,11 @@ export function App() {
     relays: pairedChildRecord?.railRelay ? [pairedChildRecord.railRelay] : [],
     unpaired: childDeviceLink.unpaired,
     onActivity: (e) => childActivitySinkRef.current(e),
+    // A deferred persona ("Later") is approved on the Heartwood the first time
+    // a request is routed as it. The gate decides first (A39): only a request
+    // it allows runs the ALLOW AS probe, and the request stamp is taken after
+    // the probe, so the wait never ages it.
+    beforeStamp: childDeviceLink.ensureApproved,
   });
   const childGateRef = useRef(childGate);
   childGateRef.current = childGate;
@@ -5949,87 +5954,105 @@ export function App() {
    * `repair` updates the existing install in place (same dependant, new
    * client keypair and slot); otherwise a fresh stub identity is written and
    * SetupAuth follows.
+   *
+   * `source` is the scanned/pasted offer (QR + relay), or a `{ tap }` channel
+   * (NFC tap then Bluetooth): the offer arrives over the link, the request goes
+   * over it, the reply is read off the link and the relay, and no check words
+   * are shown. Every check after that is the same code. The tap channel is
+   * closed however this ends.
    */
-  const handlePairChildDirect = useCallback(async (offer: ChildPairOffer, ctl: DirectPairControl, repair: boolean) => {
-    if (repair) {
-      if (!encryptionKey || !identity) throw new Error('Please unlock first.');
-      if (offer.dependant !== identity.id.toLowerCase()) throw new Error('This code is for a different account.');
-    }
-    const result = await runChildDirectPairing(offer, {
-      publish: (ev, relays) => publishEvent(ev, { relays }),
-      subscribe: (filters, relays, onEvent) => subscribeEvents(filters, relays, onEvent),
-      handshake: async (clientPriv, ncUri, expected, timeoutMs, signal) => {
-        const b = new BunkerSigningBackend(clientPriv);
-        try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
-        finally { b.destroy(); }
-      },
-      nowS: () => Math.floor(Date.now() / 1000),
-    }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal });
-
-    const now = Math.floor(Date.now() / 1000);
-    const personaName = result.personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
-    const record = {
-      bunkerUri: result.bunkerUri,
-      clientKeypair: result.clientKeypair,
-      dependantPubkey: offer.dependant,
-      dependantName: offer.name,
-      pairedAt: now,
-      guardianPubkey: offer.guardian,
-      hasPaired: true,
-      mode: 'heartwood-direct' as const,
-      railPubkey: offer.rail,
-      personaPubkey: offer.persona,
-      hwRelays: offer.hwRelays,
-      railRelay: offer.relay,
-      personas: result.personas,
-    };
-
-    if (repair && encryptionKey && identity) {
-      await saveIdentityEncrypted({
-        ...identity,
-        persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
-        // A50: a stale stub that put the bound persona in the NP slot is cleared.
-        ...(identity.naturalPerson.publicKey.toLowerCase() === offer.persona
-          ? { naturalPerson: { ...identity.naturalPerson, publicKey: '' }, naturalPersonActive: false } : {}),
-        primaryKeypair: 'persona',
-      }, encryptionKey);
-      // A27: retire the old pairing's router and backends BEFORE the new
-      // record is used — bump the generation so an in-flight probe for the
-      // old client cannot install itself afterwards.
-      bunkerRouterGenRef.current++;
-      setBunkerRouter((prev) => { prev?.destroy(); return null; });
-      setRouterProbeState(null);
-      if (bunkerBackend) {
-        bunkerBackend.destroy();
-        setBunkerBackend(null);
+  const handlePairChildDirect = useCallback(async (source: ChildPairOffer | { tap: ChildTapChannel }, ctl: DirectPairControl, repair: boolean) => {
+    const tap = 'tap' in source ? source.tap : null;
+    try {
+      const offer: ChildPairOffer = 'tap' in source ? await awaitTapOffer(source.tap, () => Math.floor(Date.now() / 1000), { signal: ctl.signal }) : source;
+      if (repair) {
+        if (!encryptionKey || !identity) throw new Error('Please unlock first.');
+        if (offer.dependant !== identity.id.toLowerCase()) throw new Error('This code is for a different account.');
       }
-      setSignerStatus(null);
-      await savePairedChild(record, encryptionKey);
-      await savePreferences(childDirectRelayPreferences(await getPreferences(), offer.relay)); // A56
-      await reloadPreferences();
-      await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
-      await setBackgroundBunkerEnabled(true).catch(() => { /* the toggle stays available */ });
-      await reloadIdentity();
-      setPairedChildBumpCounter(n => n + 1);
-      return;
-    }
+      const relayDeps = {
+        publish: (ev: import('signet-protocol').NostrEvent, relays: string[]) => publishEvent(ev, { relays }),
+        subscribe: (filters: import('signet-protocol').NostrFilter[], relays: string[], onEvent: (ev: import('signet-protocol').NostrEvent) => void) => subscribeEvents(filters, relays, onEvent),
+      };
+      const result = await runChildDirectPairing(offer, {
+        ...(tap ? childTapDeps(relayDeps, tap) : relayDeps),
+        handshake: async (clientPriv, ncUri, expected, timeoutMs, signal) => {
+          const b = new BunkerSigningBackend(clientPriv);
+          try { return await b.acceptNostrConnect(ncUri, expected, timeoutMs, signal); }
+          finally { b.destroy(); }
+        },
+        connectPaired: async (clientPriv, persona, relays, timeoutMs, signal) => {
+          const b = new BunkerSigningBackend(clientPriv);
+          try { return await b.connectAsPairedClient(persona, relays, timeoutMs, signal); }
+          finally { b.destroy(); }
+        },
+        nowS: () => Math.floor(Date.now() / 1000),
+      }, { onCheckWords: ctl.onCheckWords, signal: ctl.signal, via: tap ? 'tap' : 'qr' });
 
-    const key = generateEncryptionKey();
-    // A50: the stub never puts the bound persona in the real-identity slot.
-    const identityRecord = childDirectStubIdentity(offer, result.personas, now);
-    await saveIdentityEncrypted(identityRecord, key);
-    await savePreferences({
-      // A56: every guardian→child rail is read on the offer's relay.
-      ...childDirectRelayPreferences(await getPreferences(), offer.relay),
-      activeAccountId: offer.dependant,
-      signingMode: 'paired-child',
-      // §8: the child's bunker keeps its games signed in with the screen off
-      // — on by default after a direct pairing (APK; ignored on the web).
-      backgroundBunkerEnabled: true,
-    });
-    await reloadPreferences();
-    await savePairedChild(record, key);
-    setPendingEncryptionKey(key);
+      const now = Math.floor(Date.now() / 1000);
+      const personaName = result.personas.find(p => p.pubkey === offer.persona)?.name || offer.name;
+      const record = {
+        bunkerUri: result.bunkerUri,
+        clientKeypair: result.clientKeypair,
+        dependantPubkey: offer.dependant,
+        dependantName: offer.name,
+        pairedAt: now,
+        guardianPubkey: offer.guardian,
+        hasPaired: true,
+        mode: 'heartwood-direct' as const,
+        railPubkey: offer.rail,
+        personaPubkey: offer.persona,
+        hwRelays: offer.hwRelays,
+        railRelay: offer.relay,
+        personas: result.personas,
+      };
+
+      if (repair && encryptionKey && identity) {
+        await saveIdentityEncrypted({
+          ...identity,
+          persona: { ...identity.persona, publicKey: offer.persona, privateKey: '', displayName: identity.persona.displayName || personaName },
+          // A50: a stale stub that put the bound persona in the NP slot is cleared.
+          ...(identity.naturalPerson.publicKey.toLowerCase() === offer.persona
+            ? { naturalPerson: { ...identity.naturalPerson, publicKey: '' }, naturalPersonActive: false } : {}),
+          primaryKeypair: 'persona',
+        }, encryptionKey);
+        // A27: retire the old pairing's router and backends BEFORE the new
+        // record is used — bump the generation so an in-flight probe for the
+        // old client cannot install itself afterwards.
+        bunkerRouterGenRef.current++;
+        setBunkerRouter((prev) => { prev?.destroy(); return null; });
+        setRouterProbeState(null);
+        if (bunkerBackend) {
+          bunkerBackend.destroy();
+          setBunkerBackend(null);
+        }
+        setSignerStatus(null);
+        await savePairedChild(record, encryptionKey);
+        await savePreferences(childDirectRelayPreferences(await getPreferences(), offer.relay)); // A56
+        await reloadPreferences();
+        await clearPairedChildPersonaRevision().catch(() => { /* tolerated */ });
+        await setBackgroundBunkerEnabled(true).catch(() => { /* the toggle stays available */ });
+        await reloadIdentity();
+        setPairedChildBumpCounter(n => n + 1);
+        return;
+      }
+
+      const key = generateEncryptionKey();
+      // A50: the stub never puts the bound persona in the real-identity slot.
+      const identityRecord = childDirectStubIdentity(offer, result.personas, now);
+      await saveIdentityEncrypted(identityRecord, key);
+      await savePreferences({
+        // A56: every guardian→child rail is read on the offer's relay.
+        ...childDirectRelayPreferences(await getPreferences(), offer.relay),
+        activeAccountId: offer.dependant,
+        signingMode: 'paired-child',
+        // §8: the child's bunker keeps its games signed in with the screen off
+        // — on by default after a direct pairing (APK; ignored on the web).
+        backgroundBunkerEnabled: true,
+      });
+      await reloadPreferences();
+      await savePairedChild(record, key);
+      setPendingEncryptionKey(key);
+    } finally { tap?.end(); }
   }, [encryptionKey, identity, bunkerBackend, reloadIdentity, reloadPreferences, setBackgroundBunkerEnabled]);
 
   const handleDeleteIdentity = useCallback(async () => {
@@ -6412,11 +6435,21 @@ export function App() {
     }
   }, [encryptionKey]);
 
+  const HEARTWOOD_UNREACHABLE_DERIVE_COPY =
+    "Your Heartwood isn't reachable yet. Check it's switched on and online, then try again.";
+
   const dependantDeviceDerive = useMemo<DependantDeviceDerive | undefined>(() => {
     // Same paired-child exclusion as heartwoodRequestFn — a kid install can
     // have a non-null router, and undefined (not a throwing stub) is the right
     // shape there, so useDependants takes the local path and its own error.
-    if (!bunkerRouter || preferences.signingMode === 'paired-child') return undefined;
+    if (preferences.signingMode === 'paired-child') return undefined;
+    // Bunker mode with no router yet (the Heartwood was unreachable when this
+    // phone unlocked): there is no mnemonic to fall back to, so say what is
+    // actually wrong instead of letting useDependants report "no mnemonic".
+    if (!bunkerRouter) {
+      if (preferences.signingMode !== 'bunker') return undefined;
+      return async () => { throw new Error(HEARTWOOD_UNREACHABLE_DERIVE_COPY); };
+    }
     if (!heartwoodRequestFn) {
       return async () => { throw new Error("Your Heartwood signer isn't connected. Connect it in Settings → Advanced, then add the dependant."); };
     }
@@ -6424,7 +6457,11 @@ export function App() {
   }, [bunkerRouter, heartwoodRequestFn, preferences.signingMode]);
 
   const extraPersonaDeviceDerive = useMemo<ExtraPersonaDeviceDerive | undefined>(() => {
-    if (!bunkerRouter || preferences.signingMode === 'paired-child') return undefined; // see dependantDeviceDerive
+    if (preferences.signingMode === 'paired-child') return undefined; // see dependantDeviceDerive
+    if (!bunkerRouter) {
+      if (preferences.signingMode !== 'bunker') return undefined;
+      return async () => { throw new Error(HEARTWOOD_UNREACHABLE_DERIVE_COPY); };
+    }
     if (!heartwoodRequestFn) {
       return async () => { throw new Error("Your Heartwood signer isn't connected. Connect it in Settings → Advanced, then add the persona."); };
     }
@@ -9862,7 +9899,7 @@ export function App() {
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
       ) : null}
       {!childDeviceLink.unpaired && childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
-        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} />
+        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} onDefer={(pk) => childDeviceLink.deferApproval(pk)} />
       ) : null}
     </>
   ) : null;
@@ -10182,6 +10219,15 @@ export function App() {
             onChangeAuditVisibility={handleUpdateAuditVisibility}
             onBeginCeremony={() => navigateTo('transition-ceremony')}
             onPairDevice={() => navigateTo('pair-dependant-device')}
+            pairReadiness={resolveSettingsViewer(preferences.signingMode, carousel.childMode) === 'guardian' ? {
+              signingMode: preferences.signingMode,
+              signerStatus,
+              operator: heartwoodOperator.client,
+              operatorLoading: heartwoodOperator.loading,
+              operatorStatus: heartwoodOperator.status,
+              operatorStatusError: heartwoodOperator.statusError,
+              onOpenOperatorImport: () => navigateTo('settings-advanced'),
+            } : undefined}
             onPairApp={() => navigateTo('pair-dependant-app')}
             onViewActivity={() => navigateTo('activity')}
             onOpenPermissions={() => navigateTo('child-permissions')}

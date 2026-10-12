@@ -131,6 +131,14 @@ export interface UseChildGateOpts {
   now?: () => number;
   /** Test seam: how long an ask is held (default the ask TTL). */
   askTimeoutMs?: number;
+  /**
+   * Run once the gate has allowed a request (signed, or an ask approved) and
+   * BEFORE its request stamp is reserved: a deferred ("Later") persona's
+   * ALLOW AS probe. A refused request never reaches it, and the stamp is taken
+   * after it, so waiting on the device button never ages a stamp or lets a
+   * later request's stamp go out first (A58). False ⇒ `blocked`.
+   */
+  beforeStamp?(persona: string): Promise<boolean>;
 }
 
 export interface PendingChildGateAsk { id: string; targetLabel: string; since: number }
@@ -179,6 +187,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   const nowRef = useRef(opts.now ?? (() => Date.now()));
   nowRef.current = opts.now ?? (() => Date.now());
   const askTimeoutMs = opts.askTimeoutMs ?? CHILD_SIGN_ASK_TTL_S * 1000;
+  const beforeStampRef = useRef(opts.beforeStamp);
+  beforeStampRef.current = opts.beforeStamp;
 
   const rateRef = useRef<RateLimitState>({ count: 0, windowStart: 0 });
   const held = useRef(new Map<string, Held>());
@@ -259,12 +269,33 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     }
     const kind = template ? template.kind : null;
 
-    const verdict = template
-      ? decideChildRequest({ rules: at.rules, persona, template, appId: req.appId, siteOrigin: req.siteOrigin, nowMs, rateState: rateRef.current })
-      : decideChildCrypto({ rules: at.rules, persona, appId: req.appId, method: req.method as 'nip44_encrypt' | 'nip44_decrypt', peer: req.peer!.toLowerCase(), nowMs, rateState: rateRef.current });
+    const rateBefore = rateRef.current;
+    const decide = (rules: typeof at.rules) => template
+      ? decideChildRequest({ rules, persona, template, appId: req.appId, siteOrigin: req.siteOrigin, nowMs, rateState: rateBefore })
+      : decideChildCrypto({ rules, persona, appId: req.appId, method: req.method as 'nip44_encrypt' | 'nip44_decrypt', peer: req.peer!.toLowerCase(), nowMs, rateState: rateBefore });
+    const verdict = decide(at.rules);
     rateRef.current = checkRateLimit(rateRef.current, nowMs).newState;
 
     const forward = async (outcome: 'signed' | 'approved', target?: string): Promise<ChildGateOutcome> => {
+      const probe = beforeStampRef.current;
+      let probed = true;
+      if (probe) { try { probed = await probe(persona); } catch { probed = false; } }
+      // As before the reorder: a refused probe is not a gate decision, so nothing is reported.
+      if (!probed) return { ok: false, error: 'blocked' };
+      if (probe) {
+        // The probe can wait on the Heartwood's button: the record or the
+        // rules may have changed meanwhile. An unprompted allow is re-decided
+        // on the rules as they are now (a guardian approval stands).
+        const now = live.current;
+        if (now.unpaired || now.recordKey !== at.recordKey) return { ok: false, error: 'unpaired' };
+        if (outcome === 'signed' && now.rules !== at.rules) {
+          const again = decide(now.rules);
+          if (again.verdict !== 'sign') {
+            emit({ ...base, kind, outcome: again.verdict === 'blocked' ? 'blocked' : 'denied' });
+            return { ok: false, error: again.verdict === 'ask' ? 'denied' : refusal(again) };
+          }
+        }
+      }
       const requestCreatedAt = await reserveRequestCreatedAt(persona, { now: () => nowRef.current() });
       const t = nowRef.current();
       for (const [k, v] of pendingReports.current) if (t - v.addedAt > PENDING_REPORT_TTL_MS) pendingReports.current.delete(k);

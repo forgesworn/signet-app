@@ -4,6 +4,9 @@
  * lives here, not inline in pages or hooks.
  */
 
+/** The label on the new phone's welcome button; the guardian's QR text names the same one. */
+export const PAIR_WITH_GUARDIAN_LABEL = "Pair with my guardian's phone";
+
 export const CHILD_DEVICE_COPY = {
   title: (name: string) => `Pair ${name}'s phone`,
   checking: 'Checking your Heartwood…',
@@ -31,7 +34,7 @@ export const CHILD_DEVICE_COPY = {
     },
   },
   offerIntro: (name: string) =>
-    `Open My Signet on ${name}'s phone, choose "I'm pairing to my guardian", and scan this code.`,
+    `Open My Signet on ${name}'s phone, choose “${PAIR_WITH_GUARDIAN_LABEL}”, and scan this code.`,
   offerExpires: (mmss: string) => `This code expires in ${mmss}`,
   offerNoSecret: 'The code holds no key. It works once, for ten minutes.',
   confirmHeading: 'Check the words match',
@@ -59,6 +62,30 @@ export const CHILD_DEVICE_COPY = {
   unpaired: (name: string) => `${name}'s phone is no longer paired.`,
   pairedAlready: (name: string) => `${name}'s phone is paired to your Heartwood.`,
   pairAgain: 'Pair a different phone',
+  /** Tap-first pairing on the guardian's phone (design 2026-10-12, section 6). */
+  tap: {
+    holdHeading: (name: string) => `Hold ${name}'s phone against this one`,
+    holdBody: 'Keep both screens on and touch the phones back to back.',
+    qrInstead: 'Show a QR code instead',
+    linking: 'Phone found. Connecting…',
+    linked: (name: string) => `Connected. Waiting for ${name}'s phone…`,
+    lost: (name: string) => `The connection to ${name}'s phone dropped. Show a QR code instead, or start again.`,
+    nfcOff: 'NFC is off on this phone, so it cannot pair by tap.',
+    openNfc: 'Open NFC settings',
+    checkAgain: 'Check again',
+    secondPhone: (name: string) => `Another phone touched this one. Only ${name}'s phone can pair — start again if that was the wrong phone.`,
+    wrongScreen: (name: string) => `That phone is on the Handshake screen. On ${name}'s phone choose “${PAIR_WITH_GUARDIAN_LABEL}”.`,
+    confirmHeading: (name: string) => `Pair ${name}'s phone — the phone you just tapped?`,
+    confirmBody: 'Only carry on if you touched the phones together yourself.',
+    confirmPair: 'Pair',
+    /** Why a QR code is shown when the tap could not be used. */
+    qrBecause: {
+      unsupported: 'This phone cannot pair by tap, so here is a QR code instead.',
+      denied: 'Bluetooth is not allowed for My Signet, so here is a QR code instead.',
+      off: 'Bluetooth is off, so here is a QR code instead.',
+      failed: 'Pairing by tap is not working right now, so here is a QR code instead.',
+    } as Record<string, string>,
+  },
   errors: {
     mint: 'Your Heartwood could not set up the slot. Nothing was paired — try again.',
     mintUnconfirmed: 'Your Heartwood may have set up a slot we could not check. Open Sapwood and remove any "signet:child-device" slot you do not recognise.',
@@ -87,10 +114,29 @@ export const CHILD_SIDE_COPY = {
   cancel: 'Cancel',
   /** A28: a failed run never retries the same code. */
   scanNew: 'Scan a new code',
+  /** Tap-first pairing on the new phone (design 2026-10-12, section 6). */
+  tap: {
+    checking: 'Checking this phone…',
+    hold: "Hold your phone against your guardian's",
+    holdBody: "Your guardian opens Pair a device on their phone. Keep both screens on and touch the phones back to back.",
+    permissionReason: 'Android will ask to allow “Nearby devices”, so the two phones can talk directly.',
+    scanInstead: 'Scan a code instead',
+    waitingConfirm: 'Waiting for your guardian to confirm on their phone',
+    wrongScreen: 'That phone is on the Handshake screen. Ask your guardian to open Pair a device.',
+    secondPhone: 'Another phone touched this one. Start again if that was the wrong phone.',
+    /** Why tapping is not offered; the scan and paste buttons stay. */
+    unavailable: {
+      unsupported: 'This phone cannot pair by tap, so scan or paste a code instead.',
+      denied: 'Nearby devices is not allowed for My Signet, so scan or paste a code instead.',
+      off: 'NFC or Bluetooth is off on this phone, so scan or paste a code instead.',
+      failed: 'Pairing by tap is not working right now, so scan or paste a code instead.',
+    } as Record<string, string>,
+  },
   errors: {
     timeout: "Your guardian's phone did not answer in time. Nothing was set up — ask them for a new code.",
     publish: 'Could not reach the relay. Check your internet connection and try again.',
     signer: 'Your Heartwood did not connect as the right identity, so nothing was set up. Ask your guardian for a new code.',
+    deviceUnreachable: "Your Heartwood didn't answer this phone. Check it's on and online, then ask your guardian for a new code.",
     refused: {
       'check-mismatch': 'Your guardian said the words did not match, so nothing was set up. Ask them for a new code.',
       'two-requests': 'Another phone also answered this code, so nothing was set up. Ask your guardian for a new code.',
@@ -124,6 +170,11 @@ export const CHILD_SIDE_COPY = {
     waiting: 'Waiting for the Heartwood',
     failed: 'Not approved yet',
     retry: 'Try again',
+    later: 'Later',
+    deferred: 'Later — approve when needed',
+    approveNow: 'Approve now',
+    finishedHeading: 'Some identities are set for later',
+    finishedBody: 'Your guardian will be asked to press ALLOW AS on the Heartwood the first time you use one.',
   },
 } as const;
 
@@ -292,4 +343,37 @@ export const CHILD_PERMISSIONS_COPY = {
   notSent: 'Not sent yet',
   unpairHeading: 'Unpair phone',
   cancel: 'Cancel',
+} as const;
+
+/** The "Before you pair" checklist on the guardian's Phone & Pairing card. Advisory only. */
+export const PAIR_READINESS_COPY = {
+  heading: 'Before you pair',
+  ok: 'Ready',
+  fail: 'Needs attention',
+  checking: 'checking…',
+  couldntCheck: "Couldn't check",
+  needsOperator: 'Needs the operator key first',
+  connected: {
+    label: 'Heartwood connected',
+    fix: "Check it's switched on and online.",
+  },
+  operator: {
+    label: 'Operator key imported',
+    fix: 'This phone needs your Heartwood operator key.',
+    action: 'Import operator key',
+  },
+  firmware: {
+    label: 'Heartwood firmware can pair phones',
+    fix: 'Update it in Sapwood.',
+  },
+  slots: {
+    label: 'Free slot on the Heartwood',
+    fix: 'Remove one in Sapwood.',
+  },
+  slotsInUse: (used: number, max: number) => `${used} of ${max} in use`,
+  persona: {
+    label: (name: string) => `${name} has an active persona`,
+    fix: 'Add or switch to a persona first.',
+    action: 'Go to personas',
+  },
 } as const;

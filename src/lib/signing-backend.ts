@@ -426,7 +426,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       if (attempt !== this.connectAttempt) throw new Error('Connection cancelled');
       if (pubkey !== expectedPubkey.toLowerCase()) {
         this.activePublicKeyHex = '';
-        throw new Error(`Bunker pubkey mismatch: expected ${expectedPubkey.slice(0, 8)}… got ${pubkey.slice(0, 8)}…`);
+        throw new BunkerPubkeyMismatchError(expectedPubkey, pubkey);
       }
       const p = new URLSearchParams();
       for (const r of relays) p.append('relay', r);
@@ -440,6 +440,44 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       throw err;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onOuterAbort);
+    }
+  }
+
+  /**
+   * Fallback for child-direct pairing when {@link acceptNostrConnect} never saw
+   * the Heartwood's connect ACK (an ephemeral event no relay stores, so a
+   * socket that dropped while the screen was off misses it for good). The
+   * guardian's reply has already proved the slot exists for this client key, so
+   * connect as an ordinary bunker client: same key, the persona as the remote
+   * signer, no secret. `get_public_key` is pinned to `personaPubkey` exactly as
+   * in the nostrconnect path (a mismatch throws {@link BunkerPubkeyMismatchError}).
+   * Fresh pool and signer. Returns the secret-free bunker:// URI. Timeout or
+   * `signal` abort tears down and rejects.
+   */
+  async connectAsPairedClient(personaPubkey: string, relays: string[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
+    if (relays.length === 0) throw new Error('At least one relay is required.');
+    if (signal?.aborted) throw new Error('Connection cancelled');
+    const persona = personaPubkey.toLowerCase();
+    const p = new URLSearchParams();
+    for (const r of relays) p.append('relay', r);
+    const uri = `bunker://${persona}?${p.toString()}`;
+    let rejectAborted: (err: Error) => void = () => {};
+    const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+    aborted.catch(() => { /* observed via the race below */ });
+    // A29: an outer abort retires the attempt and tears the transport down at
+    // once, including while get_public_key is outstanding.
+    const onOuterAbort = () => {
+      this.connectAttempt++;
+      this.releaseTransport();
+      this.activePublicKeyHex = '';
+      rejectAborted(new Error('Connection cancelled'));
+    };
+    signal?.addEventListener('abort', onOuterAbort);
+    try {
+      await Promise.race([this.initSigner(uri, timeoutMs, false, persona), aborted]);
+      return this.bunkerUri;
+    } finally {
       signal?.removeEventListener('abort', onOuterAbort);
     }
   }
@@ -482,6 +520,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       });
       this.pool = pool;
       this.signer = signer;
+      this.signerKey = clientSk;
 
       // The signer's reply subscription must be live before the first
       // request, or the bunker's answer can arrive before the REQ and be
@@ -510,7 +549,7 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
       // caller can't accidentally sign with the wrong key.
       if (expectedPubkey && pubkey.toLowerCase() !== expectedPubkey.toLowerCase()) {
         this.activePublicKeyHex = ''; // symmetry with destroy() — don't leave stale pubkey visible
-        throw new Error(`Bunker pubkey mismatch: expected ${expectedPubkey.slice(0, 8)}… got ${pubkey.slice(0, 8)}…`);
+        throw new BunkerPubkeyMismatchError(expectedPubkey, pubkey);
       }
 
       // Normalise, as `RoutedBunkerSigningBackend` does: a generic bunker can
@@ -800,6 +839,15 @@ export class BunkerSigningBackend implements DecryptingSigningBackend {
     this.clientSecretHex = '0'.repeat(64);
     this.activePublicKeyHex = '';
     this.bunkerUri = '';
+  }
+}
+
+/** `get_public_key` answered as a different identity than the one pinned. A real
+ * wrong-identity result, as opposed to a transport failure. */
+export class BunkerPubkeyMismatchError extends Error {
+  constructor(expected: string, got: string) {
+    super(`Bunker pubkey mismatch: expected ${expected.slice(0, 8)}… got ${got.slice(0, 8)}…`);
+    this.name = 'BunkerPubkeyMismatchError';
   }
 }
 

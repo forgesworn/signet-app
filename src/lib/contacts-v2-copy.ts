@@ -859,6 +859,7 @@ export const HANDSHAKE_COPY = {
   withoutPhoto: 'Go on without your picture',
   outdated: 'Their app needs updating before you can shake hands.',
   childCard: 'Ask them to show the QR on their contact card, and scan that.',
+  pairingPeer: 'That phone is pairing a child’s phone, not on the Handshake screen.',
   ambiguous: 'More than one phone answered. Scan their QR to be sure who you are adding.',
   child: 'Ask your guardian', cameraError: 'Could not access camera. Check permissions.',
   radios: 'Phone radios', hint: 'Without these, the handshake uses the camera and the internet.',

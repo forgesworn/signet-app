@@ -50,7 +50,7 @@ test('delivers current contact policy to a genuinely paired child without identi
     await network.install(second); const child = await second.newPage();
     await child.goto('/');
     await child.getByRole('button', { name: 'I already have a Signet' }).click();
-    await child.getByRole('button', { name: 'I have a pairing code from my guardian' }).click();
+    await child.getByRole('button', { name: "Pair with my guardian's phone" }).click();
     await child.getByRole('button', { name: 'Paste pairing code' }).click();
     await child.getByPlaceholder('bunker://...').fill(uri);
     await child.getByRole('button', { name: 'Continue', exact: true }).click();

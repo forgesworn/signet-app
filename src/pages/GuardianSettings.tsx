@@ -9,6 +9,7 @@ import { resolveDependantRealIdentityRow } from '../lib/real-identity-row';
 import type { ContactPolicy } from '../lib/lift-child-settings';
 import { DEFAULT_CHILD_CEILING_SECTION_TITLE, defaultChildCeilingCopy, tierChipLabel } from '../lib/contacts-v2-copy';
 import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
+import { PairReadinessChecklist, type PairReadinessChecklistProps } from '../components/PairReadinessChecklist';
 
 const TIER_LABELS: Record<string, string> = {
   basic: 'Basic',
@@ -32,6 +33,8 @@ interface Props {
   onActivateDependantRealIdentity?: () => void;
   /** Opens the pair-to-device screen (phone-as-family-bunker). */
   onPairDevice?: () => void;
+  /** Inputs for the advisory "Before you pair" checklist (child-direct Heartwood path only). Absent ⇒ no checklist. */
+  pairReadiness?: Omit<PairReadinessChecklistProps, 'dependant' | 'onFixPersona'>;
   /** Opens the pair-an-app screen for trusted-app pairings. */
   onPairApp?: () => void;
   /** Opens the per-dependant audit log (v1). */
@@ -114,6 +117,7 @@ export function GuardianSettings({
   onActivateDependantRealIdentity,
   onPairDevice,
   onPairApp,
+  pairReadiness,
   onViewActivity,
   onOpenPermissions,
   appPairings,
@@ -440,6 +444,13 @@ export function GuardianSettings({
               ? `${activeDependant.displayName}'s device is paired. Generate a new code to pair another, or revoke the current pairing.`
               : `Pair a phone or tablet for ${activeDependant.displayName}. Sign-ins from their device come to you for approval.`}
           </p>
+          {pairReadiness && !activeDependant.bunkerEndpoint?.authorizedClientPubkey && activeDependant.childDevice?.mode !== 'heartwood-direct' && (
+            <PairReadinessChecklist
+              dependant={activeDependant}
+              {...pairReadiness}
+              onFixPersona={() => personasSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })}
+            />
+          )}
           <button
             className="btn btn-secondary"
             onClick={onPairDevice}

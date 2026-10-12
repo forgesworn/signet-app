@@ -20,8 +20,10 @@ import { useEffect, useRef, useState } from 'react';
 import { QRScanner } from '../components/QRScanner';
 import { parsePairingURI, type PairingURIParams } from '../lib/pairing-uri';
 import { parseChildPairUri, type ChildPairOffer } from '../lib/child-pair-wire';
-import { ChildDirectPairError } from '../lib/child-direct-pairing';
+import { ChildDirectPairError, type ChildTapChannel } from '../lib/child-direct-pairing';
 import { CHILD_SIDE_COPY as KID } from '../lib/child-device-copy';
+import { useChildPairNearby } from '../hooks/useChildPairNearby';
+import { isNativeApp } from '../lib/native';
 
 /** Plain-English copy for a failed child-direct pairing run. */
 function directErrorCopy(err: unknown): string {
@@ -29,6 +31,7 @@ function directErrorCopy(err: unknown): string {
   if (err.code === 'timeout') return KID.errors.timeout;
   if (err.code === 'publish') return KID.errors.publish;
   if (err.code === 'signer') return KID.errors.signer;
+  if (err.code === 'device-unreachable') return KID.errors.deviceUnreachable;
   if (err.code === 'refused') return KID.errors.refused[err.reason ?? 'other'] ?? KID.errors.refused.other;
   return KID.errors.generic;
 }
@@ -61,7 +64,7 @@ interface Props {
    * whole pairing — request, check words, guardian reply, handshake — and
    * persists only on success. Absent ⇒ `signet-child:` codes are refused.
    */
-  onStartDirect?: (offer: ChildPairOffer, ctl: DirectPairControl) => Promise<void>;
+  onStartDirect?: (source: ChildPairOffer | { tap: ChildTapChannel }, ctl: DirectPairControl) => Promise<void>;
 }
 
 type Step =
@@ -69,7 +72,7 @@ type Step =
   | { kind: 'capture'; mode: 'scan' | 'paste'; error: string | null }
   | { kind: 'confirm'; parsed: PairingURIParams; rawUri: string; saving: boolean; error: string | null }
   | { kind: 'confirm-direct'; offer: ChildPairOffer }
-  | { kind: 'pairing-direct'; offer: ChildPairOffer; words: string[] | null; error: string | null };
+  | { kind: 'pairing-direct'; offer: ChildPairOffer | null; via: 'tap' | 'qr'; words: string[] | null; error: string | null };
 
 export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubkey, onStartDirect }: Props) {
   const [step, setStep] = useState<Step>({ kind: 'welcome' });
@@ -79,23 +82,37 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
   const [pasteDraft, setPasteDraft] = useState('');
   const isRepair = !!expectedDependantPubkey;
 
+  // Tap first: hold this phone against the guardian's. The camera blocks NFC on
+  // some phones, so scanning (or pasting) ends the tap, and going back re-arms
+  // it with a fresh code.
+  const nearby = useChildPairNearby();
+  const tapEnabled = !!onStartDirect;
+  const nearbyRef = useRef(nearby);
+  nearbyRef.current = nearby;
+  useEffect(() => { if (tapEnabled) void nearbyRef.current.probe(); }, [tapEnabled]);
+  const { available: tapAvailable, phase: tapPhase } = nearby;
+
   const enterCapture = (mode: 'scan' | 'paste') => {
+    nearby.end();
     setPasteDraft('');
     setStep({ kind: 'capture', mode, error: null });
   };
 
   const captureError = (msg: string) => setStep(prev => prev.kind === 'capture' ? { ...prev, error: msg } : prev);
 
-  const startDirect = (offer: ChildPairOffer) => {
+  const startDirect = (offer: ChildPairOffer) => runDirect(offer, 'qr', offer);
+
+  /** One pairing run: from a scanned offer, or from the tapped phone's link (the offer arrives over it). */
+  const runDirect = (offer: ChildPairOffer | null, via: 'tap' | 'qr', source: ChildPairOffer | { tap: ChildTapChannel }) => {
     if (!onStartDirect) return;
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-    setStep({ kind: 'pairing-direct', offer, words: null, error: null });
-    onStartDirect(offer, {
+    setStep({ kind: 'pairing-direct', offer, via, words: null, error: null });
+    onStartDirect(source, {
       signal: ac.signal,
       onCheckWords: (words) => {
-        if (!ac.signal.aborted) setStep(prev => prev.kind === 'pairing-direct' ? { ...prev, words } : prev);
+        if (!ac.signal.aborted && via === 'qr') setStep(prev => prev.kind === 'pairing-direct' ? { ...prev, words } : prev);
       },
     }).catch((err: unknown) => {
       if (ac.signal.aborted) return;
@@ -106,8 +123,22 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
   const cancelDirect = () => {
     abortRef.current?.abort();
     abortRef.current = null;
+    nearby.end();
     setStep({ kind: 'welcome' });
   };
+
+  // Arm the tap while the welcome shows; the first tapped guardian phone starts the run.
+  useEffect(() => {
+    if (step.kind !== 'welcome' || !tapEnabled || tapAvailable !== true) return;
+    if (tapPhase === 'idle') { void nearbyRef.current.begin(); return; }
+    if (tapPhase === 'linking' || tapPhase === 'linked') {
+      const tap = nearbyRef.current.tap;
+      runDirect(null, 'tap', { tap: {
+        onOffer: h => tap.onOffer(h), onEvent: h => tap.onEvent(h), sendEvent: e => tap.sendEvent(e), end: () => tap.end(),
+      } });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step.kind, tapEnabled, tapAvailable, tapPhase]);
 
   const handleRawURI = (raw: string) => {
     const trimmed = raw.trim();
@@ -157,21 +188,41 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
   };
 
   if (step.kind === 'welcome') {
+    // Probing: say so rather than flash the scan buttons and then swap them.
+    if (tapEnabled && tapAvailable === null) {
+      return <div className="fade-in" style={{ padding: 24, textAlign: 'center' }}><p style={{ color: 'var(--text-secondary)' }}>{KID.tap.checking}</p></div>;
+    }
+    const tapping = tapEnabled && tapAvailable === true;
+    const why = tapEnabled && tapAvailable === false && nearby.reason && (nearby.reason !== 'unsupported' || isNativeApp())
+      ? KID.tap.unavailable[nearby.reason] ?? KID.tap.unavailable.failed : null;
     return (
       <div className="fade-in" style={{ padding: 24, maxWidth: 460, margin: '0 auto' }}>
         <h1 style={{ marginBottom: 12 }}>{isRepair ? 'Re-pair with your guardian' : 'Pair with your guardian'}</h1>
-        <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>
-          {isRepair
-            ? "Your guardian generated a fresh code on their phone (usually because they got a new device). Scan or paste it here and this app will reconnect to them."
-            : "Your guardian generated a code on their phone. Scan or paste it here and this device becomes your Signet."}
-        </p>
+        {tapping ? (
+          <>
+            <p style={{ fontSize: '1.1rem', fontWeight: 600, lineHeight: 1.4, marginBottom: 8 }}>{KID.tap.hold}</p>
+            <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{KID.tap.holdBody}</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 12 }}>{KID.tap.permissionReason}</p>
+            {nearby.wrongScreen === 'handshake' && <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.9rem', marginBottom: 12 }}>{KID.tap.wrongScreen}</p>}
+            {nearby.secondPhone && <p role="alert" style={{ color: 'var(--danger)', fontSize: '0.9rem', marginBottom: 12 }}>{KID.tap.secondPhone}</p>}
+          </>
+        ) : (
+          <>
+            <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>
+              {isRepair
+                ? "Your guardian generated a fresh code on their phone (usually because they got a new device). Scan or paste it here and this app will reconnect to them."
+                : "Your guardian generated a code on their phone. Scan or paste it here and this device becomes your Signet."}
+            </p>
+            {why && <p role="status" style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 12 }}>{why}</p>}
+          </>
+        )}
         <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 24, fontSize: '0.9rem' }}>
           {isRepair
             ? "Your identity, PIN, and history stay the same — only the connection to your guardian changes."
             : "Sign-ins from this device go to your guardian for approval (unless they've said you can handle them yourself)."}
         </p>
-        <button className="btn btn-primary" onClick={() => enterCapture('scan')} style={{ width: '100%', marginBottom: 8 }}>
-          Scan pairing code
+        <button className={tapping ? 'btn' : 'btn btn-primary'} onClick={() => enterCapture('scan')} style={{ width: '100%', marginBottom: 8 }}>
+          {tapping ? KID.tap.scanInstead : 'Scan pairing code'}
         </button>
         <button className="btn" onClick={() => enterCapture('paste')} style={{ width: '100%', marginBottom: 16 }}>
           Paste pairing code
@@ -337,6 +388,11 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
             <button className="btn btn-primary" onClick={() => enterCapture('scan')} style={{ width: '100%', marginBottom: 8 }}>
               {KID.scanNew}
             </button>
+            <button className="btn btn-ghost" onClick={cancelDirect} style={{ width: '100%' }}>{KID.cancel}</button>
+          </>
+        ) : step.via === 'tap' ? (
+          <>
+            <p role="status" style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 24 }}>{KID.tap.waitingConfirm}</p>
             <button className="btn btn-ghost" onClick={cancelDirect} style={{ width: '100%' }}>{KID.cancel}</button>
           </>
         ) : step.words ? (

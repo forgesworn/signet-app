@@ -214,6 +214,100 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
   });
 });
 
+describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
+  function setup(extra: Partial<PairedChildRecord> = {}, behaviour: Record<string, 'ok' | 'fail'> = {}) {
+    const { t } = fakeTransport();
+    const fr = fakeRouter(behaviour);
+    const saved: PairedChildRecord[] = [];
+    const mk = (rec: PairedChildRecord) => renderHook(() => useChildDeviceLink({
+      record: rec, encryptionKey: KEY, router: fr.router, transport: t,
+      inventoryPersonas: [{ pubkey: NP, name: 'Alice Real' }],
+      onRecordUpdated: async (r) => { saved.push(r); },
+    }));
+    return { fr, saved, mk, rec: record(extra) };
+  }
+
+  it('deferring every pending persona finishes the ceremony without a probe', async () => {
+    const { fr, saved, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved' } });
+    const { result } = mk(rec);
+    act(() => { result.current.deferApproval(NP); });
+    expect(result.current.personas.find(p => p.pubkey === NP)?.approval).toBe('deferred');
+    expect(result.current.ceremonyFinished).toBe(true);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(fr.calls.filter(c => c.slot === NP)).toHaveLength(0);
+    expect(saved.at(-1)?.identityApprovals).toMatchObject({ [NP]: 'deferred', [EXTRA]: 'approved' });
+  });
+
+  it('a deferred persona survives a reload of the record and is not probed', async () => {
+    const first = setup({ identityApprovals: { [EXTRA]: 'approved' } });
+    const a = first.mk(first.rec);
+    act(() => { a.result.current.deferApproval(NP); });
+    const stored = first.saved.at(-1)!;
+    a.unmount();
+    const second = setup({ identityApprovals: stored.identityApprovals });
+    const b = second.mk(second.rec);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(b.result.current.personas.find(p => p.pubkey === NP)?.approval).toBe('deferred');
+    expect(b.result.current.ceremonyFinished).toBe(true);
+    expect(second.fr.calls).toHaveLength(0);
+  });
+
+  it('db keeps a deferred state on the record (round trip through the cleaner)', async () => {
+    const { savePairedChild, loadPairedChild, setPairedChildIdentityApprovals } = await import('../lib/db');
+    const { id: _id, ...rest } = record() as PairedChildRecord & { encrypted?: boolean };
+    void _id;
+    await savePairedChild(rest as never, KEY);
+    await setPairedChildIdentityApprovals(DEP, { [EXTRA]: 'deferred', [NP]: 'approved' });
+    expect((await loadPairedChild(DEP, KEY))?.identityApprovals).toEqual({ [EXTRA]: 'deferred', [NP]: 'approved' });
+  });
+
+  it('Approve now runs exactly one probe for that persona', async () => {
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved' } });
+    const { result } = mk(rec);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(fr.calls).toHaveLength(0);
+    await act(async () => { await result.current.retryApproval(EXTRA); });
+    expect(fr.calls).toEqual([{ slot: EXTRA, args: [EXTRA, APPROVE_IDENTITY_PLAINTEXT] }]);
+    expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved');
+  });
+
+  it('first use of a deferred persona runs its probe before the request; later uses do not', async () => {
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved' } });
+    const { result } = mk(rec);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    let ok: boolean | undefined;
+    await act(async () => { ok = await result.current.ensureApproved(EXTRA); });
+    expect(ok).toBe(true);
+    expect(fr.calls).toEqual([{ slot: EXTRA, args: [EXTRA, APPROVE_IDENTITY_PLAINTEXT] }]);
+    await act(async () => { ok = await result.current.ensureApproved(EXTRA); });
+    expect(ok).toBe(true);
+    expect(fr.calls).toHaveLength(1);
+    // the bound persona and an approved one never probe
+    await act(async () => { await result.current.ensureApproved(PERSONA); await result.current.ensureApproved(NP); });
+    expect(fr.calls).toHaveLength(1);
+  });
+
+  it('concurrent first uses share one probe, and a refused probe blocks the request', async () => {
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved' } }, { [EXTRA]: 'fail' });
+    const { result } = mk(rec);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    let out: boolean[] = [];
+    await act(async () => { out = await Promise.all([result.current.ensureApproved(EXTRA), result.current.ensureApproved(EXTRA)]); });
+    expect(out).toEqual([false, false]);
+    expect(fr.calls).toHaveLength(1);
+    expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('failed');
+  });
+
+  it('deferApproval refuses the bound persona, an approved one and a stranger', async () => {
+    const { mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved' } });
+    const { result } = mk(rec);
+    act(() => { result.current.deferApproval(PERSONA); result.current.deferApproval(EXTRA); result.current.deferApproval('99'.repeat(32)); });
+    expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved');
+    expect(result.current.personas.find(p => p.pubkey === PERSONA)?.approval).toBe('approved');
+    expect(result.current.personas).toHaveLength(3);
+  });
+});
+
 describe('useChildDeviceLink — unpaired (§9.4)', () => {
   const stamped = (fail: string | null, persona: string = PERSONA) => ({
     activePublicKeyHex: persona,
