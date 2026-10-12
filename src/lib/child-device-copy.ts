@@ -201,6 +201,7 @@ export const CHILD_ASK_COPY = {
     'react-zap-reply': 'reactions and replies on',
     'pair-device': 'device pairing with',
     'mutate-identity': 'profile changes on',
+    'app-permission': 'app permissions from',
   } as Record<string, string>,
   kindPhrase: (kind: number) => `kind ${kind} requests on`,
   appMySignet: 'My Signet',

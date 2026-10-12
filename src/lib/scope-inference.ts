@@ -20,7 +20,13 @@ export type Scope =
   | 'upload-photo'
   | 'react-zap-reply'
   | 'pair-device'
-  | 'mutate-identity';
+  | 'mutate-identity'
+  /**
+   * An app asks for a standing permission for a persona (kind 30420, the
+   * "online play" statement). Never signed silently and never "always":
+   * every request is its own guardian decision (child-gate pre-check).
+   */
+  | 'app-permission';
 
 /**
  * Map a Nostr event template to its user-facing scope category, or null
@@ -44,6 +50,9 @@ export type Scope =
  *   24133                              → pair-device
  *   0                                  → mutate-identity (profile metadata)
  *   31000 with type: *-name-change     → mutate-identity
+ *   30420                              → app-permission (EVERY 30420,
+ *       whatever its shape: the strict template check is the request
+ *       parser's job; the scope only has to stop a silent signature)
  */
 export function inferScope(template: UnsignedEvent): Scope | null {
   switch (template.kind) {
@@ -68,6 +77,8 @@ export function inferScope(template: UnsignedEvent): Scope | null {
       return 'pair-device';
     case 0:
       return 'mutate-identity';
+    case 30420:
+      return 'app-permission';
     case 31000: {
       const typeTag = template.tags.find(t => t[0] === 'type');
       const value = typeTag?.[1];

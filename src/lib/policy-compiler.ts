@@ -152,6 +152,8 @@ export const SCOPE_KINDS: Readonly<Record<string, readonly number[]>> = Object.f
   'dm-private': [4, 13, 1059],
   'upload-photo': [24242],
   'mutate-identity': [0],
+  // Never auto-approved: a 30420 reaches the ceiling only as an approved-once entry.
+  'app-permission': [],
 });
 
 /** Every kind any scope maps to, sorted ascending, deduped. */

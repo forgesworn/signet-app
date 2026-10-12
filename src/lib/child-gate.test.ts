@@ -23,6 +23,7 @@ const TEMPLATES: Record<Scope, UnsignedEvent> = {
   'react-zap-reply': { kind: 7, pubkey: P1, created_at: 1, tags: [['p', PEER]], content: '+' },
   'pair-device': { kind: 24133, pubkey: P1, created_at: 1, tags: [], content: '' },
   'mutate-identity': { kind: 0, pubkey: P1, created_at: 1, tags: [], content: '{}' },
+  'app-permission': { kind: 30420, pubkey: P1, created_at: 1, tags: [['d', 'twang'], ['role', 'player']], content: '' },
 };
 
 function rule(over: Partial<ChildRule> = {}): ChildRule {
@@ -40,7 +41,8 @@ const run = (rules: ChildRulesPayload | null, scope: Scope = 'sign-in', over: Pa
   decideChildRequest({ rules, persona: P1, template: TEMPLATES[scope], appId: APP, nowMs: NOW, rateState: FRESH, ...over });
 
 describe('stage matrix (no rules)', () => {
-  for (const stage of STAGES) for (const scope of Object.keys(TEMPLATES) as Scope[]) {
+  // app-permission has its own pre-check (describe below).
+  for (const stage of STAGES) for (const scope of (Object.keys(TEMPLATES) as Scope[]).filter(s => s !== 'app-permission')) {
     it(`${stage} x ${scope}`, () => {
       const policy = resolvePolicy(stage, scope);
       const v = run(payload({ stage }), scope);
