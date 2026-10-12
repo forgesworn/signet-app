@@ -3,6 +3,12 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.20.0
+- Pair a child's phone by tapping the two phones together (NFC) or over Bluetooth, with the QR code kept as a fallback
+- A "Before you pair" checklist on the Phone & Pairing card shows what's ready and what isn't
+- Pairing recovers if the Heartwood's reply is missed, and now says whether the Heartwood is unreachable or the wrong identity
+- Creating a persona or dependant in Heartwood mode now tells you when the Heartwood can't be reached, instead of failing quietly
+
 ## 0.19.0
 - Signet Handshake: meet someone in person and swap contacts by tap (NFC), Bluetooth with no internet, or the Jigsaw, where two phones side by side show matching lines. You confirm "Is this them?" before anything is saved, and you can ask the other screen to hide you until tapped
 - Contact pictures: crop your own picture to a square, see theirs as a badge on yours, and keep an encrypted backup of your own contact pictures that restores with your words
