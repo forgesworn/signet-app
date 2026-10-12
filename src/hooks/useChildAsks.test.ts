@@ -456,13 +456,15 @@ describe('useChildAsks — verdicts', () => {
 describe('useChildAsks — app-permission (D5)', () => {
   const ORIGIN = 'https://twang.example';
   const CLAIM = { permission: 'online-play' as const, name: 'Twang Thang', origin: ORIGIN, reason: 'To play online with others.' };
+  const INSTALL = getPublicKey(generateSecretKey());
+  const STATEMENT_TAGS = [['d', 'twang'], ['p', INSTALL], ['valid_from', '1800000000'], ['valid_until', '1800086400'], ['v', '1'], ['role', 'player'], ['expiration', '1800086400']];
   function permissionAsk(): ChildSignAsk {
     const nowS = Math.floor(clock / 1000);
     const id = (n++).toString(16).padStart(32, '0');
     return {
       v: 1, id, dependantId: dep.id.toLowerCase(), persona: PERSONA, scope: 'app-permission', kind: 30420, method: 'sign_event',
       target: `site:${ORIGIN}`, targetLabel: 'Twang Thang', appPermission: CLAIM,
-      template: { kind: 30420, pubkey: PERSONA, created_at: nowS, tags: [['d', 'twang'], ['role', 'player']], content: '' },
+      template: { kind: 30420, pubkey: PERSONA, created_at: nowS, tags: STATEMENT_TAGS, content: '' },
       createdAt: nowS, expiresAt: nowS + 600,
     };
   }
@@ -542,7 +544,7 @@ describe('useChildAsks — app-permission (D5)', () => {
     expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny', alwaysDeny: true });
   });
 
-  it('a 30420 ask without the claim (generic card) gets the same treatment', async () => {
+  it('a 30420 ask without the claim (generic card): no "Always", and "Allow once" opens only its own kind — no seal', async () => {
     const s = setup();
     await flush();
     const a = { ...permissionAsk(), target: `app:${APP}` as const };
@@ -552,6 +554,18 @@ describe('useChildAsks — app-permission (D5)', () => {
     await act(async () => { r = await s.hook.result.current.decide(a.id, 'always'); });
     expect(r).toEqual({ sent: false, reason: 'always-unavailable' });
     await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
-    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
+    expect(s.pushCeiling).toHaveBeenCalledTimes(1);
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30420, until: Math.floor(clock / 1000) + 600 });
+  });
+
+  it('a claim whose template no longer passes the one-shape check: only its own kind, no seal', async () => {
+    const s = setup();
+    await flush();
+    const a = permissionAsk();
+    a.template = { ...a.template!, tags: STATEMENT_TAGS.map(t => (t[0] === 'role' ? ['role', 'admin'] : t)) };
+    t.deliver(await askEv(a)); await flush();
+    expect(s.hook.result.current.asks).toHaveLength(1);
+    await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30420, until: Math.floor(clock / 1000) + 600 });
   });
 });

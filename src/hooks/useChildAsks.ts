@@ -46,6 +46,7 @@ import { isValidRelayUrl } from '../lib/relay-url';
 import { listChildRules, loadChildAskHistory, saveChildAskHistory, saveChildRule, type ApprovedOnceKinds } from '../lib/db';
 import { publishEvent, subscribeEvents } from '../lib/relay-service';
 import type { OnceEntry } from '../lib/policy-push';
+import { appPermissionAskDetails } from '../lib/app-permission';
 
 export interface PendingChildAsk {
   ask: ChildSignAsk;
@@ -439,12 +440,14 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
             if (signs && (await o.pushCeiling(c.id)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
           }
         } else if (signs) {
-          // once. D5: an app permission's answer is sealed (kind 13) by the
-          // same persona, so its window opens for the seal too — same
-          // `until`, both in one push or neither. The child's seal pass binds
-          // that seal to this one answer.
+          // once. D5: My Signet's own answer to an app permission (the ask
+          // carries a valid claim) is sealed (kind 13) by the same persona,
+          // so its window opens for the seal too — same `until`, both in one
+          // push or neither. The child's seal pass binds that seal to this
+          // one answer. A claimless 30420 (an outside app) has no such
+          // answer: only its own kind.
           const until = nowS + CHILD_ASK_ONCE_WINDOW_S;
-          const es: OnceEntry[] = ask.scope === 'app-permission'
+          const es: OnceEntry[] = ask.scope === 'app-permission' && appPermissionAskDetails(ask) !== null
             ? [{ kind: ask.kind, until }, { kind: SEAL_KIND, until }]
             : [{ kind: ask.kind, until }];
           const current = ceilingFor(dep, rules, onceFor, nowS);
