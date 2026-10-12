@@ -204,6 +204,27 @@ export const CHILD_ASK_COPY = {
     'app-permission': 'app permissions from',
   } as Record<string, string>,
   kindPhrase: (kind: number) => `kind ${kind} requests on`,
+  /**
+   * An app's request to let a child play online (spec §5). Every sentence is
+   * My Signet's; the app's name and reason only fill the gaps, and the reason
+   * is always shown as the app's own words. The card never says more about
+   * who is asking than the app's claimed origin.
+   */
+  appPermission: {
+    heading: (app: string, child: string) => `${app} asks: let ${child} play online with other players`,
+    appSays: (reason: string) => `The app says: “${reason}”`,
+    allowsTitle: 'What this allows',
+    allows: {
+      'online-play': (app: string, child: string, until: string) =>
+        `Until ${until}, ${app} on ${child}’s phone can prove to the other players in a game that it is ${child}, so they will know ${child} plays ${app}. It cannot post, message anyone or act as ${child} anywhere else. My Signet cannot control what the app does with this proof; ${app} says it shows it only to players in a game with ${child}.`,
+    } as Record<string, (app: string, child: string, until: string) => string>,
+    from: (host: string) => `From ${host}`,
+    details: 'Details',
+    appId: 'App id',
+    installKey: 'Install key',
+    validUntil: 'Valid until',
+    allow: 'Allow',
+  },
   appMySignet: 'My Signet',
   appHex: (short: string) => `app ${short}`,
   anywhere: 'anywhere',
