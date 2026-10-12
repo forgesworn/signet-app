@@ -1228,6 +1228,8 @@ export function App() {
   /** A link that could not be used, shown once as a banner. */
   const [appPermissionNotice, setAppPermissionNotice] = useState<string | null>(null);
   /** One answer per request: 'approving' until the answer is wrapped, 'answered' once it is out (or declined). */
+  /** The request the unlock prompt was last raised for (once per request). */
+  const appPermissionAuthAskedRef = useRef<AppPermissionRequest | null>(null);
   const appPermissionMarksRef = useRef(new WeakMap<AppPermissionRequest, 'approving' | 'answered'>());
   /** Current request's entry in the developer auth-request log. */
   const currentLogEntryRef = useRef<AuthRequestLogEntry | null>(null);
@@ -5596,6 +5598,11 @@ export function App() {
     if (appPermissionMarksRef.current.get(pendingAppPermissionRequest) === 'answered') return; // its answer is on its way
     if (!encryptionKey) {
       if (!isAuthSetUp()) return;
+      // Ask once per request. This effect re-runs while locked (preferences and
+      // identity finish loading), and a second `requestAuth` while the first is
+      // still on screen answers null at once: that must not read as a cancel.
+      if (appPermissionAuthAskedRef.current === pendingAppPermissionRequest) return;
+      appPermissionAuthAskedRef.current = pendingAppPermissionRequest;
       requestAuth().then(key => {
         // Cancelled the unlock: treat it as closing the tab. The app's own
         // timeout ends the request; nothing is sent.
