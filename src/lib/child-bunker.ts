@@ -290,6 +290,16 @@ export function ungatedInner<T extends object | null>(backend: T): T {
   return ((backend as Record<symbol, unknown>)[GATED_INNER] as T | undefined) ?? backend;
 }
 
+/**
+ * Mark `wrapper` as a gated wrapper over `inner`, so a later re-gate unwraps
+ * it to `inner` (one decision, never two) — for gated wrappers built outside
+ * this module (the answer seal pass).
+ */
+export function markGated<T extends object>(wrapper: T, inner: DecryptingSigningBackend): T {
+  Object.defineProperty(wrapper, GATED_INNER, { value: ungatedInner(inner), enumerable: false });
+  return wrapper;
+}
+
 /** The child's own app id on the gate (spec §8.4). */
 export const CHILD_OWN_APP_ID = 'mysignet';
 export const CHILD_OWN_APP_LABEL = 'My Signet';

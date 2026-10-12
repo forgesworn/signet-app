@@ -214,5 +214,24 @@ describe('useBunkerServer — the child\'s gated persona routes', () => {
     expect(authorise).toHaveBeenCalledTimes(1);
     hook.unmount();
   });
-});
 
+  it('D7: an external app gets only the gate\'s `authorise` — never the pass-forward entry — even for an answer-shaped encrypt and seal', async () => {
+    const authorise = vi.fn(async (req: { template?: UnsignedEvent }): Promise<ChildGateOutcome> =>
+      ({ ok: true, requestCreatedAt: 1_900_000_100, ...(req.template ? { template: { ...req.template, pubkey: PERSONA } } : {}) }));
+    const forwardPassed = vi.fn();
+    // A full gate object: the route must still reach `authorise` only.
+    const gate = { authorise, forwardPassed } as unknown as ChildRouteGate;
+    const { route, transport } = gatedRoute(gate);
+    const { ws, hook } = await openServer(route, 'wss://child-f.example');
+    const clientSk = generateSecretKey();
+    const session = getPublicKey(generateSecretKey());
+    const statement = { kind: 30420, created_at: 1_900_000_000, tags: [['d', 'x'], ['role', 'player']], content: '' };
+    const signed = JSON.parse((await ask(ws, clientSk, transport.activePublicKeyHex, 'p1', 'sign_event', [JSON.stringify(statement)])).result!);
+    const rumor = { kind: 29999, pubkey: PERSONA, created_at: 1, tags: [['session', 'ab'.repeat(32)], ['status', 'approved']], content: JSON.stringify({ event: signed }) };
+    const ct = (await ask(ws, clientSk, transport.activePublicKeyHex, 'p2', 'nip44_encrypt', [session, JSON.stringify(rumor)])).result!;
+    await ask(ws, clientSk, transport.activePublicKeyHex, 'p3', 'sign_event', [JSON.stringify({ kind: 13, created_at: 1, tags: [], content: ct })]);
+    expect(authorise).toHaveBeenCalledTimes(3);
+    expect(forwardPassed).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+});
