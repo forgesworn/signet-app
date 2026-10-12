@@ -102,6 +102,56 @@ describe('ask rail', () => {
   });
 });
 
+describe('app-permission asks (D6)', () => {
+  const ORIGIN = 'https://twang.example';
+  const CLAIM = { permission: 'online-play' as const, name: 'Twang Thang', origin: ORIGIN, reason: 'To play online with others.' };
+  const T = { kind: 30420, pubkey: PERSONA, created_at: NOW, tags: [['d', 'twang'], ['role', 'player']], content: '' };
+  const appAsk = (over: Partial<ChildSignAsk> = {}) =>
+    ask({ scope: 'app-permission', kind: 30420, target: `site:${ORIGIN}`, targetLabel: 'Twang Thang', template: T, appPermission: CLAIM, ...over });
+  const sealed = (a: ChildSignAsk) => ({ ...a, templateHash: templateHash(a.template!), contentTruncated: false, contentLength: 0, tagsTruncated: false });
+
+  it('round-trips with the claim; the target is the claimed origin, not re-derived from the template', async () => {
+    const ev = await buildAskEvent(appAsk(), CLIENT_SK, RAIL_PK);
+    const out = await openAskEvent(ev, RAIL_SK, scope);
+    expect(out).toEqual(sealed(appAsk()));
+    expect(askInScope(sealed(appAsk()), scope)).toBe(true);
+  });
+  it('re-sanitises the claim on the guardian', async () => {
+    const ev = await buildAskEvent(appAsk({ appPermission: { ...CLAIM, name: 'Twang\u202e Thang' } }), CLIENT_SK, RAIL_PK);
+    expect((await openAskEvent(ev, RAIL_SK, scope))?.appPermission?.name).toBe('Twang Thang');
+  });
+  it('a site target other than the claimed origin is dropped', () => {
+    expect(askInScope(sealed(appAsk({ target: 'site:https://other.example' })), scope)).toBe(false);
+    expect(askInScope(sealed(appAsk({ target: 'app:mysignet' })), scope)).toBe(false);
+  });
+  it('an invalid claim refuses the whole ask', async () => {
+    for (const bad of [
+      { ...CLAIM, permission: 'post-public' }, { ...CLAIM, origin: 'http://twang.example' }, { ...CLAIM, name: '' },
+      { ...CLAIM, reason: 'r'.repeat(201) }, { ...CLAIM, extra: 'x' }, 'online-play',
+    ]) {
+      await expect(buildAskEvent(appAsk({ appPermission: bad as unknown as typeof CLAIM }), CLIENT_SK, RAIL_PK)).rejects.toThrow();
+    }
+  });
+  it('a claim on any other scope or method refuses the ask', async () => {
+    await expect(buildAskEvent(ask({ appPermission: CLAIM }), CLIENT_SK, RAIL_PK)).rejects.toThrow();
+    const crypto = ask({ method: 'nip44_encrypt', scope: 'dm-private', kind: 0, target: `peer:${PEER}`, template: undefined, appPermission: CLAIM });
+    delete crypto.template;
+    await expect(buildAskEvent(crypto, CLIENT_SK, RAIL_PK)).rejects.toThrow();
+  });
+  it('without the claim (e.g. a 30420 from an external app) it is a generic ask on the app target', async () => {
+    const generic = appAsk({ target: `app:${'f'.repeat(64)}`, appPermission: undefined });
+    delete generic.appPermission;
+    const out = await openAskEvent(await buildAskEvent(generic, CLIENT_SK, RAIL_PK), RAIL_SK, scope);
+    expect(out).toEqual(sealed(generic));
+    expect(out?.appPermission).toBeUndefined();
+    // …and a site target it cannot re-derive is still dropped
+    expect(askInScope(sealed({ ...generic, target: `site:${ORIGIN}` }), scope)).toBe(false);
+  });
+  it('the scope must still match the template: a 30420 is app-permission, nothing else', () => {
+    expect(askInScope(sealed(appAsk({ scope: null, appPermission: undefined, target: 'app:mysignet' })), scope)).toBe(false);
+  });
+});
+
 describe('verdict rail', () => {
   it('round-trips', async () => {
     const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'always', ruleId: '2'.repeat(32), decidedAt: NOW }, RAIL_SK, CLIENT_PK);
