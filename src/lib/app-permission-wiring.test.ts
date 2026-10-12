@@ -76,4 +76,21 @@ describe('app-permission wiring in App.tsx', () => {
     expect(cancel.indexOf('appPermissionWithdrawRef.current.get(req)?.abort()')).toBeGreaterThan(-1);
     expect(cancel.indexOf('appPermissionWithdrawRef.current.get(req)?.abort()')).toBeLessThan(cancel.indexOf('declineAppPermission(req)'));
   });
+
+  it('M4: a second link while one is open is refused: nothing stashed, the first untouched, a banner shown', () => {
+    const consume = between('const consumeAppPermissionUrl = useCallback(', '  useEffect(() => {\n    consumeAppPermissionUrl(');
+    const guard = consume.indexOf('if (pendingAppPermissionRef.current) {');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(consume.indexOf('setPendingAppPermissionRequest(url.request)'));
+    const refused = consume.slice(guard, consume.indexOf('}', guard));
+    expect(refused).toContain('setAppPermissionNotice(APP_PERMISSION_COPY.anotherOpen)');
+    expect(refused).toContain('return true');
+    expect(refused).not.toMatch(/setPendingAppPermissionRequest|declineAppPermission|giftWrap|publish/);
+  });
+
+  it('M4: the page is keyed by its request, and the notice banner shows over it', () => {
+    const branch = between("if (page === 'approve-app-permission' && pendingAppPermissionRequest", '// Approve third-party Add Dependant');
+    expect(branch).toContain('key={appPermissionRequestKey(pendingAppPermissionRequest)}');
+    expect(branch).toContain('{appPermissionNoticeBanner}');
+  });
 });

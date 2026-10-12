@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getPublicKey, generateSecretKey } from 'nostr-tools/pure';
-import { classifyAppPermissionSearch, classifyAppPermissionFailure, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
+import { appPermissionRequestKey, classifyAppPermissionSearch, classifyAppPermissionFailure, routeAppPermission, type AppPermissionRouteInput } from './app-permission-flow';
 import { ChildGateRefusedError } from './child-bunker';
 import { APP_PERMISSION_COPY } from './app-permission-copy';
 
@@ -92,6 +92,16 @@ describe('classifyAppPermissionFailure (I1)', () => {
     expect(classifyAppPermissionFailure(new ChildGateRefusedError('blocked'))).toEqual({ kind: 'other' });
     expect(classifyAppPermissionFailure(new ChildGateRefusedError('busy'))).toEqual({ kind: 'other' });
     expect(classifyAppPermissionFailure(new Error('timeout'))).toEqual({ kind: 'other' });
+  });
+});
+
+describe('appPermissionRequestKey (M4)', () => {
+  it('differs between two requests, so a swapped page never reuses state', () => {
+    const a = classifyAppPermissionSearch(search(), NOW);
+    const b = classifyAppPermissionSearch(search({ challenge: 'cd'.repeat(32) }), NOW);
+    if (a.kind !== 'request' || b.kind !== 'request') throw new Error('fixture');
+    expect(appPermissionRequestKey(a.request)).not.toBe(appPermissionRequestKey(b.request));
+    expect(appPermissionRequestKey(a.request)).toBe(appPermissionRequestKey({ ...a.request }));
   });
 });
 

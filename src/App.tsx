@@ -387,7 +387,7 @@ import type { VerifyRequest, VerifyResponse } from './lib/presentation';
 import { buildVerifyResponse, sendResponseViaBroadcast, parseVerifyRequest } from './lib/presentation';
 import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } from './lib/pick-credential';
 import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError, giftWrap } from './lib/relay-publish';
-import { classifyAppPermissionFailure, classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
+import { appPermissionRequestKey, classifyAppPermissionFailure, classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
 import { APP_PERMISSION_COPY } from './lib/app-permission-copy';
 import { APP_PERMISSION_KIND, buildAppPermissionApprovedRumor, buildAppPermissionDeniedRumor } from './lib/app-permission';
 import type { AppPermissionRequest } from './lib/app-permission';
@@ -9603,6 +9603,15 @@ export function App() {
       setAppPermissionNotice(APP_PERMISSION_COPY.invalidLink);
       return true;
     }
+    // M4: one request at a time. While one is pending or in flight, another
+    // app's link is refused: it is sent nothing, and the first stays on
+    // screen untouched (a swap under the person's finger would sign the
+    // wrong app's statement).
+    if (pendingAppPermissionRef.current) {
+      setAppPermissionNotice(APP_PERMISSION_COPY.anotherOpen);
+      return true;
+    }
+    pendingAppPermissionRef.current = url.request;
     setPendingAppPermissionRequest(url.request);
     return true;
   }, []);
@@ -12501,7 +12510,9 @@ export function App() {
     return (
       <>
         <Layout title={APP_PERMISSION_COPY.layoutTitle} showBack onBack={handleCancelAppPermission} {...guardianLayoutProps}>
+          {appPermissionNoticeBanner}
           <ApproveAppPermission
+            key={appPermissionRequestKey(pendingAppPermissionRequest)}
             request={pendingAppPermissionRequest}
             route={appPermissionRoute}
             personaName={appPermissionPersonaName}

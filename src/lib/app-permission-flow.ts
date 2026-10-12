@@ -97,3 +97,8 @@ export function classifyAppPermissionFailure(e: unknown): AppPermissionFailure {
   }
 }
 
+/** A request's identity for React keys (M4): its session key and challenge. */
+export function appPermissionRequestKey(r: Pick<AppPermissionRequest, 'sessionPubkey' | 'challenge'>): string {
+  return `${r.sessionPubkey}:${r.challenge}`;
+}
+

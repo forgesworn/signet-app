@@ -42,6 +42,8 @@ export const APP_PERMISSION_COPY = {
   /** I1: the guardian allowed it, but their phone could not update the Heartwood. */
   deviceUnreachable: 'Your guardian said yes, but their phone couldn\'t reach the Heartwood. Try again.',
   invalidLink: 'That app permission link was not valid, so nothing was asked.',
+  /** M4: a second link while one request is open; the second app is sent nothing. */
+  anotherOpen: 'Another app\'s request is already open.',
   refusals: {
     'legacy-paired-child': 'This phone cannot give an app permission yet. Ask your guardian to do it from their phone.',
     'dependant-on-guardian': 'That key belongs to a child you look after, whose phone is not paired straight to a Heartwood. App permissions for it cannot be given from here yet.',
