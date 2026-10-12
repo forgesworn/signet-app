@@ -5593,6 +5593,7 @@ export function App() {
   useEffect(() => {
     if (!pendingAppPermissionRequest) return;
     if (page === 'approve-app-permission') return;
+    if (appPermissionMarksRef.current.get(pendingAppPermissionRequest) === 'answered') return; // its answer is on its way
     if (!encryptionKey) {
       if (!isAuthSetUp()) return;
       requestAuth().then(key => {
@@ -8779,7 +8780,6 @@ export function App() {
   const publishAppPermissionAnswer = useCallback(async (
     req: AppPermissionRequest,
     wrap: import('signet-protocol').NostrEvent,
-    state: 'approved' | 'denied',
   ) => {
     const userRelay = preferences.relayUrl;
     const targetRelays = (userRelay && userRelay !== req.relay) ? [req.relay, userRelay] : [req.relay];
@@ -8788,8 +8788,9 @@ export function App() {
       const results = await publishWrappedToRelays(wrap, targetRelays);
       // Only the app's own relay delivers it (as for a sign-in answer).
       if (results[0] === true) {
-        setRelayAuthAckState({ status: state, siteName, variant: 'app-permission' });
+        setRelayAuthAckState({ status: 'approved', siteName, variant: 'app-permission' });
         navigateReplace('relay-auth-ack');
+        setPendingAppPermissionRequest(null);
         return;
       }
       const hosts = targetRelays.map((url, i) => ({ url, ok: results[i] })).filter(r => !r.ok).map(r => {
@@ -8806,6 +8807,7 @@ export function App() {
         retry: attempt,
       });
       navigateReplace('relay-auth-ack');
+      setPendingAppPermissionRequest(null);
     };
     await attempt();
   }, [preferences.relayUrl, navigateReplace]);
@@ -8818,21 +8820,24 @@ export function App() {
   const declineAppPermission = useCallback((req: AppPermissionRequest) => {
     appPermissionMarksRef.current.set(req, 'answered');
     const refusal = new LocalSigningBackend(generateBunkerClientSecret());
+    setRelayAuthAckState({ status: 'denied', siteName: req.name, variant: 'app-permission' });
+    navigateReplace('relay-auth-ack');
     setPendingAppPermissionRequest(null);
+    // Declining must work offline and while locked: the screen above does not
+    // wait for the network, and a lost answer is covered by the app's timeout.
     void (async () => {
       try {
         const rumor = buildAppPermissionDeniedRumor({ pubkey: refusal.activePublicKeyHex, challenge: req.challenge, permission: req.permission });
         const wrap = await giftWrap(rumor, req.sessionPubkey, refusal);
-        await publishAppPermissionAnswer(req, wrap, 'denied');
+        const userRelay = preferences.relayUrl;
+        await publishWrappedToRelays(wrap, (userRelay && userRelay !== req.relay) ? [req.relay, userRelay] : [req.relay]);
       } catch {
-        // Declining must work offline too; the app's own timeout covers a lost one.
-        setRelayAuthAckState({ status: 'denied', siteName: req.name, variant: 'app-permission' });
-        navigateReplace('relay-auth-ack');
+        // best effort
       } finally {
         refusal.destroy();
       }
     })();
-  }, [publishAppPermissionAnswer, navigateReplace]);
+  }, [preferences.relayUrl, navigateReplace]);
 
   const handleCancelAppPermission = useCallback(() => {
     const req = pendingAppPermissionRef.current;
@@ -8928,8 +8933,7 @@ export function App() {
       const wrap = await giftWrap(rumor, req.sessionPubkey, backend);
       if (!stillOpen()) return;
       marks.set(req, 'answered');
-      setPendingAppPermissionRequest(null);
-      await publishAppPermissionAnswer(req, wrap, 'approved');
+      await publishAppPermissionAnswer(req, wrap);
     } catch (e) {
       if (e instanceof ChildGateRefusedError && e.code === 'denied' && stillOpen()) {
         // The guardian said no: tell the app, like a Cancel.
