@@ -163,6 +163,7 @@ import { routeQR } from './lib/qr-router';
 import { safeOrigin } from './lib/origin-display';
 import { AddDependant } from './pages/AddDependant';
 import { ApproveAddDependant } from './pages/ApproveAddDependant';
+import { ApproveAppPermission } from './pages/ApproveAppPermission';
 import { ImportDependant } from './pages/ImportDependant';
 import { OnboardingApp } from './pages/OnboardingApp';
 import { Onboarding } from './pages/Onboarding';
@@ -320,7 +321,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, ChildGateRefusedError, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -385,7 +386,12 @@ import type { PairedChildMeta } from './lib/db';
 import type { VerifyRequest, VerifyResponse } from './lib/presentation';
 import { buildVerifyResponse, sendResponseViaBroadcast, parseVerifyRequest } from './lib/presentation';
 import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } from './lib/pick-credential';
-import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError } from './lib/relay-publish';
+import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError, giftWrap } from './lib/relay-publish';
+import { classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
+import { APP_PERMISSION_COPY } from './lib/app-permission-copy';
+import { APP_PERMISSION_KIND, buildAppPermissionApprovedRumor, buildAppPermissionDeniedRumor } from './lib/app-permission';
+import type { AppPermissionRequest } from './lib/app-permission';
+import { answerSealingBackend } from './lib/answer-seal-pass';
 import type { AuthResponse } from './lib/relay-publish';
 import { publishAuditEvent } from './lib/audit';
 import { resolveAuditVisibility } from './lib/audit-visibility';
@@ -1211,6 +1217,18 @@ export function App() {
   const [pendingAddDependantRequest, setPendingAddDependantRequest] = useState<AddDependantRequest | null>(null);
   /** A41: an add-dependant request that reached a child's phone (shown, then answered `denied`). */
   const [addDependantRefused, setAddDependantRefused] = useState<AddDependantRequest | null>(null);
+  /**
+   * A pending `?action=app-permission` request. Stashed on arrival and routed
+   * after unlock, once preferences have loaded: whether this phone is a
+   * child's or an adult's is not known before then (R-33).
+   */
+  const [pendingAppPermissionRequest, setPendingAppPermissionRequest] = useState<AppPermissionRequest | null>(null);
+  const pendingAppPermissionRef = useRef<AppPermissionRequest | null>(null);
+  pendingAppPermissionRef.current = pendingAppPermissionRequest;
+  /** A link that could not be used, shown once as a banner. */
+  const [appPermissionNotice, setAppPermissionNotice] = useState<string | null>(null);
+  /** One answer per request: 'approving' until the answer is wrapped, 'answered' once it is out (or declined). */
+  const appPermissionMarksRef = useRef(new WeakMap<AppPermissionRequest, 'approving' | 'answered'>());
   /** Current request's entry in the developer auth-request log. */
   const currentLogEntryRef = useRef<AuthRequestLogEntry | null>(null);
 
@@ -1239,9 +1257,9 @@ export function App() {
 
   /** State for the relay-mode in-app acknowledgement screen. */
   type RelayAuthAckState =
-    | { status: 'approved'; siteName: string; postUrl?: string }
-    | { status: 'denied'; siteName: string }
-    | { status: 'failed'; relayHost: string; requestedRelay?: string; primaryRelay?: string; failureReason?: string; siteName?: string; retry: () => Promise<void> };
+    | { status: 'approved'; siteName: string; postUrl?: string; variant?: 'app-permission' }
+    | { status: 'denied'; siteName: string; variant?: 'app-permission' }
+    | { status: 'failed'; relayHost: string; requestedRelay?: string; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
   const [relayAuthAckState, setRelayAuthAckState] = useState<RelayAuthAckState | null>(null);
 
   // Transient confirmation chip rendered on a dependant's card after the user
@@ -5459,7 +5477,7 @@ export function App() {
     // end-to-end verification caught 'approve-companion-grant' missing here:
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
-    const signingPages: Page[] = ['venue-entry', 'photo-capture', 'approve-auth', 'approve-verification', 'approve-connect', 'approve-add-dependant', 'approve-companion-grant', 'vouch-someone', 'add-dependant', 'import-dependant', 'roster', 'manage-carousel', 'migrate-heartwood', 'contacts-grant-approve', 'contacts-grant-code'];
+    const signingPages: Page[] = ['venue-entry', 'photo-capture', 'approve-auth', 'approve-verification', 'approve-connect', 'approve-add-dependant', 'approve-app-permission', 'approve-companion-grant', 'vouch-someone', 'add-dependant', 'import-dependant', 'roster', 'manage-carousel', 'migrate-heartwood', 'contacts-grant-approve', 'contacts-grant-code'];
     if (signingPages.includes(page) && !encryptionKey) {
       requestAuth().then(key => {
         // Both grant pages stay put on cancel and offer Unlock again: the
@@ -5499,10 +5517,10 @@ export function App() {
   // has gone (denied, delivered, withdrawn) goes home, which restores the nav.
   useEffect(() => {
     if (identityLoading) return;
-    if (isOrphanedApprovalPage(page, { hasAuthRequest: !!pendingAuthRequest, hasRelayAuthAck: !!relayAuthAckState })) {
+    if (isOrphanedApprovalPage(page, { hasAuthRequest: !!pendingAuthRequest, hasRelayAuthAck: !!relayAuthAckState, hasAppPermissionRequest: !!pendingAppPermissionRequest })) {
       navigateReplace('home');
     }
-  }, [page, pendingAuthRequest, relayAuthAckState, identityLoading, navigateReplace]);
+  }, [page, pendingAuthRequest, relayAuthAckState, pendingAppPermissionRequest, identityLoading, navigateReplace]);
 
   // After unlock, navigate to approve-auth ONLY if the pending request came via
   // URL auth (?auth=1 handler set urlAuthSiteName). QR-scanned and BroadcastChannel
@@ -5567,6 +5585,26 @@ export function App() {
     }
     navigateReplace('approve-add-dependant');
   }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode]);
+
+  // After unlock, show a pending app-permission request. Mirrors the
+  // add-dependant effect, plus one wait: a child's phone and an adult's take
+  // different routes, and the signing mode is only real once preferences and
+  // the identity have loaded (R-33), so nothing is decided before then.
+  useEffect(() => {
+    if (!pendingAppPermissionRequest) return;
+    if (page === 'approve-app-permission') return;
+    if (!encryptionKey) {
+      if (!isAuthSetUp()) return;
+      requestAuth().then(key => {
+        // Cancelled the unlock: treat it as closing the tab. The app's own
+        // timeout ends the request; nothing is sent.
+        if (!key) setPendingAppPermissionRequest(null);
+      });
+      return;
+    }
+    if (prefsLoading || identityLoading) return;
+    navigateReplace('approve-app-permission');
+  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
@@ -8695,6 +8733,216 @@ export function App() {
     navigateReplace('home');
   }, [urlAuthSiteName, navigateReplace, retireAuthRequestState]);
 
+  // ── App permission (`?action=app-permission`) ───────────────────────
+  //
+  // An app asks to show other players that one of this phone's keys plays its
+  // game: a kind-30420 statement signed by that key, answered over the app's
+  // relay as a gift wrap. An adult signs it themselves; a child phone paired
+  // straight to the Heartwood asks its guardian (the sign goes through the
+  // child's gate, with the seal pass folding the answer's two extra
+  // operations into the same decision). Nothing else is offered: see
+  // `routeAppPermission`.
+
+  const appPermissionRoute = useMemo(() => {
+    const req = pendingAppPermissionRequest;
+    if (!req || !identity) return null;
+    return routeAppPermission({
+      persona: req.template.pubkey,
+      signingMode: preferences.signingMode,
+      childDirect,
+      ownerPersonas: [
+        identity.persona.publicKey,
+        ...(identity.extraPersonas ?? []).map(e => e.publicKey),
+        ...(npActive ? [identity.naturalPerson.publicKey] : []),
+      ].filter(Boolean),
+      dependantPersonas: dependants.flatMap(dependantPersonaPubkeys),
+      childPersonas: childBunkerPersonasCsv ? childBunkerPersonasCsv.split(',') : [],
+      guardianActingAsChild: carousel.childMode,
+    });
+  }, [pendingAppPermissionRequest, identity, preferences.signingMode, childDirect, npActive, dependants, childBunkerPersonasCsv, carousel.childMode]);
+
+  /** The display name of the key the permission is for. */
+  const appPermissionPersonaName = useMemo(() => {
+    const pk = pendingAppPermissionRequest?.template.pubkey;
+    if (!pk || !identity) return '';
+    const slots = [identity.persona, identity.naturalPerson, ...(identity.extraPersonas ?? [])];
+    return slots.find(x => x.publicKey.toLowerCase() === pk)?.displayName ?? '';
+  }, [pendingAppPermissionRequest, identity]);
+
+  const retireAppPermission = useCallback(() => setPendingAppPermissionRequest(null), []);
+
+  /**
+   * Deliver one gift wrap and show how it went. `wrap` is built once by the
+   * caller: a retry re-publishes this same event (a rebuilt wrap would cost
+   * the device operations, and with the seal pass spent, extra cards again).
+   */
+  const publishAppPermissionAnswer = useCallback(async (
+    req: AppPermissionRequest,
+    wrap: import('signet-protocol').NostrEvent,
+    state: 'approved' | 'denied',
+  ) => {
+    const userRelay = preferences.relayUrl;
+    const targetRelays = (userRelay && userRelay !== req.relay) ? [req.relay, userRelay] : [req.relay];
+    const siteName = req.name;
+    const attempt = async (): Promise<void> => {
+      const results = await publishWrappedToRelays(wrap, targetRelays);
+      // Only the app's own relay delivers it (as for a sign-in answer).
+      if (results[0] === true) {
+        setRelayAuthAckState({ status: state, siteName, variant: 'app-permission' });
+        navigateReplace('relay-auth-ack');
+        return;
+      }
+      const hosts = targetRelays.map((url, i) => ({ url, ok: results[i] })).filter(r => !r.ok).map(r => {
+        try { return new URL(r.url).host; } catch { return r.url.slice(0, 64); }
+      });
+      setRelayAuthAckState({
+        status: 'failed',
+        relayHost: hosts.join(' / '),
+        requestedRelay: relayHostLabel(req.relay),
+        primaryRelay: userRelay ? relayHostLabel(userRelay) : undefined,
+        failureReason: getRelayDeliveryStatus(req.relay)?.reason,
+        siteName,
+        variant: 'app-permission',
+        retry: attempt,
+      });
+      navigateReplace('relay-auth-ack');
+    };
+    await attempt();
+  }, [preferences.relayUrl, navigateReplace]);
+
+  /**
+   * Say no: the user's Cancel / Close, or a guardian's Deny. Wrapped with a
+   * throwaway key so the app cannot attribute the refusal to a person (as a
+   * sign-in refusal is). Fire-and-forget on the network, like a sign-in Deny.
+   */
+  const declineAppPermission = useCallback((req: AppPermissionRequest) => {
+    appPermissionMarksRef.current.set(req, 'answered');
+    const refusal = new LocalSigningBackend(generateBunkerClientSecret());
+    setPendingAppPermissionRequest(null);
+    void (async () => {
+      try {
+        const rumor = buildAppPermissionDeniedRumor({ pubkey: refusal.activePublicKeyHex, challenge: req.challenge, permission: req.permission });
+        const wrap = await giftWrap(rumor, req.sessionPubkey, refusal);
+        await publishAppPermissionAnswer(req, wrap, 'denied');
+      } catch {
+        // Declining must work offline too; the app's own timeout covers a lost one.
+        setRelayAuthAckState({ status: 'denied', siteName: req.name, variant: 'app-permission' });
+        navigateReplace('relay-auth-ack');
+      } finally {
+        refusal.destroy();
+      }
+    })();
+  }, [publishAppPermissionAnswer, navigateReplace]);
+
+  const handleCancelAppPermission = useCallback(() => {
+    const req = pendingAppPermissionRef.current;
+    if (!req) { navigateReplace('home'); return; }
+    // Already answered: just leave. An approval in flight is taken over, and
+    // then delivers nothing.
+    if (appPermissionMarksRef.current.get(req) === 'answered') { retireAppPermission(); navigateReplace('home'); return; }
+    declineAppPermission(req);
+  }, [declineAppPermission, retireAppPermission, navigateReplace]);
+
+  const handleApproveAppPermission = useCallback(async () => {
+    const req = pendingAppPermissionRef.current;
+    const route = appPermissionRoute;
+    if (!req || !identity) throw new Error(APP_PERMISSION_COPY.noLongerPending);
+    if (!route || route.mode === 'refused') throw new Error(APP_PERMISSION_COPY.noLongerPending);
+    const marks = appPermissionMarksRef.current;
+    if (marks.has(req)) throw new Error(APP_PERMISSION_COPY.noLongerPending);
+    marks.set(req, 'approving');
+    const stillOpen = () => pendingAppPermissionRef.current === req && marks.get(req) === 'approving';
+    const persona = route.persona;
+    let tempBackend: LocalSigningBackend | null = null;
+    try {
+      let inner: DecryptingSigningBackend;
+      if (route.mode === 'child-direct') {
+        // The persona's own Heartwood route. No fallback: a null is "not connected".
+        const routed = resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, persona, slotResolveOpts);
+        if (!routed) throw new Error(APP_PERMISSION_COPY.keyUnavailable);
+        inner = routed;
+      } else {
+        // The guardian-source resolution of `approveAuthUnguarded`, for the key the app named.
+        const isNP = persona === identity.naturalPerson.publicKey.toLowerCase();
+        const isBuiltIn = persona === identity.persona.publicKey.toLowerCase();
+        const keypairType = isNP ? 'natural-person' : isBuiltIn ? 'persona' : persona;
+        const connectedBunker = signerStatus === 'connected' && !isImportedGuardianPersona(identity, persona)
+          ? (bunkerRouter?.backendFor(persona) ?? (isNP ? npBunkerBackend : null))
+          : null;
+        const ready = connectedBunker ?? (isNP ? nip07Backend : null)
+          ?? (isBuiltIn ? backends?.persona : isNP ? backends?.naturalPerson : null) ?? null;
+        const deviceHeld = (preferences.signingMode === 'bunker' || preferences.signingMode === 'paired-child')
+          && !isImportedGuardianPersona(identity, persona);
+        let resolved: SigningBackend | null = ready;
+        if (!resolved) {
+          let guardianIdentity = identity;
+          tempBackend = resolveGuardianBackend(keypairType, guardianIdentity);
+          if (!tempBackend) {
+            const key = encryptionKey || await requestAuth();
+            if (!key) throw new Error(deviceHeld ? routedApprovalUnavailableMessage() : 'Authentication required');
+            const fresh = await loadIdentityDecrypted(guardianIdentity.id, key);
+            if (fresh) guardianIdentity = fresh;
+            tempBackend = resolveGuardianBackend(keypairType, guardianIdentity);
+          }
+          if (tempBackend) resolved = tempBackend;
+          else if (deviceHeld) resolved = await acquireApprovalRoute(persona, stillOpen, APP_PERMISSION_COPY.noLongerPending);
+          else throw new Error(APP_PERMISSION_COPY.keyUnavailable);
+        }
+        inner = resolved as DecryptingSigningBackend;
+      }
+      if (!stillOpen()) return;
+      assertSigningIdentity(inner, persona);
+
+      let backend: SigningBackend = inner;
+      if (route.mode === 'child-direct') {
+        const label = req.name;
+        const nowS0 = Math.floor(Date.now() / 1000);
+        childGateRef.current.noteConnectedApp({ appId: childSiteAppId(req.origin), kind: 'site', label, url: req.origin, persona, firstSeen: nowS0, lastUsed: nowS0 });
+        backend = answerSealingBackend({
+          inner,
+          gate: {
+            authorise: (r) => childGateRef.current.authorise(r),
+            forwardPassed: (r) => childGateRef.current.forwardPassed(r),
+          },
+          persona,
+          appLabel: label,
+          siteOrigin: req.origin,
+          appPermission: { permission: req.permission, name: req.name, origin: req.origin, reason: req.reason },
+          sessionPubkey: req.sessionPubkey,
+          eligibleKind: APP_PERMISSION_KIND,
+          responseField: 'event',
+        });
+      }
+
+      const signed = await backend.signEvent({ ...req.template, created_at: Math.floor(Date.now() / 1000) });
+      if (!stillOpen()) return;
+      // The app compares the four template fields; make sure the signer kept them.
+      if (signed.pubkey !== persona || signed.kind !== req.template.kind || signed.content !== req.template.content
+        || JSON.stringify(signed.tags) !== JSON.stringify(req.template.tags)) {
+        throw new Error(APP_PERMISSION_COPY.keyUnavailable);
+      }
+      const rumor = buildAppPermissionApprovedRumor({ persona, challenge: req.challenge, permission: req.permission, event: signed });
+      // Wrapped ONCE, through the same backend: with the seal pass this is
+      // two device operations that need no further card, and a rebuilt wrap
+      // would bring the cards back.
+      const wrap = await giftWrap(rumor, req.sessionPubkey, backend);
+      if (!stillOpen()) return;
+      marks.set(req, 'answered');
+      setPendingAppPermissionRequest(null);
+      await publishAppPermissionAnswer(req, wrap, 'approved');
+    } catch (e) {
+      if (e instanceof ChildGateRefusedError && e.code === 'denied' && stillOpen()) {
+        // The guardian said no: tell the app, like a Cancel.
+        declineAppPermission(req);
+        return;
+      }
+      if (marks.get(req) === 'approving') marks.delete(req); // free to try again
+      throw e;
+    } finally {
+      tempBackend?.destroy();
+    }
+  }, [appPermissionRoute, identity, bunkerBackend, bunkerRouter, slotResolveOpts, signerStatus, npBunkerBackend, nip07Backend, backends, preferences.signingMode, encryptionKey, requestAuth, routedApprovalUnavailableMessage, acquireApprovalRoute, publishAppPermissionAnswer, declineAppPermission]);
+
   // ── Third-party add-dependant approval ─────────────────────────────
   //
   // Mints a new dependant, signs a kind-21236 proof event tying it to the
@@ -9315,6 +9563,32 @@ export function App() {
   }, [consumeAddDependantUrl]);
 
   /**
+   * `?action=app-permission&…` — an app asks to show other players that a key
+   * plays its game. Consumed like add-dependant: the URL is always cleared
+   * (a refresh must not re-ask), then the request is only STASHED. Whether
+   * this is a child's phone or an adult's is decided after unlock, once
+   * preferences have loaded, never here (the native cold start calls this
+   * before they do). An unusable link is dropped with a notice: the request's
+   * callback is unused in relay mode, so there is nowhere safe to answer it.
+   * The native `root-carrier` path feeds it a query string directly.
+   */
+  const consumeAppPermissionUrl = useCallback((search: string): boolean => {
+    const url = classifyAppPermissionSearch(search);
+    if (url.kind === 'not-ours') return false;
+    window.history.replaceState({ page: 'home' }, '', window.location.pathname);
+    if (url.kind === 'refused') {
+      setAppPermissionNotice(APP_PERMISSION_COPY.invalidLink);
+      return true;
+    }
+    setPendingAppPermissionRequest(url.request);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    consumeAppPermissionUrl(window.location.search);
+  }, [consumeAppPermissionUrl]);
+
+  /**
    * Web-redirect entry point for NIP-46 pairing (desktop fallback).
    *
    * Companion apps that can't rely on native `nostrconnect://` scheme
@@ -9385,7 +9659,7 @@ export function App() {
   // navigate to a foreign host, which Capacitor hands to the system browser.
   // A `root-carrier` action is a root-path URL that isn't sign-in — its query
   // string is handed to the same `consumeVerifyUrl` / `consumeAddDependantUrl`
-  // / `consumeNostrConnectUrl` callbacks the web mount effects above use, in
+  // / `consumeAppPermissionUrl` / `consumeNostrConnectUrl` callbacks the web mount effects above use, in
   // that order, so those carriers keep working when claiming the root path
   // as an App Link makes the web page's own mount-time
   // `window.location.search` effects inert inside the APK's WebView.
@@ -9419,6 +9693,7 @@ export function App() {
         try { search = new URL(action.href).search; } catch { return; }
         if (consumeVerifyUrl(search)) return;
         if (consumeAddDependantUrl(search)) return;
+        if (consumeAppPermissionUrl(search)) return;
         // An App Link means another app launched us for this pairing.
         consumeNostrConnectUrl(search, true);
         return;
@@ -9432,7 +9707,7 @@ export function App() {
         if (isUnactionableMysignetLink(url, action)) setNativeLinkNothingToOpen(true);
         return;
     }
-  }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeNostrConnectUrl, isPairedChild]);
+  }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeAppPermissionUrl, consumeNostrConnectUrl, isPairedChild]);
 
   useEffect(() => {
     if (!isNativeApp()) return;
@@ -9828,6 +10103,12 @@ export function App() {
       </button>
     </div>
   ) : null;
+  const appPermissionNoticeBanner = appPermissionNotice ? (
+    <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ flex: 1 }}>{appPermissionNotice}</span>
+      <button onClick={() => setAppPermissionNotice(null)} className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}>OK</button>
+    </div>
+  ) : null;
   const contactsGrantPairedChildBanner = contactsGrantPairedChildRequest ? (
     <ContactsGrantChildCode
       request={contactsGrantPairedChildRequest}
@@ -9905,10 +10186,10 @@ export function App() {
   ) : null;
   const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</>
   ) : null;
 
@@ -12059,8 +12340,9 @@ export function App() {
 
     if (relayAuthAckState.status === 'failed') {
       return (
-        <Layout title="Sign In" {...guardianLayoutProps}>
+        <Layout title={relayAuthAckState.variant === 'app-permission' ? APP_PERMISSION_COPY.layoutTitle : 'Sign In'} {...guardianLayoutProps}>
           <RelayAuthAck
+            variant={relayAuthAckState.variant}
             state="failed"
             relayHost={relayAuthAckState.relayHost}
             requestedRelay={relayAuthAckState.requestedRelay}
@@ -12075,8 +12357,9 @@ export function App() {
     }
 
     return (
-      <Layout title="Sign In" {...guardianLayoutProps}>
+      <Layout title={relayAuthAckState.variant === 'app-permission' ? APP_PERMISSION_COPY.layoutTitle : 'Sign In'} {...guardianLayoutProps}>
         <RelayAuthAck
+          variant={relayAuthAckState.variant}
           state={relayAuthAckState.status}
           siteName={relayAuthAckState.siteName}
           postUrl={relayAuthAckState.status === 'approved' ? relayAuthAckState.postUrl : undefined}
@@ -12185,6 +12468,25 @@ export function App() {
         {/* authOverlay must render here too — when the app auto-locks while this
             screen is open, the re-unlock prompt (requestAuth → showAuthPrompt)
             has to mount somewhere, or the lock strands the user (the internal issue tracker). */}
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
+
+  // Approve an app's permission request (`?action=app-permission`)
+  if (page === 'approve-app-permission' && pendingAppPermissionRequest && identity && appPermissionRoute) {
+    return (
+      <>
+        <Layout title={APP_PERMISSION_COPY.layoutTitle} showBack onBack={handleCancelAppPermission} {...guardianLayoutProps}>
+          <ApproveAppPermission
+            request={pendingAppPermissionRequest}
+            route={appPermissionRoute}
+            personaName={appPermissionPersonaName}
+            onApprove={handleApproveAppPermission}
+            onCancel={handleCancelAppPermission}
+          />
+        </Layout>
+        {/* See approve-auth: the re-unlock prompt must be mountable after an auto-lock. */}
         {authOverlay}{nip55Overlay}
       </>
     );

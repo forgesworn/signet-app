@@ -70,18 +70,20 @@ describe('activeTabForPage', () => {
 
 describe('isOrphanedApprovalPage', () => {
   it('flags approve-auth once its request is gone (the nav-less fall-through)', () => {
-    expect(isOrphanedApprovalPage('approve-auth', { hasAuthRequest: false, hasRelayAuthAck: false })).toBe(true);
+    expect(isOrphanedApprovalPage('approve-auth', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(true);
     expect(isBarHiddenPage('approve-auth')).toBe(true);
   });
   it('leaves approve-auth alone while a request is pending', () => {
-    expect(isOrphanedApprovalPage('approve-auth', { hasAuthRequest: true, hasRelayAuthAck: false })).toBe(false);
+    expect(isOrphanedApprovalPage('approve-auth', { hasAuthRequest: true, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(false);
   });
   it('flags relay-auth-ack without ack state', () => {
-    expect(isOrphanedApprovalPage('relay-auth-ack', { hasAuthRequest: false, hasRelayAuthAck: false })).toBe(true);
-    expect(isOrphanedApprovalPage('relay-auth-ack', { hasAuthRequest: false, hasRelayAuthAck: true })).toBe(false);
+    expect(isOrphanedApprovalPage('relay-auth-ack', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(true);
+    expect(isOrphanedApprovalPage('relay-auth-ack', { hasAuthRequest: false, hasRelayAuthAck: true, hasAppPermissionRequest: false })).toBe(false);
   });
   it('never flags ordinary pages', () => {
-    expect(isOrphanedApprovalPage('home', { hasAuthRequest: false, hasRelayAuthAck: false })).toBe(false);
+    expect(isOrphanedApprovalPage('approve-app-permission', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(true);
+    expect(isOrphanedApprovalPage('approve-app-permission', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: true })).toBe(false);
+    expect(isOrphanedApprovalPage('home', { hasAuthRequest: false, hasRelayAuthAck: false, hasAppPermissionRequest: false })).toBe(false);
   });
 });
 
