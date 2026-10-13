@@ -225,6 +225,11 @@ describe('verdict rail: `alsoOpened` (Part B)', () => {
     expect(await openVerdictEvent(ev, CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toEqual({ v: 1, id: ID, verdict: 'once', alsoOpened: [13], decidedAt: NOW });
     expect(await openRailVerdictEvent(ev, RAIL_SK, { clientPubkey: CLIENT_PK })).toMatchObject({ alsoOpened: [13] });
   });
+  it('round-trips [13] on an Always verdict (the one-time seal of that answer, M6), both rails', async () => {
+    const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'always', ruleId: '2'.repeat(32), alsoOpened: [13], decidedAt: NOW }, RAIL_SK, CLIENT_PK);
+    expect(await openVerdictEvent(ev, CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toEqual({ v: 1, id: ID, verdict: 'always', ruleId: '2'.repeat(32), alsoOpened: [13], decidedAt: NOW });
+    expect(await openRailVerdictEvent(ev, RAIL_SK, { clientPubkey: CLIENT_PK })).toMatchObject({ alsoOpened: [13] });
+  });
   it('absent stays absent', async () => {
     const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'once', decidedAt: NOW }, RAIL_SK, CLIENT_PK);
     expect((await openVerdictEvent(ev, CLIENT_SK, { railPubkey: RAIL_PK, id: ID }))?.alsoOpened).toBeUndefined();
@@ -235,8 +240,11 @@ describe('verdict rail: `alsoOpened` (Part B)', () => {
       await expect(buildVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened: alsoOpened as number[], decidedAt: NOW }, RAIL_SK, CLIENT_PK)).rejects.toThrow();
       expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened, decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
     }
-    for (const verdict of ['always', 'deny']) {
-      expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict, alsoOpened: [13], decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
+    // A deny never opened anything: refused on build and on open.
+    await expect(buildVerdictEvent({ v: 1, id: ID, verdict: 'deny', alsoOpened: [13], decidedAt: NOW }, RAIL_SK, CLIENT_PK)).rejects.toThrow();
+    expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict: 'deny', alsoOpened: [13], decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
+    for (const alsoOpened of bads) {
+      expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict: 'always', alsoOpened, decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
     }
     // the hand-built path is sound
     expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened: [13], decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).not.toBeNull();

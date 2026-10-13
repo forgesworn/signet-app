@@ -490,10 +490,11 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
             // A12: the forwarded template is the one the guardian was asked
             // about — `template` itself, never re-read from the caller.
             answerAsk(id, 'approved');
-            // Part B: what else the guardian's push opened (Allow once only;
-            // `checkVerdict` holds it to that) rides on the outcome, for the
-            // answer seal pass. A rule or the stage never sets it.
-            const also = v.verdict === 'once' ? v.alsoOpened : undefined;
+            // Part B: what else the guardian's push opened for THIS answer
+            // (Allow once or Always; `checkVerdict` refuses it on a deny)
+            // rides on the outcome, for the answer seal pass. A request
+            // allowed by a rule or the stage has no verdict, so never sets it.
+            const also = v.verdict === 'once' || v.verdict === 'always' ? v.alsoOpened : undefined;
             void forward('approved', target)
               .then(o => (o.ok && also && also.length > 0 ? { ...o, alsoOpened: [...also] } : o))
               .then(settle);

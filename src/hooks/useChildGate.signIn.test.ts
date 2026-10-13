@@ -56,8 +56,10 @@ function setup(opts: { rules?: ChildRulesPayload } = {}) {
     },
   };
   const clock = { t: Date.now() };
+  /** The rules payload the child holds; change it and `hook.rerender()` (a rule arriving on the rules rail). */
+  const cfg = { rules: opts.rules ?? rules() };
   const hook = renderHook(() => useChildGate({
-    record: record(), rules: opts.rules ?? rules(), relays: ['wss://rail.example'], unpaired: false,
+    record: record(), rules: cfg.rules, relays: ['wss://rail.example'], unpaired: false,
     onActivity: () => {}, transport: t, now: () => clock.t,
   }));
   const asks = async (): Promise<ChildSignAsk[]> => {
@@ -82,7 +84,7 @@ function setup(opts: { rules?: ChildRulesPayload } = {}) {
     authorise: (r: Parameters<typeof hook.result.current.authorise>[0]) => hook.result.current.authorise(r),
     forwardPassed: (r: Parameters<typeof hook.result.current.forwardPassed>[0]) => hook.result.current.forwardPassed(r),
   };
-  return { hook, published, asks, answer, gate, clock };
+  return { hook, published, asks, answer, gate, clock, cfg };
 }
 
 const inner = () => new LocalSigningBackend(bytesToHex(personaSk));
@@ -186,7 +188,30 @@ describe('Part B: one card for the sign-in', () => {
     expect(all[0]).toMatchObject({ method: 'nip44_encrypt' });
   });
 
-  it('"Always" on the card (a rule, no alsoOpened): no pass — the encrypt asks', async () => {
+  it('M6: "Always" on the card with the seal opened — THIS answer\'s encrypt and seal go without another ask; a later sign-in under the rule mints no pass', async () => {
+    const s = setup();
+    const w = signInWrapper(s);
+    const signing = (await start(() => signAuthChallenge(w, CHALLENGE, ORIGIN, undefined, 'Twang Thang'))).p;
+    await s.answer('always', { ruleId: '3'.repeat(32), alsoOpened: [13] });
+    const { authEvent } = await signing;
+    const wrap = await wrapAuthResponse(response(authEvent), w, SESSION);
+    expect(wrap).not.toBeNull();
+    expect(s.published).toHaveLength(1); // the one sign-in card, nothing more
+
+    // The rule reaches the child (scope sign-in → 21236 only). The next sign-in to that site signs with no card and no verdict — so no pass.
+    const allowSite: ChildRule = { id: '3'.repeat(32), dependantId: DEP, persona: PERSONA, scope: 'sign-in', target: `site:${ORIGIN}`, decision: 'allow', createdAt: 1, updatedAt: 1 };
+    s.cfg.rules = rules({ rules: [allowSite], ceilingKinds: [1, 21236] });
+    s.hook.rerender();
+    const w2 = signInWrapper(s);
+    const { authEvent: again } = await signAuthChallenge(w2, CHALLENGE, ORIGIN);
+    expect(s.published).toHaveLength(1); // no card for the sign-in itself
+    void await start(() => wrapAuthResponse(response(again), w2, SESSION));
+    const all = await s.asks();
+    expect(all).toHaveLength(2);
+    expect(all[1]).toMatchObject({ method: 'nip44_encrypt', scope: 'dm-private', target: `peer:${SESSION}` });
+  });
+
+  it('"Always" on the card from an older guardian (a rule, no alsoOpened): no pass — the encrypt asks', async () => {
     const s = setup();
     const w = signInWrapper(s);
     const signing = (await start(() => signAuthChallenge(w, CHALLENGE, ORIGIN))).p;

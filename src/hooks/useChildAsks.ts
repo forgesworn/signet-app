@@ -12,6 +12,9 @@
  * `decide()` — first verdict per ask id wins, and (A34) it is written to the
  * encrypted history row BEFORE any side effect or publish:
  *   always → ChildRule (persona-specific, target from the ask) + `onRulesChanged`;
+ *            on a marked sign-in also ONE approved-once seal (kind 13) for this
+ *            answer, in the same push, reported as `alsoOpened` (the rule
+ *            itself stays sign-in / 21236);
  *   once   → an approved-once entry for the kind (added by `pushCeiling`);
  *   deny   → an optional deny rule when "Always deny" is ticked.
  * For a sign_event `once` / `always` the ceiling is ALWAYS pushed
@@ -450,16 +453,30 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
             id: childRuleId(c.id, ask.persona, scope, ask.target), dependantId: c.id, persona: ask.persona, scope, target: ask.target,
             decision: 'allow', label: ask.targetLabel, createdAt: nowMs, updatedAt: nowMs,
           };
+          // M6: on a marked sign-in the standing rule stays sign-in / 21236;
+          // THIS answer's seal gets one approved-once entry (the Allow-once
+          // window), pushed with the rule — both or neither — so the child
+          // mints its seal pass for this one answer. Later sign-ins under the
+          // rule have no verdict, so no pass.
+          const sealOnce: OnceEntry | undefined = signs && sealsOwnAnswer(ask)
+            ? { kind: SEAL_KIND, until: nowS + CHILD_ASK_ONCE_WINDOW_S } : undefined;
           const current = signs ? ceilingFor(dep, rules, onceFor, nowS) : 'all';
-          // A5: the 64-kind ceiling must be able to hold it.
-          if (signs && !fits(current, ceilingFor(dep, [...rules.filter(r => r.id !== rule.id), rule], onceFor, nowS), [ask.kind])) {
+          // A5: the 64-kind ceiling must be able to hold it (and the seal entry).
+          if (signs && !fits(current,
+            ceilingFor(dep, [...rules.filter(r => r.id !== rule.id), rule], sealOnce ? [...onceFor, sealOnce] : onceFor, nowS),
+            sealOnce ? [ask.kind, SEAL_KIND] : [ask.kind])) {
             refuse('ceiling-full');
           } else {
             try { await saveChildRule(rule, key); } catch { return { sent: false, reason: 'publish-failed' }; }
             o.onRulesChanged();
             out = { ...out, ruleId: rule.id };
             // A33: always push; the device no-ops when it already matches.
-            if (signs && (await o.pushCeiling(c.id)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
+            if (signs && (await (sealOnce ? o.pushCeiling(c.id, sealOnce) : o.pushCeiling(c.id))) !== 'ok') {
+              refuse('device-unreachable', 'device-unreachable');
+            } else if (sealOnce) {
+              onceAdded = [sealOnce];
+              out = { ...out, alsoOpened: [SEAL_KIND] };
+            }
           }
         } else if (signs) {
           // once. D5: My Signet's own answer to an app permission (the ask

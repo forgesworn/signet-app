@@ -19,6 +19,7 @@ vi.mock('../lib/db', async (importOriginal) => {
 import { listChildRules, saveChildRule, saveChildAskHistory } from '../lib/db';
 import { buildAskEvent, buildVerdictEvent, openVerdictEvent, type ChildSignAsk } from '../lib/child-sign-asks';
 import { childRuleId } from '../lib/child-rules';
+import { compileChildDirectPolicy } from '../lib/policy-compiler';
 import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import type { ChildRule } from '../types/child-rules';
 import type { DependantIdentity } from '../types';
@@ -712,16 +713,87 @@ describe('useChildAsks — My Signet\'s own sign-in, marked (Part B)', () => {
     expect(v?.alsoOpened).toBeUndefined();
   });
 
-  it('"Always" is still offered for a marked sign-in: a rule, its own kind only, nothing reported', async () => {
+  /** The kinds a set of allow rules adds to the slot's ceiling (no approved-once entries). */
+  const ruleKinds = (rs: ChildRule[]) => {
+    const kinds = (rules: ChildRule[]) => compileChildDirectPolicy({
+      stage: dep.autonomyStage, paused: false, rules, approvedOnceKinds: [], boundPersona: PERSONA,
+      auditVisible: false, nowSeconds: Math.floor(clock / 1000),
+    }).allowedKinds;
+    const base = kinds([]);
+    return kinds(rs).filter(k => !base.includes(k));
+  };
+  const once13 = () => ({ kind: 13, until: Math.floor(clock / 1000) + 600 });
+
+  it('M6: marked "Always" saves a sign-in rule (21236 only) and, in the same push, ONE approved-once 13 — before a verdict that reports it', async () => {
     const s = await withAsk(true);
+    const order: string[] = [];
+    s.pushCeiling.mockImplementation(async () => { order.push('push'); return 'ok'; });
+    const pub = t.publish.bind(t);
+    t.publish = async (ev, relays) => { order.push('publish'); return pub(ev, relays); };
     let r;
     await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
     expect(r).toEqual({ sent: true });
-    expect(mSaveRule.mock.calls[0][0]).toMatchObject({ decision: 'allow', scope: 'sign-in', target: `site:${ORIGIN}`, persona: PERSONA });
+    const rule = mSaveRule.mock.calls[0][0] as ChildRule;
+    expect(rule).toMatchObject({ decision: 'allow', scope: 'sign-in', target: `site:${ORIGIN}`, persona: PERSONA });
+    // The standing rule never makes 13 part of the ceiling: it adds 21236 alone.
+    expect(ruleKinds([rule])).toEqual([21236]);
+    expect(s.pushCeiling).toHaveBeenCalledTimes(1);
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), once13());
+    expect(order).toEqual(['push', 'publish']);
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toEqual({
+      v: 1, id: s.a.id, verdict: 'always', ruleId: rule.id, alsoOpened: [13], decidedAt: Math.floor(clock / 1000),
+    });
+  });
+
+  it('M6: unmarked "Always" is unchanged — the rule\'s own push, no seal, nothing reported', async () => {
+    const s = await withAsk(undefined);
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(mSaveRule.mock.calls[0][0]).toMatchObject({ decision: 'allow', scope: 'sign-in', target: `site:${ORIGIN}` });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(1);
     expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase());
     const v = await verdictOf(t.published[0].ev, s.a.id);
     expect(v).toMatchObject({ verdict: 'always' });
     expect(v?.alsoOpened).toBeUndefined();
+  });
+
+  it('M6: a failed push on a marked "Always" answers deny / device-unreachable, nothing reported', async () => {
+    const s = await withAsk(true);
+    s.pushCeiling.mockResolvedValue('failed');
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: true, reason: 'device-unreachable' });
+    const v = await verdictOf(t.published[0].ev, s.a.id);
+    expect(v).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
+    expect(v?.alsoOpened).toBeUndefined();
+  });
+
+  it('M6: A5 — a marked "Always" the ceiling cannot hold (with the seal) is refused; no rule, no push', async () => {
+    mListRules.mockResolvedValue(Array.from({ length: 61 }, (_, i) => ({
+      id: String(i).padStart(32, '0'), dependantId: dep.id, persona: '*', scope: `kind:${40000 + i}`, target: '*', decision: 'allow' as const,
+      createdAt: 1, updatedAt: 1 + i,
+    })));
+    const s = await withAsk(true);
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: true, reason: 'ceiling-full' });
+    expect(mSaveRule).not.toHaveBeenCalled();
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+    expect((await verdictOf(t.published[0].ev, s.a.id))?.alsoOpened).toBeUndefined();
+  });
+
+  it('M6: a marked "Always" that did not reach the child gives the one-time 13 back; "Send again" re-pushes it and reports it', async () => {
+    const s = await withAsk(true);
+    t.ok = false;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: false, reason: 'publish-failed' });
+    expect(s.dropOnce).toHaveBeenCalledWith(dep.id.toLowerCase(), once13());
+    t.ok = true;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: true });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(2);
+    expect(s.pushCeiling).toHaveBeenLastCalledWith(dep.id.toLowerCase(), once13());
+    expect(await verdictOf(t.published[t.published.length - 1].ev, s.a.id)).toMatchObject({ verdict: 'always', alsoOpened: [13] });
   });
 
   it('Deny is unchanged', async () => {

@@ -12,10 +12,10 @@
  *
  *   mint     its `signEvent` of `eligibleKind` by the persona, through the
  *            ordinary gate, records the signed event's id — ONLY when the
- *            gate allowed it on a guardian's Allow-once verdict that reported
- *            the seal (kind 13) opened too (`alsoOpened`, Part B). Allowed by
- *            a rule or the stage, or by an older guardian's verdict that does
- *            not say so: no pass, and the encrypt and seal take the ordinary
+ *            gate allowed it on a guardian's verdict on that ask (Allow once,
+ *            or Always on a sign-in) that reported the seal (kind 13) opened
+ *            too (`alsoOpened`, Part B). Allowed by a rule or the stage, or by
+ *            an older guardian's verdict that does not say so: no pass, and the encrypt and seal take the ordinary
  *            gate. The first eligible signature decides (one chance per
  *            wrapper; 60 s; memory only)
  *   encrypt  passes only while the pass is live and unused, to the session

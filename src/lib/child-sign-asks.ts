@@ -50,10 +50,11 @@ export interface ChildSignVerdict {
   v: 1; id: string; verdict: 'once' | 'always' | 'deny'; alwaysDeny?: boolean;
   reason?: 'device-unreachable' | 'expired'; ruleId?: string; decidedAt: number;
   /**
-   * Part B: on an Allow-once verdict, the extra kinds the guardian's push
-   * opened on the Heartwood with the asked kind (only the seal, kind 13, for
-   * now). The child mints its answer seal pass only when this lists 13. An
-   * older child drops it unread.
+   * Part B: on an Allow-once or Always verdict, the extra kinds the guardian's
+   * push opened on the Heartwood, as approved-once entries, for THIS answer
+   * (only the seal, kind 13, for now; an Always rule itself never holds it).
+   * The child mints its answer seal pass only when this lists 13. Never on a
+   * deny. An older child drops it unread.
    */
   alsoOpened?: number[];
 }
@@ -259,9 +260,9 @@ function checkVerdict(raw: unknown): ChildSignVerdict | null {
   }
   if (o.ruleId !== undefined) { if (typeof o.ruleId !== 'string' || !HEX32.test(o.ruleId)) return null; out.ruleId = o.ruleId; }
   if (o.alsoOpened !== undefined) {
-    // Part B: Allow once only; a non-empty list of distinct known kinds (13 today).
+    // Part B: Allow once or Always (never a deny); a non-empty list of distinct known kinds (13 today).
     const k = o.alsoOpened;
-    if (o.verdict !== 'once' || !Array.isArray(k) || k.length === 0 || k.length > VERDICT_ALSO_OPENED_KINDS.length) return null;
+    if (o.verdict === 'deny' || !Array.isArray(k) || k.length === 0 || k.length > VERDICT_ALSO_OPENED_KINDS.length) return null;
     if (!k.every(n => Number.isInteger(n) && VERDICT_ALSO_OPENED_KINDS.includes(n as number)) || new Set(k).size !== k.length) return null;
     out.alsoOpened = [...(k as number[])];
   }
