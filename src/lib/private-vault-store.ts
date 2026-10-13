@@ -32,6 +32,10 @@ export async function updateEncryptedPrivateState<T>(id: string, key: string, ch
     if (previous !== undefined && value === previous) return value;
     const encrypted = await (encryptsAhead(key) ? encryptSecretAhead : encryptSecret)(JSON.stringify(value), key);
     const tx = db.transaction('privateVaultState', 'readwrite');
+    if (id.startsWith('contact-invites:') && await tx.store.get(`independence:closed:${id.slice('contact-invites:'.length)}`)) {
+      tx.abort(); await tx.done.catch(() => {});
+      throw new Error('This contact directory was transferred');
+    }
     const current: StateRow | undefined = await tx.store.get(id);
     if (current?.generation !== old?.generation) {
       await tx.done;

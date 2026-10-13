@@ -35,7 +35,8 @@ export type AuthPurpose =
   | 'mutate-persona-child-mode'
   | 'issue-professional-credential-confirmed'
   | 'mutate-professional-roster'
-  | 'manage-family-contacts';
+  | 'manage-family-contacts'
+  | 'transfer-independence';
 
 export type RosterAction =
   | 'add-staff'
@@ -82,7 +83,8 @@ export type PurposeContext =
       credentialType: string;
     }
   | { purpose: 'mutate-professional-roster'; firmName: string; action: RosterAction }
-  | { purpose: 'manage-family-contacts' };
+  | { purpose: 'manage-family-contacts' }
+  | { purpose: 'transfer-independence'; depName: string; phase: 'prepare' | 'complete' };
 
 export type PurposeIcon =
   | 'lock'
@@ -126,6 +128,18 @@ function as<P extends AuthPurpose>(
 }
 
 export const PURPOSES: Record<AuthPurpose, PurposeConfig> = {
+  'transfer-independence': {
+    tier: 2,
+    icon: 'key-plus',
+    accent: 'warning',
+    title: raw => as(raw, 'transfer-independence').phase === 'prepare' ? 'Prepare independent recovery words' : 'Confirm independence handover',
+    description: raw => {
+      const ctx = as(raw, 'transfer-independence');
+      return ctx.phase === 'prepare'
+        ? `Create new recovery words for **${ctx.depName}**. These belong to their new independent identity.`
+        : `Transfer **${ctx.depName}**'s contacts to their independent identity and stop managing the old family copy. Confirm with your PIN.`;
+    },
+  },
   'unlock-app': {
     tier: 0,
     icon: 'lock',

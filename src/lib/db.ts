@@ -634,7 +634,11 @@ export async function saveContact(contact: Contact, encryptionKey?: string): Pro
     ? { ...contact, sharedSecret: await encryptSecret(contact.sharedSecret, encryptionKey) }
     : contact;
   const db = await getDB();
-  await db.put('contacts', toStore);
+  const tx = db.transaction(['contacts', 'privateVaultState'], 'readwrite');
+  if (!await tx.objectStore('privateVaultState').get(`independence:slot:${contact.ownerPubkey}`)) {
+    await tx.objectStore('contacts').put(toStore);
+  }
+  await tx.done;
 }
 
 export async function deleteContact(pubkey: string): Promise<void> {
@@ -658,7 +662,11 @@ export async function getKen(pubkey: string): Promise<KenEntry | undefined> {
 
 export async function saveKen(ken: KenEntry): Promise<void> {
   const db = await getDB();
-  await db.put('ken', ken);
+  const tx = db.transaction(['ken', 'privateVaultState'], 'readwrite');
+  if (!await tx.objectStore('privateVaultState').get(`independence:slot:${ken.ownerPubkey}`)) {
+    await tx.objectStore('ken').put(ken);
+  }
+  await tx.done;
 }
 
 export async function deleteKen(pubkey: string): Promise<void> {
@@ -688,7 +696,13 @@ export async function saveContactOperationV2(op: ContactOperation, encryptionKey
   const { operationId, directoryId, contactId, logicalClock, createdAt, ...sensitive } = op;
   const encryptedData = await encryptSecret(JSON.stringify(sensitive), encryptionKey);
   const db = await getDB();
-  await db.put('contactOpsV2', { operationId, directoryId, contactId, logicalClock, createdAt, encrypted: true, encryptedData });
+  const tx = db.transaction(['contactOpsV2', 'privateVaultState'], 'readwrite');
+  if (await tx.objectStore('privateVaultState').get(`independence:closed:${directoryId}`)) {
+    tx.abort(); await tx.done.catch(() => {});
+    throw new Error('This contact directory was transferred and is read-only.');
+  }
+  await tx.objectStore('contactOpsV2').put({ operationId, directoryId, contactId, logicalClock, createdAt, encrypted: true, encryptedData });
+  await tx.done;
 }
 
 /**
@@ -715,10 +729,16 @@ export async function saveContactOperationsV2(ops: ContactOperation[], encryptio
   });
   const encryptedDataList = await (encryptsAhead(encryptionKey) ? encryptSecretsBatchAhead : encryptSecretsBatch)(sensitivePayloads, encryptionKey);
   const db = await getDB();
-  const tx = db.transaction('contactOpsV2', 'readwrite');
+  const tx = db.transaction(['contactOpsV2', 'privateVaultState'], 'readwrite');
+  for (const directoryId of new Set(ops.map(op => op.directoryId))) {
+    if (await tx.objectStore('privateVaultState').get(`independence:closed:${directoryId}`)) {
+      tx.abort(); await tx.done.catch(() => {});
+      throw new Error('This contact directory was transferred and is read-only.');
+    }
+  }
   for (let i = 0; i < ops.length; i += 1) {
     const { operationId, directoryId, contactId, logicalClock, createdAt } = ops[i];
-    await tx.store.put({ operationId, directoryId, contactId, logicalClock, createdAt, encrypted: true, encryptedData: encryptedDataList[i] });
+    await tx.objectStore('contactOpsV2').put({ operationId, directoryId, contactId, logicalClock, createdAt, encrypted: true, encryptedData: encryptedDataList[i] });
   }
   await tx.done;
 }
@@ -853,7 +873,11 @@ export async function saveContactRecordV2(record: ContactRecord, encryptionKey: 
   const { directoryId, contactId, createdAt, updatedAt, ...sensitive } = record;
   const encryptedData = await encryptSecret(JSON.stringify(sensitive), encryptionKey);
   const db = await getDB();
-  await db.put('contactRecordsV2', { directoryId, contactId, createdAt, updatedAt, encrypted: true, encryptedData });
+  const tx = db.transaction(['contactRecordsV2', 'privateVaultState'], 'readwrite');
+  if (!await tx.objectStore('privateVaultState').get(`independence:closed:${directoryId}`)) {
+    await tx.objectStore('contactRecordsV2').put({ directoryId, contactId, createdAt, updatedAt, encrypted: true, encryptedData });
+  }
+  await tx.done;
 }
 
 export async function listContactRecordsV2(directoryId: string, encryptionKey: string): Promise<ContactRecord[]> {
@@ -1064,7 +1088,11 @@ async function writeContactGrantRow(grant: AppGrantV2, encryptionKey: string): P
   const { grantId, directoryId, appPubkey, createdAt, ...sensitive } = grant;
   const encryptedData = await encryptSecret(JSON.stringify(sensitive), encryptionKey);
   const row: StoredContactGrantV2 = { grantId, directoryId, appPubkey, createdAt, encrypted: true, encryptedData };
-  await db.put('contactGrantsV2', row);
+  const tx = db.transaction(['contactGrantsV2', 'privateVaultState'], 'readwrite');
+  if (!await tx.objectStore('privateVaultState').get(`independence:closed:${directoryId}`)) {
+    await tx.objectStore('contactGrantsV2').put(row);
+  }
+  await tx.done;
 }
 
 export async function saveContactGrantV2(grant: AppGrantV2, encryptionKey: string): Promise<void> {
@@ -1940,7 +1968,13 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
     appBunkerEndpoint: encAppEndpoint,
     encrypted: true,
   };
-  await db.put('identity', stored);
+  const tx = db.transaction(['identity', 'privateVaultState'], 'readwrite');
+  // A stale legacy or private-vault snapshot cannot resurrect an identity
+  // whose handover has committed, even when its decrypt started earlier.
+  if (!await tx.objectStore('privateVaultState').get(`independence:closed:dependant:${dependant.id}`)) {
+    await tx.objectStore('identity').put(stored);
+  }
+  await tx.done;
 }
 
 /**
@@ -1969,6 +2003,7 @@ export async function getDependants(guardianPubkey: string, encryptionKey?: stri
     if (typeof record.id !== 'string' || !record.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (record.guardianPubkey !== guardianPubkey) continue;
     const realId = record.id.slice(DEPENDANT_PREFIX.length);
+    if (await db.get('privateVaultState', `independence:closed:dependant:${realId}`)) continue;
     if (encryptionKey && record.encrypted) {
       try {
         const HEX_KEY_RE = /^[0-9a-f]{64}$/;
@@ -2656,7 +2691,14 @@ export async function saveContactPicture(picture: ContactPicture, encryptionKey:
   // A lock can land while the key derives (600k PBKDF2) or the body encrypts;
   // re-check right before the write, which is the only step that persists.
   if (gen !== undefined && gen !== contactPictureGeneration()) throw new ContactPicturesLockedError();
-  await db.put('contactPictures', row);
+  const tx = db.transaction(['contactPictures', 'privateVaultState'], 'readwrite');
+  const directory = picture.id.startsWith('own:') ? picture.id.slice(4, picture.id.lastIndexOf(':')) : null;
+  if (directory && await tx.objectStore('privateVaultState').get(`independence:closed:${directory}`)) {
+    tx.abort(); await tx.done.catch(() => {});
+    throw new Error('This contact directory was transferred and is read-only.');
+  }
+  await tx.objectStore('contactPictures').put(row);
+  await tx.done;
 }
 
 export async function getContactPicture(id: string, encryptionKey: string, gen?: number): Promise<ContactPicture | null> {

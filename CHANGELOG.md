@@ -3,6 +3,10 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+- Independence handover moves a dependant's contacts and persona names to new recovery words, verifies restore before removing the family copy, and lets the guardian keep a read-only encrypted contact archive or delete it
+- Review contact trust and blocks during handover; old contact proofs need fresh checks, and apps and credentials must be set up again
+
 ## 0.20.0
 - Pair a child's phone by tapping the two phones together (NFC) or over Bluetooth, with the QR code kept as a fallback
 - A "Before you pair" checklist on the Phone & Pairing card shows what's ready and what isn't

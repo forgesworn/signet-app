@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react';
-import type { DependantIdentity } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+import type { ContactRecord, DependantIdentity } from '../types';
 import { generateMnemonic } from '../lib/signet';
-import { createMigrationEvent } from 'signet-protocol';
-import { publishEvent } from '../lib/relay-service';
 import { toRecoveryWords } from '../lib/recovery-words';
 import type { IndependenceGate } from '../lib/contacts-v2-independence-gate';
 import { REMOVE_DEPENDANT_CONTACTS_LOADING_COPY } from '../lib/contacts-v2-copy';
+import type { GuardianCopyChoice, IndependenceOptions, IndependenceReview } from '../lib/independence-transfer';
+import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
 
 interface Props {
   dependant: DependantIdentity;
@@ -32,11 +32,17 @@ interface Props {
    * and refuses — same as the render-time gate — if it comes back blocked.
    */
   onResolveGate: () => Promise<IndependenceGate>;
+  onCreateIndependentWords?: () => Promise<string>;
+  onLoadTransferContacts?: () => Promise<{ contacts: ContactRecord[]; revision: string }>;
+  onTransfer?: (opts: IndependenceOptions & { reviewRevision: string }) => Promise<void>;
+  transferProblem?: string | null;
+  recoveryRelays?: string[];
 }
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
-export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate, contactsLoading, onResolveGate }: Props) {
+export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate, contactsLoading, onResolveGate,
+  onCreateIndependentWords, onLoadTransferContacts, onTransfer, transferProblem, recoveryRelays = [] }: Props) {
   const [step, setStep] = useState<Step>(1);
 
   // Decision 1 — remove guardian authority
@@ -50,8 +56,20 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
   // Confirmation / publishing state
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState('');
+  const [reviewContacts, setReviewContacts] = useState<ContactRecord[] | null>(null);
+  const [reviewRevision, setReviewRevision] = useState('');
+  const [review, setReview] = useState<IndependenceReview>({});
+  const [guardianCopy, setGuardianCopy] = useState<GuardianCopyChoice | null>(null);
+  const [wordsVisible, setWordsVisible] = useState(true);
+  const [wordsPreparing, setWordsPreparing] = useState(false);
+  const transferring = rotateKeys === true && !!onTransfer;
+  useEffect(() => {
+    if (!newMnemonic || !wordsVisible || step !== 3) return;
+    const timer = setTimeout(() => setWordsVisible(false), 90_000);
+    return () => clearTimeout(timer);
+  }, [newMnemonic, wordsVisible, step]);
 
-  const hasDerivedKeys = Boolean(dependant.derivationPath);
+  const hasDerivedKeys = /^dependant-(0|[1-9][0-9]*)$/.test(dependant.derivationPath);
 
   const recoveryWords = useMemo(() => {
     if (!newMnemonic) return '';
@@ -75,16 +93,34 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
     }
   }
 
-  function handleKeyDecision(rotate: boolean) {
+  async function handleKeyDecision(rotate: boolean) {
+    if (wordsPreparing) return;
     if (rotate) {
-      const mnemonic = generateMnemonic();
-      setNewMnemonic(mnemonic);
-      setMnemonicConfirmed(false);
+      setWordsPreparing(true);
+      setConfirmError('');
+      try {
+        const mnemonic = onCreateIndependentWords ? await onCreateIndependentWords() : generateMnemonic();
+        setNewMnemonic(mnemonic);
+        setMnemonicConfirmed(false);
+        setWordsVisible(true);
+      } catch (error) {
+        setConfirmError(error instanceof Error ? error.message : 'Could not prepare recovery words');
+        return;
+      } finally { setWordsPreparing(false); }
     } else {
       setNewMnemonic('');
       setMnemonicConfirmed(false);
     }
     setRotateKeys(rotate);
+  }
+
+  async function loadTransferReview() {
+    setStep(6); setReviewContacts(null); setReview({}); setConfirmError('');
+    try {
+      const loaded = await onLoadTransferContacts!();
+      setReviewContacts(loaded.contacts.filter(c => c.lifecycle !== 'removed'));
+      setReviewRevision(loaded.revision);
+    } catch (error) { setConfirmError(error instanceof Error ? error.message : 'Could not load contacts'); }
   }
 
   function canProceedFromStep3(): boolean {
@@ -99,6 +135,13 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
     setConfirmError('');
 
     try {
+      if (transferring) {
+        if (!removeGuardian || !guardianCopy || !reviewRevision || !mnemonicConfirmed || transferProblem) throw new Error('Finish the handover review first.');
+        await onTransfer!({ removeGuardian: true, rotateKeys: true, newMnemonic, guardianCopy, review, reviewRevision });
+        setNewMnemonic('');
+        setStep(5);
+        return;
+      }
       // Re-check the contact-transfer gate against fresh data before doing
       // anything irreversible — `contactsGate` is a render-time memo and can
       // be stale by the time the user actually taps Confirm.
@@ -108,23 +151,7 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
         return;
       }
 
-      // If key rotation was chosen, publish a migration event signed by the old key
-      if (rotateKeys && newMnemonic) {
-        // Derive the new natural-person public key from the new mnemonic
-        // The migration event is signed by the old (current) natural-person private key
-        const { createSignetIdentity } = await import('signet-protocol');
-        const newTree = createSignetIdentity(newMnemonic);
-        const { bytesToHex } = await import('@noble/hashes/utils.js');
-        const newNpPub = bytesToHex(newTree.naturalPerson.identity.publicKey);
-
-        const migrationEvent = await createMigrationEvent(
-          dependant.naturalPerson.privateKey,
-          newNpPub,
-        );
-
-        // Best-effort publish — don't fail the ceremony if the relay is unreachable
-        publishEvent(migrationEvent).catch(() => {});
-      }
+      if (rotateKeys) throw new Error('Independent recovery transfer is unavailable. Your existing identity is unchanged.');
 
       await onComplete({
         removeGuardian: removeGuardian ?? false,
@@ -150,8 +177,8 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
         <div className="section">
           <h2 style={{ marginBottom: 12 }}>{name}'s independence ceremony</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.6, marginBottom: 0 }}>
-            This ceremony transitions {name} to an independent Signet identity. You'll make two
-            decisions — both are reversible until confirmed.
+            Choose whether {name} will manage their own identity. For independent keys, you will
+            review their contacts and verify recovery before the family copy changes.
           </p>
         </div>
 
@@ -178,9 +205,8 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
           </div>
           <h2 style={{ marginBottom: 12 }}>Guardian authority</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: 0 }}>
-            Removing guardian authority means {name}'s credentials will no longer carry your guardian
-            tag. They'll need to visit a professional verifier to get new credentials without the
-            guardian link.
+            {name} will need to visit a professional verifier for new credentials without the guardian
+            link. Existing credentials keep their original signatures.
           </p>
         </div>
 
@@ -233,6 +259,8 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
             Decision 2 of 2
           </div>
           <h2 style={{ marginBottom: 12 }}>Key derivation</h2>
+          {transferProblem && <p role="note">{transferProblem}</p>}
+          {!removeGuardian && <p role="note">Choose Remove guardian authority to use independent keys.</p>}
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: 0 }}>
             Your mnemonic can derive {name}'s private keys. This means you can always recover their
             identity — but you could also sign as them.
@@ -244,12 +272,13 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
             <button
               className="btn btn-secondary"
               onClick={() => handleKeyDecision(true)}
+              disabled={wordsPreparing || !!transferProblem || !removeGuardian || !onTransfer}
               style={{ padding: '16px', textAlign: 'left', justifyContent: 'flex-start' }}
             >
               <div>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>Generate independent keys</div>
                 <div style={{ fontSize: '0.85rem', fontWeight: 400, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  {name} gets their own mnemonic. You can no longer derive their keys. This is a clean break.
+                  {name} gets new recovery words. Their contacts move after recovery is verified.
                 </div>
               </div>
             </button>
@@ -276,16 +305,9 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
               <div style={{ fontWeight: 600, marginBottom: 12, fontSize: '0.9rem' }}>
                 {name}'s new recovery words
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-                {words.map((word, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0' }}>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', width: 20, textAlign: 'right' }}>
-                      {i + 1}
-                    </span>
-                    <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{word}</span>
-                  </div>
-                ))}
-              </div>
+              {wordsVisible ? <RecoveryWordsGrid words={words} bare /> : (
+                <button className="btn btn-secondary" onClick={() => setWordsVisible(true)}>Show recovery words again</button>
+              )}
 
               <div
                 style={{
@@ -299,8 +321,8 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
                   marginBottom: 16,
                 }}
               >
-                Write these down. {name} will need them. Once confirmed, you will no longer be able
-                to derive their keys.
+                Write these down privately with {name}. They restore the new identity and its contacts.
+                Anyone who has these words can control the new identity.
               </div>
 
               <label
@@ -351,8 +373,10 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
         )}
 
         <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {wordsPreparing && <p role="status">Preparing recovery words…</p>}
+          {confirmError && <p role="alert">{confirmError}</p>}
           {canProceedFromStep3() && (
-            <button className="btn btn-primary" onClick={() => setStep(4)}>
+            <button className="btn btn-primary" onClick={() => { if (transferring && onLoadTransferContacts) void loadTransferReview(); else setStep(4); }}>
               Continue
             </button>
           )}
@@ -362,6 +386,47 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
         </div>
       </div>
     );
+  }
+
+  if (step === 6) {
+    return <div className="fade-in" role="main">
+      <div className="section">
+        <h2>Take contacts with them</h2>
+        <p>Review these choices with {name}. Each choice becomes their own decision. Old contact proofs
+          will need fresh verification; connected apps and credentials must be set up again.</p>
+        <p>Contact names, methods, notes and saved pictures move with the directory. Guardian rules and app grants do not.</p>
+      </div>
+      {reviewContacts === null && !confirmError && <p role="status">Loading contacts…</p>}
+      {reviewContacts?.length === 0 && <p>No active contacts to review.</p>}
+      {reviewContacts?.map(contact => <div className="section card" key={contact.contactId}>
+        <label>
+          <span style={{ display: 'block', fontWeight: 600 }}>{contact.displayName || 'Unnamed contact'}</span>
+          <select aria-label={`Trust for ${contact.displayName || contact.contactId}`} value={review[contact.contactId]?.tier ?? ''}
+            onChange={e => { const tier = e.target.value as IndependenceReview[string]['tier'];
+              setReview(old => ({ ...old, [contact.contactId]: { tier, keepBlocked: old[contact.contactId]?.keepBlocked ?? true } })); }}>
+            <option value="" disabled>Choose with {name}</option>
+            <option value="kin">Kin — close circle</option><option value="kith">Kith — acquaintance</option>
+            <option value="ken">Ken — recognised</option><option value="remove">Remove contact</option>
+          </select>
+        </label>
+        {contact.blocks.some(b => !b.liftedByOperationId) && <label style={{ display: 'block', marginTop: 12 }}>
+          <input type="checkbox" checked={review[contact.contactId]?.keepBlocked ?? true}
+            onChange={e => setReview(old => ({ ...old, [contact.contactId]: { ...old[contact.contactId],
+              tier: old[contact.contactId]?.tier, keepBlocked: e.target.checked } }))} /> Keep blocked, under {name}'s control
+        </label>}
+      </div>)}
+      <div className="section">
+        <fieldset><legend>Your family contact copy after handover</legend>
+          <label style={{ display: 'block' }}><input type="radio" name="guardian-copy" checked={guardianCopy === 'archive'} onChange={() => setGuardianCopy('archive')} /> Keep a read-only encrypted archive</label>
+          <label style={{ display: 'block' }}><input type="radio" name="guardian-copy" checked={guardianCopy === 'delete'} onChange={() => setGuardianCopy('delete')} /> Delete it from this device</label>
+        </fieldset>
+        <p>Copies already held by other people or apps cannot be erased by this choice.</p>
+        {confirmError && <p role="alert">{confirmError}</p>}
+        <button className="btn btn-secondary" onClick={() => void loadTransferReview()}>Reload contacts</button>
+        <button className="btn btn-primary" disabled={!reviewContacts || !guardianCopy || reviewContacts.some(c => !review[c.contactId]?.tier)} onClick={() => setStep(4)}>Continue</button>
+        <button className="btn btn-ghost" onClick={() => setStep(3)}>Back</button>
+      </div>
+    </div>;
   }
 
   // ── Step 4: Confirmation ──────────────────────────────────────────────────
@@ -409,12 +474,19 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
               </div>
               {effectiveRotateKeys && (
                 <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 0, lineHeight: 1.5 }}>
-                  A migration event will be published. {name}'s new identity will be activated.
+                  Their contacts and profile names will be encrypted under the new recovery words and restored from a relay before handover completes.
                 </p>
               )}
             </div>
           )}
         </div>
+        {transferring && <div className="section">
+          <p>Your family copy: {guardianCopy === 'archive' ? 'read-only encrypted archive' : 'delete'}.</p>
+          <p>{name} will restore with the new words on their own device, reconnect apps and renew credentials with a verifier.</p>
+          {recoveryRelays.length > 0 && <p>When restoring, use these relay servers: {recoveryRelays.join(', ')}. Write them down with the recovery words.</p>}
+          {!removeGuardian && <p role="alert">Choose Remove guardian authority to complete an independent handover.</p>}
+          {transferProblem && <p role="alert">{transferProblem}</p>}
+        </div>}
 
         {confirmError && (
           <div className="section">
@@ -436,19 +508,19 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
           <button
             className="btn btn-primary"
             onClick={handleConfirm}
-            disabled={confirming || contactsLoading || !contactsGate.allowed}
+            disabled={confirming || contactsLoading || (transferring ? (!removeGuardian || !guardianCopy || !reviewRevision || !!transferProblem) : !contactsGate.allowed)}
           >
             {confirming ? 'Confirming…' : 'Confirm ceremony'}
           </button>
           {contactsLoading && (
             <p role="note" className="field-hint" style={{ marginTop: 8 }}>{REMOVE_DEPENDANT_CONTACTS_LOADING_COPY}</p>
           )}
-          {!contactsLoading && !contactsGate.allowed && contactsGate.reason && (
+          {!transferring && !contactsLoading && !contactsGate.allowed && contactsGate.reason && (
             <p role="note" className="field-hint" style={{ marginTop: 8 }}>{contactsGate.reason}</p>
           )}
           <button
             className="btn btn-ghost"
-            onClick={() => { setConfirmError(''); setStep(hasDerivedKeys ? 3 : 2); }}
+            onClick={() => { setConfirmError(''); setStep(transferring ? 6 : hasDerivedKeys ? 3 : 2); }}
             disabled={confirming}
           >
             Back
@@ -486,10 +558,12 @@ export function TransitionCeremony({ dependant, onComplete, onBack, contactsGate
           </div>
 
           <h2 style={{ marginBottom: 12 }}>Ceremony complete</h2>
+          {effectiveRotateKeys && recoveryRelays.length > 0 && <p>Recovery relay servers: {recoveryRelays.join(', ')}</p>}
 
           {effectiveRotateKeys ? (
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.6, margin: '0 auto', maxWidth: 320 }}>
-              A migration event has been published. {name}'s new identity is active.
+              {name}'s contacts and profile names were restored successfully using their new recovery words.
+              They can now restore on their own device. Reconnect apps and visit a verifier for new credentials.
             </p>
           ) : (
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.6, margin: '0 auto', maxWidth: 320 }}>

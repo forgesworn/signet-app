@@ -15,6 +15,7 @@ import type { Nip05CheckResult } from '../lib/nip05-check';
 import { resolvePublicProfileBase } from '../lib/public-profile-base';
 import { nextDependantPersonaName, dependantPersonaTombstones, applyDependantPersonaTombstones } from '../lib/dependant-persona-allocation';
 import { createSerialQueue } from '../lib/contacts-v2-queue';
+import { listIndependenceArchives } from '../lib/independence-store';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 
 // Serialize allocation/deletion across hook instances in this app.
@@ -130,7 +131,8 @@ export function useDependants(
     if (!guardianPubkey) throw new Error('No guardian pubkey');
     if (!encryptionKey) throw new Error('Encryption key required');
 
-    const derivationPath = `dependant-${nextDependantIndex(dependants)}`;
+    const closed = await listIndependenceArchives(guardianPubkey, encryptionKey);
+    const derivationPath = `dependant-${nextDependantIndex([...dependants, ...closed])}`;
 
     // Bunker mode (family-bunker §11.1.8 D4): the device derives; we keep
     // public keys only. Local mode: derive from the guardian mnemonic as
