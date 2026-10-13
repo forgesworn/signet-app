@@ -233,6 +233,17 @@ export const CHILD_ASK_COPY = {
     validUntil: 'Valid until',
     allow: 'Allow',
   },
+  /**
+   * Part B: a direct-paired child's own Sign in with Signet, in relay mode
+   * (a marked sign-in ask). One plain card for the sign-in; the answer's
+   * encrypt and seal ride on it. The site's name is the site's own claim and
+   * fills only its slot; "From" is the origin re-derived from the signed event.
+   */
+  signIn: {
+    heading: (child: string, site: string) => `${child} wants to sign in to ${site}`,
+    from: (host: string) => `From ${host}`,
+    sharesHandle: (child: string, shares: boolean) => `Shares ${child}’s handle: ${shares ? 'yes' : 'no'}`,
+  },
   appMySignet: 'My Signet',
   appHex: (short: string) => `app ${short}`,
   anywhere: 'anywhere',
