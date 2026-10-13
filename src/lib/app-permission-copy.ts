@@ -42,6 +42,8 @@ export const APP_PERMISSION_COPY = {
   ackApproved: (app: string) => `You let ${app} show other players who you are. Return to the app or page where you started to continue.`,
   ackDeniedTitle: 'Declined',
   ackDenied: (app: string) => `You said no to ${app}.`,
+  ackApprovedByGuardian: (app: string) => `Your guardian let ${app} show other players who you are. Return to the app or page where you started to continue.`,
+  ackDeniedByGuardian: (app: string) => `Your guardian said no to ${app}.`,
   ackFailedNoun: 'this request',
   keyUnavailable: 'The key for this permission is not available right now. Unlock again or reconnect your signer, then try again.',
   noLongerPending: 'This request is no longer waiting.',

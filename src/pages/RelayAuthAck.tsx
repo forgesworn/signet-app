@@ -41,6 +41,8 @@ interface SuccessProps {
    */
   postUrl?: string;
   variant?: Variant;
+  /** App permission on a child's phone: the guardian made the decision, not the person holding it. */
+  byGuardian?: boolean;
 }
 
 interface FailureProps {
@@ -198,7 +200,9 @@ export function RelayAuthAck(props: Props) {
 
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 24 }}>
           {permission
-            ? (approved ? APP_PERMISSION_COPY.ackApproved(props.siteName.slice(0, 64)) : APP_PERMISSION_COPY.ackDenied(props.siteName.slice(0, 64)))
+            ? (approved
+              ? (props.byGuardian ? APP_PERMISSION_COPY.ackApprovedByGuardian : APP_PERMISSION_COPY.ackApproved)(props.siteName.slice(0, 64))
+              : (props.byGuardian ? APP_PERMISSION_COPY.ackDeniedByGuardian : APP_PERMISSION_COPY.ackDenied)(props.siteName.slice(0, 64)))
             : approved
             ? props.postUrl
               ? <>You have signed in to <strong>{props.siteName.slice(0, 64)}</strong>.</>
