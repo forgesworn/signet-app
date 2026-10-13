@@ -22,9 +22,12 @@ import { withRequestCreatedAt, type DecryptingSigningBackend } from './signing-b
 
 /** What the child's gate answers. `requestCreatedAt` is the forced NIP-46
  *  request `created_at` the caller stamps on the forwarded request;
- *  `template` is the exact template to forward (sign_event only). */
+ *  `template` is the exact template to forward (sign_event only);
+ *  `alsoOpened` is present only when a guardian's Allow-once verdict
+ *  reported extra kinds its push opened (Part B: the seal, 13) — never on a
+ *  request allowed by a rule or the stage. */
 export type ChildGateOutcome =
-  | { ok: true; requestCreatedAt: number; template?: UnsignedEvent }
+  | { ok: true; requestCreatedAt: number; template?: UnsignedEvent; alsoOpened?: number[] }
   | { ok: false; error: ChildGateError };
 
 /**
