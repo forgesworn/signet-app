@@ -152,6 +152,46 @@ describe('app-permission asks (D6)', () => {
   });
 });
 
+describe('sign-in asks: the `signIn` marker (Part B)', () => {
+  const sealed = (a: ChildSignAsk) => ({ ...a, templateHash: templateHash(a.template!), contentTruncated: false, contentLength: 0, tagsTruncated: false });
+  /** An ask event built by hand, so the guardian's own checks are what refuse it. */
+  const rawAskEvent = (body: Record<string, unknown>): NostrEvent => {
+    const content = encrypt(JSON.stringify(body), getConversationKey(client, RAIL_PK));
+    return finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', 'signet:child-sign-request:v1:' + ID], ['p', RAIL_PK]], content }, client) as unknown as NostrEvent;
+  };
+
+  it('round-trips on a 21236 sign-in ask, both ways', async () => {
+    for (const sharesHandle of [true, false]) {
+      const a = ask({ signIn: { sharesHandle } });
+      const out = await openAskEvent(await buildAskEvent(a, CLIENT_SK, RAIL_PK), RAIL_SK, scope);
+      expect(out).toEqual(sealed(a));
+      expect(out?.signIn).toEqual({ sharesHandle });
+    }
+  });
+  it('an unmarked sign-in ask opens without it', async () => {
+    const out = await openAskEvent(await buildAskEvent(ask(), CLIENT_SK, RAIL_PK), RAIL_SK, scope);
+    expect(out?.signIn).toBeUndefined();
+  });
+  it('the guardian refuses a malformed marker: boolean only, nothing else in it', async () => {
+    for (const bad of [{ sharesHandle: 'yes' }, { sharesHandle: 1 }, {}, { sharesHandle: true, extra: 1 }, true, 'x', null, [true]]) {
+      const body = sealed(ask({ signIn: bad as never }));
+      expect(await openAskEvent(rawAskEvent(body as never), RAIL_SK, scope)).toBeNull();
+    }
+    // the same body with a valid marker opens (the hand-built path is sound)
+    expect(await openAskEvent(rawAskEvent(sealed(ask({ signIn: { sharesHandle: true } })) as never), RAIL_SK, scope)).not.toBeNull();
+  });
+  it('the marker is valid only on a kind-21236 signature in scope sign-in', async () => {
+    const note = ask({ scope: 'post-public', kind: 1, target: 'app:mysignet', template: { kind: 1, pubkey: PERSONA, created_at: NOW, tags: [], content: 'hi' }, signIn: { sharesHandle: true } });
+    expect(await openAskEvent(rawAskEvent(sealed(note) as never), RAIL_SK, scope)).toBeNull();
+    const crypto = ask({ method: 'nip44_encrypt', scope: 'dm-private', kind: 0, target: `peer:${PEER}`, signIn: { sharesHandle: true } });
+    delete crypto.template;
+    expect(await openAskEvent(rawAskEvent(crypto as never), RAIL_SK, scope)).toBeNull();
+    // and the child cannot build one either
+    await expect(buildAskEvent(note, CLIENT_SK, RAIL_PK)).rejects.toThrow();
+    await expect(buildAskEvent(crypto, CLIENT_SK, RAIL_PK)).rejects.toThrow();
+  });
+});
+
 describe('verdict rail', () => {
   it('round-trips', async () => {
     const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'always', ruleId: '2'.repeat(32), decidedAt: NOW }, RAIL_SK, CLIENT_PK);
@@ -172,6 +212,34 @@ describe('verdict rail', () => {
     const forged = finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', 'signet:child-sign-reply:v1:' + ID], ['p', CLIENT_PK]],
       content: encrypt(JSON.stringify({ v: 1, id: ID, verdict: 'once', decidedAt: NOW }), getConversationKey(attacker, CLIENT_PK)) }, attacker) as unknown as NostrEvent;
     expect(await openVerdictEvent(forged, CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
+  });
+});
+
+describe('verdict rail: `alsoOpened` (Part B)', () => {
+  const rawVerdictEvent = (body: Record<string, unknown>): NostrEvent => {
+    const content = encrypt(JSON.stringify(body), getConversationKey(rail, CLIENT_PK));
+    return finalizeEvent({ kind: 30078, created_at: NOW, tags: [['d', 'signet:child-sign-reply:v1:' + ID], ['p', CLIENT_PK]], content }, rail) as unknown as NostrEvent;
+  };
+  it('round-trips [13] on an Allow-once verdict, both rails', async () => {
+    const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened: [13], decidedAt: NOW }, RAIL_SK, CLIENT_PK);
+    expect(await openVerdictEvent(ev, CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toEqual({ v: 1, id: ID, verdict: 'once', alsoOpened: [13], decidedAt: NOW });
+    expect(await openRailVerdictEvent(ev, RAIL_SK, { clientPubkey: CLIENT_PK })).toMatchObject({ alsoOpened: [13] });
+  });
+  it('absent stays absent', async () => {
+    const ev = await buildVerdictEvent({ v: 1, id: ID, verdict: 'once', decidedAt: NOW }, RAIL_SK, CLIENT_PK);
+    expect((await openVerdictEvent(ev, CLIENT_SK, { railPubkey: RAIL_PK, id: ID }))?.alsoOpened).toBeUndefined();
+  });
+  it('anything but [13] on a once verdict is refused, on build and on open', async () => {
+    const bads: unknown[] = [[1], [13, 1], [13, 13], [], ['13'], [13.5], 13, 'x', null, { 0: 13 }];
+    for (const alsoOpened of bads) {
+      await expect(buildVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened: alsoOpened as number[], decidedAt: NOW }, RAIL_SK, CLIENT_PK)).rejects.toThrow();
+      expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened, decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
+    }
+    for (const verdict of ['always', 'deny']) {
+      expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict, alsoOpened: [13], decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).toBeNull();
+    }
+    // the hand-built path is sound
+    expect(await openVerdictEvent(rawVerdictEvent({ v: 1, id: ID, verdict: 'once', alsoOpened: [13], decidedAt: NOW }), CLIENT_SK, { railPubkey: RAIL_PK, id: ID })).not.toBeNull();
   });
 });
 
