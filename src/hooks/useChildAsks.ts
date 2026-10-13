@@ -118,7 +118,29 @@ export const CHILD_ASK_HISTORY_MAX = 200;
 export const CHILD_ASK_ONCE_WINDOW_S = 600;
 /** The NIP-59 seal: the answer to an approved app permission is sealed by the persona (D5). */
 const SEAL_KIND = 13;
+/** Sign in with Signet (Part B). */
+const SIGN_IN_KIND = 21236;
 const HEX64 = /^[0-9a-f]{64}$/;
+
+/** Drop a stored `alsoOpened`: only the push of the attempt that sends it may report it. */
+function withoutAlsoOpened(v: ChildSignVerdict): ChildSignVerdict {
+  if (v.alsoOpened === undefined) return v;
+  const { alsoOpened: _a, ...rest } = v; void _a;
+  return rest;
+}
+
+/**
+ * Whether an Allow once also opens the seal (kind 13): My Signet's own
+ * answer, which the child phone gift-wraps and seals as the same persona —
+ * an app permission carrying a valid claim (D5), or a marked sign-in (Part B:
+ * scope sign-in, kind 21236, `signIn` present; `checkAsk` already holds it to
+ * that shape).
+ */
+function sealsOwnAnswer(ask: ChildSignAsk): boolean {
+  if (ask.method !== 'sign_event') return false;
+  if (ask.scope === 'app-permission') return appPermissionAskDetails(ask) !== null;
+  return ask.scope === 'sign-in' && ask.kind === SIGN_IN_KIND && ask.signIn !== undefined;
+}
 
 interface DirectChild {
   dep: DependantIdentity;
@@ -397,7 +419,7 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
       const original = stored && (entry.chosen ?? entry.verdict.verdict) !== 'deny' && entry.verdict.verdict === 'deny';
       let out: ChildSignVerdict = original
         ? { v: 1, id, verdict: entry.chosen as ChildVerdictChoice, decidedAt: entry.verdict.decidedAt }
-        : entry.verdict;
+        : withoutAlsoOpened(entry.verdict); // reported again only by THIS attempt's successful push
       let reason: ChildAskDecideReason | undefined = original ? undefined : entry.reason;
       let onceAdded: OnceEntry[] | undefined;
       const refuse = (r: ChildAskDecideReason, wire?: ChildSignVerdict['reason']) => {
@@ -445,16 +467,24 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
           // so its window opens for the seal too — same `until`, both in one
           // push or neither. The child's seal pass binds that seal to this
           // one answer. A claimless 30420 (an outside app) has no such
-          // answer: only its own kind.
+          // answer: only its own kind. Part B: so is My Signet's own
+          // relay-mode sign-in (a marked 21236 ask); an unmarked one opens
+          // only its own kind, as before.
           const until = nowS + CHILD_ASK_ONCE_WINDOW_S;
-          const es: OnceEntry[] = ask.scope === 'app-permission' && appPermissionAskDetails(ask) !== null
+          const es: OnceEntry[] = sealsOwnAnswer(ask)
             ? [{ kind: ask.kind, until }, { kind: SEAL_KIND, until }]
             : [{ kind: ask.kind, until }];
           const current = ceilingFor(dep, rules, onceFor, nowS);
           if (!fits(current, ceilingFor(dep, rules, [...onceFor, ...es], nowS), es.map(e => e.kind))) refuse('ceiling-full');
           // A33: always push; the pusher adds the entries and removes them all again if the push fails.
           else if ((await o.pushCeiling(c.id, es.length === 1 ? es[0] : es)) !== 'ok') refuse('device-unreachable', 'device-unreachable');
-          else onceAdded = es;
+          else {
+            onceAdded = es;
+            // Part B: the verdict says the seal was opened too — the child
+            // mints its seal pass only on this (an older guardian never says it).
+            const also = es.filter(e => e.kind !== ask.kind).map(e => e.kind);
+            if (also.length > 0) out = { ...out, alsoOpened: also };
+          }
         }
       }
 

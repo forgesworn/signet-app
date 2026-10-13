@@ -213,7 +213,10 @@ describe('useChildAsks — verdicts', () => {
     await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
     expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30311, until: Math.floor(clock / 1000) + 600 });
     expect(order).toEqual(['push', 'publish']);
-    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'once' });
+    const v0 = await verdictOf(t.published[0].ev, s.a.id);
+    expect(v0).toMatchObject({ verdict: 'once' });
+    // An ordinary kind opens nothing else: the verdict reports nothing more.
+    expect(v0?.alsoOpened).toBeUndefined();
   });
 
   it('A33: a kind the LOCAL compile already holds still calls pushCeiling (once and always)', async () => {
@@ -506,7 +509,8 @@ describe('useChildAsks — app-permission (D5)', () => {
     expect(s.pushCeiling).toHaveBeenCalledTimes(1);
     expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
     expect(order).toEqual(['push', 'publish']);
-    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'once' });
+    // Part B: the verdict reports the seal it opened.
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'once', alsoOpened: [13] });
   });
 
   it('a failed push answers deny / device-unreachable (the pusher removed both entries)', async () => {
@@ -560,6 +564,7 @@ describe('useChildAsks — app-permission (D5)', () => {
     await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
     expect(s.pushCeiling).toHaveBeenCalledTimes(1);
     expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30420, until: Math.floor(clock / 1000) + 600 });
+    expect((await verdictOf(t.published[0].ev, a.id))?.alsoOpened).toBeUndefined();
   });
 
   it('a claim whose template no longer passes the one-shape check: only its own kind, no seal', async () => {
@@ -571,5 +576,139 @@ describe('useChildAsks — app-permission (D5)', () => {
     expect(s.hook.result.current.asks).toHaveLength(1);
     await act(async () => { await s.hook.result.current.decide(a.id, 'once'); });
     expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 30420, until: Math.floor(clock / 1000) + 600 });
+  });
+});
+
+describe('useChildAsks — My Signet\'s own sign-in, marked (Part B)', () => {
+  const ORIGIN = 'https://twang.example';
+  function signInAsk(marked: boolean | undefined): ChildSignAsk {
+    const nowS = Math.floor(clock / 1000);
+    const id = (n++).toString(16).padStart(32, '0');
+    return {
+      v: 1, id, dependantId: dep.id.toLowerCase(), persona: PERSONA, scope: 'sign-in', kind: 21236, method: 'sign_event',
+      target: `site:${ORIGIN}`, targetLabel: 'Twang Thang',
+      template: { kind: 21236, pubkey: PERSONA, created_at: nowS, tags: [['challenge', 'c'.repeat(64)], ['origin', ORIGIN], ['app', 'Twang Thang']], content: '' },
+      createdAt: nowS, expiresAt: nowS + 600, ...(marked === undefined ? {} : { signIn: { sharesHandle: marked } }),
+    };
+  }
+  async function withAsk(marked: boolean | undefined, over: Partial<UseChildAsksOpts> = {}) {
+    const s = setup(over);
+    await flush();
+    const a = signInAsk(marked);
+    t.deliver(await askEv(a)); await flush();
+    expect(s.hook.result.current.asks).toHaveLength(1);
+    expect(s.hook.result.current.asks[0].ask.signIn).toEqual(marked === undefined ? undefined : { sharesHandle: marked });
+    return { ...s, a };
+  }
+  const both = () => [{ kind: 21236, until: Math.floor(clock / 1000) + 600 }, { kind: 13, until: Math.floor(clock / 1000) + 600 }];
+
+  for (const sharesHandle of [true, false]) {
+    it(`marked (sharesHandle ${sharesHandle}): "Allow once" opens 21236 AND 13, same window, one push, before a verdict that says so`, async () => {
+      const s = await withAsk(sharesHandle);
+      const order: string[] = [];
+      s.pushCeiling.mockImplementation(async () => { order.push('push'); return 'ok'; });
+      const pub = t.publish.bind(t);
+      t.publish = async (ev, relays) => { order.push('publish'); return pub(ev, relays); };
+      let r;
+      await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+      expect(r).toEqual({ sent: true });
+      expect(s.pushCeiling).toHaveBeenCalledTimes(1);
+      expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
+      expect(order).toEqual(['push', 'publish']);
+      expect(await verdictOf(t.published[0].ev, s.a.id)).toEqual({ v: 1, id: s.a.id, verdict: 'once', alsoOpened: [13], decidedAt: Math.floor(clock / 1000) });
+    });
+  }
+
+  it('the verdict with its alsoOpened is saved before it is published (A34)', async () => {
+    const s = await withAsk(true);
+    let savedAtPublish: unknown;
+    const pub = t.publish.bind(t);
+    t.publish = async (ev, relays) => { savedAtPublish = structuredClone(store.get('history')); return pub(ev, relays); };
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
+    const row = (savedAtPublish as { ask: { id: string }; verdict: { alsoOpened?: number[] } }[]).find(e => e.ask.id === s.a.id);
+    expect(row?.verdict.alsoOpened).toEqual([13]);
+  });
+
+  it('unmarked (an older child, or an outside app): today\'s single entry, and the verdict says nothing more', async () => {
+    const s = await withAsk(undefined);
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 21236, until: Math.floor(clock / 1000) + 600 });
+    const v = await verdictOf(t.published[0].ev, s.a.id);
+    expect(v).toMatchObject({ verdict: 'once' });
+    expect(v?.alsoOpened).toBeUndefined();
+  });
+
+  it('a failed push answers deny / device-unreachable — neither kind opened, nothing reported', async () => {
+    const s = await withAsk(true);
+    s.pushCeiling.mockResolvedValue('failed');
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: true, reason: 'device-unreachable' });
+    const v = await verdictOf(t.published[0].ev, s.a.id);
+    expect(v).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
+    expect(v?.alsoOpened).toBeUndefined();
+  });
+
+  it('A5: when the ceiling cannot hold both kinds it is refused, nothing pushed', async () => {
+    mListRules.mockResolvedValue(Array.from({ length: 61 }, (_, i) => ({
+      id: String(i).padStart(32, '0'), dependantId: dep.id, persona: '*', scope: `kind:${40000 + i}`, target: '*', decision: 'allow' as const,
+      createdAt: 1, updatedAt: 1 + i,
+    })));
+    const s = await withAsk(true);
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: true, reason: 'ceiling-full' });
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'deny' });
+  });
+
+  it('a once that did not reach the child gives both back; "Send again" re-pushes both and reports the seal', async () => {
+    const s = await withAsk(true);
+    t.ok = false;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: false, reason: 'publish-failed' });
+    expect(s.dropOnce).toHaveBeenCalledWith(dep.id.toLowerCase(), both());
+    t.ok = true;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: true });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(2);
+    expect(s.pushCeiling).toHaveBeenLastCalledWith(dep.id.toLowerCase(), both());
+    expect(await verdictOf(t.published[t.published.length - 1].ev, s.a.id)).toMatchObject({ verdict: 'once', alsoOpened: [13] });
+  });
+
+  it('"Send again" whose second push fails sends deny with no alsoOpened', async () => {
+    const s = await withAsk(true);
+    t.ok = false;
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'once'); });
+    t.ok = true;
+    s.pushCeiling.mockResolvedValue('failed');
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'once'); });
+    expect(r).toEqual({ sent: true, reason: 'device-unreachable' });
+    const v = await verdictOf(t.published[t.published.length - 1].ev, s.a.id);
+    expect(v).toMatchObject({ verdict: 'deny', reason: 'device-unreachable' });
+    expect(v?.alsoOpened).toBeUndefined();
+  });
+
+  it('"Always" is still offered for a marked sign-in: a rule, its own kind only, nothing reported', async () => {
+    const s = await withAsk(true);
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: true });
+    expect(mSaveRule.mock.calls[0][0]).toMatchObject({ decision: 'allow', scope: 'sign-in', target: `site:${ORIGIN}`, persona: PERSONA });
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase());
+    const v = await verdictOf(t.published[0].ev, s.a.id);
+    expect(v).toMatchObject({ verdict: 'always' });
+    expect(v?.alsoOpened).toBeUndefined();
+  });
+
+  it('Deny is unchanged', async () => {
+    const s = await withAsk(true);
+    await act(async () => { await s.hook.result.current.decide(s.a.id, 'deny'); });
+    expect(s.pushCeiling).not.toHaveBeenCalled();
+    const v = await verdictOf(t.published[0].ev, s.a.id);
+    expect(v).toMatchObject({ verdict: 'deny' });
+    expect(v?.alsoOpened).toBeUndefined();
   });
 });
