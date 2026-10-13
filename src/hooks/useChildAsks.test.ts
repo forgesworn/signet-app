@@ -638,6 +638,27 @@ describe('useChildAsks — My Signet\'s own sign-in, marked (Part B)', () => {
     expect(v?.alsoOpened).toBeUndefined();
   });
 
+  it('M1: a marked ask without a site target (shown on the generic card) opens only 21236, and the verdict reports nothing more', async () => {
+    const s = setup();
+    await flush();
+    const nowS = Math.floor(clock / 1000);
+    const a: ChildSignAsk = {
+      ...signInAsk(true), target: 'app:mysignet', targetLabel: 'My Signet',
+      template: { kind: 21236, pubkey: PERSONA, created_at: nowS, tags: [['challenge', 'c'.repeat(64)]], content: '' },
+    };
+    t.deliver(await askEv(a)); await flush();
+    expect(s.hook.result.current.asks).toHaveLength(1);
+    expect(s.hook.result.current.asks[0].ask.signIn).toEqual({ sharesHandle: true });
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(a.id, 'once'); });
+    expect(r).toEqual({ sent: true });
+    expect(s.pushCeiling).toHaveBeenCalledTimes(1);
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 21236, until: nowS + 600 });
+    const v = await verdictOf(t.published[0].ev, a.id);
+    expect(v).toMatchObject({ verdict: 'once' });
+    expect(v?.alsoOpened).toBeUndefined();
+  });
+
   it('a failed push answers deny / device-unreachable — neither kind opened, nothing reported', async () => {
     const s = await withAsk(true);
     s.pushCeiling.mockResolvedValue('failed');

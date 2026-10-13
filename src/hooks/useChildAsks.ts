@@ -35,7 +35,7 @@ import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import type { DependantIdentity } from '../types';
 import type { ChildRule } from '../types/child-rules';
 import {
-  buildVerdictEvent, openAskEvent, openRailVerdictEvent, CHILD_SIGN_ASK_LIVE_LIMIT, CHILD_SIGN_ASK_TTL_S,
+  buildVerdictEvent, openAskEvent, openRailVerdictEvent, signInAskDetails, CHILD_SIGN_ASK_LIVE_LIMIT, CHILD_SIGN_ASK_TTL_S,
   type ChildSignAsk, type ChildSignVerdict,
 } from '../lib/child-sign-asks';
 import { childRuleId } from '../lib/child-rules';
@@ -118,8 +118,6 @@ export const CHILD_ASK_HISTORY_MAX = 200;
 export const CHILD_ASK_ONCE_WINDOW_S = 600;
 /** The NIP-59 seal: the answer to an approved app permission is sealed by the persona (D5). */
 const SEAL_KIND = 13;
-/** Sign in with Signet (Part B). */
-const SIGN_IN_KIND = 21236;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 /** Drop a stored `alsoOpened`: only the push of the attempt that sends it may report it. */
@@ -132,14 +130,16 @@ function withoutAlsoOpened(v: ChildSignVerdict): ChildSignVerdict {
 /**
  * Whether an Allow once also opens the seal (kind 13): My Signet's own
  * answer, which the child phone gift-wraps and seals as the same persona —
- * an app permission carrying a valid claim (D5), or a marked sign-in (Part B:
- * scope sign-in, kind 21236, `signIn` present; `checkAsk` already holds it to
- * that shape).
+ * an app permission carrying a valid claim (D5), or a marked sign-in (Part B).
+ * Both use the very predicate the card uses (`appPermissionAskDetails`,
+ * `signInAskDetails`), so the seal opens only for an ask the guardian saw on
+ * that card — never for one shown on the generic card. Evaluated on the live
+ * ask (with its template), never on a slimmed history row.
  */
 function sealsOwnAnswer(ask: ChildSignAsk): boolean {
   if (ask.method !== 'sign_event') return false;
   if (ask.scope === 'app-permission') return appPermissionAskDetails(ask) !== null;
-  return ask.scope === 'sign-in' && ask.kind === SIGN_IN_KIND && ask.signIn !== undefined;
+  return signInAskDetails(ask) !== null;
 }
 
 interface DirectChild {

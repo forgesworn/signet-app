@@ -62,6 +62,20 @@ export interface ChildSignVerdict {
 export const VERDICT_ALSO_OPENED_KINDS: readonly number[] = [13];
 const SIGN_IN_KIND = 21236;
 
+/**
+ * Part B: My Signet's own relay-mode sign-in on a direct child — a marked
+ * (`signIn`) kind-21236 signature in scope sign-in on a site target. The ONE
+ * predicate for both the guardian's plain sign-in card and its decision to
+ * open the seal (kind 13) with it, so the seal is only ever opened for an ask
+ * the guardian saw on that card. Null for anything else (today's card, no seal).
+ */
+export function signInAskDetails(a: ChildSignAsk): { site: string; sharesHandle: boolean } | null {
+  if (!a.signIn || typeof a.signIn.sharesHandle !== 'boolean') return null;
+  if (a.method !== 'sign_event' || a.scope !== 'sign-in' || a.kind !== SIGN_IN_KIND) return null;
+  if (!a.template || a.template.kind !== SIGN_IN_KIND || !a.target.startsWith('site:')) return null;
+  return { site: a.targetLabel ?? '', sharesHandle: a.signIn.sharesHandle };
+}
+
 export const CHILD_SIGN_ASK_TTL_S = 600;
 export const CHILD_SIGN_ASK_LIVE_LIMIT = 32;
 const MAX_CONTENT = 16384, TEMPLATE_CONTENT_MAX = 4096, TEMPLATE_TAGS_BUDGET = 4096, MAX_TAGS = 64, MAX_TAG_ITEMS = 8, MAX_TAG_ITEM_LEN = 512;

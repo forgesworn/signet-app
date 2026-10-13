@@ -9,7 +9,7 @@ import type { PendingChildAsk, ChildAskDecideReason } from '../hooks/useChildAsk
 import { describeEventTemplate } from '../lib/nip46-server';
 import { CHILD_ASK_COPY as COPY } from '../lib/child-device-copy';
 import { shortNpub } from '../lib/signet';
-import type { ChildSignAsk } from '../lib/child-sign-asks';
+import { signInAskDetails, type ChildSignAsk } from '../lib/child-sign-asks';
 import { appPermissionAskDetails } from '../lib/app-permission';
 
 export type ChildAskDecide = (id: string, verdict: 'once' | 'always' | 'deny', opts?: { alwaysDeny?: boolean }) => Promise<{ sent: boolean; reason?: ChildAskDecideReason }>;
@@ -57,18 +57,6 @@ export function askTargetText(target: string): string {
 /** "sign-in to", "public posts on", … or "kind N requests on" for an unclassified kind. */
 export function askScopePhrase(a: Pick<ChildSignAsk, 'scope' | 'kind'>): string {
   return (a.scope && COPY.scopePhrase[a.scope]) || COPY.kindPhrase(a.kind);
-}
-
-/**
- * Part B: the card input for My Signet's own relay-mode sign-in on a direct
- * child — a marked (`signIn`) kind-21236 signature in scope sign-in on a
- * site target. Null for anything else, which keeps today's card.
- */
-export function signInAskDetails(a: ChildSignAsk): { site: string; sharesHandle: boolean } | null {
-  if (!a.signIn || typeof a.signIn.sharesHandle !== 'boolean') return null;
-  if (a.method !== 'sign_event' || a.scope !== 'sign-in' || a.kind !== 21236) return null;
-  if (!a.template || a.template.kind !== 21236 || !a.target.startsWith('site:')) return null;
-  return { site: a.targetLabel ?? '', sharesHandle: a.signIn.sharesHandle };
 }
 
 export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: Props) {

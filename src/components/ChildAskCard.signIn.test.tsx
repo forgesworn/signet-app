@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { getPublicKey, generateSecretKey } from 'nostr-tools/pure';
 import type { PendingChildAsk } from '../hooks/useChildAsks';
 import { ChildAskApprovalModal } from './BunkerApprovalModal';
-import { signInAskDetails } from './ChildAskCard';
+import { signInAskDetails } from '../lib/child-sign-asks';
 import { CHILD_ASK_COPY } from '../lib/child-device-copy';
 
 // Part B: a direct-paired child's own relay-mode Sign in with Signet is one
