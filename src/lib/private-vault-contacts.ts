@@ -36,6 +36,9 @@ export function contactsVaultAdapter(directoryId: string, encryptionKey: string,
     }),
     merge: (plaintext, createdAt) => contactsMutationQueue.run(async () => {
       current();
+      if (await (await db.getDb()).get('privateVaultState', `independence:closed:${directoryId}`)) {
+        throw new Error('This contact directory was transferred');
+      }
       const value = JSON.parse(plaintext);
       if (!value || value.v !== 1 || value.directoryId !== directoryId || !Array.isArray(value.operations)
         || value.operations.length > MAX_CHECKPOINT_OPS || !Array.isArray(value.grants)) throw new Error('Invalid contacts vault');

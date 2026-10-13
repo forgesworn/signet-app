@@ -37,10 +37,44 @@ export interface ChildSignAsk {
    * a guardian that cannot validate it.
    */
   appPermission?: AppPermissionClaim;
+  /**
+   * Part B: set only by My Signet's own relay-mode Sign in with Signet on a
+   * direct-paired child (scope `sign-in`, kind 21236, sign_event). It says
+   * the request is the app's own sign-in, whose answer the child phone seals
+   * itself, and whether the answer shares the child's handle. Dropped
+   * unread by an older guardian (today's card, no seal opened).
+   */
+  signIn?: { sharesHandle: boolean };
 }
 export interface ChildSignVerdict {
   v: 1; id: string; verdict: 'once' | 'always' | 'deny'; alwaysDeny?: boolean;
   reason?: 'device-unreachable' | 'expired'; ruleId?: string; decidedAt: number;
+  /**
+   * Part B: on an Allow-once or Always verdict, the extra kinds the guardian's
+   * push opened on the Heartwood, as approved-once entries, for THIS answer
+   * (only the seal, kind 13, for now; an Always rule itself never holds it).
+   * The child mints its answer seal pass only when this lists 13. Never on a
+   * deny. An older child drops it unread.
+   */
+  alsoOpened?: number[];
+}
+
+/** The kinds a verdict may report as also opened (the NIP-59 seal). */
+export const VERDICT_ALSO_OPENED_KINDS: readonly number[] = [13];
+const SIGN_IN_KIND = 21236;
+
+/**
+ * Part B: My Signet's own relay-mode sign-in on a direct child — a marked
+ * (`signIn`) kind-21236 signature in scope sign-in on a site target. The ONE
+ * predicate for both the guardian's plain sign-in card and its decision to
+ * open the seal (kind 13) with it, so the seal is only ever opened for an ask
+ * the guardian saw on that card. Null for anything else (today's card, no seal).
+ */
+export function signInAskDetails(a: ChildSignAsk): { site: string; sharesHandle: boolean } | null {
+  if (!a.signIn || typeof a.signIn.sharesHandle !== 'boolean') return null;
+  if (a.method !== 'sign_event' || a.scope !== 'sign-in' || a.kind !== SIGN_IN_KIND) return null;
+  if (!a.template || a.template.kind !== SIGN_IN_KIND || !a.target.startsWith('site:')) return null;
+  return { site: a.targetLabel ?? '', sharesHandle: a.signIn.sharesHandle };
 }
 
 export const CHILD_SIGN_ASK_TTL_S = 600;
@@ -137,6 +171,13 @@ function checkAsk(raw: unknown): ChildSignAsk | null {
     if (!claim || o.scope !== 'app-permission' || o.method !== 'sign_event') return null;
     out.appPermission = claim;
   }
+  if (o.signIn !== undefined) {
+    // Part B: exactly `{ sharesHandle: boolean }`, on a 21236 signature in scope sign-in only.
+    const m = o.signIn as Record<string, unknown> | null;
+    if (!m || typeof m !== 'object' || Array.isArray(m) || Object.keys(m).length !== 1 || typeof m.sharesHandle !== 'boolean') return null;
+    if (o.scope !== 'sign-in' || o.kind !== SIGN_IN_KIND || o.method !== 'sign_event' || !out.template) return null;
+    out.signIn = { sharesHandle: m.sharesHandle };
+  }
   return out;
 }
 
@@ -218,6 +259,13 @@ function checkVerdict(raw: unknown): ChildSignVerdict | null {
     out.reason = o.reason;
   }
   if (o.ruleId !== undefined) { if (typeof o.ruleId !== 'string' || !HEX32.test(o.ruleId)) return null; out.ruleId = o.ruleId; }
+  if (o.alsoOpened !== undefined) {
+    // Part B: Allow once or Always (never a deny); a non-empty list of distinct known kinds (13 today).
+    const k = o.alsoOpened;
+    if (o.verdict === 'deny' || !Array.isArray(k) || k.length === 0 || k.length > VERDICT_ALSO_OPENED_KINDS.length) return null;
+    if (!k.every(n => Number.isInteger(n) && VERDICT_ALSO_OPENED_KINDS.includes(n as number)) || new Set(k).size !== k.length) return null;
+    out.alsoOpened = [...(k as number[])];
+  }
   return out;
 }
 

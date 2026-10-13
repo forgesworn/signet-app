@@ -25,12 +25,21 @@ const statement = (): UnsignedEvent => ({
   tags: [['d', 'twang'], ['p', OTHER], ['valid_from', '1900000000'], ['valid_until', '1900086400'], ['v', '1'], ['role', 'player'], ['expiration', '1900086400']],
 });
 
-/** A gate that allows everything; the spies tell which entry each operation took. */
-function setup(opts: { refuse?: boolean; responseField?: 'event' | 'authEvent' } = {}) {
+/**
+ * A gate that allows everything; the spies tell which entry each operation
+ * took. By default the eligible signature is allowed as a guardian's Allow
+ * once that reported the seal opened (`alsoOpened: [13]`); `alsoOpened: null`
+ * is an allow without it (a rule, the stage, or an older guardian).
+ */
+function setup(opts: { refuse?: boolean; responseField?: 'event' | 'authEvent'; alsoOpened?: number[] | null; signIn?: { sharesHandle: boolean } } = {}) {
   const clock = { t: T0 };
+  const also = opts.alsoOpened === undefined ? [13] : opts.alsoOpened;
   const outcome = (req: ChildGateRequest): ChildGateOutcome => (opts.refuse
     ? { ok: false, error: 'denied' }
-    : { ok: true, requestCreatedAt: 1_900_000_000, ...(req.template ? { template: { ...req.template, pubkey: req.persona } } : {}) });
+    : {
+      ok: true, requestCreatedAt: 1_900_000_000, ...(req.template ? { template: { ...req.template, pubkey: req.persona } } : {}),
+      ...(req.template?.kind === 30420 && also ? { alsoOpened: also } : {}),
+    });
   const gate = {
     authorise: vi.fn(async (req: ChildGateRequest) => outcome(req)),
     forwardPassed: vi.fn(async (req: ChildGateRequest) => ({ ok: true as const, requestCreatedAt: 1_900_000_000, ...(req.template ? { template: { ...req.template, pubkey: req.persona } } : {}) })),
@@ -39,6 +48,7 @@ function setup(opts: { refuse?: boolean; responseField?: 'event' | 'authEvent' }
   const w = answerSealingBackend({
     inner, gate, persona: PERSONA, appLabel: 'Twang Thang', siteOrigin: ORIGIN, appPermission: CLAIM,
     sessionPubkey: SESSION, eligibleKind: 30420, responseField: opts.responseField ?? 'event', now: () => clock.t,
+    ...(opts.signIn ? { signIn: opts.signIn } : {}),
   });
   /** Which entry each call took, in order. */
   const took = () => [
@@ -251,5 +261,67 @@ describe('answerSealingBackend — every mismatch takes the ordinary gated path'
       inner: new LocalSigningBackend(bytesToHex(generateSecretKey())), gate: s.gate, persona: PERSONA, appLabel: 'x',
       sessionPubkey: SESSION, eligibleKind: 30420, responseField: 'event',
     })).toThrow();
+  });
+});
+
+describe('answerSealingBackend — the pass is minted only on a verdict that opened the seal (Part B)', () => {
+  it('an older guardian\'s Allow once (no alsoOpened): no pass — the encrypt and the seal take the ordinary gate', async () => {
+    const s = setup({ alsoOpened: null });
+    const signed = await s.w.signEvent(statement());
+    await giftWrap(rumorFor(signed), SESSION, s.w);
+    expect(s.took()).toEqual(['authorise:sign_event:30420', 'authorise:nip44_encrypt', 'authorise:sign_event:13']);
+    expect(s.gate.forwardPassed).not.toHaveBeenCalled();
+  });
+
+  it('allowed by a rule or the stage (no verdict, so no alsoOpened): no pass', async () => {
+    const s = setup({ alsoOpened: null });
+    const signed = await s.w.signEvent(statement());
+    const c = await s.w.nip44Encrypt(SESSION, rumorJson(rumorFor(signed)));
+    await s.w.signEvent(sealOf(c));
+    expect(s.took()).toEqual(['authorise:sign_event:30420', 'authorise:nip44_encrypt', 'authorise:sign_event:13']);
+  });
+
+  it('alsoOpened without 13: no pass', async () => {
+    const s = setup({ alsoOpened: [] });
+    const signed = await s.w.signEvent(statement());
+    await giftWrap(rumorFor(signed), SESSION, s.w);
+    expect(s.gate.forwardPassed).not.toHaveBeenCalled();
+  });
+
+  it('alsoOpened on some OTHER request does not mint for the eligible one', async () => {
+    const s = setup({ alsoOpened: null });
+    // the gate reports the seal opened, but for an unrelated encrypt, not for the 30420
+    s.gate.authorise.mockImplementation(async (req) => ({
+      ok: true, requestCreatedAt: 1, ...(req.template ? { template: { ...req.template, pubkey: PERSONA } } : {}),
+      ...(req.template ? {} : { alsoOpened: [13] }),
+    }));
+    await s.w.nip44Encrypt(OTHER, 'x');
+    const signed = await s.w.signEvent(statement());
+    await giftWrap(rumorFor(signed), SESSION, s.w);
+    expect(s.gate.forwardPassed).not.toHaveBeenCalled();
+  });
+
+  it('the first eligible signature decides: a later one with alsoOpened does not arm it', async () => {
+    const s = setup({ alsoOpened: null });
+    await s.w.signEvent(statement());
+    s.gate.authorise.mockImplementation(async (req) => ({
+      ok: true, requestCreatedAt: 1, ...(req.template ? { template: { ...req.template, pubkey: PERSONA } } : {}),
+      ...(req.template?.kind === 30420 ? { alsoOpened: [13] } : {}),
+    }));
+    const second = await s.w.signEvent({ ...statement(), created_at: 1_900_000_100 });
+    await giftWrap(rumorFor(second), SESSION, s.w);
+    expect(s.gate.forwardPassed).not.toHaveBeenCalled();
+  });
+
+  it('the sign-in marker goes to the gate with the eligible signature only', async () => {
+    const s = setup({ signIn: { sharesHandle: true } });
+    const signed = await s.w.signEvent(statement());
+    await s.w.signEvent(sealOf('other')); // an ordinary seal: no marker
+    await s.w.nip44Encrypt(OTHER, 'x');
+    await giftWrap(rumorFor(signed), SESSION, s.w);
+    const calls = s.gate.authorise.mock.calls.map(c => c[0]);
+    expect(calls[0]).toMatchObject({ method: 'sign_event', signIn: { sharesHandle: true } });
+    for (const req of calls.slice(1)) expect(req.signIn).toBeUndefined();
+    for (const [req] of s.gate.forwardPassed.mock.calls) expect(req.signIn).toBeUndefined();
   });
 });

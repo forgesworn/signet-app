@@ -1,6 +1,8 @@
 import type { DependantIdentity } from '../types';
 import { MANAGE_FAMILY_CONTACTS_LABEL } from '../lib/contacts-v2-copy';
 import { Icon } from '../components/Icon';
+import type { IndependenceArchive } from '../lib/independence-store';
+import { shortNpub } from '../lib/signet';
 
 interface Props {
   dependants: DependantIdentity[];
@@ -15,6 +17,7 @@ interface Props {
   backupPending?: boolean;
   /** Open Security → Backup Words. */
   onBackup?: () => void;
+  independenceArchives?: IndependenceArchive[];
 }
 
 /**
@@ -26,7 +29,24 @@ interface Props {
  * Intentionally thin — no controls, just routing. All management lives
  * in Dependant settings. Spec §3.5.
  */
-export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onManageContacts, backupPending, onBackup }: Props) {
+export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onManageContacts, backupPending, onBackup, independenceArchives = [] }: Props) {
+  const history = independenceArchives.length ? <div className="section">
+    <h3>Independent family members</h3>
+    {independenceArchives.map(archive => <details className="card" key={archive.dependantId} style={{ marginBottom: 12 }}>
+      <summary>{archive.displayName} — {archive.choice === 'archive' ? 'read-only archive' : 'family copy deleted'}</summary>
+      <p>Handover completed {new Date(archive.completedAt).toLocaleDateString()}. Their identity is managed on their own device.</p>
+      {archive.contacts && <>
+        <p>This encrypted archive stays on this device. It cannot change their contacts.</p>
+        <ul>{archive.contacts.filter(c => c.lifecycle !== 'removed').map(contact => <li key={contact.contactId}>
+          {contact.displayName || 'Unnamed contact'} — {contact.tier}
+          {contact.blocks.some(b => !b.liftedByOperationId) ? ' (Blocked)' : ''}
+          {contact.identities.map(identity => <p key={identity.itemId}>{identity.label ? `${identity.label}: ` : ''}{shortNpub(identity.pubkey)}</p>)}
+          {contact.contactMethods.map(method => <p key={method.itemId}>{method.label || method.kind}: {method.value}</p>)}
+          {contact.notes && <p>{contact.notes}</p>}
+        </li>)}</ul>
+      </>}
+    </details>)}
+  </div> : null;
   const backupLine = backupPending && onBackup ? (
     <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
       Their keys are inside yours.{' '}
@@ -44,6 +64,7 @@ export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onM
     return (
       <div className="fade-in" role="main">
         {backupLine}
+        {history}
         <div className="empty-state" style={{ paddingTop: 64 }}>
           <div className="empty-state-icon"><Icon name="users" size={36} /></div>
           <h3 className="empty-state-title">No dependants yet</h3>
@@ -68,6 +89,7 @@ export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onM
   return (
     <div className="fade-in" role="main">
       {backupLine}
+      {history}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         {dependants.map((dep, i) => {
           const paired = !!dep.bunkerEndpoint?.authorizedClientPubkey;

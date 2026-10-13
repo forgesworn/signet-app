@@ -64,6 +64,12 @@ import { toWire as profilesChangeWire } from './lib/personas-sync';
 import { toSyncWire as dependantChangeWire } from './lib/dependants-sync';
 import { usePrivateVaults, legacyVaultWriteAllowed, type PrivateVaultHealth } from './hooks/usePrivateVaults';
 import { hasLocalVaultTree, privateVaultJobs } from './lib/private-vault-jobs';
+import { buildIndependenceTransfer, independenceSourceRevision, independenceTransferProblem, publishIndependenceMirror } from './lib/independence-transfer';
+import { closeIndependenceSource, independenceDraftWords, listIndependenceArchives, newIndependenceDeviceId, readIndependenceSource } from './lib/independence-store';
+import type { IndependenceArchive } from './lib/independence-store';
+import type { DependantIdentity } from './types';
+import { applyOperations as applyIndependenceOperations } from './lib/contacts-v2-reducer';
+import { syncPrivateVaultDataset } from './lib/private-vault-sync';
 import { portableSettingsValues } from './lib/portable-settings';
 import { contactsMutationQueue } from './lib/contacts-v2-queue';
 import { contactsForGrant } from './lib/contacts-v2-grant-scope';
@@ -321,7 +327,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, type ChildGateOutcome } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -841,6 +847,7 @@ export function App() {
   const [activeDependantId, setActiveDependantId] = useState<string | null>(null);
   const activeDependant = activeDependantId ? dependants.find(d => d.id === activeDependantId) ?? null : null;
 
+
   // Carousel state (identity ring + card column) — lifted to App so we can
   // inline-approve auth requests from whichever row the user has swiped to.
   const [botsVersion, setBotsVersion] = useState(0);
@@ -865,6 +872,20 @@ export function App() {
   /** The page on screen, for callbacks that must not navigate away from somewhere else (M11). */
   const pageRef = useRef<Page>(page);
   pageRef.current = page;
+  const ceremonyDependantRef = useRef<DependantIdentity | null>(null);
+  if (page === 'transition-ceremony' && activeDependant && encryptionKey) ceremonyDependantRef.current = activeDependant;
+  if (page !== 'transition-ceremony' || !encryptionKey) ceremonyDependantRef.current = null;
+  const ceremonyDependant = page === 'transition-ceremony' ? activeDependant ?? ceremonyDependantRef.current : null;
+  const [independenceArchives, setIndependenceArchives] = useState<IndependenceArchive[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setIndependenceArchives([]);
+    if (page !== 'family-list' || !identity || !encryptionKey) return;
+    void listIndependenceArchives(identity.naturalPerson.publicKey, encryptionKey).then(rows => {
+      if (!cancelled) setIndependenceArchives(rows);
+    }).catch(() => { /* Archives are optional; never present unreadable rows. */ });
+    return () => { cancelled = true; };
+  }, [page, identity?.naturalPerson.publicKey, encryptionKey]);
   handshakeForegroundRef.current = page === 'contact-handshake' && !!encryptionKey;
   // Refs threaded into useNavigation so hardware/browser back can be PIN-gated
   // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
@@ -8156,8 +8177,11 @@ export function App() {
 
     // A direct-paired child: Sign in with Signet goes through the child's gate
     // (target site:<origin>, spec §8.1). The wait for a guardian answer shows
-    // as the "Asking your guardian…" panel on the approval screen.
-    if (childDirect && selection.source === 'guardian') {
+    // as the "Asking your guardian…" panel on the approval screen. Redirect
+    // mode only here: relay mode wraps the backend below, once the handle
+    // choice is known (Part B, the answer seal pass).
+    const childDirectRelaySignIn = childDirect && selection.source === 'guardian' && !!(request.relay && request.sessionPubkey);
+    if (childDirect && selection.source === 'guardian' && !childDirectRelaySignIn) {
       const inner = selectedBackend as DecryptingSigningBackend;
       const persona = inner.activePublicKeyHex;
       const origin = request.origin;
@@ -8255,6 +8279,41 @@ export function App() {
 
       // ── Relay delivery mode ───────────────────────────────────────────────────
       if (isRelayMode) {
+        // Part B: a direct-paired child's own sign-in is one guardian card.
+        // The ask is marked (and says whether the handle is shared); when the
+        // guardian's Allow once also opened the seal, the answer seal pass
+        // lets the encrypt and seal of THIS answer through without more
+        // cards. Anything else takes the gate as before.
+        if (childDirectRelaySignIn) {
+          const inner = selectedBackend as DecryptingSigningBackend;
+          const persona = inner.activePublicKeyHex.toLowerCase();
+          const origin = request.origin;
+          let label = urlAuthSiteName;
+          if (!label) { try { label = new URL(origin).hostname; } catch { label = origin.slice(0, 64); } }
+          const siteAppId = childSiteAppId(origin);
+          const touch = () => {
+            try {
+              const now = Math.floor(Date.now() / 1000);
+              childGateRef.current.noteConnectedApp({ appId: siteAppId, kind: 'site', label, url: origin, persona, firstSeen: now, lastUsed: now });
+            } catch { /* bookkeeping only */ }
+          };
+          touch();
+          const touched = (o: ChildGateOutcome) => { if (o.ok) touch(); return o; };
+          selectedBackend = answerSealingBackend({
+            inner,
+            gate: {
+              authorise: (r) => childGateRef.current.authorise(r).then(touched),
+              forwardPassed: (r) => childGateRef.current.forwardPassed(r).then(touched),
+            },
+            persona,
+            appLabel: label,
+            siteOrigin: origin,
+            sessionPubkey: sessionPubkey!,
+            eligibleKind: 21236,
+            responseField: 'authEvent',
+            signIn: { sharesHandle: !!handleToShare },
+          });
+        }
         // Sign the kind-21236 event. Works with every backend (local, bunker, NIP-07).
         // pickedAvatar (if any) becomes avatar_hash / avatar_url / avatar_key tags
         // on the event — Phase 4 of per-persona-avatars.
@@ -12819,6 +12878,7 @@ export function App() {
       <Layout title="Family" showBack onBack={() => navigateBack()}>
         <FamilyList
           dependants={dependants}
+          independenceArchives={independenceArchives}
           onSelect={(depId) => {
             setActiveDependantId(depId);
             navigateTo('settings');
@@ -12911,15 +12971,97 @@ export function App() {
   }
 
   // Transition Ceremony — independence ceremony for a dependant
-  if (page === 'transition-ceremony' && activeDependant) {
+  if (page === 'transition-ceremony' && ceremonyDependant) {
+    const dep = ceremonyDependant;
+    const guardian = identity?.naturalPerson.publicKey;
+    const current = (key: string) => () => encryptionKeyRef.current === key
+      && identityRef.current?.naturalPerson.publicKey === guardian && pageRef.current === 'transition-ceremony'
+      && ceremonyDependantRef.current?.id === dep.id;
+    const syncSource = async (key: string) => {
+      if (!guardian || !identity || !current(key)()) throw new Error('Unlock to transfer this identity');
+      const fresh = await loadIdentityDecrypted(identity.id, key);
+      if (!fresh || !current(key)()) throw new Error('Identity locked');
+      const jobs = await privateVaultJobs({ identity: fresh, encryptionKey: key,
+        deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent: current(key) });
+      const match = /^dependant-(0|[1-9][0-9]*)$/.exec(dep.derivationPath);
+      const job = match && jobs.find(j => typeof j.adapter.dataset === 'object' && j.adapter.dataset.dependant === Number(match[1]));
+      if (!job) throw new Error('This identity has no recovery-backed contacts vault. Its handover is unavailable.');
+      const synced = await syncPrivateVaultDataset({ ...job, ownerPubkey: guardian, encryptionKey: key,
+        relays: syncRelays, isCurrent: current(key), now: Math.floor(Date.now() / 1000),
+        allowInitialPublish: contactsImport.status === 'done' && [contactsRemoteState, contactsV2RemoteState,
+          contactsGrantsRemoteState, dependantsRemoteState].every(state => state === 'present' || state === 'never-seen') });
+      if (synced.state !== 'verified') throw new Error('The family contacts backup could not be synchronised. Retry when connected.');
+      return readIndependenceSource(guardian, dep.id, key);
+    };
     return (
       <Layout title="Independence Ceremony" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
+        {authOverlay}{nip55Overlay}{bunkerApprovalOverlay}
         <TransitionCeremony
-          dependant={activeDependant}
+          dependant={dep}
+          transferProblem={independenceTransferProblem(dep)}
+          recoveryRelays={syncRelays.write}
+          onCreateIndependentWords={async () => {
+            const key = await requestFreshAuth({ purpose: 'transfer-independence', depName: dep.displayName, phase: 'prepare' });
+            if (!key) throw new Error('Recovery words preparation cancelled');
+            return independenceDraftWords(dep.id, key, current(key));
+          }}
+          onLoadTransferContacts={async () => {
+            const key = encryptionKeyRef.current;
+            if (!key) throw new Error('Unlock to review contacts');
+            const source = await syncSource(key);
+            return { contacts: [...applyIndependenceOperations(source.operations).values()],
+              revision: independenceSourceRevision(source.dependant, source.operations) };
+          }}
+          onTransfer={async opts => {
+            if (!opts.removeGuardian || !opts.rotateKeys || !opts.newMnemonic || !opts.guardianCopy || !opts.review || !guardian) throw new Error('Incomplete handover');
+            const key = await requestFreshAuth({ purpose: 'transfer-independence', depName: dep.displayName, phase: 'complete' });
+            if (!key) throw new Error('Handover cancelled');
+            const finishClosure = async () => {
+              const owner = identityRef.current;
+              if (!owner || !current(key)()) throw new Error('Unlock to finish handover');
+              const fresh = await loadIdentityDecrypted(owner.id, key);
+              if (!fresh) throw new Error('Identity unavailable');
+              const jobs = await privateVaultJobs({ identity: fresh, encryptionKey: key,
+                deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent: current(key) });
+              const profiles = jobs.find(j => j.adapter.dataset === 'profiles');
+              if (!profiles) throw new Error('Family backup unavailable');
+              const synced = await syncPrivateVaultDataset({ ...profiles, ownerPubkey: guardian, encryptionKey: key,
+                relays: syncRelays, isCurrent: current(key), now: Math.floor(Date.now() / 1000) });
+              if (synced.state !== 'verified') throw new Error('Their new backup is verified and this device has stopped managing their old identity. The family handover backup is still pending. Unlock and retry to finish syncing it.');
+              await removeDependant(dep.id);
+              bumpContactsV2();
+            };
+            // A crash/offline failure after local cutover resumes the durable
+            // family closure; it never needs the deleted old identity again.
+            if ((await listIndependenceArchives(guardian, key)).some(c => c.dependantId === dep.id)) {
+              await finishClosure(); return;
+            }
+            const source = await syncSource(key);
+            if (independenceSourceRevision(source.dependant, source.operations) !== opts.reviewRevision) throw new Error('Family data changed. Go back and reload the contacts to review them again.');
+            const draft = await independenceDraftWords(dep.id, key, current(key));
+            if (draft !== opts.newMnemonic) throw new Error('Recovery words changed. Go back and confirm the saved words.');
+            const plan = buildIndependenceTransfer({ dependant: source.dependant, operations: source.operations,
+              mnemonic: draft, review: opts.review, deviceId: newIndependenceDeviceId(), now: Date.now() });
+            await publishIndependenceMirror({ ...plan, encryptionKey: key, relays: syncRelays.write,
+              now: Math.floor(Date.now() / 1000), isCurrent: current(key) });
+            // Tell granted apps to stop using the old directory. New grants
+            // are deliberately not carried into the independent backup.
+            await Promise.allSettled(await tombstoneGrantsFor(g => g.directoryId === directoryIdForDependant(dep), true));
+            const beforeCutover = await readIndependenceSource(guardian, dep.id, key);
+            if (independenceSourceRevision(beforeCutover.dependant, beforeCutover.operations) !== opts.reviewRevision) throw new Error('Family data changed. Go back and review the contacts again.');
+            await closeIndependenceSource({ key, expectedFingerprint: beforeCutover.fingerprint, isCurrent: current(key), closure: {
+              directoryId: directoryIdForDependant(dep), guardianPubkey: guardian, dependantId: dep.id,
+              derivationPath: dep.derivationPath, displayName: dep.displayName, completedAt: Date.now(), choice: opts.guardianCopy,
+              slotPubkeys: [...new Set([source.dependant.id, source.dependant.naturalPerson.publicKey, source.dependant.persona.publicKey,
+                ...(source.dependant.extraPersonas ?? []).map(p => p.publicKey)].filter(Boolean))] } });
+            // The durable closure already removed identity and contact grants.
+            // Sweep the existing signing/approval state before returning.
+            await finishClosure();
+          }}
           contactsGate={resolveIndependenceGate({
             dependantName: activeDependant?.displayName ?? 'them',
-            contacts: activeDependant
-              ? (familyContacts.directories.find(d => d.directoryId === directoryIdForDependant(activeDependant))?.contacts ?? [])
+            contacts: dep
+              ? (familyContacts.directories.find(d => d.directoryId === directoryIdForDependant(dep))?.contacts ?? [])
               : [],
           })}
           contactsLoading={familyContacts.loading}
@@ -12939,13 +13081,13 @@ export function App() {
             // instead of silently allowing it.
             const reloadResult = await familyContacts.reload();
             const directory = reloadResult.ok
-              ? reloadResult.directories.find(d => d.directoryId === directoryIdForDependant(activeDependant))
+              ? reloadResult.directories.find(d => d.directoryId === directoryIdForDependant(dep))
               : undefined;
             if (!reloadResult.ok || !directory) {
               return { allowed: false, reason: CONTACTS_LOG_UNAVAILABLE_COPY };
             }
             return resolveIndependenceGate({
-              dependantName: activeDependant.displayName,
+              dependantName: dep.displayName,
               contacts: directory.contacts,
             });
           }}
@@ -12966,7 +13108,7 @@ export function App() {
             // tear down the grants table. A failed audit does not block
             // the purge — the purge is the user-requested action.
             if (!opts.removeGuardian) return;
-            const depId = activeDependant.id;
+            const depId = dep.id;
             const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
             const guardianPubkey = naturalPersonServingBackend?.activePublicKeyHex;
             if (naturalPersonServingBackend && guardianPubkey) {
@@ -12983,7 +13125,7 @@ export function App() {
               // Dependant: once removeDependant runs the signing keys
               // are gone with the record. Best-effort, fire-and-forget
               // semantics inside retractDepProfilesBeforePurge.
-              await retractDepProfilesBeforePurge(activeDependant);
+              await retractDepProfilesBeforePurge(dep);
               await removeDependant(depId);
             } catch {
               // Surface via the ceremony's error state — the onComplete
@@ -12991,7 +13133,7 @@ export function App() {
               throw new Error('Could not complete cleanup. Some dependant data may remain on this device.');
             }
           }}
-          onBack={() => navigateBack()}
+          onBack={() => { void reloadDependants(); navigateBack(); }}
         />
       </Layout>
     );

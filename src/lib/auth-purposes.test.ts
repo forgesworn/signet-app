@@ -40,6 +40,7 @@ describe('PURPOSES registry — shape invariants', () => {
     'issue-professional-credential-confirmed',
     'mutate-professional-roster',
     'manage-family-contacts',
+    'transfer-independence',
   ];
 
   for (const purpose of purposeKeys) {
@@ -91,6 +92,7 @@ describe('PURPOSES registry — tier contract', () => {
       'issue-professional-credential-confirmed',
       'mutate-persona-child-mode',
       'mutate-professional-roster',
+      'transfer-independence',
     ].sort());
   });
 });
@@ -102,6 +104,8 @@ describe('PURPOSES — template outputs', () => {
   // description both render non-empty. Validates that no template throws or
   // produces an empty string for a typical input.
   const cases: Array<{ name: string; ctx: PurposeContext; expectInDescription?: string }> = [
+    { name: 'prepare independence', ctx: { purpose: 'transfer-independence', depName: 'Sam', phase: 'prepare' }, expectInDescription: 'Sam' },
+    { name: 'complete independence', ctx: { purpose: 'transfer-independence', depName: 'Sam', phase: 'complete' }, expectInDescription: 'Sam' },
     { name: 'unlock-app', ctx: { purpose: 'unlock-app' } },
     {
       name: 'approve-sign-in',

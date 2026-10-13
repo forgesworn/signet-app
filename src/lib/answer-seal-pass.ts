@@ -11,7 +11,12 @@
  * the answer, so it knows every byte in advance:
  *
  *   mint     its `signEvent` of `eligibleKind` by the persona, through the
- *            ordinary gate, records the signed event's id (one mint per
+ *            ordinary gate, records the signed event's id — ONLY when the
+ *            gate allowed it on a guardian's verdict on that ask (Allow once,
+ *            or Always on a sign-in) that reported the seal (kind 13) opened
+ *            too (`alsoOpened`, Part B). Allowed by a rule or the stage, or by
+ *            an older guardian's verdict that does not say so: no pass, and the encrypt and seal take the ordinary
+ *            gate. The first eligible signature decides (one chance per
  *            wrapper; 60 s; memory only)
  *   encrypt  passes only while the pass is live and unused, to the session
  *            key, when the plaintext is the answer rumor — kind 29999 by the
@@ -68,6 +73,8 @@ export interface AnswerSealingInput {
   siteOrigin?: string;
   /** D6: the app's claim, sent with the `eligibleKind` signature only. */
   appPermission?: AppPermissionClaim;
+  /** Part B: the sign-in marker, sent with the `eligibleKind` signature only. */
+  signIn?: { sharesHandle: boolean };
   /** The key the answer is gift-wrapped to. */
   sessionPubkey: string;
   /** The approved signature that mints the pass (30420; Part B: 21236). */
@@ -103,10 +110,24 @@ export function answerSealingBackend(input: AnswerSealingInput): DecryptingSigni
     ...base, method: req.method,
     ...(req.template ? { template: req.template } : {}), ...(req.peer ? { peer: req.peer } : {}),
   });
-  const ordinary = gatedSigningBackend(inner, (req) => gate.authorise({
-    ...request(req),
-    ...(input.appPermission && req.template?.kind === eligibleKind ? { appPermission: input.appPermission } : {}),
-  }));
+  /**
+   * Per eligible template object (the very event `signEvent` was handed):
+   * did the gate allow it on a verdict that opened the seal too? Keyed on
+   * the reference, so concurrent calls cannot borrow each other's answer.
+   */
+  const sealOpened = new WeakMap<UnsignedEvent, boolean>();
+  const ordinary = gatedSigningBackend(inner, async (req) => {
+    const eligible = req.template?.kind === eligibleKind;
+    const outcome = await gate.authorise({
+      ...request(req),
+      ...(input.appPermission && eligible ? { appPermission: input.appPermission } : {}),
+      ...(input.signIn && eligible ? { signIn: { sharesHandle: input.signIn.sharesHandle } } : {}),
+    });
+    if (eligible && req.template) {
+      sealOpened.set(req.template, outcome.ok && Array.isArray(outcome.alsoOpened) && outcome.alsoOpened.includes(SEAL_KIND));
+    }
+    return outcome;
+  });
   const passed = gatedSigningBackend(inner, (req) => gate.forwardPassed(request(req)));
 
   let pass: Pass | null = null;
@@ -144,9 +165,11 @@ export function answerSealingBackend(input: AnswerSealingInput): DecryptingSigni
         return passed.signEvent(event);
       }
       const signed = await ordinary.signEvent(event);
-      if (!minted && signed.kind === eligibleKind && signed.pubkey === persona && typeof signed.id === 'string' && HEX64.test(signed.id)) {
-        minted = true;
-        pass = { eventId: signed.id, mintedAt: now(), used: false };
+      if (!minted && signed.kind === eligibleKind) {
+        minted = true; // the first eligible signature decides, pass or not
+        if (sealOpened.get(event) === true && signed.pubkey === persona && typeof signed.id === 'string' && HEX64.test(signed.id)) {
+          pass = { eventId: signed.id, mintedAt: now(), used: false };
+        }
       }
       return signed;
     },

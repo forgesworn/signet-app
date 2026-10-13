@@ -9,6 +9,7 @@ import { isNaturalPersonActive } from './identity-display';
 import { deriveProfessionalPersona } from './professional/pro-persona';
 import { sanitizeDisplayName } from './text-sanitize';
 import { contactsMutationQueue } from './contacts-v2-queue';
+import { listIndependenceArchives, closureMetadata, validIndependenceClosure, closeIndependenceSource } from './independence-store';
 
 export function profilesVaultAdapter(args: {
   identityId: string; ownerPubkey: string; encryptionKey: string; mnemonic: string | null;
@@ -29,11 +30,24 @@ export function profilesVaultAdapter(args: {
       const wires = dependants.map(toSyncWire).filter((d): d is NonNullable<typeof d> => d !== null).sort((a, b) => a.id.localeCompare(b.id));
       const bots = botRegistrySnapshot(await loadBotRegistry(args.ownerPubkey, args.encryptionKey));
       current();
-      return JSON.stringify({ v: 1, bots, personas: toWire(local), dependants: { v: 1, dependants: wires },
+      const independentDependants = (await listIndependenceArchives(args.ownerPubkey, args.encryptionKey)).map(closureMetadata);
+      return JSON.stringify({ v: 1, bots, personas: toWire(local), dependants: { v: 1, dependants: wires }, independentDependants,
         persona: { publicKey: local.persona.publicKey, displayName: local.persona.displayName,
           updatedAt: local.persona.displayNameUpdatedAt ?? 0 } });
     }),
-    merge: (raw, createdAt) => contactsMutationQueue.run(async () => {
+    merge: async (raw, createdAt) => {
+      // Validate/merge ordinary data first, then apply closures outside the
+      // queue. The closure helper owns that queue and removes stale rows.
+      current();
+      const payload = JSON.parse(raw);
+      if (!payload || payload.v !== 1 || !payload.personas || !payload.dependants) throw new Error('Invalid profiles vault');
+      const closures: unknown = payload.independentDependants ?? [];
+      if (!Array.isArray(closures) || closures.length > 1000 || !closures.every(c => validIndependenceClosure(c) && c.guardianPubkey === args.ownerPubkey)) {
+        throw new Error('Invalid independence history');
+      }
+      // Validate the ordinary profile payload before any closure changes data.
+      if (!parsePersonas(JSON.stringify(payload.personas)) || !parseDependants(JSON.stringify(payload.dependants))) throw new Error('Invalid profiles data');
+      await contactsMutationQueue.run(async () => {
       current();
       const value = JSON.parse(raw);
       if (!value || value.v !== 1 || !value.personas || !value.dependants) throw new Error('Invalid profiles vault');
@@ -91,6 +105,11 @@ export function profilesVaultAdapter(args: {
         if (existing && existing.createdAt > dep!.createdAt) continue;
         await db.saveDependant(mergeDependantWithLocal(dep!, existing ?? null), args.encryptionKey);
       }
-    }),
+      });
+      for (const closure of closures) {
+        current();
+        await closeIndependenceSource({ closure, key: args.encryptionKey, isCurrent: args.isCurrent });
+      }
+    },
   };
 }

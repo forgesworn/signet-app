@@ -116,6 +116,13 @@ export interface ChildGateRequest {
    */
   appPermission?: AppPermissionClaim;
   /**
+   * Part B: My Signet's own relay-mode Sign in with Signet (the answer seal
+   * pass sets it, on the 21236 only). An ask for a kind-21236 signature in
+   * scope sign-in carries it so the guardian's card can say so and its Allow
+   * once opens the seal too; on any other request it is ignored.
+   */
+  signIn?: { sharesHandle: boolean };
+  /**
    * M2: the caller withdrew the request (the person cancelled). A held ask
    * is dropped at once — its verdict is no longer listened for, so a later
    * Allow on the guardian's card is never forwarded to the Heartwood — and
@@ -389,6 +396,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     const scope = template ? inferScope(template) : 'dm-private';
     // D6: an app-permission ask carries the app's claim and names its origin.
     const appPermission = scope === 'app-permission' ? req.appPermission : undefined;
+    // Part B: the sign-in marker, on a 21236 signature in scope sign-in only.
+    const signIn = scope === 'sign-in' && kind === 21236 && req.signIn ? { sharesHandle: req.signIn.sharesHandle } : undefined;
     let target: ChildRuleTarget | null;
     if (appPermission) {
       target = siteTarget(appPermission.origin);
@@ -408,6 +417,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       method: req.method, target, targetLabel: (req.appLabel || req.siteOrigin || 'An app').slice(0, 100),
       createdAt: nowS, expiresAt: nowS + CHILD_SIGN_ASK_TTL_S, ...(template ? { template } : {}),
       ...(appPermission ? { appPermission } : {}),
+      ...(signIn ? { signIn } : {}),
     };
     let ev: NostrEvent;
     try { ev = await buildAskEvent(ask, rec.clientKeypair.privateKey, rec.railPubkey); }
@@ -480,7 +490,14 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
             // A12: the forwarded template is the one the guardian was asked
             // about — `template` itself, never re-read from the caller.
             answerAsk(id, 'approved');
-            void forward('approved', target).then(settle);
+            // Part B: what else the guardian's push opened for THIS answer
+            // (Allow once or Always; `checkVerdict` refuses it on a deny)
+            // rides on the outcome, for the answer seal pass. A request
+            // allowed by a rule or the stage has no verdict, so never sets it.
+            const also = v.verdict === 'once' || v.verdict === 'always' ? v.alsoOpened : undefined;
+            void forward('approved', target)
+              .then(o => (o.ok && also && also.length > 0 ? { ...o, alsoOpened: [...also] } : o))
+              .then(settle);
           });
         },
       );

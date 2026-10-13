@@ -9,7 +9,7 @@ import type { PendingChildAsk, ChildAskDecideReason } from '../hooks/useChildAsk
 import { describeEventTemplate } from '../lib/nip46-server';
 import { CHILD_ASK_COPY as COPY } from '../lib/child-device-copy';
 import { shortNpub } from '../lib/signet';
-import type { ChildSignAsk } from '../lib/child-sign-asks';
+import { signInAskDetails, type ChildSignAsk } from '../lib/child-sign-asks';
 import { appPermissionAskDetails } from '../lib/app-permission';
 
 export type ChildAskDecide = (id: string, verdict: 'once' | 'always' | 'deny', opts?: { alwaysDeny?: boolean }) => Promise<{ sent: boolean; reason?: ChildAskDecideReason }>;
@@ -74,6 +74,8 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
   // other ask, and for an app-permission one that fails the checks (a claimless
   // 30420 from an external app): that one falls through to the generic card.
   const permission = appPermissionAskDetails(a);
+  // Part B: a marked sign-in gets its own plain card; null keeps today's.
+  const signIn = permission ? null : signInAskDetails(a);
   // The scope is asked for every time, whatever the stage: never "Always".
   const showAlways = alwaysAvailable && a.scope !== 'app-permission';
   const heading = a.method === 'sign_event' && a.template
@@ -102,9 +104,22 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
         <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>
           {COPY.eyebrow}
         </div>
-        <div style={{ fontSize: '1.05rem', fontWeight: 600, lineHeight: 1.3 }}>{permission ? PC.heading(clip(permission.name, 64), child) : heading}</div>
+        <div style={{ fontSize: '1.05rem', fontWeight: 600, lineHeight: 1.3 }}>
+          {permission ? PC.heading(clip(permission.name, 64), child)
+            : signIn ? COPY.signIn.heading(child, clip(signIn.site, 60) || target)
+            : heading}
+        </div>
       </div>
-      {permission ? (
+      {signIn ? (
+        <div data-testid="child-ask-sign-in" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+          <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{COPY.signIn.from(target)}</div>
+          <div>{COPY.signIn.sharesHandle(child, signIn.sharesHandle)}</div>
+          <div>{COPY.as(persona)}</div>
+          {hiddenLines(pending).map(line => (
+            <div key={line} role="note" style={{ marginTop: 6, fontWeight: 600, color: 'var(--warning)' }}>{line}</div>
+          ))}
+        </div>
+      ) : permission ? (
         <div data-testid="child-ask-app-permission" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {/* M8: which of the child's identities the statement binds. */}
           <div>{COPY.as(persona)}</div>

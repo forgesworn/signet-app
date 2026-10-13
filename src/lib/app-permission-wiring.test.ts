@@ -45,11 +45,14 @@ describe('app-permission wiring in App.tsx', () => {
     expect(effect.indexOf('if (prefsLoading || identityLoading) return;')).toBeLessThan(effect.indexOf("navigateReplace('approve-app-permission')"));
   });
 
-  it('only the app-permission approval hands the gate\'s pass-forward entry to anything', () => {
+  it('only the app-permission approval and the child\'s relay-mode sign-in (Part B) hand the gate\'s pass-forward entry to anything', () => {
     const lines = app.split('\n').filter(l => l.includes('forwardPassed'));
-    expect(lines).toHaveLength(1);
+    expect(lines).toHaveLength(2);
     const approve = between('const handleApproveAppPermission = useCallback(', '// ── Third-party add-dependant approval');
     expect(approve).toContain('forwardPassed: (r) => childGateRef.current.forwardPassed({ ...r, abort: withdraw.signal })');
+    const signIn = between('if (childDirectRelaySignIn) {', 'const { authEvent } = await signAuthChallenge(');
+    expect(signIn).toContain('forwardPassed: (r) => childGateRef.current.forwardPassed(r).then(touched)');
+    expect(lines.filter(l => approve.includes(l) || signIn.includes(l))).toHaveLength(2);
   });
 
   it('a single wrap is built per approval and never inside the publish retry', () => {
