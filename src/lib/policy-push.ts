@@ -194,6 +194,11 @@ export async function pushChildDirectCeiling(
 export interface OnceEntry { kind: number; until: number }
 export type OnceMap = Record<string, OnceEntry[]>;
 
+/** One entry or several, as a list. */
+export function onceEntries(e: OnceEntry | OnceEntry[] | undefined): OnceEntry[] {
+  return e === undefined ? [] : Array.isArray(e) ? e : [e];
+}
+
 /** `map` with `e` appended to the dependant's list (dependant id lowercased). */
 export function addOnceEntry(map: OnceMap, depId: string, e: OnceEntry): OnceMap {
   const id = depId.toLowerCase();
@@ -241,25 +246,28 @@ export interface FreshPushReads {
 
 /**
  * Spec §7 + A31/A32: widen one child-direct slot's ceiling now. The optional
- * `extraOnce` entry is added to the current approved-once state first; then,
- * inside the operator lock, rules / dependant / approved-once are read FRESH
- * and the slot is compiled and pushed. On failure ONLY the entry this call
- * added is removed from the current state — never a restored snapshot, which
- * would drop an entry a concurrent verdict added meanwhile. Never throws.
+ * `extraOnce` entries (one, or several that land together — D5: a 30420 and
+ * the kind-13 seal of its answer) are added to the current approved-once
+ * state first; then, inside the operator lock, rules / dependant /
+ * approved-once are read FRESH and the slot is compiled and pushed, all in
+ * one push. On failure EVERY entry this call added — and only those — is
+ * removed from the current state, never a restored snapshot, which would
+ * drop an entry a concurrent verdict added meanwhile. Never throws.
  */
 export async function pushChildCeilingLocked(a: {
   lockKey: object;
   io: PolicyPushIo;
   depId: string;
-  extraOnce?: OnceEntry;
+  extraOnce?: OnceEntry | OnceEntry[];
   store: ApprovedOnceStore;
   read(): Promise<FreshPushReads>;
 }): Promise<'ok' | 'failed'> {
   const id = a.depId.toLowerCase();
-  if (a.extraOnce) {
+  const extra = onceEntries(a.extraOnce);
+  if (extra.length > 0) {
     const cur = a.store.get();
     if (cur === null) return 'failed';
-    await a.store.set(addOnceEntry(cur, id, a.extraOnce));
+    await a.store.set(extra.reduce((m, e) => addOnceEntry(m, id, e), cur));
   }
   let result: 'ok' | 'failed' = 'failed';
   try {
@@ -276,9 +284,9 @@ export async function pushChildCeilingLocked(a: {
       }, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint });
     });
   } catch { result = 'failed'; }
-  if (result !== 'ok' && a.extraOnce) {
+  if (result !== 'ok' && extra.length > 0) {
     const cur = a.store.get();
-    if (cur) { try { await a.store.set(removeOnceEntry(cur, id, a.extraOnce)); } catch { /* memory copy already updated */ } }
+    if (cur) { try { await a.store.set(extra.reduce((m, e) => removeOnceEntry(m, id, e), cur)); } catch { /* memory copy already updated */ } }
   }
   return result;
 }

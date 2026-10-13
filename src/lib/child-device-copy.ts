@@ -201,8 +201,38 @@ export const CHILD_ASK_COPY = {
     'react-zap-reply': 'reactions and replies on',
     'pair-device': 'device pairing with',
     'mutate-identity': 'profile changes on',
+    'app-permission': 'app permissions from',
   } as Record<string, string>,
   kindPhrase: (kind: number) => `kind ${kind} requests on`,
+  /**
+   * An app's request to let a child play online (spec §5). Every sentence is
+   * My Signet's; the app's name and reason only fill the gaps, and the reason
+   * is always shown as the app's own words. The card never says more about
+   * who is asking than the app's claimed origin.
+   */
+  appPermission: {
+    heading: (app: string, child: string) => `${app} asks: let ${child} play online with other players`,
+    /** M7: the label over the app's own reason, which is shown in its own frame. */
+    appSaysLabel: 'The app says:',
+    allowsTitle: 'What this allows',
+    /**
+     * M8: `persona` is the identity the statement binds — who the other
+     * players will know. When it carries the child's own name (or none),
+     * the child's name is used throughout, as before.
+     */
+    allows: {
+      'online-play': (app: string, child: string, persona: string, until: string) => {
+        const who = persona && persona.toLowerCase() !== child.toLowerCase() ? persona : child;
+        return `Until ${until}, ${app} on ${child}’s phone can prove to the other players in a game that it is ${who}, so they will know ${who} plays ${app}. It cannot post, message anyone or act as ${who} anywhere else. My Signet cannot control what the app does with this proof; ${app} says it shows it only to players in a game with ${who}.`;
+      },
+    } as Record<string, (app: string, child: string, persona: string, until: string) => string>,
+    from: (host: string) => `From ${host}`,
+    details: 'Details',
+    appId: 'App id',
+    installKey: 'Install key',
+    validUntil: 'Valid until',
+    allow: 'Allow',
+  },
   appMySignet: 'My Signet',
   appHex: (short: string) => `app ${short}`,
   anywhere: 'anywhere',
@@ -229,6 +259,7 @@ export const CHILD_ASK_COPY = {
     'publish-failed': 'Your answer has not reached their phone yet. Send it again.',
     'save-failed': 'Could not save your answer on this phone, so nothing was sent. Try again.',
     'always-unavailable': 'At this stage every request is asked for, so “Always” is not offered.',
+    'always-app-permission': 'App permissions are asked for every time.',
     'already-decided': 'This request has already been answered.',
     'not-found': 'This request is no longer waiting.',
     locked: 'Unlock to answer.',
@@ -310,6 +341,7 @@ export const CHILD_PERMISSIONS_COPY = {
     'upload-photo': 'Photo uploads',
     'mutate-identity': 'Profile changes',
     'pair-device': 'Device pairing',
+    'app-permission': 'App permissions',
   } as Record<string, string>,
   personasHeading: 'Identities on the phone',
   removePersona: (name: string) => `Remove from ${name}'s phone`,
@@ -338,6 +370,7 @@ export const CHILD_PERMISSIONS_COPY = {
     approved: 'Allowed',
     denied: 'Not allowed',
     expired: 'No answer in time',
+    withdrawn: 'You cancelled',
   } as Record<string, string>,
   verdict: { once: 'Allowed once', always: 'Always allowed', deny: 'Denied' } as Record<string, string>,
   notSent: 'Not sent yet',

@@ -34,8 +34,9 @@ import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import type { PairedChildRecord } from '../types';
 import type { ChildRulesPayload } from '../lib/child-rules-wire';
 import type { ChildRuleTarget } from '../types/child-rules';
-import { childTargetsFor, decideChildCrypto, decideChildRequest, type ChildGateVerdict } from '../lib/child-gate';
-import { appTarget, peerTarget } from '../lib/child-rules';
+import { childTargetsFor, decideChildCrypto, decideChildRequest, preflight, type ChildGateVerdict } from '../lib/child-gate';
+import { appTarget, peerTarget, siteTarget } from '../lib/child-rules';
+import type { AppPermissionClaim } from '../lib/app-permission';
 import { inferScope } from '../lib/scope-inference';
 import { checkRateLimit, type RateLimitState } from '../lib/rate-limit';
 import {
@@ -108,6 +109,19 @@ export interface ChildGateRequest {
   peer?: string;
   /** False: raise an ask but do not hold the caller (NIP-55 content provider) ⇒ `asked`. */
   wait?: boolean;
+  /**
+   * D6: the app's claim for a kind-30420 app-permission request (the app's
+   * own acts only). An ask in that scope carries it and is addressed to
+   * `site:<origin>`; on any other request it is ignored.
+   */
+  appPermission?: AppPermissionClaim;
+  /**
+   * M2: the caller withdrew the request (the person cancelled). A held ask
+   * is dropped at once — its verdict is no longer listened for, so a later
+   * Allow on the guardian's card is never forwarded to the Heartwood — and
+   * the request settles `withdrawn`. Nothing is sent to the guardian.
+   */
+  abort?: AbortSignal;
 }
 
 export interface ChildGateTransport {
@@ -153,8 +167,8 @@ export interface ChildGateAskRecord {
   scope: string;
   /** Unix seconds. */
   since: number;
-  /** `sent`: raised for a caller that could not wait (the answer applies to its next try). */
-  state: 'waiting' | 'sent' | 'approved' | 'denied' | 'expired';
+  /** `sent`: raised for a caller that could not wait (the answer applies to its next try). `withdrawn`: the child cancelled it. */
+  state: 'waiting' | 'sent' | 'approved' | 'denied' | 'expired' | 'withdrawn';
 }
 export const CHILD_GATE_ASK_HISTORY_MAX = 50;
 /** A60: a forwarded request whose result never comes back is forgotten after this. */
@@ -162,6 +176,19 @@ const PENDING_REPORT_TTL_MS = 10 * 60_000;
 
 export interface ChildGate {
   authorise(req: ChildGateRequest): Promise<ChildGateOutcome>;
+  /**
+   * D7: forward WITHOUT a gate decision. Keeps everything else `authorise`
+   * does — the unpaired / persona checks, the persona on the template (A12),
+   * the preflight (disconnected app, blocking app rule, rate limit), the
+   * `beforeStamp` probe, the request stamp and the activity record — and
+   * skips only `decideChildRequest` / `decideChildCrypto`.
+   *
+   * For the answer seal pass ONLY (`answer-seal-pass.ts`), which calls it
+   * just for the exact encrypt and seal of an answer it has itself built
+   * around a signature the gate already allowed. The NIP-46 and NIP-55
+   * server paths never see it: they are handed `authorise` alone.
+   */
+  forwardPassed(req: ChildGateRequest): Promise<ChildGateOutcome>;
   pendingAsks: PendingChildGateAsk[];
   /** A60: the child's own asks (newest first, pending and answered; in memory). */
   askHistory: ChildGateAskRecord[];
@@ -171,8 +198,21 @@ export interface ChildGate {
 
 interface Held { id: string; settle(outcome: ChildGateOutcome): void }
 
+/** A request past its opening checks (`prepare`). */
+interface Prepared {
+  at: { direct: PairedChildRecord | null; rules: ChildRulesPayload | null; relays: string[]; unpaired: boolean; recordKey: string };
+  rec: PairedChildRecord & { railPubkey: string };
+  persona: string;
+  nowMs: number;
+  base: { persona: string; method: ChildGateMethod; appId: string; appLabel: string };
+  template?: UnsignedEvent;
+  kind: number | null;
+}
+
+/** A refusing verdict's code. Only the guardian's own rules are `denied` (I1). */
 function refusal(v: ChildGateVerdict): ChildGateError {
-  return v.verdict === 'blocked' ? 'blocked' : 'denied';
+  if (v.verdict === 'blocked') return 'blocked';
+  return v.verdict === 'deny' && v.reason === 'rate-limit' ? 'rate-limited' : 'denied';
 }
 
 export function useChildGate(opts: UseChildGateOpts): ChildGate {
@@ -246,7 +286,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
         .sort((a, b) => b.lastUsed - a.lastUsed).slice(0, CHILD_CONNECTED_APPS_MAX));
   }, []);
 
-  const authorise = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
+  /** The checks every request starts with; A12: the persona is on the template before anything is decided or asked. */
+  const prepare = useCallback((req: ChildGateRequest): Prepared | { ok: false; error: ChildGateError } => {
     const at = live.current;
     const rec = at.direct;
     if (at.unpaired || !rec || !rec.railPubkey) return { ok: false, error: 'unpaired' };
@@ -256,7 +297,6 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     const base = { persona, method: req.method, appId: req.appId, appLabel: req.appLabel };
     touchApp(req.appId, persona, req.appLabel);
 
-    // A12: the persona is on the template before anything is decided or asked.
     let template: UnsignedEvent | undefined;
     if (req.method === 'sign_event') {
       if (!req.template) return { ok: false, error: 'denied' };
@@ -267,7 +307,66 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     } else if (!req.peer || !HEX64.test(req.peer.toLowerCase())) {
       return { ok: false, error: 'denied' };
     }
-    const kind = template ? template.kind : null;
+    return { at, rec: { ...rec, railPubkey: rec.railPubkey }, persona, nowMs, base, template, kind: template ? template.kind : null };
+  }, [touchApp]);
+
+  /**
+   * Probe (beforeStamp), stamp, and the pending activity record. `redecide`
+   * (an unprompted `signed` only) re-runs the decision when the rules changed
+   * while the probe waited.
+   */
+  const forwardFor = useCallback(async (
+    p: Prepared, req: ChildGateRequest, outcome: 'signed' | 'approved', target?: string, redecide?: (rules: ChildRulesPayload | null) => ChildGateVerdict,
+  ): Promise<ChildGateOutcome> => {
+    const { at, persona, base, kind, template } = p;
+    const probe = beforeStampRef.current;
+    let probed = true;
+    if (probe) { try { probed = await probe(persona); } catch { probed = false; } }
+    // As before the reorder: a refused probe is not a gate decision, so nothing is reported.
+    if (!probed) return { ok: false, error: 'blocked' };
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
+    if (probe) {
+      // The probe can wait on the Heartwood's button: the record or the
+      // rules may have changed meanwhile. An unprompted allow is re-decided
+      // on the rules as they are now (a guardian approval stands).
+      const now = live.current;
+      if (now.unpaired || now.recordKey !== at.recordKey) return { ok: false, error: 'unpaired' };
+      if (redecide && now.rules !== at.rules) {
+        const again = redecide(now.rules);
+        if (again.verdict !== 'sign') {
+          emit({ ...base, kind, outcome: again.verdict === 'blocked' ? 'blocked' : 'denied' });
+          return { ok: false, error: again.verdict === 'ask' ? 'denied' : refusal(again) };
+        }
+      }
+    }
+    const requestCreatedAt = await reserveRequestCreatedAt(persona, { now: () => nowRef.current() });
+    const t = nowRef.current();
+    for (const [k, v] of pendingReports.current) if (t - v.addedAt > PENDING_REPORT_TTL_MS) pendingReports.current.delete(k);
+    pendingReports.current.set(`${persona}:${requestCreatedAt}`, {
+      entry: { ...base, kind, outcome, ...(target ? { target } : {}), requestCreatedAt }, addedAt: t,
+    });
+    touchApp(req.appId, persona, req.appLabel);
+    return { ok: true, requestCreatedAt, ...(template ? { template } : {}) };
+  }, [emit, touchApp]);
+
+  const forwardPassed = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
+    const p = prepare(req);
+    if (!('at' in p)) return p;
+    const early = preflight(p.at.rules, p.persona, req.appId, p.nowMs, rateRef.current);
+    rateRef.current = checkRateLimit(rateRef.current, p.nowMs).newState;
+    if (early) {
+      emit({ ...p.base, kind: p.kind, outcome: early.verdict === 'blocked' ? 'blocked' : 'denied' });
+      return { ok: false, error: refusal(early) };
+    }
+    return forwardFor(p, req, 'approved');
+  }, [prepare, forwardFor, emit]);
+
+  const authorise = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
+    const p = prepare(req);
+    if (!('at' in p)) return p;
+    const { at, rec, persona, nowMs, base, template, kind } = p;
 
     const rateBefore = rateRef.current;
     const decide = (rules: typeof at.rules) => template
@@ -276,35 +375,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     const verdict = decide(at.rules);
     rateRef.current = checkRateLimit(rateRef.current, nowMs).newState;
 
-    const forward = async (outcome: 'signed' | 'approved', target?: string): Promise<ChildGateOutcome> => {
-      const probe = beforeStampRef.current;
-      let probed = true;
-      if (probe) { try { probed = await probe(persona); } catch { probed = false; } }
-      // As before the reorder: a refused probe is not a gate decision, so nothing is reported.
-      if (!probed) return { ok: false, error: 'blocked' };
-      if (probe) {
-        // The probe can wait on the Heartwood's button: the record or the
-        // rules may have changed meanwhile. An unprompted allow is re-decided
-        // on the rules as they are now (a guardian approval stands).
-        const now = live.current;
-        if (now.unpaired || now.recordKey !== at.recordKey) return { ok: false, error: 'unpaired' };
-        if (outcome === 'signed' && now.rules !== at.rules) {
-          const again = decide(now.rules);
-          if (again.verdict !== 'sign') {
-            emit({ ...base, kind, outcome: again.verdict === 'blocked' ? 'blocked' : 'denied' });
-            return { ok: false, error: again.verdict === 'ask' ? 'denied' : refusal(again) };
-          }
-        }
-      }
-      const requestCreatedAt = await reserveRequestCreatedAt(persona, { now: () => nowRef.current() });
-      const t = nowRef.current();
-      for (const [k, v] of pendingReports.current) if (t - v.addedAt > PENDING_REPORT_TTL_MS) pendingReports.current.delete(k);
-      pendingReports.current.set(`${persona}:${requestCreatedAt}`, {
-        entry: { ...base, kind, outcome, ...(target ? { target } : {}), requestCreatedAt }, addedAt: t,
-      });
-      touchApp(req.appId, persona, req.appLabel);
-      return { ok: true, requestCreatedAt, ...(template ? { template } : {}) };
-    };
+    const forward = (outcome: 'signed' | 'approved', target?: string) =>
+      forwardFor(p, req, outcome, target, outcome === 'signed' ? decide : undefined);
 
     if (verdict.verdict === 'sign') return forward('signed');
     if (verdict.verdict !== 'ask') {
@@ -315,15 +387,19 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     // ── Ask the guardian ──────────────────────────────────────────────────
     if (held.current.size >= CHILD_GATE_MAX_HELD) return { ok: false, error: 'busy' };
     const scope = template ? inferScope(template) : 'dm-private';
+    // D6: an app-permission ask carries the app's claim and names its origin.
+    const appPermission = scope === 'app-permission' ? req.appPermission : undefined;
     let target: ChildRuleTarget | null;
-    if (template) {
+    if (appPermission) {
+      target = siteTarget(appPermission.origin);
+    } else if (template) {
       // A site/peer target must be one the guardian can re-derive from the
       // template itself (A12); otherwise the ask names the app.
       target = childTargetsFor(template, scope, '')[0] ?? (req.appId ? appTarget(req.appId) : null);
     } else {
       target = peerTarget(req.peer!);
     }
-    if (!target) { emit({ ...base, kind, outcome: 'denied' }); return { ok: false, error: 'denied' }; }
+    if (!target) { emit({ ...base, kind, outcome: 'denied' }); return { ok: false, error: 'unsent' }; }
 
     const nowS = Math.floor(nowMs / 1000);
     const id = bytesToHex(randomBytes(16));
@@ -331,12 +407,14 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       v: 1, id, dependantId: rec.dependantPubkey.toLowerCase(), persona, scope, kind: kind ?? 0,
       method: req.method, target, targetLabel: (req.appLabel || req.siteOrigin || 'An app').slice(0, 100),
       createdAt: nowS, expiresAt: nowS + CHILD_SIGN_ASK_TTL_S, ...(template ? { template } : {}),
+      ...(appPermission ? { appPermission } : {}),
     };
     let ev: NostrEvent;
     try { ev = await buildAskEvent(ask, rec.clientKeypair.privateKey, rec.railPubkey); }
-    catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'denied' }; }
+    catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'unsent' }; }
     if (live.current.recordKey !== at.recordKey || live.current.unpaired) return { ok: false, error: 'unpaired' };
     if (held.current.size >= CHILD_GATE_MAX_HELD) return { ok: false, error: 'busy' };
+    if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
 
     const relays = at.relays;
     const clientPriv = rec.clientKeypair.privateKey;
@@ -348,11 +426,18 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       let done = false;
       let unsubscribe: (() => void) | null = null;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const abort = req.abort;
+      const onAbort = () => {
+        if (done) return;
+        answerAsk(id, 'withdrawn');
+        settle({ ok: false, error: 'withdrawn' });
+      };
       const settle = (outcome: ChildGateOutcome) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         unsubscribe?.();
+        abort?.removeEventListener('abort', onAbort);
         held.current.delete(id);
         setPendingAsks(prev => prev.filter(p => p.id !== id));
         resolve(outcome);
@@ -369,6 +454,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
         return;
       }
       held.current.set(id, { id, settle });
+      abort?.addEventListener('abort', onAbort);
       setPendingAsks(prev => [...prev, { id, targetLabel: ask.targetLabel, since: nowS }]);
       emit({ ...base, kind, outcome: 'asked', target });
       timer = setTimeout(() => {
@@ -386,7 +472,9 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
             if (v.verdict === 'deny') {
               emit({ ...base, kind, outcome: 'denied', target });
               answerAsk(id, 'denied');
-              settle({ ok: false, error: 'denied' });
+              // I1: a deny that carries a reason is the guardian's phone
+              // failing (or the ask running out), not their No.
+              settle({ ok: false, error: v.reason === 'device-unreachable' ? 'device-unreachable' : v.reason === 'expired' ? 'expired' : 'denied' });
               return;
             }
             // A12: the forwarded template is the one the guardian was asked
@@ -396,10 +484,10 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
           });
         },
       );
-      const unsent = () => { emit({ ...base, kind, outcome: 'denied', target }); answerAsk(id, 'denied'); settle({ ok: false, error: 'denied' }); };
+      const unsent = () => { emit({ ...base, kind, outcome: 'denied', target }); answerAsk(id, 'denied'); settle({ ok: false, error: 'unsent' }); };
       void transportRef.current.publish(ev, relays).then((r) => { if (!r.ok) unsent(); }).catch(unsent);
     });
-  }, [emit, touchApp, askTimeoutMs, noteAsk, answerAsk]);
+  }, [prepare, forwardFor, emit, askTimeoutMs, noteAsk, answerAsk]);
 
   const noteConnectedApp = useCallback((app: ConnectedChildApp) => {
     setConnectedApps(prev => {
@@ -415,6 +503,6 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
 
   useEffect(() => { setConnectedApps([]); setAskHistory([]); }, [recordKey]);
 
-  return useMemo(() => ({ authorise, pendingAsks, askHistory, noteConnectedApp, connectedApps }),
-    [authorise, pendingAsks, askHistory, noteConnectedApp, connectedApps]);
+  return useMemo(() => ({ authorise, forwardPassed, pendingAsks, askHistory, noteConnectedApp, connectedApps }),
+    [authorise, forwardPassed, pendingAsks, askHistory, noteConnectedApp, connectedApps]);
 }

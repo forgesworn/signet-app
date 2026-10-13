@@ -33,7 +33,7 @@ export const BAR_HEIGHT = 64;
 
 /** Full-screen focus surfaces where the bar must not appear. */
 export const BAR_HIDDEN_PAGES: ReadonlySet<Page> = new Set<Page>([
-  'approve-verification', 'approve-connect', 'approve-auth', 'approve-add-dependant',
+  'approve-verification', 'approve-connect', 'approve-auth', 'approve-add-dependant', 'approve-app-permission',
   'relay-auth-ack', 'web-verify', 'venue-entry', 'photo-capture',
   // Ceremony / pairing / import focus surfaces — a persistent nav bar is wrong
   // here (camera/QR or multi-step flows; a stray tab tap could orphan state).
@@ -72,10 +72,11 @@ export function activeTabForPage(page: Page): TabId | null {
  */
 export function isOrphanedApprovalPage(
   page: Page,
-  state: { hasAuthRequest: boolean; hasRelayAuthAck: boolean },
+  state: { hasAuthRequest: boolean; hasRelayAuthAck: boolean; hasAppPermissionRequest: boolean },
 ): boolean {
   if (page === 'approve-auth') return !state.hasAuthRequest;
   if (page === 'relay-auth-ack') return !state.hasRelayAuthAck;
+  if (page === 'approve-app-permission') return !state.hasAppPermissionRequest;
   return false;
 }
 

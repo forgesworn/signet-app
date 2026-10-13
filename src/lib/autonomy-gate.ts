@@ -128,6 +128,13 @@ const POLICY_MATRIX: Record<Scope, Record<AutonomyStage, Policy>> = {
     'autonomous-alerts': 'auto-alert', 'autonomous-logging': 'auto-log',
     'full-autonomy': 'auto',
   },
+  // A standing permission is a separate guardian decision at every stage:
+  // no autonomy setting satisfies it (app-permission design §5).
+  'app-permission': {
+    'full-control': 'ask-every', 'request-approve': 'ask-every',
+    'autonomous-alerts': 'ask-every', 'autonomous-logging': 'ask-every',
+    'full-autonomy': 'ask-every',
+  },
 };
 
 /**

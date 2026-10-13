@@ -109,6 +109,8 @@ describe('SCOPE_KINDS', () => {
     expect(SCOPE_KINDS['dm-private']).toEqual([4, 13, 1059]);
     expect(SCOPE_KINDS['upload-photo']).toEqual([24242]);
     expect(SCOPE_KINDS['mutate-identity']).toEqual([0]);
+    // An app-permission allow rule can never widen the device ceiling.
+    expect(SCOPE_KINDS['app-permission']).toEqual([]);
   });
 
   it('never lists pair-device (24133) or 31000', () => {

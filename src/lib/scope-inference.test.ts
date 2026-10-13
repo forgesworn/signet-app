@@ -84,6 +84,15 @@ describe('inferScope', () => {
     expect(inferScope(tmpl(31000))).toBeNull();
   });
 
+  it('kind 30420 → app-permission, whatever its shape', () => {
+    expect(inferScope(tmpl(30420))).toBe('app-permission');
+    expect(inferScope({ ...tmpl(30420), tags: [['d', 'x'], ['role', 'admin']], content: 'anything' })).toBe('app-permission');
+  });
+
+  it('app-permission has no origin to infer (the ask carries it)', () => {
+    expect(inferOrigin({ ...tmpl(30420), tags: [['origin', 'https://a.example'], ['p', 'a'.repeat(64)]] }, 'app-permission')).toBeNull();
+  });
+
   it('unknown / unclassified kinds → null (callers fall back to ASK-EVERY)', () => {
     expect(inferScope(tmpl(99999))).toBeNull();
     expect(inferScope(tmpl(12345))).toBeNull();

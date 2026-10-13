@@ -1,4 +1,5 @@
 import { isKinterestAuthority } from './kinterest-authority';
+import { inferScope } from './scope-inference';
 /**
  * NIP-55, the Android signer intent, on the web side of the MySignet APK.
  *
@@ -217,7 +218,9 @@ export function planNip55(
   if (named && !owned.includes(named)) return { kind: 'reject', reason: 'unknown-identity' };
   const remembered = grant && owned.includes(grant.pubkey) ? grant.pubkey : null;
   const identity = named ?? remembered ?? (owned.length === 1 ? owned[0] : (activePubkey && owned.includes(activePubkey.toLowerCase()) ? activePubkey.toLowerCase() : null));
-  if (grant?.allowAlways && identity && grant.pubkey === identity) return { kind: 'forward', pubkey: identity };
+  // M6: a standing app permission (kind 30420) is asked for every time, a remembered grant or not.
+  const appPermission = !!parsed.template && inferScope(parsed.template) === 'app-permission';
+  if (grant?.allowAlways && identity && grant.pubkey === identity && !appPermission) return { kind: 'forward', pubkey: identity };
   if (viaProvider) return { kind: 'defer' };
   return { kind: 'ask', pubkey: identity };
 }

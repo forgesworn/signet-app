@@ -20,6 +20,10 @@
 
 import { useCallback, useState } from 'react';
 import { isNativeApp, SignetNative } from '../lib/native';
+import { APP_PERMISSION_COPY } from '../lib/app-permission-copy';
+
+/** Which request this acknowledges; sign-in unless stated. */
+type Variant = 'sign-in' | 'app-permission';
 
 interface SuccessProps {
   state: 'approved' | 'denied';
@@ -36,10 +40,14 @@ interface SuccessProps {
    * spec for the design rationale.
    */
   postUrl?: string;
+  variant?: Variant;
+  /** App permission on a child's phone: the guardian made the decision, not the person holding it. */
+  byGuardian?: boolean;
 }
 
 interface FailureProps {
   state: 'failed';
+  variant?: Variant;
   relayHost: string;
   requestedRelay?: string;
   primaryRelay?: string;
@@ -123,9 +131,9 @@ export function RelayAuthAck(props: Props) {
 
           {props.failureReason && <p role="alert" style={{ color: 'var(--warning)', fontSize: '0.85rem' }}>{props.failureReason}</p>}
           {props.requestedRelay && <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 24 }}>
-            {props.siteName || 'The requesting app'} chose <strong>{props.requestedRelay}</strong> for this sign-in.
+            {props.siteName || 'The requesting app'} chose <strong>{props.requestedRelay}</strong> for {props.variant === 'app-permission' ? APP_PERMISSION_COPY.ackFailedNoun : 'this sign-in'}.
             {props.primaryRelay && props.primaryRelay !== props.requestedRelay && <> Your primary relay is <strong>{props.primaryRelay}</strong>, but the app is listening for this response on its chosen relay.</>}
-            {' '}To use a different relay, start a new sign-in in the requesting app.
+            {' '}To use a different relay, start a new {props.variant === 'app-permission' ? 'request' : 'sign-in'} in the requesting app.
           </p>}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -151,6 +159,7 @@ export function RelayAuthAck(props: Props) {
   }
 
   const approved = props.state === 'approved';
+  const permission = props.variant === 'app-permission';
 
   return (
     <div className="fade-in" role="main">
@@ -183,12 +192,18 @@ export function RelayAuthAck(props: Props) {
             {approved ? '\u2713' : '\u2717'}
           </span>
           <h2 style={{ margin: 0 }}>
-            {approved ? 'Signed in' : 'Declined'}
+            {permission
+              ? (approved ? APP_PERMISSION_COPY.ackApprovedTitle : APP_PERMISSION_COPY.ackDeniedTitle)
+              : (approved ? 'Signed in' : 'Declined')}
           </h2>
         </div>
 
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 24 }}>
-          {approved
+          {permission
+            ? (approved
+              ? (props.byGuardian ? APP_PERMISSION_COPY.ackApprovedByGuardian : APP_PERMISSION_COPY.ackApproved)(props.siteName.slice(0, 64))
+              : (props.byGuardian ? APP_PERMISSION_COPY.ackDeniedByGuardian : APP_PERMISSION_COPY.ackDenied)(props.siteName.slice(0, 64)))
+            : approved
             ? props.postUrl
               ? <>You have signed in to <strong>{props.siteName.slice(0, 64)}</strong>.</>
               : <>You have signed in to <strong>{props.siteName.slice(0, 64)}</strong>. Return to the app or page where you started to continue.</>

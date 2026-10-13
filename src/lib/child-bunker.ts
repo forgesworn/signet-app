@@ -27,8 +27,29 @@ export type ChildGateOutcome =
   | { ok: true; requestCreatedAt: number; template?: UnsignedEvent }
   | { ok: false; error: ChildGateError };
 
-/** `asked`: an ask was raised but the caller could not wait (NIP-55 content provider). */
-export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'busy' | 'asked';
+/**
+ * `asked`: an ask was raised but the caller could not wait (NIP-55 content provider).
+ *
+ * `denied` is the guardian's own No only: their Deny, or one of their rules
+ * (a deny rule, a removed app). Purely local failures have their own codes
+ * (I1), so a caller can tell "your guardian said no" from "try again":
+ * `unsent` (the ask never reached the rail relay), `rate-limited` (this
+ * phone's 10/min limit), `device-unreachable` (the guardian allowed it but
+ * their phone could not update the Heartwood). `withdrawn`: the caller
+ * cancelled the request (its `abort` signal, M2). On the NIP-46 wire they all
+ * still read `denied` (`childGateWireError`).
+ */
+export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'busy' | 'asked'
+  | 'unsent' | 'rate-limited' | 'device-unreachable' | 'withdrawn';
+
+/**
+ * The error string a third-party NIP-46 client is sent for a refused gate
+ * outcome. The local-failure codes are new to this build; an app sees the
+ * same `denied` it always did.
+ */
+export function childGateWireError(code: ChildGateError): string {
+  return code === 'unsent' || code === 'rate-limited' || code === 'device-unreachable' || code === 'withdrawn' ? 'denied' : code;
+}
 
 export type ChildGateMethod = 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
 
@@ -270,6 +291,10 @@ export class ChildGateRefusedError extends Error {
       : code === 'unpaired' ? 'This phone is no longer paired.'
       : code === 'busy' ? 'Too many requests are waiting for your guardian.'
       : code === 'asked' ? 'Your guardian has been asked.'
+      : code === 'unsent' ? 'Couldn\'t reach your guardian. Try again.'
+      : code === 'rate-limited' ? 'Too many requests just now. Wait a moment, then try again.'
+      : code === 'device-unreachable' ? 'Your guardian said yes, but their Heartwood couldn\'t be reached. Try again.'
+      : code === 'withdrawn' ? 'You cancelled this request.'
       : 'Your guardian has not allowed this.');
     this.name = 'ChildGateRefusedError';
   }
@@ -288,6 +313,16 @@ const GATED_INNER = Symbol('childGatedInner');
 export function ungatedInner<T extends object | null>(backend: T): T {
   if (!backend) return backend;
   return ((backend as Record<symbol, unknown>)[GATED_INNER] as T | undefined) ?? backend;
+}
+
+/**
+ * Mark `wrapper` as a gated wrapper over `inner`, so a later re-gate unwraps
+ * it to `inner` (one decision, never two) — for gated wrappers built outside
+ * this module (the answer seal pass).
+ */
+export function markGated<T extends object>(wrapper: T, inner: DecryptingSigningBackend): T {
+  Object.defineProperty(wrapper, GATED_INNER, { value: ungatedInner(inner), enumerable: false });
+  return wrapper;
 }
 
 /** The child's own app id on the gate (spec §8.4). */

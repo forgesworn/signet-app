@@ -35,7 +35,7 @@ describe('resolvePolicy — interaction matrix (2026-04-22 spec)', () => {
   // accidental gaps if the matrix is edited in future.
   const ALL_SCOPES: Scope[] = [
     'sign-in', 'venue-entry', 'post-public', 'dm-private', 'upload-photo',
-    'react-zap-reply', 'pair-device', 'mutate-identity',
+    'react-zap-reply', 'pair-device', 'mutate-identity', 'app-permission',
   ];
   const ALL_STAGES: AutonomyStage[] = [
     'full-control', 'request-approve', 'autonomous-alerts',
@@ -108,6 +108,10 @@ describe('resolvePolicy — interaction matrix (2026-04-22 spec)', () => {
     expect(resolvePolicy('request-approve', 'mutate-identity')).toBe('ask-every');
   });
 
+  it('app-permission: ASK-EVERY at every stage, full-autonomy included', () => {
+    for (const stage of ALL_STAGES) expect(resolvePolicy(stage, 'app-permission')).toBe('ask-every');
+  });
+
   it('null scope (unclassified kind): ASK-EVERY except at full-autonomy', () => {
     expect(resolvePolicy('full-control', null)).toBe('ask-every');
     expect(resolvePolicy('request-approve', null)).toBe('ask-every');
@@ -130,6 +134,7 @@ describe('isOriginScopedScope', () => {
     expect(isOriginScopedScope('post-public')).toBe(false);
     expect(isOriginScopedScope('pair-device')).toBe(false);
     expect(isOriginScopedScope('mutate-identity')).toBe(false);
+    expect(isOriginScopedScope('app-permission')).toBe(false);
   });
 });
 
@@ -142,6 +147,12 @@ describe('dependantAllowAlwaysPersists', () => {
   it('is false for a non-origin-scoped scope even when an origin is known', () => {
     expect(dependantAllowAlwaysPersists('post-public', 'https://example.com')).toBe(false);
     expect(dependantAllowAlwaysPersists('mutate-identity', 'https://example.com')).toBe(false);
+  });
+
+  it('is false for app-permission at every stage (each request is one decision)', () => {
+    for (const stage of ['full-control', 'request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy', undefined] as const) {
+      expect(dependantAllowAlwaysPersists('app-permission', 'https://example.com', stage)).toBe(false);
+    }
   });
 
   it('is false for an origin-scoped scope with no origin', () => {

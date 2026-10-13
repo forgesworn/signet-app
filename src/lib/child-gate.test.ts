@@ -23,6 +23,7 @@ const TEMPLATES: Record<Scope, UnsignedEvent> = {
   'react-zap-reply': { kind: 7, pubkey: P1, created_at: 1, tags: [['p', PEER]], content: '+' },
   'pair-device': { kind: 24133, pubkey: P1, created_at: 1, tags: [], content: '' },
   'mutate-identity': { kind: 0, pubkey: P1, created_at: 1, tags: [], content: '{}' },
+  'app-permission': { kind: 30420, pubkey: P1, created_at: 1, tags: [['d', 'twang'], ['role', 'player']], content: '' },
 };
 
 function rule(over: Partial<ChildRule> = {}): ChildRule {
@@ -40,7 +41,8 @@ const run = (rules: ChildRulesPayload | null, scope: Scope = 'sign-in', over: Pa
   decideChildRequest({ rules, persona: P1, template: TEMPLATES[scope], appId: APP, nowMs: NOW, rateState: FRESH, ...over });
 
 describe('stage matrix (no rules)', () => {
-  for (const stage of STAGES) for (const scope of Object.keys(TEMPLATES) as Scope[]) {
+  // app-permission has its own pre-check (describe below).
+  for (const stage of STAGES) for (const scope of (Object.keys(TEMPLATES) as Scope[]).filter(s => s !== 'app-permission')) {
     it(`${stage} x ${scope}`, () => {
       const policy = resolvePolicy(stage, scope);
       const v = run(payload({ stage }), scope);
@@ -194,5 +196,75 @@ describe('childTargetsFor', () => {
     expect(childTargetsFor(TEMPLATES['sign-in'], 'sign-in', APP)).toEqual(['site:https://a.example', `app:${APP}`]);
     expect(childTargetsFor(TEMPLATES['dm-private'], 'dm-private', APP, 'https://x.example')).toEqual([`peer:${PEER}`, 'site:https://x.example', `app:${APP}`]);
     expect(childTargetsFor(TEMPLATES['post-public'], 'post-public', 'nip55:com.x')).toEqual(['app:nip55:com.x']);
+  });
+});
+
+describe('app-permission pre-check (kind 30420: never silent, never "always")', () => {
+  const T = TEMPLATES['app-permission'];
+  const ORIGIN = 'https://twang.example';
+  const ASK = { verdict: 'ask', reason: 'stage', alwaysOffered: false };
+  const go = (rules: ChildRulesPayload | null, over: Partial<Parameters<typeof decideChildRequest>[0]> = {}) =>
+    decideChildRequest({ rules, persona: P1, template: T, appId: 'mysignet', siteOrigin: ORIGIN, nowMs: NOW, rateState: FRESH, ...over });
+  const withKind = (stage: AutonomyStage) => payload({ stage, ceilingKinds: stage === 'full-autonomy' ? [] : [30420] });
+
+  for (const stage of STAGES) {
+    it(`${stage}: asks, without "always", whatever the ceiling`, () => {
+      expect(go(payload({ stage }))).toEqual(ASK);
+      expect(go(withKind(stage))).toEqual(ASK);
+      expect(go(payload({ stage, ceilingKinds: [] }))).toEqual(ASK);
+    });
+    it(`${stage}: an allow rule is ignored — specific, kind, app, or * / *`, () => {
+      for (const r of [
+        rule({ scope: 'app-permission', target: `site:${ORIGIN}` }),
+        rule({ scope: 'kind:30420', target: `site:${ORIGIN}` }),
+        rule({ scope: 'app-permission', target: 'app:mysignet' }),
+        rule({ scope: '*', target: '*', persona: '*' }),
+        rule({ scope: '*', target: '*' }),
+      ]) expect(go({ ...withKind(stage), rules: [r] })).toEqual(ASK);
+    });
+    it(`${stage}: a deny rule on the origin is honoured`, () => {
+      const r = rule({ scope: 'app-permission', target: `site:${ORIGIN}`, decision: 'deny' });
+      expect(go({ ...withKind(stage), rules: [r] })).toEqual({ verdict: 'deny', reason: 'rule', ruleId: r.id });
+    });
+    it(`${stage}: a deny rule beats an allow rule at a more specific level`, () => {
+      const allow = rule({ scope: 'app-permission', target: `site:${ORIGIN}` });
+      const deny = rule({ scope: 'app-permission', target: '*', persona: '*', decision: 'deny' });
+      expect(go({ ...withKind(stage), rules: [allow, deny] })).toMatchObject({ verdict: 'deny', ruleId: deny.id });
+    });
+  }
+  it('a deny rule for another origin or another scope does not apply', () => {
+    const other = rule({ scope: 'app-permission', target: 'site:https://other.example', decision: 'deny' });
+    const signIn = rule({ scope: 'sign-in', target: `site:${ORIGIN}`, decision: 'deny' });
+    expect(go({ ...withKind('request-approve'), rules: [other, signIn] })).toEqual(ASK);
+  });
+  it('every 30420, whatever its shape, from any app', () => {
+    const odd = { ...T, tags: [['role', 'admin']], content: 'x' };
+    expect(go(withKind('full-autonomy'), { template: odd, appId: APP, siteOrigin: undefined })).toEqual(ASK);
+  });
+  it('the preflight still applies first: a disconnected app, the rate limit', () => {
+    expect(go({ ...withKind('full-autonomy'), disconnectedApps: [APP] }, { appId: APP })).toEqual({ verdict: 'deny', reason: 'disconnected-app' });
+    expect(go(withKind('full-autonomy'), { rateState: { count: 10, windowStart: NOW } })).toEqual({ verdict: 'deny', reason: 'rate-limit' });
+  });
+  it('no cached rules: asks, without "always"', () => {
+    expect(go(null)).toEqual(ASK);
+  });
+  for (const stage of STAGES) {
+    it(`${stage}: a paused phone stays blocked — the pre-check never gets around a block`, () => {
+      const paused: GrantSchedule = { v: 1, tz: 'UTC', paused: true, weekly: {}, issuedAt: 1 };
+      expect(go({ ...withKind(stage), defaultSchedule: paused })).toEqual({ verdict: 'blocked', reason: 'schedule' });
+      const deny = rule({ scope: 'app-permission', target: `site:${ORIGIN}`, decision: 'deny' });
+      expect(go({ ...withKind(stage), defaultSchedule: paused, rules: [deny] })).toEqual({ verdict: 'blocked', reason: 'schedule' });
+    });
+  }
+  it('outside the allowed hours: blocked with the next allowed time; inside them: asks', () => {
+    const evening: GrantSchedule = { v: 1, tz: 'UTC', weekly: { tue: [{ start: '18:00', end: '20:00' }] }, issuedAt: 1 };
+    const v = go({ ...withKind('full-autonomy'), defaultSchedule: evening });
+    expect(v).toEqual({ verdict: 'blocked', reason: 'schedule', nextAllowedAt: Date.UTC(2026, 8, 29, 18, 0, 0) });
+    const noon: GrantSchedule = { v: 1, tz: 'UTC', weekly: { tue: [{ start: '11:00', end: '13:00' }] }, issuedAt: 1 };
+    expect(go({ ...withKind('full-autonomy'), defaultSchedule: noon })).toEqual(ASK);
+  });
+  it('the preflight still comes before the schedule', () => {
+    const paused: GrantSchedule = { v: 1, tz: 'UTC', paused: true, weekly: {}, issuedAt: 1 };
+    expect(go({ ...withKind('request-approve'), defaultSchedule: paused }, { rateState: { count: 10, windowStart: NOW } })).toEqual({ verdict: 'deny', reason: 'rate-limit' });
   });
 });

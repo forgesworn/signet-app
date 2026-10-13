@@ -387,6 +387,25 @@ describe('A31/A32 — locked ceiling + policy pushes', () => {
     expect(store.peek()).toEqual({ [NP]: [other, { kind: 30313, until: NOW + 590 }], ['9'.repeat(64)]: [{ kind: 1, until: NOW + 100 }] });
   });
 
+  it('D5: several entries land together (one push), both on the device', async () => {
+    const dev = fakeDevice();
+    const store = memStore();
+    const both = [{ kind: 30420, until: NOW + 600 }, { kind: 13, until: NOW + 600 }];
+    expect(await pushChildCeilingLocked({ lockKey: {}, io: dev.io, depId: NP, extraOnce: both, store, read: reads() })).toBe('ok');
+    expect(dev.landed).toHaveLength(1);
+    expect(dev.kinds()).toEqual(expect.arrayContaining([30420, 13]));
+    expect(store.peek()).toEqual({ [NP]: both });
+  });
+
+  it('D5: a failed push removes every entry it added — both or neither — and nothing else', async () => {
+    const other = { kind: 30312, until: NOW + 500 };
+    const store = memStore({ [NP]: [other] });
+    const refusing: PolicyPushIo = { listClients: fakeDevice().io.listClients, updateClientPolicy: async () => { throw new Error('denied'); } };
+    const both = [{ kind: 30420, until: NOW + 600 }, { kind: 13, until: NOW + 600 }];
+    expect(await pushChildCeilingLocked({ lockKey: {}, io: refusing, depId: NP, extraOnce: both, store, read: reads() })).toBe('failed');
+    expect(store.peek()).toEqual({ [NP]: [other] });
+  });
+
   it('removeOnceEntry drops exactly one matching entry', () => {
     const e = { kind: 7, until: 9 };
     expect(removeOnceEntry({ [NP]: [e, e] }, NP.toUpperCase(), e)).toEqual({ [NP]: [e] });

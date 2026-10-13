@@ -15,6 +15,7 @@ import type { KeypairOption } from '../lib/keypair-policy';
 import { detectDrift } from '../lib/drift-detection';
 import { KeypairBadge } from '../components/KeypairBadge';
 import { PairedChildApprovalWaiting } from '../components/PairedChildApprovalWaiting';
+import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmSection';
 
 /**
  * Resolve the display name for SharePreview. Returns `'(anonymous)'` when a
@@ -867,63 +868,6 @@ export function ApproveAuth({
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-/**
- * Inline confirmation shown when the user has selected natural-person
- * and the NP-ceiling guardrail is active. Two-step so a single tap on
- * an NP row doesn't silently send the real-name identity.
- */
-interface NpConfirmProps {
-  display: string;
-  requireConfirm: boolean;
-  confirmed: boolean;
-  onConfirm: () => void;
-  onUndo: () => void;
-}
-function NaturalPersonConfirmSection({ display, requireConfirm, confirmed, onConfirm, onUndo }: NpConfirmProps) {
-  if (!requireConfirm) return null;
-  if (confirmed) {
-    return (
-      <div
-        className="card section"
-        style={{
-          background: 'var(--success-light)',
-          borderColor: 'var(--success)',
-          fontSize: '0.85rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <span style={{ color: 'var(--success)' }}>
-            Real-name sign-in confirmed.
-          </span>
-          <button className="btn btn-ghost" onClick={onUndo} style={{ fontSize: '0.8rem', padding: '4px 8px' }}>
-            Undo
-          </button>
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div
-      className="card section"
-      style={{
-        background: 'var(--warning-light)',
-        borderColor: 'var(--warning)',
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-        You're about to sign in with your real-name identity
-      </div>
-      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 10 }}>
-        <strong>{display.slice(0, 100)}</strong> is your natural-person keypair. Most sites don't need it —
-        a persona is usually enough.
-      </p>
-      <button className="btn btn-secondary" onClick={onConfirm} style={{ width: '100%' }}>
-        Yes, use my real-name identity
-      </button>
     </div>
   );
 }

@@ -15,6 +15,8 @@ import { inferScope, type Scope } from './scope-inference';
 import { sanitizeDisplayName } from './text-sanitize';
 import { TARGET_RE, SCOPE_RE } from './child-rules-wire';
 import { childTargetsFor } from './child-gate';
+import { checkAppPermissionClaim, type AppPermissionClaim } from './app-permission';
+import { siteTarget } from './child-rules';
 
 export interface ChildSignAsk {
   v: 1; id: string; dependantId: string; persona: string; scope: string | null; kind: number;
@@ -28,6 +30,13 @@ export interface ChildSignAsk {
   contentLength?: number;
   /** True when trailing tags were dropped to fit the 4 KB tag budget. */
   tagsTruncated?: boolean;
+  /**
+   * Scope `app-permission` only: what the app says about itself, sanitised by
+   * the child and checked again by the guardian (D6). With it the target is
+   * `site:<origin>`. Ignored — the ask still shows, as the generic card — by
+   * a guardian that cannot validate it.
+   */
+  appPermission?: AppPermissionClaim;
 }
 export interface ChildSignVerdict {
   v: 1; id: string; verdict: 'once' | 'always' | 'deny'; alwaysDeny?: boolean;
@@ -122,6 +131,12 @@ function checkAsk(raw: unknown): ChildSignAsk | null {
     out.templateHash = o.templateHash; out.contentTruncated = o.contentTruncated;
     out.contentLength = o.contentLength as number; out.tagsTruncated = o.tagsTruncated;
   }
+  if (o.appPermission !== undefined) {
+    // D6: only on a signature in scope app-permission; checked (and re-sanitised) here, never trusted.
+    const claim = checkAppPermissionClaim(o.appPermission);
+    if (!claim || o.scope !== 'app-permission' || o.method !== 'sign_event') return null;
+    out.appPermission = claim;
+  }
   return out;
 }
 
@@ -145,6 +160,10 @@ export function askInScope(a: ChildSignAsk, scope: { dependantId: string; person
     if (inferScope(a.template) !== a.scope) return false;
     // With the whole template in hand the hash must match (a truncated one cannot be re-hashed here).
     if (!a.contentTruncated && !a.tagsTruncated && a.templateHash !== templateHash(a.template)) return false;
+    // D6: an app-permission ask with the app's claim is addressed to the claimed
+    // origin. That origin is the app's own claim either way (the card says
+    // "From <origin>" and no more), so it is not re-derived from the template.
+    if (a.appPermission) return a.scope === 'app-permission' && a.target === siteTarget(a.appPermission.origin);
     // A site/peer target must be one the template itself yields; an app target cannot be re-derived.
     if (!a.target.startsWith('app:')) {
       if (a.tagsTruncated) return false;

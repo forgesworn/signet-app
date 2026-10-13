@@ -105,8 +105,12 @@ function decideWithRules(
   return { verdict: 'ask', reason: 'stage', alwaysOffered: alwaysOffered(rules) };
 }
 
-/** Disconnected or blocked app, then rate limit; null when the request may go on. */
-function preflight(rules: ChildRulesPayload | null, persona: string, appId: string, nowMs: number, rateState: RateLimitState): ChildGateVerdict | null {
+/**
+ * Disconnected or blocked app, then rate limit; null when the request may go
+ * on. Exported for the gate's pass-forward entry (`forwardPassed`), which
+ * keeps this step and skips only the decision.
+ */
+export function preflight(rules: ChildRulesPayload | null, persona: string, appId: string, nowMs: number, rateState: RateLimitState): ChildGateVerdict | null {
   const app = normaliseAppId(appId ?? '');
   if (rules && rules.disconnectedApps.some(a => normaliseAppId(a) === app)) {
     return { verdict: 'deny', reason: 'disconnected-app' };
@@ -126,11 +130,38 @@ export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
   if (!rules) return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
 
   const scope = inferScope(template);
+  if (scope === 'app-permission') {
+    return decideAppPermission(rules, { persona, nowMs, targets: childTargetsFor(template, scope, appId, siteOrigin) });
+  }
   const ownRelayAuth = template.kind === RELAY_AUTH_KIND && !siteOrigin && normaliseAppId(appId ?? '') === OWN_APP_ID;
   return decideWithRules(rules, {
     persona, scope, scopeKey: scope ?? `kind:${template.kind}`,
     targets: childTargetsFor(template, scope, appId, siteOrigin), nowMs, ceilingKind: template.kind, ownRelayAuth,
   });
+}
+
+/**
+ * Hard pre-check for a standing app permission (kind 30420, D4): keyed on the
+ * scope, not on autonomy. It never signs — not at full-autonomy, not on an
+ * allow rule (of any scope, `*` included), not on the empty "every kind"
+ * ceiling — and never offers "always". A matching deny rule (e.g. the
+ * guardian's "Always deny this" on the app's origin) still refuses at once.
+ * It only removes silent signing; it never gets around a block, so the
+ * phone's schedule (paused, outside hours) is checked first.
+ */
+function decideAppPermission(
+  rules: ChildRulesPayload,
+  q: { persona: string; nowMs: number; targets: ChildRuleTarget[] },
+): ChildGateVerdict {
+  if (rules.defaultSchedule) {
+    const w = isWithinSchedule(rules.defaultSchedule, new Date(q.nowMs));
+    if (!w.allowed) {
+      return { verdict: 'blocked', reason: 'schedule', ...(w.nextAllowedAt ? { nextAllowedAt: w.nextAllowedAt.getTime() } : {}) };
+    }
+  }
+  const deny = findRule(rules.rules.filter(r => r.decision === 'deny'), { persona: q.persona, scope: 'app-permission', targets: q.targets, nowMs: q.nowMs });
+  if (deny) return { verdict: 'deny', reason: 'rule', ruleId: deny.id };
+  return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
 }
 
 /** nip44 encrypt/decrypt: `dm-private` semantics, target peer + app. */

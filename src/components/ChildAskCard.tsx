@@ -10,6 +10,7 @@ import { describeEventTemplate } from '../lib/nip46-server';
 import { CHILD_ASK_COPY as COPY } from '../lib/child-device-copy';
 import { shortNpub } from '../lib/signet';
 import type { ChildSignAsk } from '../lib/child-sign-asks';
+import { appPermissionAskDetails } from '../lib/app-permission';
 
 export type ChildAskDecide = (id: string, verdict: 'once' | 'always' | 'deny', opts?: { alwaysDeny?: boolean }) => Promise<{ sent: boolean; reason?: ChildAskDecideReason }>;
 
@@ -69,6 +70,12 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
   const label = clip(a.targetLabel ?? '', 60);
   const showLabel = label.length > 0 && label.toLowerCase() !== target.toLowerCase();
   const unsent = pending.unsent?.verdict;
+  // D10: a valid app-permission ask gets its own fixed wording. `null` for any
+  // other ask, and for an app-permission one that fails the checks (a claimless
+  // 30420 from an external app): that one falls through to the generic card.
+  const permission = appPermissionAskDetails(a);
+  // The scope is asked for every time, whatever the stage: never "Always".
+  const showAlways = alwaysAvailable && a.scope !== 'app-permission';
   const heading = a.method === 'sign_event' && a.template
     ? COPY.heading(child, describeEventTemplate(a.template))
     : COPY.headingCrypto(child);
@@ -87,14 +94,41 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
     }
   };
 
+  const PC = COPY.appPermission;
+  const until = permission ? new Date(permission.validUntil * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
   return (
     <div data-testid="child-ask-card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div>
         <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>
           {COPY.eyebrow}
         </div>
-        <div style={{ fontSize: '1.05rem', fontWeight: 600, lineHeight: 1.3 }}>{heading}</div>
+        <div style={{ fontSize: '1.05rem', fontWeight: 600, lineHeight: 1.3 }}>{permission ? PC.heading(clip(permission.name, 64), child) : heading}</div>
       </div>
+      {permission ? (
+        <div data-testid="child-ask-app-permission" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {/* M8: which of the child's identities the statement binds. */}
+          <div>{COPY.as(persona)}</div>
+          <div>
+            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>{PC.appSaysLabel}</div>
+            {/* M7: the app's own words, framed apart from My Signet's. */}
+            <div data-testid="child-ask-app-permission-reason" style={{ marginTop: 4, padding: 8, borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{permission.reason}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>{PC.allowsTitle}</div>
+            <div style={{ color: 'var(--text-primary)' }}>{PC.allows[permission.permission](clip(permission.name, 64), child, persona, until)}</div>
+          </div>
+          <div>
+            <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{PC.from(target)}</div>
+            <details>
+              <summary>{PC.details}</summary>
+              <div>{PC.appId}: {permission.appId}</div>
+              <div>{PC.installKey}: {`${permission.installKey.slice(0, 8)}…${permission.installKey.slice(-4)}`}</div>
+              <div>{PC.validUntil}: {until}</div>
+            </details>
+          </div>
+        </div>
+      ) : (
       <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
         <div>{COPY.as(persona)}</div>
         <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{COPY.on(target)}</div>
@@ -109,6 +143,7 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
           <div key={line} role="note" style={{ marginTop: 6, fontWeight: 600, color: 'var(--warning)' }}>{line}</div>
         ))}
       </div>
+      )}
       {message && (
         <div role={message.error ? 'alert' : 'status'} aria-live="polite"
           style={{ fontSize: '0.85rem', fontWeight: 600, color: message.error ? 'var(--danger)' : 'var(--success)' }}>
@@ -123,8 +158,8 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
         </div>
       ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button className="btn btn-primary" disabled={busy} onClick={() => { void act('once'); }}>{COPY.allowOnce}</button>
-        {alwaysAvailable && (
+        <button className="btn btn-primary" disabled={busy} onClick={() => { void act('once'); }}>{permission ? PC.allow : COPY.allowOnce}</button>
+        {showAlways && (
           <button className="btn btn-secondary" disabled={busy} onClick={() => { void act('always'); }}>{COPY.allowAlways(askScopePhrase(a), target, persona)}</button>
         )}
         <button className="btn btn-ghost" disabled={busy} onClick={() => { void act('deny'); }} style={{ color: 'var(--danger)' }}>{COPY.deny}</button>
