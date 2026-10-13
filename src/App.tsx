@@ -321,7 +321,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, type ChildGateOutcome } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -8156,8 +8156,11 @@ export function App() {
 
     // A direct-paired child: Sign in with Signet goes through the child's gate
     // (target site:<origin>, spec §8.1). The wait for a guardian answer shows
-    // as the "Asking your guardian…" panel on the approval screen.
-    if (childDirect && selection.source === 'guardian') {
+    // as the "Asking your guardian…" panel on the approval screen. Redirect
+    // mode only here: relay mode wraps the backend below, once the handle
+    // choice is known (Part B, the answer seal pass).
+    const childDirectRelaySignIn = childDirect && selection.source === 'guardian' && !!(request.relay && request.sessionPubkey);
+    if (childDirect && selection.source === 'guardian' && !childDirectRelaySignIn) {
       const inner = selectedBackend as DecryptingSigningBackend;
       const persona = inner.activePublicKeyHex;
       const origin = request.origin;
@@ -8255,6 +8258,41 @@ export function App() {
 
       // ── Relay delivery mode ───────────────────────────────────────────────────
       if (isRelayMode) {
+        // Part B: a direct-paired child's own sign-in is one guardian card.
+        // The ask is marked (and says whether the handle is shared); when the
+        // guardian's Allow once also opened the seal, the answer seal pass
+        // lets the encrypt and seal of THIS answer through without more
+        // cards. Anything else takes the gate as before.
+        if (childDirectRelaySignIn) {
+          const inner = selectedBackend as DecryptingSigningBackend;
+          const persona = inner.activePublicKeyHex.toLowerCase();
+          const origin = request.origin;
+          let label = urlAuthSiteName;
+          if (!label) { try { label = new URL(origin).hostname; } catch { label = origin.slice(0, 64); } }
+          const siteAppId = childSiteAppId(origin);
+          const touch = () => {
+            try {
+              const now = Math.floor(Date.now() / 1000);
+              childGateRef.current.noteConnectedApp({ appId: siteAppId, kind: 'site', label, url: origin, persona, firstSeen: now, lastUsed: now });
+            } catch { /* bookkeeping only */ }
+          };
+          touch();
+          const touched = (o: ChildGateOutcome) => { if (o.ok) touch(); return o; };
+          selectedBackend = answerSealingBackend({
+            inner,
+            gate: {
+              authorise: (r) => childGateRef.current.authorise(r).then(touched),
+              forwardPassed: (r) => childGateRef.current.forwardPassed(r).then(touched),
+            },
+            persona,
+            appLabel: label,
+            siteOrigin: origin,
+            sessionPubkey: sessionPubkey!,
+            eligibleKind: 21236,
+            responseField: 'authEvent',
+            signIn: { sharesHandle: !!handleToShare },
+          });
+        }
         // Sign the kind-21236 event. Works with every backend (local, bunker, NIP-07).
         // pickedAvatar (if any) becomes avatar_hash / avatar_url / avatar_key tags
         // on the event — Phase 4 of per-persona-avatars.
