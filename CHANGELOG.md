@@ -4,6 +4,7 @@ Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
+- The home-screen scanner opens My Signet web links carrying NostrConnect invitations instead of silently ignoring them
 
 ## 0.21.0
 - Trotters removed from default and saved app relay settings; sync uses the full remaining pool, writes return on the first acknowledgement, and primary connections fail over after outages

@@ -9450,7 +9450,9 @@ export function App() {
         const currentRow = carousel.rows[carousel.row];
         const selection = currentRow ? resolveSigningSelection(currentRow) : null;
         setPendingConnectSelection(selection);
-        handleNostrConnect(data);
+        // The router unwraps My Signet HTTPS carriers. Parse the invitation
+        // it returned, rather than the outer URL from the camera.
+        if (!handleNostrConnect(action.uri)) return 'Invalid NostrConnect request.';
         break;
       }
       case 'companion-pair':

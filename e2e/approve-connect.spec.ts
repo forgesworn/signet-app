@@ -23,6 +23,31 @@ const CONNECT_REQUEST = {
 
 // ── Approve path ────────────────────────────────────────────────────────────
 
+for (const wrapped of [false, true]) {
+  test(`home scanner opens ${wrapped ? 'wrapped' : 'raw'} NostrConnect invitations`, async ({ page }) => {
+    await page.routeWebSocket(/wss?:\/\//, ws => {
+      ws.onMessage(message => {
+        const frame = JSON.parse(String(message));
+        if (frame[0] === 'REQ') ws.send(JSON.stringify(['EOSE', frame[1]]));
+        if (frame[0] === 'EVENT') ws.send(JSON.stringify(['OK', frame[1].id, true, '']));
+      });
+    });
+    await createIdentityAndUnlock(page);
+    const params = new URLSearchParams({
+      relay: CONNECT_REQUEST.relayUrl, secret: 'test-pairing-secret',
+      name: 'KithMoot', url: 'https://kithmoot.forgesworn.dev',
+    });
+    const uri = `nostrconnect://${CONNECT_REQUEST.clientPubkey}?${params}`;
+    const link = wrapped ? `https://mysignet.app/?nostrconnect=${encodeURIComponent(uri)}` : uri;
+    await page.getByRole('button', { name: 'Scan a QR code', exact: true }).click();
+    await page.locator('.viewfinder').click();
+    await page.getByLabel('Paste QR link').fill(link);
+    await page.getByRole('button', { name: 'Submit', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Connection Request' })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText('KithMoot', { exact: true }).first()).toBeVisible();
+  });
+}
+
 test.describe('ApproveConnect: approve path', () => {
   // routeWebSocket must be registered before any page navigation so the init
   // script patches window.WebSocket before it is first used.
