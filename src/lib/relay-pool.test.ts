@@ -36,6 +36,22 @@ async function freshPool() {
 beforeEach(() => { hoisted.published.length = 0; hoisted.fetchReturns = {}; hoisted.connects.length = 0; hoisted.connectFailures.clear(); hoisted.connectPending.clear(); hoisted.publishPending.clear(); });
 afterEach(() => vi.useRealTimers());
 
+it('reads connection states without dialing, follows disconnects and forgets removed clients', async () => {
+  const rs = await freshPool();
+  rs.setRelays([{ url: 'wss://status.example', enabled: true, read: true, write: true }]);
+  expect(rs.getRelayConnectionStates()).toEqual({});
+  expect(hoisted.connects).toEqual([]);
+  await rs.connectRelay();
+  expect(rs.getRelayConnectionStates()).toEqual({ 'wss://status.example': 'connected' });
+  const client = rs.getRelayClient() as unknown as { emitState(state: string): void };
+  client.emitState('connecting');
+  expect(rs.getRelayConnectionStates()).toEqual({ 'wss://status.example': 'connecting' });
+  rs.setRelays([{ url: 'wss://other.example', enabled: true, read: true, write: true }]);
+  expect(rs.getRelayConnectionStates()).toEqual({ 'wss://other.example': 'disconnected' });
+  expect(hoisted.connects).toEqual(['wss://status.example']);
+  rs.disconnectRelay();
+});
+
 describe('publishEvent fan-out', () => {
   it('publishes only to enabled+write relays', async () => {
     const rs = await freshPool();

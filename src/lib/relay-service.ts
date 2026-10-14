@@ -214,6 +214,12 @@ export function getRelayState(): RelayState {
   return c ? c.getState() : 'disconnected';
 }
 
+/** Observe existing app sockets without opening a connection or running a
+ * reachability check. An absent URL has no app socket in use. */
+export function getRelayConnectionStates(): Record<string, RelayState> {
+  return Object.fromEntries([...clients].map(([url, client]) => [url, client.getState()]));
+}
+
 /** Publish to every enabled+write relay. ok=true if ANY relay accepts.
  *  Per-relay rejects/timeouts are swallowed (public relays drop unknown
  *  Signet kinds — harmless).

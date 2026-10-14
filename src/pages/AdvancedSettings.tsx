@@ -93,6 +93,13 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   function removeRelay(url: string) {
     onSetRelays(relayList.filter(r => r.url !== url));
   }
+  function moveRelay(index: number, offset: -1 | 1) {
+    const next = index + offset;
+    if (next < 0 || next >= relayList.length) return;
+    const reordered = [...relayList];
+    [reordered[index], reordered[next]] = [reordered[next], reordered[index]];
+    onSetRelays(reordered);
+  }
   function addRelay() {
     const url = relayDraft.trim();
     if (!isValidRelayUrl(url) || relayList.some(r => r.url === url) || relayList.length >= MAX_RELAYS) return;
@@ -198,7 +205,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           The app publishes to every enabled relay with write on, and reads from every enabled relay with read on. The first enabled write relay is your primary (used for pairing codes and remote signing). A sign-in started by another app replies on the relay that app requested.
         </p>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 8 }}>
-          Status checks test connection and reading. A reachable relay can still reject publishing. Read-only is your setting, not a health result.
+          Move relays up or down to choose your preferred primary. Changes are saved automatically. App connection shows a socket currently in use; a reachability check is a separate snapshot. A reachable relay can still reject publishing.
         </p>
         <button type="button" className="btn btn-ghost btn-sm" onClick={relayHealth.check} style={{ width: 'auto', marginBottom: 12 }}>Check relays</button>
 
@@ -207,13 +214,14 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
             const isPrimary = idx === relayList.findIndex(x => x.enabled && x.write);
             const isLastWrite = r.enabled && r.write && writeCount === 1;
             const health = relayHealth.health[r.url];
+            const connection = relayHealth.connections[r.url];
             const delivery = getRelayDeliveryStatus(r.url);
             return (
-              <div key={r.url} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px' }}>
+              <div key={r.url} role="group" aria-label={`Relay ${r.url}`} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ flex: 1, fontSize: '0.82rem', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
                     {r.url.replace(/^wss:\/\//, '')}
-                    {isPrimary && <span style={{ marginLeft: 6, fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 600 }}>PRIMARY</span>}
+                    {isPrimary && <span style={{ marginLeft: 6, fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 600 }}>PREFERRED PRIMARY</span>}
                   </span>
                   <button
                     onClick={() => removeRelay(r.url)}
@@ -225,7 +233,16 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
                     <Icon name="x" size={14} />
                   </button>
                 </div>
+                <div role="status" style={{ fontSize: '0.8rem', marginTop: 8, color: r.enabled && connection === 'connected' ? 'var(--success)' : 'var(--text-muted)' }}>
+                  App connection: {!r.enabled ? 'Disabled' : !connection ? 'Not in use' : ({ connected: 'Connected', connecting: 'Connecting…', disconnected: 'Disconnected', error: 'Connection failed' })[connection]}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Order {idx + 1}</span>
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ width: 'auto' }} disabled={idx === 0} aria-label={`Move ${r.url} up`} onClick={() => moveRelay(idx, -1)}>Move up</button>
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ width: 'auto' }} disabled={idx === relayList.length - 1} aria-label={`Move ${r.url} down`} onClick={() => moveRelay(idx, 1)}>Move down</button>
+                </div>
                 <div role="status" style={{ fontSize: '0.8rem', marginTop: 8, color: !r.enabled || !health || health === 'checking' ? 'var(--text-muted)' : health.status === 'reachable' ? 'var(--success)' : 'var(--warning)' }}>
+                  Reachability: {' '}
                   {!r.enabled ? 'Disabled' : !health ? 'Not checked' : health === 'checking' ? 'Checking…' : <>
                     {health.status === 'reachable' ? 'Reachable' : health.status === 'restricted' ? 'Connected · read check failed' : 'Unavailable'}
                     {' · '}{health.latencyMs} ms
@@ -237,7 +254,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
                   Last delivery: {delivery.ok ? 'accepted' : 'failed'} · {new Date(delivery.checkedAt).toLocaleTimeString()}
                   <div style={{ color: 'var(--text-secondary)' }}>{delivery.reason}</div>
                 </div>}
-                <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 8 }}>
                   <label
                     title={isLastWrite ? 'Cannot disable your only write relay' : undefined}
                     style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: isLastWrite ? 'not-allowed' : 'pointer' }}
