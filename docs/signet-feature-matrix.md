@@ -40,3 +40,18 @@ Known decision:
 
 - Amber is SDK-supported and auth-only. MySignet does not implement Amber, and Canary should not expose Amber as a full signer path unless a live signer/NIP-44 handoff exists.
 - Signet Lite is a NIP-46-only signer: `nip04` and the NIP-46 `logout` method are intentionally not in its advertised surface (it returns "unsupported method"), and `switch_relays` returns JSON `null` to match MySignet. signet-login's client handles all three correctly.
+
+## Combined online-play sign-in extension
+
+The optional version-1 `app_permission` extension is implemented in My Signet.
+It is an app extension, not a capability advertised by every published SDK or
+an additional required manifest row. New consumers should follow the
+[app integration guide](app-integration.md), verify the statement separately
+from sign-in, and retain the legacy fallback.
+
+Local regression gates: `src/lib/sign-in-app-permission.test.ts`,
+`src/lib/nip46-permissions.test.ts`, the explicit-grant cases in
+`src/lib/child-gate.test.ts`, `src/hooks/useChildAsks.test.ts`,
+`src/hooks/useBunkerServer.nostrconnect.test.tsx`, and the combined-answer
+cases in `e2e/app-permission.spec.ts`. Twang Thang's consumer verifies the
+paired contract in `crates/decented-signet/tests/signin_with_signet.rs`.

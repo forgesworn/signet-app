@@ -1,3 +1,4 @@
+import type { PurposeContext } from '../lib/auth-purposes';
 /**
  * Guardian-side pair-an-app screen for trusted-app pairings on a dependant.
  *
@@ -37,7 +38,7 @@ interface Props {
   /** Opens Security settings so the guardian can enable the bunker server. */
   onOpenSecuritySettings?: () => void;
   /** Tier 1 auth gate — must resolve before the pairing QR is generated. */
-  requestAuth: () => Promise<string | null>;
+  requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onBack: () => void;
 }
 
@@ -120,7 +121,7 @@ export function PairDependantApp({
     let cancelled = false;
     (async () => {
       try {
-        const key = await requestAuthRef.current();
+        const key = await requestAuthRef.current({ purpose: 'manage-dependant', action: 'pair-app', depName: dependant.displayName });
         if (cancelled) return;
         if (!key) {
           onBackRef.current();

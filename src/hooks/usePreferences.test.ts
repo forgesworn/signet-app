@@ -431,3 +431,17 @@ describe('usePreferences — Handshake Jigsaw edge distance', () => {
     expect(stored.handshakeSeamGapMm).toBe(9); expect(stored.backgroundBunkerEnabled).toBe(true);
   });
 });
+
+it('retires the saved Trotters default on load and on post-unlock reload', async () => {
+  const retired = 'wss://relay.trotters.cc';
+  await db.savePreferences({ id: 'current', theme: 'dark', relayUrl: retired, relays: [{ url: retired, enabled: true, read: true, write: true }] });
+  const { result } = renderHook(() => usePreferences());
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.preferences.relayUrl).toBe('ws://localhost:7777');
+  expect(result.current.preferences.relays?.some(r => r.url === retired)).toBe(false);
+  await waitFor(async () => expect((await db.getPreferences()).relayUrl).not.toBe(retired));
+  await db.savePreferences({ ...(await db.getPreferences()), relayUrl: retired, relays: [] });
+  await act(async () => { await result.current.reloadPreferences(); });
+  expect(result.current.preferences.relays!.length).toBeGreaterThan(1);
+  expect((await db.getPreferences()).relayUrl).not.toBe(retired);
+});

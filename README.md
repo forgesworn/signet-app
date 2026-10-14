@@ -61,12 +61,36 @@ npm run typecheck  # TypeScript type checking
 
 ## Sign in with Signet
 
+For the combined sign-in and online-play flow, wire examples, verification,
+NIP-46 permission scopes and backwards compatibility, see the
+[app integration guide](docs/app-integration.md). Support depends on the
+installed My Signet version; retain the documented legacy fallback.
+
 External websites can authenticate users via a redirect flow:
 
 1. Website redirects to `https://mysignet.app/?auth=1&challenge={hex}&origin={url}&name={name}&callback={url}&t={timestamp}`
 2. User unlocks the app and sees an approval screen showing what will be shared
 3. On approve, the app signs the challenge and redirects back to `{callback}?pubkey={hex}&npub={bech32}&signature={hex}&eventId={hex}`
 4. On deny, redirects to `{callback}?error=denied`
+
+## Relay defaults and failover
+
+Fresh installs use `wss://nos.lol`, `wss://relay.damus.io`,
+`wss://relay.primal.net` and `wss://relay.ditto.pub` for reads and writes.
+`wss://relay.nostr.band` is an additional read-only relay. Trotters is retired
+from the defaults and migrated out of saved app relay settings.
+
+Sync uses the full configured pool. Writes succeed on the first relay
+acknowledgement while the other deliveries continue; network operations have
+time limits. Sync reads merge completed replies and retain author checks;
+a stalled read does not count as proof that no backup exists. The primary
+connection fails over and reconnects with backoff after a drop. Disabled
+relays and read-only choices remain respected.
+
+Apps should supply their relay in sign-in/permission requests rather than
+assuming My Signet's primary. Existing paired-device endpoints and historical
+event locations retain their explicit addresses. Browser development adds
+`ws://localhost:7777`; native Android uses the public defaults.
 
 ## Architecture
 

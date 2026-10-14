@@ -381,6 +381,9 @@ export function Carousel(props: CarouselProps) {
   const incomingScreenRef = useRef<HTMLDivElement>(null);
   const swipeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapBackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transitionInFlight = useRef(false);
+  const animationFrames = useRef<number[]>([]);
+  const stopTransitionListener = useRef<(() => void) | null>(null);
 
   const [incomingCard, setIncomingCard] = useState<IncomingCard | null>(null);
 
@@ -440,6 +443,18 @@ export function Carousel(props: CarouselProps) {
   // rendered card starts centred. Without this, the outgoing transform persists
   // on the stable DOM node and the viewport blanks on the next swipe.
   useLayoutEffect(() => {
+    // An external identity change cancels an unfinished slide, so its old
+    // destination cannot overwrite the new selection when the timer fires.
+    if (transitionInFlight.current) {
+      transitionInFlight.current = false;
+      if (swipeTimeoutRef.current) clearTimeout(swipeTimeoutRef.current);
+      animationFrames.current.forEach(cancelAnimationFrame);
+      animationFrames.current = [];
+      stopTransitionListener.current?.();
+      stopTransitionListener.current = null;
+      setIncoming(null);
+      onAnimatingChange(false);
+    }
     if (!currentScreenRef.current) return;
     currentScreenRef.current.style.transition = 'none';
     currentScreenRef.current.style.transform = 'translate(0, 0)';
@@ -448,6 +463,8 @@ export function Carousel(props: CarouselProps) {
   useEffect(() => () => {
     if (swipeTimeoutRef.current) clearTimeout(swipeTimeoutRef.current);
     if (snapBackTimeoutRef.current) clearTimeout(snapBackTimeoutRef.current);
+    animationFrames.current.forEach(cancelAnimationFrame);
+    stopTransitionListener.current?.();
   }, []);
 
   /**
@@ -463,7 +480,7 @@ export function Carousel(props: CarouselProps) {
    * affordance.
    */
   const handleDrag = useCallback((axis: 'h' | 'v', dx: number, dy: number) => {
-    if (animating || !currentScreenRef.current) return;
+    if (animating || transitionInFlight.current || !currentScreenRef.current) return;
 
     // A fresh drag supersedes any pending unmount from the last snap-back.
     clearSnapBackTimeout();
@@ -541,7 +558,7 @@ export function Carousel(props: CarouselProps) {
   }, [clearSnapBackTimeout, setIncoming]);
 
   const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
-    if (animating) return;
+    if (animating || transitionInFlight.current) return;
 
     const target = resolveTarget(axis, direction);
     if (!target) {
@@ -550,52 +567,72 @@ export function Carousel(props: CarouselProps) {
     }
     const { row: newRow, col: newCol } = target;
 
+    transitionInFlight.current = true;
     onAnimatingChange(true);
 
     const vp = viewportRef.current;
     const current = currentScreenRef.current;
     if (!vp || !current) {
+      transitionInFlight.current = false;
       onAnimatingChange(false);
       return;
     }
 
     clearSnapBackTimeout();
 
-    const curDx = axis === 'h' ? dx : 0;
-    const curDy = axis === 'v' ? dy : 0;
+    // Keyboard/arrows pass a synthetic swipe distance. With no live drag,
+    // both cards must start flush rather than jumping 60px into the slide.
+    const wasDragged = incomingRef.current !== null;
+    const curDx = wasDragged && axis === 'h' ? dx : 0;
+    const curDy = wasDragged && axis === 'v' ? dy : 0;
     const baseX = axis === 'h' ? (-direction * vp.clientWidth) : 0;
     const baseY = axis === 'v' ? (-direction * vp.clientHeight) : 0;
     const outX = axis === 'h' ? (direction * vp.clientWidth) : 0;
     const outY = axis === 'v' ? (direction * vp.clientHeight) : 0;
 
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      stopTransitionListener.current?.();
+      stopTransitionListener.current = null;
+      if (swipeTimeoutRef.current) clearTimeout(swipeTimeoutRef.current);
+      swipeTimeoutRef.current = null;
+      transitionInFlight.current = false;
+      // Keyed screens promote the already-painted incoming component. Its
+      // local state, QR canvas and effects survive the handover.
+      onCommit(newRow, newCol);
+      setIncoming(null);
+    };
+
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      finish();
+      return;
+    }
+
     const runAnimation = () => {
+      animationFrames.current = [];
       const incoming = incomingScreenRef.current;
       if (!incoming) {
+        transitionInFlight.current = false;
         onAnimatingChange(false);
         setIncoming(null);
         return;
       }
-
-      const dur = '0.3s';
-      const ease = 'cubic-bezier(0.25, 0.46, 0.45, 0.94)';
-
-      current.style.transition = `transform ${dur} ${ease}`;
+      const transition = 'transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1)';
+      const onEnd = (event: TransitionEvent) => {
+        if (event.target === incoming && event.propertyName === 'transform') finish();
+      };
+      incoming.addEventListener('transitionend', onEnd);
+      stopTransitionListener.current = () => incoming.removeEventListener('transitionend', onEnd);
+      current.style.transition = transition;
       current.style.transform = `translate(${outX}px, ${outY}px)`;
-
-      // base + offset must equal the animation target (0,0), so a re-render
-      // mid-flight re-computes translate(0, 0) rather than yanking the screen
-      // back to where the finger left it.
       dragOffsetRef.current = { x: -baseX, y: -baseY };
-      incoming.style.transition = `transform ${dur} ${ease}`;
+      incoming.style.transition = transition;
       incoming.style.transform = 'translate(0, 0)';
-
-      swipeTimeoutRef.current = setTimeout(() => {
-        swipeTimeoutRef.current = null;
-        // Both state updates in one callback so React commits the new current
-        // screen and the incoming's unmount together — no blank frame.
-        onCommit(newRow, newCol);
-        setIncoming(null);
-      }, 320);
+      // transitionend follows the compositor; the timeout covers interrupted
+      // or backgrounded WebViews where the event can be dropped.
+      swipeTimeoutRef.current = setTimeout(finish, 340);
     };
 
     const mounted = incomingRef.current;
@@ -617,9 +654,9 @@ export function Carousel(props: CarouselProps) {
     // programmatic navigation): mount it now and wait two frames as before.
     dragOffsetRef.current = { x: curDx, y: curDy };
     setIncoming({ row: newRow, col: newCol, baseX, baseY });
-    requestAnimationFrame(() => {
-      requestAnimationFrame(runAnimation);
-    });
+    animationFrames.current = [requestAnimationFrame(() => {
+      animationFrames.current = [requestAnimationFrame(runAnimation)];
+    })];
   }, [animating, resolveTarget, onCommit, onAnimatingChange, handleSnapBack, setIncoming, clearSnapBackTimeout]);
 
   const handleTap = useCallback(() => {
@@ -676,8 +713,10 @@ export function Carousel(props: CarouselProps) {
   }, [registerArrows, handleSwipe, row, rows.length]);
 
   return (
-    <div className="carousel-viewport" data-theme="dark" ref={viewportRef}>
+    <div className="carousel-viewport" data-theme="dark" data-carousel-cell={`${row}:${col}`} aria-busy={animating} ref={viewportRef}>
       <div
+        key={`${row}:${col}`}
+        inert={animating || undefined}
         className={`carousel-screen${longPressEngaged ? ' carousel-screen-engaged' : ''}`}
         ref={currentScreenRef}
       >
@@ -686,7 +725,10 @@ export function Carousel(props: CarouselProps) {
 
       {incomingCard && rows[incomingCard.row] && (
         <div
+          key={`${incomingCard.row}:${incomingCard.col}`}
           className="carousel-screen"
+          inert
+          aria-hidden="true"
           ref={incomingScreenRef}
           data-testid="carousel-incoming-screen"
           style={{

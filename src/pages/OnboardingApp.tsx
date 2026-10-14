@@ -1,3 +1,4 @@
+import { PRODUCTION_RELAY_URL } from '../lib/relay-defaults';
 import { useState, useEffect, type ReactNode } from 'react';
 import { validateMnemonic, decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
 import { fetchRestoreProfile, type RestoredProfile } from '../lib/profile-restore';
@@ -217,7 +218,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
     // production default plus the public lookup relays (inside
     // `fetchExistingProfile`). (Keep the default in sync with
     // src/lib/relay-service.ts.)
-    const productionRelay = 'wss://relay.trotters.cc';
+    const productionRelay = PRODUCTION_RELAY_URL;
     // In the Capacitor APK the WebView origin IS localhost — that must not
     // select the dev relay. Only a real browser tab on a dev server does.
     // A dev server looks ONLY at the dev relay: no external lookups in dev/e2e.

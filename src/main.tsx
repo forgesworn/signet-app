@@ -5,6 +5,7 @@ import { VersionBadge } from './components/VersionBadge';
 import { App } from './App';
 import { CarouselArrowProvider } from './components/CarouselArrowContext';
 import { DesktopFrame } from './components/DesktopFrame';
+import { PortraitLayout } from './components/PortraitLayout';
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/playfair-display/wght.css';
 import '@fontsource-variable/geist-mono/wght.css';
@@ -15,11 +16,13 @@ import './styles/desktop-frame.css';
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <CarouselArrowProvider>
-        <DesktopFrame>
-          <App />
-        </DesktopFrame>
-      </CarouselArrowProvider>
+      <PortraitLayout>
+        <CarouselArrowProvider>
+          <DesktopFrame>
+            <App />
+          </DesktopFrame>
+        </CarouselArrowProvider>
+      </PortraitLayout>
       {import.meta.env.DEV && <VersionBadge />}
     </ErrorBoundary>
   </StrictMode>

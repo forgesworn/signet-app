@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useEffect, useState } from 'react';
 import { render, act, fireEvent } from '@testing-library/react';
 import { Carousel } from './Carousel';
 import type { CarouselRow } from '../types';
@@ -244,5 +245,63 @@ describe('five-column identity matrix', () => {
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     act(() => { vi.advanceTimersByTime(400); });
     expect(onCommit).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('Carousel transition continuity', () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('promotes the prepared screen without remounting its components', () => {
+    const mounted = vi.fn();
+    function Preview() {
+      const [value, setValue] = useState('Prepared contact search');
+      useEffect(() => { mounted(); }, []);
+      return <input aria-label="Prepared search" value={value} onChange={e => setValue(e.target.value)} />;
+    }
+    const identity = {
+      naturalPerson: { publicKey: 'a'.repeat(64), displayName: 'Owner' },
+      persona: { publicKey: 'b'.repeat(64), displayName: 'Persona' }, extraPersonas: [],
+    };
+    const identityRows = [{ type: 'persona', identity }] as unknown as CarouselRow[];
+    function Host() {
+      const [col, setCol] = useState<0 | 1 | 2 | 3 | 4>(1);
+      const [animating, setAnimating] = useState(false);
+      return <Carousel row={0} col={col} rows={identityRows} activeIdentity={resolvedAdd} animating={animating}
+        onCommit={(_r, c) => { setCol(c); setAnimating(false); }} onAnimatingChange={setAnimating}
+        badge={null} onNavigateDeepPage={vi.fn()} onQRScanned={vi.fn()} onEnterChildMode={vi.fn()}
+        onExitChildMode={vi.fn()} childMode={false} childDependant={null} onAddPersona={vi.fn()}
+        renderInviteCard={() => <div>Invite</div>} renderContactsCard={() => <Preview />} />;
+    }
+    const { container } = render(<Host />);
+    fireEvent.keyDown(document, { key: 'ArrowRight' });
+    const prepared = container.querySelector('input');
+    expect(prepared).not.toBeNull();
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(container.querySelector('input')).toBe(prepared);
+    expect(mounted).toHaveBeenCalledOnce();
+    expect(screenCount(container)).toBe(1);
+    expect(container.querySelector('.carousel-viewport')?.getAttribute('data-carousel-cell')).toBe('0:2');
+    expect(container.querySelector('.carousel-screen')?.hasAttribute('inert')).toBe(false);
+  });
+
+  it('ignores a repeated navigation key while a slide is already starting', () => {
+    const { onCommit, onAnimatingChange } = renderCarousel();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+    });
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(onAnimatingChange).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits immediately for reduced motion', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    const { onCommit, container } = renderCarousel();
+    fireEvent.keyDown(document, { key: 'ArrowRight' });
+    expect(onCommit).toHaveBeenCalledWith(0, 1);
+    expect(screenCount(container)).toBe(1);
   });
 });

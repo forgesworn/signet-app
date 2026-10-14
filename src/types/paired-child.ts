@@ -4,7 +4,8 @@ import type { AutonomyStage } from './dependants';
  * A NIP-46 client (external app) that has paired with this Signet. When
  * the bunker server is enabled (AppPreferences.bunkerServerEnabled),
  * every inbound sign_event (etc.) request is routed by `clientPubkey`;
- * records with `allowAlways: true` skip the approval prompt.
+ * records with `allowAlways: true` skip ordinary approvals only within their
+ * explicit permission ceiling. Sensitive operations still prompt.
  *
  * Stored in IndexedDB keyed by `clientPubkey`.
  */
@@ -21,11 +22,13 @@ export interface ConnectedClient {
   lastSeenAt: number;
   /**
    * When true, sign_event / nip44_* requests from this client are
-   * auto-approved without prompting. User sets this by choosing
+   * auto-approved within `permissions`, except sensitive operations. User sets this by choosing
    * "Allow always for <App>" in the approval modal. Revocable via
    * the Connections settings page.
    */
   allowAlways: boolean;
+  /** Explicit NIP-46 method/kind ceiling. Absent only on legacy connections. */
+  permissions?: string[];
   /**
    * Random marker written by the connect approval that saved this record.
    * Its rollback (cancelled / withdrawn / failed) touches the record only

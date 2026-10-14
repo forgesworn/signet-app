@@ -148,6 +148,8 @@ html, body {
   flex-direction: column;
 }
 
+button, input, select, textarea { font-family: inherit; }
+
 h1 { font-family: var(--font-display); font-size: 1.6rem; font-weight: 600; letter-spacing: 0; }
 h2 { font-size: 1.2rem; font-weight: 650; letter-spacing: -0.01em; }
 h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
@@ -325,9 +327,8 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
    Keep in sync with DESKTOP_BREAKPOINT_PX in src/hooks/useViewportMode.ts */
 :root {
   --breakpoint-desktop: 720px;
-  /* Vertical space the fixed mobile bottom nav (TabBar) occupies. Must match
-     BAR_HEIGHT (64) in src/lib/app-nav.ts. Zeroed on desktop (>=720px), where
-     the nav is a side-rail. Consumed by the carousel so cards sit ABOVE the bar. */
+  /* Vertical space the bottom nav occupies, including in the desktop phone
+     frame. Must match BAR_HEIGHT (64) in src/lib/app-nav.ts. */
   --app-bottom-bar: calc(64px + env(safe-area-inset-bottom));
   /* Default viewport height for full-height surfaces. DesktopFrame overrides this
      to 100% inside the frame; on mobile it stays 100dvh (byte-identical to before). */
@@ -344,9 +345,6 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 }
 
 @media (min-width: 720px) {
-  :root {
-    --app-bottom-bar: 0px; /* desktop nav is a side-rail, not a bottom bar */
-  }
   .page {
     max-width: none;
   }
@@ -382,19 +380,14 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-/* `backwards`, never `forwards`/`both`: a forwards-filled animation keeps its
-   final `transform: translateY(0)` applied for the element's whole life, and
-   any non-`none` transform makes the element the containing block for
-   `position: fixed` descendants. Every modal/sheet rendered inside a page
-   wrapped in `.fade-in` then centred itself in the whole (tall) page instead
-   of the viewport, leaving the dialog off-screen under a dimmed page. The
-   end state equals the element's natural style, so nothing needs holding. */
+/* Fade without translating the page: forms stay aligned and nested fixed
+   dialogs never acquire a temporary containing block during the animation. */
 .fade-in {
-  animation: fadeIn 200ms ease backwards;
+  animation: fadeIn 160ms ease-out backwards;
 }
 
 @keyframes checkmark {
@@ -786,3 +779,36 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
 .handshake-mark > span { display: flex; align-items: center; gap: 8px; }
 .handshake-mark .jigsaw-sigil { width: 77px; margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) { .jigsaw-closing, .jigsaw-closing path, .handshake-wait i { animation: none; } }
+
+/* Shared page rhythm and balanced controls, inside or outside the phone frame. */
+.app-shell, .layout { min-height: var(--app-vh); display: flex; flex-direction: column; min-width: 0; }
+.card-flush > .row, .card-flush > .row-button { padding: 14px 16px; }
+.field-label { display: block; line-height: 1.4; margin-bottom: 6px; }
+.input + .field-label, .field-hint + .field-label { margin-top: 16px; }
+.field-hint { line-height: 1.5; }
+.card .input, .card textarea, .card select { min-width: 0; max-width: 100%; }
+.layout-header { padding-top: env(safe-area-inset-top, 0px); min-height: calc(56px + env(safe-area-inset-top, 0px)); }
+.row-label, .row-sub { overflow-wrap: anywhere; }
+.app-notices { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.app-notices:empty { display: none; }
+.app-notices > div { flex-wrap: wrap; line-height: 1.5; border-radius: var(--radius-sm); }
+.app-notices > div > span { flex: 1 1 12rem; min-width: 0; }
+.app-notices .btn { flex-shrink: 0; width: auto; min-height: 36px; }
+@media (hover: none) and (pointer: coarse) {
+  .input, .input-sm { font-size: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fade-in, .checkmark-anim { animation: none; }
+  .btn, .row-button, .layout-back, .signet-pinpad-key { transition: none; }
+}
+
+.portrait-app { display: contents; }
+.portrait-notice {
+  position: fixed; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 16px; padding: 24px;
+  text-align: center; background: var(--bg-primary); color: var(--text-primary);
+}
+.portrait-notice-icon { color: var(--brand-gold-text); }
+.portrait-notice h1 { font-size: 1.5rem; }
+.portrait-notice p { max-width: 360px; color: var(--text-secondary); line-height: 1.6; }
+.auth-screen > * { flex-shrink: 0; }

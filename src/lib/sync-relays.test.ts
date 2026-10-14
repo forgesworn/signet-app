@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Relay transport mock for the `fetchNewestFromRelays` tests below — same
 // per-URL shape as the rail test files, but seeded events carry an explicit
@@ -8,6 +8,9 @@ const relayMock = vi.hoisted(() => ({
   fetchThrows: new Set<string>(),
   published: [] as string[],
   afterConnect: async () => {},
+  connectHangs: new Set<string>(),
+  fetchHangs: new Set<string>(),
+  disconnected: [] as string[],
 }));
 vi.mock('signet-protocol', async () => {
   const actual = await vi.importActual<typeof import('signet-protocol')>('signet-protocol');
@@ -18,13 +21,15 @@ vi.mock('signet-protocol', async () => {
       constructor(url: string) { this.url = url; }
       async connect(): Promise<void> {
         if (relayMock.fetchThrows.has(this.url)) throw new Error('connect failed');
+        if (relayMock.connectHangs.has(this.url)) await new Promise(() => {});
         await relayMock.afterConnect();
       }
       async fetch(): Promise<Array<{ id: string; created_at: number; content: string; pubkey: string }>> {
+        if (relayMock.fetchHangs.has(this.url)) await new Promise(() => {});
         return relayMock.fetchReturns[this.url] ?? [];
       }
       async publish(): Promise<{ ok: boolean }> { relayMock.published.push(this.url); return { ok: true }; }
-      disconnect(): void {}
+      disconnect(): void { relayMock.disconnected.push(this.url); }
     },
   };
 });
@@ -32,11 +37,13 @@ vi.mock('signet-protocol', async () => {
 beforeEach(() => {
   relayMock.fetchReturns = {};
   relayMock.published = []; relayMock.afterConnect = async () => {};
-  relayMock.fetchThrows = new Set();
+  relayMock.fetchThrows = new Set(); relayMock.connectHangs.clear(); relayMock.fetchHangs.clear(); relayMock.disconnected = [];
 });
+afterEach(() => vi.useRealTimers());
 
 import type { RelayConfig } from '../types';
 import { resolveSyncRelays, fetchNewestFromRelays, publishToRelays } from './sync-relays';
+import { DEFAULT_RELAY_URL, defaultRelays } from './relay-defaults';
 
 function relay(overrides: Partial<RelayConfig> & { url: string }): RelayConfig {
   return { enabled: true, read: true, write: true, ...overrides };
@@ -76,13 +83,13 @@ describe('resolveSyncRelays', () => {
     expect(result.write).toEqual(['wss://good.example', 'ws://localhost:4869']);
   });
 
-  it('falls back to the fallback when every relay is disabled', () => {
+  it('keeps an explicitly disabled pool offline', () => {
     const relays: RelayConfig[] = [
       relay({ url: 'wss://a.example', enabled: false }),
       relay({ url: 'wss://b.example', enabled: false }),
     ];
     const result = resolveSyncRelays({ relays }, 'wss://fallback.example');
-    expect(result).toEqual({ read: ['wss://fallback.example'], write: ['wss://fallback.example'] });
+    expect(result).toEqual({ read: [], write: [] });
   });
 
   it('dedupes repeated URLs while preserving first-seen order', () => {
@@ -96,13 +103,13 @@ describe('resolveSyncRelays', () => {
     expect(result.write).toEqual(['wss://a.example', 'wss://b.example']);
   });
 
-  it('read and write pools can diverge independently and each falls back on their own', () => {
+  it('never turns a read-only pool into an implicit write grant', () => {
     const relays: RelayConfig[] = [
       relay({ url: 'wss://readonly.example', read: true, write: false }),
     ];
     const result = resolveSyncRelays({ relays }, 'wss://fallback.example');
     expect(result.read).toEqual(['wss://readonly.example']);
-    expect(result.write).toEqual(['wss://fallback.example']);
+    expect(result.write).toEqual([]);
   });
 
   it('uses relayUrl as the fallback ahead of the explicit fallback when relays is empty', () => {
@@ -110,10 +117,10 @@ describe('resolveSyncRelays', () => {
     expect(result).toEqual({ read: ['wss://legacy.example'], write: ['wss://legacy.example'] });
   });
 
-  it('uses relayUrl as the fallback ahead of the explicit fallback when every relay is disabled', () => {
+  it('does not use a legacy relay to bypass an explicitly disabled pool', () => {
     const relays: RelayConfig[] = [relay({ url: 'wss://a.example', enabled: false })];
     const result = resolveSyncRelays({ relays, relayUrl: 'wss://legacy.example' }, 'wss://fallback.example');
-    expect(result).toEqual({ read: ['wss://legacy.example'], write: ['wss://legacy.example'] });
+    expect(result).toEqual({ read: [], write: [] });
   });
 
   it('falls through to the explicit fallback when relayUrl is invalid', () => {
@@ -183,4 +190,29 @@ it('checks guarded publication after connecting and refuses a session that ends 
     beforeSend: async () => { throw new Error('Consent withdrawn'); }, isCurrent: () => true,
   })).toBe(false);
   expect(relayMock.published).toEqual([]);
+});
+
+it('uses all default relays for fresh-install sync, excluding read-only relays from writes', () => {
+  expect(resolveSyncRelays({}, DEFAULT_RELAY_URL)).toEqual({ read: defaultRelays().map(r => r.url), write: defaultRelays().filter(r => r.write).map(r => r.url) });
+  expect(resolveSyncRelays({ relayUrl: 'wss://relay.trotters.cc' }, DEFAULT_RELAY_URL).write).not.toContain('wss://relay.trotters.cc');
+});
+
+it('acknowledges a healthy backup immediately and bounds a stalled sync connection', async () => {
+  vi.useFakeTimers();
+  relayMock.connectHangs.add('wss://hung.example');
+  expect(await publishToRelays({} as never, ['wss://hung.example', 'wss://healthy.example'])).toBe(true);
+  expect(relayMock.published).toEqual(['wss://healthy.example']);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(relayMock.disconnected).toContain('wss://hung.example');
+  expect(relayMock.published).not.toContain('wss://hung.example');
+});
+it('bounds a stalled sync fetch while preserving the newest verified author across healthy replies', async () => {
+  vi.useFakeTimers();
+  const author = 'a'.repeat(64);
+  relayMock.fetchHangs.add('wss://hung.example');
+  relayMock.fetchReturns['wss://healthy.example'] = [{ id: 'newest', pubkey: author, created_at: 20, content: 'newest' }];
+  const work = fetchNewestFromRelays({ authors: [author], kinds: [30078] }, ['wss://hung.example', 'wss://healthy.example'], undefined, { timeoutMs: 50 });
+  await vi.advanceTimersByTimeAsync(50);
+  expect(await work).toMatchObject({ event: { id: 'newest' }, reachableRelays: 1 });
+  expect(relayMock.disconnected).toContain('wss://hung.example');
 });

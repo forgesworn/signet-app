@@ -1,20 +1,15 @@
-/**
- * Relay-pool resolver for the sync rails (personas, dependants, contacts,
- * credentials, grants). Reads/writes fan out to the user's whole relay set
- * (2026-06-10 multi-relay manager) rather than the single `relayUrl` a rail
- * historically used — see `AppPreferences.relays`. When the user hasn't
- * edited relays yet (`relays` absent/empty) or every configured relay ends
- * up filtered out, both pools collapse to a fallback: `prefs.relayUrl`
- * (the pre-multi-relay legacy setting) when it's itself a valid relay URL,
- * else the caller-supplied `fallback` (normally `DEFAULT_RELAY_URL`) — so
- * a rail never ends up with an empty pool, and an existing single-relay
- * user's setting is honoured ahead of the app-wide default.
- */
+/** Sync reads and writes use the whole configured pool. A fresh install
+ * uses the full default pool; an explicit custom single relay stays custom.
+ * Disabled/read-only choices never create an implicit write fallback. */
 
 import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import { RelayClient } from 'signet-protocol';
 import type { AppPreferences } from '../types';
 import { isValidRelayUrl } from './relay-url';
+import { DEFAULT_RELAY_URL, defaultRelays, migrateRelayPreferences } from './relay-defaults';
+import { relayTimeout, anyRelayAccepted } from './relay-operations';
+
+const NETWORK_TIMEOUT_MS = 10_000;
 
 function dedupe(urls: string[]): string[] {
   const seen = new Set<string>();
@@ -32,16 +27,19 @@ export function resolveSyncRelays(
   prefs: Pick<AppPreferences, 'relays' | 'relayUrl'>,
   fallback: string,
 ): { read: string[]; write: string[] } {
-  const configured = (prefs.relays ?? []).filter((r) => r.enabled && isValidRelayUrl(r.url));
-
-  const read = dedupe(configured.filter((r) => r.read).map((r) => r.url));
-  const write = dedupe(configured.filter((r) => r.write).map((r) => r.url));
-
-  const effectiveFallback = prefs.relayUrl && isValidRelayUrl(prefs.relayUrl) ? prefs.relayUrl : fallback;
-
+  const effective = migrateRelayPreferences(prefs);
+  const configured = (effective.relays ?? []).filter(r => isValidRelayUrl(r.url));
+  if (configured.length) return {
+    read: dedupe(configured.filter(r => r.enabled && r.read).map(r => r.url)),
+    write: dedupe(configured.filter(r => r.enabled && r.write).map(r => r.url)),
+  };
+  const legacy = effective.relayUrl && isValidRelayUrl(effective.relayUrl) ? effective.relayUrl : undefined;
+  if (legacy) return { read: [legacy], write: [legacy] };
+  if (fallback !== DEFAULT_RELAY_URL) return { read: [fallback], write: [fallback] };
+  const defaults = defaultRelays();
   return {
-    read: read.length > 0 ? read : [effectiveFallback],
-    write: write.length > 0 ? write : [effectiveFallback],
+    read: defaults.filter(r => r.enabled && r.read).map(r => r.url),
+    write: defaults.filter(r => r.enabled && r.write).map(r => r.url),
   };
 }
 
@@ -50,30 +48,27 @@ export function resolveSyncRelays(
  * `relayUrls` is assumed already validated/deduped by the caller — this
  * helper doesn't filter. Returns true when at least one relay accepts it;
  * a per-relay construct/connect/publish failure doesn't fail the others
- * (`allSettled`). Shared by every sync rail (personas, dependants,
+ * and a first acknowledgement returns immediately. Shared by every sync rail (personas, dependants,
  * contacts, credentials, grants).
  */
 export async function publishToRelays(signedEvent: NostrEvent, relayUrls: string[], guard?: {
   beforeSend(): Promise<void>; isCurrent(): boolean;
 }): Promise<boolean> {
   if (relayUrls.length === 0) return false;
-
-  const results = await Promise.allSettled(relayUrls.map(async (url) => {
-    const relay = new RelayClient(url);
+  return anyRelayAccepted(dedupe(relayUrls).map(async url => {
+    const relay = new RelayClient(url, { autoReconnect: false });
     try {
-      await relay.connect();
+      await relayTimeout(relay.connect(), NETWORK_TIMEOUT_MS);
       if (guard) {
         await guard.beforeSend();
         if (!guard.isCurrent()) throw new Error('Publication session changed');
       }
-      const result = await relay.publish(signedEvent);
+      const result = await relayTimeout(relay.publish(signedEvent), NETWORK_TIMEOUT_MS);
       return result.ok;
     } finally {
       relay.disconnect();
     }
   }));
-
-  return results.some((r) => r.status === 'fulfilled' && r.value === true);
 }
 
 /**
@@ -101,17 +96,21 @@ export async function fetchNewestFromRelays(
   filter: NostrFilter,
   relayUrls: string[],
   authorPubkey?: string,
+  opts?: { timeoutMs?: number },
 ): Promise<{ event: NostrEvent | null; reachableRelays: number }> {
   const eventsById = new Map<string, NostrEvent>();
   let reachableRelays = 0;
   const pin = (authorPubkey ?? filter.authors?.[0])?.toLowerCase();
 
-  await Promise.all(relayUrls.map(async (url) => {
+  const timeoutMs = opts?.timeoutMs ?? NETWORK_TIMEOUT_MS;
+  await Promise.all(dedupe(relayUrls).map(async (url) => {
     try {
-      const relay = new RelayClient(url);
+      const relay = new RelayClient(url, { autoReconnect: false });
       try {
-        await relay.connect();
-        const events = await relay.fetch([filter]);
+        await relayTimeout(relay.connect(), timeoutMs);
+        // A relay that never finishes its read is not evidence of absence.
+        // Expire before the SDK's timer can resolve partial/empty results.
+        const events = await relayTimeout(relay.fetch([filter], timeoutMs + 100), timeoutMs);
         reachableRelays += 1;
         for (const ev of events) {
           if (pin && ev.pubkey?.toLowerCase() !== pin) continue;

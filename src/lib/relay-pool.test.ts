@@ -1,25 +1,29 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const hoisted = vi.hoisted(() => ({
   published: [] as Array<{ url: string; id: string }>,
   fetchReturns: {} as Record<string, Array<{ id: string }>>,
+  connects: [] as string[],
+  connectFailures: new Set<string>(),
+  connectPending: new Map<string, Promise<void>>(),
+  publishPending: new Set<string>(),
 }));
 
 vi.mock('signet-protocol', () => {
   class FakeRelayClient {
     url: string;
-    state: 'connected' | 'disconnected' = 'disconnected';
+    state: 'connected' | 'disconnected' | 'error' | 'connecting' = 'disconnected';
     stateCallback: ((s: string) => void) | null = null;
     constructor(url: string) { this.url = url; }
-    async connect() { this.state = 'connected'; }
+    async connect() { hoisted.connects.push(this.url); await hoisted.connectPending.get(this.url); if (hoisted.connectFailures.has(this.url)) throw new Error('offline'); this.state = 'connected'; }
     disconnect() { this.state = 'disconnected'; }
     getState() { return this.state; }
-    async publish(ev: { id: string }) { hoisted.published.push({ url: this.url, id: ev.id }); return { ok: true, message: '' }; }
+    async publish(ev: { id: string }) { hoisted.published.push({ url: this.url, id: ev.id }); if (hoisted.publishPending.has(this.url)) await new Promise(() => {}); return { ok: true, message: '' }; }
     async fetch() { return hoisted.fetchReturns[this.url] ?? []; }
     // Single-slot by design — matches the real signet-protocol client this
     // mock stands in for (M8's whole premise: only one listener at a time).
     onStateChanged(cb: (s: string) => void) { this.stateCallback = cb; }
-    emitState(s: string) { this.stateCallback?.(s); }
+    emitState(s: 'connected' | 'disconnected' | 'error' | 'connecting') { this.state = s; this.stateCallback?.(s); }
   }
   return { RelayClient: FakeRelayClient };
 });
@@ -29,7 +33,8 @@ async function freshPool() {
   return await import('./relay-service');
 }
 
-beforeEach(() => { hoisted.published.length = 0; hoisted.fetchReturns = {}; });
+beforeEach(() => { hoisted.published.length = 0; hoisted.fetchReturns = {}; hoisted.connects.length = 0; hoisted.connectFailures.clear(); hoisted.connectPending.clear(); hoisted.publishPending.clear(); });
+afterEach(() => vi.useRealTimers());
 
 describe('publishEvent fan-out', () => {
   it('publishes only to enabled+write relays', async () => {
@@ -192,4 +197,80 @@ describe('addStateListener (M8)', () => {
 
     expect(seen).toEqual(['connected', 'connecting']);
   });
+});
+
+
+describe('relay outage handling', () => {
+  const entry = (url: string) => ({ url, enabled: true, read: true, write: true });
+  it('returns a successful publish without waiting for a hung relay', async () => {
+    vi.useFakeTimers();
+    const rs = await freshPool();
+    rs.setRelays([entry('wss://hung.example'), entry('wss://healthy.example')]);
+    hoisted.publishPending.add('wss://hung.example');
+    expect((await rs.publishEvent({ id: 'event' } as never, { timeoutMs: 50 })).ok).toBe(true);
+    expect(hoisted.published).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(50);
+  });
+  it('fails over from a stalled primary and ignores its later state changes', async () => {
+    vi.useFakeTimers();
+    const rs = await freshPool();
+    rs.setRelays([entry('wss://hung.example'), entry('wss://healthy.example')]);
+    const old = rs.getRelayClient() as unknown as { emitState(s: string): void };
+    const seen: string[] = [];
+    rs.addStateListener(state => seen.push(state));
+    hoisted.connectPending.set('wss://hung.example', new Promise(() => {}));
+    const connected = rs.connectRelay();
+    await vi.advanceTimersByTimeAsync(5000);
+    await connected;
+    expect(rs.getRelayUrl()).toBe('wss://healthy.example');
+    expect(rs.getRelayState()).toBe('connected');
+    old.emitState('error');
+    expect(seen).toEqual(['connected']);
+  });
+  it('shares an in-flight connection and honours disconnect while connecting', async () => {
+    const rs = await freshPool();
+    rs.setRelays([entry('wss://pending.example')]);
+    let ready!: () => void;
+    hoisted.connectPending.set('wss://pending.example', new Promise(resolve => { ready = resolve; }));
+    const first = rs.connectRelay().catch(error => error);
+    const second = rs.connectRelay().catch(error => error);
+    rs.disconnectRelay(); ready();
+    expect((await first).message).toMatch(/configuration changed/);
+    expect((await second).message).toMatch(/configuration changed/);
+    expect(hoisted.connects).toEqual(['wss://pending.example']);
+  });
+  it('never falls back to a disabled relay', async () => {
+    const rs = await freshPool();
+    rs.setRelays([{ ...entry('wss://off.example'), enabled: false }]);
+    await expect(rs.connectRelay()).rejects.toThrow('No configured relay');
+    expect(hoisted.connects).toEqual([]);
+  });
+  it('does not publish to a relay removed while its connection was pending', async () => {
+    const rs = await freshPool();
+    rs.setRelays([entry('wss://pending.example')]);
+    let ready!: () => void;
+    hoisted.connectPending.set('wss://pending.example', new Promise(resolve => { ready = resolve; }));
+    const published = rs.publishEvent({ id: 'event' } as never);
+    rs.setRelays([{ ...entry('wss://pending.example'), enabled: false }]); ready();
+    expect((await published).ok).toBe(false);
+    expect(hoisted.published).toEqual([]);
+  });
+});
+
+it('moves to a backup when an established primary drops, and stops retrying after Disconnect', async () => {
+  vi.useFakeTimers();
+  const rs = await freshPool();
+  rs.setRelays(['wss://primary.example', 'wss://backup.example'].map(url => ({ url, enabled: true, read: true, write: true })));
+  await rs.connectRelay();
+  await rs.fetchEvents([]); // the backup already carries pool reads
+  const primary = rs.getRelayClient() as unknown as { emitState(s: string): void };
+  hoisted.connectFailures.add('wss://primary.example');
+  primary.emitState('disconnected');
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(rs.getRelayUrl()).toBe('wss://backup.example');
+  expect(rs.getRelayState()).toBe('connected');
+  rs.disconnectRelay();
+  const attempts = hoisted.connects.length;
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(hoisted.connects).toHaveLength(attempts);
 });

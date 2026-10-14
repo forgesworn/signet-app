@@ -115,9 +115,12 @@ export function useSwipeGesture({
       return;
     }
     const onInteractiveZone = !!el?.closest(INTERACTIVE_ZONE_SELECTOR);
-    // Block vertical card-swipe inside scrollable identity-settings cards so
-    // native content scroll wins (the `.settings-view` content can overflow).
-    verticalSwipeBlocked.current = !!el?.closest('.settings-view');
+    // Scrollable card bodies own vertical movement; horizontal movement
+    // still changes cards, and the contacts header can change personas.
+    const scrollBody = el?.closest<HTMLElement>('.settings-view, .contacts-card-body, .qr-view, .camera-view');
+    verticalSwipeBlocked.current = !!scrollBody && (
+      scrollBody.matches('.settings-view, .contacts-card-body') || scrollBody.scrollHeight > scrollBody.clientHeight + 1
+    );
 
     startX.current = clientX;
     startY.current = clientY;

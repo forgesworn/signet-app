@@ -115,6 +115,9 @@ export interface ChildGateRequest {
    * `site:<origin>`; on any other request it is ignored.
    */
   appPermission?: AppPermissionClaim;
+  appPermissionApproved?: boolean;
+  /** Local presentation callback; never serialized into a request. */
+  onGuardianAsk?: () => void;
   /**
    * Part B: My Signet's own relay-mode Sign in with Signet (the answer seal
    * pass sets it, on the 21236 only). An ask for a kind-21236 signature in
@@ -377,7 +380,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
 
     const rateBefore = rateRef.current;
     const decide = (rules: typeof at.rules) => template
-      ? decideChildRequest({ rules, persona, template, appId: req.appId, siteOrigin: req.siteOrigin, nowMs, rateState: rateBefore })
+      ? decideChildRequest({ rules, persona, template, appId: req.appId, siteOrigin: req.siteOrigin, nowMs, rateState: rateBefore, appPermission: req.appPermission, appPermissionApproved: req.appPermissionApproved })
       : decideChildCrypto({ rules, persona, appId: req.appId, method: req.method as 'nip44_encrypt' | 'nip44_decrypt', peer: req.peer!.toLowerCase(), nowMs, rateState: rateBefore });
     const verdict = decide(at.rules);
     rateRef.current = checkRateLimit(rateRef.current, nowMs).newState;
@@ -390,6 +393,8 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       emit({ ...base, kind, outcome: verdict.verdict === 'blocked' ? 'blocked' : 'denied' });
       return { ok: false, error: refusal(verdict) };
     }
+
+    try { req.onGuardianAsk?.(); } catch { /* presentation must not change the decision */ }
 
     // ── Ask the guardian ──────────────────────────────────────────────────
     if (held.current.size >= CHILD_GATE_MAX_HELD) return { ok: false, error: 'busy' };

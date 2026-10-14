@@ -84,6 +84,7 @@ export function isAppBlocked(app: ConnectedChildApp, rules: ChildRule[], disconn
 
 /** Human name for a rule's scope: `*` → every type, `kind:<n>` → "Other type (n)". */
 export function ruleTypeName(scope: string): string {
+  if (scope === 'app-permission-self') return 'Approve online play yourself';
   if (scope === '*') return COPY.everyType;
   const n = kindFromScope(scope);
   if (n !== null) return COPY.otherType(n);

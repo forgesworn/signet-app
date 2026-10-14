@@ -92,6 +92,7 @@ interface Props {
   childAsks?: PendingChildAsk[];
   /** False at full-control (no "Always"). */
   childAskAlwaysAvailable?: (dependantId: string) => boolean;
+  childAskStandingAvailable?: (dependantId: string) => boolean;
   onChildAskDecide?: ChildAskDecide;
 }
 
@@ -103,7 +104,7 @@ export function BunkerPanel({
   isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing,
   escalationNotices, onDismissEscalation, resolveEscalationOwner,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
-  childAsks, childAskAlwaysAvailable, onChildAskDecide,
+  childAsks, childAskAlwaysAvailable, childAskStandingAvailable, onChildAskDecide,
 }: Props) {
   const [reviewHandle, setReviewHandle] = useState<number | null>(null);
   const reviewed = pendingApprovals.find(a => a.handle === reviewHandle);
@@ -184,7 +185,7 @@ export function BunkerPanel({
     width: '100%',
     maxWidth: 480,
     height: 'auto',
-    maxHeight: '85vh',
+    maxHeight: '85%',
     overflowY: 'auto',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
@@ -400,7 +401,7 @@ export function BunkerPanel({
               )}
               {hasChildAsks && childAsks!.map((p) => (
                 <div key={p.ask.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
-                  <ChildAskCard pending={p} alwaysAvailable={childAskAlwaysAvailable?.(p.dependantId) ?? true} onDecide={onChildAskDecide!}
+                  <ChildAskCard pending={p} alwaysAvailable={childAskAlwaysAvailable?.(p.dependantId) ?? true} appPermissionStandingAvailable={childAskStandingAvailable?.(p.dependantId)} onDecide={onChildAskDecide!}
                     onOutcome={(r) => { const text = childAskOutcomeText(r); if (r.sent && text) setChildAskNote(text); }} />
                 </div>
               ))}

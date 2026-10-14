@@ -54,6 +54,7 @@ export interface ChildPermissionsProps {
   onRemovePersona?: (pubkey: string) => Promise<void>;
   onUnpair?: () => Promise<void>;
   onOpenStage?: () => void;
+  onSetAppPermissionSelfApproval?: (enabled: boolean) => Promise<void>;
 }
 
 const muted = { fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 } as const;
@@ -81,6 +82,7 @@ function RuleRow({ rule, guardian, onRevoke }: { rule: ChildRule; guardian: bool
           {rule.decision === 'allow' ? COPY.allow : COPY.deny}
           {' · '}
           {typeof rule.lastUsedAt === 'number' ? COPY.lastUsed(dateText(rule.lastUsedAt)) : COPY.neverUsed}
+          {rule.appPermission && rule.expiresAt ? ` · Expires ${dateText(rule.expiresAt)}` : ''}
         </div>
         {error && <div role="alert" style={{ ...small, color: 'var(--danger)' }}>{error}</div>}
       </div>
@@ -189,6 +191,9 @@ export function ChildPermissions(props: ChildPermissionsProps) {
   const [confirmUnpair, setConfirmUnpair] = useState(false);
   const [unpairing, setUnpairing] = useState(false);
   const [unpairError, setUnpairError] = useState<string | null>(null);
+  const [delegationBusy, setDelegationBusy] = useState(false);
+  const [delegationError, setDelegationError] = useState<string | null>(null);
+  const delegated = rules.some(r => r.scope === 'app-permission-self' && r.persona === '*' && r.target === '*' && r.decision === 'allow' && !r.tombstonedAt && (!r.expiresAt || r.expiresAt > nowMs));
 
   const names = useMemo(() => new Map(personas.map(p => [p.pubkey.toLowerCase(), p.name])), [personas]);
   const nameOf = (pk: string) => names.get(pk.toLowerCase()) ?? `${pk.slice(0, 8)}…`;
@@ -224,6 +229,26 @@ export function ChildPermissions(props: ChildPermissionsProps) {
           {guardian && props.onOpenStage && (
             <button className="btn btn-secondary" style={{ marginTop: 8 }} onClick={props.onOpenStage}>{COPY.changeStage}</button>
           )}
+        </div>
+      )}
+
+      {stage === 'full-autonomy' && (
+        <div className="card section">
+          <div className="section-title">Online-play approvals</div>
+          {guardian && props.onSetAppPermissionSelfApproval ? (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <input type="checkbox" checked={delegated} disabled={delegationBusy} onChange={async e => {
+                const enabled = e.target.checked;
+                setDelegationBusy(true); setDelegationError(null);
+                try { await props.onSetAppPermissionSelfApproval!(enabled); }
+                catch { setDelegationError('Could not change online-play approvals. Try again.'); }
+                finally { setDelegationBusy(false); }
+              }} />
+              <span>Let {childName} approve online-play permissions</span>
+            </label>
+          ) : <p style={muted}>{delegated ? 'You can approve online-play permissions yourself.' : 'Online-play permissions go to your guardian.'}</p>}
+          <p style={{ ...small, marginTop: 8 }}>Each new permission still needs an approval tap. App blocks, schedules and limits continue to apply. This setting applies only at full autonomy.</p>
+          {delegationError && <p role="alert" style={small}>{delegationError}</p>}
         </div>
       )}
 
@@ -357,6 +382,7 @@ export interface ChildPermissionsGuardianRouteProps {
   onBlockApp(app: ConnectedChildApp): Promise<void>;
   onRemovePersona(pubkey: string): Promise<void>;
   onOpenStage(): void;
+  onSetAppPermissionSelfApproval?: (enabled: boolean) => Promise<void>;
   onUnpaired(): void;
 }
 
@@ -395,6 +421,7 @@ export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRoutePr
       onRemovePersona={p.onRemovePersona}
       onUnpair={async () => { await pairing.unpair(); p.onUnpaired(); }}
       onOpenStage={p.onOpenStage}
+      onSetAppPermissionSelfApproval={p.onSetAppPermissionSelfApproval}
     />
   );
 }

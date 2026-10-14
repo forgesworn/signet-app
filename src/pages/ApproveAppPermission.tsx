@@ -30,6 +30,8 @@ interface Props {
    * two-step confirmation a sign-in asks for.
    */
   confirmRealIdentity?: boolean;
+  /** Presentation hint only; the live child gate still decides. */
+  selfApproval?: boolean;
 }
 
 function hostOf(origin: string): string {
@@ -45,7 +47,7 @@ export function shortKey(hex: string): string {
   return `${hex.slice(0, 8)}…${hex.slice(-4)}`;
 }
 
-export function ApproveAppPermission({ request, route, personaName, onApprove, onCancel, confirmRealIdentity = false }: Props) {
+export function ApproveAppPermission({ request, route, personaName, onApprove, onCancel, confirmRealIdentity = false, selfApproval = false }: Props) {
   const [working, setWorking] = useState(false);
   const [realIdentityConfirmed, setRealIdentityConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +104,7 @@ export function ApproveAppPermission({ request, route, personaName, onApprove, o
             {COPY.allowsTitle}
           </div>
           <p data-testid="app-permission-allows" style={{ margin: 0, fontSize: '0.9rem' }}>
-            {child ? COPY.allowsChild(app, persona, until) : COPY.allowsAdult(app, persona, until)}
+            {child && !selfApproval ? COPY.allowsChild(app, persona, until) : COPY.allowsAdult(app, persona, until)}
           </p>
         </div>
         <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
@@ -126,11 +128,16 @@ export function ApproveAppPermission({ request, route, personaName, onApprove, o
         )}
         {error && <div role="alert" style={{ color: 'var(--danger)', fontSize: '0.9rem', fontWeight: 600 }}>{error}</div>}
         {child && working ? (
-          <PairedChildApprovalWaiting onCancel={onCancel} direct />
+          selfApproval ? (
+            <div role="status">
+              <p>{COPY.working}</p>
+              <button className="btn btn-ghost" onClick={onCancel}>{COPY.cancel}</button>
+            </div>
+          ) : <PairedChildApprovalWaiting onCancel={onCancel} direct />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button className="btn btn-primary" disabled={working || needsConfirm} aria-busy={working || undefined} onClick={() => { void approve(); }}>
-              {working ? COPY.working : child ? (error ? COPY.tryAgain : COPY.askGuardian) : COPY.allow}
+              {working ? COPY.working : child && !selfApproval ? (error ? COPY.tryAgain : COPY.askGuardian) : COPY.allow}
             </button>
             <button className="btn btn-ghost" disabled={working} onClick={onCancel}>{COPY.cancel}</button>
           </div>

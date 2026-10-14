@@ -15,5 +15,7 @@ export const Z = {
   panel: 2500,
   /** Auth/unlock modals and focused approval modals — highest interactive level before debug. */
   auth: 3000,
+  /** Portrait-only fallback when the device/browser refuses an orientation lock. */
+  orientation: 4000,
   debug: 9999,
 } as const;

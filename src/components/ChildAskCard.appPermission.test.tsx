@@ -118,3 +118,11 @@ describe('ChildAskCard — app permission', () => {
     expect(screen.getByRole('button', { name: /Always allow/ })).toBeTruthy();
   });
 });
+
+it('offers an expiry-labelled standing grant only with explicit full-autonomy availability', async () => {
+  const decide = vi.fn(async () => ({ sent: true }));
+  render(<ChildAskApprovalModal asks={[pending()]} alwaysAvailableFor={() => true} appPermissionStandingFor={() => true} onDecide={decide} />);
+  const button = screen.getByRole('button', { name: `Allow online play until ${new Date(UNTIL * 1000).toLocaleDateString()}` });
+  fireEvent.click(button);
+  await waitFor(() => expect(decide).toHaveBeenCalledWith(pending().ask.id, 'always', undefined));
+});

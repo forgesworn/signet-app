@@ -4,6 +4,16 @@ Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
+- Trotters removed from default and saved app relay settings; sync uses the full remaining pool, writes return on the first acknowledgement, and primary connections fail over after outages
+- Apps can request an exact online-play statement alongside sign-in, with a sign-in-only choice and no need to enable Bunker
+- At full autonomy, guardians can explicitly delegate online-play approval or remember an app permission until its displayed expiry; app blocks and schedules still apply
+- Explicit NIP-46 method and event-kind permissions are displayed and enforced; scoped deletion requests require individual approval
+- App-permission links open from completed sign-in screens, survive an existing unlock, and can be reopened after cancelling the PIN prompt
+- Identity cards fit shorter screens without internal scrolling; swiping up and down changes personas again
+- More consistent card sizes, spacing and form alignment throughout the app; smoother screen changes keep the incoming card ready instead of rebuilding it
+- Portrait orientation on phones and tablets, with a turn-upright screen that preserves your place when the browser cannot lock orientation
+- Persona contact cards have a clearer layout, trust-tier counts, contact previews and better empty and locked states
+- PIN and biometric prompts now explain the action, including dependant pairing, recovery words, bot permissions and professional credentials
 - Independence handover moves a dependant's contacts and persona names to new recovery words, verifies restore before removing the family copy, and lets the guardian keep a read-only encrypted contact archive or delete it
 - Review contact trust and blocks during handover; old contact proofs need fresh checks, and apps and credentials must be set up again
 

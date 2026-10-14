@@ -14,6 +14,7 @@ import type { SVGProps } from 'react';
 export type IconName =
   | 'home'
   | 'users'
+  | 'search'
   | 'user'
   | 'key'
   | 'settings'
@@ -36,6 +37,12 @@ export type IconName =
   | 'nfc';
 
 const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
+  search: (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m15.3 15.3 5.2 5.2" />
+    </>
+  ),
   home: (
     <>
       <path d="M4 11.5 12 4l8 7.5" />

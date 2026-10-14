@@ -308,13 +308,14 @@ export function AuthScreen({ onUnlock, onCancel, purposeContext }: Props) {
     : (showPinFallback ? 'Enter your 6-digit PIN to continue' : 'Use your fingerprint or face to unlock');
 
   return (
-    <div style={{
+    <div className="auth-screen" style={{
       position: 'fixed',
       inset: 0,
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: 'center',
+      justifyContent: 'safe center',
+      overflowY: 'auto',
       background: 'var(--bg-primary)',
       zIndex: Z.auth,
       padding: '24px',

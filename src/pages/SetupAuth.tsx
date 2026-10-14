@@ -145,7 +145,7 @@ export function SetupAuth({ encryptionKey, onComplete, mode = 'first-run' }: Pro
   // --- Intro ---
   if (step === 'intro') {
     return (
-      <div style={fullScreenStyle}>
+      <div className="auth-screen" style={fullScreenStyle}>
         <div style={{ textAlign: 'center', marginBottom: 40 }}>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--text-primary)', marginBottom: 16 }}><Icon name="key" size={56} /></div>
           <h1 style={{ marginBottom: 12 }}>Protect your Signet</h1>
@@ -169,7 +169,7 @@ export function SetupAuth({ encryptionKey, onComplete, mode = 'first-run' }: Pro
   // --- Choose method ---
   if (step === 'choose') {
     return (
-      <div style={fullScreenStyle}>
+      <div className="auth-screen" style={fullScreenStyle}>
         <div style={{ textAlign: 'center', marginBottom: 40 }}>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--text-primary)', marginBottom: 16 }}><Icon name="key" size={56} /></div>
           <h1 style={{ marginBottom: 12 }}>How do you want to unlock?</h1>
@@ -209,7 +209,7 @@ export function SetupAuth({ encryptionKey, onComplete, mode = 'first-run' }: Pro
   // --- Biometric in progress ---
   if (step === 'biometric-pending') {
     return (
-      <div style={fullScreenStyle}>
+      <div className="auth-screen" style={fullScreenStyle}>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 24 }}>
           <div style={{ width: 40, height: 40, border: '3px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
         </div>
@@ -228,7 +228,7 @@ export function SetupAuth({ encryptionKey, onComplete, mode = 'first-run' }: Pro
   if (step === 'pin-entry') {
     const isConfirming = pinPhase === 'confirm';
     return (
-      <div style={fullScreenStyle}>
+      <div className="auth-screen" style={fullScreenStyle}>
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--text-primary)', marginBottom: 16 }}><Icon name="grid" size={56} /></div>
           <h1 style={{ marginBottom: 8 }}>
@@ -320,7 +320,7 @@ export function SetupAuth({ encryptionKey, onComplete, mode = 'first-run' }: Pro
   // --- Done ---
   if (step === 'done') {
     return (
-      <div style={fullScreenStyle}>
+      <div className="auth-screen" style={fullScreenStyle}>
         <div style={{ textAlign: 'center', marginBottom: 40 }}>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--success)', marginBottom: 16 }}><Icon name="checkCircle" size={56} /></div>
           <h1 style={{ marginBottom: 12 }}>You're protected</h1>
@@ -365,7 +365,8 @@ const fullScreenStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
-  justifyContent: 'center',
+  justifyContent: 'safe center',
+  overflowY: 'auto',
   background: 'var(--bg-primary)',
   zIndex: Z.modal,
   padding: '24px',

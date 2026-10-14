@@ -130,3 +130,14 @@ describe('child rules wire', () => {
     await expect(buildChildRulesEvent(payload(rules), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow('too-large');
   });
 });
+
+it('round trips bounded per-install online-play grants and explicit delegation', async () => {
+  const grant = rule({ scope: 'app-permission', appPermission: { v: 1, appId: 'twang', installKey: CLIENT_PK }, expiresAt: 1800086400000 });
+  const delegation = rule({ scope: 'app-permission-self', persona: '*', target: '*' });
+  const event = await buildChildRulesEvent(payload([grant, delegation], { stage: 'full-autonomy', ceilingKinds: [] }), RAIL_SK, CLIENT_PK, 1_000_000);
+  const opened = await openChildRulesEvent(event, CLIENT_SK, expectOk);
+  expect(opened?.rules).toEqual([grant, delegation]);
+  for (const patch of [{ expiresAt: undefined }, { persona: '*' }, { target: '*' }, { appPermission: { v: 1, appId: '../other', installKey: CLIENT_PK } }]) {
+    expect(parseChildRuleRecord({ ...grant, ...patch })).toBeNull();
+  }
+});

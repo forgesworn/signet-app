@@ -18,13 +18,14 @@ export function useRelay() {
   useEffect(() => {
     // M8: fan-out listener, not a direct single-slot registration — see
     // relay-service.ts addStateListener.
-    const unsubscribe = addStateListener((newState) => setState(newState));
+    const unsubscribe = addStateListener((newState) => { setState(newState); setUrl(getRelayUrl()); });
     setState(getRelayState());
     return unsubscribe;
   }, [url]);
 
   const connect = useCallback(async () => {
     await connectRelay();
+    setUrl(getRelayUrl());
     setState(getRelayState());
   }, []);
 

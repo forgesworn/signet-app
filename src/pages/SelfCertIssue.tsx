@@ -1,3 +1,5 @@
+import type { PurposeContext } from '../lib/auth-purposes';
+import { shortNpub } from '../lib/signet';
 /**
  * SelfCertIssue — issuance flow for a self-cert credential (pending path).
  *
@@ -68,7 +70,7 @@ interface Props {
   prefilledRole?: string;
   proBackend: SigningBackend;
   proPersonaPubkey: string;
-  requestAuth: () => Promise<string | null>;
+  requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onComplete: (credId: string) => void;
   onSave: (cred: StoredCredential) => Promise<void>;
   onBack: () => void;
@@ -102,7 +104,12 @@ export function SelfCertIssue({
     setSignStep('signing');
 
     // Tier 1 auth gate — PIN or biometric required (§6.10.10).
-    const authKey = await requestAuth();
+    const authKey = await requestAuth({
+      purpose: 'issue-professional-credential-pending',
+      firmName: prefilledFirm || result.claimedFirm || 'your firm',
+      recipientShort: shortNpub(result.recipientPubkey),
+      credentialType: credentialOptions.find(o => o.value === result.credentialType)?.label ?? result.credentialType,
+    });
     if (!authKey) {
       setSignStep('pick');
       setErrorMsg('Authentication cancelled. Please try again.');

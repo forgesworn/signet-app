@@ -1,3 +1,5 @@
+import { decideChildRequest } from './lib/child-gate';
+import { childRuleId } from './lib/child-rules';
 import { ContactHandshake } from './pages/ContactHandshake';
 import { handshakeDirect } from './lib/handshake-nearby';
 import { HANDSHAKE_COPY } from './lib/contacts-v2-copy';
@@ -178,7 +180,7 @@ import { runChildDirectPairing, pairedChildSignerPubkey, awaitTapOffer, childTap
 import type { ChildPairOffer } from './lib/child-pair-wire';
 import { useChildDeviceLink } from './hooks/useChildDeviceLink';
 import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
-import { getPublicKey } from 'nostr-tools/pure';
+import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
 import { ContactsRolodex } from './pages/ContactsRolodex';
@@ -382,7 +384,7 @@ import { useOwnBadge } from './hooks/useOwnBadge';
 import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
-import type { PurposeContext } from './lib/auth-purposes';
+import { PAGE_AUTH_CONTEXTS, type PurposeContext } from './lib/auth-purposes';
 import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
@@ -395,8 +397,9 @@ import { parseStoredCredentialEvent, pickCredential, pickCredentialForSubject } 
 import { publishVerifyResponseToRelay, publishVerifyRejectionToRelay, wrapAuthResponse, publishWrappedToRelays, getLastAuthPublishError, giftWrap } from './lib/relay-publish';
 import { appPermissionNeedsRealIdentityConfirm, appPermissionRequestKey, classifyAppPermissionFailure, classifyAppPermissionSearch, routeAppPermission } from './lib/app-permission-flow';
 import { APP_PERMISSION_COPY } from './lib/app-permission-copy';
-import { APP_PERMISSION_KIND, buildAppPermissionApprovedRumor, buildAppPermissionDeniedRumor } from './lib/app-permission';
+import { APP_PERMISSION_KIND, buildAppPermissionApprovedRumor, buildAppPermissionDeniedRumor, validateAppPermissionTemplate } from './lib/app-permission';
 import type { AppPermissionRequest } from './lib/app-permission';
+import { permissionTemplate, type SignInAppPermission, type SignInAppPermissionResult } from './lib/sign-in-app-permission';
 import { answerSealingBackend } from './lib/answer-seal-pass';
 import type { AuthResponse } from './lib/relay-publish';
 import { publishAuditEvent } from './lib/audit';
@@ -420,7 +423,7 @@ const NOSTRCONNECT_SERVE_MINUTES = 2;
 const NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS = 10_000;
 const NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS = 5_000;
 const AUTH_FLOW_BUNKER_FALLBACK_RELAYS = [
-  'wss://relay.trotters.cc',
+  'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.primal.net',
   'wss://relay.ditto.pub',
@@ -1210,6 +1213,7 @@ export function App() {
   // native App Link). Their denial goes back to the consumer's callback even
   // when the consumer sent no name= (an empty urlAuthSiteName).
   const urlAuthRequestsRef = useRef(new WeakSet<object>());
+  const signInAppPermissionsRef = useRef(new WeakMap<object, SignInAppPermission>());
   authApprovalInFlightRef.current = () => {
     const current = pendingAuthRequestRef.current;
     if (current && authSettlementRef.current.isInFlight(authRequestKey(current))) return true;
@@ -3980,7 +3984,9 @@ export function App() {
       // a Revoke button that flips allowAlways back off (or deletes the
       // record entirely) if they change their mind.
       const now = Math.floor(Date.now() / 1000);
+      const existing = await getConnectedClient(clientPubkey.toLowerCase());
       await saveConnectedClient({
+        ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
         clientPubkey: clientPubkey.toLowerCase(),
         appName,
         appUrl: origin,
@@ -4507,6 +4513,9 @@ export function App() {
   const childAskAlwaysAvailable = useCallback((depId: string) =>
     dependants.find(d => d.id.toLowerCase() === depId.toLowerCase())?.autonomyStage !== 'full-control', [dependants]);
 
+  const childAskStandingAvailable = useCallback((depId: string) =>
+    dependants.find(d => d.id.toLowerCase() === depId.toLowerCase())?.autonomyStage === 'full-autonomy', [dependants]);
+
   // C4 verdict leg — `resolve_approval` for a parked "Family asks" row.
   // Single stale-challenge retry lives in `submitVerdict`. Requires the
   // notice to carry a park id (petitions don't — the panel never offers
@@ -4550,10 +4559,10 @@ export function App() {
       // Deterministically lock the app, as the inactivity / visibility-hidden
       // grace timers do at runtime. Lets e2e exercise an auto-lock landing on an
       // approval screen without waiting out the 30s grace.
-      lock: () => {
+      lock: (showPrompt = true) => {
         setEncryptionKey(null);
         setAuthPromptContext(undefined);
-        setShowAuthPrompt(true);
+        setShowAuthPrompt(showPrompt);
       },
       isLocked: () => encryptionKeyRef.current === null,
       // True once the unlocked identity's key material is decrypted. Unlocking
@@ -5048,7 +5057,7 @@ export function App() {
 
   // Wire the preferences relay set into the relay-service pool. `setRelays`
   // recomputes the primary internally, so getRelayUrl() stays correct for the
-  // single-URL consumers. No persisted set yet → the 6 defaults (the pool also
+  // single-URL consumers. No persisted set yet → the default relay pool (the pool also
   // defaults to these at module load; we set explicitly so connectRelay targets
   // the right primary and a later edit is a no-op diff).
   useEffect(() => {
@@ -5190,7 +5199,7 @@ export function App() {
   const handleBunkerPendingArm = useCallback((minutes: number) => {
     setPendingBunkerArm(minutes);
     setBunkerPanelOpen(false);
-    requestAuth();
+    requestAuth({ purpose: 'manage-signing-session', minutes });
   }, [requestAuth]);
 
   // Always-on tapped while locked: same unlock-first flow as +X. The pref is
@@ -5199,7 +5208,7 @@ export function App() {
   const handleBunkerPendingAlwaysOn = useCallback(() => {
     setPendingAlwaysOnArm(true);
     setBunkerPanelOpen(false);
-    requestAuth();
+    requestAuth({ purpose: 'manage-signing-session' });
   }, [requestAuth]);
 
   // Screen stays on while a stay-awake window is open (foreground only).
@@ -5230,7 +5239,7 @@ export function App() {
     if (!isAuthSetUp() || pendingEncryptionKey || encryptionKey) return;
     if (showAuthPrompt) return;
     pairedChildAutoPromptRef.current = true;
-    void requestAuth();
+    void requestAuth({ purpose: 'unlock-app' });
   }, [identityLoading, prefsLoading, identity, preferences.signingMode, pendingEncryptionKey, encryptionKey, showAuthPrompt, requestAuth]);
 
   // Attach activity listeners when authenticated
@@ -5432,7 +5441,7 @@ export function App() {
       pairedChild: preferences.signingMode === 'paired-child',
     })) return;
     alwaysOnUnlockPromptRef.current = true;
-    void requestAuth();
+    void requestAuth({ purpose: 'unlock-app' });
   }, [identityLoading, prefsLoading, identity, encryptionKey, pendingEncryptionKey, showAuthPrompt, preferences.backgroundBunkerEnabled, preferences.signingMode, requestAuth]);
 
   // Native: liveness heartbeat to the foreground service while serving.
@@ -5494,6 +5503,31 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
+  const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
+    if (pendingAuthRequestRef.current !== request) return;
+    if (currentLogEntryRef.current) {
+      updateAuthRequestOutcome(currentLogEntryRef.current, 'cancelled');
+      currentLogEntryRef.current = null;
+    }
+    setPendingAuthRequest(null);
+    setPendingAuthSelection(null);
+    setOriginalAuthUrl(null);
+    setConsumerHint(null);
+    setConsumerWarnings([]);
+    setConsumerDisplayName(null);
+    setPendingPostUrl(null);
+    setUrlAuthSiteName('');
+  }, [setPendingAuthRequest]);
+
+  const handleContextualAuthDeclined = useCallback(() => {
+    if (authPromptContext?.purpose === 'review-request' && authPromptContext.request === 'sign-in') {
+      const request = pendingAuthRequestRef.current;
+      if (request) cancelSignInReview(request);
+      navigateReplace('home');
+    }
+    handleAuthPromptDeclined();
+  }, [authPromptContext, cancelSignInReview, navigateReplace, handleAuthPromptDeclined]);
+
   // On-demand auth gate: pages that require signing trigger auth prompt automatically.
   // `manage-carousel` is also gated here even though it doesn't sign anything —
   // its hide/reorder buttons call `setExtraPersonaHidden` / `reorderExtraPersonas`
@@ -5516,9 +5550,18 @@ export function App() {
     // end-to-end verification caught 'approve-companion-grant' missing here:
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
-    const signingPages: Page[] = ['venue-entry', 'photo-capture', 'approve-auth', 'approve-verification', 'approve-connect', 'approve-add-dependant', 'approve-app-permission', 'approve-companion-grant', 'vouch-someone', 'add-dependant', 'import-dependant', 'roster', 'manage-carousel', 'migrate-heartwood', 'contacts-grant-approve', 'contacts-grant-code'];
-    if (signingPages.includes(page) && !encryptionKey) {
-      requestAuth().then(key => {
+    const pagePurpose = PAGE_AUTH_CONTEXTS[page];
+    // Capture the request label when entering/re-unlocking its review page.
+    // Labels alone must not re-run this effect and contend with an open prompt.
+    const purpose: PurposeContext | undefined = page === 'approve-auth' && pendingAuthRequest
+      ? { purpose: 'review-request', request: 'sign-in', siteName: urlAuthSiteName || pendingAuthRequest.origin }
+      : page === 'approve-connect' && pendingConnectRequest
+        ? { purpose: 'review-request', request: 'connection', siteName: pendingConnectRequest.appName }
+        : page === 'approve-app-permission' && pendingAppPermissionRequest
+          ? { purpose: 'review-request', request: 'app-permission', siteName: pendingAppPermissionRequest.name }
+          : pagePurpose;
+    if (purpose && !encryptionKey) {
+      requestAuth(purpose).then(key => {
         // Both grant pages stay put on cancel and offer Unlock again: the
         // approve page so the owner need not restart the pairing from the
         // app, the code page because the check must survive. Leaving the code page would let the
@@ -5570,27 +5613,15 @@ export function App() {
       // No identity yet — let the !identity render branch consume pendingAuthRequest
       // and show the staged onboarding flow. Don't prompt for auth that doesn't exist.
       if (!isAuthSetUp()) return;
-      requestAuth().then(key => {
-        if (!key) {
-          if (currentLogEntryRef.current) {
-            updateAuthRequestOutcome(currentLogEntryRef.current, 'cancelled');
-            currentLogEntryRef.current = null;
-          }
-          setPendingAuthRequest(null);
-          setPendingAuthSelection(null);
-          setOriginalAuthUrl(null);
-          setConsumerHint(null);
-          setConsumerWarnings([]);
-          setConsumerDisplayName(null);
-          setPendingPostUrl(null);
-        }
+      requestAuth({ purpose: 'review-request', request: 'sign-in', siteName: urlAuthSiteName || pendingAuthRequest.origin }).then(key => {
+        if (!key) cancelSignInReview(pendingAuthRequest);
       });
       return;
     }
     if (urlAuthSiteName || urlAuthRequestsRef.current.has(pendingAuthRequest)) {
       navigateReplace('approve-auth');
     }
-  }, [encryptionKey, pendingAuthRequest, urlAuthSiteName, page, requestAuth]);
+  }, [encryptionKey, pendingAuthRequest, urlAuthSiteName, page, requestAuth, cancelSignInReview]);
 
   // After unlock, navigate to the third-party add-dependant approval page
   // Mirrors the auth-request unlock flow but
@@ -5603,7 +5634,7 @@ export function App() {
       // Otherwise wait — the !identity onboarding branch will eventually
       // surface and the user can complete onboarding before we route them.
       if (!isAuthSetUp()) return;
-      requestAuth().then(key => {
+      requestAuth({ purpose: 'review-request', request: 'add-dependant' }).then(key => {
         if (!key) {
           // User cancelled the auth prompt — silently drop the request.
           // Don't redirect-back to the consumer; treat as "user closed the
@@ -5633,26 +5664,30 @@ export function App() {
     if (!pendingAppPermissionRequest) return;
     if (page === 'approve-app-permission') return;
     if (appPermissionMarksRef.current.get(pendingAppPermissionRequest) === 'answered') return; // its answer is on its way
+    if (prefsLoading || identityLoading) return;
     if (!encryptionKey) {
       if (!isAuthSetUp()) return;
+      // A startup/page unlock may already own the auth slot. Its busy result
+      // is not a refusal of this request: keep the link until that unlock
+      // settles, then route with its key or offer this request's own prompt.
+      if (showAuthPrompt || authResolverRef.current) return;
       // Ask once per request. This effect re-runs while locked (preferences and
       // identity finish loading), and a second `requestAuth` while the first is
       // still on screen answers null at once: that must not read as a cancel.
       if (appPermissionAuthAskedRef.current === pendingAppPermissionRequest) return;
       appPermissionAuthAskedRef.current = pendingAppPermissionRequest;
-      requestAuth().then(key => {
+      requestAuth({ purpose: 'review-request', request: 'app-permission', siteName: pendingAppPermissionRequest.name }).then(key => {
         // Cancelled the unlock: treat it as closing the tab. The app's own
         // timeout ends the request; nothing is sent.
-        if (!key) setPendingAppPermissionRequest(null);
+        if (!key && pendingAppPermissionRef.current === pendingAppPermissionRequest) setPendingAppPermissionRequest(null);
       });
       return;
     }
-    if (prefsLoading || identityLoading) return;
     // M9: a paired-child phone's route also depends on its record (direct or
     // legacy, and the child's persona): wait until it has loaded.
     if (preferences.signingMode === 'paired-child' && pairedChildLoadedFor !== identity?.id) return;
     navigateReplace('approve-app-permission');
-  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id]);
+  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id, showAuthPrompt]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
@@ -6145,7 +6180,7 @@ export function App() {
     // Proof-of-presence gate: the most destructive action in the app must cost
     // an unlock. Falls through only if no PIN/biometric was ever set up.
     if (isAuthSetUp()) {
-      const key = await requestFreshAuth();
+      const key = await requestFreshAuth({ purpose: 'delete-my-signet' });
       if (!key) return;
     }
 
@@ -6437,7 +6472,7 @@ export function App() {
     const root = identity?.naturalPerson.publicKey;
     if (!identity || !root || isPairedChild || activeDependant || !privateVaultSupported) throw new Error('Owner backup session required');
     const generation = rotationContext.current.generation;
-    const key = await requestFreshAuth();
+    const key = await requestFreshAuth({ purpose: 'rotate-backup-key' });
     if (!key) return 'Backup key change cancelled.';
     const isCurrent = () => encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === root
       && rotationContext.current.generation === generation && rotationContext.current.session === privateVaultSession && !rotationContext.current.activeDependant;
@@ -6951,7 +6986,7 @@ export function App() {
 	    if (!slot.privateKey && !routedBackend) {
 	      // Locked: the router is torn down on lock by design, so this is not
 	      // "no signer" — ask for the unlock that brings the pairing back.
-	      if (!encryptionKey) void requestAuth();
+	      if (!encryptionKey) void requestAuth({ purpose: 'mutate-persona', action: 'edit-profile' });
 	      return {
 	        ok: false,
 	        message: routedSignerUnavailableMessage({
@@ -7496,7 +7531,7 @@ export function App() {
       const decision = checkAutonomy(activeDependant.autonomyStage);
       if (decision.kind === 'block') throw new Error(decision.message);
       if (decision.kind === 'require-pin') {
-        const key = await requestFreshAuth();
+        const key = await requestFreshAuth({ purpose: 'guardian-approve-dep-action', depName: activeDependant.displayName, actionDescription: 'connect an app', siteName: connectRequest.appName });
         if (!key) throw new Error('Guardian approval cancelled');
       }
     }
@@ -7647,7 +7682,7 @@ export function App() {
           // while this connect approval was open, `identity` may be public-only
           // or simply stale while the freshly-unlocked identity is still being
           // rebuilt. Re-acquire auth and fresh-decrypt before failing.
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
           if (!key) {
             throw new Error(deviceHeld ? routedApprovalUnavailableMessage() : 'Authentication required');
           }
@@ -8008,9 +8043,10 @@ export function App() {
       && authSettlementRef.current.claimDelivery(authRequestKey(request))
   ), []);
 
-  const approveAuthUnguarded = useCallback(async (selection: AuthSelection, shareHandle: boolean = false) => {
+  const approveAuthUnguarded = useCallback(async (selection: AuthSelection, shareHandle: boolean = false, includeOnlinePlay = false) => {
     if (!pendingAuthRequest || !identity) throw new Error('No pending auth request');
     const request = pendingAuthRequest;
+    const combinedPermission = signInAppPermissionsRef.current.get(request);
 
     // Autonomy-stage gate. Block / PIN-gate /
     // allow based on the active dependant's autonomyStage. Fires only
@@ -8057,7 +8093,7 @@ export function App() {
       // "Dependant keys are encrypted" with the silent catch bouncing the
       // user to the picker. `loadFreshDependants` is the hook's imperative
       // fresh-decrypt for exactly this case (see its doc in useDependants.ts).
-      const key = encryptionKey || await requestAuth();
+      const key = encryptionKey || await requestAuth({ purpose: 'approve-sign-in', siteName: urlAuthSiteName || request.origin, identityName: resolveAuthSelectionIdentity(selection, identity, dependants)?.displayName || 'your dependant' });
       if (!key) throw new Error('Authentication required');
       const freshDeps = await loadFreshDependants(key);
       const dep = freshDeps.find(d => d.id === selection.dependantId);
@@ -8150,7 +8186,7 @@ export function App() {
           // moment of signing instead of throwing a dead-end locked-keys error.
           // For a device-held slot the unlock is what brings the pairing (and
           // the per-persona router) back; the wait below picks the route up.
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'approve-sign-in', siteName: urlAuthSiteName || request.origin, identityName: resolveAuthSelectionIdentity(selection, identity, dependants)?.displayName || 'your persona' });
           if (!key) {
             throw new Error(deviceHeld
               ? routedApprovalUnavailableMessage()
@@ -8214,6 +8250,36 @@ export function App() {
       const relayUrl = pendingAuthRequest.relay;
       const sessionPubkey = pendingAuthRequest.sessionPubkey;
       const isRelayMode = !!(relayUrl && sessionPubkey);
+
+      let appPermission: SignInAppPermissionResult | undefined;
+      if (combinedPermission) {
+        appPermission = { v: 1, permission: 'online-play', status: 'declined' };
+        if (includeOnlinePlay) {
+          let permissionBackend = selectedBackend;
+          if (childDirect && selection.source === 'guardian') {
+            permissionBackend = gatedSigningBackend(selectedBackend as DecryptingSigningBackend, req => childGateRef.current.authorise({
+              persona: pubkey, appId: 'mysignet', appLabel: urlAuthSiteName || request.origin,
+              siteOrigin: request.origin, method: req.method, template: req.template, peer: req.peer,
+              appPermissionApproved: true,
+              appPermission: { permission: 'online-play', origin: request.origin, name: urlAuthSiteName || request.origin, reason: combinedPermission.reason },
+            }));
+          } else if (selection.source === 'dependant') {
+            const key = await requestFreshAuth({ purpose: 'guardian-approve-dep-action', depName: resolveAuthSelectionIdentity(selection, identity, dependants)?.displayName || 'your dependant', actionDescription: 'enable online play', siteName: urlAuthSiteName || request.origin });
+            if (!key) throw new Error('Authentication required');
+          }
+          try {
+            const template = permissionTemplate(combinedPermission, pubkey);
+            if (combinedPermission.validUntil <= Math.floor(Date.now() / 1000) || !validateAppPermissionTemplate(template, { nowS: Math.floor(Date.now() / 1000), checkTime: true }).ok) throw new Error('The online-play request has expired. Start again in the app.');
+            const event = await permissionBackend.signEvent({ ...template, created_at: Math.floor(Date.now() / 1000) });
+            if (event.pubkey !== pubkey || event.kind !== template.kind || event.content !== template.content
+              || JSON.stringify(event.tags) !== JSON.stringify(template.tags) || !verifyEvent(event)) throw new Error('The signer returned a different online-play statement.');
+            assertApprovalStillPending(request);
+            appPermission = { v: 1, permission: 'online-play', status: 'approved', event };
+          } catch (error) {
+            if (classifyAppPermissionFailure(error).kind !== 'guardian-denied') throw error;
+          }
+        }
+      }
 
       // Resolve display name for site authorisation and ack screen
       let siteName = urlAuthSiteName;
@@ -8332,7 +8398,7 @@ export function App() {
         const remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         // Denied/withdrawn while signing: arm nothing, deliver nothing.
         if (!authDeliveryStillOpen(request)) return;
-        const handoff = signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: bunkerServerEnabled });
+        const handoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: bunkerServerEnabled });
         if (handoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
@@ -8388,6 +8454,7 @@ export function App() {
           ...(credential ? { credential } : {}),
           ...(handleToShare ? { displayName: handleToShare } : {}),
           ...(bunkerUri ? { bunkerUri } : {}),
+          ...(appPermission ? { appPermission } : {}),
         };
 
         // Capture values needed by the retry closure before clearing pendingAuthRequest
@@ -8560,7 +8627,7 @@ export function App() {
         let bunkerUri: string | undefined;
         // A44: never on a direct child.
         const remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
-        const sameTabHandoff = signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: false });
+        const sameTabHandoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: false });
         if (sameTabHandoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
@@ -8601,6 +8668,7 @@ export function App() {
             fromNP: fromNP || undefined,
             displayName: handleToShare,
             bunker: bunkerUri,
+            appPermission,
             // Phase 4 of per-persona-avatars: avatar fields ride in URL
             // params so consumers can decrypt the encrypted Blossom blob
             // without needing to fetch the kind-21236 event from a relay.
@@ -8708,7 +8776,7 @@ export function App() {
   // One answer per request: starts the in-flight approval synchronously so a
   // Deny/Back tapped while signing is a no-op, refuses a request that has
   // already been answered, and reopens it if the approval failed undelivered.
-  const handleApproveAuth = useCallback(async (selection: AuthSelection, shareHandle: boolean = false) => {
+  const handleApproveAuth = useCallback(async (selection: AuthSelection, shareHandle: boolean = false, includeOnlinePlay = false) => {
     const request = pendingAuthRequestRef.current;
     if (!request) throw new Error('No pending auth request');
     const key = authRequestKey(request);
@@ -8723,18 +8791,18 @@ export function App() {
     if (began === 'in-flight') throw new Error('Already signing this request.');
     setAuthApprovalInFlightKey(key);
     try {
-      await approveAuthUnguarded(selection, shareHandle);
+      await approveAuthUnguarded(selection, shareHandle, includeOnlinePlay);
     } finally {
       authSettlementRef.current.endApproval(key);
       setAuthApprovalInFlightKey(current => (current === key ? null : current));
     }
   }, [approveAuthUnguarded, retireAuthRequestState, navigateReplace]);
 
-  const handleApproveAuthGuarded = useCallback(async (selection: AuthSelection, shareHandle: boolean = false) => {
+  const handleApproveAuthGuarded = useCallback(async (selection: AuthSelection, shareHandle: boolean = false, includeOnlinePlay = false) => {
     const request = pendingAuthRequestRef.current;
     setPickerInitialError(null);
     try {
-      await handleApproveAuth(selection, shareHandle);
+      await handleApproveAuth(selection, shareHandle, includeOnlinePlay);
     } catch (e) {
       // An approval that waited through a lock/unlock may finish after the
       // ApproveAuth instance that started it has been unmounted and remounted
@@ -8955,6 +9023,7 @@ export function App() {
     marks.set(req, 'approving');
     const stillOpen = () => pendingAppPermissionRef.current === req && marks.get(req) === 'approving';
     const persona = route.persona;
+    let approvedByGuardian = false;
     let tempBackend: LocalSigningBackend | null = null;
     try {
       let inner: DecryptingSigningBackend;
@@ -8980,7 +9049,7 @@ export function App() {
           let guardianIdentity = identity;
           tempBackend = resolveGuardianBackend(keypairType, guardianIdentity);
           if (!tempBackend) {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'review-request', request: 'app-permission', siteName: req.name });
             if (!key) throw new Error(deviceHeld ? routedApprovalUnavailableMessage() : 'Authentication required');
             const fresh = await loadIdentityDecrypted(guardianIdentity.id, key);
             if (fresh) guardianIdentity = fresh;
@@ -9005,12 +9074,13 @@ export function App() {
         backend = answerSealingBackend({
           inner,
           gate: {
-            authorise: (r) => childGateRef.current.authorise({ ...r, abort: withdraw.signal }),
+            authorise: (r) => childGateRef.current.authorise({ ...r, abort: withdraw.signal, onGuardianAsk: () => { approvedByGuardian = true; } }),
             forwardPassed: (r) => childGateRef.current.forwardPassed({ ...r, abort: withdraw.signal }),
           },
           persona,
           appLabel: label,
           siteOrigin: req.origin,
+          appPermissionApproved: true,
           appPermission: { permission: req.permission, name: req.name, origin: req.origin, reason: req.reason },
           sessionPubkey: req.sessionPubkey,
           eligibleKind: APP_PERMISSION_KIND,
@@ -9032,7 +9102,7 @@ export function App() {
       const wrap = await giftWrap(rumor, req.sessionPubkey, backend);
       if (!stillOpen()) return;
       marks.set(req, 'answered');
-      await publishAppPermissionAnswer(req, wrap, route.mode === 'child-direct');
+      await publishAppPermissionAnswer(req, wrap, approvedByGuardian);
     } catch (e) {
       // I1: only the guardian's own No (their Deny, or a deny rule) is final
       // and answers the app. Any other failure sends nothing: the request
@@ -9227,12 +9297,12 @@ export function App() {
   const handleExitChildMode = useCallback(async () => {
     // Load-bearing safety boundary: exit requires the guardian's PIN/biometric.
     // Without this, "child-mode" is just a UI state the child can flip. See spec §2.
-    const key = await requestFreshAuth();
+    const key = await requestFreshAuth({ purpose: 'exit-child-mode', depName: activeDependant?.displayName || carousel.childDependant?.displayName || 'your dependant' });
     if (!key) return; // Cancelled or failed — stay in child-mode.
     carousel.exitChildMode();
     setActiveDependantId(null);
     clearChildModeSession().catch(() => {});
-  }, [carousel.exitChildMode, setActiveDependantId, requestFreshAuth]);
+  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, setActiveDependantId, requestFreshAuth]);
 
   // Publish current child-mode state + exit handler to useNavigation's refs so
   // hardware back / browser back can trigger the same gated exit while inside
@@ -9511,6 +9581,7 @@ export function App() {
     // be staged invisibly if MySignet was backgrounded on Settings/Bunker.
     setPendingAuthSelection(null);
     urlAuthRequestsRef.current.add(parsed.request);
+    if (parsed.appPermission) signInAppPermissionsRef.current.set(parsed.request, parsed.appPermission);
     setPendingAuthRequest(parsed.request);
     navigateReplace('approve-auth');
     return true;
@@ -9683,7 +9754,9 @@ export function App() {
   const consumeAppPermissionUrl = useCallback((search: string): boolean => {
     const url = classifyAppPermissionSearch(search);
     if (url.kind === 'not-ours') return false;
-    window.history.replaceState({ page: 'home' }, '', window.location.pathname);
+    // Removing the carrier does not change the visible page. The deferred
+    // route below updates React and history together after unlock/loading.
+    window.history.replaceState(window.history.state, '', window.location.pathname);
     if (url.kind === 'refused') {
       setAppPermissionNotice(APP_PERMISSION_COPY.invalidLink);
       return true;
@@ -9781,6 +9854,7 @@ export function App() {
   // as an App Link makes the web page's own mount-time
   // `window.location.search` effects inert inside the APK's WebView.
   const lastNativeUrlRef = useRef<string | null>(null);
+  const lastNativeAppPermissionUrlRef = useRef<string | null>(null);
   const launchUrlReadRef = useRef(false);
   const handleNativeUrl = useCallback((url: string) => {
     if (!url || lastNativeUrlRef.current === url) return;
@@ -9810,7 +9884,10 @@ export function App() {
         try { search = new URL(action.href).search; } catch { return; }
         if (consumeVerifyUrl(search)) return;
         if (consumeAddDependantUrl(search)) return;
-        if (consumeAppPermissionUrl(search)) return;
+        if (consumeAppPermissionUrl(search)) {
+          lastNativeAppPermissionUrlRef.current = url;
+          return;
+        }
         // An App Link means another app launched us for this pairing.
         consumeNostrConnectUrl(search, true);
         return;
@@ -9824,7 +9901,16 @@ export function App() {
         if (isUnactionableMysignetLink(url, action)) setNativeLinkNothingToOpen(true);
         return;
     }
-  }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeAppPermissionUrl, consumeNostrConnectUrl, isPairedChild]);
+  }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeAppPermissionUrl, consumeNostrConnectUrl]);
+
+  // Deduplicate the launch/event copies while reviewing a request, but allow
+  // the app to reopen its same still-valid link after an unlock was cancelled.
+  useEffect(() => {
+    if (!pendingAppPermissionRequest && lastNativeUrlRef.current === lastNativeAppPermissionUrlRef.current) {
+      lastNativeUrlRef.current = null;
+      lastNativeAppPermissionUrlRef.current = null;
+    }
+  }, [pendingAppPermissionRequest]);
 
   useEffect(() => {
     if (!isNativeApp()) return;
@@ -10305,21 +10391,21 @@ export function App() {
     || contactsBackupTooLargeBanner
     || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
-    <>{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
+    <div className="app-notices">{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
       {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
-      {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</>
+      {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
 
   // On-demand auth prompt overlay — rendered on any page that triggers requestAuth
   const authOverlay = showAuthPrompt ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: Z.overlay, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={(e) => { if (e.target === e.currentTarget) handleAuthPromptDeclined(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) handleContextualAuthDeclined(); }}
     >
       <div style={{ width: '100%', maxWidth: 400 }}>
         <AuthScreen
           onUnlock={handleAuthPromptUnlock}
-          onCancel={handleAuthPromptDeclined}
+          onCancel={handleContextualAuthDeclined}
           purposeContext={authPromptContext}
         />
       </div>
@@ -10344,6 +10430,7 @@ export function App() {
         <ChildAskApprovalModal
           asks={sheetChildAsks}
           alwaysAvailableFor={childAskAlwaysAvailable}
+          appPermissionStandingFor={childAskStandingAvailable}
           onDecide={childAsks.decide}
           onLater={putOffChildAsks}
         />
@@ -10631,23 +10718,23 @@ export function App() {
             onOpenPermissions={() => navigateTo('child-permissions')}
             appPairings={activeDependant.appBunkerEndpoint?.pairings ?? []}
             onRevokeAppPairing={async (clientPubkey) => {
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', depName: activeDependant.displayName, action: 'remove-app' });
               if (!key) throw new Error('Authentication required');
               await dbRemoveAppBunkerPairing(activeDependant.id, clientPubkey, key);
               await reloadDependants();
             }}
             onSwitchDependantPrimary={async (kp) => {
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', depName: activeDependant.displayName, action: 'switch' });
               if (!key) throw new Error('Authentication required');
               await switchDependantPrimary(activeDependant.id, kp, key);
             }}
             onUpdateDependantPersonaName={async (target, name) => {
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', depName: activeDependant.displayName, action: 'rename', personaName: name });
               if (!key) throw new Error('Authentication required');
               await updateDependantPersonaName(activeDependant.id, target, name, key);
             }}
             onAddDependantPersona={async (displayName) => {
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', depName: activeDependant.displayName, action: 'create', personaName: displayName });
               if (!key) throw new Error('Authentication required');
               await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDerive });
             }}
@@ -10662,7 +10749,7 @@ export function App() {
             currentContactPolicy={childSettingsMap.get(activeDependant.id)?.contactPolicy ?? 'kin-only'}
             contactPolicyConflicted={childSettingsMap.get(activeDependant.id)?.contactPolicyConflicted}
             onUpdateContactPolicy={async (policy) => {
-              const key = await requestAuth();
+              const key = await requestAuth({ purpose: 'manage-dependant', depName: activeDependant.displayName, action: 'contact-policy' });
               if (!key) return;
               const guardian = identity?.naturalPerson.publicKey;
               const current = () => encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
@@ -10679,7 +10766,7 @@ export function App() {
             }}
             currentDefaultChildCeiling={childSettingsMap.get(activeDependant.id)?.defaultChildCeiling ?? DEFAULT_CHILD_CEILING}
             onUpdateDefaultChildCeiling={async (ceiling) => {
-              const key = await requestAuth();
+              const key = await requestAuth({ purpose: 'manage-dependant', depName: activeDependant.displayName, action: 'permissions' });
               if (!key) return;
               const guardian = identity?.naturalPerson.publicKey;
               const current = () => encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
@@ -10721,7 +10808,7 @@ export function App() {
           // A fresh PIN/biometric prompt must succeed before the user
           // even sees the "Delete forever" confirm card — proof of
           // presence for the most destructive action the app offers.
-          const key = await requestFreshAuth();
+          const key = await requestFreshAuth({ purpose: 'delete-my-signet' });
           return key !== null;
         }}
         powerMode={powerMode}
@@ -10729,7 +10816,7 @@ export function App() {
         onNavigate={async target => {
           if (target === 'bots') {
             setPendingBotContacts(undefined);
-            if (!encryptionKey && !await requestAuth()) return;
+            if (!encryptionKey && !await requestAuth({ purpose: 'access-feature', feature: 'bots' })) return;
           }
           navigateTo(target);
         }}
@@ -10752,7 +10839,7 @@ export function App() {
       appConnections={{
         connect: async (botPubkey, request, eventKinds, duration, valid) => {
           const mode = preferences.signingMode;
-          const key = await requestFreshAuth();
+          const key = await requestFreshAuth({ purpose: 'manage-bot', action: 'connect', botName: botInventory.find(b => b.publicKey === botPubkey)?.label, siteName: request.appName });
           const current = () => valid() && !!key && botSession.current.key === key && botSession.current.owner === root && botSession.current.mode === mode;
           if (!key || !current()) throw new Error('Bot app approval cancelled.');
           const signer = await makeBotAppSigner(botPubkey, current);
@@ -10793,7 +10880,7 @@ export function App() {
       }}
       initialContactsBot={pendingBotContacts} personas={personas} identity={identity} deviceId={preferences.contactsDeviceId ?? ''} relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL} version={botsVersion} onChanged={() => { setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1); }}
       onCreate={async input => {
-        const key = await requestFreshAuth();
+        const key = await requestFreshAuth({ purpose: 'manage-bot', action: 'create', botName: input.label });
         const current = () => encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === root;
         if (!key || !current()) throw new Error('Unlock to create a bot.');
         const fresh = await loadIdentityDecrypted(identity.id, key);
@@ -10817,7 +10904,7 @@ export function App() {
           } });
       }}
       onOwnership={async (pubkey, action, days) => {
-        const key = await requestFreshAuth();
+        const key = await requestFreshAuth({ purpose: 'manage-bot', action: action === 'create' ? 'ownership' : action, botName: botInventory.find(b => b.publicKey === pubkey)?.label });
         if (!key || encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== root) throw new Error('Unlock to manage bot ownership.');
         const service = makeBotOwnershipService(() => true), now = Math.floor(Date.now() / 1000);
         if (action === 'create') await service.create(pubkey, now, days);
@@ -10826,7 +10913,7 @@ export function App() {
         await service.flush(now);
       }}
       onExport={async pubkey => {
-        const key = await requestFreshAuth();
+        const key = await requestFreshAuth({ purpose: 'manage-bot', action: 'reveal-key', botName: botInventory.find(b => b.publicKey === pubkey)?.label });
         if (!key || encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== root) throw new Error('Unlock to copy the bot recovery key.');
         const bot = (await loadBotRegistry(root, key)).bots.find(b => b.publicKey === pubkey && b.removedAt === undefined);
         if (!bot?.privateKey || encryptionKeyRef.current !== key || identityRef.current?.naturalPerson.publicKey !== root) throw new Error('Bot key unavailable');
@@ -10934,24 +11021,24 @@ export function App() {
             navigateTo('home');
           }}
           onSwitchPrimary={async (target) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'switch' });
             if (!key) return;
             await switchPrimary(target, key);
           }}
           onAddPersona={async (displayName) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
             if (!key) throw new Error('Authentication required');
             // §11.1.8 D4: in bunker mode the phone has no mnemonic — the
             // device derives `persona-N` from its own tree instead.
             await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
           }}
           onUpdateName={async (target, name) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'rename', personaName: name });
             if (!key) throw new Error('Authentication required');
             await updateDisplayName(target, name, undefined, key);
           }}
           onImportNostrAccount={isPairedChild ? undefined : async (nsec, displayName, match) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'import', personaName: displayName });
             if (!key) throw new Error('Authentication required');
             // "Match it in My Signet": the card, the state of the kind-0 that is
             // ALREADY on the relay (nothing is published) and the device-local
@@ -11151,7 +11238,7 @@ export function App() {
   }): Promise<string | null> => {
     // A42: a direct child publishes no avatar pointer (guardian-managed).
     if (childDirect) return null;
-    const key = encryptionKey || await requestAuth();
+    const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'share-photo', depName: opts.depPubkey ? dependants.find(d => d.id === opts.depPubkey)?.displayName : undefined });
     if (!key) throw new Error('Authentication required');
 
     // Resolve the decrypted slot (privateKey + private-avatar fields).
@@ -11259,7 +11346,7 @@ export function App() {
   // Any failure throws, and the caller sends nothing.
   const shareContactPhoto = async (persona: string): Promise<{ key: string; server: string; hash: string }> => {
     if (!identity || isPairedChild) throw new Error('Photo sharing is not available here.');
-    const key = encryptionKey || await requestAuth();
+    const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'share-photo' });
     if (!key) throw new Error('Authentication required');
     const want = persona.toLowerCase();
     const target = identity.persona?.publicKey?.toLowerCase() === want ? 'persona'
@@ -11293,7 +11380,7 @@ export function App() {
   // recipient who cached the old key can't follow the new pointer. Recipients
   // who already fetched the blob keep it — no clawback, by design.
   const handleStopContactAvatarShare = async (target: string, depPubkey?: string): Promise<string | void> => {
-    const key = encryptionKey || await requestAuth();
+    const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'stop-sharing-photo', depName: depPubkey ? dependants.find(d => d.id === depPubkey)?.displayName : undefined });
     if (!key) throw new Error('Authentication required');
 
     // Resolve the slot's privateKey the same fresh-read way pushContactAvatar
@@ -11407,7 +11494,7 @@ export function App() {
           // card's (the panel says so). The page is reachable while locked,
           // so unlock on demand and hand the key through: this render's
           // hooks still close over the null key.
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'edit-profile', personaName: found.profile.displayName || undefined });
           if (!key) throw new Error('Authentication required');
           const seed = buildMatchSeed(found, found.profile.displayName || '');
           await setPersonaPublicProfile(slotTarget, seed.config, seed.state, seed.base ?? null, key);
@@ -11420,7 +11507,7 @@ export function App() {
           }
         }}
         onSwitchPrimary={async (target) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'switch', depName: depPubkey ? dependants.find(d => d.id === depPubkey)?.displayName : undefined });
           if (!key) throw new Error('Authentication required');
           if (depPubkey) {
             await switchDependantPrimary(depPubkey, target, key);
@@ -11445,13 +11532,13 @@ export function App() {
           if (depPubkey) {
             await setDepExtraPersonaHidden(depPubkey, pubkey, true);
           } else {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'hide' });
             if (!key) throw new Error('Authentication required');
             await setExtraPersonaHidden(pubkey, true, key);
           }
         }}
         onShowPersona={depPubkey ? undefined : async (pubkey) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'show' });
           if (!key) throw new Error('Authentication required');
           await setExtraPersonaHidden(pubkey, false, key);
         }}
@@ -11586,7 +11673,7 @@ export function App() {
           backupStep="none"
           recoveryWords={[]}
           onActivate={async (legalName) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'activate', depName: dep.displayName, personaName: legalName });
             if (!key) throw new Error('Authentication required');
             await activateDependantNaturalPerson(dep.id, legalName, key);
           }}
@@ -12204,7 +12291,7 @@ export function App() {
     return <>
       <Layout title="Contacts" {...guardianLayoutProps}>
         <p>Unlock to view your contacts.</p>
-        <button className="btn btn-primary" onClick={() => { void requestAuth(); }}>Unlock contacts</button>
+        <button className="btn btn-primary" onClick={() => { void requestAuth({ purpose: 'access-feature', feature: 'contacts' }); }}>Unlock contacts</button>
       </Layout>
       {authOverlay}
     </>;
@@ -12457,33 +12544,39 @@ export function App() {
 
     if (relayAuthAckState.status === 'failed') {
       return (
-        <Layout title={relayAuthAckState.variant === 'app-permission' ? APP_PERMISSION_COPY.layoutTitle : 'Sign In'} {...guardianLayoutProps}>
-          <RelayAuthAck
-            variant={relayAuthAckState.variant}
-            state="failed"
-            relayHost={relayAuthAckState.relayHost}
-            requestedRelay={relayAuthAckState.requestedRelay}
-            primaryRelay={relayAuthAckState.primaryRelay}
-            failureReason={relayAuthAckState.failureReason}
-            siteName={relayAuthAckState.siteName}
-            onRetry={async () => { await relayAuthAckState.retry(); }}
-            onCancel={clearAck}
-          />
-        </Layout>
+        <>
+          <Layout title={relayAuthAckState.variant === 'app-permission' ? APP_PERMISSION_COPY.layoutTitle : 'Sign In'} {...guardianLayoutProps}>
+            <RelayAuthAck
+              variant={relayAuthAckState.variant}
+              state="failed"
+              relayHost={relayAuthAckState.relayHost}
+              requestedRelay={relayAuthAckState.requestedRelay}
+              primaryRelay={relayAuthAckState.primaryRelay}
+              failureReason={relayAuthAckState.failureReason}
+              siteName={relayAuthAckState.siteName}
+              onRetry={async () => { await relayAuthAckState.retry(); }}
+              onCancel={clearAck}
+            />
+          </Layout>
+          {authOverlay}{nip55Overlay}
+        </>
       );
     }
 
     return (
-      <Layout title={relayAuthAckState.variant === 'app-permission' ? APP_PERMISSION_COPY.layoutTitle : 'Sign In'} {...guardianLayoutProps}>
-        <RelayAuthAck
-          variant={relayAuthAckState.variant}
-          state={relayAuthAckState.status}
-          siteName={relayAuthAckState.siteName}
-          postUrl={relayAuthAckState.status === 'approved' ? relayAuthAckState.postUrl : undefined}
-          byGuardian={relayAuthAckState.byGuardian}
-          onClose={clearAck}
-        />
-      </Layout>
+      <>
+        <Layout title={relayAuthAckState.variant === 'app-permission' ? APP_PERMISSION_COPY.layoutTitle : 'Sign In'} {...guardianLayoutProps}>
+          <RelayAuthAck
+            variant={relayAuthAckState.variant}
+            state={relayAuthAckState.status}
+            siteName={relayAuthAckState.siteName}
+            postUrl={relayAuthAckState.status === 'approved' ? relayAuthAckState.postUrl : undefined}
+            byGuardian={relayAuthAckState.byGuardian}
+            onClose={clearAck}
+          />
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
     );
   }
 
@@ -12551,7 +12644,7 @@ export function App() {
       preferredPersonaPubkey,
       originMemory: originPolicyForRequest,
       onAddPersona: async (displayName: string) => {
-        const key = encryptionKey || await requestAuth();
+        const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
         if (!key) throw new Error('Authentication required');
         return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
       },
@@ -12576,6 +12669,8 @@ export function App() {
               "Signing…" state or error. */}
           <ApproveAuth
             key={approveAuthRequestKey}
+            appPermission={signInAppPermissionsRef.current.get(pendingAuthRequest)}
+            appPermissionName={urlAuthSiteName || pendingAuthRequest.origin}
             {...approveAuthProps}
             externallyApproving={authApprovalInFlightKey === approveAuthRequestKey}
             userChoice={authPickerChoice?.key === approveAuthRequestKey ? { selection: authPickerChoice.selection } : undefined}
@@ -12593,6 +12688,13 @@ export function App() {
 
   // Approve an app's permission request (`?action=app-permission`)
   if (page === 'approve-app-permission' && pendingAppPermissionRequest && identity && appPermissionRoute) {
+    const req = pendingAppPermissionRequest;
+    const now = Date.now();
+    const selfApproval = appPermissionRoute.mode === 'child-direct' && decideChildRequest({
+      rules: childDeviceLink.rules, persona: req.template.pubkey, template: { ...req.template, created_at: Math.floor(now / 1000) },
+      appId: 'mysignet', siteOrigin: req.origin, nowMs: now, rateState: { count: 0, windowStart: now },
+      appPermission: req, appPermissionApproved: true,
+    }).verdict === 'sign';
     return (
       <>
         <Layout title={APP_PERMISSION_COPY.layoutTitle} showBack onBack={handleCancelAppPermission} {...guardianLayoutProps}>
@@ -12602,6 +12704,7 @@ export function App() {
             request={pendingAppPermissionRequest}
             route={appPermissionRoute}
             personaName={appPermissionPersonaName}
+            selfApproval={selfApproval}
             onApprove={handleApproveAppPermission}
             onCancel={handleCancelAppPermission}
             confirmRealIdentity={appPermissionNeedsRealIdentityConfirm(appPermissionRoute, identity, requireNpConfirmation)}
@@ -12724,7 +12827,7 @@ export function App() {
       <>
         <Layout title={CONTACTS_GRANT_APPROVE_TITLE} showBack onBack={handleDenyContactsGrantV2}>
           <p>{CONTACTS_GRANT_APPROVE_LOCKED_COPY}</p>
-          <button className="btn btn-primary" onClick={() => { void requestAuth(); }}>{CONTACTS_GRANT_CODE_UNLOCK_LABEL}</button>
+          <button className="btn btn-primary" onClick={() => { void requestAuth({ purpose: 'review-request', request: 'contact-access' }); }}>{CONTACTS_GRANT_CODE_UNLOCK_LABEL}</button>
         </Layout>
         {authOverlay}{nip55Overlay}
       </>
@@ -12754,7 +12857,7 @@ export function App() {
   // Back/leave is wired the same as "Keep it": the grant stands, nothing is
   // revoked silently.
   // Finding 2: the page itself needs an unlocked app (the disconnect action
-  // does), so while locked it shows an Unlock step instead — `signingPages`
+  // does), so while locked it shows an Unlock step instead — `PAGE_AUTH_CONTEXTS`
   // prompts on arrival, and a cancelled prompt stays here rather than
   // falling through to Home, where the exit effect would clear the check on
   // the next unlock. `page` is untouched by locking, and the mismatch count
@@ -12764,7 +12867,7 @@ export function App() {
       <>
         <Layout title={CONTACTS_GRANT_CODE_TITLE} showBack onBack={handleContactsGrantCodeDone}>
           <p>{CONTACTS_GRANT_CODE_LOCKED_COPY}</p>
-          <button className="btn btn-primary" onClick={() => { void requestAuth(); }}>{CONTACTS_GRANT_CODE_UNLOCK_LABEL}</button>
+          <button className="btn btn-primary" onClick={() => { void requestAuth({ purpose: 'access-feature', feature: 'contact-code' }); }}>{CONTACTS_GRANT_CODE_UNLOCK_LABEL}</button>
         </Layout>
         {authOverlay}{nip55Overlay}
       </>
@@ -13153,7 +13256,7 @@ export function App() {
     // Merge ONLY the pairing fields onto a fresh read, so a concurrent
     // edit to the dependant is never overwritten by this snapshot.
     onDependantUpdated: async (dep) => {
-      const key = encryptionKey || await requestAuth();
+      const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: dep.displayName });
       if (!key) throw new Error('Authentication required');
       const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
       if (!fresh) throw new Error('Dependant not found');
@@ -13162,7 +13265,7 @@ export function App() {
     },
     onRulesChanged: () => { void reloadChildRules(); },
     readDependant: async (id) => {
-      const key = encryptionKey || await requestAuth();
+      const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: dependants.find(d => d.id === id)?.displayName || 'your dependant' });
       if (!key) return null;
       return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
     },
@@ -13191,17 +13294,17 @@ export function App() {
           // calls requestAuth() and bails via onBack if no key.
           bunkerServerEnabled={bunkerServerEnabled}
           ensureDependantBunkerEndpoint={async (pubkey) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             return ensureDependantBunkerEndpoint(pubkey, key);
           }}
           clearDependantBunkerEndpoint={async (pubkey) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             return clearDependantBunkerEndpoint(pubkey, key);
           }}
           saveDependantPairingSecret={async (pubkey, secret) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             return saveDependantPairingSecret(pubkey, secret, key);
           }}
@@ -13235,14 +13338,27 @@ export function App() {
             pairing={pairingOpts}
             history={childAsks.history}
             onRevokeRule={async (rule) => {
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
               // Tombstone → rules self-rail, rules publisher and policy push (ceiling recompile).
               await tombstoneChildRule(rule.id, key, Date.now());
               await reloadChildRules();
             }}
+            onSetAppPermissionSelfApproval={async enabled => {
+              const key = await requestFreshAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
+              if (!key) throw new Error('Authentication required');
+              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
+              if (!fresh || fresh.autonomyStage !== 'full-autonomy') throw new Error('Full autonomy is required');
+              const id = childRuleId(dep.id, '*', 'app-permission-self', '*');
+              const existing = (await listChildRules(dep.id, key)).find(r => r.id === id);
+              const now = Date.now();
+              if (enabled) {
+                await saveChildRule({ id, dependantId: dep.id, persona: '*', scope: 'app-permission-self', target: '*', decision: 'allow', label: 'Approve online play yourself', createdAt: existing?.createdAt ?? now, updatedAt: Math.max(now, (existing?.updatedAt ?? 0) + 1) }, key);
+              } else if (existing) await tombstoneChildRule(id, key, now);
+              await reloadChildRules();
+            }}
             onBlockApp={async (app) => {
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
               // A7/A11: a `*`-scope deny rule for the app; `disconnectedApps` derives from it.
               const out = blockAppRules(dep.id, app, await listChildRules(dep.id, key), Date.now());
@@ -13257,7 +13373,7 @@ export function App() {
               if (persona.toLowerCase() === cd.boundPersona.toLowerCase()) throw new Error('Unpair to remove this persona');
               await withOperatorLock(c, () => mgmtRevokeClientIdentity(c, { slotIndex: cd.slotIndex, secretFingerprint: cd.secretFingerprint }, persona));
               // A51: the phone stops offering it too — the rules payload's `personas` drops it.
-              const key = encryptionKey || await requestAuth();
+              const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
               const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
               if (fresh?.childDevice) {
@@ -13317,25 +13433,25 @@ export function App() {
           // !!encryptionKey; the page's mount effect handles the locked case.
           bunkerServerEnabled={bunkerServerEnabled}
           ensureAppBunkerEndpoint={async (pubkey) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-app', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             const ep = await dbEnsureAppBunkerEndpoint(pubkey, key);
             await reloadDependants();
             return ep;
           }}
           setAppBunkerPairingSecret={async (pubkey, secret) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-app', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             await dbSetAppBunkerPairingSecret(pubkey, secret, key);
             await reloadDependants();
           }}
           listAppBunkerPairings={async (pubkey) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-app', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             return dbListAppBunkerPairings(pubkey, key);
           }}
           removeAppBunkerPairing={async (pubkey, clientPubkey) => {
-            const key = encryptionKey || await requestAuth();
+            const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'remove-app', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
             await dbRemoveAppBunkerPairing(pubkey, clientPubkey, key);
             await reloadDependants();
@@ -13350,7 +13466,7 @@ export function App() {
 
   // Migrate family to Heartwood — full-screen ceremony page, no Layout
   // wrapper (family-bunker migration §11.1.3). Guarded on identity +
-  // encryptionKey; the effect above (`signingPages`) already re-prompts
+  // encryptionKey; the effect above (`PAGE_AUTH_CONTEXTS`) already re-prompts
   // auth on arrival if locked, so this branch only needs the interim
   // "Unlocking..." state while that prompt is up.
   if (page === 'migrate-heartwood') {
@@ -13670,7 +13786,7 @@ export function App() {
           // Fresh-auth gate so a child who's shoulder-surfed the PIN can't
           // mint new personas on the guardian's identity. Same pattern as
           // IdentitySettings' Add Persona flow. See the authorisation matrix.
-          const key = await requestFreshAuth();
+          const key = await requestFreshAuth(carousel.childMode && activeDependant ? { purpose: 'mutate-persona-child-mode', depName: activeDependant.displayName, action: 'create' } : { purpose: 'mutate-persona', action: 'create', personaName: displayName });
           if (!key) throw new Error('Authentication required');
           // Route the new persona to the currently-viewed identity. In child
           // mode the carousel is showing a dependant — the persona must land
@@ -13739,7 +13855,7 @@ export function App() {
           // the persona crop, for a picture). The upload auth is signed by a
           // one-off key, never the real-name key.
           const maxEdge = kind === 'banner' ? PUBLIC_BANNER_MAX_EDGE_PX : PUBLIC_PICTURE_MAX_EDGE_PX;
-          const uploaderKey = encryptionKey || await requestAuth();
+          const uploaderKey = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'edit-profile' });
           if (!uploaderKey) throw new Error('Authentication required');
           const reencoded = await downscaleAvatar(file, maxEdge, kind === 'picture' ? crop : undefined);
           const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent, uploaderKey);
@@ -13747,7 +13863,7 @@ export function App() {
           return { url, sha256: hash };
         }}
         onUpdateOwnPersonaName={async (target, name) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'rename', personaName: name });
           if (!key) throw new Error('Authentication required');
           await updateDisplayName(target, name, undefined, key);
         }}
@@ -13780,7 +13896,7 @@ export function App() {
           // uploading a phone photo of their child would otherwise leak
           // home GPS coordinates onto the public Nostr relay.
           const maxEdge = kind === 'banner' ? PUBLIC_BANNER_MAX_EDGE_PX : PUBLIC_PICTURE_MAX_EDGE_PX;
-          const uploaderKey = encryptionKey || await requestAuth();
+          const uploaderKey = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'edit-profile' });
           if (!uploaderKey) throw new Error('Authentication required');
           const reencoded = await downscaleAvatar(file, maxEdge, kind === 'picture' ? crop : undefined);
           const hash = await uploadPublicPicture(reencoded, blossomUrl, blossomConsent, uploaderKey);
@@ -13788,12 +13904,12 @@ export function App() {
           return { url, sha256: hash };
         }}
         onUpdateDepName={async (depPubkey, name) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'rename', depName: dependants.find(d => d.id === depPubkey)?.displayName || 'your dependant' });
           if (!key) throw new Error('Authentication required');
           await updateDependantName(depPubkey, name);
         }}
         onUpdateDepPersonaName={async (depPubkey, target, name) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'rename', personaName: name, depName: dependants.find(d => d.id === depPubkey)?.displayName });
           if (!key) throw new Error('Authentication required');
           await updateDependantPersonaName(depPubkey, target, name, key);
         }}
@@ -13806,7 +13922,7 @@ export function App() {
         // guardian. (The Blossom auth is signed by a one-off key, so no sign
         // request reaches a bunker.)
         onSetPersonaAvatar={isPairedChild ? undefined : async (target, file, crop) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'set-avatar' });
           if (!key) throw new Error('Authentication required');
           const MAX_RAW_BYTES = 20 * 1024 * 1024;
           if (file.size > MAX_RAW_BYTES) {
@@ -13834,7 +13950,7 @@ export function App() {
           return { deletion };
         }}
         onClearPersonaAvatar={isPairedChild ? undefined : async (target) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'remove-avatar' });
           if (!key) throw new Error('Authentication required');
           const oldAvatar = findSlotBlobs(identity, target).avatar;
           await clearPersonaAvatar(target);
@@ -13847,7 +13963,7 @@ export function App() {
           await setSlotNip05Check(target, { result, checkedAt });
         }}
         onSetDepPersonaAvatar={async (depPubkey, target, file, crop) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'set-avatar', depName: dependants.find(d => d.id === depPubkey)?.displayName });
           if (!key) throw new Error('Authentication required');
           const MAX_RAW_BYTES = 20 * 1024 * 1024;
           if (file.size > MAX_RAW_BYTES) {
@@ -13877,7 +13993,7 @@ export function App() {
           return { deletion };
         }}
         onClearDepPersonaAvatar={async (depPubkey, target) => {
-          const key = encryptionKey || await requestAuth();
+          const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'remove-avatar', depName: dependants.find(d => d.id === depPubkey)?.displayName });
           if (!key) throw new Error('Authentication required');
           const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
           await clearDependantPersonaAvatar(depPubkey, target);
@@ -13992,6 +14108,7 @@ export function App() {
           verdictAvailability={verdictAvailability}
           childAsks={childAsks.asks}
           childAskAlwaysAvailable={childAskAlwaysAvailable}
+          childAskStandingAvailable={childAskStandingAvailable}
           onChildAskDecide={childAsks.decide}
         />
       )}

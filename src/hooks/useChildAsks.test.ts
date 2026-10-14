@@ -486,7 +486,7 @@ describe('useChildAsks — app-permission (D5)', () => {
   });
   const both = () => [{ kind: 30420, until: Math.floor(clock / 1000) + 600 }, { kind: 13, until: Math.floor(clock / 1000) + 600 }];
 
-  for (const stage of ['request-approve', 'autonomous-alerts', 'autonomous-logging', 'full-autonomy'] as const) {
+  for (const stage of ['request-approve', 'autonomous-alerts', 'autonomous-logging'] as const) {
     it(`${stage}: "Always" is refused, nothing saved, pushed or sent`, async () => {
       dep = makeDep({ autonomyStage: stage });
       const s = await withPermissionAsk();
@@ -499,6 +499,27 @@ describe('useChildAsks — app-permission (D5)', () => {
       expect(s.hook.result.current.asks).toHaveLength(1);
     });
   }
+
+  it('full autonomy: remembers an exact bounded grant and opens only this answer seal', async () => {
+    dep = makeDep({ autonomyStage: 'full-autonomy' });
+    const s = await withPermissionAsk();
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: true });
+    expect(mSaveRule.mock.calls[0][0]).toMatchObject({ scope: 'app-permission', persona: PERSONA, target: `site:${ORIGIN}`, appPermission: { v: 1, appId: 'twang', installKey: INSTALL }, expiresAt: 1800086400000 });
+    expect(s.pushCeiling).toHaveBeenCalledWith(dep.id.toLowerCase(), { kind: 13, until: Math.floor(clock / 1000) + 600 });
+    expect(await verdictOf(t.published[0].ev, s.a.id)).toMatchObject({ verdict: 'always', alsoOpened: [13] });
+  });
+
+  it('refuses to remember a stale or future-dated statement even at full autonomy', async () => {
+    dep = makeDep({ autonomyStage: 'full-autonomy' });
+    const s = await withPermissionAsk();
+    clock += 301000;
+    let r;
+    await act(async () => { r = await s.hook.result.current.decide(s.a.id, 'always'); });
+    expect(r).toEqual({ sent: false, reason: 'always-app-permission' });
+    expect(mSaveRule).not.toHaveBeenCalled();
+  });
 
   it('"Allow once" pushes approved-once for the 30420 AND the kind-13 seal, same window, in one push, before the verdict', async () => {
     const s = await withPermissionAsk();

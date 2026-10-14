@@ -1,3 +1,4 @@
+import type { PurposeContext } from '../lib/auth-purposes';
 import { shortNpub } from '../lib/signet';
 /**
  * LeadAddStaff — Lead "Add staff via QR scan" flow.
@@ -85,8 +86,8 @@ interface Props {
   currentRosterMembers: RosterMember[];
   /** Pro persona signing backend for the lead. */
   proBackend: SigningBackend;
-  requestAuth: () => Promise<string | null>;
-  requestFreshAuth: () => Promise<string | null>;
+  requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
+  requestFreshAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onComplete: () => void;
   onBack: () => void;
 }
@@ -144,7 +145,7 @@ export function LeadAddStaff({
     try {
       await runProGate(
         'addStaffMember',
-        { requestAuth, requestFreshAuth, payload: null },
+        { requestAuth, requestFreshAuth, payload: null, purposeContext: { purpose: 'mutate-professional-roster', firmName: anchorContext.entityName, action: 'add-staff' } },
         async () => {
           // Auth passed — show double-confirm dialog.
           setStep('confirm');

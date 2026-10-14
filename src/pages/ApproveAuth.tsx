@@ -16,6 +16,8 @@ import { detectDrift } from '../lib/drift-detection';
 import { KeypairBadge } from '../components/KeypairBadge';
 import { PairedChildApprovalWaiting } from '../components/PairedChildApprovalWaiting';
 import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmSection';
+import { SignInOnlinePlay } from '../components/SignInOnlinePlay';
+import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 
 /**
  * Resolve the display name for SharePreview. Returns `'(anonymous)'` when a
@@ -79,7 +81,9 @@ interface Props {
    * surfaces that cannot activate (paired child).
    */
   onActivateRealIdentity?: () => void;
-  onApprove: (selection: AuthSelection, shareHandle: boolean) => Promise<void> | void;
+  appPermission?: SignInAppPermission;
+  appPermissionName?: string;
+  onApprove: (selection: AuthSelection, shareHandle: boolean, includeOnlinePlay?: boolean) => Promise<void> | void;
   onDeny: () => void;
   /**
    * Pre-populated error banner, used when an upstream handler (e.g. the
@@ -176,6 +180,8 @@ export function ApproveAuth({
   onAddPersona,
   onActivateRealIdentity,
   onApprove,
+  appPermission,
+  appPermissionName,
   onDeny,
   initialError,
   externallyApproving = false,
@@ -185,6 +191,7 @@ export function ApproveAuth({
   isPairedChild = false,
   childDirect = false,
 }: Props) {
+  const [includeOnlinePlay, setIncludeOnlinePlay] = useState(true);
   const login = isLoginRequest(request);
   const originDisplay = safeOrigin(request.origin);
   const ageRange = login && typeof request.requiredAgeRange === 'string' && VALID_AGE_RANGES.includes(request.requiredAgeRange)
@@ -542,6 +549,12 @@ export function ApproveAuth({
           />
         )}
 
+        {appPermission && (
+          <SignInOnlinePlay request={appPermission} appName={appPermissionName || originDisplay}
+            personaName={resolveDisplayNameForPreview(selection, identity, dependants) || 'your persona'}
+            enabled={includeOnlinePlay} onChange={setIncludeOnlinePlay} disabled={approving} />
+        )}
+
         {error && (
           <div className="card section" style={{ background: 'var(--danger-light)', borderColor: 'var(--danger)' }}>
             <p style={{ fontSize: '0.85rem', color: 'var(--danger)', marginBottom: 0 }}>
@@ -563,14 +576,15 @@ export function ApproveAuth({
                   setApproving(true);
                   setError(null);
                   try {
-                    await onApprove(selection, shareHandle);
+                    if (appPermission) await onApprove(selection, shareHandle, includeOnlinePlay);
+                  else await onApprove(selection, shareHandle);
                   } catch (e) {
                     setApproving(false);
                     setError(friendlyApprovalError(e));
                   }
                 }}
               >
-                {approving ? 'Signing…' : 'Approve'}
+                {approving ? 'Signing…' : appPermission ? includeOnlinePlay ? 'Sign in and enable online play' : 'Sign in only' : 'Approve'}
               </button>
               <button className="btn btn-ghost" onClick={onDeny} disabled={approving}>
                 Cancel
@@ -824,6 +838,12 @@ export function ApproveAuth({
         })()}
       </div>
 
+      {appPermission && (
+        <SignInOnlinePlay request={appPermission} appName={appPermissionName || originDisplay}
+          personaName={resolveDisplayNameForPreview(selection, identity, dependants) || 'your persona'}
+          enabled={includeOnlinePlay} onChange={setIncludeOnlinePlay} disabled={approving} />
+      )}
+
       {error && (
         <div className="card section" style={{ background: 'var(--danger-light)', borderColor: 'var(--danger)' }}>
           <p style={{ fontSize: '0.85rem', color: 'var(--danger)', marginBottom: 0 }}>
@@ -853,14 +873,15 @@ export function ApproveAuth({
                 setApproving(true);
                 setError(null);
                 try {
-                  await onApprove(selection, shareHandle);
+                  if (appPermission) await onApprove(selection, shareHandle, includeOnlinePlay);
+                  else await onApprove(selection, shareHandle);
                 } catch (e) {
                   setApproving(false);
                   setError(friendlyApprovalError(e));
                 }
               }}
             >
-              {approving ? 'Signing…' : 'Approve'}
+              {approving ? 'Signing…' : appPermission ? includeOnlinePlay ? 'Sign in and enable online play' : 'Sign in only' : 'Approve'}
             </button>
             <button className="btn btn-ghost" onClick={onDeny} disabled={approving}>
               Deny

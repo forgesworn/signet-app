@@ -1,3 +1,4 @@
+import type { PurposeContext } from '../lib/auth-purposes';
 import { useState, useEffect, useMemo } from 'react';
 import type { SignetIdentity, SecurityTier } from '../types';
 import { getAuthMethod, changePIN, enableBiometric, disableBiometric, isBiometricAvailable, hasPinFallback, biometricAcceptsDevicePin } from '../lib/auth';
@@ -18,8 +19,8 @@ interface Props {
   identity: SignetIdentity;
   securityTier: SecurityTier;
   onSetSecurityTier: (tier: SecurityTier) => void;
-  onRequestAuth?: () => Promise<string | null>;
-  onRequestFreshAuth?: () => Promise<string | null>;
+  onRequestAuth?: (ctx?: PurposeContext) => Promise<string | null>;
+  onRequestFreshAuth?: (ctx?: PurposeContext) => Promise<string | null>;
   /** Whether identity names/avatars are blurred in the carousel until tapped (anti-shoulder-surf). Default-off; only explicit true enables blur. */
   blurIdentityNames: boolean;
   onSetBlurIdentityNames: (enabled: boolean) => void;
@@ -527,7 +528,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
           <button className="btn btn-secondary" onClick={async () => {
             const auth = onRequestFreshAuth ?? onRequestAuth;
             if (!auth) return;
-            const key = await auth();
+            const key = await auth({ purpose: 'reveal-recovery-words' });
             if (!key) return;
             setShowBackup(true);
           }}>
@@ -614,7 +615,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
                   try {
                     const auth = onRequestFreshAuth ?? onRequestAuth;
                     if (!auth) return;
-                    const key = await auth();
+                    const key = await auth({ purpose: 'change-biometric', enabled: true });
                     if (!key) return;
                     const result = await enableBiometric(key);
                     if (result.ok) {
@@ -784,7 +785,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
                   const doDisable = async () => {
                     const auth = onRequestFreshAuth ?? onRequestAuth;
                     if (!auth) return;
-                    const key = await auth();
+                    const key = await auth({ purpose: 'change-biometric', enabled: false });
                     if (!key) return;
                     await disableBiometric(key, next);
                     setAuthMethod('pin');

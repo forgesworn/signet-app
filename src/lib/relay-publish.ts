@@ -68,6 +68,7 @@ export interface AuthResponse {
    * no wire change.
    */
   bunkerUri?: string;
+  appPermission?: import('./sign-in-app-permission').SignInAppPermissionResult;
 }
 
 // ── Gift Wrap (NIP-17 / NIP-59) ──────────────────────────────────────────────

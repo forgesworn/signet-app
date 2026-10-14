@@ -393,8 +393,10 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
     // A34: once chosen, only the SAME verdict can be sent again.
     if (stored && (stored.chosen ?? stored.verdict.verdict) !== verdict) return { sent: false, reason: 'already-decided' };
     if (!stored && verdict === 'always' && dep.autonomyStage === 'full-control') return { sent: false, reason: 'always-unavailable' };
-    // D5: a standing app permission is one decision per request — never "Always", at any stage.
-    if (verdict === 'always' && ask.scope === 'app-permission') return { sent: false, reason: 'always-app-permission' };
+    // New grants are explicit, bounded and available only at full autonomy.
+    const permissionDetails = ask.scope === 'app-permission' ? appPermissionAskDetails(ask) : null;
+    const permissionGrant = permissionDetails && Math.abs(permissionDetails.validFrom - nowS0) <= 300 && permissionDetails.validUntil > nowS0 ? permissionDetails : null;
+    if (verdict === 'always' && ask.scope === 'app-permission' && (dep.autonomyStage !== 'full-autonomy' || !permissionGrant)) return { sent: false, reason: 'always-app-permission' };
     decidingRef.current.add(id);
     try {
       const nowMs = now();
@@ -452,6 +454,7 @@ export function useChildAsks(opts: UseChildAsksOpts): UseChildAsks {
           const rule: ChildRule = {
             id: childRuleId(c.id, ask.persona, scope, ask.target), dependantId: c.id, persona: ask.persona, scope, target: ask.target,
             decision: 'allow', label: ask.targetLabel, createdAt: nowMs, updatedAt: nowMs,
+            ...(permissionGrant ? { appPermission: { v: 1 as const, appId: permissionGrant.appId, installKey: permissionGrant.installKey }, expiresAt: permissionGrant.validUntil * 1000 } : {}),
           };
           // M6: on a marked sign-in the standing rule stays sign-in / 21236;
           // THIS answer's seal gets one approved-once entry (the Allow-once

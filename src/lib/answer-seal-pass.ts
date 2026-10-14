@@ -73,6 +73,8 @@ export interface AnswerSealingInput {
   siteOrigin?: string;
   /** D6: the app's claim, sent with the `eligibleKind` signature only. */
   appPermission?: AppPermissionClaim;
+  /** Set only after a visible approval in My Signet. */
+  appPermissionApproved?: boolean;
   /** Part B: the sign-in marker, sent with the `eligibleKind` signature only. */
   signIn?: { sharesHandle: boolean };
   /** The key the answer is gift-wrapped to. */
@@ -120,7 +122,7 @@ export function answerSealingBackend(input: AnswerSealingInput): DecryptingSigni
     const eligible = req.template?.kind === eligibleKind;
     const outcome = await gate.authorise({
       ...request(req),
-      ...(input.appPermission && eligible ? { appPermission: input.appPermission } : {}),
+      ...(input.appPermission && eligible ? { appPermission: input.appPermission, appPermissionApproved: input.appPermissionApproved === true } : {}),
       ...(input.signIn && eligible ? { signIn: { sharesHandle: input.signIn.sharesHandle } } : {}),
     });
     if (eligible && req.template) {

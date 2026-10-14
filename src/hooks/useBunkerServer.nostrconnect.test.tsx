@@ -889,3 +889,68 @@ describe('M6: an owner persona\'s remembered allow-always never signs an app per
   });
 });
 
+
+describe('explicit NIP-46 connection scopes at the server boundary', () => {
+  it('refuses unrequested signing/crypto and widening connect; scoped deletion always prompts', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://scoped.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey(), clientPubkey = getPublicKey(clientSk);
+    await saveConnectedClient(buildConnectedClientFromNostrConnect({ clientPubkey, relayUrl, relayUrls: [relayUrl], secret: 'scoped-secret', appName: 'Game', permissions: ['sign_event:30420', 'sign_event:5'] }));
+    async function send(id: string, method: string, params: string[]) {
+      const count = ws.published.length;
+      await act(async () => { ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id, method, params })); });
+      await waitFor(() => expect(ws.published.length).toBe(count + 1));
+      return decryptServerResponse(clientSk, ws.published[count]);
+    }
+    for (const kind of [0, 1, 13, 24133]) {
+      expect((await send(`kind-${kind}`, 'sign_event', [JSON.stringify({ kind, created_at: 1, tags: [], content: '' })])).error).toBe('permission not granted');
+    }
+    for (const method of ['nip44_encrypt', 'nip44_decrypt', 'nip04_encrypt', 'nip04_decrypt']) {
+      expect((await send(method, method, [clientPubkey, 'plaintext'])).error).toBe('permission not granted');
+    }
+    expect((await send('widen', 'connect', [ownerBackend.activePublicKeyHex, 'scoped-secret', 'sign_event'])).error).toMatch(/approve requested permissions/);
+    expect((await getConnectedClient(clientPubkey))?.permissions).toEqual(['sign_event:30420', 'sign_event:5']);
+    const before = ws.published.length;
+    await act(async () => { ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'delete', method: 'sign_event', params: [JSON.stringify({ kind: 5, created_at: 1, tags: [['e', 'a'.repeat(64)]], content: '' })] })); });
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(before);
+    expect(result.current.pendingApprovals[0].alwaysAvailable).toBe(false);
+    await act(async () => { await result.current.approveOnce(result.current.pendingApprovals[0].handle); });
+    expect((await getConnectedClient(clientPubkey))?.permissions).toEqual(['sign_event:30420', 'sign_event:5']);
+    unmount();
+  });
+});
+
+it('uses a narrowed scope on the fresh owner check before silent signing or crypto', async () => {
+  const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://scope-update.example');
+  const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+  const clientSk = generateSecretKey(), clientPubkey = getPublicKey(clientSk);
+  const record = buildConnectedClientFromNostrConnect({ clientPubkey, relayUrl, relayUrls: [relayUrl], secret: 'scope-update', appName: 'Game' });
+  for (const method of ['sign_event', 'nip44_encrypt']) {
+    const read = vi.spyOn(db, 'getConnectedClient');
+    read.mockResolvedValueOnce({ ...record, permissions: [method === 'sign_event' ? 'sign_event:1' : 'nip44_encrypt'] });
+    read.mockResolvedValueOnce({ ...record, permissions: ['sign_event:5'] });
+    const before = ws.published.length;
+    await act(async () => { ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: method, method,
+      params: method === 'sign_event' ? [JSON.stringify({ kind: 1, created_at: 1, tags: [], content: 'no' })] : [clientPubkey, 'no'],
+    })); });
+    await waitFor(() => expect(ws.published).toHaveLength(before + 1));
+    expect(decryptServerResponse(clientSk, ws.published[before]).error).toBe('permission not granted');
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    read.mockRestore();
+  }
+  unmount();
+});
+
+it('remembering a scoped approval preserves its ceiling and retires an earlier pairing rollback marker', async () => {
+  const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://scope-remember.example');
+  const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+  const clientSk = generateSecretKey(), clientPubkey = getPublicKey(clientSk);
+  await saveConnectedClient({ ...buildConnectedClientFromNostrConnect({ clientPubkey, relayUrl, relayUrls: [relayUrl], secret: 'scope-remember', appName: 'Game', permissions: ['sign_event:1'] }), allowAlways: false, pairingNonce: 'old-pairing' });
+  await act(async () => { ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'remember', method: 'sign_event', params: [JSON.stringify({ kind: 1, created_at: 1, tags: [], content: 'approved post' })] })); });
+  await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+  await act(async () => { await result.current.approveAlways(result.current.pendingApprovals[0].handle); });
+  expect(await getConnectedClient(clientPubkey)).toMatchObject({ allowAlways: true, permissions: ['sign_event:1'] });
+  expect((await getConnectedClient(clientPubkey))?.pairingNonce).toBeUndefined();
+  unmount();
+});

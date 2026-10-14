@@ -30,10 +30,10 @@ function request(): AppPermissionRequest {
 const adult: AppPermissionRoute = { mode: 'adult', persona: PERSONA };
 const child: AppPermissionRoute = { mode: 'child-direct', persona: PERSONA };
 
-function show(route: AppPermissionRoute, over: { onApprove?: (o: { realIdentityConfirmed: boolean }) => Promise<void>; onCancel?: () => void; confirmRealIdentity?: boolean } = {}) {
+function show(route: AppPermissionRoute, over: { onApprove?: (o: { realIdentityConfirmed: boolean }) => Promise<void>; onCancel?: () => void; confirmRealIdentity?: boolean; selfApproval?: boolean } = {}) {
   const onApprove = over.onApprove ?? vi.fn(async () => {});
   const onCancel = over.onCancel ?? vi.fn();
-  render(<ApproveAppPermission request={request()} route={route} personaName="Sky" onApprove={onApprove} onCancel={onCancel} confirmRealIdentity={over.confirmRealIdentity} />);
+  render(<ApproveAppPermission request={request()} route={route} personaName="Sky" onApprove={onApprove} onCancel={onCancel} confirmRealIdentity={over.confirmRealIdentity} selfApproval={over.selfApproval} />);
   return { onApprove, onCancel };
 }
 
@@ -172,4 +172,11 @@ describe('RelayAuthAck — app-permission variant', () => {
     render(<RelayAuthAck state="approved" siteName="Fathom" onClose={() => {}} />);
     expect(screen.getByRole('heading').textContent).toBe('Signed in');
   });
+});
+
+it('shows Allow for an explicitly delegated approval and leaves enforcement to the live gate', async () => {
+  const { onApprove } = show(child, { selfApproval: true });
+  expect(screen.queryByText(/Your guardian decides/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: COPY.allow }));
+  await waitFor(() => expect(onApprove).toHaveBeenCalledWith({ realIdentityConfirmed: false }));
 });

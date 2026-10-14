@@ -38,7 +38,7 @@ export function AppShell({ page, isDependantContext, childBunker, onNavigate, on
     tint={bunkerTint ? { bunker: TINT_COLOUR[bunkerTint] } : undefined} />;
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="app-shell">
       <div style={{ flex: 1, minWidth: 0, paddingBottom: `calc(${BAR_HEIGHT}px + env(safe-area-inset-bottom))` }}>
         {children}
       </div>

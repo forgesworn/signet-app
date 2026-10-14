@@ -18,6 +18,7 @@ interface Props {
   pending: PendingChildAsk;
   /** Hide "Always allow" (full-control: every request is asked for). */
   alwaysAvailable: boolean;
+  appPermissionStandingAvailable?: boolean;
   onDecide: ChildAskDecide;
   /** Called with every outcome (the caller keeps an error visible after the ask leaves the list). */
   onOutcome?: (r: { sent: boolean; reason?: ChildAskDecideReason }) => void;
@@ -59,7 +60,7 @@ export function askScopePhrase(a: Pick<ChildSignAsk, 'scope' | 'kind'>): string 
   return (a.scope && COPY.scopePhrase[a.scope]) || COPY.kindPhrase(a.kind);
 }
 
-export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: Props) {
+export function ChildAskCard({ pending, alwaysAvailable, appPermissionStandingAvailable = false, onDecide, onOutcome }: Props) {
   const [busy, setBusy] = useState(false);
   const [alwaysDeny, setAlwaysDeny] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
@@ -77,7 +78,7 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
   // Part B: a marked sign-in gets its own plain card; null keeps today's.
   const signIn = permission ? null : signInAskDetails(a);
   // The scope is asked for every time, whatever the stage: never "Always".
-  const showAlways = alwaysAvailable && a.scope !== 'app-permission';
+  const showAlways = alwaysAvailable && (a.scope !== 'app-permission' || (!!permission && appPermissionStandingAvailable));
   const heading = a.method === 'sign_event' && a.template
     ? COPY.heading(child, describeEventTemplate(a.template))
     : COPY.headingCrypto(child);
@@ -175,7 +176,7 @@ export function ChildAskCard({ pending, alwaysAvailable, onDecide, onOutcome }: 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <button className="btn btn-primary" disabled={busy} onClick={() => { void act('once'); }}>{permission ? PC.allow : COPY.allowOnce}</button>
         {showAlways && (
-          <button className="btn btn-secondary" disabled={busy} onClick={() => { void act('always'); }}>{COPY.allowAlways(askScopePhrase(a), target, persona)}</button>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => { void act('always'); }}>{permission ? `Allow online play until ${new Date(permission.validUntil * 1000).toLocaleDateString()}` : COPY.allowAlways(askScopePhrase(a), target, persona)}</button>
         )}
         <button className="btn btn-ghost" disabled={busy} onClick={() => { void act('deny'); }} style={{ color: 'var(--danger)' }}>{COPY.deny}</button>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>

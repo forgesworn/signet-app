@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { AppPreferences, SecurityTier, RelayConfig } from '../types';
 import { primaryRelayUrl } from '../lib/relay-service';
+import { migrateRelayPreferences } from '../lib/relay-defaults';
 import { TIER_WORD_COUNT } from '../types';
 import * as db from '../lib/db';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
@@ -21,7 +22,8 @@ export function usePreferences() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    db.getPreferences().then(async p => {
+    db.getPreferences().then(async stored => {
+      const p = migrateRelayPreferences(stored);
       // One-shot migration: convert literal-equals-default to fall-through.
       // Users who got pre-populated by an earlier default, or whose Venue Entry write
       // happened to match the current default move back to tracking the
@@ -40,6 +42,7 @@ export function usePreferences() {
       }
       setPreferences(p);
       setLoading(false);
+      if (p !== stored) await db.savePreferences(p);
     }).catch(() => {
       // IDB read failed, or the migration write above rejected mid-chain.
       // Fall back to the useState default ({ id: 'current', theme: 'system' })
@@ -84,8 +87,8 @@ export function usePreferences() {
   // DEFAULT_RELAY_URL again — and stays tracking it across future
   // default rotations. Used by the "Restore to default" button.
   const resetRelayUrl = useCallback(async () => {
-    const { relayUrl: _drop, ...rest } = preferences;
-    void _drop;
+    const { relayUrl: _drop, relays: _relays, ...rest } = preferences;
+    void _drop; void _relays;
     setPreferences(rest);
     await db.savePreferences(rest);
   }, [preferences]);
@@ -283,8 +286,10 @@ export function usePreferences() {
     // A queued applyFresh write has already changed state; read after it
     // lands, or this read would put the old record back over it.
     await applyFreshChainRef.current.catch(() => {});
-    const fresh = await db.getPreferences(encryptionKey);
+    const stored = await db.getPreferences(encryptionKey);
+    const fresh = migrateRelayPreferences(stored);
     setPreferences(fresh);
+    if (fresh !== stored) await db.savePreferences(fresh);
   }, []);
 
   const securityTier: SecurityTier = preferences.securityTier ?? 'basic';

@@ -268,3 +268,38 @@ describe('app-permission pre-check (kind 30420: never silent, never "always")', 
     expect(go({ ...withKind('request-approve'), defaultSchedule: paused }, { rateState: { count: 10, windowStart: NOW } })).toEqual({ verdict: 'deny', reason: 'rate-limit' });
   });
 });
+
+describe('explicit full-autonomy online-play grants', () => {
+  const installKey = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+  const origin = 'https://twang.example';
+  const from = NOW / 1000, until = from + 86400;
+  const template: UnsignedEvent = { kind: 30420, pubkey: P1, created_at: from, content: '', tags: [['d', 'twang'], ['p', installKey], ['valid_from', String(from)], ['valid_until', String(until)], ['v', '1'], ['role', 'player'], ['expiration', String(until)]] };
+  const claim = { permission: 'online-play' as const, origin, name: 'Twang', reason: 'Play online.' };
+  const delegation = rule({ scope: 'app-permission-self', persona: '*', target: '*' });
+  const standing = rule({ scope: 'app-permission', target: `site:${origin}`, expiresAt: until * 1000, appPermission: { v: 1, appId: 'twang', installKey } });
+  const check = (rules: ChildRule[], overrides: Partial<Parameters<typeof decideChildRequest>[0]> = {}, stage: AutonomyStage = 'full-autonomy') => run(payload({ stage, ceilingKinds: [], rules }), 'app-permission', { template, appId: 'mysignet', siteOrigin: origin, appPermission: claim, ...overrides });
+  it('requires explicit delegation AND a visible approval in My Signet', () => {
+    expect(check([delegation]).verdict).toBe('ask');
+    expect(check([delegation], { appPermissionApproved: true })).toMatchObject({ verdict: 'sign', audit: true });
+    expect(check([delegation], { appPermissionApproved: true, appId: APP }).verdict).toBe('ask');
+    expect(check([delegation], { appPermissionApproved: true, appPermission: undefined }).verdict).toBe('ask');
+    for (const stage of STAGES.filter(s => s !== 'full-autonomy')) expect(check([delegation], { appPermissionApproved: true }, stage).verdict).toBe('ask');
+  });
+  it('honours only exact persona, site, app, installation and bounded expiry', () => {
+    expect(check([standing])).toMatchObject({ verdict: 'sign', ruleId: standing.id });
+    for (const patch of [{ persona: '*' }, { target: '*' }, { appPermission: undefined }, { appPermission: { v: 1 as const, appId: 'other', installKey } }, { appPermission: { v: 1 as const, appId: 'twang', installKey: P2 } }, { expiresAt: until * 1000 - 1 }, { tombstonedAt: NOW }, { expiresAt: NOW - 1 }]) {
+      expect(check([{ ...standing, ...patch } as ChildRule]).verdict).toBe('ask');
+    }
+    expect(check([standing], { siteOrigin: 'https://other.example' }).verdict).toBe('ask');
+    expect(check([standing], {}, 'autonomous-logging').verdict).toBe('ask');
+  });
+  it('keeps explicit denials, app blocks, paused schedules and rate limits first', () => {
+    const deny = rule({ scope: 'app-permission', target: `site:${origin}`, decision: 'deny' });
+    expect(check([standing, deny]).verdict).toBe('deny');
+    expect(check([delegation, rule({ scope: 'app-permission-self', target: '*', persona: '*', decision: 'deny' })], { appPermissionApproved: true }).verdict).toBe('ask');
+    const rules = payload({ stage: 'full-autonomy', ceilingKinds: [], rules: [standing], defaultSchedule: { v: 1, tz: 'UTC', weekly: {}, issuedAt: NOW / 1000, paused: true } });
+    expect(check([standing], { rules }).verdict).toBe('blocked');
+    expect(check([standing], { rules: { ...rules, defaultSchedule: undefined, disconnectedApps: ['mysignet'] } }).verdict).toBe('deny');
+    expect(check([standing], { rateState: { count: 1000, windowStart: NOW } })).toMatchObject({ verdict: 'deny', reason: 'rate-limit' });
+  });
+});

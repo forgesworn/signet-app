@@ -16,6 +16,7 @@ import { inferOrigin, inferScope, type Scope } from './scope-inference';
 import { resolvePolicy } from './autonomy-gate';
 import { intersectSchedules, isWithinSchedule } from './grant-schedule';
 import { checkRateLimit, type RateLimitState } from './rate-limit';
+import { validateAppPermissionTemplate, appPermissionTemplateOf, checkAppPermissionClaim, type AppPermissionClaim } from './app-permission';
 
 export type ChildGateVerdict =
   | { verdict: 'sign'; reason: 'rule' | 'stage'; ruleId?: string; audit: boolean }
@@ -32,6 +33,9 @@ export interface ChildGateInput {
   siteOrigin?: string;
   nowMs: number;
   rateState: RateLimitState;
+  appPermission?: AppPermissionClaim;
+  /** Set only by My Signet's visible Allow / combined-sign-in button. */
+  appPermissionApproved?: boolean;
 }
 
 /** Candidate rule targets for a request: site, peer, app. Never `*`. */
@@ -131,7 +135,7 @@ export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
 
   const scope = inferScope(template);
   if (scope === 'app-permission') {
-    return decideAppPermission(rules, { persona, nowMs, targets: childTargetsFor(template, scope, appId, siteOrigin) });
+    return decideAppPermission(rules, { persona, nowMs, targets: childTargetsFor(template, scope, appId, siteOrigin), template, claim: input.appPermission, approved: appId === 'mysignet' && input.appPermissionApproved === true });
   }
   const ownRelayAuth = template.kind === RELAY_AUTH_KIND && !siteOrigin && normaliseAppId(appId ?? '') === OWN_APP_ID;
   return decideWithRules(rules, {
@@ -140,18 +144,12 @@ export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
   });
 }
 
-/**
- * Hard pre-check for a standing app permission (kind 30420, D4): keyed on the
- * scope, not on autonomy. It never signs — not at full-autonomy, not on an
- * allow rule (of any scope, `*` included), not on the empty "every kind"
- * ceiling — and never offers "always". A matching deny rule (e.g. the
- * guardian's "Always deny this" on the app's origin) still refuses at once.
- * It only removes silent signing; it never gets around a block, so the
- * phone's schedule (paused, outside hours) is checked first.
- */
+/** Online play asks by default. Full autonomy needs a new, explicit guardian
+ * delegation plus visible consent, or an exact, unexpired standing grant.
+ * Legacy wildcard allows never grant this permission. Blocks win first. */
 function decideAppPermission(
   rules: ChildRulesPayload,
-  q: { persona: string; nowMs: number; targets: ChildRuleTarget[] },
+  q: { persona: string; nowMs: number; targets: ChildRuleTarget[]; template: UnsignedEvent; claim?: AppPermissionClaim; approved: boolean },
 ): ChildGateVerdict {
   if (rules.defaultSchedule) {
     const w = isWithinSchedule(rules.defaultSchedule, new Date(q.nowMs));
@@ -161,6 +159,29 @@ function decideAppPermission(
   }
   const deny = findRule(rules.rules.filter(r => r.decision === 'deny'), { persona: q.persona, scope: 'app-permission', targets: q.targets, nowMs: q.nowMs });
   if (deny) return { verdict: 'deny', reason: 'rule', ruleId: deny.id };
+  if (rules.stage === 'full-autonomy') {
+    const claim = q.claim ? checkAppPermissionClaim(q.claim) : null;
+    const checked = validateAppPermissionTemplate(appPermissionTemplateOf(q.template), { nowS: Math.floor(q.nowMs / 1000), checkTime: true });
+    const target = claim ? siteTarget(claim.origin) : null;
+    if (claim && checked.ok && checked.details.validUntil > Math.floor(q.nowMs / 1000) && checked.template.pubkey === q.persona && target && q.targets.includes(target)) {
+      const standing = findRule(rules.rules.filter(r => r.scope === 'app-permission' && r.decision === 'allow'
+        && r.persona === q.persona && r.target === target && r.appPermission?.v === 1
+        && r.appPermission.appId === checked.details.appId && r.appPermission.installKey === checked.details.installKey
+        && typeof r.expiresAt === 'number' && checked.details.validUntil * 1000 <= r.expiresAt),
+      { persona: q.persona, scope: 'app-permission', targets: [target], nowMs: q.nowMs });
+      const delegation = q.approved ? findRule(rules.rules.filter(r => r.scope === 'app-permission-self'),
+        { persona: q.persona, scope: 'app-permission-self', targets: q.targets, nowMs: q.nowMs }) : null;
+      const allowed = standing ?? (delegation?.decision === 'allow' ? delegation : null);
+      if (allowed) {
+        const schedule = intersectSchedules(rules.defaultSchedule, allowed.schedule);
+        if (schedule) {
+          const within = isWithinSchedule(schedule, new Date(q.nowMs));
+          if (!within.allowed) return { verdict: 'blocked', reason: 'schedule', ...(within.nextAllowedAt ? { nextAllowedAt: within.nextAllowedAt.getTime() } : {}) };
+        }
+        return { verdict: 'sign', reason: 'rule', ruleId: allowed.id, audit: true };
+      }
+    }
+  }
   return { verdict: 'ask', reason: 'stage', alwaysOffered: false };
 }
 

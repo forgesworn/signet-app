@@ -19,6 +19,8 @@ export interface ChildRule {
   scope: string;
   target: ChildRuleTarget;
   decision: 'allow' | 'deny';
+  /** A standing online-play decision is bound to one app install, never a wildcard. */
+  appPermission?: { v: 1; appId: string; installKey: string };
   schedule?: GrantSchedule;
   /** Display name of the site/app at decision time. */
   label?: string;

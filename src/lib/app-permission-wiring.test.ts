@@ -73,7 +73,7 @@ describe('app-permission wiring in App.tsx', () => {
 
   it('M2: Cancel withdraws the held ask before answering; both gate entries carry the signal', () => {
     const approve = between('const handleApproveAppPermission = useCallback(', '// ── Third-party add-dependant approval');
-    expect(approve).toContain('authorise: (r) => childGateRef.current.authorise({ ...r, abort: withdraw.signal })');
+    expect(approve).toContain('authorise: (r) => childGateRef.current.authorise({ ...r, abort: withdraw.signal');
     expect(approve).toContain('appPermissionWithdrawRef.current.set(req, withdraw)');
     const cancel = between('const handleCancelAppPermission = useCallback(', 'const handleApproveAppPermission = useCallback(');
     expect(cancel.indexOf('appPermissionWithdrawRef.current.get(req)?.abort()')).toBeGreaterThan(-1);

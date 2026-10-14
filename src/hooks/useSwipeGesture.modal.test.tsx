@@ -77,3 +77,56 @@ describe('usePicturePick renders the crop screen outside its host', () => {
     frame.remove();
   });
 });
+
+describe('contacts card scrolling', () => {
+  function ContactsHost({ onSwipe }: { onSwipe: (...a: unknown[]) => void }) {
+    useSwipeGesture({ onSwipe, onSnapBack: () => {}, onDrag: () => {} });
+    return <div><header data-testid="contacts-header">Contacts</header><div className="contacts-card-body" data-testid="contacts-body">People</div></div>;
+  }
+
+  it('vertical scrolling in the contact list stays on the current persona', () => {
+    const onSwipe = vi.fn();
+    render(<ContactsHost onSwipe={onSwipe} />);
+    const body = screen.getByTestId('contacts-body');
+    fireEvent.touchStart(body, { touches: [{ clientX: 150, clientY: 300 }] });
+    fireEvent.touchMove(body, { touches: [{ clientX: 150, clientY: 200 }] });
+    fireEvent.touchEnd(body, { touches: [] });
+    expect(onSwipe).not.toHaveBeenCalled();
+  });
+
+  it('horizontal swipes inside the list still change cards', () => {
+    const onSwipe = vi.fn();
+    render(<ContactsHost onSwipe={onSwipe} />);
+    touchPan(screen.getByTestId('contacts-body'), 200, 100);
+    expect(onSwipe).toHaveBeenCalledWith('h', -1, -100, 3);
+  });
+
+  it('vertical swipes from the header still change personas', () => {
+    const onSwipe = vi.fn();
+    render(<ContactsHost onSwipe={onSwipe} />);
+    const header = screen.getByTestId('contacts-header');
+    fireEvent.touchStart(header, { touches: [{ clientX: 150, clientY: 300 }] });
+    fireEvent.touchMove(header, { touches: [{ clientX: 150, clientY: 200 }] });
+    fireEvent.touchEnd(header, { touches: [] });
+    expect(onSwipe).toHaveBeenCalledWith('v', -1, 0, -100);
+  });
+});
+
+describe('identity card gestures', () => {
+  it('up and down change personas even when identity content exceeds its height', () => {
+    const onSwipe = vi.fn();
+    function IdentityHost() {
+      useSwipeGesture({ onSwipe, onSnapBack: () => {}, onDrag: () => {} });
+      return <div className="id-card"><div className="card-inner" data-testid="identity-body">Identity</div></div>;
+    }
+    render(<IdentityHost />);
+    const body = screen.getByTestId('identity-body');
+    Object.defineProperties(body, { clientHeight: { value: 500 }, scrollHeight: { value: 600 } });
+    for (const to of [200, 400]) {
+      fireEvent.touchStart(body, { touches: [{ clientX: 150, clientY: 300 }] });
+      fireEvent.touchMove(body, { touches: [{ clientX: 150, clientY: to }] });
+      fireEvent.touchEnd(body, { touches: [] });
+    }
+    expect(onSwipe.mock.calls).toEqual([['v', -1, 0, -100], ['v', 1, 0, 100]]);
+  });
+});

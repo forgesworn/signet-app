@@ -66,6 +66,7 @@ import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/pers
 import { childGateWireError, type ChildRouteGate } from '../lib/child-bunker';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
+import { parseNip46Permissions, nip46PermissionAllows } from '../lib/nip46-permissions';
 import { isNativeApp } from '../lib/native';
 import { markAnswered, wasAnswered } from '../lib/bunker-answered-store';
 
@@ -717,6 +718,29 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       return;
     }
 
+    // Apply explicit connection scopes before every dispatch, including crypto
+    // and manual approvals. Reconnecting cannot widen a saved ceiling.
+    const scopedClient = await db.getConnectedClient(request.clientPubkey);
+    const requestedKind = request.method === 'sign_event'
+      ? parseSignEventTemplate(request.params[0] ?? '')?.kind : undefined;
+    if (!nip46PermissionAllows(scopedClient?.permissions, request.method, requestedKind)) {
+      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
+      return;
+    }
+
+    // Standard connect params[2] is the requested permissions string. Some
+    // older integrations use metadata JSON there; preserve that compatibility.
+    if (request.method === 'connect' && request.params[2] && !request.params[2].trimStart().startsWith('{')) {
+      const requested = parseNip46Permissions(request.params[2]);
+      if (!requested || !scopedClient?.permissions || requested.some(p => {
+        const [method, kind] = p.split(':');
+        return !scopedClient.permissions!.includes(p) && !nip46PermissionAllows(scopedClient.permissions, method, kind === undefined ? undefined : Number(kind));
+      })) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'approve requested permissions with nostrconnect');
+        return;
+      }
+    }
+
     // Handshake + ongoing-request methods. Guardian routes ACK
     // `connect` unconditionally (existing behaviour). Dependant
     // routes enforce the pairing secret on first `connect` and bind
@@ -1047,6 +1071,10 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         let owner: import('../types').ConnectedClient | undefined;
         try { owner = await db.getConnectedClient(request.clientPubkey); }
         catch { owner = undefined; }
+        if (!nip46PermissionAllows(owner?.permissions, request.method)) {
+          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
+          return;
+        }
         if (!ownerRouteNip44Authorised(route.dependantId, owner)) {
           await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not connected');
           return;
@@ -1291,6 +1319,10 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         return;
       }
       const existing = await db.getConnectedClient(request.clientPubkey);
+      if (!nip46PermissionAllows(existing?.permissions, 'sign_event', template.kind)) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
+        return;
+      }
       // Identity-sensitive scopes (pairing new NIP-46 clients, mutating the
       // profile / display name) are never auto-approved even when a
       // connected client has `allowAlways: true`. `allowAlways` is a
@@ -1299,7 +1331,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       // further bunker clients or rename the guardian's identity silently.
       // M6: a standing app permission (kind 30420) is one decision per
       // request, never covered by a remembered "allow always" either.
-      const sensitiveForAllowAlways = kinterest || scope === 'pair-device' || scope === 'mutate-identity' || scope === 'app-permission';
+      const sensitiveForAllowAlways = kinterest || scope === 'pair-device' || scope === 'mutate-identity' || scope === 'app-permission' || (existing?.permissions !== undefined && template.kind === 5);
       if (existing?.allowAlways && !sensitiveForAllowAlways) {
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
@@ -1563,7 +1595,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
       method: 'sign_event',
       template,
       description: kinterestDescription(template) ?? describeEventTemplate(template),
-      alwaysAvailable: route.dependantId ? dependantAllowAlwaysPersists(scope, origin, route.autonomyStage) : true,
+      alwaysAvailable: route.dependantId ? dependantAllowAlwaysPersists(scope, origin, route.autonomyStage) : scope !== 'app-permission' && !(scopedClient?.permissions !== undefined && template.kind === 5),
       ...(kinterestChildName ? { kinterestChildName, kinterestChildAvatar: kinterestChildProfile?.avatar } : {}),
     };
     setPendingApprovals(prev => [...prev, entry]);
@@ -1618,6 +1650,11 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
         return;
       }
 
+      const currentClient = await db.getConnectedClient(req.clientPubkey);
+      if (!nip46PermissionAllows(currentClient?.permissions, 'sign_event', req.template.kind)) {
+        await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'permission not granted');
+        return;
+      }
       let signed: NostrEvent;
       try {
         // Inner USER template signed with the dependant's signing key on
@@ -1698,6 +1735,7 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
             const now = Math.floor(Date.now() / 1000);
             const existing = await db.getConnectedClient(req.clientPubkey);
             await db.saveConnectedClient({
+              ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
               clientPubkey: req.clientPubkey,
               appName: existing?.appName ?? 'Unknown app',
               appUrl: existing?.appUrl,

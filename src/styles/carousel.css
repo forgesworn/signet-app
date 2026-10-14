@@ -13,8 +13,7 @@
 .carousel-viewport {
   position: fixed;
   inset: 0;
-  /* Sit ABOVE the fixed mobile bottom nav so cards aren't clipped by it
-     (resolves to 0 on desktop, where the nav is a side-rail). */
+  /* Sit above the bottom nav, including inside the desktop phone frame. */
   bottom: var(--app-bottom-bar);
   overflow: hidden;
   background: var(--bg-primary);
@@ -23,7 +22,7 @@
      that doesn't set its own colour rendered light-theme-dark on the dark
      island ("Add", "Name this persona"). Re-resolve it inside the subtree. */
   color: var(--text-primary);
-  touch-action: none;
+  touch-action: pan-y;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -46,17 +45,23 @@
    button-dense column (e.g. the per-identity settings card). Tells the
    user the swipe has taken over and they can start moving. */
 .carousel-screen-engaged {
-  transition: transform 120ms ease, filter 120ms ease;
-  transform: scale(0.98);
-  filter: brightness(0.95);
+  outline: 1px solid var(--brand-gold);
+  outline-offset: -12px;
+}
+
+/* A steady frame across every card: swiping changes content, not its size. */
+.id-card, .qr-view, .contacts-card, .camera-view, .settings-view, .add-view {
+  width: 100%;
+  max-width: 420px;
+  height: 100%;
+  max-height: 820px;
+  min-height: 0;
 }
 
 /* ─── Identity Card ─── */
 .id-card {
-  width: 100%;
-  max-width: 420px;
-  height: calc(var(--app-vh) - 40px - var(--app-bottom-bar));
-  max-height: 820px;
+  container: identity-card / size;
+  touch-action: none;
   border-radius: var(--radius);
   padding: 0;
   overflow: hidden;
@@ -129,7 +134,11 @@
   position: relative;
   z-index: 2;
   justify-content: space-around;
+  min-height: 0;
+  gap: 12px;
 }
+.card-inner > * { flex-shrink: 0; }
+.card-inner .handshake-button { margin-top: 0; }
 
 .card-brand {
   display: flex;
@@ -344,10 +353,6 @@
 
 /* ─── QR Card ─── */
 .qr-view {
-  width: 100%;
-  max-width: 420px;
-  height: calc(var(--app-vh) - 40px - var(--app-bottom-bar));
-  max-height: 820px;
   background: var(--bg-card);
   border-radius: var(--radius);
   padding: 24px 20px;
@@ -472,10 +477,6 @@
 
 /* ─── Camera Card ─── */
 .camera-view {
-  width: 100%;
-  max-width: 400px;
-  height: calc(var(--app-vh) - 80px - var(--app-bottom-bar));
-  max-height: 720px;
   background: #0a0a0a;
   border-radius: var(--radius);
   display: flex;
@@ -529,10 +530,6 @@
 
 /* ─── Settings Card ─── */
 .settings-view {
-  width: 100%;
-  max-width: 400px;
-  height: calc(var(--app-vh) - 80px - var(--app-bottom-bar));
-  max-height: 720px;
   background: var(--bg-card);
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -556,10 +553,6 @@
  * the selector and retain the long-press-to-swipe escape hatch.
  */
 .add-view {
-  width: 100%;
-  max-width: 400px;
-  height: calc(var(--app-vh) - 80px - var(--app-bottom-bar));
-  max-height: 720px;
   background: var(--bg-card);
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -1076,4 +1069,140 @@
   font-size: 0.82rem;
   color: var(--text-secondary);
   text-align: center;
+}
+
+/* Per-persona contacts — the same wallet footprint as the identity cards. */
+.contacts-card {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(155deg, var(--bg-card-alt), var(--bg-card) 38%);
+  box-shadow: var(--shadow-lg);
+}
+.contacts-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 26px 24px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.contacts-card-heading { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+.contacts-card-heading > div { min-width: 0; }
+.contacts-card-heading h2 { margin: 0; font-size: 1.6rem; line-height: 1.2; }
+.contacts-card-emblem {
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 46px; height: 46px; border-radius: 14px;
+  color: var(--brand-gold-text); background: var(--brand-gold-light);
+  border: 1px solid color-mix(in srgb, var(--brand-gold) 24%, transparent);
+}
+.contacts-card-persona {
+  margin: 5px 0 0; color: var(--text-secondary); font-size: .8rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.contacts-card-total {
+  padding: 5px 9px; border: 1px solid var(--border); border-radius: 20px;
+  font-size: .7rem; color: var(--text-secondary); white-space: nowrap; margin-top: 5px;
+}
+.contacts-card-body {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 24px;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+}
+.contacts-card-body-centred { display: flex; align-items: center; justify-content: center; }
+.contacts-card-tiers {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0 0 24px; padding: 14px 0; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-primary) 35%, transparent);
+}
+.contacts-card-tier { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.contacts-card-tier + .contacts-card-tier { border-left: 1px solid var(--border); }
+.contacts-card-tier dt {
+  display: flex; align-items: center; gap: 5px; font-size: .66rem;
+  font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary);
+}
+.contacts-card-tier dt span { width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); }
+.contacts-card-tier-kin dt span { background: var(--brand-gold); }
+.contacts-card-tier-kith dt span { background: var(--accent); }
+.contacts-card-tier dd { margin: 0; font-size: 1.5rem; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums; }
+.contacts-card-search { position: relative; margin-bottom: 24px; }
+.contacts-card-search > svg { position: absolute; top: 50%; left: 14px; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.contacts-card-search .input { padding-left: 42px; min-height: 48px; background: color-mix(in srgb, var(--bg-primary) 45%, transparent); }
+.contacts-card-preview-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.contacts-card-preview-heading h3 { margin: 0; color: var(--text-secondary); font-size: .75rem; font-family: inherit; font-weight: 600; }
+.contacts-card-preview-heading > span { font-size: .66rem; color: var(--text-muted); }
+.contacts-card-list { margin: 0; padding: 0; list-style: none; }
+.contacts-card-list li { display: flex; align-items: center; gap: 12px; min-height: 70px; padding: 12px 0; }
+.contacts-card-list li + li { border-top: 1px solid var(--border); }
+.contacts-card-avatar { flex-shrink: 0; }
+.contacts-card-contact-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; font-weight: 500; }
+.contacts-card-contact-tier { flex-shrink: 0; max-width: 48%; }
+.contacts-card-contact-tier > span { flex-wrap: wrap; justify-content: flex-end; }
+.contacts-card-contact-tier > span > span { white-space: normal !important; text-align: right; }
+.contacts-card-empty { text-align: center; max-width: 260px; padding: 20px 0; }
+.contacts-card-state-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: 76px; height: 76px;
+  margin-bottom: 22px; border-radius: 24px; color: var(--brand-gold-text);
+  background: var(--brand-gold-light); border: 1px solid color-mix(in srgb, var(--brand-gold) 20%, transparent);
+}
+.contacts-card-empty h3 { font-size: 1.35rem; margin: 0 0 10px; }
+.contacts-card-empty p { margin: 0; font-size: .86rem; color: var(--text-secondary); line-height: 1.65; }
+.contacts-card-no-results { padding: 20px 0; text-align: center; color: var(--text-secondary); font-size: .85rem; }
+.contacts-card-no-results p { margin: 0 0 8px; }
+.contacts-card-no-results .btn { min-height: 44px; }
+.contacts-card-footer { padding: 20px 24px; border-top: 1px solid var(--border); }
+.contacts-card-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.contacts-card-actions .btn { padding: 13px 8px; min-height: 46px; font-size: .82rem; }
+.contacts-card-actions .btn > span { font-size: 1.2rem; line-height: 1; font-weight: 400; }
+.contacts-card-import { margin-top: 10px; min-height: 44px; font-size: .8rem; color: var(--text-secondary); }
+.contacts-card-error { margin: 0 0 12px; color: var(--danger); font-size: .8rem; line-height: 1.4; }
+@media (max-height: 650px) {
+  .contacts-card-header { padding: 18px 20px; }
+  .contacts-card-body { padding: 18px 20px; }
+  .contacts-card-footer { padding: 14px 20px; }
+  .contacts-card-tiers, .contacts-card-search { margin-bottom: 18px; }
+  .contacts-card-state-icon { width: 60px; height: 60px; margin-bottom: 14px; }
+}
+
+/* Fit the identity into its actual card height. It is a swipe surface, not a
+   scroll area; keep every detail and action visible on shorter phones. */
+@container identity-card (max-height: 780px) {
+  .card-inner { padding: 14px 20px 12px; gap: 8px; justify-content: space-between; }
+  .card-brand { margin-top: 0; gap: 14px; }
+  .card-brand img:first-child { height: 44px; }
+  .card-brand img:last-child { height: 34px; }
+  .card-photo { width: clamp(64px, 19cqh, 120px); height: clamp(64px, 19cqh, 120px); border-radius: 22px; }
+  .card-name { font-size: 1.8rem; overflow-wrap: anywhere; }
+  .card-stat { padding: 10px 0; }
+  .card-stat-value { font-size: 1.8rem; }
+}
+@container identity-card (max-height: 540px) {
+  .card-inner { padding: 10px 16px; gap: 4px; }
+  .card-brand img:first-child { height: 32px; }
+  .card-brand img:last-child { height: 26px; }
+  .card-photo { width: 72px; height: 72px; border-radius: 18px; }
+  .card-name { font-size: 1.45rem; }
+  .card-type { font-size: .72rem; }
+  .carousel-tier-badge { padding: 6px 16px; font-size: .8rem; }
+  .status-chip { font-size: .8rem; }
+  .card-stat { padding: 6px 0; }
+  .card-stat-value { font-size: 1.5rem; margin-bottom: 3px; }
+  .card-stat-label { font-size: .6rem; }
+  .card-npub { font-size: .7rem; }
+  .card-dormant-notice { margin-top: 0 !important; padding: 6px 8px !important; font-size: .72rem !important; }
+}
+/* Other cards contain lists and forms that retain their native scrolling. */
+.qr-view { overflow-y: auto; overscroll-behavior: contain; gap: 16px; }
+.qr-view > * { flex-shrink: 0; }
+.qr-box { width: min(260px, 100%); height: auto; aspect-ratio: 1; }
+.qr-box canvas { max-width: 100%; height: auto !important; }
+.settings-view { overscroll-behavior: contain; }
+.camera-view { padding: 20px; overflow-y: auto; overscroll-behavior: contain; }
+.camera-view > * { flex-shrink: 0; max-width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .signin-ack-chip { animation: none; }
+  .nav-dot { transition: none; }
 }

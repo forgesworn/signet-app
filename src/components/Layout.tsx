@@ -26,7 +26,7 @@ interface Props {
 export function Layout({ title, showBack, onBack, guardianMode, guardianDependantName, guardianActingAs, onExitGuardianMode, onOpenHandoffPicker, children }: Props) {
   const tint = guardianActingAs ? 'var(--guardian-light)' : 'var(--accent-light)';
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="layout">
       {/* Header tint pairs with the banner colour: amber for true child-mode
        (acting-as), accent blue for guardian-managing-dep, neutral otherwise. */}
       <header className="layout-header" style={{
@@ -46,7 +46,7 @@ export function Layout({ title, showBack, onBack, guardianMode, guardianDependan
             &#8249;
           </button>
         )}
-        <h2 className="layout-title" style={{ marginLeft: showBack ? 0 : 4 }}>{title || 'MySignet'}</h2>
+        <h2 className="layout-title" title={title || 'MySignet'} style={{ marginLeft: showBack ? 0 : 4 }}>{title || 'MySignet'}</h2>
       </header>
       {guardianMode && guardianDependantName && onExitGuardianMode && (
         <GuardianBanner

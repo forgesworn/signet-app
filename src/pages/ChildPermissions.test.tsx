@@ -161,3 +161,21 @@ describe('A60: the child sees its own asks', () => {
     expect(within(list).queryByRole('button')).toBeNull();
   });
 });
+
+it('offers explicit online-play delegation only to a guardian at full autonomy', async () => {
+  const change = vi.fn(async () => {});
+  setup({ stage: 'full-autonomy', onSetAppPermissionSelfApproval: change });
+  const toggle = screen.getByRole('checkbox', { name: 'Let Sky approve online-play permissions' });
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(change).toHaveBeenCalledWith(true));
+});
+it('a child sees full-autonomy delegation as read-only', () => {
+  setup({ stage: 'full-autonomy', viewer: 'child', rules: [rule({ persona: '*', target: '*', scope: 'app-permission-self' })] });
+  expect(screen.getByText('You can approve online-play permissions yourself.')).toBeInTheDocument();
+  expect(screen.queryByRole('checkbox')).toBeNull();
+});
+it('does not offer online-play self approval below full autonomy', () => {
+  setup({ onSetAppPermissionSelfApproval: vi.fn() });
+  expect(screen.queryByRole('checkbox', { name: /approve online-play/ })).toBeNull();
+});

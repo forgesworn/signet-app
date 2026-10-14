@@ -14,6 +14,7 @@ import { validateSchedule, type GrantSchedule } from './grant-schedule';
 import { childRuleId, isValidRuleScope } from './child-rules';
 import { CHILD_CEILING_MAX } from './policy-compiler';
 import { sanitizeDisplayName } from './text-sanitize';
+import { isXOnlyPoint } from './app-permission';
 import { sealVaultPayload, openVaultPayload, MAX_ENVELOPE_CHARS } from './vault-envelope';
 
 export const CHILD_RULES_WIRE_D_TAG = 'signet:child-rules:v1';
@@ -68,6 +69,13 @@ export function parseChildRuleRecord(raw: unknown): ChildRule | null {
   if (schedule) out.schedule = schedule;
   if (typeof r.label === 'string') { const l = sanitizeDisplayName(r.label, 100); if (l) out.label = l; }
   if (posInt(r.expiresAt)) out.expiresAt = r.expiresAt;
+  if (r.appPermission !== undefined) {
+    const p = r.appPermission as Record<string, unknown> | null;
+    if (!p || p.v !== 1 || typeof p.appId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(p.appId)
+      || typeof p.installKey !== 'string' || !isXOnlyPoint(p.installKey) || !posInt(r.expiresAt)
+      || r.scope !== 'app-permission' || r.persona === '*' || !r.target.startsWith('site:')) return null;
+    out.appPermission = { v: 1, appId: p.appId, installKey: p.installKey };
+  }
   if (posInt(r.tombstonedAt)) out.tombstonedAt = r.tombstonedAt;
   if (posInt(r.lastUsedAt)) out.lastUsedAt = r.lastUsedAt;
   return out;

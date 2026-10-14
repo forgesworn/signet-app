@@ -197,6 +197,9 @@ export function ApproveConnect({
 
       <div className="card section">
         <div className="section-title">Connection details</div>
+        {request.permissions && <p style={{ fontSize: '0.85rem', marginBottom: 12 }}>
+          Requested access: {request.permissions.join(', ')}. Online-play statements and deletions still need a separate approval.
+        </p>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: '0.9rem' }}>
             <span style={{ color: 'var(--text-muted)' }}>App: </span>

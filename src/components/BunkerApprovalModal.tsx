@@ -183,10 +183,11 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
  * ceiling full…) the sheet stays on that ask with the reason until the
  * guardian closes it.
  */
-export function ChildAskApprovalModal({ asks, alwaysAvailableFor, onDecide, onLater }: {
+export function ChildAskApprovalModal({ asks, alwaysAvailableFor, appPermissionStandingFor, onDecide, onLater }: {
   asks: PendingChildAsk[];
   /** False at full-control (no "Always"). */
   alwaysAvailableFor: (dependantId: string) => boolean;
+  appPermissionStandingFor?: (dependantId: string) => boolean;
   onDecide: ChildAskDecide;
   /** A37: put off every ask now in the sheet; they stay answerable in the Bunker panel. */
   onLater?: (askIds: string[]) => void;
@@ -209,7 +210,7 @@ export function ChildAskApprovalModal({ asks, alwaysAvailableFor, onDecide, onLa
           </>
         ) : (
           <>
-            <ChildAskCard key={shown.ask.id} pending={shown} alwaysAvailable={alwaysAvailableFor(shown.dependantId)} onDecide={onDecide}
+            <ChildAskCard key={shown.ask.id} pending={shown} alwaysAvailable={alwaysAvailableFor(shown.dependantId)} appPermissionStandingAvailable={appPermissionStandingFor?.(shown.dependantId)} onDecide={onDecide}
               onOutcome={(r) => { const text = childAskOutcomeText(r); if (r.sent && text) setHeld({ pending: shown, text }); }} />
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
               <span data-testid="child-ask-more" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>

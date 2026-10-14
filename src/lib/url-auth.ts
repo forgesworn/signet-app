@@ -19,6 +19,7 @@ import {
 import type { UnsignedEvent } from 'signet-protocol';
 import type { LoginRequest, AuthRequest } from './qr-router';
 import { sanitizeDisplayName } from './text-sanitize';
+import { parseSignInAppPermission, encodeAppPermission, type SignInAppPermission, type SignInAppPermissionResult } from './sign-in-app-permission';
 
 export { parseUrlAuthParams, buildAuthDeniedUrl, getUrlAuthSiteName } from 'signet-protocol';
 
@@ -198,11 +199,15 @@ export function parseSignInRequest(search: string): {
   warnings: string[];
   consumerDisplayName?: string;
   postUrl?: string;
+  appPermission?: SignInAppPermission;
 } | null {
   const request = protocolParse(search);
   if (!request) return null;
   const { hint, warnings } = parseConsumerHint(search);
   const params = new URLSearchParams(search);
+  const permissionParams = params.getAll('app_permission');
+  const appPermission = permissionParams.length === 1 ? parseSignInAppPermission(permissionParams[0]) : null;
+  if (permissionParams.length > 0 && !appPermission) return null;
   const rawCdn = params.get('consumer_display_name');
   const consumerDisplayName = rawCdn !== null
     ? sanitiseConsumerDisplayName(rawCdn)
@@ -215,6 +220,7 @@ export function parseSignInRequest(search: string): {
     warnings: combinedWarnings,
     ...(consumerDisplayName ? { consumerDisplayName } : {}),
     ...(postUrl ? { postUrl } : {}),
+    ...(appPermission ? { appPermission } : {}),
   };
 }
 
@@ -253,6 +259,7 @@ export function buildAuthCallbackUrl(
      * SDK before use; we just shuttle it through here.
      */
     bunker?: string;
+    appPermission?: SignInAppPermissionResult;
     /**
      * Optional per-persona avatar metadata (phase 4 of the per-persona-
      * avatars feature). When the signing keypair has an avatar set, the
@@ -272,6 +279,7 @@ export function buildAuthCallbackUrl(
   const base = protocolBuildCallback(callbackUrl, pubkey, npub, signature, eventId, extras?.createdAt);
   if (!extras) return base;
   const url = new URL(base);
+  if (extras.appPermission) url.searchParams.set('app_permission', encodeAppPermission(extras.appPermission));
   if (extras.warnings && extras.warnings.length > 0) {
     url.searchParams.set('warnings', extras.warnings.join(','));
   }

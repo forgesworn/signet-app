@@ -1,3 +1,4 @@
+import type { PurposeContext } from '../lib/auth-purposes';
 /**
  * Professional Dashboard — shown when the user has a verified role anchor.
  *
@@ -43,8 +44,8 @@ interface Props {
   anchor: ProRoleAnchorRecord;
   /** Pro persona signing backend — all Pro-surface signing uses the Pro persona key (§4.5.6). */
   backend: SigningBackend | null;
-  requestAuth: () => Promise<string | null>;
-  requestFreshAuth: () => Promise<string | null>;
+  requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
+  requestFreshAuth: (ctx?: PurposeContext) => Promise<string | null>;
   /**
    * When present: the user is a confirmed sub-role, not the lead.
    * The dashboard shows sub-role actions (Scan to attest) instead of lead actions.
@@ -150,7 +151,7 @@ export function ProDashboard({ anchor, backend: _backend, requestAuth, requestFr
 
   async function handleRotateLeadKey() {
     try {
-      await runProGate('rotateLeadPubkey', { requestAuth, requestFreshAuth, payload: null }, async (_key) => {
+      await runProGate('rotateLeadPubkey', { requestAuth, requestFreshAuth, payload: null, purposeContext: { purpose: 'mutate-professional-roster', firmName: anchor.entityName, action: 'rotate-key' } }, async (_key) => {
         setConfirmAction({
           type: 'rotate-lead-key',
           title: 'Rotate lead key',
@@ -181,7 +182,7 @@ export function ProDashboard({ anchor, backend: _backend, requestAuth, requestFr
 
   async function handleRevokeSubRole(pubkey: string, subRole: string) {
     try {
-      await runProGate('revokeSubRole', { requestAuth, requestFreshAuth, payload: null }, async (_key) => {
+      await runProGate('revokeSubRole', { requestAuth, requestFreshAuth, payload: null, purposeContext: { purpose: 'mutate-professional-roster', firmName: anchor.entityName, action: 'revoke-role' } }, async (_key) => {
         setConfirmAction({
           type: 'revoke-sub-role',
           title: 'Revoke sub-role',
@@ -212,7 +213,7 @@ export function ProDashboard({ anchor, backend: _backend, requestAuth, requestFr
 
   async function handleRemoveRoleAnchor() {
     try {
-      await runProGate('removeRoleAnchor', { requestAuth, requestFreshAuth, payload: null }, async (_key) => {
+      await runProGate('removeRoleAnchor', { requestAuth, requestFreshAuth, payload: null, purposeContext: { purpose: 'mutate-professional-roster', firmName: anchor.entityName, action: 'remove-role' } }, async (_key) => {
         setConfirmAction({
           type: 'remove-role-anchor',
           title: 'Remove Professional role',
@@ -271,7 +272,7 @@ export function ProDashboard({ anchor, backend: _backend, requestAuth, requestFr
               if (reattesting) return;
               setReattesting(true);
               try {
-                const key = await requestAuth();
+                const key = await requestAuth({ purpose: 'recheck-professional', firmName: anchor.entityName });
                 if (!key) return;
                 await invalidateProRegistryRecord(anchor.identifier, anchor.professionKind);
                 const liveRecord = await resolveIdentifier(

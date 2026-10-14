@@ -1,3 +1,4 @@
+import type { PurposeContext } from '../lib/auth-purposes';
 /**
  * Guardian-side pair-to-device screen.
  *
@@ -54,7 +55,7 @@ interface Props {
   /** Opens Security settings so the guardian can enable the bunker server. */
   onOpenSecuritySettings?: () => void;
   /** Tier 1 auth gate — must resolve before the pairing QR is generated. */
-  requestAuth: () => Promise<string | null>;
+  requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onBack: () => void;
   /** Guardian's signing mode — `'bunker'` + a tree-derived dependant takes the child-direct Heartwood flow. */
   signingMode?: string;
@@ -121,7 +122,7 @@ function LegacyPairDependantDevice({
     let cancelled = false;
     (async () => {
       try {
-        const key = await requestAuthRef.current();
+        const key = await requestAuthRef.current({ purpose: 'manage-dependant', action: 'pair-device', depName: dependant.displayName });
         if (cancelled) return;
         if (!key) {
           // User cancelled auth — back out to previous screen.
@@ -370,7 +371,7 @@ const wide = { width: '100%', marginBottom: 8 } as const;
 function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
   dependant: DependantIdentity;
   direct: NonNullable<Props['direct']>;
-  requestAuth: () => Promise<string | null>;
+  requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onBack: () => void;
 }) {
   const { onOpenOperatorImport, ...opts } = direct;
@@ -411,10 +412,10 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
   }, []);
 
   const begin = useCallback(async () => {
-    const key = await requestAuthRef.current();
+    const key = await requestAuthRef.current({ purpose: 'manage-dependant', action: 'pair-device', depName: dependant.displayName });
     if (!key) { onBackRef.current(); return; }
     await chooseAndStart();
-  }, [chooseAndStart]);
+  }, [chooseAndStart, dependant.displayName]);
 
   /** Switch from the tap to today's QR flow; the guardian already authenticated. */
   const showQr = useCallback(() => { setNfcOff(false); setProbeReason(null); startRef.current('qr'); }, []);

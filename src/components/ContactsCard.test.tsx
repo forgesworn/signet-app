@@ -7,8 +7,18 @@ const contacts = [{ contactId: 'a'.repeat(32), displayName: 'Private friend', ef
 it('does not render private names or counts before the directory is available', () => {
   render(<ContactsCard name="Child" contacts={contacts} available={false} onOpen={vi.fn()} />);
   expect(screen.queryByText('Private friend')).toBeNull();
-  expect(screen.queryByText(/1 contacts/)).toBeNull();
+  expect(screen.queryByText(/^1 contact/)).toBeNull();
+  expect(screen.queryByRole('searchbox')).toBeNull();
   expect(screen.getByRole('button', { name: 'View contacts' })).toBeTruthy();
+});
+it('explains an empty search and clears back to the contact preview', () => {
+  render(<ContactsCard name="Persona" contacts={contacts} available onOpen={vi.fn()} />);
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Nobody' } });
+  expect(screen.getByRole('status').textContent).toContain('No contacts match your search.');
+  expect(screen.queryByText('Private friend')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+  expect(screen.getByRole('searchbox')).toHaveValue('');
+  expect(screen.getByText('Private friend')).toBeTruthy();
 });
 it('passes the summary search through to the selected identity list', async () => {
   const onOpen = vi.fn(async () => {});

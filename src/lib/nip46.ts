@@ -17,6 +17,7 @@ import {
 import { sanitizeDisplayName } from './text-sanitize';
 import { MAX_NIP46_CONTENT, MAX_NIP46_PARAMS } from './nip46-server';
 import { isValidRelayUrl } from './relay-url';
+import { parseNip46Permissions } from './nip46-permissions';
 import type { ConnectedClient } from '../types';
 
 /**
@@ -83,6 +84,7 @@ export interface NostrConnectRequest {
   secret: string;          // one-time secret echoed back to complete nostrconnect pairing
   appName: string;         // from metadata.name
   appUrl?: string;         // from metadata.url
+  permissions?: string[];
 }
 
 /** Build the persisted owner-route client record created by explicit NostrConnect approval. */
@@ -97,6 +99,7 @@ export function buildConnectedClientFromNostrConnect(
     connectedAt: nowS,
     lastSeenAt: nowS,
     allowAlways: true,
+    ...(request.permissions ? { permissions: request.permissions } : {}),
   };
 }
 
@@ -167,6 +170,9 @@ export function parseNostrConnectURI(uri: string): NostrConnectRequest | null {
       .map(relay => relay.trim())
       .filter((relay, idx, arr) => relay.length > 0 && arr.indexOf(relay) === idx && isValidRelayUrl(relay));
     const relayUrl = relayUrls[0];
+    const permissionValues = url.searchParams.getAll('perms');
+    const permissions = permissionValues.length === 1 ? parseNip46Permissions(permissionValues[0]) : null;
+    if (permissionValues.length && !permissions) return null;
     const secret = url.searchParams.get('secret');
     const metadataStr = url.searchParams.get('metadata');
     if (!clientPubkey || !relayUrl || !secret) return null;
@@ -217,7 +223,7 @@ export function parseNostrConnectURI(uri: string): NostrConnectRequest | null {
         } catch { /* invalid URL — leave appUrl undefined */ }
       }
     }
-    return { clientPubkey, relayUrl, relayUrls, secret, appName, appUrl };
+    return { clientPubkey, relayUrl, relayUrls, secret, appName, appUrl, ...(permissions ? { permissions } : {}) };
   } catch {
     return null;
   }

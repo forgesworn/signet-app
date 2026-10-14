@@ -10,14 +10,15 @@
  *   - Default context resolves to the unlock-app purpose.
  *
  * What's NOT covered here (component-level):
- *   - The `<AuthScreen>` rendering of the resolved purpose — covered by
- *     manual smoke testing per the holodeck doc; no RTL infra in this PR.
+ *   - AuthScreen rendering and interaction are covered by its component tests
+ *     and the contextual authentication browser journey.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   PURPOSES,
   DEFAULT_PURPOSE_CONTEXT,
+  PAGE_AUTH_CONTEXTS,
   resolvePurpose,
   type AuthPurpose,
   type PurposeContext,
@@ -41,6 +42,15 @@ describe('PURPOSES registry — shape invariants', () => {
     'mutate-professional-roster',
     'manage-family-contacts',
     'transfer-independence',
+    'review-request',
+    'access-feature',
+    'manage-signing-session',
+    'manage-dependant',
+    'manage-bot',
+    'rotate-backup-key',
+    'reveal-recovery-words',
+    'change-biometric',
+    'recheck-professional',
   ];
 
   for (const purpose of purposeKeys) {
@@ -67,7 +77,7 @@ describe('PURPOSES registry — tier contract', () => {
     expect(PURPOSES['unlock-app'].tier).toBe(0);
   });
 
-  it('Tier 1 set matches the holodeck list', () => {
+  it('Tier 1 actions allow cached authentication', () => {
     const tier1 = (Object.keys(PURPOSES) as AuthPurpose[])
       .filter(p => PURPOSES[p].tier === 1)
       .sort();
@@ -78,6 +88,11 @@ describe('PURPOSES registry — tier contract', () => {
       'manage-family-contacts',
       'mutate-persona',
       'reveal-dep-backup',
+      'review-request',
+      'access-feature',
+      'manage-signing-session',
+      'manage-dependant',
+      'recheck-professional',
     ].sort());
   });
 
@@ -93,6 +108,10 @@ describe('PURPOSES registry — tier contract', () => {
       'mutate-persona-child-mode',
       'mutate-professional-roster',
       'transfer-independence',
+      'manage-bot',
+      'rotate-backup-key',
+      'reveal-recovery-words',
+      'change-biometric',
     ].sort());
   });
 });
@@ -292,5 +311,48 @@ describe('manage-family-contacts purpose', () => {
     expect(resolved.title).toBe('Manage family contacts');
     expect(resolved.description).toContain('every dependant you manage');
     expect(resolved.icon).toBe('people');
+  });
+});
+
+
+describe('Contextual action prompts', () => {
+  const contexts: PurposeContext[] = [
+    { purpose: 'review-request', request: 'sign-in', siteName: 'Example app' },
+    { purpose: 'access-feature', feature: 'contacts' },
+    { purpose: 'manage-signing-session', minutes: 15 },
+    { purpose: 'manage-signing-session' },
+    { purpose: 'rotate-backup-key' },
+    { purpose: 'reveal-recovery-words' },
+    { purpose: 'change-biometric', enabled: true },
+    { purpose: 'change-biometric', enabled: false },
+    { purpose: 'recheck-professional', firmName: 'Example School' },
+    ...(['pair-device', 'pair-app', 'remove-app', 'permissions', 'contact-policy', 'rename'] as const)
+      .map(action => ({ purpose: 'manage-dependant' as const, depName: 'Alice', action })),
+    ...(['create', 'connect', 'ownership', 'revoke', 'publish', 'reveal-key'] as const)
+      .map(action => ({ purpose: 'manage-bot' as const, botName: 'Helper', siteName: 'Example app', action })),
+    ...(['import', 'hide', 'show', 'edit-profile', 'set-avatar', 'remove-avatar', 'share-photo', 'stop-sharing-photo', 'activate'] as const)
+      .map(action => ({ purpose: 'mutate-persona' as const, action, personaName: 'Fox', depName: 'Alice' })),
+    ...Object.values(PAGE_AUTH_CONTEXTS),
+  ];
+
+  it.each(contexts)('renders $purpose $action $feature $request', ctx => {
+    const resolved = resolvePurpose(ctx);
+    expect(resolved.title).toBeTruthy();
+    expect(resolved.description).toBeTruthy();
+    expect(resolved.description).not.toMatch(/undefined|null/);
+  });
+
+  it('review unlock explains that approval is a later decision', () => {
+    const resolved = resolvePurpose({ purpose: 'review-request', request: 'sign-in', siteName: 'Example app' });
+    expect(resolved.title).toBe('Review sign-in request');
+    expect(resolved.description).toContain('**Example app**');
+    expect(resolved.description).toContain('approve or decline it after unlocking');
+  });
+
+  it('bot key reveal warns that the key grants signing access', () => {
+    const resolved = resolvePurpose({ purpose: 'manage-bot', action: 'reveal-key', botName: 'Helper' });
+    expect(resolved.description).toContain('**Helper**');
+    expect(resolved.description).toContain('Anyone with this key can sign');
+    expect(resolved.tier).toBe(2);
   });
 });
