@@ -101,6 +101,9 @@ it('a check made while the warm-up runs joins it instead of decrypting the log a
   expect(await check).toBe(true);
   expect(await warm).toHaveLength(SALTS);
   expect(batch.fn).toHaveBeenCalledTimes(1);
+  // The snapshot is written in the background. Finish this test's write
+  // before the next test purges the database and unlocks with the same key.
+  await vi.waitFor(async () => expect(await snapshot()).toBeDefined());
 });
 
 it('still refuses a blocked peer when the log comes from the snapshot', async () => {

@@ -4,6 +4,8 @@ Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
+
+## 0.21.0
 - Trotters removed from default and saved app relay settings; sync uses the full remaining pool, writes return on the first acknowledgement, and primary connections fail over after outages
 - Apps can request an exact online-play statement alongside sign-in, with a sign-in-only choice and no need to enable Bunker
 - At full autonomy, guardians can explicitly delegate online-play approval or remember an app permission until its displayed expiry; app blocks and schedules still apply
