@@ -3,7 +3,7 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.21.1
 - Relay-mode sign-in uses up to three relays named by the app (repeated `relay=`, primary first), so one relay the phone cannot reach no longer fails the sign-in
 - The home-screen scanner opens My Signet web links carrying NostrConnect invitations instead of silently ignoring them
 
