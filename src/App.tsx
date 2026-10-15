@@ -3883,6 +3883,7 @@ export function App() {
     isOwnerServingActive: () => backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
     reconnectNonce: bunkerReconnectNonce,
     relayUrl: nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL,
+    persistentRelayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     routes: bunkerRoutes,
     kinterestChildLabel: (pk) => {
       if (!npActive || !identity) return null;

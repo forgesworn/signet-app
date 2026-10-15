@@ -8,7 +8,7 @@ import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/ni
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { NostrConnect } from 'nostr-tools/kinds';
 import type { NostrEvent } from 'signet-protocol';
-import { useBunkerServer } from './useBunkerServer';
+import { switchRelaysAnswer, useBunkerServer } from './useBunkerServer';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { buildConnectedClientFromNostrConnect } from '../lib/nip46';
 import { deleteConnectedClient, getConnectedClient, saveConnectedClient } from '../lib/db';
@@ -270,6 +270,44 @@ describe('useBunkerServer NostrConnect integration', () => {
       expect(await getConnectedClient(clientPubkey)).toBeUndefined();
     });
 
+    unmount();
+  });
+
+  it.each([
+    {
+      label: 'leads with the persistent relay and keeps the temporary pairing relay',
+      persistentRelayUrl: 'wss://nos.lol',
+      expected: ['wss://nos.lol', 'wss://canary-switch.example'],
+    },
+    {
+      label: 'answers null when the request already arrived on the persistent relay',
+      persistentRelayUrl: 'wss://canary-switch.example/',
+      expected: null,
+    },
+    {
+      label: 'answers null when no valid persistent relay is known',
+      persistentRelayUrl: 'ws://relay.example',
+      expected: null,
+    },
+  ])('switch_relays $label', async ({ persistentRelayUrl, expected }) => {
+    const { ownerBackend, relayUrl, unmount } = renderOwnerServer('wss://canary-switch.example', { persistentRelayUrl });
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({
+        clientSk,
+        targetPubkey: ownerBackend.activePublicKeyHex,
+        id: 'switch-relays',
+        method: 'switch_relays',
+        params: [],
+      }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({
+      id: 'switch-relays',
+      result: JSON.stringify(expected),
+    });
     unmount();
   });
 
@@ -953,4 +991,24 @@ it('remembering a scoped approval preserves its ceiling and retires an earlier p
   expect(await getConnectedClient(clientPubkey)).toMatchObject({ allowAlways: true, permissions: ['sign_event:1'] });
   expect((await getConnectedClient(clientPubkey))?.pairingNonce).toBeUndefined();
   unmount();
+});
+
+describe('switchRelaysAnswer', () => {
+  it('names the persistent relay first and keeps the relay serving the live session', () => {
+    expect(switchRelaysAnswer('wss://nos.lol', 'wss://pairing.example')).toEqual(['wss://nos.lol', 'wss://pairing.example']);
+    expect(switchRelaysAnswer(' wss://nos.lol ', null)).toEqual(['wss://nos.lol']);
+    expect(switchRelaysAnswer('wss://nos.lol', 'ws://pairing.example')).toEqual(['wss://nos.lol']);
+  });
+
+  it('answers null when the request arrived on the persistent relay', () => {
+    expect(switchRelaysAnswer('wss://nos.lol', 'wss://nos.lol')).toBeNull();
+    expect(switchRelaysAnswer('wss://nos.lol', 'WSS://NOS.LOL/')).toBeNull();
+  });
+
+  it('never names an absent or invalid relay', () => {
+    expect(switchRelaysAnswer(undefined, 'wss://pairing.example')).toBeNull();
+    expect(switchRelaysAnswer('', 'wss://pairing.example')).toBeNull();
+    expect(switchRelaysAnswer('ws://relay.example', 'wss://pairing.example')).toBeNull();
+    expect(switchRelaysAnswer('https://relay.example', 'wss://pairing.example')).toBeNull();
+  });
 });
