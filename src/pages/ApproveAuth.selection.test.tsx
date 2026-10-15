@@ -20,6 +20,7 @@ const IMPORTED = 'e'.repeat(64);
 
 const request: AuthRequest = {
   type: 'signet-auth-request',
+  relays: [],
   requestId: 'f'.repeat(32),
   challenge: 'c'.repeat(64),
   origin: 'https://example.com',

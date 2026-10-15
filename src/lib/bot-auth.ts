@@ -18,7 +18,7 @@ export function parseBotAuthRequest(raw: string): AuthRequest {
   }
   // Copy only the fields this consent authorises; no callback or extra fields.
   return { type: 'signet-auth-request', requestId: request.requestId, challenge: request.challenge,
-    origin: request.origin, relay: request.relay, sessionPubkey: request.sessionPubkey, timestamp: request.timestamp };
+    origin: request.origin, relay: request.relay, relays: [request.relay], sessionPubkey: request.sessionPubkey, timestamp: request.timestamp };
 }
 
 /** One consent, one authentication proof. Does not mint a persistent grant. */

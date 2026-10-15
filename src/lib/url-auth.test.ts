@@ -9,6 +9,11 @@ import {
   parseAddDependantRequest,
   buildAddDependantCallbackUrl,
   buildAddDependantErrorUrl,
+  parseAuthRelays,
+  parseUrlAuthRequest,
+  consumerRelaysOf,
+  relayCompareKey,
+  MAX_AUTH_RELAYS,
 } from './url-auth';
 
 function validSearch(overrides: Record<string, string> = {}): string {
@@ -790,5 +795,77 @@ describe('buildAddDependantErrorUrl', () => {
   it('accepts http://localhost and http://127.0.0.1 for dev', () => {
     expect(buildAddDependantErrorUrl('http://localhost:5174/cb', 'denied')).not.toBeNull();
     expect(buildAddDependantErrorUrl('http://127.0.0.1:5174/cb', 'denied')).not.toBeNull();
+  });
+});
+
+describe('consumer relays (repeated relay=, primary first)', () => {
+  const SESSION = 'b'.repeat(64);
+  function relaySearch(relays: string[]): string {
+    const p = new URLSearchParams(validSearch({ sessionPubkey: SESSION }).slice(1));
+    for (const r of relays) p.append('relay', r);
+    return '?' + p.toString();
+  }
+
+  it('keeps up to three relays in order, primary first', () => {
+    const search = relaySearch(['wss://nos.lol', 'wss://relay.trotters.cc', 'wss://relay.primal.net']);
+    const req = parseUrlAuthRequest(search)!;
+    expect(req.relays).toEqual(['wss://nos.lol', 'wss://relay.trotters.cc', 'wss://relay.primal.net']);
+    expect(req.relay).toBe('wss://nos.lol');
+  });
+
+  it('primary equals what signet-protocol parses (old builds read the same relay)', () => {
+    const search = relaySearch(['wss://nos.lol/', 'wss://relay.trotters.cc']);
+    const protocol = parseUrlAuthParams(search)!;
+    const req = parseUrlAuthRequest(search)!;
+    expect(protocol.relay).toBe('wss://nos.lol/');
+    expect(req.relay).toBe(protocol.relay);
+    expect(req.relays[0]).toBe(protocol.relay);
+    expect(parseSignInRequest(search)!.request.relays[0]).toBe(protocol.relay);
+  });
+
+  it('dedupes by lowercase host and one trailing slash, keeping the first spelling', () => {
+    const search = relaySearch(['wss://nos.lol', 'wss://NOS.lol/', 'wss://relay.trotters.cc/', 'wss://relay.trotters.cc']);
+    expect(parseUrlAuthRequest(search)!.relays).toEqual(['wss://nos.lol', 'wss://relay.trotters.cc/']);
+  });
+
+  it('drops invalid extras without rejecting the request', () => {
+    const long = 'wss://' + 'a'.repeat(1100) + '.example';
+    const search = relaySearch(['wss://nos.lol', 'https://relay.example', 'ws://evil.example', '', long, '  wss://relay.trotters.cc  ']);
+    expect(parseUrlAuthRequest(search)!.relays).toEqual(['wss://nos.lol', 'wss://relay.trotters.cc']);
+  });
+
+  it('caps at three', () => {
+    expect(MAX_AUTH_RELAYS).toBe(3);
+    const search = relaySearch(['wss://a.example', 'wss://b.example', 'wss://c.example', 'wss://d.example']);
+    expect(parseUrlAuthRequest(search)!.relays).toEqual(['wss://a.example', 'wss://b.example', 'wss://c.example']);
+  });
+
+  it('a single relay is unchanged', () => {
+    const search = relaySearch(['wss://nos.lol']);
+    const req = parseSignInRequest(search)!.request;
+    expect(req.relay).toBe('wss://nos.lol');
+    expect(req.relays).toEqual(['wss://nos.lol']);
+    expect(req.sessionPubkey).toBe(SESSION);
+  });
+
+  it('a first relay signet-protocol rejects still rejects the whole request', () => {
+    expect(parseUrlAuthRequest(relaySearch(['https://nos.lol', 'wss://relay.trotters.cc']))).toBeNull();
+  });
+
+  it('redirect mode (no relay) has no relays', () => {
+    expect(parseUrlAuthRequest(validSearch())!.relays).toEqual([]);
+    expect(parseAuthRelays(validSearch(), undefined)).toEqual([]);
+  });
+
+  it('relayCompareKey folds case and one trailing slash only', () => {
+    expect(relayCompareKey('wss://NOS.lol/')).toBe(relayCompareKey('wss://nos.lol'));
+    expect(relayCompareKey('wss://nos.lol/a')).not.toBe(relayCompareKey('wss://nos.lol'));
+  });
+
+  it('consumerRelaysOf falls back to the single relay when the list is missing or inconsistent', () => {
+    expect(consumerRelaysOf({ relay: 'wss://a.example' })).toEqual(['wss://a.example']);
+    expect(consumerRelaysOf({ relay: 'wss://a.example', relays: ['wss://b.example'] })).toEqual(['wss://a.example']);
+    expect(consumerRelaysOf({ relay: 'wss://a.example', relays: ['wss://a.example', 'wss://b.example'] })).toEqual(['wss://a.example', 'wss://b.example']);
+    expect(consumerRelaysOf({ relays: ['wss://b.example'] })).toEqual([]);
   });
 });

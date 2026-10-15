@@ -8,7 +8,7 @@ vi.mock('./relay-publish', async original => ({ ...await original<typeof import(
 const key = '01'.repeat(32), pubkey = getPublicKey(Uint8Array.from({ length: 32 }, () => 1));
 const recipient = Uint8Array.from({ length: 32 }, () => 2);
 const request = () => ({ type: 'signet-auth-request' as const, requestId: 'a'.repeat(32), challenge: 'test-challenge-123456',
-  origin: 'https://consumer.test', timestamp: Math.floor(Date.now() / 1000), relay: 'wss://relay.test', sessionPubkey: getPublicKey(recipient) });
+  origin: 'https://consumer.test', timestamp: Math.floor(Date.now() / 1000), relay: 'wss://relay.test', relays: ['wss://relay.test'], sessionPubkey: getPublicKey(recipient) });
 const selection = { source: 'bot' as const, botPubkey: pubkey };
 beforeEach(() => { vi.mocked(publishToRelay).mockReset().mockResolvedValue(true); });
 it('delivers a real encrypted bot proof without owner fields, credentials or persistent signing authority', async () => {

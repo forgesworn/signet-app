@@ -15,6 +15,7 @@ import type { AuthRequest } from '../lib/qr-router';
 
 const request: AuthRequest = {
   type: 'signet-auth-request',
+  relays: [],
   requestId: 'f'.repeat(32),
   challenge: 'c'.repeat(64),
   origin: 'https://example.com',

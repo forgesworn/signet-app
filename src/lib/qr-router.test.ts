@@ -56,6 +56,16 @@ describe('routeQR', () => {
   });
 
   describe('auth requests', () => {
+    it('a JSON auth request carries its single relay as relays', () => {
+      const payload = JSON.stringify({
+        type: 'signet-auth-request', requestId: validHex32, challenge: 'challenge-string-16ch',
+        origin: 'https://example.com', relay: 'wss://relay.example.com', sessionPubkey: 'b'.repeat(64), timestamp: now,
+      });
+      const result = routeQR(payload);
+      if (result.type !== 'auth') throw new Error(`expected auth, got ${result.type}`);
+      expect(result.request.relays).toEqual(['wss://relay.example.com']);
+    });
+
     it('routes valid compact auth request (t: sa)', () => {
       const payload = JSON.stringify({
         t: 'sa',
@@ -284,6 +294,23 @@ describe('routeQR', () => {
 
     it('returns unknown for mysignet.app URL with invalid challenge', () => {
       expect(routeQR(buildUrlAuthQR({ ...baseParams, challenge: 'nope' })).type).toBe('unknown');
+    });
+
+    it('carries every consumer relay from repeated relay= params, primary first', () => {
+      const u = new URL(buildUrlAuthQR({ ...baseParams, sessionPubkey: 'b'.repeat(64) }));
+      for (const r of ['wss://nos.lol', 'wss://relay.trotters.cc', 'wss://nos.lol/']) u.searchParams.append('relay', r);
+      const result = routeQR(u.toString());
+      expect(result.type).toBe('login');
+      if (result.type === 'login') {
+        expect(result.request.relay).toBe('wss://nos.lol');
+        expect(result.request.relays).toEqual(['wss://nos.lol', 'wss://relay.trotters.cc']);
+      }
+    });
+
+    it('a redirect-mode URL has no relays', () => {
+      const result = routeQR(buildUrlAuthQR(baseParams));
+      if (result.type !== 'login') throw new Error('expected login');
+      expect(result.request.relays).toEqual([]);
     });
 
     it('delegates unrelated https URLs to protocol router (returns unknown)', () => {

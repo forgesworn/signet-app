@@ -49,7 +49,10 @@ interface FailureProps {
   state: 'failed';
   variant?: Variant;
   relayHost: string;
+  /** Host label(s) of the relay(s) the requesting app chose, joined with ", ". */
   requestedRelay?: string;
+  /** How many relays the app chose (sign-in may name up to three). */
+  requestedRelayCount?: number;
   primaryRelay?: string;
   failureReason?: string;
   siteName?: string;
@@ -132,7 +135,7 @@ export function RelayAuthAck(props: Props) {
           {props.failureReason && <p role="alert" style={{ color: 'var(--warning)', fontSize: '0.85rem' }}>{props.failureReason}</p>}
           {props.requestedRelay && <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 24 }}>
             {props.siteName || 'The requesting app'} chose <strong>{props.requestedRelay}</strong> for {props.variant === 'app-permission' ? APP_PERMISSION_COPY.ackFailedNoun : 'this sign-in'}.
-            {props.primaryRelay && props.primaryRelay !== props.requestedRelay && <> Your primary relay is <strong>{props.primaryRelay}</strong>, but the app is listening for this response on its chosen relay.</>}
+            {props.primaryRelay && !props.requestedRelay.split(', ').includes(props.primaryRelay) && <> Your primary relay is <strong>{props.primaryRelay}</strong>, but the app is listening for this response on {(props.requestedRelayCount ?? 1) > 1 ? 'the relays it chose' : 'its chosen relay'}.</>}
             {' '}To use a different relay, start a new {props.variant === 'app-permission' ? 'request' : 'sign-in'} in the requesting app.
           </p>}
 
