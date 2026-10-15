@@ -8421,11 +8421,20 @@ export function App() {
           const relayOpenTimeoutMs = consumerRelays.length > 1
             ? NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS
             : NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS;
-          const armedRelay = await armFirstOpenRelay(
-            consumerRelays,
-            relay => armNostrConnectServe(routeBackend.activePublicKeyHex, relay, relayOpenTimeoutMs),
-            () => authDeliveryStillOpen(request),
-          );
+          let armedRelay: string | null;
+          try {
+            armedRelay = await armFirstOpenRelay(
+              consumerRelays,
+              relay => armNostrConnectServe(routeBackend.activePublicKeyHex, relay, relayOpenTimeoutMs),
+              () => authDeliveryStillOpen(request),
+            );
+          } catch (e) {
+            // No relay opened: take down the route this approval installed
+            // (which releases a retained temp backend) rather than leave it
+            // serving until the 5-minute timer, then fail as before.
+            clearNostrConnectTransientRouteByToken(installedRouteToken);
+            throw e;
+          }
           if (armedRelay === null) {
             // Denied or withdrawn between attempts: take the route down, deliver nothing.
             clearNostrConnectTransientRouteByToken(installedRouteToken);
