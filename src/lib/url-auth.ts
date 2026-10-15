@@ -72,12 +72,26 @@ export function dedupeRelayUrls(urls: readonly (string | null | undefined)[]): s
 }
 
 /**
+ * Stricter than `isValidRelayUrl`, for the EXTRA consumer relays only: no
+ * whitespace or commas anywhere (they would garble a joined host list), and
+ * the URL must parse with protocol wss:, or ws: on localhost / 127.0.0.1.
+ */
+function isAcceptableExtraRelay(url: string): boolean {
+  if (url.length === 0 || url.length > MAX_AUTH_RELAY_URL_LENGTH) return false;
+  if (/[\s,]/.test(url) || !isValidRelayUrl(url)) return false;
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol === 'wss:') return parsed.hostname.length > 0;
+  return parsed.protocol === 'ws:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+}
+
+/**
  * The consumer relays of a relay-mode sign-in, primary first.
  *
  * `primary` is the relay signet-protocol already accepted (the first
  * `relay=` value, verbatim) and is always `relays[0]`, so `relay === relays[0]`
  * holds by construction. Further `relay=` values are trimmed, checked
- * (`isValidRelayUrl`, length cap), deduped against what is kept, and the list
+ * (`isAcceptableExtraRelay`: stricter than `isValidRelayUrl`, length cap), deduped against what is kept, and the list
  * stops at `MAX_AUTH_RELAYS`. Invalid extras are dropped, never fatal. With no
  * primary there is no relay mode, so the list is empty.
  */
@@ -89,7 +103,7 @@ export function parseAuthRelays(search: string, primary: string | undefined): st
   for (const raw of all.slice(1)) {
     if (kept.length >= MAX_AUTH_RELAYS) break;
     const url = raw.trim();
-    if (url.length === 0 || url.length > MAX_AUTH_RELAY_URL_LENGTH || !isValidRelayUrl(url)) continue;
+    if (!isAcceptableExtraRelay(url)) continue;
     const key = relayCompareKey(url);
     if (keys.has(key)) continue;
     keys.add(key);

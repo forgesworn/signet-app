@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { armFirstOpenRelay, authBunkerRelays, deliveredToConsumer, planAuthDeliveryTargets } from './auth-relay-delivery';
+import { armFirstOpenRelay, authBunkerRelays, deliveredToConsumer, planAuthDeliveryTargets, publishToEveryRelay } from './auth-relay-delivery';
 
 const A = 'wss://nos.lol';
 const B = 'wss://relay.trotters.cc';
@@ -73,5 +73,29 @@ describe('armFirstOpenRelay', () => {
 describe('authBunkerRelays', () => {
   it('armed relay first, then other consumer relays, then the rest, deduped', () => {
     expect(authBunkerRelays(B, [A, B], [USER, 'wss://nos.lol/', C, undefined, ''])).toEqual([B, A, USER, C]);
+  });
+});
+
+describe('publishToEveryRelay (sign-in Deny)', () => {
+  it('sends to every consumer relay in parallel, and one failure does not stop the rest', async () => {
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    const publish = vi.fn((relay: string) => {
+      started.push(relay);
+      if (relay === A) return Promise.reject(new Error('unreachable'));
+      return new Promise<boolean>(resolve => releases.push(() => resolve(true)));
+    });
+    const done = publishToEveryRelay([A, B, C, 'wss://relay.trotters.cc/'], publish);
+    // All started before any answered: parallel, deduped.
+    expect(started).toEqual([A, B, C]);
+    releases.forEach(r => r());
+    await expect(done).resolves.toEqual([false, true, true]);
+  });
+
+  it('a publish that throws synchronously counts as false', async () => {
+    await expect(publishToEveryRelay([A, B], relay => {
+      if (relay === A) throw new Error('boom');
+      return Promise.resolve(true);
+    })).resolves.toEqual([false, true]);
   });
 });

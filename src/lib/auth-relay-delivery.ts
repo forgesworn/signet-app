@@ -71,6 +71,24 @@ export async function armFirstOpenRelay(
 }
 
 /**
+ * Publish to every relay at once (each attempt independent; a throw counts as
+ * false). Used for the sign-in Deny: the consumer treats a refusal on any of
+ * its relays as final, so it must not depend on the primary being reachable.
+ */
+export function publishToEveryRelay(
+  relays: readonly string[],
+  publish: (relayUrl: string) => Promise<boolean>,
+): Promise<boolean[]> {
+  return Promise.all(dedupeRelayUrls(relays).map(relayUrl => {
+    try {
+      return publish(relayUrl).catch(() => false);
+    } catch {
+      return Promise.resolve(false);
+    }
+  }));
+}
+
+/**
  * Relays for the one-shot bunker URI handed to the consumer: the relay the
  * listener actually opened on first, then the other consumer relays, then
  * the rest (user relay, saved fallbacks, built-in fallbacks), deduped.

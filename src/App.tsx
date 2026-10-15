@@ -237,7 +237,7 @@ import type { AuthSelection } from './pages/ApproveAuth';
 import { RelayAuthAck } from './pages/RelayAuthAck';
 import { getRelayDeliveryStatus } from './lib/relay-delivery-status';
 import { relayHostLabel } from './lib/relay-url';
-import { armFirstOpenRelay, authBunkerRelays, deliveredToConsumer, planAuthDeliveryTargets } from './lib/auth-relay-delivery';
+import { armFirstOpenRelay, authBunkerRelays, deliveredToConsumer, planAuthDeliveryTargets, publishToEveryRelay } from './lib/auth-relay-delivery';
 import { AuthScreen } from './pages/AuthScreen';
 import { AppShell } from './components/AppShell';
 import { SetupAuth } from './pages/SetupAuth';
@@ -1292,7 +1292,7 @@ export function App() {
   type RelayAuthAckState =
     | { status: 'approved'; siteName: string; postUrl?: string; variant?: 'app-permission'; byGuardian?: boolean }
     | { status: 'denied'; siteName: string; variant?: 'app-permission'; byGuardian?: boolean }
-    | { status: 'failed'; relayHost: string; requestedRelay?: string; requestedRelayCount?: number; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
+    | { status: 'failed'; relayHost: string; requestedRelay?: string; requestedRelays?: string[]; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
   const [relayAuthAckState, setRelayAuthAckState] = useState<RelayAuthAckState | null>(null);
 
   // Transient confirmation chip rendered on a dependant's card after the user
@@ -8603,8 +8603,8 @@ export function App() {
             setRelayAuthAckState({
               status: 'failed',
               relayHost,
-              requestedRelay: consumerRelays.map(relayHostLabel).join(', '),
-              requestedRelayCount: consumerRelays.length,
+              requestedRelay: relayHostLabel(relayUrl),
+              requestedRelays: consumerRelays.map(relayHostLabel),
               primaryRelay: userRelay ? relayHostLabel(userRelay) : undefined,
               failureReason: realErr || consumerRelays.map(r => getRelayDeliveryStatus(r)?.reason).find(Boolean),
               siteName: capturedSiteName,
@@ -8879,8 +8879,13 @@ export function App() {
       // The ack screen confirms the local intent; relay delivery is best-effort.
       // Refusing access must work while the owner's signer is locked or
       // reconnecting, and must not disclose an identity they declined to share.
+      // Sent to every consumer relay in parallel: the app treats a refusal on
+      // any of them as final, so one unreachable relay cannot hide the Deny.
       const refusalBackend = new LocalSigningBackend(generateBunkerClientSecret());
-      publishVerifyRejectionToRelay(challenge, relayUrl, refusalBackend, sessionPubkey)
+      publishToEveryRelay(
+        consumerRelaysOf(request),
+        relay => publishVerifyRejectionToRelay(challenge, relay, refusalBackend, sessionPubkey),
+      )
         .catch(() => {})
         .finally(() => refusalBackend.destroy());
 
@@ -12578,7 +12583,7 @@ export function App() {
               state="failed"
               relayHost={relayAuthAckState.relayHost}
               requestedRelay={relayAuthAckState.requestedRelay}
-              requestedRelayCount={relayAuthAckState.requestedRelayCount}
+              requestedRelays={relayAuthAckState.requestedRelays}
               primaryRelay={relayAuthAckState.primaryRelay}
               failureReason={relayAuthAckState.failureReason}
               siteName={relayAuthAckState.siteName}

@@ -834,6 +834,11 @@ describe('consumer relays (repeated relay=, primary first)', () => {
     expect(parseUrlAuthRequest(search)!.relays).toEqual(['wss://nos.lol', 'wss://relay.trotters.cc']);
   });
 
+  it('rejects extras with commas or inner whitespace, or that do not parse as wss:', () => {
+    const search = relaySearch(['wss://nos.lol', 'wss://a, b', 'wss://a,b.example', 'wss://a b.example', 'wss://', 'ws://localhost.evil.example', 'ws://localhost:7777', 'wss://relay.trotters.cc']);
+    expect(parseUrlAuthRequest(search)!.relays).toEqual(['wss://nos.lol', 'ws://localhost:7777', 'wss://relay.trotters.cc']);
+  });
+
   it('caps at three', () => {
     expect(MAX_AUTH_RELAYS).toBe(3);
     const search = relaySearch(['wss://a.example', 'wss://b.example', 'wss://c.example', 'wss://d.example']);
