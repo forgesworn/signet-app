@@ -10,6 +10,7 @@ afterEach(cleanup);
 
 const mkRequest = (n: string): AuthRequest => ({
   type: 'signet-auth-request',
+  relays: [],
   requestId: n.repeat(32),
   challenge: n.repeat(64),
   origin: 'https://example.com',

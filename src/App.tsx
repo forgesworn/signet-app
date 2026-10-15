@@ -237,6 +237,7 @@ import type { AuthSelection } from './pages/ApproveAuth';
 import { RelayAuthAck } from './pages/RelayAuthAck';
 import { getRelayDeliveryStatus } from './lib/relay-delivery-status';
 import { relayHostLabel } from './lib/relay-url';
+import { armFirstOpenRelay, authBunkerRelays, deliveredToConsumer, planAuthDeliveryTargets, publishToEveryRelay } from './lib/auth-relay-delivery';
 import { AuthScreen } from './pages/AuthScreen';
 import { AppShell } from './components/AppShell';
 import { SetupAuth } from './pages/SetupAuth';
@@ -342,7 +343,7 @@ import { AuthRequestSettlement, authRequestKey, requestObjectKey } from './lib/a
 import { deliverConnectApproval, ConnectWithdrawnError } from './lib/connect-delivery';
 import { ConnectRouteTracker } from './lib/connect-route-cancel';
 import type { SigningBackend, DecryptingSigningBackend } from './lib/signing-backend';
-import { parseSignInRequest, getUrlAuthSiteName, buildAuthCallbackUrl, buildAuthDeniedUrl, parseAddDependantRequest, buildAddDependantProofTemplate, buildAddDependantCallbackUrl, buildAddDependantErrorUrl } from './lib/url-auth';
+import { parseSignInRequest, consumerRelaysOf, getUrlAuthSiteName, buildAuthCallbackUrl, buildAuthDeniedUrl, parseAddDependantRequest, buildAddDependantProofTemplate, buildAddDependantCallbackUrl, buildAddDependantErrorUrl } from './lib/url-auth';
 import type { AddDependantRequest } from './lib/url-auth';
 import { parseVerifyRequestFromUrl, buildVerifyCallbackUrl, buildVerifyDeniedUrl } from './lib/url-verify';
 import type { ConsumerHint } from './types';
@@ -1291,7 +1292,7 @@ export function App() {
   type RelayAuthAckState =
     | { status: 'approved'; siteName: string; postUrl?: string; variant?: 'app-permission'; byGuardian?: boolean }
     | { status: 'denied'; siteName: string; variant?: 'app-permission'; byGuardian?: boolean }
-    | { status: 'failed'; relayHost: string; requestedRelay?: string; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
+    | { status: 'failed'; relayHost: string; requestedRelay?: string; requestedRelays?: string[]; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
   const [relayAuthAckState, setRelayAuthAckState] = useState<RelayAuthAckState | null>(null);
 
   // Transient confirmation chip rendered on a dependant's card after the user
@@ -8250,6 +8251,8 @@ export function App() {
       const relayUrl = pendingAuthRequest.relay;
       const sessionPubkey = pendingAuthRequest.sessionPubkey;
       const isRelayMode = !!(relayUrl && sessionPubkey);
+      // Every consumer relay, primary first (relayUrl === consumerRelays[0]).
+      const consumerRelays = consumerRelaysOf(pendingAuthRequest);
 
       let appPermission: SignInAppPermissionResult | undefined;
       if (combinedPermission) {
@@ -8413,7 +8416,30 @@ export function App() {
           const routeBackend = requireNostrConnectRouteBackend(selectedBackend);
           tempBackendRetainedForRoute = tempBackend === routeBackend;
           installedRouteToken = installNostrConnectTransientRoute(routeBackend, tempBackendRetainedForRoute);
-          await armNostrConnectServe(routeBackend.activePublicKeyHex, relayUrl);
+          // Try the consumer relays in order; the first that opens wins, so
+          // one relay the phone cannot reach does not sink the sign-in.
+          const relayOpenTimeoutMs = consumerRelays.length > 1
+            ? NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS
+            : NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS;
+          let armedRelay: string | null;
+          try {
+            armedRelay = await armFirstOpenRelay(
+              consumerRelays,
+              relay => armNostrConnectServe(routeBackend.activePublicKeyHex, relay, relayOpenTimeoutMs),
+              () => authDeliveryStillOpen(request),
+            );
+          } catch (e) {
+            // No relay opened: take down the route this approval installed
+            // (which releases a retained temp backend) rather than leave it
+            // serving until the 5-minute timer, then fail as before.
+            clearNostrConnectTransientRouteByToken(installedRouteToken);
+            throw e;
+          }
+          if (armedRelay === null) {
+            // Denied or withdrawn between attempts: take the route down, deliver nothing.
+            clearNostrConnectTransientRouteByToken(installedRouteToken);
+            return;
+          }
           // Local-key persona: no standalone bunker to hand over, so mint a
           // one-shot pairing URI to our own NIP-46 server (passthrough). Reliable
           // on same-device redirect; over cross-device QR it depends on this app
@@ -8421,12 +8447,11 @@ export function App() {
           // by per-request QR back to Signet — a later piece.)
           try {
             const pairingSecret = generatePairingSecret();
-            const relaysForBunker = [
-              pendingAuthRequest.relay,
+            const relaysForBunker = authBunkerRelays(armedRelay, consumerRelays, [
               preferences.relayUrl ?? DEFAULT_RELAY_URL,
               ...(preferences.fallbackBunkerRelays ?? []),
               ...AUTH_FLOW_BUNKER_FALLBACK_RELAYS,
-            ].filter((relay): relay is string => typeof relay === 'string' && relay.length > 0);
+            ]);
             const candidate = buildAuthFlowBunkerUrl(authEvent.pubkey, relaysForBunker, pairingSecret);
             if (candidate) {
               const ttlMs = 5 * 60 * 1000;  // 5-minute pairing window
@@ -8488,21 +8513,20 @@ export function App() {
         setConsumerDisplayName(null);
         setPendingPostUrl(null);
 
-        // Targets for the response gift-wrap. `targetRelays[0]` is ALWAYS the
-        // consumer's chosen relay — that's the one the consumer is guaranteed
-        // to be subscribed to, so success in the ack screen must reflect
-        // whether THAT publish was accepted. The user's preferred relay is a
-        // best-effort additional copy for consumers that happen to subscribe
-        // to multiple relays (they'll dedupe by inner event id); a publish
-        // there cannot rescue a consumer whose chosen relay rejected, because
-        // the consumer won't see events on a relay they aren't subscribed to.
+        // Targets for the response gift-wrap. The first `consumerCount`
+        // entries are ALWAYS the consumer's chosen relays (up to three,
+        // primary first) — those are the ones the consumer is subscribed to,
+        // so success in the ack screen must reflect whether ANY of THOSE
+        // publishes was accepted. The user's preferred relay is a best-effort
+        // additional copy for consumers that happen to subscribe to it too
+        // (they'll dedupe by inner event id); a publish there alone cannot
+        // rescue a consumer whose relays all rejected, because the consumer
+        // won't see events on a relay they aren't subscribed to.
         // Previously `ok = results.some(r => r)` meant a successful publish to
         // the user's relay masked a rejection on the consumer's — Signet
         // showed "approved" while the consumer's site stayed unauthenticated.
         const userRelay = preferences.relayUrl;
-        const targetRelays = (userRelay && userRelay !== relayUrl)
-          ? [relayUrl, userRelay]
-          : [relayUrl];
+        const { targets: targetRelays, consumerCount } = planAuthDeliveryTargets(consumerRelays, userRelay);
 
         // The gift-wrap is built ONCE and the same event goes to every target
         // relay, and to every retry: the seal is a NIP-44 encrypt plus a
@@ -8520,7 +8544,7 @@ export function App() {
             : targetRelays.map(() => false);
           // Consumer-relay acceptance is the only outcome that delivers the
           // response to the consumer's listener; see comment block above.
-          const ok = results[0] === true;
+          const ok = deliveredToConsumer(results, consumerCount);
           if (ok) {
             // Record the authorised site in the Connections manager
             authorizeSite(
@@ -8580,8 +8604,9 @@ export function App() {
               status: 'failed',
               relayHost,
               requestedRelay: relayHostLabel(relayUrl),
+              requestedRelays: consumerRelays.map(relayHostLabel),
               primaryRelay: userRelay ? relayHostLabel(userRelay) : undefined,
-              failureReason: realErr || getRelayDeliveryStatus(relayUrl)?.reason,
+              failureReason: realErr || consumerRelays.map(r => getRelayDeliveryStatus(r)?.reason).find(Boolean),
               siteName: capturedSiteName,
               retry: doPublish,
             });
@@ -8854,8 +8879,13 @@ export function App() {
       // The ack screen confirms the local intent; relay delivery is best-effort.
       // Refusing access must work while the owner's signer is locked or
       // reconnecting, and must not disclose an identity they declined to share.
+      // Sent to every consumer relay in parallel: the app treats a refusal on
+      // any of them as final, so one unreachable relay cannot hide the Deny.
       const refusalBackend = new LocalSigningBackend(generateBunkerClientSecret());
-      publishVerifyRejectionToRelay(challenge, relayUrl, refusalBackend, sessionPubkey)
+      publishToEveryRelay(
+        consumerRelaysOf(request),
+        relay => publishVerifyRejectionToRelay(challenge, relay, refusalBackend, sessionPubkey),
+      )
         .catch(() => {})
         .finally(() => refusalBackend.destroy());
 
@@ -12553,6 +12583,7 @@ export function App() {
               state="failed"
               relayHost={relayAuthAckState.relayHost}
               requestedRelay={relayAuthAckState.requestedRelay}
+              requestedRelays={relayAuthAckState.requestedRelays}
               primaryRelay={relayAuthAckState.primaryRelay}
               failureReason={relayAuthAckState.failureReason}
               siteName={relayAuthAckState.siteName}

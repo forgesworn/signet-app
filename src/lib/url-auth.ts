@@ -19,6 +19,7 @@ import {
 import type { UnsignedEvent } from 'signet-protocol';
 import type { LoginRequest, AuthRequest } from './qr-router';
 import { sanitizeDisplayName } from './text-sanitize';
+import { isValidRelayUrl } from './relay-url';
 import { parseSignInAppPermission, encodeAppPermission, type SignInAppPermission, type SignInAppPermissionResult } from './sign-in-app-permission';
 
 export { parseUrlAuthParams, buildAuthDeniedUrl, getUrlAuthSiteName } from 'signet-protocol';
@@ -32,6 +33,102 @@ const MAX_PREFER_LENGTH = 32;
 const MAX_REASON_LENGTH = 120;
 const MAX_CONSUMER_DISPLAY_NAME_LENGTH = 64;
 const MAX_POST_URL_LENGTH = 2048;
+
+/**
+ * Relay-mode sign-in may name up to three consumer relays, primary first, by
+ * repeating `relay=`. signet-protocol reads only the first (`params.get`), so
+ * older My Signet builds keep working off the primary.
+ */
+export const MAX_AUTH_RELAYS = 3;
+/** Same per-URL cap signet-protocol applies to the primary relay. */
+const MAX_AUTH_RELAY_URL_LENGTH = 1024;
+
+/**
+ * Comparison key for a relay URL: scheme and host lowercased (the URL parser
+ * does this), one trailing slash dropped. Used only to dedupe; the stored
+ * string is always the one the consumer sent.
+ */
+export function relayCompareKey(url: string): string {
+  let s = url.trim();
+  try {
+    const u = new URL(s);
+    s = `${u.protocol}//${u.host}${u.pathname}${u.search}`;
+  } catch { /* keep the raw string */ }
+  return s.endsWith('/') ? s.slice(0, -1) : s;
+}
+
+/** Drop empty entries and later duplicates (by `relayCompareKey`), keeping order. */
+export function dedupeRelayUrls(urls: readonly (string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const url of urls) {
+    if (typeof url !== 'string' || url.length === 0) continue;
+    const key = relayCompareKey(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(url);
+  }
+  return out;
+}
+
+/**
+ * Stricter than `isValidRelayUrl`, for the EXTRA consumer relays only: no
+ * whitespace or commas anywhere (they would garble a joined host list), and
+ * the URL must parse with protocol wss:, or ws: on localhost / 127.0.0.1.
+ */
+function isAcceptableExtraRelay(url: string): boolean {
+  if (url.length === 0 || url.length > MAX_AUTH_RELAY_URL_LENGTH) return false;
+  if (/[\s,]/.test(url) || !isValidRelayUrl(url)) return false;
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol === 'wss:') return parsed.hostname.length > 0;
+  return parsed.protocol === 'ws:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+}
+
+/**
+ * The consumer relays of a relay-mode sign-in, primary first.
+ *
+ * `primary` is the relay signet-protocol already accepted (the first
+ * `relay=` value, verbatim) and is always `relays[0]`, so `relay === relays[0]`
+ * holds by construction. Further `relay=` values are trimmed, checked
+ * (`isAcceptableExtraRelay`: stricter than `isValidRelayUrl`, length cap), deduped against what is kept, and the list
+ * stops at `MAX_AUTH_RELAYS`. Invalid extras are dropped, never fatal. With no
+ * primary there is no relay mode, so the list is empty.
+ */
+export function parseAuthRelays(search: string, primary: string | undefined): string[] {
+  if (!primary) return [];
+  const kept = [primary];
+  const keys = new Set([relayCompareKey(primary)]);
+  const all = new URLSearchParams(search).getAll('relay');
+  for (const raw of all.slice(1)) {
+    if (kept.length >= MAX_AUTH_RELAYS) break;
+    const url = raw.trim();
+    if (!isAcceptableExtraRelay(url)) continue;
+    const key = relayCompareKey(url);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    kept.push(url);
+  }
+  return kept;
+}
+
+/**
+ * signet-protocol's URL parser plus the app-side consumer relay list. The
+ * single entry point for turning a `?auth=1…` search string into a request.
+ */
+export function parseUrlAuthRequest(search: string): LoginRequest | null {
+  const request = protocolParse(search);
+  if (!request) return null;
+  return { ...request, relays: parseAuthRelays(search, request.relay) };
+}
+
+/** Consumer relays of a pending request, primary first ([] when not relay mode). */
+export function consumerRelaysOf(request: { relay?: string; relays?: readonly string[] }): string[] {
+  if (!request.relay) return [];
+  const relays = request.relays;
+  if (relays && relays.length > 0 && relays[0] === request.relay) return [...relays];
+  return [request.relay];
+}
 
 function isKeypairToken(token: string): token is KeypairToken {
   return (KEYPAIR_TOKENS as readonly string[]).includes(token);
@@ -201,7 +298,7 @@ export function parseSignInRequest(search: string): {
   postUrl?: string;
   appPermission?: SignInAppPermission;
 } | null {
-  const request = protocolParse(search);
+  const request = parseUrlAuthRequest(search);
   if (!request) return null;
   const { hint, warnings } = parseConsumerHint(search);
   const params = new URLSearchParams(search);

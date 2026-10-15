@@ -15,10 +15,14 @@ import { parseContactInviteLink } from './contact-invite-link';
 import type { ContactInvite } from '@forgesworn/signet-contacts';
 import {
   routeQR as protocolRouteQR,
-  parseUrlAuthParams,
   QR_MAX_PAYLOAD_SIZE,
 } from 'signet-protocol';
-import type { QRAction as ProtocolQRAction } from 'signet-protocol';
+import type {
+  QRAction as ProtocolQRAction,
+  AuthRequest as ProtocolAuthRequest,
+  LoginRequest as ProtocolLoginRequest,
+} from 'signet-protocol';
+import { parseUrlAuthRequest } from './url-auth';
 import { parsePairingRequest } from './companion-pair';
 import type { PairingRequest } from './companion-pair';
 import { isContactsPairingV2, parseContactsPairingRequestV2 } from './companion-pair-v2';
@@ -26,13 +30,36 @@ import type { PairingRequestV2 } from './companion-pair-v2';
 import { isHeartwoodImportLinkText } from './heartwood-operator-import';
 
 export { QR_MAX_PAYLOAD_SIZE };
-export type { AuthRequest, LoginRequest } from 'signet-protocol';
+/**
+ * App-side sign-in requests: the protocol shape plus `relays`, every consumer
+ * relay for relay-mode delivery, primary first (up to three, from repeated
+ * `relay=` params). Invariant: when `relay` is set, `relay === relays[0]`;
+ * when it is not, `relays` is empty. signet-protocol stays single-relay.
+ */
+export type AuthRequest = ProtocolAuthRequest & { relays: string[] };
+export type LoginRequest = ProtocolLoginRequest & { relays: string[] };
 
-// Signet-app-side QRAction: the protocol union plus the companion-rail
-// pairing action, which is an app-distribution contract (like the
-// mysignet.app hostname pin below), not a protocol format.
+/** A protocol-parsed request (JSON/compact QR) carries at most its one relay. */
+function withSingleRelay<T extends ProtocolAuthRequest | ProtocolLoginRequest>(request: T): T & { relays: string[] } {
+  return { ...request, relays: request.relay ? [request.relay] : [] };
+}
+
+/** Protocol routing, with sign-in requests lifted to the app-side shape. */
+function routeProtocolQR(raw: string): QRAction {
+  const action = protocolRouteQR(raw);
+  if (action.type === 'auth') return { type: 'auth', request: withSingleRelay(action.request) };
+  if (action.type === 'login') return { type: 'login', request: withSingleRelay(action.request) };
+  return action;
+}
+
+// Signet-app-side QRAction: the protocol union (with sign-in requests in their
+// app-side shape) plus the companion-rail pairing action, which is an
+// app-distribution contract (like the mysignet.app hostname pin below), not a
+// protocol format.
 export type QRAction =
-  | ProtocolQRAction
+  | Exclude<ProtocolQRAction, { type: 'auth' } | { type: 'login' }>
+  | { type: 'auth'; request: AuthRequest }
+  | { type: 'login'; request: LoginRequest }
   | { type: 'contact-invite'; invite: ContactInvite }
   | { type: 'companion-pair'; request: PairingRequest }
   /** Contacts v2 grant request — same `signet-grant:` carrier as v1, marked
@@ -97,13 +124,13 @@ export function routeQR(data: string): QRAction {
       const url = new URL(raw);
       if (MYSIGNET_HOSTS.has(url.hostname.toLowerCase())) {
         const nostrConnectUri = url.searchParams.get('nostrconnect');
-        if (nostrConnectUri) return protocolRouteQR(nostrConnectUri);
-        const request = parseUrlAuthParams(url.search);
+        if (nostrConnectUri) return routeProtocolQR(nostrConnectUri);
+        const request = parseUrlAuthRequest(url.search);
         if (request) return { type: 'login', request };
         return { type: 'unknown', raw };
       }
     } catch { /* not a URL — fall through */ }
   }
 
-  return protocolRouteQR(raw);
+  return routeProtocolQR(raw);
 }
