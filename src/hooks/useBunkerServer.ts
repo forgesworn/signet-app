@@ -84,6 +84,26 @@ const devLog = (...args: unknown[]): void => {
   }
 };
 
+function normaliseRelayUrl(url: string): string {
+  return url.trim().toLowerCase().replace(/\/+$/, '');
+}
+
+/**
+ * The `switch_relays` answer: null when the persistent serve relay is unknown
+ * or invalid, or the request already arrived on it. Otherwise the persistent
+ * relay first, then the relay the request arrived on. Signet listens on one
+ * relay at a time, so during a nostrconnect window it is not yet on the
+ * persistent relay; a client that replaces its relays with the answer must
+ * keep the relay carrying the live session, or its next request is lost.
+ */
+export function switchRelaysAnswer(persistentRelayUrl: string | undefined, arrivedOnRelayUrl: string | null | undefined): string[] | null {
+  const persistent = persistentRelayUrl?.trim();
+  if (!persistent || !isValidRelayUrl(persistent)) return null;
+  const arrivedOn = arrivedOnRelayUrl?.trim();
+  if (arrivedOn && normaliseRelayUrl(arrivedOn) === normaliseRelayUrl(persistent)) return null;
+  return arrivedOn && isValidRelayUrl(arrivedOn) ? [persistent, arrivedOn] : [persistent];
+}
+
 /**
  * A single identity the bunker server listens for.
  *
@@ -229,7 +249,16 @@ interface Options {
   kinterestAuthorityPubkey?: string;
 
   enabled: boolean;
+  /** The relay this server is listening on right now (may be a temporary pairing relay). */
   relayUrl: string;
+  /**
+   * The relay Signet serves NIP-46 on whenever it serves at all (the
+   * preference relay, or the default). Distinct from `relayUrl`, which can
+   * briefly be a nostrconnect pairing relay. `switch_relays` answers with
+   * this relay so a client stops depending on a relay Signet will leave.
+   * Absent or invalid → `switch_relays` answers null.
+   */
+  persistentRelayUrl?: string;
   /**
    * Identities to listen for. At least one entry = guardian's own identity.
    * Pass an empty array (or `enabled: false`) to stop the server.
@@ -437,7 +466,7 @@ async function publishResponseToSocket(
   }
 }
 
-export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey }: Options) {
+export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey }: Options) {
   const kinterestChildLabelRef = useRef(kinterestChildLabel);
   kinterestChildLabelRef.current = kinterestChildLabel;
   const kinterestChildConsentRef = useRef(kinterestChildConsent);
@@ -500,6 +529,8 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
   const responseGenerationRef = useRef(0);
   const liveConnectionConfigRef = useRef({ enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce });
   liveConnectionConfigRef.current = { enabled, relayUrl, routesKey: routesKey(routes), reconnectNonce };
+  const persistentRelayUrlRef = useRef(persistentRelayUrl);
+  persistentRelayUrlRef.current = persistentRelayUrl;
   const flushResponses = useCallback(() => {
     const ws = wsRef.current;
     for (const [id, entry] of responseOutboxRef.current) {
@@ -989,10 +1020,16 @@ export function useBunkerServer({ enabled, relayUrl, routes, onPairingComplete, 
     }
 
     if (request.method === 'switch_relays') {
-      // NIP-46 expects a JSON array of relay URLs or JSON null. MySignet's
-      // relay choice is still owned by app state, so the truthful response is
-      // "no change" until we wire a persisted server-side relay migration.
-      await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(null));
+      // NIP-46: a JSON array of relay URLs, or JSON null for "no change".
+      // Lead with the relay Signet keeps serving on, so the client's stored
+      // bunker URI reaches it after a restart; also keep the relay this
+      // request came through, which Signet is serving right now. The request
+      // carries no relay list and no client relay set is stored, so the
+      // server cannot see exactly which relays the client uses: arriving on
+      // the persistent relay proves the client already reaches it, so that
+      // answers null, and the client's own same-set check covers the rest.
+      const relays = switchRelaysAnswer(persistentRelayUrlRef.current, liveConnectionConfigRef.current.relayUrl);
+      await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(relays));
       return;
     }
 
