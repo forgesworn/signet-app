@@ -3,6 +3,7 @@ import {
   sanitiseAppLabel,
   extractAppOrigin,
   parseConnectMetadata,
+  connectMetadataParam,
   pairingMatches,
 } from './app-bunker-routing';
 import type { TrustedAppPairing } from '../types';
@@ -102,5 +103,28 @@ describe('pairingMatches', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pairings = [{ clientPubkey: undefined } as any, pairing('aa'.repeat(32))];
     expect(pairingMatches(pairings, 'aa'.repeat(32))).toBe(true);
+  });
+});
+
+describe('connectMetadataParam', () => {
+  const meta = JSON.stringify({ name: 'Game', url: 'https://game.example' });
+
+  it('reads the fourth param, where NIP-46 puts metadata', () => {
+    expect(connectMetadataParam(['pk', 'secret', '', meta])).toBe(meta);
+    expect(connectMetadataParam(['pk', 'secret', 'sign_event:1', meta])).toBe(meta);
+  });
+
+  it('falls back to the third param for older clients', () => {
+    expect(connectMetadataParam(['pk', 'secret', meta])).toBe(meta);
+  });
+
+  it('never reads a permissions string as metadata', () => {
+    expect(connectMetadataParam(['pk', 'secret', 'sign_event,nip44_encrypt'])).toBeUndefined();
+    expect(connectMetadataParam(['pk', 'secret'])).toBeUndefined();
+  });
+
+  it('feeds parseConnectMetadata for either layout', () => {
+    expect(parseConnectMetadata(connectMetadataParam(['pk', '', '', meta]))).toEqual({ label: 'Game', origin: 'https://game.example' });
+    expect(parseConnectMetadata(connectMetadataParam(['pk', '', meta]))).toEqual({ label: 'Game', origin: 'https://game.example' });
   });
 });

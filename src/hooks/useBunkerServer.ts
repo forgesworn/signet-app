@@ -60,7 +60,7 @@ import { inferScope, inferOrigin, type Scope } from '../lib/scope-inference';
 import { resolvePolicy, isOriginScopedScope, dependantAllowAlwaysPersists } from '../lib/autonomy-gate';
 import { checkRateLimit, type RateLimitState } from '../lib/rate-limit';
 import type { AuditEventParams } from '../lib/audit';
-import { parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
+import { connectMetadataParam, parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/persona-bunker-routes';
 import { childGateWireError, type ChildRouteGate } from '../lib/child-bunker';
@@ -780,7 +780,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     if (request.method === 'connect' && route.childGate) {
       // The child's bunker ACKs any client; what it may then do is the gate's
       // call. The metadata label names the app in asks and connected apps.
-      const meta = parseConnectMetadata(request.params[2]);
+      const meta = parseConnectMetadata(connectMetadataParam(request.params));
       try { route.childGate.onConnect?.(request.clientPubkey.toLowerCase(), { label: meta.label ?? '', ...(meta.origin ? { url: meta.origin } : {}) }); }
       catch { /* bookkeeping only */ }
       await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
@@ -825,8 +825,8 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           bindingInFlightRef.current.add(flightKey);
           const bindApp = onAppPairingCompleteRef.current;
           const dependantId = route.dependantId;
-          // params[2] carries the consumer's metadata blob per NIP-46.
-          const meta = parseConnectMetadata(request.params[2]);
+          // The consumer's metadata blob: fourth param per NIP-46, third from older clients.
+          const meta = parseConnectMetadata(connectMetadataParam(request.params));
           let bindError: string | null = null;
           if (bindApp) {
             try {
@@ -941,7 +941,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           }
         }
         if (matched && matchedKey) {
-          const meta = parseConnectMetadata(request.params[2]);
+          const meta = parseConnectMetadata(connectMetadataParam(request.params));
           const finishAuthPair = onAuthFlowPairingCompleteRef.current;
           if (finishAuthPair) {
             try {
