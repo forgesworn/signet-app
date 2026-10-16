@@ -39,7 +39,8 @@ Built on [Nostr](https://nostr.com/) using the [Signet Protocol](https://github.
 
 Prerequisite: Node.js 24, which is what CI runs. The tightest declared floor in
 the toolchain is jsdom 30's `^22.22.2 || ^24.15.0 || >=26`; Vitest 5, Capacitor
-CLI 8 and nsec-tree also need Node 22 or later.
+CLI 8 and nsec-tree also need Node 22 or later. `engines` in package.json
+states that jsdom range.
 
 ```bash
 git clone https://github.com/forgesworn/signet-app.git
