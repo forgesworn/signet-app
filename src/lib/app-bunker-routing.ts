@@ -48,7 +48,20 @@ export function extractAppOrigin(input: unknown): string | undefined {
 }
 
 /**
- * Parse the NIP-46 `connect` request's third param (metadata blob) into
+ * Pick the metadata blob from NIP-46 `connect` params. NIP-46 puts it fourth,
+ * after the requested permissions; older clients (signet-login up to 0.20)
+ * sent it third. Only a JSON object counts, so a permissions string in the
+ * third slot is never read as metadata.
+ */
+export function connectMetadataParam(params: readonly unknown[]): string | undefined {
+  for (const value of [params[3], params[2]]) {
+    if (typeof value === 'string' && value.trimStart().startsWith('{')) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Parse the NIP-46 `connect` request's metadata blob into
  * sanitised `{ label, origin }`. The blob is JSON; both fields are
  * optional. Always returns a label (defaulted) and an optional origin.
  */
