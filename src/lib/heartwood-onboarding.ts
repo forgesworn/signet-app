@@ -33,7 +33,10 @@ export const HEARTWOOD_ONBOARDING_COPY: Record<OnboardingFailure, string> = {
   'bad-key': 'Your Heartwood returned an unexpected key. Nothing was saved.',
 };
 
-const DEFAULT_LIST_TIMEOUT_MS = 10_000;
+// Longer than the firmware's 30 s LIST IDS card, so an unpressed card comes
+// back as the device's own "timeout" reply (not-approved), and only a silent
+// device trips this one (unreachable).
+const DEFAULT_LIST_TIMEOUT_MS = 60_000;
 const DEFAULT_DERIVE_TIMEOUT_MS = 120_000;
 const UNKNOWN_METHOD = /unknown method|method not (supported|found)|unsupported method|not implemented/i;
 const HEX64_LOWER = /^[0-9a-f]{64}$/;

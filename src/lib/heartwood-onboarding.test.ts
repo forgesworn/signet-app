@@ -57,7 +57,7 @@ describe('resolveOnboardingKeys', () => {
     const rf = fake(() => new Promise<string>(() => {}));
     const p = resolveOnboardingKeys(rf, MASTER);
     const assertion = expect(p).rejects.toMatchObject({ reason: 'unreachable', message: HEARTWOOD_ONBOARDING_COPY.unreachable });
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await assertion;
     expect(rf).toHaveBeenCalledTimes(1);
   });
