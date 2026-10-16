@@ -37,9 +37,23 @@ Built on [Nostr](https://nostr.com/) using the [Signet Protocol](https://github.
 
 ## Quick start
 
+Prerequisite: Node.js 24, which is what CI runs. The tightest declared floor in
+the toolchain is jsdom 30's `^22.22.2 || ^24.15.0 || >=26`; Vitest 5, Capacitor
+CLI 8 and nsec-tree also need Node 22 or later.
+
 ```bash
+git clone https://github.com/forgesworn/signet-app.git
+cd signet-app
 npm install
 npm run dev        # starts on https://localhost:5174 (or http if no certs)
+```
+
+`@forgesworn/signet-contacts` is installed from a pinned GitHub commit, so
+`npm install` needs git access to github.com. If npm resolves it to an SSH URL
+and you have no key, route it over HTTPS first (this is what CI does):
+
+```bash
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 ```
 
 For HTTPS (required for WebAuthn on non-localhost):
@@ -57,21 +71,122 @@ npm run dev
 npm run build      # outputs to dist/
 npm run preview    # preview production build
 npm run typecheck  # TypeScript type checking
+npm test           # unit tests (Vitest)
 ```
+
+### Android
+
+The Android app wraps the same web build with Capacitor (application ID
+`app.mysignet`, minSdk 24). There is no npm script for it. You need JDK 21 and
+the Android SDK (compileSdk 36). From the repository root:
+
+```bash
+npm run build && npx cap sync android
+cd android && ./gradlew assembleDebug
+# → app/build/outputs/apk/debug/app-debug.apk (signed with the local debug key)
+```
+
+`npx cap open android` opens the project in Android Studio instead. For a
+signed release build (`./gradlew assembleRelease`), see
+[android/RELEASE_SIGNING.md](android/RELEASE_SIGNING.md).
 
 ## Sign in with Signet
 
 For the combined sign-in and online-play flow, wire examples, verification,
 NIP-46 permission scopes and backwards compatibility, see the
-[app integration guide](docs/app-integration.md). Support depends on the
-installed My Signet version; retain the documented legacy fallback.
+[app integration guide](docs/app-integration.md), which is in this repository.
+Support depends on the installed My Signet version, so keep the legacy
+fallback: older versions, renewals and people who choose online play later use
+the separate `?action=app-permission&permission=online-play` flow, which asks
+for the online-play statement on its own and answers with a
+`signet-app-permission-response` instead of a sign-in answer (the guide's
+"Fallback for a persona already signed in" section has its parameters).
 
 External websites can authenticate users via a redirect flow:
 
 1. Website redirects to `https://mysignet.app/?auth=1&challenge={hex}&origin={url}&name={name}&callback={url}&t={timestamp}`
 2. User unlocks the app and sees an approval screen showing what will be shared
-3. On approve, the app signs the challenge and redirects back to `{callback}?pubkey={hex}&npub={bech32}&signature={hex}&eventId={hex}`
+3. On approve, the app signs the challenge and redirects back to `{callback}?pubkey={hex}&npub={bech32}&signature={hex}&eventId={hex}&t={created_at}`
 4. On deny, redirects to `{callback}?error=denied`
+
+Request parameters:
+
+- `challenge`: 64 hex characters, 32 fresh random bytes per attempt
+- `origin`: `https://` origin of your site (`http://localhost` or `http://127.0.0.1` for development)
+- `callback`: a URL on exactly that origin
+- `name`: your site's display name, 1 to 64 characters
+- `t`: request time in Unix seconds. My Signet ignores the request if it differs from the phone's clock by more than 300 seconds
+- optional `relay` (`wss://`, or `ws://localhost` for development) with `sessionPubkey` (64 hex): both or neither. They switch to cross-device relay delivery, where the answer is a gift wrap on your relay instead of a redirect
+
+Build the URL with `URLSearchParams` or `encodeURIComponent` so each value is
+percent-encoded.
+
+### Verifying the response
+
+My Signet signs one Nostr event and returns its parts in the callback query.
+The event is kind 21236 with empty `content` and these tags, in this order:
+
+```text
+["challenge", <your challenge>]
+["origin", <the exact origin string you sent>]
+["avatar_hash", ...], ["avatar_url", ...], ["avatar_key", ...]   (only if the person shared a persona picture)
+```
+
+Redirect mode adds no `app` tag. Tag order is part of the event ID, so rebuild
+the tags exactly as above. The callback carries:
+
+- `pubkey`: signer's x-only public key, 64 hex characters
+- `npub`: bech32 form of `pubkey`
+- `signature`: BIP-340 Schnorr signature, 128 hex characters
+- `eventId`: NIP-01 event ID, the SHA-256 of `[0, pubkey, created_at, 21236, tags, ""]` as JSON, 64 hex characters
+- `t`: the signed event's `created_at` in Unix seconds, not milliseconds. It reuses the name of the request's `t` but is a different value, and you need it to rebuild the event
+- optional: `display_name` and `warnings` (comma-separated tokens), `fromNP=true`, `bunker`, `app_permission` (see the integration guide) and `avatar_hash`, `avatar_url`, `avatar_key`. Treat all of them as untrusted until the signature checks out
+
+`eventId` is the hash of the rebuilt event and `signature` is the Schnorr
+signature over that hash, so one check of the rebuilt event covers both. Accept
+the response only if the event rebuilt from your own stored `challenge` and
+`origin` verifies, and `t` is within 300 seconds of now (the same window as
+`AUTH_FRESHNESS_WINDOW_SEC` in `signet-verify`). Keep each challenge to one
+attempt and discard it once used. Callback values are ordinary percent-encoded
+query values; read them with `URLSearchParams`. Parameters already on your
+callback URL are kept, and a response parameter with the same name replaces
+yours.
+
+```js
+import { verifyEvent } from 'nostr-tools/pure';
+
+// `sent` is what you stored for this attempt: { challenge, origin }
+function verifySignInCallback(callbackUrl, sent) {
+  const q = new URL(callbackUrl).searchParams;
+  if (q.get('error')) return { ok: false, reason: q.get('error') }; // 'denied'
+  const pubkey = q.get('pubkey'), eventId = q.get('eventId'), sig = q.get('signature');
+  const createdAt = Number(q.get('t'));
+  if (!pubkey || !eventId || !sig || !Number.isInteger(createdAt)) return { ok: false, reason: 'missing-params' };
+  if (Math.abs(Date.now() / 1000 - createdAt) > 300) return { ok: false, reason: 'stale' };
+  const tags = [['challenge', sent.challenge], ['origin', sent.origin]];
+  const hash = q.get('avatar_hash'), url = q.get('avatar_url'), key = q.get('avatar_key');
+  if (hash && url && key) tags.push(['avatar_hash', hash], ['avatar_url', url], ['avatar_key', key]);
+  const event = { id: eventId, pubkey, created_at: createdAt, kind: 21236, tags, content: '', sig };
+  // verifyEvent recomputes the ID from the event, compares it with `id`, then checks the signature
+  if (!verifyEvent(event)) return { ok: false, reason: 'bad-signature' };
+  return { ok: true, pubkey };
+}
+```
+
+Error codes: for sign-in the only `error` value is `denied`, sent with no
+signature parameters. My Signet does not redirect for a request it rejects (a
+bad challenge, an origin that is not `https://`, a callback on another origin,
+a `t` outside the 300-second window or an invalid `app_permission`), so give
+every attempt your own timeout. The codes `invalid_request`, `stale_request` and
+`create_failed` belong to `?action=add-dependant`, not to sign-in.
+
+In relay mode the answer is a NIP-59 gift wrap carrying the whole signed event
+as `authEvent`, with an extra `["app", <name>]` tag. Use the `signet-verify`
+package's `waitForAuthResponse` for that: it unwraps, checks the event, the
+origin and the freshness window, and rejects with `denied`, `timeout`,
+`expired` and other codes. It is a relay-mode helper, not a redirect-callback
+verifier. It is a devDependency in this repository and nothing in `src/`
+imports it.
 
 ## Relay defaults and failover
 
@@ -94,25 +209,38 @@ event locations retain their explicit addresses. Browser development adds
 
 ## Architecture
 
-React 19 SPA with no router library — page state managed in `App.tsx`. All data stored client-side in IndexedDB v3 (via `idb`).
+React 19 SPA with no router library: page state managed in `App.tsx`. All data stored client-side in IndexedDB, schema version 27 (`DB_VERSION` in `src/lib/db.ts`, via `idb`).
 
 ```
 src/
 ├── lib/           — Core logic (crypto, storage, relay, QR routing, URL auth)
 ├── hooks/         — React hooks (identity, family, credentials, relay, connections)
-├── pages/         — Full-page views (20 pages: onboarding, home, verify, settings, connections)
+├── pages/         — Full-page views (about 70 page components: onboarding, home, verify, contacts, settings, connections)
 ├── components/    — Shared UI components (QR, badges, navigation)
-├── types.ts       — TypeScript interfaces
+├── types/         — TypeScript interfaces (`routing.ts` holds the `Page` union)
 └── App.tsx        — Main app component, page routing, URL auth handler
 ```
 
 ## Dependencies
 
-- `signet-protocol` — Protocol library (nsec-tree key derivation, credentials, badges, Shamir)
-- `spoken-token` — Directional word verification for Signet Me
-- `@noble/curves` + `@noble/hashes` + `@noble/ciphers` — Cryptographic primitives
-- `idb` — IndexedDB wrapper
-- `qrcode` + `html5-qrcode` + `jsqr` — QR generation and scanning
+Runtime dependencies, from `package.json`:
+
+- `react` + `react-dom` (19): UI
+- `signet-protocol`: Protocol library (credentials, badges, URL auth parsing and callback building, relay events). The app derives personas with `nsec-tree` and splits backups with `@forgesworn/shamir-words` directly (`src/lib/signet.ts`)
+- `nsec-tree`: Deterministic Nostr sub-identity (persona) derivation from the mnemonic
+- `@forgesworn/shamir-words`: Shamir secret sharing with BIP-39 word encoding, for the 2-of-3 backup
+- `nostr-tools`: Nostr event signing and verification, relay pool, and the NIP-19, NIP-44, NIP-46 and NIP-59 helpers
+- `@forgesworn/kenspeckle`: Kin, kith and ken relationship model with handshake and bond ceremonies
+- `@forgesworn/signet-contacts`: Contacts v2 wire (capability-scoped pairing and grants), installed from a pinned GitHub commit
+- `@forgesworn/tessera-kit`: Privacy-preserving membership-presence filter (declared directly; `src/` does not import it)
+- `spoken-token`: Time-rotating spoken verification words (declared directly; `src/` does not import it, and `vite.config.ts` pre-bundles it)
+- `@noble/curves` + `@noble/hashes` + `@noble/ciphers`: Cryptographic primitives
+- `idb`: IndexedDB wrapper
+- `qrcode` + `html5-qrcode` + `jsqr`: QR generation and scanning
+- `@capacitor/core`, `@capacitor/app`, `@capacitor/local-notifications`, `@capacitor/android`: Android shell, app lifecycle and local notifications
+- `@fontsource-variable/inter`, `@fontsource-variable/playfair-display`, `@fontsource-variable/geist-mono`: Bundled fonts
+
+Build and test tooling (`devDependencies`): Vite 8 with `@vitejs/plugin-react` and `vite-plugin-pwa`, TypeScript 6, Vitest 5 with Testing Library, jsdom and `fake-indexeddb`, Playwright, `@capacitor/cli` and `@capacitor/assets`, and `signet-verify` (not imported by `src/`).
 
 ## Known limitations
 

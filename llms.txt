@@ -1,0 +1,51 @@
+# My Signet
+
+> Identity verification app for the Signet protocol, built on Nostr. A React 19 single-page app (also packaged for Android with Capacitor) that holds a person's keys on their own device, signs "Sign in with Signet" requests from websites, answers NIP-46 remote-signing requests, and acts as a NIP-55 signer for Android apps on the same phone.
+
+Websites integrate through a redirect (or relay) sign-in flow. The redirect callback returns a signed kind 21236 Nostr event split across query parameters. The README section below states exactly what is signed and how to verify it.
+
+## Integrating a website
+
+- [Sign in with Signet](README.md#sign-in-with-signet): request parameters, redirect flow, callback parameters
+- [Verifying the response](README.md#verifying-the-response): signed event kind and tags, units of `t`, 300-second freshness window, encoding, error codes, and a verification snippet using `nostr-tools`
+- [App integration guide](docs/app-integration.md): combined sign-in plus online-play approval (`app_permission`, kind 30420 statement), relay-mode answers, the `?action=app-permission` legacy fallback, NIP-46 `perms`, and family-decision boundaries
+- [Relay defaults and failover](README.md#relay-defaults-and-failover): which relays My Signet uses and why apps should supply their own relay in requests
+
+## Running and building
+
+- [Quick start](README.md#quick-start): Node prerequisites, clone, install, dev server
+- [Build](README.md#build): production build, preview, typecheck, tests
+- [Android](README.md#android): `npm run build && npx cap sync android`, then `./gradlew assembleDebug` in `android/`
+- [Android release signing](android/RELEASE_SIGNING.md): signed release builds
+
+## Architecture and dependencies
+
+- [Architecture](README.md#architecture): `src/` layout; no router library, page state and URL-auth handling live in `src/App.tsx`; client-side IndexedDB at schema version 27 (`DB_VERSION` in `src/lib/db.ts`)
+- [Dependencies](README.md#dependencies): what each package in `package.json` is for
+- [Signet feature matrix](docs/signet-feature-matrix.md): feature coverage across Signet projects, checked by `npm run check:signet-conformance`
+- [Known limitations](README.md#known-limitations)
+
+## Working on the code
+
+Run before committing:
+
+- `npm run typecheck`
+- `npm test` (Vitest; add `--maxWorkers=2` on a loaded machine)
+- `npm run check:signet-conformance`
+- `npm run build`
+
+Security invariants to keep:
+
+- No console output in production code; `src/no-console.test.ts` enforces it
+- Content Security Policy in `index.html` allows scripts from `'self'` only: no `unsafe-eval`, no inline scripts
+- Relay URLs must be `wss://`; `ws://` only for `localhost` and `127.0.0.1`. The single check is `isValidRelayUrl` in `src/lib/relay-url.ts`; import it rather than writing a copy
+- Callback and origin checks: `https://` (or `http://localhost` for development), and the callback must share the request's origin
+- Zeroize private keys and NIP-44 key material after use (see the `.fill(0)` calls in `src/lib/signet.ts`)
+- Private keys are encrypted at rest; do not log or display them
+
+## Optional
+
+- [Changelog](CHANGELOG.md)
+- [Physical mobile smoke test](docs/physical-mobile-smoke.md)
+- [Test consumer](test-consumer/README.md): a local website that signs in against My Signet and verifies the callback for real
+- [Signet protocol library](https://github.com/forgesworn/signet)
