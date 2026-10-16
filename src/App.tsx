@@ -251,8 +251,7 @@ import { PairDependantDevice } from './pages/PairDependantDevice';
 import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
-import { parseHeartwoodIdentities, pickOwnerIdentities } from './lib/heartwood-identities';
-import { derivePersonaToken } from './lib/heartwood-enrolment';
+import { resolveOnboardingKeys, HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
 import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
@@ -305,6 +304,7 @@ import {
   deleteContactGrantV2, listContactOperationsV2, saveContactOperationsV2, isGrantCapError,
 } from './lib/db';
 import { identityKeypairs } from './lib/contacts-sync';
+import { deleteIdentityRecord } from './lib/db';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
 import { isAppInForeground, subscribeAppForeground } from './lib/app-foreground';
@@ -5779,71 +5779,94 @@ export function App() {
     setPendingEncryptionKey(key);
   }, [importLiteMnemonic]);
 
+  // A failed key resolve keeps the connected bunker here so "Try again" does
+  // not need a fresh pairing (a bunker:// secret may be single-use).
+  const heartwoodOnboardingRef = useRef<{ bunkerUri: string; bunker: BunkerSigningBackend; clientSecret: string } | null>(null);
+
   const handleConnectHeartwood = useCallback(async (bunkerUri: string, displayName: string) => {
     // Generate encryption key for auth setup
     const key = generateEncryptionKey();
 
-    // Generate and save bunker client secret
-    const clientSecret = generateBunkerClientSecret();
+    // A different URI drops whatever a previous failed attempt was holding.
+    let held = heartwoodOnboardingRef.current;
+    if (held && held.bunkerUri !== bunkerUri) {
+      held.bunker.destroy();
+      heartwoodOnboardingRef.current = null;
+      held = null;
+    }
 
-    // Connect to the bunker to get the public key
-    const bunker = new BunkerSigningBackend(clientSecret);
+    let bunker: BunkerSigningBackend;
+    let clientSecret: string;
+    if (held) {
+      ({ bunker, clientSecret } = held);
+    } else {
+      // Generate bunker client secret and connect to get the public key
+      clientSecret = generateBunkerClientSecret();
+      bunker = new BunkerSigningBackend(clientSecret);
+      try {
+        await bunker.connect(bunkerUri, 30_000);
+      } catch (err) {
+        bunker.destroy();
+        throw err;
+      }
+    }
+
+    // On a family Heartwood the pairing is bound to the MASTER, which must
+    // never become the user's identity. resolveOnboardingKeys lists or
+    // derives the device's NP/Persona (a derive may need a button press) and
+    // throws rather than fall back to the master; only a signer that does not
+    // speak heartwood_list_identities is treated as a generic single-key one.
+    let keys: OnboardingKeys;
     try {
-      await bunker.connect(bunkerUri, 30_000);
+      keys = await resolveOnboardingKeys(
+        (method, params) => bunker.request(method, params),
+        bunker.activePublicKeyHex,
+      );
     } catch (err) {
-      bunker.destroy();
+      if (err instanceof HeartwoodOnboardingError && err.reason === 'unreachable') {
+        // The socket may be dead (the signer pool does not reconnect), so a
+        // retry builds a fresh connection from the same bunker:// URI.
+        bunker.destroy();
+        heartwoodOnboardingRef.current = null;
+      } else {
+        heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret };
+      }
       throw err;
     }
 
-    // On a family Heartwood the pairing is bound to the MASTER, so
-    // `get_public_key` returns the master pubkey — but the guardian's NP is
-    // the device's derived `natural-person` persona, and that is the key the
-    // firmware addresses every C4/C5 gift-wrap to. Ask the device which
-    // identities it serves (auto-approved extension) and adopt NP/Persona
-    // from there; a generic bunker answers nothing and keeps the master.
-    let npPubkey = bunker.activePublicKeyHex;
-    let personaPubkey = '';
-    try {
-      const raw = await Promise.race([
-        bunker.request('heartwood_list_identities', []),
-        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
-      ]);
-      const owner = pickOwnerIdentities(parseHeartwoodIdentities(raw));
-      if (owner.naturalPerson) npPubkey = owner.naturalPerson;
-      if (owner.persona) personaPubkey = owner.persona;
-      // The registry only lists personas someone has derived; on a fresh
-      // family device the NP/Persona usually aren't there yet even though
-      // the firmware addresses notices to the (deterministic) NP. Derive
-      // them now — idempotent, auto-approved when the pairing lists the
-      // extension (the legacy manager slot), a button/timeout otherwise, in
-      // which case the master stays the NP and the wizard can enrol later.
-      const requestFn = (method: string, params: string[]) => bunker.request(method, params);
-      if (!owner.naturalPerson) {
-        const d = await derivePersonaToken(requestFn, 'natural-person', 10_000);
-        if (d.status === 'ok') npPubkey = d.pubkeyHex;
+    // Create minimal identity record (pubkeys only, no mnemonic/private keys).
+    // Heartwood: persona-first like "Create my Signet" (typed name on the
+    // persona, real-name slot dormant). Generic bunker: the single key is the
+    // active natural person.
+    const npPubkey = keys.kind === 'heartwood' ? keys.naturalPerson : bunker.activePublicKeyHex;
+    const identityRecord: import('./types').SignetIdentity = keys.kind === 'heartwood'
+      ? {
+        id: npPubkey,
+        mnemonic: '',
+        naturalPerson: { publicKey: npPubkey, privateKey: '', displayName: '' },
+        persona: { publicKey: keys.persona, privateKey: '', displayName },
+        primaryKeypair: 'persona',
+        isChild: false,
+        createdAt: Math.floor(Date.now() / 1000),
+        encrypted: true,
+        backedUp: true,
+        naturalPersonActive: false,
       }
-      if (!owner.persona && npPubkey !== bunker.activePublicKeyHex) {
-        const d = await derivePersonaToken(requestFn, 'persona', 10_000);
-        if (d.status === 'ok') personaPubkey = d.pubkeyHex;
-      }
-    } catch {
-      // Not a Heartwood (or no personas yet) — master stays the NP.
-    }
-
-    // Create minimal identity record (pubkeys only, no mnemonic/private keys)
-    const identityRecord: import('./types').SignetIdentity = {
-      id: npPubkey,
-      mnemonic: '',
-      naturalPerson: { publicKey: npPubkey, privateKey: '', displayName },
-      persona: { publicKey: personaPubkey, privateKey: '', displayName: personaPubkey ? 'Persona' : '' },
-      primaryKeypair: 'natural-person',
-      isChild: false,
-      createdAt: Math.floor(Date.now() / 1000),
-      encrypted: true,
-      backedUp: true,
-    };
+      : {
+        id: npPubkey,
+        mnemonic: '',
+        naturalPerson: { publicKey: npPubkey, privateKey: '', displayName },
+        persona: { publicKey: '', privateKey: '', displayName: '' },
+        primaryKeypair: 'natural-person',
+        isChild: false,
+        createdAt: Math.floor(Date.now() / 1000),
+        encrypted: true,
+        backedUp: true,
+        naturalPersonActive: true,
+      };
 
     // Save identity (encrypt with the new key — fields are empty but flag must be set)
+    try {
     await saveIdentityEncrypted(identityRecord, key);
     // M1: encrypt bunkerUri at rest — `key` is the freshly-generated
     // encryption key for this brand-new identity (global `encryptionKey`
@@ -5851,6 +5874,15 @@ export function App() {
     await savePreferences({ ...(await getPreferences(key)), activeAccountId: npPubkey, signingMode: 'bunker', bunkerUri }, key);
     await reloadPreferences(key);
     await saveBunkerSecret(clientSecret, key);
+    } catch (err) {
+      // Keep the bunker held so Try again needs no fresh pairing, and drop
+      // the identity row just written. (Preferences, if already saved, are
+      // overwritten by the next attempt.)
+      heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret };
+      await deleteIdentityRecord(npPubkey).catch(() => {});
+      throw err;
+    }
+    heartwoodOnboardingRef.current = null;
 
     // Set bunker backend state
     setBunkerBackend(bunker);
@@ -5865,6 +5897,11 @@ export function App() {
     // Trigger auth setup flow
     setPendingEncryptionKey(key);
   }, [reloadPreferences]);
+
+  const handleCancelHeartwood = useCallback(() => {
+    heartwoodOnboardingRef.current?.bunker.destroy();
+    heartwoodOnboardingRef.current = null;
+  }, []);
 
   const handleConnectNip07 = useCallback(async (displayName: string) => {
     if (!window.nostr) throw new Error('NIP-07 extension not available');
@@ -10098,7 +10135,7 @@ export function App() {
         />
       );
     }
-    return <OnboardingApp onCreate={handleCreateSignet} onImport={handleImport} onImportLiteMnemonic={handleImportLiteMnemonic} onImportWithProfile={handleImportWithProfile} onImportNsec={handleImportNsec} onConnectHeartwood={handleConnectHeartwood} onConnectNip07={handleConnectNip07} onStartChildPair={() => setPairChildFlow(true)} />;
+    return <OnboardingApp onCreate={handleCreateSignet} onImport={handleImport} onImportLiteMnemonic={handleImportLiteMnemonic} onImportWithProfile={handleImportWithProfile} onImportNsec={handleImportNsec} onConnectHeartwood={handleConnectHeartwood} onCancelHeartwood={handleCancelHeartwood} onConnectNip07={handleConnectNip07} onStartChildPair={() => setPairChildFlow(true)} />;
   }
 
   // Past the !identity guard — both identity and displayIdentity are non-null

@@ -32,6 +32,8 @@ interface Props {
     opts?: { publishProfile?: boolean; existingProfile?: Partial<PublicProfileConfig>; existingEventId?: string; existingCreatedAt?: number; existingRelay?: string; existingBase?: PublicProfileBase; existingContentHash?: string },
   ) => Promise<void>;
   onConnectHeartwood: (bunkerUri: string, displayName: string) => Promise<void>;
+  /** Called when the user backs out of the Heartwood screens, so a held connection can be dropped. */
+  onCancelHeartwood?: () => void;
   onConnectNip07: (displayName: string) => Promise<void>;
   /** Child-device pair path. Parent navigates to PairChildOnboarding. */
   onStartChildPair?: () => void;
@@ -48,7 +50,7 @@ type ImportStep = 'phrase' | 'fetching' | 'name-choice' | 'name' | 'done';
 type LiteImportStep = 'phrase' | 'name' | 'done';
 type HeartwoodStep = 'uri' | 'name' | 'connecting';
 
-export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProfile, onImportNsec, onConnectHeartwood, onConnectNip07, onStartChildPair, onCreate }: Props) {
+export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProfile, onImportNsec, onConnectHeartwood, onCancelHeartwood, onConnectNip07, onStartChildPair, onCreate }: Props) {
   const [flow, setFlow] = useState<Flow>('welcome');
   const [creating, setCreating] = useState(false);
   const [importStep, setImportStep] = useState<ImportStep>('phrase');
@@ -901,7 +903,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleHeartwoodUri} disabled={!bunkerUri.trim()} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => { setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => { onCancelHeartwood?.(); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -913,7 +915,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
           <div className="page fade-in" role="main">
             <h1 style={{ marginBottom: 8 }}>What should we call you?</h1>
             <p style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>
-              Your name as it should appear on your Signet identity.
+              This names your persona. Use a name or handle, not your real name.
             </p>
             {error && (
               <div style={{ padding: 8, background: 'var(--danger-light)', borderRadius: 'var(--radius-sm)', marginBottom: 12, color: 'var(--danger)', fontSize: '0.9rem' }}>
@@ -922,7 +924,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             )}
             <input
               className="input"
-              placeholder="Your name"
+              placeholder="A name or handle — not your real name"
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleHeartwoodComplete()}
@@ -930,9 +932,14 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               autoFocus
             />
             <button className="btn btn-primary" onClick={handleHeartwoodComplete} disabled={!displayName.trim() || heartwoodConnecting} style={{ marginTop: 16 }}>
-              {heartwoodConnecting ? 'Connecting...' : 'Connect'}
+              {heartwoodConnecting ? 'Connecting...' : error ? 'Try again' : 'Connect'}
             </button>
-            <button className="btn btn-ghost" onClick={() => setHeartwoodStep('uri')} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
+            {heartwoodConnecting && (
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: 8 }}>
+                If your Heartwood asks, press its button to approve. It may ask more than once.
+              </p>
+            )}
+            <button className="btn btn-ghost" onClick={() => { onCancelHeartwood?.(); setHeartwoodStep('uri'); }} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -944,6 +951,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
           <div className="page fade-in" role="main" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
             <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>Connecting to your signer...</p>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: 8 }}>Approve the connection on your signer.</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: 8, textAlign: 'center' }}>If your Heartwood asks, press its button to approve. It may ask more than once.</p>
           </div>
         );
       }

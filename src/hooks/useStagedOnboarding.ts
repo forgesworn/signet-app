@@ -56,7 +56,7 @@ export function useStagedOnboarding({ onCreate, onImport }: Options) {
     }
     setBusy(true);
     try {
-      await onImport(mnemonic, name, 'natural-person', false);
+      await onImport(mnemonic, name, 'persona', false);
     } catch (e) {
       setBusy(false);
       setError(e instanceof Error ? e.message : 'Could not restore that Signet — please try again.');
@@ -72,7 +72,7 @@ export function useStagedOnboarding({ onCreate, onImport }: Options) {
     }
     setBusy(true);
     try {
-      await onCreate(name, 'natural-person', false);
+      await onCreate(name, 'persona', false);
     } catch (e) {
       setBusy(false);
       setError(e instanceof Error ? e.message : 'Could not create your Signet — please try again.');
