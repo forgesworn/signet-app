@@ -15,7 +15,7 @@ test('external signer reconnects after an outage and keeps the same signing iden
   await page.getByRole('button', { name: 'Connect a remote signer' }).click();
   await page.getByPlaceholder('bunker://...').fill(signer.uri);
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await page.getByPlaceholder('Your name', { exact: true }).fill('Remote owner');
+  await page.getByPlaceholder('A name or handle — not your real name', { exact: true }).fill('Remote owner');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await page.getByRole('button', { name: 'Set up now' }).click();
   await page.getByRole('button', { name: /6-digit PIN/ }).click();
