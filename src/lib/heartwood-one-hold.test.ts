@@ -1,0 +1,205 @@
+import { describe, it, expect, vi } from 'vitest';
+import { WORDLIST } from 'spoken-token';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { hexToBytes } from '@noble/hashes/utils.js';
+import {
+  pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
+  runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
+  addChildPressPreview, BUNDLE_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+} from './heartwood-one-hold';
+import { BunkerRequestTimeoutError } from './signing-backend';
+
+const NP = 'a'.repeat(64);
+const PERSONA = 'b'.repeat(64);
+const MASTER = 'c'.repeat(64);
+// secp256k1 generator x-coordinate, the firmware-side test vector's client key.
+const VECTOR_CLIENT = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+
+describe('pairWordsForClient', () => {
+  it('matches an independent computation of the 4.2 formula for the vector key', () => {
+    const prefix = new Uint8Array([...new TextEncoder().encode('heartwood-pair-words'), 0]);
+    const key = hexToBytes(VECTOR_CLIENT);
+    const msg = new Uint8Array(prefix.length + 32);
+    msg.set(prefix); msg.set(key, prefix.length);
+    const d = sha256(msg);
+    const expected = [0, 1, 2].map(i => WORDLIST[((d[2 * i] << 8) | d[2 * i + 1]) % 2048]);
+    expect(pairWordsForClient(VECTOR_CLIENT)).toEqual(expected);
+  });
+
+  it('pins the three words for the vector key', () => {
+    // Pinned from this implementation; compare against the firmware's own vector when it lands.
+    expect(pairWordsForClient(VECTOR_CLIENT)).toEqual(PINNED_WORDS);
+  });
+
+  it('is case-insensitive, deterministic and differs per key', () => {
+    expect(pairWordsForClient(VECTOR_CLIENT.toUpperCase())).toEqual(pairWordsForClient(VECTOR_CLIENT));
+    expect(pairWordsForClient('1'.repeat(64))).not.toEqual(pairWordsForClient(VECTOR_CLIENT));
+  });
+
+  it('every word is in the en-v1 list and is at most 8 letters', () => {
+    for (const w of pairWordsForClient(VECTOR_CLIENT)) {
+      expect(WORDLIST).toContain(w);
+      expect(w.length).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it('rejects a malformed key', () => {
+    expect(() => pairWordsForClient('abc')).toThrow();
+  });
+});
+
+const PINNED_WORDS: [string, string, string] = ['nice', 'never', 'repair'];
+
+describe('cardLines', () => {
+  const words: [string, string, string] = ['one', 'two', 'three'];
+  it('everyday, persona only', () => {
+    expect(cardLines({ words, label: 'my signet', realName: false, style: 'everyday' })).toEqual({
+      header: 'FULL ACCESS', label: 'MY SIGNET', wordsLine1: 'one two', wordsLine2: 'three',
+      scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACK UP'], hold: 'HOLD 5 SECONDS',
+    });
+  });
+  it('extra careful with the real name', () => {
+    const c = cardLines({ words, realName: true, style: 'careful' });
+    expect(c.scope).toBe('PERSONA + REAL NAME');
+    expect(c.powers).toEqual(['SIGNS ALONE: BACKUPS', 'ASKS: EVERYTHING ELSE']);
+    expect(c.label).toBeNull();
+  });
+});
+
+describe('buildBundleParam', () => {
+  it('create:true, persona only, everyday', () => {
+    expect(JSON.parse(buildBundleParam({ create: true, actAsNaturalPerson: false, style: 'everyday' }))).toEqual({
+      v: 1, personas: ['natural-person', 'persona'], act_as: ['persona'], create: true, style: 'everyday',
+    });
+  });
+  it('act_as includes the real identity only when asked', () => {
+    const p = JSON.parse(buildBundleParam({ create: true, actAsNaturalPerson: true, style: 'careful' }));
+    expect(p.act_as).toEqual(['natural-person', 'persona']);
+    expect(p.style).toBe('careful');
+  });
+  it('create:false carries expect, lowercased', () => {
+    const p = JSON.parse(buildBundleParam({
+      create: false, actAsNaturalPerson: false, style: 'everyday',
+      expect: { naturalPerson: NP.toUpperCase(), persona: PERSONA },
+    }));
+    expect(p.create).toBe(false);
+    expect(p.expect).toEqual({ 'natural-person': NP, persona: PERSONA });
+  });
+});
+
+describe('parseBundleReply', () => {
+  const ctx = { masterPubkey: MASTER, requestedStyle: 'everyday' as const };
+  it('accepts the pinned 4.1 shape', () => {
+    const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'careful' });
+    expect(parseBundleReply(raw, ctx)).toEqual({ naturalPerson: NP, persona: PERSONA, actAs: ['persona'], style: 'careful' });
+  });
+  it('accepts the 4.3 personas-array shape with the same checks', () => {
+    const raw = JSON.stringify({ v: 1, personas: [
+      { name: 'natural-person', pubkey: NP, index: 0 }, { name: 'persona', pubkey: PERSONA, index: 0 }] });
+    expect(parseBundleReply(raw, ctx)).toMatchObject({ naturalPerson: NP, persona: PERSONA, style: 'everyday' });
+  });
+  it.each([
+    ['master as persona', { 'natural-person': NP, persona: MASTER }],
+    ['master as real identity', { 'natural-person': MASTER, persona: PERSONA }],
+    ['same key twice', { 'natural-person': NP, persona: NP }],
+    ['uppercase hex', { 'natural-person': NP.toUpperCase(), persona: PERSONA }],
+    ['short key', { 'natural-person': 'ab', persona: PERSONA }],
+    ['missing persona', { 'natural-person': NP }],
+  ])('rejects %s', (_n, pubkeys) => {
+    expect(parseBundleReply(JSON.stringify({ v: 1, pubkeys, owner: true }), ctx)).toBeNull();
+  });
+  it('rejects owner:false, junk and a create:false reply that differs from expect', () => {
+    expect(parseBundleReply(JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: false }), ctx)).toBeNull();
+    expect(parseBundleReply('nope', ctx)).toBeNull();
+    expect(parseBundleReply('[]', ctx)).toBeNull();
+    const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true });
+    expect(parseBundleReply(raw, { ...ctx, expect: { persona: 'd'.repeat(64) } })).toBeNull();
+    expect(parseBundleReply(raw, { ...ctx, expect: { persona: PERSONA, naturalPerson: NP } })).not.toBeNull();
+  });
+});
+
+describe('classifyBundleError', () => {
+  it.each([
+    ['unauthorised', 'continue', PAIRING_PROBLEM_COPY.strict],
+    ['unauthorised: pairing has a kinds list', 'continue', PAIRING_PROBLEM_COPY.everything],
+    ['unauthorised: pairing asks for every request', 'continue', PAIRING_PROBLEM_COPY.everything],
+    ['unauthorised: pairing shared by another device', 'continue', PAIRING_PROBLEM_COPY.shared],
+    ['DEVICE_APPROVAL_REQUIRED', 'continue', PAIRING_PROBLEM_COPY.phoneMayOk],
+    ['-4 storage full', 'continue', DEVICE_LIMIT_COPY.storageFull],
+    ['-4 no persona tree on this master', 'continue', DEVICE_LIMIT_COPY.noPersonaTree],
+    ['-4 method list full', 'continue', DEVICE_LIMIT_COPY.methodListFull],
+    ['-4 approval list full', 'silent', ''],
+    ['-3 pubkey mismatch', 'mismatch', FULL_ACCESS_COPY.pairingMismatch],
+    ['-3 persona missing', 'mismatch', FULL_ACCESS_COPY.personaMissing],
+    ['-3 malformed bundle', 'silent', ''],
+    ['-3 bundle names a child', 'silent', ''],
+    ['user denied', 'retry', FULL_ACCESS_COPY.declined],
+    ['timeout', 'retry', FULL_ACCESS_COPY.declined],
+    ['something unforeseen', 'silent', ''],
+  ])('%s', (err, action, message) => {
+    expect(classifyBundleError(err)).toMatchObject({ action, message });
+  });
+  it('our own expiry and a transport failure', () => {
+    expect(classifyBundleError(new BunkerRequestTimeoutError('heartwood_approve_bundle')))
+      .toMatchObject({ action: 'retry', message: FULL_ACCESS_COPY.declined });
+    expect(classifyBundleError(new Error('publish failed')))
+      .toMatchObject({ action: 'retry', message: FULL_ACCESS_COPY.unreachable });
+  });
+});
+
+describe('runApproveBundle', () => {
+  const okReply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'everyday' });
+  it('sends exactly one request with the 140 s timeout and returns the reply', async () => {
+    const request = vi.fn().mockResolvedValue(okReply);
+    const out = await runApproveBundle(request, { create: true, actAsNaturalPerson: false, style: 'everyday', masterPubkey: MASTER });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0][0]).toBe('heartwood_approve_bundle');
+    expect(request.mock.calls[0][2]).toBe(BUNDLE_TIMEOUT_MS);
+    expect(out).toMatchObject({ ok: true, reply: { persona: PERSONA } });
+  });
+  it('a refusal comes back as a failure, not a throw, and is not retried', async () => {
+    const request = vi.fn().mockRejectedValue('unauthorised');
+    const out = await runApproveBundle(request, { create: true, actAsNaturalPerson: false, style: 'everyday', masterPubkey: MASTER });
+    expect(out).toMatchObject({ ok: false, failure: { code: 'strict' } });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it('an unusable reply is a silent failure', async () => {
+    const request = vi.fn().mockResolvedValue('{"v":1}');
+    const out = await runApproveBundle(request, { create: true, actAsNaturalPerson: false, style: 'everyday', masterPubkey: MASTER });
+    expect(out).toMatchObject({ ok: false, failure: { code: 'bad-reply' } });
+  });
+});
+
+describe('owner status and narrow', () => {
+  it('parses status and defaults the style', () => {
+    expect(parseOwnerStatus('{"owner":true,"style":"careful"}')).toEqual({ owner: true, style: 'careful' });
+    expect(parseOwnerStatus('{"owner":false}')).toEqual({ owner: false, style: 'everyday' });
+    expect(parseOwnerStatus('{"owner":"yes"}')).toBeNull();
+    expect(parseOwnerStatus('x')).toBeNull();
+  });
+  it('fetchOwnerStatus turns any failure into null (unknown, not off)', async () => {
+    expect(await fetchOwnerStatus(vi.fn().mockRejectedValue(new Error('x')))).toBeNull();
+    expect(await fetchOwnerStatus(vi.fn().mockResolvedValue('{"owner":true,"style":"everyday"}'))).toEqual({ owner: true, style: 'everyday' });
+  });
+  it('narrow sends the careful style only', async () => {
+    const request = vi.fn().mockResolvedValue('{"style":"careful","changed":true}');
+    expect(await narrowToCareful(request)).toEqual({ ok: true, changed: true });
+    expect(request.mock.calls[0][0]).toBe('heartwood_owner_narrow');
+    expect(JSON.parse(request.mock.calls[0][1][0])).toEqual({ v: 1, style: 'careful' });
+  });
+  it('narrow on an unmarked pairing says so', async () => {
+    const out = await narrowToCareful(vi.fn().mockRejectedValue('unauthorised'));
+    expect(out.ok).toBe(false);
+  });
+});
+
+describe('capability gate and press preview', () => {
+  it('only a list naming the bundle method counts', () => {
+    expect(supportsApproveBundle(['sign_event', 'heartwood_approve_bundle'])).toBe(true);
+    expect(supportsApproveBundle(['sign_event'])).toBe(false);
+    expect(supportsApproveBundle(null)).toBe(false);
+  });
+  it('names the child in the two-press line', () => {
+    expect(addChildPressPreview(' Sam ')).toBe('Your Heartwood will ask twice: first for Sam\'s real-name key, then for Sam\'s persona key.');
+  });
+});
