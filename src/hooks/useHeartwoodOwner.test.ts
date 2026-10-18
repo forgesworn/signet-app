@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
+import type { HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useHeartwoodOwner, type UseHeartwoodOwnerArgs } from './useHeartwoodOwner';
 import { BunkerRequestTimeoutError, type BunkerSigningBackend } from '../lib/signing-backend';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
+
+const listClientsMock = vi.hoisted(() => vi.fn());
+vi.mock('../lib/heartwood-mgmt', async (orig) => ({
+  ...(await orig<typeof import('../lib/heartwood-mgmt')>()),
+  listClients: listClientsMock,
+}));
 
 const NP = 'a'.repeat(64);
 const PERSONA = 'b'.repeat(64);
@@ -179,5 +186,26 @@ describe('useHeartwoodOwner', () => {
     expect(out).toMatchObject({ ok: false, failure: { code: 'no-answer' } });
     await waitFor(() => expect(result.current.status).toEqual({ owner: true, style: 'everyday' }));
     expect(statusCalls).toBe(2);
+  });
+
+  it('m1: with an operator key it reads the methods listed on this phone\'s own pairing', async () => {
+    listClientsMock.mockResolvedValue([{
+      slotIndex: 2, label: 'My Signet', secretFingerprint: 'fp', autoApprove: true, signingApproved: true,
+      strictPermissions: false, currentPubkey: null, authorizedPubkeys: [CLIENT], allowedKinds: [],
+      allowedMethods: ['sign_event', 'heartwood_derive_persona'], escalate: false, petitionOnDeny: false,
+      auditChildWrap: false, boundIdentity: null,
+    }]);
+    const operatorClient = { isOpen: true } as unknown as HeartwoodMgmtClient;
+    const bunker = fakeBunker(async () => '{"owner":true,"style":"everyday"}');
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, operatorClient })));
+    await waitFor(() => expect(result.current.ownSlotMethods).toEqual(['sign_event', 'heartwood_derive_persona']));
+    expect(result.current.label).toBe('My Signet');
+  });
+
+  it('m1: without an operator key the methods are unknown (null), never guessed', async () => {
+    const bunker = fakeBunker(async () => '{"owner":true,"style":"everyday"}');
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER })));
+    await waitFor(() => expect(result.current.status).not.toBeNull());
+    expect(result.current.ownSlotMethods).toBeNull();
   });
 });

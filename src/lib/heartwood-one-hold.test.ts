@@ -5,7 +5,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, addChildRaisesCards, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
 import { BunkerRequestTimeoutError, SIGNER_REQUEST_TIMEOUT_MS } from './signing-backend';
 
@@ -335,5 +335,18 @@ describe('ownerOfferState (A8, M2, m2)', () => {
     expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: null }).offer).toBe(true);
     expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: false }).offer).toBe(true);
     expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: true }).offer).toBe(false);
+  });
+});
+
+describe('addChildRaisesCards (m1, D4)', () => {
+  it('shows the preview when keys are made on the device and nothing says otherwise', () => {
+    expect(addChildRaisesCards({ deviceDerive: true, ownSlotMethods: null })).toBe(true);
+    expect(addChildRaisesCards({ deviceDerive: true, ownSlotMethods: ['sign_event'] })).toBe(true);
+  });
+  it('shows nothing when the operator has listed derive on this pairing: no card comes up', () => {
+    expect(addChildRaisesCards({ deviceDerive: true, ownSlotMethods: ['sign_event', 'heartwood_derive_persona'] })).toBe(false);
+  });
+  it('shows nothing when keys are not made on the device', () => {
+    expect(addChildRaisesCards({ deviceDerive: false, ownSlotMethods: null })).toBe(false);
   });
 });

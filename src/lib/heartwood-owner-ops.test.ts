@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { findOwnSlot, turnOffFullAccess, ownSlotLabel } from './heartwood-owner-ops';
+import { findOwnSlot, turnOffFullAccess, ownSlotLabel, ownSlotInfo } from './heartwood-owner-ops';
 import type { DeviceClientSlot } from './heartwood-mgmt-types';
 
 const ME = 'd'.repeat(64);
@@ -54,5 +54,16 @@ describe('ownSlotLabel', () => {
   it('returns the label or null', async () => {
     expect(await ownSlotLabel({ listClients: async () => [slot({ authorizedPubkeys: [ME] })] }, ME)).toBe('My Signet');
     expect(await ownSlotLabel({ listClients: async () => { throw new Error('x'); } }, ME)).toBeNull();
+  });
+});
+
+describe('ownSlotInfo (decision 11)', () => {
+  it('returns the label and the methods the device lists for this phone\'s pairing', async () => {
+    const info = await ownSlotInfo({ listClients: async () => [slot({ authorizedPubkeys: [ME], allowedMethods: ['sign_event', 'heartwood_derive_persona'] })] }, ME);
+    expect(info).toEqual({ label: 'My Signet', allowedMethods: ['sign_event', 'heartwood_derive_persona'] });
+  });
+  it('is null when the slot is not found or the list fails', async () => {
+    expect(await ownSlotInfo({ listClients: async () => [slot()] }, ME)).toBeNull();
+    expect(await ownSlotInfo({ listClients: async () => { throw new Error('x'); } }, ME)).toBeNull();
   });
 });

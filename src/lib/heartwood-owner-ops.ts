@@ -39,13 +39,24 @@ export async function turnOffFullAccess(io: OwnerOpsIo, clientPubkeyHex: string)
   }
 }
 
-/** The pairing's label as the device lists it, for A9. */
-export async function ownSlotLabel(io: Pick<OwnerOpsIo, 'listClients'>, clientPubkeyHex: string): Promise<string | null> {
+/** What the device lists for this phone's own pairing: its label (A9) and its allowed methods (decision 11). */
+export interface OwnSlotInfo {
+  label: string | null;
+  allowedMethods: string[];
+}
+
+export async function ownSlotInfo(io: Pick<OwnerOpsIo, 'listClients'>, clientPubkeyHex: string): Promise<OwnSlotInfo | null> {
   try {
     const slot = findOwnSlot(await io.listClients(), clientPubkeyHex);
-    const label = slot?.label.trim();
-    return label ? label.slice(0, 40) : null;
+    if (!slot) return null;
+    const label = slot.label.trim();
+    return { label: label ? label.slice(0, 40) : null, allowedMethods: [...slot.allowedMethods] };
   } catch {
     return null;
   }
+}
+
+/** The pairing's label as the device lists it, for A9. */
+export async function ownSlotLabel(io: Pick<OwnerOpsIo, 'listClients'>, clientPubkeyHex: string): Promise<string | null> {
+  return (await ownSlotInfo(io, clientPubkeyHex))?.label ?? null;
 }

@@ -253,7 +253,7 @@ import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { resolveOnboardingKeys, HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
 import {
-  negotiateFullAccess, ownerOfferState, FULL_ACCESS_COPY,
+  negotiateFullAccess, ownerOfferState, addChildRaisesCards, FULL_ACCESS_COPY,
   type FullAccessDecision, type HeartwoodConnectUi, type OwnerStyle,
 } from './lib/heartwood-one-hold';
 import { useHeartwoodOwner } from './hooks/useHeartwoodOwner';
@@ -13120,7 +13120,8 @@ export function App() {
           bunkerServerEnabled={bunkerServerEnabled}
           onBack={() => navigateBack()}
           showRoleConfirm={!preferences.dependantRoleConfirmedAt}
-          heartwoodDeriveCards={!!dependantDeviceDerive && !!bunkerRouter}
+          heartwoodDeriveCards={addChildRaisesCards({ deviceDerive: !!dependantDeviceDerive && !!bunkerRouter, ownSlotMethods: heartwoodOwner.ownSlotMethods })}
+          heartwoodFullAccess={heartwoodOwner.status?.owner === true}
           recoveryWords={addDependantRecoveryWords}
           onMarkBackedUp={markBackedUp}
         />

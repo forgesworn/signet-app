@@ -26,7 +26,7 @@ import {
   CAP_OWNER_NARROW, fetchOwnerStatus, narrowToCareful, pairWordsForClient, runApproveBundle, supportsApproveBundle,
   type BundleRunResult, type NarrowResult, type OwnerStatus, type OwnerStyle,
 } from '../lib/heartwood-one-hold';
-import { ownSlotLabel, turnOffFullAccess, type TurnOffResult } from '../lib/heartwood-owner-ops';
+import { ownSlotInfo, turnOffFullAccess, type TurnOffResult } from '../lib/heartwood-owner-ops';
 
 export interface UseHeartwoodOwnerArgs {
   /** Bunker mode, unlocked, not a paired-child install. */
@@ -62,6 +62,12 @@ export interface UseHeartwoodOwnerReturn {
   everHadFullAccess: boolean;
   /** The pairing's label, when an operator key lets us read it. */
   label: string | null;
+  /**
+   * The methods the device lists for this phone's own pairing, when an operator
+   * key lets us read them (`null` = unknown). Decision 11: a pairing that lists
+   * `heartwood_derive_persona` makes new keys with no card.
+   */
+  ownSlotMethods: string[] | null;
   hasOperatorKey: boolean;
   /** A bundle is in flight (the vault poller must not queue cards beside it). */
   busy: boolean;
@@ -92,6 +98,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
   // `supported` is true and the answer is wrongly taken as "not pending".
   const [settled, setSettled] = useState<{ router: BunkerBackendRouter | null; tick: number } | null>(null);
   const [label, setLabel] = useState<string | null>(null);
+  const [ownSlotMethods, setOwnSlotMethods] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const busyRef = useRef(false);
@@ -128,16 +135,23 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supported, router, request, refreshTick]);
 
-  // A9: the pairing's label, only when an operator key lets us read the slot list.
+  // A9: the pairing's label, and decision 11: whether it lists derive. Only when
+  // an operator key lets us read the slot list. Not gated on the bundle method:
+  // a D4 install on older firmware has the same "no card" case.
+  const canReadSlots = enabled && connected && !!bunker;
   useEffect(() => {
-    if (!supported || !operatorClient || !operatorClient.isOpen || !clientPubkey) { setLabel(null); return; }
+    if (!canReadSlots || !operatorClient || !operatorClient.isOpen || !clientPubkey) { setLabel(null); setOwnSlotMethods(null); return; }
     let cancelled = false;
-    void ownSlotLabel(
+    void ownSlotInfo(
       { listClients: () => withOperatorLock(operatorClient, () => listClients(operatorClient)) },
       clientPubkey,
-    ).then((l) => { if (!cancelled) setLabel(l); });
+    ).then((info) => {
+      if (cancelled) return;
+      setLabel(info?.label ?? null);
+      setOwnSlotMethods(info?.allowedMethods ?? null);
+    });
     return () => { cancelled = true; };
-  }, [supported, operatorClient, clientPubkey, refreshTick]);
+  }, [canReadSlots, operatorClient, clientPubkey, refreshTick]);
 
   const run = useCallback(async (style: OwnerStyle): Promise<BundleRunResult> => {
     if (!supported || !bunker) {
@@ -208,7 +222,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   return {
-    supported, status, checking, awaitingFirstStatus, everHadFullAccess: storedStyle !== undefined, label,
+    supported, status, checking, awaitingFirstStatus, everHadFullAccess: storedStyle !== undefined, label, ownSlotMethods,
     hasOperatorKey: !!operatorClient, busy, words, includeRealName, canNarrow, run, narrow, turnOff, refresh,
   };
 }

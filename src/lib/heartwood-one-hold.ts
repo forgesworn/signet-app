@@ -169,6 +169,19 @@ export const DEVICE_LIMIT_COPY = {
   methodListFull: 'This pairing has no room for full access. Remove some of its permissions in Sapwood, then try again.',
 } as const;
 
+/** The method that makes a new key on the device; a pairing that lists it makes keys with no card. */
+export const CAP_DERIVE_PERSONA = 'heartwood_derive_persona';
+
+/**
+ * Decision 11: show the add-child press preview only when cards will actually
+ * appear. `ownSlotMethods` is the operator's view of this phone's pairing
+ * (`null` when there is no operator key, so the answer is unknown and the
+ * preview is shown). A pairing that lists derive raises no card.
+ */
+export function addChildRaisesCards(args: { deviceDerive: boolean; ownSlotMethods: readonly string[] | null }): boolean {
+  return args.deviceDerive && !(args.ownSlotMethods?.includes(CAP_DERIVE_PERSONA) ?? false);
+}
+
 /** The private backups a fresh install makes: profiles, two contact lists, credentials and settings. */
 export const FIRST_SYNC_BACKUPS = 5;
 
@@ -191,7 +204,7 @@ export function separatelyHint(backups: number = FIRST_SYNC_BACKUPS): string {
  * full-access mark on this phone the Heartwood asks exactly twice; without it
  * the child's first backups ask as well, so the line says "more than twice".
  */
-export function addChildPressPreview(name: string, fullAccess: boolean = true): string {
+export function addChildPressPreview(name: string, fullAccess: boolean = false): string {
   const n = name.trim();
   const possessive = n ? `${n}'s` : 'their';
   return fullAccess
