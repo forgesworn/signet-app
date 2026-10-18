@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { FullAccessChoice } from './FullAccessChoice';
-import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, type BundleRunResult } from '../lib/heartwood-one-hold';
+import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, classifyBundleError, separatelyHint, type BundleRunResult } from '../lib/heartwood-one-hold';
 
 const WORDS: [string, string, string] = ['nice', 'never', 'repair'];
 const NP = 'a'.repeat(64);
@@ -119,5 +119,38 @@ describe('FullAccessChoice', () => {
     setup({ separatelyLabel: 'Not now', initialStyle: 'careful' });
     expect(screen.getByRole('button', { name: 'Not now' })).toBeTruthy();
     expect((screen.getByLabelText(/Extra careful/) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('M4: a busy or changed refusal at onboarding shows Try again instead of falling into today\'s flow', async () => {
+    const failure = classifyBundleError('signer is busy with another approval; retry shortly');
+    const onRun = vi.fn().mockResolvedValueOnce({ ok: false, failure }).mockResolvedValueOnce(OK);
+    const p = setup({ onRun });
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    expect(await screen.findByText(FULL_ACCESS_COPY.busy)).toBeTruthy();
+    expect(p.onSeparately).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.tryAgain }));
+    await waitFor(() => expect(p.onApproved).toHaveBeenCalled());
+  });
+
+  it('M1: the real escalate-slot refusal shows the Phone may OK line', async () => {
+    const failure = classifyBundleError('this request must be approved at the device; a guardian verdict cannot answer it');
+    setup({ onRun: vi.fn().mockResolvedValue({ ok: false, failure }) });
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    expect(await screen.findByText(PAIRING_PROBLEM_COPY.phoneMayOk)).toBeTruthy();
+  });
+
+  it('M3: the separately hint gives the real number of cards', () => {
+    setup({ showSeparatelyHint: true });
+    expect(screen.getByText(separatelyHint())).toBeTruthy();
+    expect(separatelyHint()).toContain('about 19 times');
+  });
+
+  it('m4: a label is drawn as the firmware draws it; without one a placeholder keeps the line count', () => {
+    const { unmount } = render(<FullAccessChoice words={WORDS} includeRealName={false} label="My Signet" onRun={vi.fn()} onApproved={vi.fn()} onSeparately={vi.fn()} />);
+    const lines = (screen.getByTestId('full-access-card').querySelectorAll('div > div > div') as NodeListOf<HTMLElement>);
+    expect(lines[0].textContent).toBe('My Signet');
+    unmount();
+    setup();
+    expect(screen.getByTestId('full-access-card').textContent).toContain("(this pairing's name)");
   });
 });

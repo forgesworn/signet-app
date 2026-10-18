@@ -205,7 +205,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
         onSeparately={() => setOwnerChoice(null)}
         separatelyLabel="Not now"
         continueLabel="Close"
-        silentMessage="Full access couldn't be set up. Nothing was changed."
+        silentMessage="Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off."
       />
     );
   }

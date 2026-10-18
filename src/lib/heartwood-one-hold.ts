@@ -69,13 +69,35 @@ export function pairWordsForClient(clientPubkeyHex: string): [string, string, st
 
 export interface CardLines {
   header: string;
-  label: string | null;
+  /** The pairing's name as the Heartwood draws it, or a placeholder when it is not known here. */
+  label: string;
+  /** False when `label` is the placeholder, so the line count still matches the Heartwood's card. */
+  labelKnown: boolean;
   wordsLine1: string;
   wordsLine2: string;
   scope: string;
   /** Everyday: one line. Extra careful: two. */
   powers: string[];
   hold: string;
+}
+
+/** Standing in for the pairing's name where this phone cannot read it (onboarding). */
+export const CARD_LABEL_PLACEHOLDER = '(this pairing\'s name)';
+
+/**
+ * Characters the label line takes on the Heartwood's panel. The firmware draws
+ * the label as typed, shows anything outside printable ASCII as `?`, and cuts a
+ * longer one to this width with `..` (common/src/owner_pairing.rs
+ * `full_access_card`); this is its preview width, so the drawing here may cut a
+ * very long name a little earlier or later than a given panel does.
+ */
+export const CARD_LABEL_MAX_CHARS = 21;
+
+/** The label line exactly as the firmware builds it (no upper-casing). */
+export function cardLabelLine(label: string, maxChars: number = CARD_LABEL_MAX_CHARS): string {
+  const printable = Array.from(label, c => (c >= ' ' && c <= '~' ? c : '?')).join('');
+  const room = Math.max(maxChars, 3);
+  return printable.length <= room ? printable : `${printable.slice(0, room - 2)}..`;
 }
 
 export function cardLines(args: {
@@ -87,7 +109,8 @@ export function cardLines(args: {
   const label = (args.label ?? '').trim();
   return {
     header: 'FULL ACCESS',
-    label: label ? label.toUpperCase().slice(0, 24) : null,
+    label: label ? cardLabelLine(label) : CARD_LABEL_PLACEHOLDER,
+    labelKnown: label !== '',
     wordsLine1: `${args.words[0]} ${args.words[1]}`,
     wordsLine2: args.words[2],
     scope: args.realName ? 'PERSONA + REAL NAME' : 'PERSONA ONLY',
@@ -105,16 +128,19 @@ export function cardLines(args: {
 export const FULL_ACCESS_COPY = {
   heading: 'Give this phone full access?',
   covers: 'This phone can sign in, post and back up as your persona (and your real name, if you use it), including your children\'s backups. You can take it back in Settings.',
+  realNameForLegacyBackups: 'Your older backups still sign with your real-name key, so this includes it.',
   expect: 'Your Heartwood will show FULL ACCESS and these three words. Check they match, then hold its button for 5 seconds.',
   warning: 'Your Heartwood only shows FULL ACCESS when you start it here. If it ever shows it at another time, don\'t hold the button.',
   setUp: 'Set up with one hold',
   separately: 'Approve each thing separately',
-  separatelyHint: 'Your Heartwood will then ask a few times, once for each thing: first to list your keys, then once for each key it has to make.',
   styleHeading: 'How should this phone sign?',
   everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys, money, your real name the first time.' },
   careful: { name: 'Extra careful', tag: '', body: 'Only backups happen on their own. Every sign-in, post and message asks on your Heartwood, so they wait until you\'re home.' },
   holding: 'Hold the button on your Heartwood for 5 seconds. It shows FULL ACCESS and the three words above.',
   declined: 'Full access wasn\'t approved. Nothing changed.',
+  noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again.',
+  busy: 'Your Heartwood was busy. Nothing changed. Try again.',
+  changed: 'Something changed on your Heartwood while it waited. Nothing changed here. Try again.',
   tryAgain: 'Try again',
   unreachable: 'Couldn\'t reach your Heartwood. Check it\'s switched on and online, then try again. Nothing changed.',
   pairingMismatch: 'Your Heartwood\'s keys don\'t match this phone\'s. Nothing was changed.',
@@ -143,11 +169,34 @@ export const DEVICE_LIMIT_COPY = {
   methodListFull: 'This pairing has no room for full access. Remove some of its permissions in Sapwood, then try again.',
 } as const;
 
-/** How many presses are coming, and what each says (decision 11). */
-export function addChildPressPreview(name: string): string {
+/** The private backups a fresh install makes: profiles, two contact lists, credentials and settings. */
+export const FIRST_SYNC_BACKUPS = 5;
+
+/**
+ * How many times today's flow asks, so the owner weighing one hold against it
+ * sees the real cost (decision 11): one card to list the keys, one for each of
+ * the two keys it makes, three for each backup (two key checks and one
+ * REMEMBER AS), and one more for the older backups that sign as the real name.
+ */
+export function separateCardCount(backups: number = FIRST_SYNC_BACKUPS): number {
+  return 1 + 2 + 3 * backups + 1;
+}
+
+export function separatelyHint(backups: number = FIRST_SYNC_BACKUPS): string {
+  return `Your Heartwood will then ask about ${separateCardCount(backups)} times over the first few minutes: once to list your keys, once for each key it makes, and about three times for each of your ${backups} backups.`;
+}
+
+/**
+ * How many presses are coming, and what each says (decision 11). With the
+ * full-access mark on this phone the Heartwood asks exactly twice; without it
+ * the child's first backups ask as well, so the line says "more than twice".
+ */
+export function addChildPressPreview(name: string, fullAccess: boolean = true): string {
   const n = name.trim();
   const possessive = n ? `${n}'s` : 'their';
-  return `Your Heartwood will ask twice: first for ${possessive} real-name key, then for ${possessive} persona key.`;
+  return fullAccess
+    ? `Your Heartwood will ask twice: first for ${possessive} real-name key, then for ${possessive} persona key.`
+    : `Your Heartwood will ask more than twice: first for ${possessive} real-name key, then for ${possessive} persona key, then a few more times for ${possessive} first backups.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,8 +263,8 @@ export function parseBundleReply(
   if (!valid(np) || !valid(persona) || np === persona) return null;
   if (ctx.expect?.naturalPerson && ctx.expect.naturalPerson.toLowerCase() !== np) return null;
   if (ctx.expect?.persona && ctx.expect.persona.toLowerCase() !== persona) return null;
-  // A reply that says the owner mark was NOT set is not a success.
-  if (parsed.owner !== undefined && parsed.owner !== true) return null;
+  // The firmware always sends `owner:true` on success; a reply without it is not one.
+  if (parsed.owner !== true) return null;
   const actAs = Array.isArray(parsed.act_as) ? parsed.act_as.filter((x): x is string => typeof x === 'string') : [];
   const style: OwnerStyle = parsed.style === 'careful' || parsed.style === 'everyday' ? parsed.style : ctx.requestedStyle;
   return { naturalPerson: np, persona, actAs, style };
@@ -238,7 +287,7 @@ export interface BundleFailure {
   action: BundleFailureAction;
   message: string;
   code:
-    | 'declined' | 'unreachable' | 'strict' | 'kinds-list' | 'shared' | 'every-request' | 'phone-may-ok'
+    | 'declined' | 'no-answer' | 'busy' | 'changed' | 'unreachable' | 'strict' | 'kinds-list' | 'shared' | 'every-request' | 'phone-may-ok'
     | 'approval-list-full' | 'storage-full' | 'no-persona-tree' | 'method-list-full'
     | 'pubkey-mismatch' | 'persona-missing' | 'malformed' | 'child' | 'bad-reply' | 'other';
 }
@@ -251,10 +300,12 @@ export interface BundleFailure {
  * tested before the bare `unauthorised`.
  */
 export function classifyBundleError(err: unknown): BundleFailure {
-  if (err instanceof BunkerRequestTimeoutError) return { action: 'retry', code: 'declined', message: FULL_ACCESS_COPY.declined };
+  // Our own expiry means no answer reached us, not that the owner said no: the
+  // press may have landed after we stopped listening (m3).
+  if (err instanceof BunkerRequestTimeoutError) return { action: 'retry', code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer };
   if (err instanceof Error) {
     return /timed out|timeout/i.test(err.message)
-      ? { action: 'retry', code: 'declined', message: FULL_ACCESS_COPY.declined }
+      ? { action: 'retry', code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer }
       : { action: 'retry', code: 'unreachable', message: FULL_ACCESS_COPY.unreachable };
   }
   const m = String(err ?? '').trim();
@@ -262,7 +313,14 @@ export function classifyBundleError(err: unknown): BundleFailure {
   if (/pairing shared by another device/.test(lower)) return { action: 'continue', code: 'shared', message: PAIRING_PROBLEM_COPY.shared };
   if (/pairing has a kinds list/.test(lower)) return { action: 'continue', code: 'kinds-list', message: PAIRING_PROBLEM_COPY.everything };
   if (/pairing asks for every request/.test(lower)) return { action: 'continue', code: 'every-request', message: PAIRING_PROBLEM_COPY.everything };
-  if (/device[_ ]approval[_ ]required/.test(lower)) return { action: 'continue', code: 'phone-may-ok', message: PAIRING_PROBLEM_COPY.phoneMayOk };
+  // The firmware's refusal for a pairing set to "Phone may OK": its text is
+  // escalate.rs DEVICE_APPROVAL_REQUIRED, not the constant's name. The name is
+  // still matched in case a build sends it.
+  if (/must be approved at the device|device[_ ]approval[_ ]required/.test(lower)) return { action: 'continue', code: 'phone-may-ok', message: PAIRING_PROBLEM_COPY.phoneMayOk };
+  // Transient refusals: the slot changed while the ask waited, or the signer
+  // was busy with another card. Nothing was granted; the owner taps Try again.
+  if (/signer is busy|busy with another approval/.test(lower)) return { action: 'retry', code: 'busy', message: FULL_ACCESS_COPY.busy };
+  if (/send the request again|approval_changed/.test(lower)) return { action: 'retry', code: 'changed', message: FULL_ACCESS_COPY.changed };
   if (/^unauthori[sz]ed$/.test(lower)) return { action: 'continue', code: 'strict', message: PAIRING_PROBLEM_COPY.strict };
   if (/approval list full/.test(lower)) return { action: 'silent', code: 'approval-list-full', message: '' };
   if (/storage full/.test(lower)) return { action: 'continue', code: 'storage-full', message: DEVICE_LIMIT_COPY.storageFull };

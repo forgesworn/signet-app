@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import {
   FULL_ACCESS_COPY,
   cardLines,
+  separatelyHint,
   type BundleFailure,
   type BundleRunResult,
   type BundleSuccess,
@@ -23,7 +24,7 @@ import {
 export interface FullAccessChoiceProps {
   /** The three words for this install's client key (4.2). */
   words: readonly [string, string, string];
-  /** The pairing's label, when known. Left off the drawing when not. */
+  /** The pairing's label, when known. A placeholder line stands in when not, so the drawing has the Heartwood's line count. */
   label?: string | null;
   /** True when `act_as` will include the real identity. */
   includeRealName: boolean;
@@ -96,7 +97,7 @@ export function FullAccessChoice({
 
         <div
           role="img"
-          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.wordsLine1} ${lines.wordsLine2}, ${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}`}
+          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.labelKnown ? `${lines.label}, ` : 'the name of this pairing, '}${lines.wordsLine1} ${lines.wordsLine2}, ${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}`}
           data-testid="full-access-card"
           style={{
             fontFamily: 'var(--font-mono)', fontSize: '0.95rem', lineHeight: 1.5, textAlign: 'center',
@@ -108,7 +109,7 @@ export function FullAccessChoice({
             {lines.header}
           </div>
           <div style={{ padding: '8px 8px 10px' }}>
-            {lines.label && <div>{lines.label}</div>}
+            <div style={lines.labelKnown ? undefined : { color: 'var(--text-muted)' }}>{lines.label}</div>
             <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine1}</div>
             <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine2}</div>
             <div>{lines.scope}</div>
@@ -159,7 +160,7 @@ export function FullAccessChoice({
             </button>
             {showSeparatelyHint && (
               <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: 1.45, marginTop: 8 }}>
-                {FULL_ACCESS_COPY.separatelyHint}
+                {separatelyHint()}
               </p>
             )}
           </>

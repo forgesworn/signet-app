@@ -160,6 +160,10 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
       if (out.ok) {
         setStatus({ owner: true, style: out.reply.style });
         await onStyleChange(out.reply.style);
+      } else if (out.failure.code === 'no-answer' || out.failure.code === 'bad-reply') {
+        // The press may have landed after we stopped listening (m3): ask the
+        // device again rather than leave the status line saying "off".
+        setRefreshTick((t) => t + 1);
       }
       return out;
     } finally {

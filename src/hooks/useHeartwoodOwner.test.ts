@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useHeartwoodOwner, type UseHeartwoodOwnerArgs } from './useHeartwoodOwner';
-import type { BunkerSigningBackend } from '../lib/signing-backend';
+import { BunkerRequestTimeoutError, type BunkerSigningBackend } from '../lib/signing-backend';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 
 const NP = 'a'.repeat(64);
@@ -164,5 +164,20 @@ describe('useHeartwoodOwner', () => {
     const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: NO_BUNDLE_ROUTER })));
     expect(result.current.awaitingFirstStatus).toBe(false);
     expect(result.current.checking).toBe(false);
+  });
+
+  it('m3: after our own expiry the status is asked again, so a press that landed late shows as on', async () => {
+    let statusCalls = 0;
+    const bunker = fakeBunker(async (m) => {
+      if (m === 'heartwood_owner_status') { statusCalls += 1; return statusCalls === 1 ? '{"owner":false}' : '{"owner":true,"style":"everyday"}'; }
+      throw new BunkerRequestTimeoutError('heartwood_approve_bundle');
+    });
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER })));
+    await waitFor(() => expect(result.current.status).toEqual({ owner: false, style: 'everyday' }));
+    let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+    await act(async () => { out = await result.current.run('everyday'); });
+    expect(out).toMatchObject({ ok: false, failure: { code: 'no-answer' } });
+    await waitFor(() => expect(result.current.status).toEqual({ owner: true, style: 'everyday' }));
+    expect(statusCalls).toBe(2);
   });
 });

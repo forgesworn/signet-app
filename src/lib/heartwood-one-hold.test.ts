@@ -5,7 +5,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, negotiateFullAccess, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
 import { BunkerRequestTimeoutError, SIGNER_REQUEST_TIMEOUT_MS } from './signing-backend';
 
@@ -54,7 +54,7 @@ describe('cardLines', () => {
   const words: [string, string, string] = ['one', 'two', 'three'];
   it('everyday, persona only', () => {
     expect(cardLines({ words, label: 'my signet', realName: false, style: 'everyday' })).toEqual({
-      header: 'FULL ACCESS', label: 'MY SIGNET', wordsLine1: 'one two', wordsLine2: 'three',
+      header: 'FULL ACCESS', label: 'my signet', labelKnown: true, wordsLine1: 'one two', wordsLine2: 'three',
       scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACKUP'], hold: 'HOLD 5 SECONDS',
     });
   });
@@ -62,7 +62,31 @@ describe('cardLines', () => {
     const c = cardLines({ words, realName: true, style: 'careful' });
     expect(c.scope).toBe('PERSONA + REAL NAME');
     expect(c.powers).toEqual(['SIGNS ALONE: BACKUPS', 'ASKS: EVERYTHING ELSE']);
-    expect(c.label).toBeNull();
+    // No label known here (onboarding): a placeholder keeps the Heartwood's line count.
+    expect(c.label).toBe(CARD_LABEL_PLACEHOLDER);
+    expect(c.labelKnown).toBe(false);
+  });
+  it('draws the label the way the firmware does (m4): as typed, ? for non-ASCII, .. when cut', () => {
+    expect(cardLabelLine('My Signet')).toBe('My Signet');
+    expect(cardLabelLine('Café phone')).toBe('Caf? phone');
+    expect(cardLabelLine('a'.repeat(21))).toBe('a'.repeat(21));
+    expect(cardLabelLine('a'.repeat(30))).toBe(`${'a'.repeat(19)}..`);
+    expect(cardLabelLine('abcdefgh', 3)).toBe('a..');
+    expect(cardLabelLine('abcdefgh', 1)).toBe('a..');
+  });
+});
+
+describe('separatelyHint (M3)', () => {
+  it('states the real count, not "a few"', () => {
+    expect(separateCardCount(5)).toBe(19);
+    const hint = separatelyHint();
+    expect(hint).toContain('about 19 times');
+    expect(hint).toContain('your 5 backups');
+    expect(hint).not.toMatch(/a few times/);
+  });
+  it('follows the number of backups', () => {
+    expect(separateCardCount(7)).toBe(25);
+    expect(separatelyHint(7)).toContain('about 25 times');
   });
 });
 
@@ -112,6 +136,8 @@ describe('parseBundleReply', () => {
     expect(parseBundleReply(JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: false }), ctx)).toBeNull();
     expect(parseBundleReply('nope', ctx)).toBeNull();
     expect(parseBundleReply('[]', ctx)).toBeNull();
+    // m10: the firmware always sends owner:true, so a reply without it is not a success.
+    expect(parseBundleReply(JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA } }), ctx)).toBeNull();
     const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true });
     expect(parseBundleReply(raw, { ...ctx, expect: { persona: 'd'.repeat(64) } })).toBeNull();
     expect(parseBundleReply(raw, { ...ctx, expect: { persona: PERSONA, naturalPerson: NP } })).not.toBeNull();
@@ -124,7 +150,14 @@ describe('classifyBundleError', () => {
     ['unauthorised: pairing has a kinds list', 'continue', PAIRING_PROBLEM_COPY.everything],
     ['unauthorised: pairing asks for every request', 'continue', PAIRING_PROBLEM_COPY.everything],
     ['unauthorised: pairing shared by another device', 'continue', PAIRING_PROBLEM_COPY.shared],
+    // M1: the firmware's real text (heartwood-esp32 common/src/escalate.rs DEVICE_APPROVAL_REQUIRED).
+    ['this request must be approved at the device; a guardian verdict cannot answer it', 'continue', PAIRING_PROBLEM_COPY.phoneMayOk],
     ['DEVICE_APPROVAL_REQUIRED', 'continue', PAIRING_PROBLEM_COPY.phoneMayOk],
+    // M4: transient refusals say Try again, never fall silently into today's flow.
+    ['signer is busy with another approval; retry shortly', 'retry', FULL_ACCESS_COPY.busy],
+    ['approval changed while waiting; send the request again', 'retry', FULL_ACCESS_COPY.changed],
+    ['approval_changed: pairing or permissions changed; send the request again', 'retry', FULL_ACCESS_COPY.changed],
+    ['identity approved; send the request again', 'retry', FULL_ACCESS_COPY.changed],
     ['storage full', 'continue', DEVICE_LIMIT_COPY.storageFull],
     ['no persona tree on this master', 'continue', DEVICE_LIMIT_COPY.noPersonaTree],
     ['method list full', 'continue', DEVICE_LIMIT_COPY.methodListFull],
@@ -140,8 +173,10 @@ describe('classifyBundleError', () => {
     expect(classifyBundleError(err)).toMatchObject({ action, message });
   });
   it('our own expiry and a transport failure', () => {
+    // m3: our own expiry is "no answer", which does not claim nothing changed.
     expect(classifyBundleError(new BunkerRequestTimeoutError('heartwood_approve_bundle')))
-      .toMatchObject({ action: 'retry', message: FULL_ACCESS_COPY.declined });
+      .toMatchObject({ action: 'retry', code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer });
+    expect(FULL_ACCESS_COPY.noAnswer).not.toMatch(/Nothing changed/);
     expect(classifyBundleError(new Error('publish failed')))
       .toMatchObject({ action: 'retry', message: FULL_ACCESS_COPY.unreachable });
   });
@@ -199,8 +234,13 @@ describe('capability gate and press preview', () => {
     expect(supportsApproveBundle(['sign_event'])).toBe(false);
     expect(supportsApproveBundle(null)).toBe(false);
   });
-  it('names the child in the two-press line', () => {
-    expect(addChildPressPreview(' Sam ')).toBe('Your Heartwood will ask twice: first for Sam\'s real-name key, then for Sam\'s persona key.');
+  it('names the child in the two-press line when this phone has full access', () => {
+    expect(addChildPressPreview(' Sam ', true)).toBe('Your Heartwood will ask twice: first for Sam\'s real-name key, then for Sam\'s persona key.');
+  });
+  it('does not promise "twice" without the mark (m1)', () => {
+    const line = addChildPressPreview('Sam', false);
+    expect(line).toContain('more than twice');
+    expect(line).not.toContain('ask twice');
   });
 });
 
