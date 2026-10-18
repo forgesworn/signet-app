@@ -18,7 +18,7 @@ import {
  * The bundle is sent ONLY from the "Set up with one hold" tap, never in the
  * background and never retried by itself: a retry is another tap on "Try
  * again". The card drawn here uses the same lines, word for word, as the
- * Heartwood's own FULL ACCESS card, so the owner matches them rather than
+ * Heartwood's own FULL ACCESS card (the words sit under "while you hold:", since the Heartwood shows them only on its hold screen), so the owner matches them rather than
  * interprets them.
  */
 export interface FullAccessChoiceProps {
@@ -106,7 +106,7 @@ export function FullAccessChoice({
 
         <div
           role="img"
-          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.labelKnown ? `${lines.label}, ` : 'the name of this pairing, '}${lines.wordsLine1} ${lines.wordsLine2}, ${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}`}
+          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.labelKnown ? `${lines.label}, ` : 'the name of this pairing, '}${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}. ${FULL_ACCESS_COPY.wordsWhileHolding} ${lines.wordsLine1} ${lines.wordsLine2}`}
           data-testid="full-access-card"
           style={{
             fontFamily: 'var(--font-mono)', fontSize: '0.95rem', lineHeight: 1.5, textAlign: 'center',
@@ -119,11 +119,14 @@ export function FullAccessChoice({
           </div>
           <div style={{ padding: '8px 8px 10px' }}>
             <div style={lines.labelKnown ? undefined : { color: 'var(--text-muted)' }}>{lines.label}</div>
-            <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine1}</div>
-            <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine2}</div>
             <div>{lines.scope}</div>
             {lines.powers.map(p => <div key={p}>{p}</div>)}
             <div>{lines.hold}</div>
+            <div style={{ borderTop: '1px dashed var(--border)', marginTop: 8, paddingTop: 8 }}>
+              <div style={{ color: 'var(--text-muted)' }}>{FULL_ACCESS_COPY.wordsWhileHolding}</div>
+              <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine1}</div>
+              <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine2}</div>
+            </div>
           </div>
         </div>
 

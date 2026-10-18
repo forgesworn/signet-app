@@ -65,6 +65,8 @@ export function pairWordsForClient(clientPubkeyHex: string): [string, string, st
 
 // ---------------------------------------------------------------------------
 // The card, as the choice screen draws it (4.2, 4.6). Same lines, word for word.
+// The words are not on the card at rest: the Heartwood shows them only on the
+// hold screen, while the button is held (letting go declines).
 // ---------------------------------------------------------------------------
 
 export interface CardLines {
@@ -129,14 +131,15 @@ export const FULL_ACCESS_COPY = {
   heading: 'Give this phone full access?',
   covers: 'This phone can sign in, post and back up as your persona (and your real name, if you use it), including your children\'s backups. You can take it back in Settings.',
   realNameForLegacyBackups: 'Your older backups still sign with your real-name key, so this includes it.',
-  expect: 'Your Heartwood will show FULL ACCESS and these three words. Check they match, then hold its button for 5 seconds.',
+  expect: 'Your Heartwood will show FULL ACCESS and these three words. Start holding its button: the words appear on the Heartwood while you hold. If they match, keep holding for 5 seconds. If they don\'t, let go.',
   warning: 'Your Heartwood only shows FULL ACCESS when you start it here. If it ever shows it at another time, don\'t hold the button.',
   setUp: 'Set up with one hold',
   separately: 'Approve each thing separately',
   styleHeading: 'How should this phone sign?',
   everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys, money, your real name the first time.' },
   careful: { name: 'Extra careful', tag: '', body: 'Only backups happen on their own. Every sign-in, post and message asks on your Heartwood, so they wait until you\'re home.' },
-  holding: 'Hold the button on your Heartwood for 5 seconds. It shows FULL ACCESS and the three words above.',
+  holding: 'Start holding the button on your Heartwood. The three words above appear on it while you hold. If they match, keep holding for 5 seconds. If they don\'t, let go.',
+  wordsWhileHolding: 'while you hold:',
   declined: 'Full access wasn\'t approved. Nothing changed.',
   noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again.',
   busy: 'Your Heartwood was busy. Nothing changed. Try again.',

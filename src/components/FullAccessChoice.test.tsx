@@ -167,4 +167,17 @@ describe('FullAccessChoice', () => {
     setup({ includeRealName: false, realNameForLegacyBackups: true });
     expect(screen.queryByText(FULL_ACCESS_COPY.realNameForLegacyBackups)).toBeNull();
   });
+
+  it('firmware: the words show only while the button is held, so the card drawing is the at-rest card with the words under "while you hold:"', () => {
+    setup();
+    expect(FULL_ACCESS_COPY.expect).toBe(
+      'Your Heartwood will show FULL ACCESS and these three words. Start holding its button: the words appear on the Heartwood while you hold. If they match, keep holding for 5 seconds. If they don\'t, let go.',
+    );
+    expect(screen.getByText(FULL_ACCESS_COPY.expect)).toBeTruthy();
+    const text = screen.getByTestId('full-access-card').textContent ?? '';
+    expect(text.indexOf('HOLD 5 SECONDS')).toBeGreaterThan(-1);
+    expect(text.indexOf('while you hold:')).toBeGreaterThan(text.indexOf('HOLD 5 SECONDS'));
+    expect(text.indexOf('nice never')).toBeGreaterThan(text.indexOf('while you hold:'));
+    expect(text.indexOf('PERSONA ONLY')).toBeLessThan(text.indexOf('nice never'));
+  });
 });
