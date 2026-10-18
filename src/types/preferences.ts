@@ -95,6 +95,15 @@ export interface AppPreferences {
    */
   bunkerUri?: string;
   /**
+   * One-hold pairing (A8, A11): the signing style this phone asked the
+   * Heartwood for the last time the setup hold ran ('everyday' = every kind,
+   * 'careful' = only backups and relay AUTH sign alone). Device-local and
+   * kept on file because the Heartwood forgets it when a backup is restored,
+   * so a re-run of the hold can ask for the same style. Absent = this
+   * install never ran the setup hold.
+   */
+  heartwoodOwnerStyle?: 'everyday' | 'careful';
+  /**
    * Require an explicit confirmation before signing a Sign-in-with-Signet
    * request with the natural-person keypair. Defends against hostile
    * `accept=natural-person` hints pressuring real-name disclosure.

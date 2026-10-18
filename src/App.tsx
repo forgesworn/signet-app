@@ -252,6 +252,10 @@ import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { resolveOnboardingKeys, HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
+import {
+  negotiateFullAccess,
+  type FullAccessDecision, type HeartwoodConnectUi, type OwnerStyle,
+} from './lib/heartwood-one-hold';
 import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
@@ -5781,9 +5785,11 @@ export function App() {
 
   // A failed key resolve keeps the connected bunker here so "Try again" does
   // not need a fresh pairing (a bunker:// secret may be single-use).
-  const heartwoodOnboardingRef = useRef<{ bunkerUri: string; bunker: BunkerSigningBackend; clientSecret: string } | null>(null);
+  // `fullAccess` keeps the owner's one-hold decision so a retry after a later
+  // failure does not ask again (a bundle that already worked needs no second hold).
+  const heartwoodOnboardingRef = useRef<{ bunkerUri: string; bunker: BunkerSigningBackend; clientSecret: string; fullAccess?: FullAccessDecision } | null>(null);
 
-  const handleConnectHeartwood = useCallback(async (bunkerUri: string, displayName: string) => {
+  const handleConnectHeartwood = useCallback(async (bunkerUri: string, displayName: string, ui?: HeartwoodConnectUi) => {
     // Generate encryption key for auth setup
     const key = generateEncryptionKey();
 
@@ -5817,11 +5823,44 @@ export function App() {
     // throws rather than fall back to the master; only a signer that does not
     // speak heartwood_list_identities is treated as a generic single-key one.
     let keys: OnboardingKeys;
+    let ownerStyle: OwnerStyle | undefined;
+    // One-hold pairing (A1): ONE capabilities attempt with a 20 s timeout. If
+    // the Heartwood lists the bundle method, the owner chooses on a full-screen
+    // card; the bundle is sent only from that tap. Anything else (an older
+    // Heartwood, a generic signer, no answer) is today's flow, unchanged.
+    let fullAccess: FullAccessDecision | undefined = held?.fullAccess;
+    if (!fullAccess) {
+      fullAccess = await negotiateFullAccess({
+        ui,
+        probe: async () => {
+          const outcome = await BunkerBackendRouter.probe(bunker, clientSecret, undefined, 20_000);
+          if (outcome.kind !== 'router') return null;
+          const methods = outcome.router.capabilities.methods;
+          outcome.router.destroy();
+          return methods;
+        },
+        clientPubkeyHex: bunker.transportClientPubkeyHex,
+        masterPubkey: bunker.activePublicKeyHex,
+        request: (method, params, timeoutMs) => bunker.request(method, params, timeoutMs),
+      });
+      if (fullAccess.mode === 'cancel') {
+        bunker.destroy();
+        heartwoodOnboardingRef.current = null;
+        throw new Error('Cancelled. Nothing was changed.');
+      }
+    }
     try {
-      keys = await resolveOnboardingKeys(
-        (method, params) => bunker.request(method, params),
-        bunker.activePublicKeyHex,
-      );
+      if (fullAccess?.mode === 'bundle') {
+        // The reply is already validated (hex64, not the master, real identity
+        // differs from the persona) by `parseBundleReply`.
+        keys = { kind: 'heartwood', naturalPerson: fullAccess.reply.naturalPerson, persona: fullAccess.reply.persona };
+        ownerStyle = fullAccess.style;
+      } else {
+        keys = await resolveOnboardingKeys(
+          (method, params) => bunker.request(method, params),
+          bunker.activePublicKeyHex,
+        );
+      }
     } catch (err) {
       if (err instanceof HeartwoodOnboardingError && err.reason === 'unreachable') {
         // The socket may be dead (the signer pool does not reconnect), so a
@@ -5829,7 +5868,7 @@ export function App() {
         bunker.destroy();
         heartwoodOnboardingRef.current = null;
       } else {
-        heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret };
+        heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret, fullAccess };
       }
       throw err;
     }
@@ -5871,14 +5910,17 @@ export function App() {
     // M1: encrypt bunkerUri at rest — `key` is the freshly-generated
     // encryption key for this brand-new identity (global `encryptionKey`
     // state isn't set until the auth-setup flow below completes).
-    await savePreferences({ ...(await getPreferences(key)), activeAccountId: npPubkey, signingMode: 'bunker', bunkerUri }, key);
+    await savePreferences({
+      ...(await getPreferences(key)), activeAccountId: npPubkey, signingMode: 'bunker', bunkerUri,
+      ...(ownerStyle ? { heartwoodOwnerStyle: ownerStyle } : {}),
+    }, key);
     await reloadPreferences(key);
     await saveBunkerSecret(clientSecret, key);
     } catch (err) {
       // Keep the bunker held so Try again needs no fresh pairing, and drop
       // the identity row just written. (Preferences, if already saved, are
       // overwritten by the next attempt.)
-      heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret };
+      heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret, fullAccess };
       await deleteIdentityRecord(npPubkey).catch(() => {});
       throw err;
     }

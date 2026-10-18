@@ -5,7 +5,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, BUNDLE_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, type FullAccessOffer, BUNDLE_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
 import { BunkerRequestTimeoutError } from './signing-backend';
 
@@ -201,5 +201,62 @@ describe('capability gate and press preview', () => {
   });
   it('names the child in the two-press line', () => {
     expect(addChildPressPreview(' Sam ')).toBe('Your Heartwood will ask twice: first for Sam\'s real-name key, then for Sam\'s persona key.');
+  });
+});
+
+describe('negotiateFullAccess (A1)', () => {
+  const okReply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true, style: 'everyday' });
+  const base = { clientPubkeyHex: VECTOR_CLIENT, masterPubkey: MASTER };
+
+  it('asks nothing and sends nothing without a UI', async () => {
+    const request = vi.fn();
+    const probe = vi.fn().mockResolvedValue(['heartwood_approve_bundle']);
+    const out = await negotiateFullAccess({ ...base, ui: undefined, probe, request });
+    expect(out).toEqual({ mode: 'separate' });
+    expect(probe).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['firmware without the method', ['sign_event', 'heartwood_derive_persona']],
+    ['no answer to the probe', null],
+  ])('%s: today\'s flow, UI never shown', async (_n, methods) => {
+    const ui = { chooseFullAccess: vi.fn() };
+    const request = vi.fn();
+    const out = await negotiateFullAccess({ ...base, ui, probe: async () => methods, request });
+    expect(out).toEqual({ mode: 'separate' });
+    expect(ui.chooseFullAccess).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('a probe that throws is treated as no capability', async () => {
+    const ui = { chooseFullAccess: vi.fn() };
+    const out = await negotiateFullAccess({ ...base, ui, probe: () => Promise.reject(new Error('x')), request: vi.fn() });
+    expect(out).toEqual({ mode: 'separate' });
+  });
+
+  it('offers the words and sends NO bundle until the screen runs it', async () => {
+    const request = vi.fn().mockResolvedValue(okReply);
+    const ui = { chooseFullAccess: vi.fn().mockResolvedValue({ mode: 'separate' }) };
+    const out = await negotiateFullAccess({ ...base, ui, probe: async () => ['heartwood_approve_bundle'], request });
+    expect(out).toEqual({ mode: 'separate' });
+    expect(ui.chooseFullAccess).toHaveBeenCalledTimes(1);
+    expect(ui.chooseFullAccess.mock.calls[0][0].words).toEqual(pairWordsForClient(VECTOR_CLIENT));
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('the screen\'s tap runs one create:true bundle for the persona only', async () => {
+    const request = vi.fn().mockResolvedValue(okReply);
+    const ui = {
+      chooseFullAccess: vi.fn(async (offer: FullAccessOffer) => {
+        const r = await offer.run('careful');
+        return r.ok ? { mode: 'bundle' as const, reply: r.reply, style: 'careful' as const } : { mode: 'separate' as const };
+      }),
+    };
+    const out = await negotiateFullAccess({ ...base, ui, probe: async () => ['heartwood_approve_bundle'], request });
+    expect(out).toMatchObject({ mode: 'bundle', reply: { naturalPerson: NP, persona: PERSONA } });
+    expect(request).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(request.mock.calls[0][1][0]);
+    expect(sent).toMatchObject({ create: true, act_as: ['persona'], style: 'careful', personas: ['natural-person', 'persona'] });
   });
 });

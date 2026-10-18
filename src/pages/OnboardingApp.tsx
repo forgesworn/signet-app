@@ -9,6 +9,8 @@ import type { PublicProfileBase, PublicProfileConfig } from '../types';
 import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import { BrandMark } from '../components/BrandMark';
 import { PAIR_WITH_GUARDIAN_LABEL } from '../lib/child-device-copy';
+import { FullAccessChoice } from '../components/FullAccessChoice';
+import type { FullAccessDecision, FullAccessOffer, HeartwoodConnectUi } from '../lib/heartwood-one-hold';
 
 interface Props {
   onImport: (mnemonic: string, displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean, guardianPubkey?: string) => Promise<void>;
@@ -31,7 +33,12 @@ interface Props {
     primaryKeypair: 'natural-person' | 'persona',
     opts?: { publishProfile?: boolean; existingProfile?: Partial<PublicProfileConfig>; existingEventId?: string; existingCreatedAt?: number; existingRelay?: string; existingBase?: PublicProfileBase; existingContentHash?: string },
   ) => Promise<void>;
-  onConnectHeartwood: (bunkerUri: string, displayName: string) => Promise<void>;
+  /**
+   * `ui` lets the connect handler stop for the full-access choice (one-hold
+   * pairing, A1) once the Heartwood lists the bundle method. The bundle is
+   * sent only from the tap on that screen.
+   */
+  onConnectHeartwood: (bunkerUri: string, displayName: string, ui?: HeartwoodConnectUi) => Promise<void>;
   /** Called when the user backs out of the Heartwood screens, so a held connection can be dropped. */
   onCancelHeartwood?: () => void;
   onConnectNip07: (displayName: string) => Promise<void>;
@@ -48,7 +55,7 @@ interface Props {
 type Flow = 'welcome' | 'create' | 'signet-restore' | 'nostr-native' | 'import' | 'import-lite' | 'import-nsec' | 'heartwood' | 'nip07';
 type ImportStep = 'phrase' | 'fetching' | 'name-choice' | 'name' | 'done';
 type LiteImportStep = 'phrase' | 'name' | 'done';
-type HeartwoodStep = 'uri' | 'name' | 'connecting';
+type HeartwoodStep = 'uri' | 'name' | 'connecting' | 'full-access';
 
 export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProfile, onImportNsec, onConnectHeartwood, onCancelHeartwood, onConnectNip07, onStartChildPair, onCreate }: Props) {
   const [flow, setFlow] = useState<Flow>('welcome');
@@ -87,6 +94,9 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   const [heartwoodStep, setHeartwoodStep] = useState<HeartwoodStep>('uri');
   const [bunkerUri, setBunkerUri] = useState('');
   const [heartwoodConnecting, setHeartwoodConnecting] = useState(false);
+  // The full-access choice (A1): the offer from the connect handler and the
+  // resolver that carries the owner's decision back to it.
+  const [fullAccess, setFullAccess] = useState<{ offer: FullAccessOffer; resolve: (d: FullAccessDecision) => void } | null>(null);
   const [nip07Detected, setNip07Detected] = useState(false);
   const [nip07Connecting, setNip07Connecting] = useState(false);
   const [nsecImporting, setNsecImporting] = useState(false);
@@ -321,13 +331,27 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
     setHeartwoodStep('connecting');
     setHeartwoodConnecting(true);
     setError('');
+    const ui: HeartwoodConnectUi = {
+      chooseFullAccess: (offer) => new Promise<FullAccessDecision>((resolve) => {
+        setFullAccess({ offer, resolve });
+        setHeartwoodStep('full-access');
+      }),
+    };
     try {
-      await onConnectHeartwood(bunkerUri.trim(), displayName.trim());
+      await onConnectHeartwood(bunkerUri.trim(), displayName.trim(), ui);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
+      setFullAccess(null);
       setHeartwoodStep('name');
       setHeartwoodConnecting(false);
     }
+  };
+
+  const decideFullAccess = (d: FullAccessDecision) => {
+    const pending = fullAccess;
+    setFullAccess(null);
+    setHeartwoodStep('connecting');
+    pending?.resolve(d);
   };
 
   // --- Render: compute the current stage's body ---
@@ -943,6 +967,20 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               Back
             </button>
           </div>
+        );
+      }
+
+      if (heartwoodStep === 'full-access' && fullAccess) {
+        return (
+          <FullAccessChoice
+            words={fullAccess.offer.words}
+            includeRealName={false}
+            onRun={fullAccess.offer.run}
+            onApproved={(reply, style) => decideFullAccess({ mode: 'bundle', reply, style })}
+            onSeparately={() => decideFullAccess({ mode: 'separate' })}
+            onBack={() => decideFullAccess({ mode: 'cancel' })}
+            showSeparatelyHint
+          />
         );
       }
 

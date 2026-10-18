@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { OnboardingApp } from './OnboardingApp';
 import { HEARTWOOD_ONBOARDING_COPY } from '../lib/heartwood-onboarding';
+import { FULL_ACCESS_COPY, type FullAccessDecision, type FullAccessOffer, type HeartwoodConnectUi } from '../lib/heartwood-one-hold';
 
 const URI = 'bunker://' + 'a'.repeat(64) + '?relay=wss://relay.example.com&secret=x';
 
@@ -29,6 +30,47 @@ describe('OnboardingApp Heartwood connect', () => {
     onConnectHeartwood.mockImplementationOnce(() => Promise.resolve());
     fireEvent.click(retry);
     await waitFor(() => expect(onConnectHeartwood).toHaveBeenCalledTimes(2));
-    expect(onConnectHeartwood).toHaveBeenLastCalledWith(URI, 'Moss');
+    expect(onConnectHeartwood).toHaveBeenLastCalledWith(URI, 'Moss', expect.objectContaining({ chooseFullAccess: expect.any(Function) }));
+  });
+
+  it('stops on the full-access choice when offered, sends nothing until the tap, and carries the decision back', async () => {
+    const run = vi.fn().mockResolvedValue({
+      ok: true,
+      reply: { naturalPerson: 'a'.repeat(64), persona: 'b'.repeat(64), actAs: ['persona'], style: 'everyday' },
+    });
+    let decision: FullAccessDecision | undefined;
+    const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
+      const offer: FullAccessOffer = { words: ['nice', 'never', 'repair'], run };
+      decision = await ui!.chooseFullAccess(offer);
+    });
+    openNameStep(onConnectHeartwood);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeTruthy();
+    expect(run).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    await waitFor(() => expect(decision?.mode).toBe('bundle'));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('everyday');
+  });
+
+  it('"Approve each thing separately" resolves to today\'s flow and shows the connecting screen again', async () => {
+    let decision: FullAccessDecision | undefined;
+    const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
+      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c'], run: vi.fn() });
+      await new Promise(() => {}); // stay "connecting"
+    });
+    openNameStep(onConnectHeartwood);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    fireEvent.click(await screen.findByRole('button', { name: FULL_ACCESS_COPY.separately }));
+    await waitFor(() => expect(decision).toEqual({ mode: 'separate' }));
+    expect(await screen.findByText('Connecting to your signer...')).toBeTruthy();
+  });
+
+  it('a connect that never reaches the choice (older firmware) shows no choice screen', async () => {
+    const onConnectHeartwood = vi.fn(() => new Promise<void>(() => {}));
+    openNameStep(onConnectHeartwood);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/press its button to approve/)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeNull();
   });
 });

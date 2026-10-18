@@ -367,3 +367,51 @@ export function supportsApproveBundle(methods: readonly string[] | null | undefi
 export function sameKey(a: string | null | undefined, b: string | null | undefined): boolean {
   return !!a && !!b && a.toLowerCase() === b.toLowerCase();
 }
+
+// ---------------------------------------------------------------------------
+// Onboarding hand-off (A1): App.tsx asks the screen to run the choice
+// ---------------------------------------------------------------------------
+
+/** What App.tsx hands the onboarding screen once the Heartwood lists the bundle method. */
+export interface FullAccessOffer {
+  words: [string, string, string];
+  /** Send ONE bundle. The screen calls this from the tap only. */
+  run: (style: OwnerStyle) => Promise<BundleRunResult>;
+}
+
+export type FullAccessDecision =
+  | { mode: 'separate' }
+  | { mode: 'bundle'; reply: BundleSuccess; style: OwnerStyle }
+  | { mode: 'cancel' };
+
+/** UI seam for `handleConnectHeartwood`. Absent = never offer (today's flow). */
+export interface HeartwoodConnectUi {
+  chooseFullAccess(offer: FullAccessOffer): Promise<FullAccessDecision>;
+}
+
+/**
+ * A1: after `connect`, decide whether the owner is offered full access.
+ * `probe` makes the ONE capabilities attempt (20 s) and returns the method
+ * list, or `null` for any failure. Without the bundle method, or without a UI
+ * to ask on, the answer is `separate`: today's flow, with nothing sent. The
+ * bundle itself runs only if the UI calls `offer.run`, which the screen does
+ * from the tap and from nowhere else.
+ */
+export async function negotiateFullAccess(args: {
+  ui: HeartwoodConnectUi | undefined;
+  probe: () => Promise<readonly string[] | null>;
+  clientPubkeyHex: string;
+  masterPubkey: string;
+  request: RequestFn;
+}): Promise<FullAccessDecision> {
+  if (!args.ui) return { mode: 'separate' };
+  let methods: readonly string[] | null;
+  try { methods = await args.probe(); } catch { methods = null; }
+  if (!supportsApproveBundle(methods)) return { mode: 'separate' };
+  return args.ui.chooseFullAccess({
+    words: pairWordsForClient(args.clientPubkeyHex),
+    run: (style) => runApproveBundle(args.request, {
+      create: true, actAsNaturalPerson: false, style, masterPubkey: args.masterPubkey,
+    }),
+  });
+}
