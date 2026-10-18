@@ -5,7 +5,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
 import { BunkerRequestTimeoutError, SIGNER_REQUEST_TIMEOUT_MS } from './signing-backend';
 
@@ -309,5 +309,31 @@ describe('A7 timeouts', () => {
   });
   it('status and narrow never raise a card, so a short wait is fine', () => {
     expect(OWNER_QUICK_TIMEOUT_MS).toBeLessThan(CARD_REQUEST_TIMEOUT_MS);
+  });
+});
+
+describe('ownerOfferState (A8, M2, m2)', () => {
+  const base = {
+    supported: true, everHadFullAccess: true, statusOwner: null as boolean | null,
+    awaitingFirstStatus: false, vaultNeedsApproval: false, dismissed: false,
+  };
+  it('holds backups only while the first status answer is pending', () => {
+    expect(ownerOfferState({ ...base, awaitingFirstStatus: true }).holdBackups).toBe(true);
+  });
+  it('M2: once owner:false is known the offer shows but backups run (a deliberate Forget approvals must not stall every start)', () => {
+    const s = ownerOfferState({ ...base, statusOwner: false });
+    expect(s).toEqual({ lost: true, offer: true, holdBackups: false });
+  });
+  it('never holds backups for an install that never ran the hold, or on old firmware', () => {
+    expect(ownerOfferState({ ...base, everHadFullAccess: false, awaitingFirstStatus: true }).holdBackups).toBe(false);
+    expect(ownerOfferState({ ...base, supported: false, awaitingFirstStatus: true, statusOwner: false })).toEqual({ lost: false, offer: false, holdBackups: false });
+  });
+  it('"Not now" ends the offer for the session', () => {
+    expect(ownerOfferState({ ...base, statusOwner: false, dismissed: true }).offer).toBe(false);
+  });
+  it('m2: a refused backup offers the hold only when the mark is not known to be there', () => {
+    expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: null }).offer).toBe(true);
+    expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: false }).offer).toBe(true);
+    expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: true }).offer).toBe(false);
   });
 });

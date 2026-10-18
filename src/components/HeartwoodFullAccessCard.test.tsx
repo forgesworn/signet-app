@@ -34,16 +34,23 @@ describe('HeartwoodFullAccessCard', () => {
     expect(screen.getByText(/This phone's pairing: Pixel 8\. If you lose this phone, remove it in Sapwood\./)).toBeTruthy();
   });
 
-  it('turn off without an operator key points to Sapwood and calls nothing', () => {
-    const p = setup({ hasOperatorKey: false });
+  it('turn off without an operator key goes straight to turnOff (which clears the style) and shows the Sapwood line', async () => {
+    const p = setup({ hasOperatorKey: false, turnOff: vi.fn().mockResolvedValue({ ok: false, message: FULL_ACCESS_COPY.sapwoodForget }) });
     fireEvent.click(screen.getByRole('button', { name: 'Turn off full access' }));
-    expect(screen.getByText(FULL_ACCESS_COPY.sapwoodForget)).toBeTruthy();
-    expect(p.turnOff).not.toHaveBeenCalled();
+    expect(await screen.findByText(FULL_ACCESS_COPY.sapwoodForget)).toBeTruthy();
+    expect(p.turnOff).toHaveBeenCalledTimes(1);
   });
 
-  it('turn off with an operator key calls it once', async () => {
+  it('m7: with an operator key, turning off needs a second tap that says what it takes back', async () => {
     const p = setup({ hasOperatorKey: true });
     fireEvent.click(screen.getByRole('button', { name: 'Turn off full access' }));
+    expect(p.turnOff).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog').textContent).toMatch(/everything your Heartwood has approved/);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep it' }));
+    expect(p.turnOff).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Turn off full access' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off full access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, turn it off' }));
     await waitFor(() => expect(p.turnOff).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/Full access is off for this phone/)).toBeTruthy();
   });

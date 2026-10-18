@@ -200,6 +200,48 @@ export function addChildPressPreview(name: string, fullAccess: boolean = true): 
 }
 
 // ---------------------------------------------------------------------------
+// A8: when an owner pairing loses its mark
+// ---------------------------------------------------------------------------
+
+export interface OwnerOfferInput {
+  supported: boolean;
+  /** A style is on file: this install ran the hold before. */
+  everHadFullAccess: boolean;
+  /** `heartwood_owner_status` answered `owner:false` (`null` = no answer, never "off"). */
+  statusOwner: boolean | null;
+  /** The first status answer for this router has not arrived yet. */
+  awaitingFirstStatus: boolean;
+  /** A vault request was refused, timed out or found the signer busy. */
+  vaultNeedsApproval: boolean;
+  dismissed: boolean;
+}
+
+export interface OwnerOfferState {
+  /** The mark is known to be gone. */
+  lost: boolean;
+  /** Show "Approve this phone again". */
+  offer: boolean;
+  /**
+   * Hold the backups. ONLY while the first answer is pending, so a card is not
+   * queued beside the one the owner may be asked for. Once the answer is in,
+   * even `owner:false`, backups run (today's cards): a pairing the owner
+   * deliberately cleared in Sapwood must not stall every start until "Not now".
+   */
+  holdBackups: boolean;
+}
+
+export function ownerOfferState(i: OwnerOfferInput): OwnerOfferState {
+  const lost = i.supported && i.everHadFullAccess && i.statusOwner === false;
+  // A refused vault request is only a reason to offer the hold when the mark is
+  // not there: with `owner:true` the refusal is a plain backup refusal, whose
+  // own banner re-queues today's cards.
+  const offer = i.supported && i.everHadFullAccess && !i.dismissed
+    && (lost || (i.vaultNeedsApproval && i.statusOwner !== true));
+  const holdBackups = i.everHadFullAccess && i.supported && i.awaitingFirstStatus;
+  return { lost, offer, holdBackups };
+}
+
+// ---------------------------------------------------------------------------
 // Bundle param and reply (4.1)
 // ---------------------------------------------------------------------------
 

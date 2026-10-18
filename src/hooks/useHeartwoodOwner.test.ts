@@ -138,7 +138,7 @@ describe('useHeartwoodOwner', () => {
     expect(result.current.status).toEqual({ owner: true, style: 'careful' });
   });
 
-  it('turn off without an operator key says where to go and clears nothing', async () => {
+  it('M2: turn off without an operator key says where to go and clears the style on file', async () => {
     const bunker = fakeBunker(async () => '{"owner":true,"style":"everyday"}');
     const onStyleChange = vi.fn();
     const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, onStyleChange, storedStyle: 'everyday' })));
@@ -146,7 +146,7 @@ describe('useHeartwoodOwner', () => {
     let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
     await act(async () => { out = await result.current.turnOff(); });
     expect(out).toEqual({ ok: false, message: 'Choose Forget approvals for this phone in Sapwood.' });
-    expect(onStyleChange).not.toHaveBeenCalledWith(undefined);
+    expect(onStyleChange).toHaveBeenCalledWith(undefined);
   });
 
   it('is awaiting the first status in the very render it becomes supported, and settles after the answer', async () => {

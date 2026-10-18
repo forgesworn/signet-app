@@ -253,7 +253,7 @@ import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { resolveOnboardingKeys, HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
 import {
-  negotiateFullAccess, FULL_ACCESS_COPY,
+  negotiateFullAccess, ownerOfferState, FULL_ACCESS_COPY,
   type FullAccessDecision, type HeartwoodConnectUi, type OwnerStyle,
 } from './lib/heartwood-one-hold';
 import { useHeartwoodOwner } from './hooks/useHeartwoodOwner';
@@ -4421,13 +4421,14 @@ export function App() {
   // A8: the offer to approve this phone again, dismissable for the session.
   const [ownerAgainDismissed, setOwnerAgainDismissed] = useState(false);
   const [pendingOwnerChoice, setPendingOwnerChoice] = useState<OwnerChoiceKind | null>(null);
-  const ownerLost = heartwoodOwner.supported && heartwoodOwner.everHadFullAccess && heartwoodOwner.status?.owner === false;
-  const ownerAgainOffer = heartwoodOwner.supported && heartwoodOwner.everHadFullAccess && !ownerAgainDismissed
-    && (ownerLost || privateVaultHealth.needsApproval === true);
-  // Backups wait while the answer is pending or the offer is open, rather than
-  // queue a card per dataset beside the one the owner is about to be asked for.
-  const ownerHoldsBackups = heartwoodOwner.everHadFullAccess && heartwoodOwner.supported
-    && (heartwoodOwner.awaitingFirstStatus || (ownerLost && !ownerAgainDismissed));
+  const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldsBackups } = ownerOfferState({
+    supported: heartwoodOwner.supported,
+    everHadFullAccess: heartwoodOwner.everHadFullAccess,
+    statusOwner: heartwoodOwner.status?.owner ?? null,
+    awaitingFirstStatus: heartwoodOwner.awaitingFirstStatus,
+    vaultNeedsApproval: privateVaultHealth.needsApproval === true,
+    dismissed: ownerAgainDismissed,
+  });
 
   // Approve from my phone, per app, for the owner's own pairings (Advanced
   // settings, inside the operator key card). The compiler's classification
@@ -10364,7 +10365,9 @@ export function App() {
   // busy), so the vault jobs stopped retrying for this unlock rather than put
   // the same cards back up. One quiet line; the button runs them once more.
   const privateVaultApprovalBanner = (!isPairedChild && privateVaultSupported
-    && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed) ? (
+    && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed
+    // The "approve again" banner below says the same words; one at a time.
+    && !ownerAgainOffer) ? (
     <PrivateVaultApprovalBanner
       onApprove={() => setPrivateVaultApproveToken(t => t + 1)}
       onDismiss={() => setPrivateVaultApprovalDismissed(true)}
@@ -10383,7 +10386,13 @@ export function App() {
           onClick={() => { setPendingOwnerChoice('again'); navigateTo('settings-advanced'); }}>
           {FULL_ACCESS_COPY.approveAgain}
         </button>
-        <button type="button" className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }} onClick={() => setOwnerAgainDismissed(true)}>
+        <button type="button" className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }} onClick={() => {
+          setOwnerAgainDismissed(true);
+          // The owner has said no to full access for this phone: drop the style on
+          // file so the offer does not come back on every start. Settings still
+          // offers the hold. (A refused backup alone leaves the style alone.)
+          if (ownerLost) void setHeartwoodOwnerStyle(undefined);
+        }}>
           Not now
         </button>
       </span>

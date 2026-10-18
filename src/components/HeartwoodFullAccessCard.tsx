@@ -35,6 +35,7 @@ export function HeartwoodFullAccessCard({
 }: HeartwoodFullAccessCardProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [confirmOff, setConfirmOff] = useState(false);
 
   async function doNarrow() {
     if (busy) return;
@@ -47,7 +48,7 @@ export function HeartwoodFullAccessCard({
 
   async function doTurnOff() {
     if (busy) return;
-    if (!hasOperatorKey) { setMessage(FULL_ACCESS_COPY.sapwoodForget); return; }
+    setConfirmOff(false);
     setBusy(true); setMessage('');
     try {
       const out = await turnOff();
@@ -77,10 +78,24 @@ export function HeartwoodFullAccessCard({
                 Switch back to Everyday
               </button>
             )}
-            <button className="btn btn-secondary" disabled={busy} onClick={() => void doTurnOff()}>
-              Turn off full access
-            </button>
+            {!confirmOff && (
+              // Without an operator key nothing is withdrawn from here (Sapwood does that), so no confirm is needed.
+              <button className="btn btn-secondary" disabled={busy} onClick={() => (hasOperatorKey ? setConfirmOff(true) : void doTurnOff())}>
+                Turn off full access
+              </button>
+            )}
           </div>
+          {confirmOff && (
+            <div role="alertdialog" aria-label="Turn off full access?" style={{ marginTop: 8, padding: 10, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+              <p style={small}>
+                This takes back everything your Heartwood has approved for this phone, not only full access: sign-ins, backups and your children&apos;s keys. Your Heartwood will ask again for each of them, so expect several presses.
+              </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-danger" disabled={busy} onClick={() => void doTurnOff()}>Yes, turn it off</button>
+                <button className="btn btn-secondary" disabled={busy} onClick={() => setConfirmOff(false)}>Keep it</button>
+              </div>
+            </div>
+          )}
         </>
       )}
 

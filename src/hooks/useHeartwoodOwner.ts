@@ -183,6 +183,11 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
 
   const turnOff = useCallback(async (): Promise<TurnOffResult> => {
     if (!operatorClient || !operatorClient.isOpen || !clientPubkey) {
+      // No operator key: Sapwood does the withdrawing. The owner has said they
+      // want full access off, so drop the style on file now; otherwise the
+      // "approve again" offer would return on every start (M2). If they do not
+      // follow through, the next status check puts the style back.
+      await onStyleChange(undefined);
       return { ok: false, message: 'Choose Forget approvals for this phone in Sapwood.' };
     }
     const out = await withOperatorLock(operatorClient, () => turnOffFullAccess(
