@@ -13110,6 +13110,7 @@ export function App() {
           bunkerServerEnabled={bunkerServerEnabled}
           onBack={() => navigateBack()}
           showRoleConfirm={!preferences.dependantRoleConfirmedAt}
+          heartwoodDeriveCards={!!dependantDeviceDerive && !!bunkerRouter}
           recoveryWords={addDependantRecoveryWords}
           onMarkBackedUp={markBackedUp}
         />

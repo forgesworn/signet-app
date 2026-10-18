@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { computeAge } from '../lib/date-utils';
 import { Icon } from '../components/Icon';
 import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
+import { addChildPressPreview } from '../lib/heartwood-one-hold';
 
 interface Props {
   onCreateDependant: (name: string, dateOfBirth?: string) => Promise<string>;
@@ -16,6 +17,12 @@ interface Props {
   recoveryWords: string[] | null;
   /** Set `identity.backedUp = true`. */
   onMarkBackedUp: () => Promise<void>;
+  /**
+   * The child's keys are made ON the Heartwood (a Heartwood install with no
+   * recovery tree on this phone), so creating one raises cards on it. Says how
+   * many and what each will say before any is raised (one-hold decision 11).
+   */
+  heartwoodDeriveCards?: boolean;
 }
 
 type Step = 'form' | 'creating' | 'backup' | 'success' | 'error';
@@ -33,6 +40,7 @@ export function AddDependant({
   showRoleConfirm,
   recoveryWords,
   onMarkBackedUp,
+  heartwoodDeriveCards = false,
 }: Props) {
   const [step, setStep] = useState<Step>('form');
   const [name, setName] = useState('');
@@ -187,6 +195,15 @@ export function AddDependant({
             Sites see their age as vouched by you, not verified. Some may later ask you to verify; that's when
             you'll be asked for your real identity.
           </p>
+
+          {heartwoodDeriveCards && (
+            <p
+              role="note"
+              style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.5, marginBottom: 16, fontWeight: 600 }}
+            >
+              {addChildPressPreview(name)}
+            </p>
+          )}
 
           {showRoleConfirm && (
             <div
