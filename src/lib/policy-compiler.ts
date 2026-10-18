@@ -462,6 +462,9 @@ export function compileDependantSlotPolicy(
  * and the four sync-rail methods are added; on a strict slot only
  * `TOFU_SAFE_METHODS` survive. Never escalates (the guardian must not park
  * a request to themselves); no child-wrap fields; `boundIdentity` omitted.
+ * The slot's existing `allowedMethods` (so the one-hold owner mark
+ * `heartwood_owner_vault` survives a push) and `allowedKinds` (so Extra
+ * careful survives) are carried over untouched.
  */
 export function compileGuardianSlotPolicy(slot: DeviceClientSlot): SlotPolicyUpdate {
   let methods = uniqueStrings([...(slot.allowedMethods ?? []), ...GUARDIAN_REQUIRED_METHODS]);
@@ -470,7 +473,11 @@ export function compileGuardianSlotPolicy(slot: DeviceClientSlot): SlotPolicyUpd
   }
   return {
     allowedMethods: methods,
-    allowedKinds: [],
+    // One-hold pairing (A6): the slot's CURRENT kinds list, never `[]`. An
+    // empty list means "every kind" on the device, so sending `[]` would
+    // quietly turn an Extra careful phone (`[30078, 22242]`) back into
+    // Everyday on the next family push.
+    allowedKinds: [...(slot.allowedKinds ?? [])],
     autoApprove: true,
     escalate: false,
     petitionOnDeny: false,
