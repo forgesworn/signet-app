@@ -92,6 +92,8 @@ describe('RoutedBunkerSigningBackend', () => {
     expect(call[0]).toContain(`bunker://${PK_B}`);
     expect(call[2]).toBe(PK_B); // expectedPubkey pin
     expect(call[3]).toBe(false); // no connect handshake re-send
+    // A7: a route's first get_public_key can raise a card on the Heartwood.
+    expect(call[1]).toBeGreaterThanOrEqual(45_000);
   });
 
   it('connects only once across concurrent calls', async () => {

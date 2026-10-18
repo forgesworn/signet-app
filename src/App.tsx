@@ -262,7 +262,7 @@ import type { OwnerChoiceKind } from './components/HeartwoodFullAccessCard';
 import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
-import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret } from './lib/signing-backend';
+import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
 import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
@@ -5844,7 +5844,7 @@ export function App() {
       clientSecret = generateBunkerClientSecret();
       bunker = new BunkerSigningBackend(clientSecret);
       try {
-        await bunker.connect(bunkerUri, 30_000);
+        await bunker.connect(bunkerUri, CARD_REQUEST_TIMEOUT_MS);
       } catch (err) {
         bunker.destroy();
         throw err;

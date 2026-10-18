@@ -5,9 +5,9 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, negotiateFullAccess, type FullAccessOffer, BUNDLE_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
-import { BunkerRequestTimeoutError } from './signing-backend';
+import { BunkerRequestTimeoutError, SIGNER_REQUEST_TIMEOUT_MS } from './signing-backend';
 
 const NP = 'a'.repeat(64);
 const PERSONA = 'b'.repeat(64);
@@ -258,5 +258,16 @@ describe('negotiateFullAccess (A1)', () => {
     expect(request).toHaveBeenCalledTimes(1);
     const sent = JSON.parse(request.mock.calls[0][1][0]);
     expect(sent).toMatchObject({ create: true, act_as: ['persona'], style: 'careful', personas: ['natural-person', 'persona'] });
+  });
+});
+
+describe('A7 timeouts', () => {
+  it('anything that may raise a card waits at least 45 s; the bundle waits 140 s', () => {
+    expect(CARD_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
+    expect(SIGNER_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
+    expect(BUNDLE_TIMEOUT_MS).toBe(140_000);
+  });
+  it('status and narrow never raise a card, so a short wait is fine', () => {
+    expect(OWNER_QUICK_TIMEOUT_MS).toBeLessThan(CARD_REQUEST_TIMEOUT_MS);
   });
 });

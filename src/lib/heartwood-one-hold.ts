@@ -15,7 +15,9 @@
  */
 import { encodeAsWords, sha256 } from 'spoken-token';
 import { hexToBytes } from '@noble/hashes/utils.js';
-import { BunkerRequestTimeoutError } from './signing-backend';
+import { BunkerRequestTimeoutError, CARD_REQUEST_TIMEOUT_MS } from './signing-backend';
+
+export { CARD_REQUEST_TIMEOUT_MS };
 
 export const CAP_APPROVE_BUNDLE = 'heartwood_approve_bundle';
 export const CAP_OWNER_STATUS = 'heartwood_owner_status';
@@ -23,8 +25,6 @@ export const CAP_OWNER_NARROW = 'heartwood_owner_narrow';
 
 /** The bundle waits out the device's 90 s queue TTL plus its 45 s card window (A7). */
 export const BUNDLE_TIMEOUT_MS = 140_000;
-/** Any request that may raise a card waits at least this long (A7). */
-export const CARD_REQUEST_TIMEOUT_MS = 45_000;
 /** Status and narrow never raise a card. */
 export const OWNER_QUICK_TIMEOUT_MS = 20_000;
 
