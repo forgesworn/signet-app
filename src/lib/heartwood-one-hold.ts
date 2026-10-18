@@ -148,6 +148,7 @@ export const FULL_ACCESS_COPY = {
   unreachable: 'Couldn\'t reach your Heartwood. Check it\'s switched on and online, then try again. Nothing changed.',
   pairingMismatch: 'Your Heartwood\'s keys don\'t match this phone\'s. Nothing was changed.',
   personaMissing: 'Your Heartwood doesn\'t have this phone\'s keys yet, so nothing was changed.',
+  missingKey: 'This phone is missing a key it needs for full access, so nothing was sent. Your Heartwood will keep asking about each thing separately.',
   realNameFirstUse: 'The first time you use your real name, your Heartwood will ask you to confirm it once.',
   needsHeartwood: 'This needs your Heartwood. Try again when you\'re with it.',
   lostPhone: 'If you lose this phone, remove it in Sapwood.',
@@ -347,7 +348,7 @@ export interface BundleFailure {
   code:
     | 'declined' | 'no-answer' | 'busy' | 'changed' | 'unreachable' | 'strict' | 'kinds-list' | 'shared' | 'every-request' | 'phone-may-ok'
     | 'approval-list-full' | 'storage-full' | 'no-persona-tree' | 'method-list-full'
-    | 'pubkey-mismatch' | 'persona-missing' | 'malformed' | 'child' | 'bad-reply' | 'other';
+    | 'pubkey-mismatch' | 'persona-missing' | 'missing-key' | 'malformed' | 'child' | 'bad-reply' | 'other';
 }
 
 /**
@@ -405,6 +406,16 @@ export async function runApproveBundle(
   request: RequestFn,
   args: BundleParamArgs & { masterPubkey: string },
 ): Promise<BundleRunResult> {
+  // m9 / A10: an existing install must name both keys it has on file. An empty
+  // or malformed entry would be dropped from `expect` and the firmware would
+  // answer `malformed bundle`, which the owner would never see. Say so, and
+  // send nothing.
+  if (!args.create) {
+    const onFile = (k: string | undefined) => typeof k === 'string' && HEX64.test(k.trim().toLowerCase());
+    if (!onFile(args.expect?.naturalPerson) || !onFile(args.expect?.persona)) {
+      return { ok: false, failure: { action: 'continue', code: 'missing-key', message: FULL_ACCESS_COPY.missingKey } };
+    }
+  }
   let raw: string;
   try {
     raw = await request('heartwood_approve_bundle', [buildBundleParam(args)], BUNDLE_TIMEOUT_MS);
@@ -521,6 +532,11 @@ export async function negotiateFullAccess(args: {
   return args.ui.chooseFullAccess({
     words: pairWordsForClient(args.clientPubkeyHex),
     run: (style) => runApproveBundle(args.request, {
+      // m8 / A1: false is right here. Onboarding runs before any identity
+      // exists, and the identity it creates is persona-first with the real-name
+      // slot dormant (`naturalPersonActive: false`), so there is no active real
+      // identity to include. An existing install passes `isNaturalPersonActive`
+      // through `useHeartwoodOwner` (`includeRealName`).
       create: true, actAsNaturalPerson: false, style, masterPubkey: args.masterPubkey,
     }),
   });

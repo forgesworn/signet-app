@@ -198,6 +198,31 @@ describe('runApproveBundle', () => {
     expect(out).toMatchObject({ ok: false, failure: { code: 'strict' } });
     expect(request).toHaveBeenCalledTimes(1);
   });
+  it('create:false with a missing or empty key sends nothing and says why (m9)', async () => {
+    const base = { create: false, actAsNaturalPerson: false, style: 'everyday' as const, masterPubkey: MASTER };
+    for (const keys of [
+      undefined,
+      { naturalPerson: '', persona: PERSONA },
+      { naturalPerson: NP, persona: '' },
+      { naturalPerson: NP },
+      { naturalPerson: 'nothex', persona: PERSONA },
+    ]) {
+      const request = vi.fn().mockResolvedValue(okReply);
+      const out = await runApproveBundle(request, { ...base, expect: keys });
+      expect(request).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ ok: false, failure: { action: 'continue', code: 'missing-key', message: FULL_ACCESS_COPY.missingKey } });
+    }
+    expect(FULL_ACCESS_COPY.missingKey).not.toBe('');
+  });
+  it('create:false with both keys on file is sent', async () => {
+    const request = vi.fn().mockResolvedValue(okReply);
+    const out = await runApproveBundle(request, {
+      create: false, actAsNaturalPerson: false, style: 'everyday', masterPubkey: MASTER,
+      expect: { naturalPerson: NP, persona: PERSONA },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(out.ok).toBe(true);
+  });
   it('an unusable reply is a silent failure', async () => {
     const request = vi.fn().mockResolvedValue('{"v":1}');
     const out = await runApproveBundle(request, { create: true, actAsNaturalPerson: false, style: 'everyday', masterPubkey: MASTER });
