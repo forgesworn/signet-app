@@ -11894,6 +11894,7 @@ export function App() {
     return renderSettingsPage('activate-real-identity', 'Your real identity', (
       <ActivateRealIdentity
         target={{ kind: 'owner' }}
+        heartwoodFirstUse={heartwoodOwner.supported}
         backupStep={words.length === 0 ? 'none' : backupStep}
         recoveryWords={words}
         onActivate={activateNaturalPerson}
@@ -12835,6 +12836,7 @@ export function App() {
       onApprove: handleApproveAuthGuarded,
       onDeny: handleDenyAuth,
       initialError: pickerInitialError ?? undefined,
+      realNameNeedsHeartwood: heartwoodOwner.supported,
       isPairedChild,
       childDirect,
       // A paired-child install cannot activate the owner's real identity.

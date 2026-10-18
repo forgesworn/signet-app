@@ -25,6 +25,16 @@ describe('ActivateRealIdentity', () => {
     expect(screen.getByPlaceholderText('Your legal name')).toBeDefined();
   });
 
+  it('A2: says the Heartwood asks once on first use of the real name, only on a Heartwood that does', () => {
+    const line = 'The first time you use your real name, your Heartwood will ask you to confirm it once.';
+    const { unmount } = render(<ActivateRealIdentity target={{ kind: 'owner' }} backupStep="none" recoveryWords={[]}
+      onActivate={vi.fn()} onMarkBackedUp={vi.fn()} onDone={vi.fn()} onCancel={vi.fn()} heartwoodFirstUse />);
+    expect(screen.getByText(line)).toBeDefined();
+    unmount();
+    renderPage();
+    expect(screen.queryByText(line)).toBeNull();
+  });
+
   it('keeps Continue disabled until a name is typed', () => {
     renderPage();
     const cont = screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement;

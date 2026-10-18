@@ -52,4 +52,16 @@ describe('resolveActivationCopy (spec §7.1/§7.6/§12)', () => {
     const odd = resolveActivationCopy({ kind: 'dependant', depPubkey: 'b'.repeat(64), dependantName: 'Zoë' });
     expect(odd.nameLabel).toBe("Zoë's legal name");
   });
+
+  it('A2: adds the Heartwood first-use line to the owner copy only when asked, matching the one-hold copy', async () => {
+    const { FULL_ACCESS_COPY } = await import('./heartwood-one-hold');
+    const plain = resolveActivationCopy({ kind: 'owner' });
+    const withLine = resolveActivationCopy({ kind: 'owner' }, { heartwoodFirstUse: true });
+    expect(withLine.explanationBody).toHaveLength(plain.explanationBody.length + 1);
+    expect(withLine.explanationBody[withLine.explanationBody.length - 1]).toBe(FULL_ACCESS_COPY.realNameFirstUse);
+    expect(plain.explanationBody).not.toContain(FULL_ACCESS_COPY.realNameFirstUse);
+    // Dependants are untouched.
+    const dep = { kind: 'dependant', depPubkey: 'a'.repeat(64), dependantName: 'Sam' } as const;
+    expect(resolveActivationCopy(dep, { heartwoodFirstUse: true })).toEqual(resolveActivationCopy(dep));
+  });
 });
