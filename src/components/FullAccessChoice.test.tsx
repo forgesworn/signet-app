@@ -34,7 +34,7 @@ describe('FullAccessChoice', () => {
     expect(card.textContent).toContain('nice never');
     expect(card.textContent).toContain('repair');
     expect(card.textContent).toContain('PERSONA ONLY');
-    expect(card.textContent).toContain('SIGN IN, POST, BACK UP');
+    expect(card.textContent).toContain('SIGN IN, POST, BACKUP');
     expect(card.textContent).toContain('HOLD 5 SECONDS');
   });
 
@@ -56,7 +56,7 @@ describe('FullAccessChoice', () => {
     const card = screen.getByTestId('full-access-card');
     expect(card.textContent).toContain('SIGNS ALONE: BACKUPS');
     expect(card.textContent).toContain('ASKS: EVERYTHING ELSE');
-    expect(card.textContent).not.toContain('SIGN IN, POST, BACK UP');
+    expect(card.textContent).not.toContain('SIGN IN, POST, BACKUP');
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
     await waitFor(() => expect(p.onApproved).toHaveBeenCalled());
     expect(p.onRun).toHaveBeenCalledWith('careful');

@@ -53,6 +53,11 @@ export interface UseHeartwoodOwnerReturn {
   /** `null` = unknown (not asked yet, or no answer). */
   status: OwnerStatus | null;
   checking: boolean;
+  /**
+   * No answer yet to the FIRST status check on this router (derived, so it is
+   * true in the very render that `supported` turns true). Backups wait on it.
+   */
+  awaitingFirstStatus: boolean;
   /** This install has run the hold before (style on file). */
   everHadFullAccess: boolean;
   /** The pairing's label, when an operator key lets us read it. */
@@ -82,11 +87,16 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
   const canNarrow = supported && !!methods && methods.includes(CAP_OWNER_NARROW);
 
   const [status, setStatus] = useState<OwnerStatus | null>(null);
-  const [checking, setChecking] = useState(false);
+  // Which (router, refresh) pair the last status answer belongs to. `checking`
+  // is derived from it, never set from an effect, so there is no render where
+  // `supported` is true and the answer is wrongly taken as "not pending".
+  const [settled, setSettled] = useState<{ router: BunkerBackendRouter | null; tick: number } | null>(null);
   const [label, setLabel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const busyRef = useRef(false);
+  const checking = supported && !(settled !== null && settled.router === router && settled.tick === refreshTick);
+  const awaitingFirstStatus = supported && !(settled !== null && settled.router === router);
 
   const clientPubkey = bunker?.transportClientPubkeyHex ?? '';
   const words = useMemo<[string, string, string] | null>(() => {
@@ -104,13 +114,12 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
 
   // Once per router (= once per unlock / reconnect), and on refresh().
   useEffect(() => {
-    if (!supported) { setStatus(null); setChecking(false); return; }
+    if (!supported) { setStatus(null); return; }
     let cancelled = false;
-    setChecking(true);
     void fetchOwnerStatus(request).then((s) => {
       if (cancelled) return;
       setStatus(s);
-      setChecking(false);
+      setSettled({ router, tick: refreshTick });
       // The Heartwood is the authority on the style; keep the copy on file in step.
       if (s?.owner && s.style !== storedStyle) void onStyleChange(s.style);
     });
@@ -141,7 +150,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
     setBusy(true);
     try {
       const out = await runApproveBundle(request, {
-        // Existing install: never add a key. A different key is refused before the card (-3 pubkey mismatch).
+        // Existing install: never add a key. A different key is refused before the card (pubkey mismatch).
         create: false,
         actAsNaturalPerson: includeRealName,
         style,
@@ -190,7 +199,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   return {
-    supported, status, checking, everHadFullAccess: storedStyle !== undefined, label,
+    supported, status, checking, awaitingFirstStatus, everHadFullAccess: storedStyle !== undefined, label,
     hasOperatorKey: !!operatorClient, busy, words, includeRealName, canNarrow, run, narrow, turnOff, refresh,
   };
 }

@@ -4427,7 +4427,7 @@ export function App() {
   // Backups wait while the answer is pending or the offer is open, rather than
   // queue a card per dataset beside the one the owner is about to be asked for.
   const ownerHoldsBackups = heartwoodOwner.everHadFullAccess && heartwoodOwner.supported
-    && (heartwoodOwner.checking || (ownerLost && !ownerAgainDismissed));
+    && (heartwoodOwner.awaitingFirstStatus || (ownerLost && !ownerAgainDismissed));
 
   // Approve from my phone, per app, for the owner's own pairings (Advanced
   // settings, inside the operator key card). The compiler's classification
@@ -6896,7 +6896,8 @@ export function App() {
 
     // Clear preferences
     const prefs = await getPreferences();
-    await savePreferences({ ...prefs, signingMode: 'local', bunkerUri: undefined });
+    // The style on file belonged to the pairing we are leaving.
+    await savePreferences({ ...prefs, signingMode: 'local', bunkerUri: undefined, heartwoodOwnerStyle: undefined });
 
     // Delete bunker secret
     await deleteBunkerSecret();

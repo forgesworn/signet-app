@@ -55,7 +55,7 @@ describe('cardLines', () => {
   it('everyday, persona only', () => {
     expect(cardLines({ words, label: 'my signet', realName: false, style: 'everyday' })).toEqual({
       header: 'FULL ACCESS', label: 'MY SIGNET', wordsLine1: 'one two', wordsLine2: 'three',
-      scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACK UP'], hold: 'HOLD 5 SECONDS',
+      scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACKUP'], hold: 'HOLD 5 SECONDS',
     });
   });
   it('extra careful with the real name', () => {
@@ -93,10 +93,10 @@ describe('parseBundleReply', () => {
     const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'careful' });
     expect(parseBundleReply(raw, ctx)).toEqual({ naturalPerson: NP, persona: PERSONA, actAs: ['persona'], style: 'careful' });
   });
-  it('accepts the 4.3 personas-array shape with the same checks', () => {
+  it('rejects the retired personas-array shape', () => {
     const raw = JSON.stringify({ v: 1, personas: [
       { name: 'natural-person', pubkey: NP, index: 0 }, { name: 'persona', pubkey: PERSONA, index: 0 }] });
-    expect(parseBundleReply(raw, ctx)).toMatchObject({ naturalPerson: NP, persona: PERSONA, style: 'everyday' });
+    expect(parseBundleReply(raw, ctx)).toBeNull();
   });
   it.each([
     ['master as persona', { 'natural-person': NP, persona: MASTER }],
@@ -125,14 +125,14 @@ describe('classifyBundleError', () => {
     ['unauthorised: pairing asks for every request', 'continue', PAIRING_PROBLEM_COPY.everything],
     ['unauthorised: pairing shared by another device', 'continue', PAIRING_PROBLEM_COPY.shared],
     ['DEVICE_APPROVAL_REQUIRED', 'continue', PAIRING_PROBLEM_COPY.phoneMayOk],
-    ['-4 storage full', 'continue', DEVICE_LIMIT_COPY.storageFull],
-    ['-4 no persona tree on this master', 'continue', DEVICE_LIMIT_COPY.noPersonaTree],
-    ['-4 method list full', 'continue', DEVICE_LIMIT_COPY.methodListFull],
-    ['-4 approval list full', 'silent', ''],
-    ['-3 pubkey mismatch', 'mismatch', FULL_ACCESS_COPY.pairingMismatch],
-    ['-3 persona missing', 'mismatch', FULL_ACCESS_COPY.personaMissing],
-    ['-3 malformed bundle', 'silent', ''],
-    ['-3 bundle names a child', 'silent', ''],
+    ['storage full', 'continue', DEVICE_LIMIT_COPY.storageFull],
+    ['no persona tree on this master', 'continue', DEVICE_LIMIT_COPY.noPersonaTree],
+    ['method list full', 'continue', DEVICE_LIMIT_COPY.methodListFull],
+    ['approval list full', 'silent', ''],
+    ['pubkey mismatch', 'mismatch', FULL_ACCESS_COPY.pairingMismatch],
+    ['persona missing', 'mismatch', FULL_ACCESS_COPY.personaMissing],
+    ['malformed bundle', 'silent', ''],
+    ['bundle names a child', 'silent', ''],
     ['user denied', 'retry', FULL_ACCESS_COPY.declined],
     ['timeout', 'retry', FULL_ACCESS_COPY.declined],
     ['something unforeseen', 'silent', ''],

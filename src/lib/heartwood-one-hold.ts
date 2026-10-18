@@ -93,7 +93,7 @@ export function cardLines(args: {
     scope: args.realName ? 'PERSONA + REAL NAME' : 'PERSONA ONLY',
     powers: args.style === 'careful'
       ? ['SIGNS ALONE: BACKUPS', 'ASKS: EVERYTHING ELSE']
-      : ['SIGN IN, POST, BACK UP'],
+      : ['SIGN IN, POST, BACKUP'],
     hold: 'HOLD 5 SECONDS',
   };
 }
@@ -191,10 +191,9 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * Validate the success reply. Two shapes are accepted, with identical checks:
- * the pinned 4.1 shape (`pubkeys` map) and the 4.3 / A1 shape (`personas`
- * array of `{name, pubkey, index}`). Lowercase hex64, not the master, and the
- * real identity differs from the persona. `null` means the reply is unusable.
+ * Validate the success reply (the 4.1 shape: `pubkeys` map, `act_as`, `owner`,
+ * `style`). Lowercase hex64, not the master, and the real identity differs
+ * from the persona. `null` means the reply is unusable.
  */
 export function parseBundleReply(
   raw: string,
@@ -203,16 +202,10 @@ export function parseBundleReply(
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
   if (!isRecord(parsed)) return null;
+  // The only reply shape is the 4.1 one: a `pubkeys` map of name -> hex.
+  if (!isRecord(parsed.pubkeys)) return null;
   const found: Record<string, string> = {};
-  if (isRecord(parsed.pubkeys)) {
-    for (const [k, v] of Object.entries(parsed.pubkeys)) if (typeof v === 'string') found[k] = v;
-  } else if (Array.isArray(parsed.personas)) {
-    for (const row of parsed.personas) {
-      if (isRecord(row) && typeof row.name === 'string' && typeof row.pubkey === 'string') found[row.name] = row.pubkey;
-    }
-  } else {
-    return null;
-  }
+  for (const [k, v] of Object.entries(parsed.pubkeys)) if (typeof v === 'string') found[k] = v;
   const np = found['natural-person'];
   const persona = found['persona'];
   if (typeof np !== 'string' || typeof persona !== 'string') return null;
@@ -251,7 +244,8 @@ export interface BundleFailure {
 }
 
 /**
- * Map a rejected bundle request. nostr-tools rejects a remote error reply with
+ * Map a rejected bundle request. NIP-46 errors carry only the message text,
+ * never a numeric code, so this matches the text. nostr-tools rejects a remote error reply with
  * the raw STRING and a transport failure with an Error; our own 140 s expiry is
  * a BunkerRequestTimeoutError. The `unauthorised: pairing ...` variants are
  * tested before the bare `unauthorised`.
@@ -268,7 +262,7 @@ export function classifyBundleError(err: unknown): BundleFailure {
   if (/pairing shared by another device/.test(lower)) return { action: 'continue', code: 'shared', message: PAIRING_PROBLEM_COPY.shared };
   if (/pairing has a kinds list/.test(lower)) return { action: 'continue', code: 'kinds-list', message: PAIRING_PROBLEM_COPY.everything };
   if (/pairing asks for every request/.test(lower)) return { action: 'continue', code: 'every-request', message: PAIRING_PROBLEM_COPY.everything };
-  if (/device_approval_required/.test(lower)) return { action: 'continue', code: 'phone-may-ok', message: PAIRING_PROBLEM_COPY.phoneMayOk };
+  if (/device[_ ]approval[_ ]required/.test(lower)) return { action: 'continue', code: 'phone-may-ok', message: PAIRING_PROBLEM_COPY.phoneMayOk };
   if (/^unauthori[sz]ed$/.test(lower)) return { action: 'continue', code: 'strict', message: PAIRING_PROBLEM_COPY.strict };
   if (/approval list full/.test(lower)) return { action: 'silent', code: 'approval-list-full', message: '' };
   if (/storage full/.test(lower)) return { action: 'continue', code: 'storage-full', message: DEVICE_LIMIT_COPY.storageFull };

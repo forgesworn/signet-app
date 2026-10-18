@@ -100,7 +100,7 @@ describe('useHeartwoodOwner', () => {
   });
 
   it('a pubkey mismatch stops with the keys-don\'t-match message and records nothing', async () => {
-    const bunker = fakeBunker(async (m) => { if (m === 'heartwood_owner_status') return '{"owner":false}'; throw '-3 pubkey mismatch'; });
+    const bunker = fakeBunker(async (m) => { if (m === 'heartwood_owner_status') return '{"owner":false}'; throw 'pubkey mismatch'; });
     const onStyleChange = vi.fn();
     const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, onStyleChange })));
     await waitFor(() => expect(result.current.status).not.toBeNull());
@@ -147,5 +147,22 @@ describe('useHeartwoodOwner', () => {
     await act(async () => { out = await result.current.turnOff(); });
     expect(out).toEqual({ ok: false, message: 'Choose Forget approvals for this phone in Sapwood.' });
     expect(onStyleChange).not.toHaveBeenCalledWith(undefined);
+  });
+
+  it('is awaiting the first status in the very render it becomes supported, and settles after the answer', async () => {
+    const bunker = fakeBunker(async () => '{"owner":true,"style":"everyday"}');
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER })));
+    expect(result.current.supported).toBe(true);
+    expect(result.current.awaitingFirstStatus).toBe(true);
+    expect(result.current.checking).toBe(true);
+    await waitFor(() => expect(result.current.awaitingFirstStatus).toBe(false));
+    expect(result.current.checking).toBe(false);
+  });
+
+  it('is never awaiting when unsupported', () => {
+    const bunker = fakeBunker(async () => '{}');
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: NO_BUNDLE_ROUTER })));
+    expect(result.current.awaitingFirstStatus).toBe(false);
+    expect(result.current.checking).toBe(false);
   });
 });
