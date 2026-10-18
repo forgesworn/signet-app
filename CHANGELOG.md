@@ -3,6 +3,12 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.21.3
+- Signing up from a sign-in link or a pairing request now starts with a persona, keeping your real identity dormant, the same as Create my Signet
+- Connecting a Heartwood during sign-up asks the device for your identity keys and saves nothing if the button press is missed, denied or the device is unreachable; Try again reuses the same connection
+- Pairing a Heartwood waits for the on-device confirmation card instead of reporting the device as unreachable after 10 seconds
+- Apps that send their name and address in the newer NIP-46 position are recognised when they pair, instead of showing as "App"
+
 ## 0.21.2
 - Apps you sign in to over a temporary pairing relay are told to keep the relay My Signet stays on, so they can still reach you after a restart instead of asking you to sign in again
 
