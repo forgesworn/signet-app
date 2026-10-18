@@ -45,6 +45,8 @@ export interface HeartwoodOwnerSettingsProps extends Omit<HeartwoodFullAccessCar
   supported: boolean;
   words: [string, string, string] | null;
   includeRealName: boolean;
+  /** The real name is included only because older backups still sign with it (m12). */
+  realNameForLegacyBackups?: boolean;
   /** The style on file, for re-running the hold (A8). */
   storedStyle: OwnerStyle | undefined;
   /** Run ONE bundle; called from the choice screen's tap only. */
@@ -99,9 +101,16 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   useEffect(() => {
     if (!openOwnerChoice) return;
-    if (heartwoodOwner) setOwnerChoice(openOwnerChoice);
+    // The choice screen needs the three words (m8). If they are not there yet
+    // (a reconnect), drop the request rather than leave it to open on its own later.
+    if (heartwoodOwner?.words) setOwnerChoice(openOwnerChoice);
     onOwnerChoiceHandled?.();
   }, [openOwnerChoice, heartwoodOwner, onOwnerChoiceHandled]);
+  // ...and close it if the words go away while it is open.
+  const ownerWordsReady = !!heartwoodOwner?.words;
+  useEffect(() => {
+    if (!ownerWordsReady) setOwnerChoice(null);
+  }, [ownerWordsReady]);
   const [confirmForgetOperator, setConfirmForgetOperator] = useState(false);
   const [forgettingOperator, setForgettingOperator] = useState(false);
   const relayList: RelayConfig[] = relays.length > 0 ? relays : defaultRelays();
@@ -192,6 +201,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
         words={owner.words!}
         label={owner.label}
         includeRealName={owner.includeRealName}
+        realNameForLegacyBackups={owner.realNameForLegacyBackups}
         initialStyle={ownerChoice === 'again' ? (owner.storedStyle ?? 'everyday') : 'everyday'}
         onRun={async (style) => {
           const out = await owner.run(style);

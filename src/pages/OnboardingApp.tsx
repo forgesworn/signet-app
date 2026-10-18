@@ -1,5 +1,5 @@
 import { PRODUCTION_RELAY_URL } from '../lib/relay-defaults';
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { validateMnemonic, decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
 import { fetchRestoreProfile, type RestoredProfile } from '../lib/profile-restore';
 import { fetchExistingProfile, buildMatchSeed, type ExistingProfile } from '../lib/existing-profile';
@@ -352,6 +352,25 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
     setFullAccess(null);
     setHeartwoodStep('connecting');
     pending?.resolve(d);
+  };
+
+  // m9: the connect handshake waits on the choice screen. Any way out other
+  // than its own buttons (an unmount, a flow reset, the cancel below) answers
+  // 'cancel', so the signer socket is closed and `heartwoodConnecting` clears
+  // instead of waiting forever. Nothing is sent: the bundle needs a tap.
+  const pendingFullAccess = useRef(fullAccess);
+  pendingFullAccess.current = fullAccess;
+  useEffect(() => () => { pendingFullAccess.current?.resolve({ mode: 'cancel' }); }, []);
+  useEffect(() => {
+    if (fullAccess && (flow !== 'heartwood' || heartwoodStep !== 'full-access')) {
+      fullAccess.resolve({ mode: 'cancel' });
+      setFullAccess(null);
+    }
+  }, [fullAccess, flow, heartwoodStep]);
+  const cancelHeartwood = () => {
+    pendingFullAccess.current?.resolve({ mode: 'cancel' });
+    setFullAccess(null);
+    onCancelHeartwood?.();
   };
 
   // --- Render: compute the current stage's body ---
@@ -927,7 +946,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleHeartwoodUri} disabled={!bunkerUri.trim()} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => { onCancelHeartwood?.(); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -963,7 +982,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
                 If your Heartwood asks, press its button to approve. It may ask more than once.
               </p>
             )}
-            <button className="btn btn-ghost" onClick={() => { onCancelHeartwood?.(); setHeartwoodStep('uri'); }} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setHeartwoodStep('uri'); }} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>

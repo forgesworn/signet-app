@@ -153,4 +153,18 @@ describe('FullAccessChoice', () => {
     setup();
     expect(screen.getByTestId('full-access-card').textContent).toContain("(this pairing's name)");
   });
+
+  it('m12: says why the real name is included when only older backups need it', () => {
+    setup({ includeRealName: true, realNameForLegacyBackups: true });
+    expect(screen.getByText(FULL_ACCESS_COPY.realNameForLegacyBackups)).toBeTruthy();
+    expect(screen.getByTestId('full-access-card').textContent).toContain('PERSONA + REAL NAME');
+  });
+
+  it('m12: no such line when the real name is set up, or not included', () => {
+    const { unmount } = render(<FullAccessChoice words={WORDS} includeRealName realNameForLegacyBackups={false} onRun={vi.fn()} onApproved={vi.fn()} onSeparately={vi.fn()} />);
+    expect(screen.queryByText(FULL_ACCESS_COPY.realNameForLegacyBackups)).toBeNull();
+    unmount();
+    setup({ includeRealName: false, realNameForLegacyBackups: true });
+    expect(screen.queryByText(FULL_ACCESS_COPY.realNameForLegacyBackups)).toBeNull();
+  });
 });

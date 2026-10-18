@@ -11266,6 +11266,7 @@ export function App() {
           turnOff: heartwoodOwner.turnOff,
           words: heartwoodOwner.words,
           includeRealName: heartwoodOwner.includeRealName,
+          realNameForLegacyBackups: !!identity && !isNaturalPersonActive(identity) && legacyRailsMaySignAsRealName,
           storedStyle: preferences.heartwoodOwnerStyle,
           run: heartwoodOwner.run,
         } : undefined}

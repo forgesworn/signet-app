@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { OnboardingApp } from './OnboardingApp';
 import { HEARTWOOD_ONBOARDING_COPY } from '../lib/heartwood-onboarding';
 import { FULL_ACCESS_COPY, type FullAccessDecision, type FullAccessOffer, type HeartwoodConnectUi } from '../lib/heartwood-one-hold';
@@ -72,5 +72,29 @@ describe('OnboardingApp Heartwood connect', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText(/press its button to approve/)).toBeTruthy();
     expect(screen.queryByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeNull();
+  });
+
+  it('m9: leaving the choice screen by unmounting answers cancel, so the connect does not hang', async () => {
+    let decision: FullAccessDecision | undefined;
+    const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
+      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c'], run: vi.fn() });
+    });
+    openNameStep(onConnectHeartwood);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeTruthy();
+    expect(decision).toBeUndefined();
+    cleanup(); // unmount, as a flow reset or the Android back gesture would
+    await waitFor(() => expect(decision).toEqual({ mode: 'cancel' }));
+  });
+
+  it('m9: Back on the choice screen still answers cancel', async () => {
+    let decision: FullAccessDecision | undefined;
+    const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
+      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c'], run: vi.fn() });
+    });
+    openNameStep(onConnectHeartwood);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(decision).toEqual({ mode: 'cancel' }));
   });
 });

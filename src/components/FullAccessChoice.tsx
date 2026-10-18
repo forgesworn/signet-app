@@ -28,6 +28,12 @@ export interface FullAccessChoiceProps {
   label?: string | null;
   /** True when `act_as` will include the real identity. */
   includeRealName: boolean;
+  /**
+   * The real name is in the grant only because older backups still sign with
+   * it, not because the owner set one up. Say so, so `PERSONA + REAL NAME` is
+   * not a surprise.
+   */
+  realNameForLegacyBackups?: boolean;
   initialStyle?: OwnerStyle;
   /** Run ONE bundle. Called from the tap only. */
   onRun: (style: OwnerStyle) => Promise<BundleRunResult>;
@@ -57,7 +63,7 @@ type Phase =
   | { kind: 'problem'; failure: BundleFailure };
 
 export function FullAccessChoice({
-  words, label, includeRealName, initialStyle = 'everyday', onRun, onApproved, onSeparately, onBack,
+  words, label, includeRealName, realNameForLegacyBackups = false, initialStyle = 'everyday', onRun, onApproved, onSeparately, onBack,
   separatelyLabel = FULL_ACCESS_COPY.separately, showSeparatelyHint = false, continueLabel = 'Continue', silentMessage,
 }: FullAccessChoiceProps) {
   const [style, setStyle] = useState<OwnerStyle>(initialStyle);
@@ -93,6 +99,9 @@ export function FullAccessChoice({
       >
         <h1 style={{ marginBottom: 8, fontSize: '1.3rem' }}>{FULL_ACCESS_COPY.heading}</h1>
         <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.covers}</p>
+        {includeRealName && realNameForLegacyBackups && (
+          <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.realNameForLegacyBackups}</p>
+        )}
         <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.expect}</p>
 
         <div

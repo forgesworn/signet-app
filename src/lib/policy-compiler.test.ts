@@ -568,6 +568,14 @@ describe('guardian slot', () => {
     expect(policyDiffersFromSlot(p, careful)).toBe(false);
   });
 
+  it('one-hold (m11): any non-empty kinds list is carried over as it is, not only the careful one', () => {
+    // A Sapwood "Posting"-style list: the push must not widen it to "every kind".
+    const posting = slot({ currentPubkey: GUARDIAN_CLIENT, strictPermissions: false, allowedKinds: [1, 7] });
+    expect(compileGuardianSlotPolicy(posting).allowedKinds).toEqual([1, 7]);
+    // And an empty list ("every kind") stays empty rather than gaining entries.
+    expect(compileGuardianSlotPolicy(slot({ currentPubkey: GUARDIAN_CLIENT, strictPermissions: false, allowedKinds: [] })).allowedKinds).toEqual([]);
+  });
+
   it('one-hold: the kinds list is copied, not shared with the slot', () => {
     const s = slot({ currentPubkey: GUARDIAN_CLIENT, strictPermissions: false, allowedKinds: [30078, 22242] });
     const p = compileGuardianSlotPolicy(s);

@@ -112,4 +112,25 @@ describe('Settings -> Heartwood full access', () => {
     expect(await screen.findByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeTruthy();
     expect(handled).toHaveBeenCalled();
   });
+
+  it('m8: a banner request that arrives before the words are ready is dropped, not opened later', async () => {
+    const handled = vi.fn();
+    const props = { openOwnerChoice: 'again' as const, onOwnerChoiceHandled: handled };
+    const view = renderSettings(owner({ everHadFullAccess: true, storedStyle: 'everyday', words: null }), props);
+    await waitFor(() => expect(handled).toHaveBeenCalled());
+    expect(screen.queryByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeNull();
+    // The words arrive later: the screen must not open by itself.
+    view.rerender(
+      <AdvancedSettings
+        identity={{ backedUp: true } as SignetIdentity}
+        preferences={{ id: 'current' } as AppPreferences}
+        relays={[]} onSetRelays={() => {}} onNavigateBridge={() => {}}
+        onSetDefaultBlossomUrl={async () => {}} onSetBlossomConsent={async () => {}}
+        signingMode="bunker" bunkerUri="bunker://x"
+        heartwoodOwner={owner({ everHadFullAccess: true, storedStyle: 'everyday' })}
+        onOwnerChoiceHandled={handled}
+      />,
+    );
+    expect(screen.queryByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeNull();
+  });
 });
