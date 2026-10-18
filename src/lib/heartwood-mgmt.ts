@@ -657,3 +657,22 @@ export async function revokeClientIdentity(
   });
   if (r.slot_index !== slot.slotIndex) throw new Error('revoke_client_identity confirmed a different slot');
 }
+
+/**
+ * `clear_client_identities` — withdraw EVERY recorded identity approval on a
+ * slot. On a one-hold phone this also drops the owner mark (the Heartwood's
+ * rule: "Forget approvals" drops it), so the specific cards ask again. No
+ * `client_pubkey` is sent: a marked slot authorises exactly one key, so the
+ * whole-slot form is the same thing.
+ */
+export async function clearClientIdentities(
+  c: HeartwoodMgmtClient,
+  slot: { slotIndex: number; secretFingerprint: string },
+): Promise<void> {
+  checkSlotRef(slot);
+  const r = await c.request('clear_client_identities', {
+    slot_index: slot.slotIndex,
+    expected_secret_fingerprint: slot.secretFingerprint,
+  });
+  if (r.slot_index !== slot.slotIndex) throw new Error('clear_client_identities confirmed a different slot');
+}

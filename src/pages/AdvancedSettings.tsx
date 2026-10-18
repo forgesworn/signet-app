@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { SignetIdentity, AppPreferences, RelayConfig } from '../types';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { defaultRelays, MAX_RELAYS } from '../lib/relay-service';
@@ -12,6 +12,9 @@ import { describePushResult, type PolicyPushResult } from '../lib/policy-push';
 import { shortDeviceLabel } from '../lib/heartwood-operator-import';
 import { useRelayHealth } from '../hooks/useRelayHealth';
 import { getRelayDeliveryStatus } from '../lib/relay-delivery-status';
+import { FullAccessChoice } from '../components/FullAccessChoice';
+import { HeartwoodFullAccessCard, type HeartwoodFullAccessCardProps, type OwnerChoiceKind } from '../components/HeartwoodFullAccessCard';
+import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, type BundleRunResult, type OwnerStyle } from '../lib/heartwood-one-hold';
 
 /** Operator-key + rules-push state bundle from App.tsx (C3, family-bunker §11.1.4/9). */
 export interface HeartwoodOperatorSettingsProps {
@@ -35,6 +38,17 @@ export interface HeartwoodOperatorSettingsProps {
   initialImportText?: string;
   /** Approve from my phone, per own app; absent hides the section. */
   awayApproval?: AwayApprovalListProps;
+}
+
+/** One-hold pairing state for Settings → Heartwood (absent unless the Heartwood lists the bundle method). */
+export interface HeartwoodOwnerSettingsProps extends Omit<HeartwoodFullAccessCardProps, 'onOpenChoice'> {
+  supported: boolean;
+  words: [string, string, string] | null;
+  includeRealName: boolean;
+  /** The style on file, for re-running the hold (A8). */
+  storedStyle: OwnerStyle | undefined;
+  /** Run ONE bundle; called from the choice screen's tap only. */
+  run: (style: OwnerStyle) => Promise<BundleRunResult>;
 }
 
 interface Props {
@@ -74,9 +88,20 @@ interface Props {
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
   /** Heartwood operator key + rules push (absent on the paired-child surface). */
   heartwoodOperator?: HeartwoodOperatorSettingsProps;
+  /** One-hold pairing status and actions (absent unless the Heartwood lists the bundle method). */
+  heartwoodOwner?: HeartwoodOwnerSettingsProps;
+  /** Open the choice screen straight away (the "approve again" banner lands here). */
+  openOwnerChoice?: OwnerChoiceKind | null;
+  onOwnerChoiceHandled?: () => void;
 }
 
-export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator }: Props) {
+export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerChoiceHandled }: Props) {
+  const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
+  useEffect(() => {
+    if (!openOwnerChoice) return;
+    if (heartwoodOwner) setOwnerChoice(openOwnerChoice);
+    onOwnerChoiceHandled?.();
+  }, [openOwnerChoice, heartwoodOwner, onOwnerChoiceHandled]);
   const [confirmForgetOperator, setConfirmForgetOperator] = useState(false);
   const [forgettingOperator, setForgettingOperator] = useState(false);
   const relayList: RelayConfig[] = relays.length > 0 ? relays : defaultRelays();
@@ -156,6 +181,33 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   function truncateBunkerUri(uri: string): string {
     if (uri.length <= 30) return uri;
     return `${uri.slice(0, 18)}...${uri.slice(-10)}`;
+  }
+
+  // One-hold pairing (A10, A8, A11): the full-screen choice replaces the page.
+  if (ownerChoice && heartwoodOwner?.words) {
+    const owner = heartwoodOwner;
+    const again = ownerChoice === 'again';
+    return (
+      <FullAccessChoice
+        words={owner.words!}
+        label={owner.label}
+        includeRealName={owner.includeRealName}
+        initialStyle={ownerChoice === 'again' ? (owner.storedStyle ?? 'everyday') : 'everyday'}
+        onRun={async (style) => {
+          const out = await owner.run(style);
+          // A8: a pairing the Heartwood now refuses has to be made again.
+          if (again && !out.ok && out.failure.code === 'strict') {
+            return { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };
+          }
+          return out;
+        }}
+        onApproved={() => setOwnerChoice(null)}
+        onSeparately={() => setOwnerChoice(null)}
+        separatelyLabel="Not now"
+        continueLabel="Close"
+        silentMessage="Full access couldn't be set up. Nothing was changed."
+      />
+    );
   }
 
   return (
@@ -663,6 +715,19 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
               Connected to Heartwood signer.
             </p>
+            {heartwoodOwner?.supported && (
+              <HeartwoodFullAccessCard
+                status={heartwoodOwner.status}
+                checking={heartwoodOwner.checking}
+                everHadFullAccess={heartwoodOwner.everHadFullAccess}
+                label={heartwoodOwner.label}
+                hasOperatorKey={heartwoodOwner.hasOperatorKey}
+                canNarrow={heartwoodOwner.canNarrow}
+                narrow={heartwoodOwner.narrow}
+                turnOff={heartwoodOwner.turnOff}
+                onOpenChoice={setOwnerChoice}
+              />
+            )}
             {bunkerUri && (
               <span style={{ fontSize: '0.8rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                 {truncateBunkerUri(bunkerUri)}

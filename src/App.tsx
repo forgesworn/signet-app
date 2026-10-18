@@ -253,9 +253,12 @@ import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { resolveOnboardingKeys, HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
 import {
-  negotiateFullAccess,
+  negotiateFullAccess, FULL_ACCESS_COPY,
   type FullAccessDecision, type HeartwoodConnectUi, type OwnerStyle,
 } from './lib/heartwood-one-hold';
+import { useHeartwoodOwner } from './hooks/useHeartwoodOwner';
+import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY } from './lib/vault-approval';
+import type { OwnerChoiceKind } from './components/HeartwoodFullAccessCard';
 import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
@@ -689,7 +692,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -4395,6 +4398,37 @@ export function App() {
     loadChildRules: isPairedChild || !encryptionKey ? undefined : () => listAllChildRules(encryptionKey),
   });
 
+  // One-hold pairing (spec A1b, A8-A11): is this phone's pairing an owner
+  // pairing, and in which style. Gated on the Heartwood listing the bundle
+  // method, so older firmware sees no new request at all. Never on a
+  // paired-child install. The real identity joins `act_as` only when it is
+  // positively in use: activated, or a legacy sync rail is still free to sign
+  // as it (an unknown state leaves it out; its first use then asks once).
+  const legacyRailsMaySignAsRealName = privateVaultSupported
+    && Object.values(privateVaultHealth.datasets).some(d => !d.canonical && d.state !== 'unusable' && d.state !== 'unavailable' && d.state !== 'waiting-legacy');
+  const heartwoodOwner = useHeartwoodOwner({
+    enabled: !!encryptionKey && preferences.signingMode === 'bunker' && !isPairedChild,
+    bunker: bunkerBackend,
+    router: bunkerRouter,
+    connected: signerStatus === 'connected',
+    operatorClient: heartwoodOperator.client,
+    naturalPersonPubkey: identity?.naturalPerson.publicKey ?? '',
+    personaPubkey: identity?.persona.publicKey ?? '',
+    includeRealName: !!identity && (isNaturalPersonActive(identity) || legacyRailsMaySignAsRealName),
+    storedStyle: preferences.heartwoodOwnerStyle,
+    onStyleChange: setHeartwoodOwnerStyle,
+  });
+  // A8: the offer to approve this phone again, dismissable for the session.
+  const [ownerAgainDismissed, setOwnerAgainDismissed] = useState(false);
+  const [pendingOwnerChoice, setPendingOwnerChoice] = useState<OwnerChoiceKind | null>(null);
+  const ownerLost = heartwoodOwner.supported && heartwoodOwner.everHadFullAccess && heartwoodOwner.status?.owner === false;
+  const ownerAgainOffer = heartwoodOwner.supported && heartwoodOwner.everHadFullAccess && !ownerAgainDismissed
+    && (ownerLost || privateVaultHealth.needsApproval === true);
+  // Backups wait while the answer is pending or the offer is open, rather than
+  // queue a card per dataset beside the one the owner is about to be asked for.
+  const ownerHoldsBackups = heartwoodOwner.everHadFullAccess && heartwoodOwner.supported
+    && (heartwoodOwner.checking || (ownerLost && !ownerAgainDismissed));
+
   // Approve from my phone, per app, for the owner's own pairings (Advanced
   // settings, inside the operator key card). The compiler's classification
   // decides what is "own": a pairing it compiles (the guardian's, a
@@ -6593,7 +6627,8 @@ export function App() {
     encryptionKey,
     supported: privateVaultSupported,
     ready: contactsImport.status === 'done' && !dependantsLoading
-      && (preferences.signingMode !== 'bunker' || signerStatus === 'connected'),
+      && (preferences.signingMode !== 'bunker' || signerStatus === 'connected')
+      && !ownerHoldsBackups,
     migrationReady: [personasRemoteState, dependantsRemoteState, credentialsRemoteState, grantsRemoteState,
         contactsRemoteState, contactsV2RemoteState, contactsGrantsRemoteState]
         .every(state => state === 'present' || state === 'never-seen'),
@@ -6608,7 +6643,7 @@ export function App() {
     // signed, no new vault request goes to the device (its cards would queue
     // ahead of, or beside, the sign-in's own). Bunker mode only — local-key
     // vault work never touches a device.
-    paused: preferences.signingMode === 'bunker' && (pendingAuthRequest !== null || authApprovalInFlightKey !== null),
+    paused: preferences.signingMode === 'bunker' && (pendingAuthRequest !== null || authApprovalInFlightKey !== null || heartwoodOwner.busy),
     relays: syncRelays,
     jobs: isCurrent => privateVaultJobs({ identity: identity!, encryptionKey: encryptionKey!,
       deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent }),
@@ -10335,6 +10370,25 @@ export function App() {
     />
   ) : null;
 
+  // A8: this phone had full access and the Heartwood no longer shows it (the
+  // pairing was edited, restored or had its approvals forgotten), or a private
+  // backup request was refused. One quiet line; the button opens the choice
+  // screen in Settings, where the owner checks the three words first.
+  const ownerAgainBanner = (!isPairedChild && ownerAgainOffer) ? (
+    <div className="vault-approval-banner">
+      <span className="vault-approval-banner-text">{ownerLost ? 'This phone no longer has full access on your Heartwood.' : PRIVATE_VAULT_NEEDS_APPROVAL_COPY}</span>
+      <span className="vault-approval-banner-actions">
+        <button type="button" className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }}
+          onClick={() => { setPendingOwnerChoice('again'); navigateTo('settings-advanced'); }}>
+          {FULL_ACCESS_COPY.approveAgain}
+        </button>
+        <button type="button" className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }} onClick={() => setOwnerAgainDismissed(true)}>
+          Not now
+        </button>
+      </span>
+    </div>
+  ) : null;
+
   // R6: the v2 contacts log has either outgrown what the rail can carry
   // ('too-large') or has a relay round trip stuck with no leg left that
   // could succeed ('stalled', Task 6 review ruling). Distinct from a missing
@@ -10499,11 +10553,11 @@ export function App() {
       ) : null}
     </>
   ) : null;
-  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner
+  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
     || contactsBackupTooLargeBanner
     || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
-    <div className="app-notices">{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{contactsBackupTooLargeBanner}
+    <div className="app-notices">{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
       {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
@@ -11190,6 +11244,23 @@ export function App() {
         onNavigateRoster={() => navigateTo('roster')}
         onNavigateDeveloper={() => navigateTo('settings-developer')}
         onOpenMigration={() => navigateTo('migrate-heartwood')}
+        heartwoodOwner={heartwoodOwner.supported ? {
+          supported: true,
+          status: heartwoodOwner.status,
+          checking: heartwoodOwner.checking,
+          everHadFullAccess: heartwoodOwner.everHadFullAccess,
+          label: heartwoodOwner.label,
+          hasOperatorKey: heartwoodOwner.hasOperatorKey,
+          canNarrow: heartwoodOwner.canNarrow,
+          narrow: heartwoodOwner.narrow,
+          turnOff: heartwoodOwner.turnOff,
+          words: heartwoodOwner.words,
+          includeRealName: heartwoodOwner.includeRealName,
+          storedStyle: preferences.heartwoodOwnerStyle,
+          run: heartwoodOwner.run,
+        } : undefined}
+        openOwnerChoice={pendingOwnerChoice}
+        onOwnerChoiceHandled={() => setPendingOwnerChoice(null)}
         heartwoodOperator={preferences.signingMode !== 'paired-child' ? {
           credential: heartwoodOperator.credential
             ? { deviceHex: heartwoodOperator.credential.deviceHex, relays: heartwoodOperator.credential.relays, importedAt: heartwoodOperator.credential.importedAt }

@@ -1,0 +1,114 @@
+import { useState } from 'react';
+import { FULL_ACCESS_COPY, type NarrowResult, type OwnerStatus, type OwnerStyle } from '../lib/heartwood-one-hold';
+import type { TurnOffResult } from '../lib/heartwood-owner-ops';
+
+export type OwnerChoiceKind = 'offer' | 'again' | 'everyday';
+
+export interface HeartwoodFullAccessCardProps {
+  status: OwnerStatus | null;
+  checking: boolean;
+  everHadFullAccess: boolean;
+  label: string | null;
+  hasOperatorKey: boolean;
+  canNarrow: boolean;
+  narrow: () => Promise<NarrowResult>;
+  turnOff: () => Promise<TurnOffResult>;
+  /** Open A1's choice screen (A10 offer, A8 re-run, or back to Everyday). */
+  onOpenChoice: (kind: OwnerChoiceKind) => void;
+}
+
+const STYLE_NAME: Record<OwnerStyle, string> = { everyday: 'Everyday', careful: 'Extra careful' };
+const STYLE_BODY: Record<OwnerStyle, string> = {
+  everyday: FULL_ACCESS_COPY.everyday.body,
+  careful: FULL_ACCESS_COPY.careful.body,
+};
+
+const small = { fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8, lineHeight: 1.45 } as const;
+
+/**
+ * Settings → Heartwood: the one-hold status line and its actions. Rendered
+ * only when the Heartwood lists the bundle method (the caller gates that), so
+ * on older firmware nothing here exists.
+ */
+export function HeartwoodFullAccessCard({
+  status, checking, everHadFullAccess, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice,
+}: HeartwoodFullAccessCardProps) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  async function doNarrow() {
+    if (busy) return;
+    setBusy(true); setMessage('');
+    try {
+      const out = await narrow();
+      setMessage(out.ok ? 'This phone now signs in the Extra careful style.' : out.message);
+    } finally { setBusy(false); }
+  }
+
+  async function doTurnOff() {
+    if (busy) return;
+    if (!hasOperatorKey) { setMessage(FULL_ACCESS_COPY.sapwoodForget); return; }
+    setBusy(true); setMessage('');
+    try {
+      const out = await turnOff();
+      setMessage(out.ok ? 'Full access is off for this phone. Your Heartwood will ask for each thing again.' : out.message);
+    } finally { setBusy(false); }
+  }
+
+  let line: string;
+  if (status === null) line = checking ? 'Full access: checking…' : 'Full access: couldn\'t check just now.';
+  else line = status.owner ? 'Full access: on for this phone' : 'Full access: off for this phone';
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{line}</div>
+
+      {status?.owner && (
+        <>
+          <p style={small}><strong>{STYLE_NAME[status.style]}.</strong> {STYLE_BODY[status.style]}</p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {status.style === 'everyday' && canNarrow && (
+              <button className="btn btn-secondary" disabled={busy} onClick={() => void doNarrow()}>
+                {busy ? 'Working…' : 'Switch to Extra careful'}
+              </button>
+            )}
+            {status.style === 'careful' && (
+              <button className="btn btn-secondary" disabled={busy} onClick={() => onOpenChoice('everyday')}>
+                Switch back to Everyday
+              </button>
+            )}
+            <button className="btn btn-secondary" disabled={busy} onClick={() => void doTurnOff()}>
+              Turn off full access
+            </button>
+          </div>
+        </>
+      )}
+
+      {status && !status.owner && (
+        everHadFullAccess ? (
+          <>
+            <p style={small}>
+              This phone had full access, but your Heartwood no longer shows it. That happens when the pairing is edited or restored in Sapwood, or its approvals are forgotten.
+            </p>
+            <button className="btn btn-primary" disabled={busy} onClick={() => onOpenChoice('again')}>
+              {FULL_ACCESS_COPY.approveAgain}
+            </button>
+          </>
+        ) : (
+          <>
+            <p style={small}>{FULL_ACCESS_COPY.covers}</p>
+            <button className="btn btn-primary" disabled={busy} onClick={() => onOpenChoice('offer')}>
+              {FULL_ACCESS_COPY.offerExisting}
+            </button>
+          </>
+        )
+      )}
+
+      {message && <p role="status" style={{ ...small, marginTop: 8, marginBottom: 0 }}>{message}</p>}
+
+      <p style={{ ...small, marginTop: 8, marginBottom: 0 }}>
+        {label ? `This phone's pairing: ${label}. ` : ''}{FULL_ACCESS_COPY.lostPhone}
+      </p>
+    </div>
+  );
+}
