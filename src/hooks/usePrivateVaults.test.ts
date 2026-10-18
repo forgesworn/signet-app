@@ -414,3 +414,20 @@ it('a pending rotation is re-synced on a change cycle and retried on the backoff
   expect(sync).toHaveBeenCalledTimes(5);
   unmount();
 });
+
+it('A5: the cycle reports how many datasets it visits, kept through every update', async () => {
+  vi.useFakeTimers();
+  const jobs = ['profiles', 'contacts:owner', 'credentials'].map(dataset => ({
+    adapter: { dataset: dataset as VaultDataset, snapshot: async () => '{}', merge: async () => {} },
+    resolve: async () => ({} as DecryptingSigningBackend),
+  }));
+  const seen: Array<number | undefined> = [];
+  const { result, unmount } = renderHook(() => usePrivateVaults({
+    ...opts(), jobs: async () => jobs, onHealth: (h: { total?: number }) => { seen.push(h.total); },
+  }));
+  sync.mockResolvedValue({ state: 'verified', canonical: true });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(result.current.total).toBe(3);
+  expect(seen.filter(t => t !== undefined).every(t => t === 3)).toBe(true);
+  unmount();
+});

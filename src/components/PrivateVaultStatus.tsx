@@ -22,6 +22,8 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate }: {
   const heading = health.phase === 'unsupported' ? 'Recovery-derived backups unavailable'
     : invalid ? 'A private backup needs attention'
     : health.phase === 'checking' ? 'Checking existing backups before migration'
+    : health.phase === 'running' && health.total !== undefined && health.total > 0 && verified < health.total
+      ? `Backing up ${Math.min(verified + 1, health.total)} of ${health.total}…`
     : health.phase === 'running' ? 'Checking private backups'
     : states.some(s => s.state === 'waiting-legacy') ? 'Waiting for existing backups before migration'
     : unavailable ? 'Private backups are waiting for a connection'
