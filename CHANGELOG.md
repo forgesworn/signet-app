@@ -3,6 +3,9 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.21.4
+- Signing in to a site by scanning its QR code with My Signet's own scanner now works for sites that ask for their app name, instead of the site refusing it with an app mismatch
+
 ## 0.21.3
 - Signing up from a sign-in link or a pairing request now starts with a persona, keeping your real identity dormant, the same as Create my Signet
 - Connecting a Heartwood during sign-up asks the device for your identity keys and saves nothing if the button press is missed, denied or the device is unreachable; Try again reuses the same connection
