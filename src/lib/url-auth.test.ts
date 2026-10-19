@@ -11,6 +11,7 @@ import {
   buildAddDependantErrorUrl,
   parseAuthRelays,
   parseUrlAuthRequest,
+  relaySignInAppName,
   consumerRelaysOf,
   relayCompareKey,
   MAX_AUTH_RELAYS,
@@ -872,5 +873,26 @@ describe('consumer relays (repeated relay=, primary first)', () => {
     expect(consumerRelaysOf({ relay: 'wss://a.example', relays: ['wss://b.example'] })).toEqual(['wss://a.example']);
     expect(consumerRelaysOf({ relay: 'wss://a.example', relays: ['wss://a.example', 'wss://b.example'] })).toEqual(['wss://a.example', 'wss://b.example']);
     expect(consumerRelaysOf({ relays: ['wss://b.example'] })).toEqual([]);
+  });
+});
+
+describe('requested app name (the app tag a relay-mode sign-in binds)', () => {
+  it('rides on the parsed request, cleaned the way the URL handler cleans it', () => {
+    const search = validSearch({ name: 'v4v\u202E\u0007' });
+    const req = parseUrlAuthRequest(search)!;
+    expect(req.name).toBe('v4v');
+    expect(req.name).toBe(getUrlAuthSiteName(search));
+    expect(parseSignInRequest(search)!.request.name).toBe('v4v');
+  });
+
+  it('is absent when nothing of the name survives cleaning', () => {
+    expect('name' in parseUrlAuthRequest(validSearch({ name: '\u202E\u0007' }))!).toBe(false);
+  });
+
+  it('prefers the name the URL handler recorded, else the request\'s, else none', () => {
+    expect(relaySignInAppName('Opened', { name: 'Scanned' })).toBe('Opened');
+    expect(relaySignInAppName('', { name: 'v4v' })).toBe('v4v');
+    expect(relaySignInAppName('', {})).toBeUndefined();
+    expect(relaySignInAppName('', null)).toBeUndefined();
   });
 });

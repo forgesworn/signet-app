@@ -343,7 +343,7 @@ import { AuthRequestSettlement, authRequestKey, requestObjectKey } from './lib/a
 import { deliverConnectApproval, ConnectWithdrawnError } from './lib/connect-delivery';
 import { ConnectRouteTracker } from './lib/connect-route-cancel';
 import type { SigningBackend, DecryptingSigningBackend } from './lib/signing-backend';
-import { parseSignInRequest, consumerRelaysOf, getUrlAuthSiteName, buildAuthCallbackUrl, buildAuthDeniedUrl, parseAddDependantRequest, buildAddDependantProofTemplate, buildAddDependantCallbackUrl, buildAddDependantErrorUrl } from './lib/url-auth';
+import { parseSignInRequest, consumerRelaysOf, getUrlAuthSiteName, relaySignInAppName, buildAuthCallbackUrl, buildAuthDeniedUrl, parseAddDependantRequest, buildAddDependantProofTemplate, buildAddDependantCallbackUrl, buildAddDependantErrorUrl } from './lib/url-auth';
 import type { AddDependantRequest } from './lib/url-auth';
 import { parseVerifyRequestFromUrl, buildVerifyCallbackUrl, buildVerifyDeniedUrl } from './lib/url-verify';
 import type { ConsumerHint } from './types';
@@ -8424,7 +8424,9 @@ export function App() {
         // Sign the kind-21236 event. Works with every backend (local, bunker, NIP-07).
         // pickedAvatar (if any) becomes avatar_hash / avatar_url / avatar_key tags
         // on the event — Phase 4 of per-persona-avatars.
-        const { authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar, urlAuthSiteName || undefined);
+        // The app tag comes from the request too, so a link scanned in-app binds
+        // the name its consumer asked for, as an opened link does.
+        const { authEvent } = await signAuthChallenge(selectedBackend, challenge, pendingAuthRequest.origin, pickedAvatar, relaySignInAppName(urlAuthSiteName, pendingAuthRequest));
 
         // Find credential for login+verify flows
         const credential = authResponseCredentialForSigner(pendingAuthRequest, authEvent.pubkey);
