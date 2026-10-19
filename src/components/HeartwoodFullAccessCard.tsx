@@ -15,6 +15,12 @@ export interface HeartwoodFullAccessCardProps {
   turnOff: () => Promise<TurnOffResult>;
   /** Open A1's choice screen (A10 offer, A8 re-run, or back to Everyday). */
   onOpenChoice: (kind: OwnerChoiceKind) => void;
+  /** The grant on file covers the real name, so Everyday's body must not call it a first-time ask. */
+  realNameCovered?: boolean;
+  /** The outcome of the last full-access hold, kept after its screen closes. */
+  outcome?: string | null;
+  /** Called when the owner starts another action here, so the outcome line goes. */
+  onOutcomeClear?: () => void;
 }
 
 const STYLE_NAME: Record<StatusStyle, string> = { everyday: 'Everyday', careful: 'Extra careful', custom: FULL_ACCESS_COPY.customStyleName };
@@ -32,7 +38,7 @@ const small = { fontSize: '0.85rem', color: 'var(--text-secondary)', marginBotto
  * on older firmware nothing here exists.
  */
 export function HeartwoodFullAccessCard({
-  status, checking, everHadFullAccess, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice,
+  status, checking, everHadFullAccess, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice, realNameCovered = false, outcome = null, onOutcomeClear,
 }: HeartwoodFullAccessCardProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -40,7 +46,7 @@ export function HeartwoodFullAccessCard({
 
   async function doNarrow() {
     if (busy) return;
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); onOutcomeClear?.();
     try {
       const out = await narrow();
       setMessage(out.ok ? 'This phone now signs in the Extra careful style.' : out.message);
@@ -50,7 +56,7 @@ export function HeartwoodFullAccessCard({
   async function doTurnOff() {
     if (busy) return;
     setConfirmOff(false);
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); onOutcomeClear?.();
     try {
       const out = await turnOff();
       setMessage(out.ok ? 'Full access is off for this phone. Your Heartwood will ask for each thing again.' : out.message);
@@ -67,7 +73,7 @@ export function HeartwoodFullAccessCard({
 
       {status?.owner && (
         <>
-          <p style={small}><strong>{STYLE_NAME[status.style]}.</strong> {STYLE_BODY[status.style]}</p>
+          <p style={small}><strong>{STYLE_NAME[status.style]}.</strong> {status.style === 'everyday' && realNameCovered ? FULL_ACCESS_COPY.everydayWithRealName : STYLE_BODY[status.style]}</p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {status.style === 'everyday' && canNarrow && (
               <button className="btn btn-secondary" disabled={busy} onClick={() => void doNarrow()}>
@@ -126,7 +132,7 @@ export function HeartwoodFullAccessCard({
         )
       )}
 
-      {message && <p role="status" style={{ ...small, marginTop: 8, marginBottom: 0 }}>{message}</p>}
+      {(message || outcome) && <p role="status" style={{ ...small, marginTop: 8, marginBottom: 0 }}>{message || outcome}</p>}
 
       <p style={{ ...small, marginTop: 8, marginBottom: 0 }}>
         {label ? `This phone's pairing: ${label}. ` : ''}{FULL_ACCESS_COPY.lostPhone}

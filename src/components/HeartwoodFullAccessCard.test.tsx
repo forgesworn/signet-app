@@ -29,6 +29,20 @@ describe('HeartwoodFullAccessCard', () => {
     expect(screen.getByText(FULL_ACCESS_COPY.lostPhone)).toBeTruthy();
   });
 
+  it('N5: the Everyday body drops the real-name first-use line when the grant covers the real name', () => {
+    setup({ realNameCovered: true });
+    expect(screen.getByText(FULL_ACCESS_COPY.everydayWithRealName, { exact: false })).toBeTruthy();
+    expect(screen.queryByText(/your real name the first time/)).toBeNull();
+  });
+
+  it('N7: shows the kept outcome line, and clears it when the owner starts another action', async () => {
+    const onOutcomeClear = vi.fn();
+    setup({ outcome: 'Full access is on for this phone.', onOutcomeClear });
+    expect(screen.getByRole('status').textContent).toBe('Full access is on for this phone.');
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off full access' }));
+    await waitFor(() => expect(onOutcomeClear).toHaveBeenCalled());
+  });
+
   it('A9 names the pairing label when an operator key supplied it', () => {
     setup({ label: 'Pixel 8' });
     expect(screen.getByText(/This phone's pairing: Pixel 8\. If you lose this phone, remove it in Sapwood\./)).toBeTruthy();

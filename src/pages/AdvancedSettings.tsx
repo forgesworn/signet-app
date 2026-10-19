@@ -32,6 +32,8 @@ export interface HeartwoodOperatorSettingsProps {
     lastPushAt: number | null;
     lastResult: PolicyPushResult | null;
     pushing: boolean;
+    /** The push is held while a full-access hold waits on the Heartwood. */
+    waiting?: boolean;
     pushNow: () => void;
   };
   /** Pre-filled link text (from a QR scan routed here). */
@@ -97,6 +99,8 @@ interface Props {
   onOwnerChoiceHandled?: () => void;
 }
 
+const OWNER_SILENT_MESSAGE = "Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off.";
+
 export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerChoiceHandled }: Props) {
   const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   useEffect(() => {
@@ -113,6 +117,8 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   // reconnect, and it closes once the bundle settles if they have not come back.
   const ownerWordsReady = !!heartwoodOwner?.words;
   const [ownerRunning, setOwnerRunning] = useState(false);
+  // The last hold's outcome, shown in the full-access card once the choice screen is gone.
+  const [ownerOutcome, setOwnerOutcome] = useState<string | null>(null);
   const lastOwnerRef = useRef<HeartwoodOwnerSettingsProps | null>(null);
   if (heartwoodOwner?.words) lastOwnerRef.current = heartwoodOwner;
   useEffect(() => {
@@ -217,15 +223,16 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           try { out = await owner.run(style); } finally { setOwnerRunning(false); }
           // A8: a pairing the Heartwood now refuses has to be made again.
           if (again && !out.ok && out.failure.code === 'strict') {
-            return { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };
+            out = { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };
           }
+          setOwnerOutcome(out.ok ? FULL_ACCESS_COPY.approvedOutcome : (out.failure.message || OWNER_SILENT_MESSAGE));
           return out;
         }}
         onApproved={() => setOwnerChoice(null)}
         onSeparately={() => setOwnerChoice(null)}
         separatelyLabel="Not now"
         continueLabel="Close"
-        silentMessage="Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off."
+        silentMessage={OWNER_SILENT_MESSAGE}
       />
     );
   }
@@ -655,11 +662,11 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-secondary"
-                disabled={heartwoodOperator.push.pushing}
+                disabled={heartwoodOperator.push.pushing || heartwoodOperator.push.waiting === true}
                 onClick={() => heartwoodOperator.push.pushNow()}
                 style={{ flex: 1 }}
               >
-                {heartwoodOperator.push.pushing ? 'Pushing…' : 'Push rules now'}
+                {heartwoodOperator.push.pushing ? 'Pushing…' : heartwoodOperator.push.waiting ? 'Waiting for your Heartwood…' : 'Push rules now'}
               </button>
               {!confirmForgetOperator ? (
                 <button className="btn btn-ghost" onClick={() => setConfirmForgetOperator(true)} style={{ flex: 1 }}>
@@ -745,7 +752,10 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
                 canNarrow={heartwoodOwner.canNarrow}
                 narrow={heartwoodOwner.narrow}
                 turnOff={heartwoodOwner.turnOff}
-                onOpenChoice={setOwnerChoice}
+                onOpenChoice={kind => { setOwnerOutcome(null); setOwnerChoice(kind); }}
+                realNameCovered={preferences.heartwoodOwnerActAs?.includes('natural-person') ?? false}
+                outcome={ownerOutcome}
+                onOutcomeClear={() => setOwnerOutcome(null)}
               />
             )}
             {bunkerUri && (

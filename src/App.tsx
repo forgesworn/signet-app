@@ -11307,6 +11307,8 @@ export function App() {
             lastPushAt: policyPush.lastPushAt,
             lastResult: policyPush.lastResult,
             pushing: policyPush.pushing,
+            // usePolicyPush is paused while a full-access hold waits on the Heartwood.
+            waiting: heartwoodOwner.busy,
             pushNow: policyPush.pushNow,
           },
           initialImportText: pendingOperatorImportText ?? undefined,

@@ -201,6 +201,96 @@ describe('Settings -> Heartwood full access', () => {
     });
   });
 
+  it('N7: when the screen closes on a settled bundle with the words gone, the outcome stays in the card', async () => {
+    let release!: (r: BundleRunResult) => void;
+    const run = vi.fn(() => new Promise<BundleRunResult>(r => { release = r; }));
+    const settingsWith = (o?: HeartwoodOwnerSettingsProps) => (
+      <AdvancedSettings
+        identity={{ backedUp: true } as SignetIdentity}
+        preferences={{ id: 'current' } as AppPreferences}
+        relays={[]} onSetRelays={() => {}} onNavigateBridge={() => {}}
+        onSetDefaultBlossomUrl={async () => {}} onSetBlossomConsent={async () => {}}
+        signingMode="bunker" bunkerUri="bunker://x"
+        heartwoodOwner={o}
+      />
+    );
+    const view = render(settingsWith(owner({ run })));
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.offerExisting }));
+    fireEvent.click(await screen.findByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    // The signer drops, the owner prop goes, and the bundle then fails.
+    view.rerender(settingsWith(undefined));
+    release({ ok: false, failure: { action: 'retry', code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer } });
+    await waitFor(() => expect(screen.queryByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeNull());
+    // The reconnect finishes: the card is back and still says what happened.
+    view.rerender(settingsWith(owner({ run })));
+    expect(await screen.findByText(FULL_ACCESS_COPY.noAnswer)).toBeTruthy();
+    // Another action clears it.
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.offerExisting }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
+    await screen.findByText('Connected to Heartwood signer.');
+    expect(screen.queryByText(FULL_ACCESS_COPY.noAnswer)).toBeNull();
+  });
+
+  it('N7: an approved hold leaves the approved line in the card', async () => {
+    const o = owner();
+    renderSettings(o);
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.offerExisting }));
+    fireEvent.click(await screen.findByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    expect(await screen.findByText(FULL_ACCESS_COPY.approvedOutcome)).toBeTruthy();
+  });
+
+  it('N5: the card uses the real-name Everyday body when the grant on file covers natural-person', () => {
+    render(
+      <AdvancedSettings
+        identity={{ backedUp: true } as SignetIdentity}
+        preferences={{ id: 'current', heartwoodOwnerActAs: ['persona', 'natural-person'] } as AppPreferences}
+        relays={[]} onSetRelays={() => {}} onNavigateBridge={() => {}}
+        onSetDefaultBlossomUrl={async () => {}} onSetBlossomConsent={async () => {}}
+        signingMode="bunker" bunkerUri="bunker://x"
+        heartwoodOwner={owner({ status: { owner: true, style: 'everyday' } })}
+      />,
+    );
+    expect(screen.queryByText(/your real name the first time/)).toBeNull();
+    expect(screen.getByText(FULL_ACCESS_COPY.everydayWithRealName, { exact: false })).toBeTruthy();
+  });
+
+  describe('N8: Push rules now while the family push is paused', () => {
+    function withOperator(push: { pushing: boolean; waiting?: boolean }) {
+      const pushNow = vi.fn();
+      render(
+        <AdvancedSettings
+          identity={{ backedUp: true } as SignetIdentity}
+          preferences={{ id: 'current' } as AppPreferences}
+          relays={[]} onSetRelays={() => {}} onNavigateBridge={() => {}}
+          onSetDefaultBlossomUrl={async () => {}} onSetBlossomConsent={async () => {}}
+          signingMode="bunker" bunkerUri="bunker://x"
+          heartwoodOperator={{
+            credential: { deviceHex: 'ab'.repeat(32), relays: ['wss://r.example'], importedAt: 1 },
+            status: null, statusError: null, canPush: true, canVerdict: true,
+            importLink: vi.fn(), importPhrase: vi.fn(), forget: vi.fn(),
+            push: { lastPushAt: null, lastResult: null, pushNow, ...push },
+          } as never}
+        />,
+      );
+      return pushNow;
+    }
+
+    it('shows "Waiting for your Heartwood…" and disables the button', () => {
+      const pushNow = withOperator({ pushing: false, waiting: true });
+      const btn = screen.getByRole('button', { name: 'Waiting for your Heartwood…' }) as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+      fireEvent.click(btn);
+      expect(pushNow).not.toHaveBeenCalled();
+    });
+
+    it('is the normal button when nothing is paused', () => {
+      const pushNow = withOperator({ pushing: false, waiting: false });
+      fireEvent.click(screen.getByRole('button', { name: 'Push rules now' }));
+      expect(pushNow).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('W4: a custom style is re-chosen through the hold, starting on Everyday', async () => {
     const o = owner({ status: { owner: true, style: 'custom' }, everHadFullAccess: true, storedStyle: 'custom' });
     renderSettings(o);

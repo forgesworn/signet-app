@@ -187,10 +187,13 @@ export const FULL_ACCESS_COPY = {
   separately: 'Approve each thing separately',
   styleHeading: 'How should this phone sign?',
   everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys, money, your real name the first time.' },
+  // The hold being offered already covers the real name, so it is not a "first time" ask.
+  everydayWithRealName: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys and money.',
   careful: { name: 'Extra careful', tag: '', body: 'Backups, app data and relay logins happen on their own, and reading messages still works. Signing in to sites, posting and sending messages ask on your Heartwood, so they wait until you\'re home.' },
   holding: 'Your Heartwood is showing FULL ACCESS and five words, two at a time. Check every word matches the ones above. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
   holdScreenHeading: 'While you hold the button it shows:',
   cardHintChange: (hold: string) => `When every page has shown, the last line changes to ${hold}.`,
+  approvedOutcome: 'Full access is on for this phone.',
   declined: 'Full access wasn\'t approved. Nothing changed. You can try again in a minute.',
   noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again in a minute.',
   // Onboarding has no Settings yet, so it cannot point there.

@@ -156,7 +156,7 @@ export function FullAccessChoice({
                 />
                 <span>
                   <strong>{c.name}</strong>{c.tag ? ` (${c.tag})` : ''}
-                  <span style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.45 }}>{c.body}</span>
+                  <span style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.45 }}>{s === 'everyday' && includeRealName ? FULL_ACCESS_COPY.everydayWithRealName : c.body}</span>
                 </span>
               </label>
             );

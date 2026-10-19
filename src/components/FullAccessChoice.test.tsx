@@ -44,6 +44,17 @@ describe('FullAccessChoice', () => {
     expect(screen.getByTestId('full-access-card').textContent).toContain('PERSONA + REAL NAME');
   });
 
+  it('N5: the Everyday body drops "your real name the first time" when the hold covers the real name', () => {
+    const view = render(<FullAccessChoice words={WORDS} includeRealName={false} onRun={vi.fn()} onApproved={vi.fn()} onSeparately={vi.fn()} />);
+    expect(screen.getByText(FULL_ACCESS_COPY.everyday.body)).toBeTruthy();
+    view.unmount();
+    setup({ includeRealName: true });
+    expect(screen.getByText(FULL_ACCESS_COPY.everydayWithRealName)).toBeTruthy();
+    expect(screen.queryByText(FULL_ACCESS_COPY.everyday.body)).toBeNull();
+    expect(FULL_ACCESS_COPY.everydayWithRealName).not.toMatch(/real name/);
+    expect(screen.getByText(FULL_ACCESS_COPY.careful.body)).toBeTruthy();
+  });
+
   it('sends nothing until the owner taps "Set up with one hold"', () => {
     const p = setup();
     expect(p.onRun).not.toHaveBeenCalled();
