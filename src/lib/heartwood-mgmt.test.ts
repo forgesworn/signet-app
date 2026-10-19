@@ -984,14 +984,13 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
     c.stop();
   });
 
-  it('clearClientIdentities without a client key sends the slot ref only, as a challenged mutation', async () => {
+  it('clearClientIdentities without a client key sends nothing (no whole-slot form)', async () => {
     const d = makeFakeDevice({ handler: (r) => (r.method === 'clear_client_identities' ? { result: { slot_index: 2, changed: true } } : undefined) });
     const c = d.client();
     c.start();
-    await clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' });
-    const sent = d.seen.find(s => s.method === 'clear_client_identities')!;
-    expect(sent.params).toEqual({ slot_index: 2, expected_secret_fingerprint: 'fp2' });
-    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, undefined as unknown as string)).rejects.toThrow(/client_pubkey/);
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, '')).rejects.toThrow(/client_pubkey/);
+    expect(d.seen.find(s => s.method === 'clear_client_identities')).toBeUndefined();
     c.stop();
   });
 
@@ -1002,6 +1001,7 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
     await clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, 'AB'.repeat(32));
     const sent = d.seen.find(s => s.method === 'clear_client_identities')!;
     expect(sent.params).toEqual({ slot_index: 2, expected_secret_fingerprint: 'fp2', client_pubkey: 'ab'.repeat(32) });
+    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
     await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, 'nothex')).rejects.toThrow(/client_pubkey/);
     c.stop();
   });
@@ -1010,7 +1010,7 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
     const d = makeFakeDevice({ handler: (r) => (r.method === 'clear_client_identities' ? { result: { slot_index: 9 } } : undefined) });
     const c = d.client();
     c.start();
-    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' })).rejects.toThrow(/different slot/);
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, 'ab'.repeat(32))).rejects.toThrow(/different slot/);
     c.stop();
   });
 

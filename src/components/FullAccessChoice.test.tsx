@@ -55,7 +55,8 @@ describe('FullAccessChoice', () => {
     const p = setup();
     fireEvent.click(screen.getByLabelText(/Extra careful/));
     const card = screen.getByTestId('full-access-card');
-    expect(card.textContent).toContain('SIGNS ALONE: BACKUPS, APP DATA');
+    expect(card.textContent).toContain('ALONE: BACKUPS, APP DATA');
+    expect(card.textContent).not.toContain('SIGNS ALONE');
     expect(card.textContent).toContain('ASKS: EVERYTHING ELSE');
     expect(card.textContent).not.toContain('SIGN IN, POST, BACKUP');
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
@@ -146,13 +147,12 @@ describe('FullAccessChoice', () => {
     expect(separatelyHint()).toContain('about 19 times');
   });
 
-  it('m4: a label is drawn as the firmware draws it; without one a placeholder keeps the line count', () => {
+  it('m4: a label is drawn as the firmware draws it, on the hold screen; without one a placeholder stands in', () => {
     const { unmount } = render(<FullAccessChoice words={WORDS} includeRealName={false} label="My Signet" onRun={vi.fn()} onApproved={vi.fn()} onSeparately={vi.fn()} />);
-    const lines = (screen.getByTestId('full-access-card').querySelectorAll('div > div > div') as NodeListOf<HTMLElement>);
-    expect(lines[0].textContent).toBe('My Signet');
+    expect(screen.getByTestId('full-access-hold-screen').textContent).toContain('My Signet');
     unmount();
     setup();
-    expect(screen.getByTestId('full-access-card').textContent).toContain("(this pairing's name)");
+    expect(screen.getByTestId('full-access-hold-screen').textContent).toContain("(this pairing's name)");
   });
 
   it('m12: says why the real name is included when only older backups need it', () => {
@@ -177,10 +177,29 @@ describe('FullAccessChoice', () => {
     expect(pages).toEqual(['1-2 of 5nice never', '3-4 of 5repair area', '5 of 5upgrade']);
     const text = screen.getByTestId('full-access-card').textContent ?? '';
     expect(text).not.toContain('while you hold');
-    // The words come after the card's own lines, like the Heartwood's order.
-    expect(text.indexOf('PERSONA ONLY')).toBeLessThan(text.indexOf('nice never'));
-    expect(text.indexOf('HOLD 5 SECONDS')).toBeLessThan(text.indexOf('nice never'));
+    // The Heartwood's order at rest (oled.rs show_full_access): header, the words, the scope, the style line, the hint.
+    expect(text.indexOf('FULL ACCESS')).toBeLessThan(text.indexOf('nice never'));
+    expect(text.indexOf('nice never')).toBeLessThan(text.indexOf('PERSONA ONLY'));
+    expect(text.indexOf('PERSONA ONLY')).toBeLessThan(text.indexOf('SIGN IN, POST, BACKUP'));
+    expect(text.indexOf('SIGN IN, POST, BACKUP')).toBeLessThan(text.indexOf('COMPARE ALL 5 WORDS'));
     expect(screen.getByTestId('full-access-card').getAttribute('aria-label')).toContain('1-2 of 5: nice never; 3-4 of 5: repair area; 5 of 5: upgrade');
+  });
+
+  it('S5: the resting card has no label and says COMPARE ALL 5 WORDS; the label and all five words are only on the hold screen', () => {
+    setup({ label: 'My Signet' });
+    // The resting part is everything above the hold-screen block.
+    const card = screen.getByTestId('full-access-card');
+    const hold = screen.getByTestId('full-access-hold-screen');
+    const resting = (card.textContent ?? '').replace(hold.textContent ?? '', '');
+    expect(resting).not.toContain('My Signet');
+    expect(screen.getByTestId('full-access-hint').textContent).toBe('COMPARE ALL 5 WORDS');
+    // HOLD 5 SECONDS is not the resting hint: it is named as what the last line changes to.
+    expect(screen.getByTestId('full-access-hint').textContent).not.toContain('HOLD');
+    expect(card.textContent).toContain(FULL_ACCESS_COPY.cardHintChange('HOLD 5 SECONDS'));
+    // The hold screen: the label, then all five words as w1 w2 / w3 w4 / w5.
+    expect(hold.textContent).toContain('My Signet');
+    const holdLines = Array.from(hold.querySelectorAll('div')).filter(d => d.children.length === 0).map(d => d.textContent);
+    expect(holdLines).toEqual(['My Signet', 'nice never', 'repair area', 'upgrade']);
   });
 
   it('W2: the running line is the same instruction, with no "words appear while you hold"', async () => {
@@ -224,7 +243,7 @@ describe('FullAccessChoice', () => {
     const failure = classifyBundleError('could not persist client policy; request was not applied');
     setup({ onRun: vi.fn().mockResolvedValue({ ok: false, failure }) });
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
-    expect((await screen.findByRole('alert')).textContent).toBe('Your Heartwood couldn\'t save that. Nothing changed.');
+    expect((await screen.findByRole('alert')).textContent).toBe('Your Heartwood couldn\'t save that. Nothing changed. You can try again in a minute.');
     expect(screen.getByRole('button', { name: FULL_ACCESS_COPY.tryAgain })).toBeTruthy();
   });
 

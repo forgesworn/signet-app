@@ -84,24 +84,38 @@ export function pairWordsForClient(clientPubkeyHex: string): PairWords {
 
 // ---------------------------------------------------------------------------
 // The card, as the choice screen draws it (4.2, 4.6, W2). Same lines, word for word.
-// The Heartwood pages the five words AT REST, two at a time ("1-2 of 5",
-// "3-4 of 5", "5 of 5"), each page for its full dwell, and repeats them. The
-// hold counts only once every page has had its dwell and the button has been
-// seen up since; letting go before 5 s declines.
+// At rest the Heartwood draws (oled.rs `show_full_access`): the inverted header,
+// ONE page of the words (two at a time: "1-2 of 5", "3-4 of 5", "5 of 5"),
+// the scope, the style's lines and a hint that reads COMPARE ALL 5 WORDS until
+// every page has had its dwell, then HOLD 5 SECONDS. There is NO label at
+// rest. The label and all five words appear only on the hold screen
+// (`show_full_access_hold`), while the button is down. The hold counts only
+// once every page has had its dwell and the button has been seen up since;
+// letting go before 5 s declines.
 // ---------------------------------------------------------------------------
 
 export interface CardLines {
   header: string;
-  /** The pairing's name as the Heartwood draws it, or a placeholder when it is not known here. */
-  label: string;
-  /** False when `label` is the placeholder, so the line count still matches the Heartwood's card. */
-  labelKnown: boolean;
   /** The word pages as the Heartwood pages them, e.g. `1-2 of 5`: `nice never`. */
   wordPages: { label: string; words: string }[];
   scope: string;
   /** Everyday: one line. Extra careful: two. */
   powers: string[];
+  /** The hint line at rest, until every words page has had its dwell. */
+  compare: string;
+  /** The hint line once a hold counts, and the hold screen's job. */
   hold: string;
+  /**
+   * What the Heartwood draws only while the button is held (`show_full_access_hold`):
+   * the pairing's label and all five words (`w1 w2` / `w3 w4` / `w5`).
+   */
+  holdScreen: {
+    /** The pairing's name as the Heartwood draws it, or a placeholder when it is not known here. */
+    label: string;
+    /** False when `label` is the placeholder (onboarding cannot read the pairing's name). */
+    labelKnown: boolean;
+    words: string[];
+  };
 }
 
 /** Standing in for the pairing's name where this phone cannot read it (onboarding). */
@@ -143,14 +157,19 @@ export function cardLines(args: {
   const label = (args.label ?? '').trim();
   return {
     header: 'FULL ACCESS',
-    label: label ? cardLabelLine(label) : CARD_LABEL_PLACEHOLDER,
-    labelKnown: label !== '',
     wordPages: wordPages(args.words),
     scope: args.realName ? 'PERSONA + REAL NAME' : 'PERSONA ONLY',
+    // Firmware CAREFUL_LINES: "SIGNS" is dropped to fit 24 characters.
     powers: args.style === 'careful'
-      ? ['SIGNS ALONE: BACKUPS, APP DATA', 'ASKS: EVERYTHING ELSE']
+      ? ['ALONE: BACKUPS, APP DATA', 'ASKS: EVERYTHING ELSE']
       : ['SIGN IN, POST, BACKUP'],
+    compare: 'COMPARE ALL 5 WORDS',
     hold: 'HOLD 5 SECONDS',
+    holdScreen: {
+      label: label ? cardLabelLine(label) : CARD_LABEL_PLACEHOLDER,
+      labelKnown: label !== '',
+      words: wordPages(args.words).map(p => p.words),
+    },
   };
 }
 
@@ -170,17 +189,18 @@ export const FULL_ACCESS_COPY = {
   everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys, money, your real name the first time.' },
   careful: { name: 'Extra careful', tag: '', body: 'Backups, app data and relay logins happen on their own, and reading messages still works. Signing in to sites, posting and sending messages ask on your Heartwood, so they wait until you\'re home.' },
   holding: 'Your Heartwood is showing FULL ACCESS and five words, two at a time. Check every word matches the ones above. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
-  wordsHeading: 'The five words:',
+  holdScreenHeading: 'While you hold the button it shows:',
+  cardHintChange: (hold: string) => `When every page has shown, the last line changes to ${hold}.`,
   declined: 'Full access wasn\'t approved. Nothing changed. You can try again in a minute.',
-  noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again.',
+  noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again in a minute.',
   // Onboarding has no Settings yet, so it cannot point there.
   noAnswerOnboarding: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on. You can try again in a minute.',
   anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute.',
   cardShownRecently: 'Your Heartwood showed a full access card a moment ago, so it won\'t show another yet. Nothing changed. You can try again in a minute.',
-  saveFailed: 'Your Heartwood couldn\'t save that. Nothing changed.',
+  saveFailed: 'Your Heartwood couldn\'t save that. Nothing changed. You can try again in a minute.',
   saveFailedFatal: 'Your Heartwood couldn\'t save that and needs attention. Connect it by cable and check it in Sapwood.',
   busy: 'Your Heartwood was busy. Nothing changed. Try again.',
-  changed: 'Something changed on your Heartwood while it waited. Nothing changed here. Try again.',
+  changed: 'Something changed on your Heartwood while it waited. Nothing changed here. Try again in a minute.',
   tryAgain: 'Try again',
   unreachable: 'Couldn\'t reach your Heartwood. Check it\'s switched on and online, then try again. Nothing changed.',
   pairingMismatch: 'Your Heartwood\'s keys don\'t match this phone\'s. Nothing was changed.',
@@ -193,6 +213,7 @@ export const FULL_ACCESS_COPY = {
   // while the client still has a remembered approval. Edit or Remove drops it too.
   sapwoodForget: 'In Sapwood, open this phone\'s pairing and choose Withdraw all for this client. If that button isn\'t there, choose Edit or Remove for the pairing instead.',
   turnOffUnconfirmed: 'Your Heartwood still shows full access as on, so it was not turned off.',
+  turnOffUnknown: 'Couldn\'t check your Heartwood. Full access may already be off; it will show here next time it connects.',
   customStyleName: 'Custom',
   customStyleBody: 'Changed in Sapwood, so your Heartwood signs only some things on its own. Choose a style again to set it with a hold on your Heartwood.',
   chooseStyleAgain: 'Choose a style again',

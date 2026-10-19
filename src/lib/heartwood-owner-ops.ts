@@ -18,26 +18,31 @@ export function findOwnSlot(slots: readonly DeviceClientSlot[], clientPubkeyHex:
 
 export interface OwnerOpsIo {
   listClients: () => Promise<DeviceClientSlot[]>;
-  /** `clientPubkey` makes the clear per-client: only this phone's key loses its approvals. */
-  clearClientIdentities: (slot: { slotIndex: number; secretFingerprint: string }, clientPubkey?: string) => Promise<void>;
+  /** Always per-client: only this phone's key loses its approvals. There is no whole-slot form. */
+  clearClientIdentities: (slot: { slotIndex: number; secretFingerprint: string }, clientPubkey: string) => Promise<void>;
   /** A fresh `heartwood_owner_status` read over the phone's own pairing; `null` = no usable answer. */
   readOwnerStatus: () => Promise<OwnerStatus | null>;
 }
 
+/** `status === null` = the clear went through but the re-read got no answer; `undefined` = no re-read was made or it is not the point. */
 export type TurnOffResult = { ok: true } | { ok: false; message: string; status?: OwnerStatus | null };
 
 /**
  * A1b with an operator key: `clear_client_identities` for this phone's key on
  * its own slot, then a re-read of `heartwood_owner_status`. "Off" is reported
  * only when that re-read says `owner:false`; anything else is a plain error
- * and the status line keeps saying "on". Without an operator key the caller
+ * and the status line keeps saying "on" (an unanswered re-read gets its own
+ * "couldn't check" line, not a claim that it is still on). Without an operator key the caller
  * shows `FULL_ACCESS_COPY.sapwoodForget` instead and calls nothing.
  *
- * The clear names this phone's client key (`client_pubkey`), so a second
+ * The clear always names this phone's client key (`client_pubkey`), so a second
  * device bound to the slot since the status was read keeps its own approvals.
+ * "unknown client credential" is never answered with a whole-slot clear: the
+ * status is re-read instead.
  */
 export async function turnOffFullAccess(io: OwnerOpsIo, clientPubkeyHex: string): Promise<TurnOffResult> {
   const me = (clientPubkeyHex || '').trim().toLowerCase();
+  const sapwoodError = `Couldn't turn off full access from here. ${FULL_ACCESS_COPY.sapwoodForget}`;
   try {
     const slot = findOwnSlot(await io.listClients(), clientPubkeyHex);
     if (!slot) return { ok: false, message: `Couldn't find this phone's pairing on your Heartwood. ${FULL_ACCESS_COPY.sapwoodForget}` };
@@ -45,19 +50,23 @@ export async function turnOffFullAccess(io: OwnerOpsIo, clientPubkeyHex: string)
     try {
       await io.clearClientIdentities(ref, me);
     } catch (err) {
-      // A slot without per-client records cannot take a per-client clear. When
-      // this phone's key is the only one on the slot the whole-slot clear is
-      // the same thing; with any other key present nothing is sent.
       const msg = err instanceof Error ? err.message : String(err ?? '');
-      const only = slot.authorizedPubkeys.every(k => k.toLowerCase() === me) && slot.authorizedPubkeys.length > 0;
-      if (!(/unknown client credential/i.test(msg) && only)) throw err;
-      await io.clearClientIdentities(ref);
+      if (!/unknown client credential/i.test(msg)) throw err;
+      // The device no longer recognises this key on the slot. Never fall back
+      // to a whole-slot clear (it would wipe another device's approvals):
+      // ask the device what it now says. owner:false is a fine answer to
+      // "off"; anything else is a plain error pointing at Sapwood.
+      const now = await io.readOwnerStatus();
+      if (now && !now.owner) return { ok: true };
+      return { ok: false, message: sapwoodError, ...(now ? { status: now } : {}) };
     }
   } catch {
-    return { ok: false, message: `Couldn't turn off full access from here. ${FULL_ACCESS_COPY.sapwoodForget}` };
+    return { ok: false, message: sapwoodError };
   }
   const status = await io.readOwnerStatus();
   if (status && !status.owner) return { ok: true };
+  // No answer is not "still on": the clear went through, the read did not.
+  if (!status) return { ok: false, message: FULL_ACCESS_COPY.turnOffUnknown, status: null };
   return { ok: false, message: FULL_ACCESS_COPY.turnOffUnconfirmed, status };
 }
 

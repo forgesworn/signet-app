@@ -55,19 +55,22 @@ describe('cardLines', () => {
   const words = ['one', 'two', 'three', 'four', 'five'];
   it('everyday, persona only', () => {
     expect(cardLines({ words, label: 'my signet', realName: false, style: 'everyday' })).toEqual({
-      header: 'FULL ACCESS', label: 'my signet', labelKnown: true,
+      header: 'FULL ACCESS',
       wordPages: [{ label: '1-2 of 5', words: 'one two' }, { label: '3-4 of 5', words: 'three four' }, { label: '5 of 5', words: 'five' }],
-      scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACKUP'], hold: 'HOLD 5 SECONDS',
+      scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACKUP'], compare: 'COMPARE ALL 5 WORDS', hold: 'HOLD 5 SECONDS',
+      // The label and all five words belong to the hold screen only (firmware `show_full_access_hold`).
+      holdScreen: { label: 'my signet', labelKnown: true, words: ['one two', 'three four', 'five'] },
     });
   });
   it('extra careful with the real name', () => {
     const c = cardLines({ words, realName: true, style: 'careful' });
     expect(c.scope).toBe('PERSONA + REAL NAME');
     // W9: never claim less than what signs alone (backups, app data under a granted identity, relay logins).
-    expect(c.powers).toEqual(['SIGNS ALONE: BACKUPS, APP DATA', 'ASKS: EVERYTHING ELSE']);
-    // No label known here (onboarding): a placeholder keeps the Heartwood's line count.
-    expect(c.label).toBe(CARD_LABEL_PLACEHOLDER);
-    expect(c.labelKnown).toBe(false);
+    // The firmware's CAREFUL_LINES, character for character ("SIGNS" is dropped to fit 24 characters).
+    expect(c.powers).toEqual(['ALONE: BACKUPS, APP DATA', 'ASKS: EVERYTHING ELSE']);
+    // No label known here (onboarding): the hold screen's label is a placeholder.
+    expect(c.holdScreen.label).toBe(CARD_LABEL_PLACEHOLDER);
+    expect(c.holdScreen.labelKnown).toBe(false);
   });
   it('draws the label the way the firmware does (m4): as typed, ? for non-ASCII, .. when cut', () => {
     expect(cardLabelLine('My Signet')).toBe('My Signet');
@@ -248,7 +251,7 @@ describe('classifyBundleError', () => {
   });
   it('note 3: a failed save says so and says nothing changed; the fatal one does not', () => {
     expect(classifyBundleError('could not persist client policy; request was not applied'))
-      .toMatchObject({ action: 'retry', code: 'save-failed', message: 'Your Heartwood couldn\'t save that. Nothing changed.' });
+      .toMatchObject({ action: 'retry', code: 'save-failed', message: 'Your Heartwood couldn\'t save that. Nothing changed. You can try again in a minute.' });
     const fatal = classifyBundleError('fatal storage error: could not restore prior client policy; take the device offline for USB recovery');
     expect(fatal.code).toBe('save-failed');
     expect(fatal.message).not.toMatch(/Nothing changed/);

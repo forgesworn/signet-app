@@ -214,14 +214,65 @@ describe('useHeartwoodOwner', () => {
       expect(result.current.status?.owner).toBe(true);
       expect(onStyleChange).not.toHaveBeenCalledWith(undefined);
     });
-    it('a re-read with no answer is not "off" either', async () => {
+    it('a re-read with no answer is not "off", and does not claim it is still on (S3)', async () => {
       const { result, bunker } = setup(['{"owner":true,"style":"everyday"}']);
       await waitFor(() => expect(result.current.status?.owner).toBe(true));
       bunker.request.mockImplementation(async () => { throw new Error('timeout'); });
       let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
       await act(async () => { out = await result.current.turnOff(); });
+      expect(out).toMatchObject({ ok: false, message: FULL_ACCESS_COPY.turnOffUnknown, status: null });
+      // The line is asked again rather than left on a state the device never confirmed.
+      await waitFor(() => expect(result.current.status).toBeNull());
+    });
+    it('S2: unknown client credential re-reads the status and never sends a whole-slot clear', async () => {
+      const { result, bunker } = setup(['{"owner":true,"style":"everyday"}']);
+      await waitFor(() => expect(result.current.status?.owner).toBe(true));
+      clearMock.mockRejectedValue(new Error('unknown client credential'));
+      let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
+      await act(async () => { out = await result.current.turnOff(); });
       expect(out?.ok).toBe(false);
-      expect(result.current.status?.owner).toBe(true);
+      expect(clearMock).toHaveBeenCalledTimes(1);
+      expect(clearMock.mock.calls.every(c => c[2] === CLIENT)).toBe(true);
+      expect(bunker.request.mock.calls.filter(c => c[0] === 'heartwood_owner_status').length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('S1: the bundle is serialised with the family push (operator lock)', () => {
+    const operatorClient = { isOpen: true } as unknown as HeartwoodMgmtClient;
+    const reply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'everyday' });
+    it('does not send the bundle while a push holds the lock, and sends it once the push settles', async () => {
+      const bunker = fakeBunker(async (m) => (m === 'heartwood_owner_status' ? '{"owner":false}' : reply));
+      const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, operatorClient })));
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      let releasePush!: () => void;
+      let pushDone!: Promise<unknown>;
+      // A family push already in flight: it holds the operator lock.
+      const { withOperatorLock } = await import('../lib/operator-lock');
+      pushDone = withOperatorLock(operatorClient, () => new Promise<void>((r) => { releasePush = r; }));
+      let run!: Promise<unknown>;
+      act(() => { run = result.current.run('everyday'); });
+      await waitFor(() => expect(result.current.busy).toBe(true));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(bunker.request.mock.calls.some(c => c[0] === 'heartwood_approve_bundle')).toBe(false);
+      await act(async () => { releasePush(); await pushDone; await run; });
+      expect(bunker.request.mock.calls.filter(c => c[0] === 'heartwood_approve_bundle')).toHaveLength(1);
+    });
+    it('holds the lock while the bundle waits, so a push cannot start until it settles', async () => {
+      let release!: (v: string) => void;
+      const bunker = fakeBunker((m) => (m === 'heartwood_owner_status'
+        ? Promise.resolve('{"owner":false}') : new Promise<string>(r => { release = r; })));
+      const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, operatorClient })));
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      let run!: Promise<unknown>;
+      act(() => { run = result.current.run('everyday'); });
+      await waitFor(() => expect(bunker.request.mock.calls.some(c => c[0] === 'heartwood_approve_bundle')).toBe(true));
+      const { withOperatorLock } = await import('../lib/operator-lock');
+      let pushRan = false;
+      const push = withOperatorLock(operatorClient, async () => { pushRan = true; });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(pushRan).toBe(false);
+      await act(async () => { release(reply); await run; await push; });
+      expect(pushRan).toBe(true);
     });
   });
 

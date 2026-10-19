@@ -257,6 +257,7 @@ import {
   type FullAccessDecision, type HeartwoodConnectUi,
 } from './lib/heartwood-one-hold';
 import { useHeartwoodOwner } from './hooks/useHeartwoodOwner';
+import { useOwnerHoldCap } from './hooks/useOwnerHoldCap';
 import {
   resolveHeartwoodConnect, HeartwoodConnectCancelled, HeartwoodConnectFailed, type OwnerGrantOnFile,
 } from './lib/heartwood-connect';
@@ -4420,7 +4421,9 @@ export function App() {
   // stop backups for the whole session.
   const ownerRouterSettled = bunkerRouter !== null || routerProbeState === 'unsupported';
   const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldBackupsRaw } = ownerOfferState({
-    bunkerMode: preferences.signingMode === 'bunker' && !isPairedChild,
+    // Unlocked only: preferences load without the key, so a locked app would
+    // otherwise count as "holding" and run the cap on the PIN screen.
+    bunkerMode: !!encryptionKey && preferences.signingMode === 'bunker' && !isPairedChild,
     routerSettled: ownerRouterSettled,
     supported: heartwoodOwner.supported,
     everHadFullAccess: heartwoodOwner.everHadFullAccess,
@@ -4429,13 +4432,7 @@ export function App() {
     vaultNeedsApproval: privateVaultHealth.needsApproval === true,
     dismissed: ownerAgainDismissed,
   });
-  const [ownerHoldLapsed, setOwnerHoldLapsed] = useState(false);
-  useEffect(() => {
-    if (!ownerHoldBackupsRaw) { setOwnerHoldLapsed(false); return; }
-    const timer = setTimeout(() => setOwnerHoldLapsed(true), OWNER_HOLD_CAP_MS);
-    return () => clearTimeout(timer);
-  }, [ownerHoldBackupsRaw]);
-  const ownerHoldsBackups = ownerHoldBackupsRaw && !ownerHoldLapsed;
+  const ownerHoldsBackups = useOwnerHoldCap(ownerHoldBackupsRaw, signerStatus === 'connected', OWNER_HOLD_CAP_MS);
 
   // C3 policy push: whenever dependants / grants change (or the client
   // comes up), debounce and push each changed family slot's compiled

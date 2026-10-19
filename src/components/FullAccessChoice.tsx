@@ -106,7 +106,7 @@ export function FullAccessChoice({
 
         <div
           role="img"
-          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.labelKnown ? `${lines.label}, ` : 'the name of this pairing, '}${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}. ${lines.wordPages.map(p => `${p.label}: ${p.words}`).join('; ')}`}
+          aria-label={`The card your Heartwood will show: ${lines.header}. ${lines.wordPages.map(p => `${p.label}: ${p.words}`).join('; ')}. ${lines.scope}, ${lines.powers.join(', ')}, ${lines.compare}. When every page has shown the last line changes to ${lines.hold}. While you hold, it shows ${lines.holdScreen.labelKnown ? lines.holdScreen.label : 'the name of this pairing'} and all five words: ${lines.holdScreen.words.join('; ')}.`}
           data-testid="full-access-card"
           style={{
             fontFamily: 'var(--font-mono)', fontSize: '0.85rem', lineHeight: 1.5, textAlign: 'center', overflowWrap: 'anywhere',
@@ -118,22 +118,26 @@ export function FullAccessChoice({
             {lines.header}
           </div>
           <div style={{ padding: '8px 8px 10px' }}>
-            <div style={lines.labelKnown ? undefined : { color: 'var(--text-muted)' }}>{lines.label}</div>
-            <div>{lines.scope}</div>
+            {lines.wordPages.map(p => (
+              <div
+                key={p.label}
+                data-testid="full-access-word-page"
+                style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', columnGap: 12, padding: '0 4px' }}
+              >
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{p.label}</span>
+                <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>{p.words}</span>
+              </div>
+            ))}
+            <div style={{ marginTop: 6 }}>{lines.scope}</div>
             {lines.powers.map(p => <div key={p}>{p}</div>)}
-            <div>{lines.hold}</div>
-            <div style={{ borderTop: '1px dashed var(--border)', marginTop: 8, paddingTop: 8 }}>
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 4 }}>{FULL_ACCESS_COPY.wordsHeading}</div>
-              {lines.wordPages.map(p => (
-                <div
-                  key={p.label}
-                  data-testid="full-access-word-page"
-                  style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', columnGap: 12, padding: '0 4px' }}
-                >
-                  <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{p.label}</span>
-                  <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>{p.words}</span>
-                </div>
-              ))}
+            <div data-testid="full-access-hint" style={{ color: 'var(--text-muted)' }}>{lines.compare}</div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: 1.4, margin: '4px 0 0' }}>
+              {FULL_ACCESS_COPY.cardHintChange(lines.hold)}
+            </p>
+            <div data-testid="full-access-hold-screen" style={{ borderTop: '1px dashed var(--border)', marginTop: 8, paddingTop: 8 }}>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '0 0 4px' }}>{FULL_ACCESS_COPY.holdScreenHeading}</p>
+              <div style={lines.holdScreen.labelKnown ? undefined : { color: 'var(--text-muted)' }}>{lines.holdScreen.label}</div>
+              {lines.holdScreen.words.map(w => <div key={w} style={{ fontWeight: 700, fontSize: '1.1rem' }}>{w}</div>)}
             </div>
           </div>
         </div>

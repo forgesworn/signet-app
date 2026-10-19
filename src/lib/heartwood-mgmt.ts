@@ -663,23 +663,23 @@ export async function revokeClientIdentity(
  * slot. On a one-hold phone this also drops the owner mark (the Heartwood's
  * rule: "Forget approvals" drops it), so the specific cards ask again.
  *
- * `clientPubkey` (this phone's NIP-46 client key) makes it a per-client clear:
- * the firmware then touches only that key's approvals, so a second device
- * bound to the slot since the mark was last read keeps its own. Without it the
- * clear covers every key on the slot.
+ * `clientPubkey` (this phone's NIP-46 client key) is required: the clear is
+ * always per-client, so the firmware touches only that key's approvals and a
+ * second device bound to the slot since the mark was last read keeps its own.
+ * There is deliberately no whole-slot form here.
  */
 export async function clearClientIdentities(
   c: HeartwoodMgmtClient,
   slot: { slotIndex: number; secretFingerprint: string },
-  clientPubkey?: string,
+  clientPubkey: string,
 ): Promise<void> {
   checkSlotRef(slot);
-  const client = clientPubkey === undefined ? undefined : clientPubkey.trim().toLowerCase();
-  if (client !== undefined && !HEX64.test(client)) throw new Error('client_pubkey must be 64 hex chars');
+  const client = (clientPubkey ?? '').trim().toLowerCase();
+  if (!HEX64.test(client)) throw new Error('client_pubkey must be 64 hex chars');
   const r = await c.request('clear_client_identities', {
     slot_index: slot.slotIndex,
     expected_secret_fingerprint: slot.secretFingerprint,
-    ...(client !== undefined ? { client_pubkey: client } : {}),
+    client_pubkey: client,
   });
   if (r.slot_index !== slot.slotIndex) throw new Error('clear_client_identities confirmed a different slot');
 }

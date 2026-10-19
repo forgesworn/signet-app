@@ -167,7 +167,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
     busyRef.current = true;
     setBusy(true);
     try {
-      const out = await runApproveBundle(request, {
+      const send = () => runApproveBundle(request, {
         // Existing install: never add a key. A different key is refused before the card (pubkey mismatch).
         create: false,
         actAsNaturalPerson: includeRealName,
@@ -175,6 +175,13 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
         expect: { naturalPerson: naturalPersonPubkey, persona: personaPubkey },
         masterPubkey: bunker.activePublicKeyHex,
       });
+      // S1: the press changes the guardian's own slot on the device, so the
+      // bundle goes out under the operator lock. A family push already running
+      // (list -> update_client) settles first, and one that starts later reads
+      // the slot after the press. The lock is held until the bundle settles.
+      const out = operatorClient && operatorClient.isOpen
+        ? await withOperatorLock(operatorClient, send)
+        : await send();
       if (out.ok) {
         setStatus({ owner: true, style: out.reply.style });
         // The device's own echo of what it granted, not what was asked.
@@ -189,7 +196,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
       busyRef.current = false;
       setBusy(false);
     }
-  }, [supported, bunker, request, includeRealName, naturalPersonPubkey, personaPubkey, onStyleChange]);
+  }, [supported, bunker, request, operatorClient, includeRealName, naturalPersonPubkey, personaPubkey, onStyleChange]);
 
   const narrow = useCallback(async (): Promise<NarrowResult> => {
     const out = await narrowToCareful(request);
@@ -231,6 +238,10 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
     } else if (out.status) {
       // The device still says owner: keep the line on what it said.
       setStatus(out.status);
+    } else if (out.status === null) {
+      // The clear went through but the re-read got no answer: ask again now,
+      // rather than leave the line on a state the device never confirmed.
+      setRefreshTick((t) => t + 1);
     }
     return out;
   }, [operatorClient, clientPubkey, onStyleChange, request]);

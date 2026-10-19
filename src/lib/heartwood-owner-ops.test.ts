@@ -49,9 +49,11 @@ describe('turnOffFullAccess', () => {
     // The device still says owner: plain error, and the answer is handed back so the line stays on.
     const still = await turnOffFullAccess(mk(async () => ({ owner: true, style: 'careful' })), ME);
     expect(still).toMatchObject({ ok: false, message: FULL_ACCESS_COPY.turnOffUnconfirmed, status: { owner: true, style: 'careful' } });
-    // No usable answer is not "off" either.
+    // No usable answer is not "off" either, and it is not "still on": its own line (S3).
     const none = await turnOffFullAccess(mk(async () => null), ME);
-    expect(none).toMatchObject({ ok: false, status: null });
+    expect(none).toMatchObject({ ok: false, status: null, message: FULL_ACCESS_COPY.turnOffUnknown });
+    expect(FULL_ACCESS_COPY.turnOffUnknown).toBe('Couldn\'t check your Heartwood. Full access may already be off; it will show here next time it connects.');
+    expect(FULL_ACCESS_COPY.turnOffUnknown).not.toMatch(/still/i);
   });
   it('does nothing and points to Sapwood when the slot cannot be found', async () => {
     const clear = vi.fn();
@@ -72,17 +74,40 @@ describe('turnOffFullAccess', () => {
     expect(out.ok).toBe(false);
     expect(read).not.toHaveBeenCalled();
   });
-  it('a slot with no per-client records falls back to the whole-slot clear only when this key is the only one on it', async () => {
+  describe('"unknown client credential" (S2: no whole-slot fallback, ever)', () => {
     const unknown = () => { throw new Error('unknown client credential'); };
-    const sole = vi.fn().mockImplementationOnce(unknown).mockResolvedValue(undefined);
-    const okSole = await turnOffFullAccess({ listClients: async () => [slot({ authorizedPubkeys: [ME] })], clearClientIdentities: sole, readOwnerStatus: off }, ME);
-    expect(okSole).toEqual({ ok: true });
-    expect(sole.mock.calls.map(c => c[1])).toEqual([ME, undefined]);
-
-    const shared = vi.fn().mockImplementation(unknown);
-    const bad = await turnOffFullAccess({ listClients: async () => [slot({ authorizedPubkeys: [ME, 'f'.repeat(64)] })], clearClientIdentities: shared, readOwnerStatus: off }, ME);
-    expect(bad.ok).toBe(false);
-    expect(shared).toHaveBeenCalledTimes(1);
+    const mk = (authorized: string[], read: () => Promise<{ owner: boolean; style: 'everyday' | 'careful' | 'custom' } | null>) => {
+      const clear = vi.fn().mockImplementation(unknown);
+      return { clear, io: { listClients: async () => [slot({ authorizedPubkeys: authorized })], clearClientIdentities: clear, readOwnerStatus: read } };
+    };
+    it('re-reads the status and shows off when the device says owner:false', async () => {
+      const read = vi.fn(off);
+      const { clear, io } = mk([ME], read);
+      expect(await turnOffFullAccess(io, ME)).toEqual({ ok: true });
+      expect(clear).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+    it('is a plain Sapwood error when the device still says owner (status handed back)', async () => {
+      const { clear, io } = mk([ME], async () => ({ owner: true, style: 'careful' }));
+      const out = await turnOffFullAccess(io, ME);
+      expect(out).toMatchObject({ ok: false, status: { owner: true, style: 'careful' } });
+      if (!out.ok) expect(out.message).toContain('Withdraw all for this client');
+      expect(clear).toHaveBeenCalledTimes(1);
+    });
+    it('is a plain Sapwood error when the re-read gets no answer', async () => {
+      const { io } = mk([ME], async () => null);
+      const out = await turnOffFullAccess(io, ME);
+      expect(out.ok).toBe(false);
+      if (!out.ok) expect(out.message).toContain('Withdraw all for this client');
+    });
+    it('never sends a clear without client_pubkey, whatever the slot holds', async () => {
+      for (const authorized of [[ME], [ME, 'f'.repeat(64)]]) {
+        const { clear, io } = mk(authorized, off);
+        await turnOffFullAccess(io, ME);
+        for (const call of clear.mock.calls) expect(call[1]).toBe(ME);
+        expect(clear).toHaveBeenCalledTimes(1);
+      }
+    });
   });
 });
 
