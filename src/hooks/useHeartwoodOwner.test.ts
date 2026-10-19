@@ -215,7 +215,7 @@ describe('useHeartwoodOwner', () => {
       expect(onStyleChange).not.toHaveBeenCalledWith(undefined);
     });
     it('a re-read with no answer is not "off", and does not claim it is still on (S3)', async () => {
-      const { result, bunker } = setup(['{"owner":true,"style":"everyday"}']);
+      const { result, bunker, onStyleChange } = setup(['{"owner":true,"style":"everyday"}']);
       await waitFor(() => expect(result.current.status?.owner).toBe(true));
       bunker.request.mockImplementation(async () => { throw new Error('timeout'); });
       let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
@@ -223,6 +223,9 @@ describe('useHeartwoodOwner', () => {
       expect(out).toMatchObject({ ok: false, message: FULL_ACCESS_COPY.turnOffUnknown, status: null });
       // The line is asked again rather than left on a state the device never confirmed.
       await waitFor(() => expect(result.current.status).toBeNull());
+      // The style on file is dropped, so a later owner:false reads as this
+      // turn-off and not as "this phone no longer has full access".
+      expect(onStyleChange).toHaveBeenCalledWith(undefined);
     });
     it('S2: unknown client credential re-reads the status and never sends a whole-slot clear', async () => {
       const { result, bunker } = setup(['{"owner":true,"style":"everyday"}']);

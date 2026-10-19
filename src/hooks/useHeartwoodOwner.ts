@@ -241,6 +241,10 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
     } else if (out.status === null) {
       // The clear went through but the re-read got no answer: ask again now,
       // rather than leave the line on a state the device never confirmed.
+      // Drop the style on file first, as the no-operator path does, so an
+      // owner:false answer reads as the turn-off it is, not as "lost". If the
+      // mark somehow survived, that status check puts the style back.
+      await onStyleChange(undefined);
       setRefreshTick((t) => t + 1);
     }
     return out;
