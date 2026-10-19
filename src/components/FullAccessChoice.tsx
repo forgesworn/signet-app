@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   FULL_ACCESS_COPY,
   cardLines,
@@ -70,6 +70,7 @@ export function FullAccessChoice({
   const [phase, setPhase] = useState<Phase>({ kind: 'choose' });
   // One bundle in flight at a time: a double tap must not send two.
   const inFlight = useRef(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
   const lines = cardLines({ words, label, realName: includeRealName, style });
 
@@ -91,18 +92,29 @@ export function FullAccessChoice({
   const problem = phase.kind === 'problem' ? phase.failure : null;
   const canRetry = problem !== null && problem.action === 'retry';
 
+  // While waiting for the hold, bring the top of the screen (the instruction and the
+  // card with the five words) into view: the radios and buttons below can wait.
+  useEffect(() => {
+    if (running) headingRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [running]);
+
   return (
     <div className="page fade-in" role="main">
       <div
         className="card section"
         style={{ background: 'var(--warning-light)', borderColor: 'var(--warning)' }}
       >
-        <h1 style={{ marginBottom: 8, fontSize: '1.3rem' }}>{FULL_ACCESS_COPY.heading}</h1>
-        <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.covers}</p>
+        <h1 ref={headingRef} style={{ marginBottom: 8, fontSize: '1.3rem' }}>{FULL_ACCESS_COPY.heading}</h1>
+        <p style={{ color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 12 }}>{includeRealName ? FULL_ACCESS_COPY.covers : FULL_ACCESS_COPY.coversPersonaOnly}</p>
         {includeRealName && realNameForLegacyBackups && (
-          <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.realNameForLegacyBackups}</p>
+          <p style={{ color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.realNameForLegacyBackups}</p>
         )}
-        <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.expect}</p>
+        {running ? (
+          // The same instruction, shortened: it is already on screen above the card.
+          <p role="status" style={{ color: 'var(--text-primary)', fontWeight: 600, lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.holding}</p>
+        ) : (
+          <p style={{ color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.expect}</p>
+        )}
 
         <div
           role="img"
@@ -156,18 +168,15 @@ export function FullAccessChoice({
                 />
                 <span>
                   <strong>{c.name}</strong>{c.tag ? ` (${c.tag})` : ''}
-                  <span style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.45 }}>{s === 'everyday' && includeRealName ? FULL_ACCESS_COPY.everydayWithRealName : c.body}</span>
+                  <span style={{ display: 'block', color: 'var(--text-primary)', fontSize: '0.9rem', lineHeight: 1.45 }}>{c.body}</span>
                 </span>
               </label>
             );
           })}
         </fieldset>
 
-        {running && (
-          <p role="status" style={{ fontWeight: 600, lineHeight: 1.5, marginBottom: 12 }}>{FULL_ACCESS_COPY.holding}</p>
-        )}
         {problem && problem.message && (
-          <div role="alert" style={{ padding: 8, background: 'var(--danger-light)', borderRadius: 'var(--radius-sm)', marginBottom: 12, color: 'var(--danger)', fontSize: '0.9rem' }}>
+          <div role="alert" className="status-problem" style={{ marginBottom: 12 }}>
             {problem.message}
           </div>
         )}
@@ -183,7 +192,7 @@ export function FullAccessChoice({
               {separatelyLabel}
             </button>
             {showSeparatelyHint && (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: 1.45, marginTop: 8 }}>
+              <p style={{ color: 'var(--text-primary)', fontSize: '0.8rem', lineHeight: 1.45, marginTop: 8 }}>
                 {separatelyHint()}
               </p>
             )}

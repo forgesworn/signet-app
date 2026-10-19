@@ -118,7 +118,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   const ownerWordsReady = !!heartwoodOwner?.words;
   const [ownerRunning, setOwnerRunning] = useState(false);
   // The last hold's outcome, shown in the full-access card once the choice screen is gone.
-  const [ownerOutcome, setOwnerOutcome] = useState<string | null>(null);
+  const [ownerOutcome, setOwnerOutcome] = useState<{ text: string; problem: boolean } | null>(null);
   const lastOwnerRef = useRef<HeartwoodOwnerSettingsProps | null>(null);
   if (heartwoodOwner?.words) lastOwnerRef.current = heartwoodOwner;
   useEffect(() => {
@@ -225,7 +225,10 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           if (again && !out.ok && out.failure.code === 'strict') {
             out = { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };
           }
-          setOwnerOutcome(out.ok ? FULL_ACCESS_COPY.approvedOutcome : (out.failure.message || OWNER_SILENT_MESSAGE));
+          // The outcome is kept in the Settings card, so a no-answer line must not send the reader to Settings.
+          setOwnerOutcome(out.ok
+            ? { text: FULL_ACCESS_COPY.approvedOutcome, problem: false }
+            : { text: out.failure.code === 'no-answer' ? FULL_ACCESS_COPY.noAnswerSettings : (out.failure.message || OWNER_SILENT_MESSAGE), problem: true });
           return out;
         }}
         onApproved={() => setOwnerChoice(null)}
@@ -753,8 +756,9 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
                 narrow={heartwoodOwner.narrow}
                 turnOff={heartwoodOwner.turnOff}
                 onOpenChoice={kind => { setOwnerOutcome(null); setOwnerChoice(kind); }}
-                realNameCovered={preferences.heartwoodOwnerActAs?.includes('natural-person') ?? false}
-                outcome={ownerOutcome}
+                offerIncludesRealName={heartwoodOwner.includeRealName}
+                outcome={ownerOutcome?.text ?? null}
+                outcomeIsProblem={ownerOutcome?.problem ?? false}
                 onOutcomeClear={() => setOwnerOutcome(null)}
               />
             )}

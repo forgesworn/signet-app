@@ -15,10 +15,12 @@ export interface HeartwoodFullAccessCardProps {
   turnOff: () => Promise<TurnOffResult>;
   /** Open A1's choice screen (A10 offer, A8 re-run, or back to Everyday). */
   onOpenChoice: (kind: OwnerChoiceKind) => void;
-  /** The grant on file covers the real name, so Everyday's body must not call it a first-time ask. */
-  realNameCovered?: boolean;
+  /** The hold on offer (when full access is off) would include the real name; the offer's wording follows. */
+  offerIncludesRealName?: boolean;
   /** The outcome of the last full-access hold, kept after its screen closes. */
   outcome?: string | null;
+  /** The kept outcome is a refusal or a failure, not a success. */
+  outcomeIsProblem?: boolean;
   /** Called when the owner starts another action here, so the outcome line goes. */
   onOutcomeClear?: () => void;
 }
@@ -38,10 +40,11 @@ const small = { fontSize: '0.85rem', color: 'var(--text-secondary)', marginBotto
  * on older firmware nothing here exists.
  */
 export function HeartwoodFullAccessCard({
-  status, checking, everHadFullAccess, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice, realNameCovered = false, outcome = null, onOutcomeClear,
+  status, checking, everHadFullAccess, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice, offerIncludesRealName = false, outcome = null, outcomeIsProblem = false, onOutcomeClear,
 }: HeartwoodFullAccessCardProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [messageIsProblem, setMessageIsProblem] = useState(false);
   const [confirmOff, setConfirmOff] = useState(false);
 
   async function doNarrow() {
@@ -49,6 +52,7 @@ export function HeartwoodFullAccessCard({
     setBusy(true); setMessage(''); onOutcomeClear?.();
     try {
       const out = await narrow();
+      setMessageIsProblem(!out.ok);
       setMessage(out.ok ? 'This phone now signs in the Extra careful style.' : out.message);
     } finally { setBusy(false); }
   }
@@ -59,6 +63,7 @@ export function HeartwoodFullAccessCard({
     setBusy(true); setMessage(''); onOutcomeClear?.();
     try {
       const out = await turnOff();
+      setMessageIsProblem(!out.ok);
       setMessage(out.ok ? 'Full access is off for this phone. Your Heartwood will ask for each thing again.' : out.message);
     } finally { setBusy(false); }
   }
@@ -73,7 +78,7 @@ export function HeartwoodFullAccessCard({
 
       {status?.owner && (
         <>
-          <p style={small}><strong>{STYLE_NAME[status.style]}.</strong> {status.style === 'everyday' && realNameCovered ? FULL_ACCESS_COPY.everydayWithRealName : STYLE_BODY[status.style]}</p>
+          <p style={small}><strong>{STYLE_NAME[status.style]}.</strong> {STYLE_BODY[status.style]}</p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {status.style === 'everyday' && canNarrow && (
               <button className="btn btn-secondary" disabled={busy} onClick={() => void doNarrow()}>
@@ -124,7 +129,7 @@ export function HeartwoodFullAccessCard({
           </>
         ) : (
           <>
-            <p style={small}>{FULL_ACCESS_COPY.covers}</p>
+            <p style={small}>{offerIncludesRealName ? FULL_ACCESS_COPY.covers : FULL_ACCESS_COPY.coversPersonaOnly}</p>
             <button className="btn btn-primary" disabled={busy} onClick={() => onOpenChoice('offer')}>
               {FULL_ACCESS_COPY.offerExisting}
             </button>
@@ -132,7 +137,11 @@ export function HeartwoodFullAccessCard({
         )
       )}
 
-      {(message || outcome) && <p role="status" style={{ ...small, marginTop: 8, marginBottom: 0 }}>{message || outcome}</p>}
+      {(message || outcome) && (
+        (message ? messageIsProblem : outcomeIsProblem)
+          ? <p role="alert" className="status-problem" style={{ marginTop: 8, marginBottom: 0 }}>{message || outcome}</p>
+          : <p role="status" style={{ ...small, color: 'var(--text-primary)', fontWeight: 600, marginTop: 8, marginBottom: 0 }}>{message || outcome}</p>
+      )}
 
       <p style={{ ...small, marginTop: 8, marginBottom: 0 }}>
         {label ? `This phone's pairing: ${label}. ` : ''}{FULL_ACCESS_COPY.lostPhone}

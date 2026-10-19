@@ -94,14 +94,22 @@ describe('five-word copy (W2, W9, W10)', () => {
   it('no longer says the words appear while the button is held', () => {
     for (const text of [FULL_ACCESS_COPY.expect, FULL_ACCESS_COPY.holding]) {
       expect(text).not.toMatch(/while you hold|appear on/i);
-      expect(text).toMatch(/five words, two at a time/);
       expect(text).toMatch(/hold its button for 5 seconds/);
       expect(text).toMatch(/If any word doesn't match, don't hold/);
     }
+    expect(FULL_ACCESS_COPY.expect).toMatch(/five words, two at a time/);
+    // The running line is short: it replaces `expect`, it does not repeat it.
+    expect(FULL_ACCESS_COPY.holding.length).toBeLessThan(FULL_ACCESS_COPY.expect.length * 0.7);
     expect(FULL_ACCESS_COPY.expect).toBe('Your Heartwood will show FULL ACCESS and five words, two at a time. Check every word matches the ones here. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.');
   });
   it('the Everyday line says the phone can sign anything and read messages', () => {
     expect(FULL_ACCESS_COPY.covers).toMatch(/sign anything and read your messages as your persona \(and your real name, if you use it\)/);
+  });
+  it('persona-only wording never mentions the real name; the real-name wording keeps it', () => {
+    expect(FULL_ACCESS_COPY.coversPersonaOnly).not.toMatch(/real name/i);
+    expect(FULL_ACCESS_COPY.coversPersonaOnly).toMatch(/sign anything and read your messages as your persona, including/);
+    expect(FULL_ACCESS_COPY.everyday.body).not.toMatch(/real name/i);
+    expect(FULL_ACCESS_COPY.covers).toMatch(/your real name, if you use it/);
   });
   it('Extra careful says what really signs alone (W9)', () => {
     expect(FULL_ACCESS_COPY.careful.body).toBe('Backups, app data and relay logins happen on their own, and reading messages still works. Signing in to sites, posting and sending messages ask on your Heartwood, so they wait until you\'re home.');
@@ -116,6 +124,11 @@ describe('five-word copy (W2, W9, W10)', () => {
   it('the onboarding no-answer line does not point to Settings', () => {
     expect(FULL_ACCESS_COPY.noAnswer).toContain('Settings, Advanced');
     expect(FULL_ACCESS_COPY.noAnswerOnboarding).not.toMatch(/Settings|Advanced/);
+  });
+  it('the Settings no-answer line does not point to Settings, and says the status here will update', () => {
+    expect(FULL_ACCESS_COPY.noAnswerSettings).not.toMatch(/Settings|Advanced/);
+    expect(FULL_ACCESS_COPY.noAnswerSettings).toContain('the status here will update when your Heartwood answers');
+    expect(FULL_ACCESS_COPY.noAnswerSettings).toContain('may already be on');
   });
 });
 

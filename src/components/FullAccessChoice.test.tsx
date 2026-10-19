@@ -27,7 +27,7 @@ describe('FullAccessChoice', () => {
   it('shows the heading, the covers line, the warning and the card with the five words', () => {
     setup();
     expect(screen.getByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeTruthy();
-    expect(screen.getByText(FULL_ACCESS_COPY.covers)).toBeTruthy();
+    expect(screen.getByText(FULL_ACCESS_COPY.coversPersonaOnly)).toBeTruthy();
     expect(screen.getByText(FULL_ACCESS_COPY.warning)).toBeTruthy();
     const card = screen.getByTestId('full-access-card');
     expect(card.textContent).toContain('FULL ACCESS');
@@ -44,14 +44,20 @@ describe('FullAccessChoice', () => {
     expect(screen.getByTestId('full-access-card').textContent).toContain('PERSONA + REAL NAME');
   });
 
-  it('N5: the Everyday body drops "your real name the first time" when the hold covers the real name', () => {
+  it('persona-only hold: neither the covers line nor the Everyday body mentions the real name; the real-name hold keeps its wording', () => {
     const view = render(<FullAccessChoice words={WORDS} includeRealName={false} onRun={vi.fn()} onApproved={vi.fn()} onSeparately={vi.fn()} />);
-    expect(screen.getByText(FULL_ACCESS_COPY.everyday.body)).toBeTruthy();
+    expect(screen.getByTestId('full-access-card').textContent).toContain('PERSONA ONLY');
+    expect(screen.queryByText(/real name/i)).toBeNull();
     view.unmount();
     setup({ includeRealName: true });
-    expect(screen.getByText(FULL_ACCESS_COPY.everydayWithRealName)).toBeTruthy();
-    expect(screen.queryByText(FULL_ACCESS_COPY.everyday.body)).toBeNull();
-    expect(FULL_ACCESS_COPY.everydayWithRealName).not.toMatch(/real name/);
+    expect(screen.getByText(FULL_ACCESS_COPY.covers)).toBeTruthy();
+    expect(screen.queryByText(FULL_ACCESS_COPY.coversPersonaOnly)).toBeNull();
+  });
+
+  it('the Everyday body is the same either way and never mentions the real name', () => {
+    expect(FULL_ACCESS_COPY.everyday.body).not.toMatch(/real name/);
+    setup({ includeRealName: true });
+    expect(screen.getByText(FULL_ACCESS_COPY.everyday.body)).toBeTruthy();
     expect(screen.getByText(FULL_ACCESS_COPY.careful.body)).toBeTruthy();
   });
 
@@ -218,8 +224,10 @@ describe('FullAccessChoice', () => {
     setup({ onRun: vi.fn(() => new Promise<BundleRunResult>(r => { release = r; })) });
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
     const running = await screen.findByText(FULL_ACCESS_COPY.holding);
-    expect(running.textContent).toContain('five words, two at a time');
+    expect(running.textContent).toContain('hold its button for 5 seconds');
     expect(running.textContent).not.toMatch(/while you hold|appear/);
+    // Not repeated: the long instruction is replaced while waiting.
+    expect(screen.queryByText(FULL_ACCESS_COPY.expect)).toBeNull();
     release(OK);
   });
 

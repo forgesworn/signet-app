@@ -222,14 +222,17 @@ describe('Settings -> Heartwood full access', () => {
     view.rerender(settingsWith(undefined));
     release({ ok: false, failure: { action: 'retry', code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer } });
     await waitFor(() => expect(screen.queryByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeNull());
-    // The reconnect finishes: the card is back and still says what happened.
+    // The reconnect finishes: the card is back and still says what happened, in words that
+    // do not send the reader to the Settings page they are already on.
     view.rerender(settingsWith(owner({ run })));
-    expect(await screen.findByText(FULL_ACCESS_COPY.noAnswer)).toBeTruthy();
+    expect(await screen.findByText(FULL_ACCESS_COPY.noAnswerSettings)).toBeTruthy();
+    expect(screen.queryByText(FULL_ACCESS_COPY.noAnswer)).toBeNull();
+    expect(screen.getByRole('alert').className).toContain('status-problem');
     // Another action clears it.
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.offerExisting }));
     fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
     await screen.findByText('Connected to Heartwood signer.');
-    expect(screen.queryByText(FULL_ACCESS_COPY.noAnswer)).toBeNull();
+    expect(screen.queryByText(FULL_ACCESS_COPY.noAnswerSettings)).toBeNull();
   });
 
   it('N7: an approved hold leaves the approved line in the card', async () => {
@@ -240,7 +243,7 @@ describe('Settings -> Heartwood full access', () => {
     expect(await screen.findByText(FULL_ACCESS_COPY.approvedOutcome)).toBeTruthy();
   });
 
-  it('N5: the card uses the real-name Everyday body when the grant on file covers natural-person', () => {
+  it('N5: the on-state Everyday body never mentions the real name, whichever grant is on file', () => {
     render(
       <AdvancedSettings
         identity={{ backedUp: true } as SignetIdentity}
@@ -251,8 +254,16 @@ describe('Settings -> Heartwood full access', () => {
         heartwoodOwner={owner({ status: { owner: true, style: 'everyday' } })}
       />,
     );
-    expect(screen.queryByText(/your real name the first time/)).toBeNull();
-    expect(screen.getByText(FULL_ACCESS_COPY.everydayWithRealName, { exact: false })).toBeTruthy();
+    expect(screen.queryByText(/your real name/)).toBeNull();
+    expect(screen.getByText(FULL_ACCESS_COPY.everyday.body, { exact: false })).toBeTruthy();
+  });
+
+  it('the offer in the card follows the hold on offer: real-name wording only when the hold includes the real name', () => {
+    const view = renderSettings(owner({ includeRealName: false }));
+    expect(screen.getByText(FULL_ACCESS_COPY.coversPersonaOnly)).toBeTruthy();
+    view.unmount();
+    renderSettings(owner({ includeRealName: true }));
+    expect(screen.getByText(FULL_ACCESS_COPY.covers)).toBeTruthy();
   });
 
   describe('N8: Push rules now while the family push is paused', () => {

@@ -29,10 +29,35 @@ describe('HeartwoodFullAccessCard', () => {
     expect(screen.getByText(FULL_ACCESS_COPY.lostPhone)).toBeTruthy();
   });
 
-  it('N5: the Everyday body drops the real-name first-use line when the grant covers the real name', () => {
-    setup({ realNameCovered: true });
-    expect(screen.getByText(FULL_ACCESS_COPY.everydayWithRealName, { exact: false })).toBeTruthy();
-    expect(screen.queryByText(/your real name the first time/)).toBeNull();
+  it('the offer says persona only, without the real name, unless the hold on offer includes it', () => {
+    const view = render(<HeartwoodFullAccessCard {...{
+      status: { owner: false, style: 'everyday' }, checking: false, everHadFullAccess: false, label: null, hasOperatorKey: false,
+      canNarrow: true, narrow: vi.fn(), turnOff: vi.fn(), onOpenChoice: vi.fn(),
+    }} />);
+    expect(screen.getByText(FULL_ACCESS_COPY.coversPersonaOnly)).toBeTruthy();
+    expect(screen.queryByText(/real name/i)).toBeNull();
+    view.unmount();
+    setup({ status: { owner: false, style: 'everyday' }, everHadFullAccess: false, offerIncludesRealName: true });
+    expect(screen.getByText(FULL_ACCESS_COPY.covers)).toBeTruthy();
+  });
+
+  it('the on-state Everyday body does not mention the real name', () => {
+    setup();
+    expect(screen.queryByText(/real name/i)).toBeNull();
+  });
+
+  it('outcome and error lines: a problem is an alert with the shared problem style, a success stays a status', async () => {
+    setup({ outcome: FULL_ACCESS_COPY.noAnswerSettings, outcomeIsProblem: true });
+    const alert = screen.getByRole('alert');
+    expect(alert.className).toContain('status-problem');
+    expect(alert.textContent).toBe(FULL_ACCESS_COPY.noAnswerSettings);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('a failed turn-off shows as a problem; a successful one as a status', async () => {
+    setup({ turnOff: vi.fn().mockResolvedValue({ ok: false, message: FULL_ACCESS_COPY.turnOffUnconfirmed, status: { owner: true, style: 'everyday' } }) });
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off full access' }));
+    expect((await screen.findByRole('alert')).className).toContain('status-problem');
   });
 
   it('N7: shows the kept outcome line, and clears it when the owner starts another action', async () => {

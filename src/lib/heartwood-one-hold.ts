@@ -179,23 +179,28 @@ export function cardLines(args: {
 
 export const FULL_ACCESS_COPY = {
   heading: 'Give this phone full access?',
+  // The hold includes the real name: the grant card says PERSONA + REAL NAME.
   covers: 'Everyday lets this phone sign anything and read your messages as your persona (and your real name, if you use it), including your children\'s backups. Extra careful limits what signs without you. You can take it back in Settings.',
+  // The hold is persona only: the grant card says PERSONA ONLY, so the line must not mention the real name.
+  coversPersonaOnly: 'Everyday lets this phone sign anything and read your messages as your persona, including your children\'s backups. Extra careful limits what signs without you. You can take it back in Settings.',
   realNameForLegacyBackups: 'Your older backups still sign with your real-name key, so this includes it.',
   expect: 'Your Heartwood will show FULL ACCESS and five words, two at a time. Check every word matches the ones here. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
   warning: 'Your Heartwood only shows FULL ACCESS when you start it here. If it ever shows it at another time, don\'t hold the button.',
   setUp: 'Set up with one hold',
   separately: 'Approve each thing separately',
   styleHeading: 'How should this phone sign?',
-  everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys, money, your real name the first time.' },
-  // The hold being offered already covers the real name, so it is not a "first time" ask.
-  everydayWithRealName: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys and money.',
+  // Names no real-name step either way: a hold that includes the real name covers it already, and a persona-only one does not touch it.
+  everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys and money.' },
   careful: { name: 'Extra careful', tag: '', body: 'Backups, app data and relay logins happen on their own, and reading messages still works. Signing in to sites, posting and sending messages ask on your Heartwood, so they wait until you\'re home.' },
-  holding: 'Your Heartwood is showing FULL ACCESS and five words, two at a time. Check every word matches the ones above. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
+  // Shown in place of `expect` while waiting, so the instruction is not repeated.
+  holding: 'Check the five words on your Heartwood match these, then hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
   holdScreenHeading: 'While you hold the button it shows:',
   cardHintChange: (hold: string) => `When every page has shown, the last line changes to ${hold}.`,
   approvedOutcome: 'Full access is on for this phone.',
   declined: 'Full access wasn\'t approved. Nothing changed. You can try again in a minute.',
   noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again in a minute.',
+  // The same outcome shown inside the Settings full-access card, which is where the status is.
+  noAnswerSettings: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: the status here will update when your Heartwood answers. You can also try again in a minute.',
   // Onboarding has no Settings yet, so it cannot point there.
   noAnswerOnboarding: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on. You can try again in a minute.',
   anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute.',
