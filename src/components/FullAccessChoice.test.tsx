@@ -262,7 +262,7 @@ describe('FullAccessChoice', () => {
     const failure = classifyBundleError('could not persist client policy; request was not applied');
     setup({ onRun: vi.fn().mockResolvedValue({ ok: false, failure }) });
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
-    expect((await screen.findByRole('alert')).textContent).toBe('Your Heartwood couldn\'t save that. Nothing changed. You can try again in a minute.');
+    expect((await screen.findByRole('alert')).textContent).toBe('Your Heartwood couldn\'t save that, so nothing changed. It may be out of space: remove pairings you no longer use in Sapwood, then try again.');
     expect(screen.getByRole('button', { name: FULL_ACCESS_COPY.tryAgain })).toBeTruthy();
   });
 

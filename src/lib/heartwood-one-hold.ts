@@ -205,7 +205,7 @@ export const FULL_ACCESS_COPY = {
   noAnswerOnboarding: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on. You can try again in a minute.',
   anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute.',
   cardShownRecently: 'Your Heartwood showed a full access card a moment ago, so it won\'t show another yet. Nothing changed. You can try again in a minute.',
-  saveFailed: 'Your Heartwood couldn\'t save that. Nothing changed. You can try again in a minute.',
+  saveFailed: 'Your Heartwood couldn\'t save that, so nothing changed. It may be out of space: remove pairings you no longer use in Sapwood, then try again.',
   saveFailedFatal: 'Your Heartwood couldn\'t save that and needs attention. Connect it by cable and check it in Sapwood.',
   busy: 'Your Heartwood was busy. Nothing changed. Try again.',
   changed: 'Something changed on your Heartwood while it waited. Nothing changed here. Try again in a minute.',
@@ -243,6 +243,8 @@ export const PAIRING_PROBLEM_COPY = {
 export const DEVICE_LIMIT_COPY = {
   storageFull: 'Your Heartwood has no room for another identity.',
   noPersonaTree: 'Your Heartwood isn\'t set up to make persona keys, so full access isn\'t available.',
+  // Refused BEFORE any card: the board's storage cannot hold the pairing table after the grant.
+  pairingStorageFull: 'Your Heartwood is out of space for another pairing change. Remove pairings you no longer use in Sapwood, then try again.',
   methodListFull: 'This pairing has no room for full access. Remove some of its permissions in Sapwood, then try again.',
 } as const;
 
@@ -473,7 +475,7 @@ export interface BundleFailure {
   message: string;
   code:
     | 'declined' | 'no-answer' | 'busy' | 'changed' | 'another-card' | 'card-recent' | 'save-failed' | 'unreachable' | 'strict' | 'kinds-list' | 'shared' | 'every-request' | 'phone-may-ok'
-    | 'approval-list-full' | 'storage-full' | 'no-persona-tree' | 'method-list-full'
+    | 'approval-list-full' | 'pairing-storage-full' | 'storage-full' | 'no-persona-tree' | 'method-list-full'
     | 'pubkey-mismatch' | 'persona-missing' | 'missing-key' | 'malformed' | 'child' | 'bad-reply' | 'other';
 }
 
@@ -512,6 +514,10 @@ export function classifyBundleError(err: unknown): BundleFailure {
   if (/another full access request arrived/.test(lower)) return { action: 'retry', code: 'another-card', message: FULL_ACCESS_COPY.anotherCard };
   if (/full access card shown recently/.test(lower)) return { action: 'retry', code: 'card-recent', message: FULL_ACCESS_COPY.cardShownRecently };
   if (/^unauthori[sz]ed$/.test(lower)) return { action: 'continue', code: 'strict', message: PAIRING_PROBLEM_COPY.strict };
+  // `-4 no room to save this pairing`: refused before any card, so the owner never
+  // holds for nothing. Tested ahead of every other `-4` rule (and the bare
+  // `storage full` one) so nothing else can claim it.
+  if (/no room to save this pairing/.test(lower)) return { action: 'continue', code: 'pairing-storage-full', message: DEVICE_LIMIT_COPY.pairingStorageFull };
   if (/approval list full/.test(lower)) return { action: 'silent', code: 'approval-list-full', message: '' };
   if (/storage full/.test(lower)) return { action: 'continue', code: 'storage-full', message: DEVICE_LIMIT_COPY.storageFull };
   if (/no persona tree/.test(lower)) return { action: 'continue', code: 'no-persona-tree', message: DEVICE_LIMIT_COPY.noPersonaTree };

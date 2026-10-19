@@ -235,6 +235,7 @@ describe('classifyBundleError', () => {
     ['approval_changed: pairing or permissions changed; send the request again', 'retry', FULL_ACCESS_COPY.changed],
     ['identity approved; send the request again', 'retry', FULL_ACCESS_COPY.changed],
     ['storage full', 'continue', DEVICE_LIMIT_COPY.storageFull],
+    ['no room to save this pairing', 'continue', DEVICE_LIMIT_COPY.pairingStorageFull],
     ['no persona tree on this master', 'continue', DEVICE_LIMIT_COPY.noPersonaTree],
     ['method list full', 'continue', DEVICE_LIMIT_COPY.methodListFull],
     ['approval list full', 'silent', ''],
@@ -264,10 +265,21 @@ describe('classifyBundleError', () => {
   });
   it('note 3: a failed save says so and says nothing changed; the fatal one does not', () => {
     expect(classifyBundleError('could not persist client policy; request was not applied'))
-      .toMatchObject({ action: 'retry', code: 'save-failed', message: 'Your Heartwood couldn\'t save that. Nothing changed. You can try again in a minute.' });
+      .toMatchObject({ action: 'retry', code: 'save-failed', message: 'Your Heartwood couldn\'t save that, so nothing changed. It may be out of space: remove pairings you no longer use in Sapwood, then try again.' });
     const fatal = classifyBundleError('fatal storage error: could not restore prior client policy; take the device offline for USB recovery');
     expect(fatal.code).toBe('save-failed');
     expect(fatal.message).not.toMatch(/Nothing changed/);
+  });
+  it('pairing-storage-full: a continue, not a retry, with the Sapwood line, ahead of the other -4 rules', () => {
+    for (const text of ['no room to save this pairing', 'storage full: no room to save this pairing', 'No room to save this pairing.']) {
+      expect(classifyBundleError(text)).toEqual({
+        action: 'continue',
+        code: 'pairing-storage-full',
+        message: 'Your Heartwood is out of space for another pairing change. Remove pairings you no longer use in Sapwood, then try again.',
+      });
+    }
+    // The older identity-storage refusal is still its own code.
+    expect(classifyBundleError('storage full').code).toBe('storage-full');
   });
   it('our own expiry and a transport failure', () => {
     // m3: our own expiry is "no answer", which does not claim nothing changed.
