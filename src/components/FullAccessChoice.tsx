@@ -18,12 +18,12 @@ import {
  * The bundle is sent ONLY from the "Set up with one hold" tap, never in the
  * background and never retried by itself: a retry is another tap on "Try
  * again". The card drawn here uses the same lines, word for word, as the
- * Heartwood's own FULL ACCESS card (the words sit under "while you hold:", since the Heartwood shows them only on its hold screen), so the owner matches them rather than
+ * Heartwood's own FULL ACCESS card (the Heartwood pages its five words at rest, two at a time, and they are drawn in the same pages), so the owner matches them rather than
  * interprets them.
  */
 export interface FullAccessChoiceProps {
-  /** The three words for this install's client key (4.2). */
-  words: readonly [string, string, string];
+  /** The five check words for this install's client key (W1). */
+  words: readonly string[];
   /** The pairing's label, when known. A placeholder line stands in when not, so the drawing has the Heartwood's line count. */
   label?: string | null;
   /** True when `act_as` will include the real identity. */
@@ -106,10 +106,10 @@ export function FullAccessChoice({
 
         <div
           role="img"
-          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.labelKnown ? `${lines.label}, ` : 'the name of this pairing, '}${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}. ${FULL_ACCESS_COPY.wordsWhileHolding} ${lines.wordsLine1} ${lines.wordsLine2}`}
+          aria-label={`The card your Heartwood will show: ${lines.header}, ${lines.labelKnown ? `${lines.label}, ` : 'the name of this pairing, '}${lines.scope}, ${lines.powers.join(', ')}, ${lines.hold}. ${lines.wordPages.map(p => `${p.label}: ${p.words}`).join('; ')}`}
           data-testid="full-access-card"
           style={{
-            fontFamily: 'var(--font-mono)', fontSize: '0.95rem', lineHeight: 1.5, textAlign: 'center',
+            fontFamily: 'var(--font-mono)', fontSize: '0.85rem', lineHeight: 1.5, textAlign: 'center', overflowWrap: 'anywhere',
             background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
             overflow: 'hidden', marginBottom: 12,
           }}
@@ -123,9 +123,17 @@ export function FullAccessChoice({
             {lines.powers.map(p => <div key={p}>{p}</div>)}
             <div>{lines.hold}</div>
             <div style={{ borderTop: '1px dashed var(--border)', marginTop: 8, paddingTop: 8 }}>
-              <div style={{ color: 'var(--text-muted)' }}>{FULL_ACCESS_COPY.wordsWhileHolding}</div>
-              <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine1}</div>
-              <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>{lines.wordsLine2}</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 4 }}>{FULL_ACCESS_COPY.wordsHeading}</div>
+              {lines.wordPages.map(p => (
+                <div
+                  key={p.label}
+                  data-testid="full-access-word-page"
+                  style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', columnGap: 12, padding: '0 4px' }}
+                >
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{p.label}</span>
+                  <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>{p.words}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>

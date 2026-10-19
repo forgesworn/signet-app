@@ -4,12 +4,15 @@ import type { HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useHeartwoodOwner, type UseHeartwoodOwnerArgs } from './useHeartwoodOwner';
 import { BunkerRequestTimeoutError, type BunkerSigningBackend } from '../lib/signing-backend';
+import { FULL_ACCESS_COPY, pairWordsForClient } from '../lib/heartwood-one-hold';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 
 const listClientsMock = vi.hoisted(() => vi.fn());
+const clearMock = vi.hoisted(() => vi.fn());
 vi.mock('../lib/heartwood-mgmt', async (orig) => ({
   ...(await orig<typeof import('../lib/heartwood-mgmt')>()),
   listClients: listClientsMock,
+  clearClientIdentities: clearMock,
 }));
 
 const NP = 'a'.repeat(64);
@@ -67,7 +70,19 @@ describe('useHeartwoodOwner', () => {
     expect(bunker.request).toHaveBeenCalledTimes(1);
     expect(bunker.request.mock.calls[0][0]).toBe('heartwood_owner_status');
     expect(onStyleChange).toHaveBeenCalledWith('careful');
-    expect(result.current.words).toHaveLength(3);
+    expect(result.current.words).toHaveLength(5);
+  });
+
+  it('the five words come from the same client key that makes the requests', async () => {
+    const reply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'everyday' });
+    const bunker = fakeBunker(async (m) => (m === 'heartwood_owner_status' ? '{"owner":false}' : reply));
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER })));
+    await waitFor(() => expect(result.current.status).not.toBeNull());
+    expect(result.current.words).toEqual(pairWordsForClient(bunker.transportClientPubkeyHex));
+    expect(result.current.words).toEqual(['nice', 'never', 'repair', 'area', 'upgrade']);
+    // The status probe and the bundle both go over that one signer.
+    await act(async () => { await result.current.run('everyday'); });
+    expect(bunker.request.mock.calls.map(c => c[0])).toEqual(['heartwood_owner_status', 'heartwood_approve_bundle']);
   });
 
   it('an unanswered status is unknown, not off', async () => {
@@ -91,16 +106,19 @@ describe('useHeartwoodOwner', () => {
       create: false, act_as: ['persona'], expect: { 'natural-person': NP, persona: PERSONA }, style: 'everyday',
     });
     expect(call[2]).toBe(140_000);
-    expect(onStyleChange).toHaveBeenCalledWith('everyday');
+    // Review 3: the device's act_as echo is kept with the style.
+    expect(onStyleChange).toHaveBeenCalledWith('everyday', ['persona']);
     expect(result.current.status).toEqual({ owner: true, style: 'everyday' });
   });
 
   it('act_as adds the real identity when it is in use (A10)', async () => {
-    const reply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true });
+    const reply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['natural-person', 'persona'], owner: true, style: 'careful' });
     const bunker = fakeBunker(async (m) => (m === 'heartwood_owner_status' ? '{"owner":false}' : reply));
-    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, includeRealName: true })));
+    const onStyleChange = vi.fn();
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, includeRealName: true, onStyleChange })));
     await waitFor(() => expect(result.current.status).not.toBeNull());
     await act(async () => { await result.current.run('careful'); });
+    expect(onStyleChange).toHaveBeenCalledWith('careful', ['natural-person', 'persona']);
     const call = bunker.request.mock.calls.find(c => c[0] === 'heartwood_approve_bundle')!;
     expect(JSON.parse(call[1][0]).act_as).toEqual(['natural-person', 'persona']);
     expect(JSON.parse(call[1][0]).style).toBe('careful');
@@ -130,7 +148,7 @@ describe('useHeartwoodOwner', () => {
     await act(async () => { second = await result.current.run('everyday'); });
     expect(second?.ok).toBe(false);
     expect(bunker.request.mock.calls.filter(c => c[0] === 'heartwood_approve_bundle')).toHaveLength(1);
-    await act(async () => { release(JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true })); await first; });
+    await act(async () => { release(JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true })); await first; });
     expect(result.current.busy).toBe(false);
   });
 
@@ -152,8 +170,71 @@ describe('useHeartwoodOwner', () => {
     await waitFor(() => expect(result.current.status?.owner).toBe(true));
     let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
     await act(async () => { out = await result.current.turnOff(); });
-    expect(out).toEqual({ ok: false, message: 'Choose Forget approvals for this phone in Sapwood.' });
+    expect(out).toEqual({ ok: false, message: FULL_ACCESS_COPY.sapwoodForget });
     expect(onStyleChange).toHaveBeenCalledWith(undefined);
+  });
+
+  describe('turn off with an operator key (review 1)', () => {
+    const ownSlot = {
+      slotIndex: 2, label: 'My Signet', secretFingerprint: 'fp', autoApprove: true, signingApproved: true,
+      strictPermissions: false, currentPubkey: null, authorizedPubkeys: [CLIENT, 'e'.repeat(64)], allowedKinds: [],
+      allowedMethods: ['sign_event'], escalate: false, petitionOnDeny: false, auditChildWrap: false, boundIdentity: null,
+    };
+    const operatorClient = { isOpen: true } as unknown as HeartwoodMgmtClient;
+    function setup(statuses: string[]) {
+      listClientsMock.mockResolvedValue([ownSlot]);
+      clearMock.mockReset();
+      clearMock.mockResolvedValue(undefined);
+      let n = 0;
+      const bunker = fakeBunker(async () => statuses[Math.min(n++, statuses.length - 1)]);
+      const onStyleChange = vi.fn();
+      const hook = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, operatorClient, onStyleChange, storedStyle: 'everyday' })));
+      return { bunker, onStyleChange, ...hook };
+    }
+    it('sends this phone\'s client key, and shows off only after the status is re-read as owner:false', async () => {
+      const { result, onStyleChange, bunker } = setup(['{"owner":true,"style":"everyday"}', '{"owner":false,"style":"everyday"}']);
+      await waitFor(() => expect(result.current.status?.owner).toBe(true));
+      let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
+      await act(async () => { out = await result.current.turnOff(); });
+      expect(out).toEqual({ ok: true });
+      expect(clearMock).toHaveBeenCalledTimes(1);
+      expect(clearMock.mock.calls[0][1]).toEqual({ slotIndex: 2, secretFingerprint: 'fp' });
+      expect(clearMock.mock.calls[0][2]).toBe(CLIENT);
+      // The re-read went over the phone's own pairing.
+      expect(bunker.request.mock.calls.filter(c => c[0] === 'heartwood_owner_status').length).toBeGreaterThanOrEqual(2);
+      expect(result.current.status?.owner).toBe(false);
+      expect(onStyleChange).toHaveBeenCalledWith(undefined);
+    });
+    it('a re-read that still says owner keeps "on", shows a plain error and keeps the style on file', async () => {
+      const { result, onStyleChange } = setup(['{"owner":true,"style":"everyday"}']);
+      await waitFor(() => expect(result.current.status?.owner).toBe(true));
+      let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
+      await act(async () => { out = await result.current.turnOff(); });
+      expect(out).toMatchObject({ ok: false, message: FULL_ACCESS_COPY.turnOffUnconfirmed });
+      expect(result.current.status?.owner).toBe(true);
+      expect(onStyleChange).not.toHaveBeenCalledWith(undefined);
+    });
+    it('a re-read with no answer is not "off" either', async () => {
+      const { result, bunker } = setup(['{"owner":true,"style":"everyday"}']);
+      await waitFor(() => expect(result.current.status?.owner).toBe(true));
+      bunker.request.mockImplementation(async () => { throw new Error('timeout'); });
+      let out: Awaited<ReturnType<typeof result.current.turnOff>> | undefined;
+      await act(async () => { out = await result.current.turnOff(); });
+      expect(out?.ok).toBe(false);
+      expect(result.current.status?.owner).toBe(true);
+    });
+  });
+
+  it('W4: a custom style is shown as it is, and narrowing it changes nothing', async () => {
+    const bunker = fakeBunker(async (m) => (m === 'heartwood_owner_status' ? '{"owner":true,"style":"custom"}' : '{"style":"custom","changed":false}'));
+    const onStyleChange = vi.fn();
+    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, onStyleChange })));
+    await waitFor(() => expect(result.current.status).toEqual({ owner: true, style: 'custom' }));
+    expect(onStyleChange).toHaveBeenCalledWith('custom');
+    let out: Awaited<ReturnType<typeof result.current.narrow>> | undefined;
+    await act(async () => { out = await result.current.narrow(); });
+    expect(out).toMatchObject({ ok: false, style: 'custom' });
+    expect(result.current.status).toEqual({ owner: true, style: 'custom' });
   });
 
   it('is awaiting the first status in the very render it becomes supported, and settles after the answer', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SignetIdentity, AppPreferences, RelayConfig } from '../types';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { defaultRelays, MAX_RELAYS } from '../lib/relay-service';
@@ -14,7 +14,7 @@ import { useRelayHealth } from '../hooks/useRelayHealth';
 import { getRelayDeliveryStatus } from '../lib/relay-delivery-status';
 import { FullAccessChoice } from '../components/FullAccessChoice';
 import { HeartwoodFullAccessCard, type HeartwoodFullAccessCardProps, type OwnerChoiceKind } from '../components/HeartwoodFullAccessCard';
-import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, type BundleRunResult, type OwnerStyle } from '../lib/heartwood-one-hold';
+import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, type BundleRunResult, type OwnerStyle, type PairWords, type StatusStyle } from '../lib/heartwood-one-hold';
 
 /** Operator-key + rules-push state bundle from App.tsx (C3, family-bunker §11.1.4/9). */
 export interface HeartwoodOperatorSettingsProps {
@@ -43,12 +43,12 @@ export interface HeartwoodOperatorSettingsProps {
 /** One-hold pairing state for Settings → Heartwood (absent unless the Heartwood lists the bundle method). */
 export interface HeartwoodOwnerSettingsProps extends Omit<HeartwoodFullAccessCardProps, 'onOpenChoice'> {
   supported: boolean;
-  words: [string, string, string] | null;
+  words: PairWords | null;
   includeRealName: boolean;
   /** The real name is included only because older backups still sign with it (m12). */
   realNameForLegacyBackups?: boolean;
   /** The style on file, for re-running the hold (A8). */
-  storedStyle: OwnerStyle | undefined;
+  storedStyle: StatusStyle | undefined;
   /** Run ONE bundle; called from the choice screen's tap only. */
   run: (style: OwnerStyle) => Promise<BundleRunResult>;
 }
@@ -101,16 +101,23 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   useEffect(() => {
     if (!openOwnerChoice) return;
-    // The choice screen needs the three words (m8). If they are not there yet
+    // The choice screen needs the five words (m8). If they are not there yet
     // (a reconnect), drop the request rather than leave it to open on its own later.
     if (heartwoodOwner?.words) setOwnerChoice(openOwnerChoice);
     onOwnerChoiceHandled?.();
   }, [openOwnerChoice, heartwoodOwner, onOwnerChoiceHandled]);
-  // ...and close it if the words go away while it is open.
+  // ...and close it if the words go away while it is open (a lock, or a
+  // reconnect that finished) - but never while a bundle is waiting on the
+  // Heartwood: the card is still up there, and closing the screen would hide
+  // the answer. The last props are kept so the screen can stay up through a
+  // reconnect, and it closes once the bundle settles if they have not come back.
   const ownerWordsReady = !!heartwoodOwner?.words;
+  const [ownerRunning, setOwnerRunning] = useState(false);
+  const lastOwnerRef = useRef<HeartwoodOwnerSettingsProps | null>(null);
+  if (heartwoodOwner?.words) lastOwnerRef.current = heartwoodOwner;
   useEffect(() => {
-    if (!ownerWordsReady) setOwnerChoice(null);
-  }, [ownerWordsReady]);
+    if (!ownerWordsReady && !ownerRunning) setOwnerChoice(null);
+  }, [ownerWordsReady, ownerRunning]);
   const [confirmForgetOperator, setConfirmForgetOperator] = useState(false);
   const [forgettingOperator, setForgettingOperator] = useState(false);
   const relayList: RelayConfig[] = relays.length > 0 ? relays : defaultRelays();
@@ -193,8 +200,9 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   }
 
   // One-hold pairing (A10, A8, A11): the full-screen choice replaces the page.
-  if (ownerChoice && heartwoodOwner?.words) {
-    const owner = heartwoodOwner;
+  const ownerForChoice = heartwoodOwner?.words ? heartwoodOwner : (ownerRunning ? lastOwnerRef.current : null);
+  if (ownerChoice && ownerForChoice?.words) {
+    const owner = ownerForChoice;
     const again = ownerChoice === 'again';
     return (
       <FullAccessChoice
@@ -202,9 +210,11 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
         label={owner.label}
         includeRealName={owner.includeRealName}
         realNameForLegacyBackups={owner.realNameForLegacyBackups}
-        initialStyle={ownerChoice === 'again' ? (owner.storedStyle ?? 'everyday') : 'everyday'}
+        initialStyle={ownerChoice === 'again' && owner.storedStyle && owner.storedStyle !== 'custom' ? owner.storedStyle : 'everyday'}
         onRun={async (style) => {
-          const out = await owner.run(style);
+          setOwnerRunning(true);
+          let out: BundleRunResult;
+          try { out = await owner.run(style); } finally { setOwnerRunning(false); }
           // A8: a pairing the Heartwood now refuses has to be made again.
           if (again && !out.ok && out.failure.code === 'strict') {
             return { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };

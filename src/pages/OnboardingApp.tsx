@@ -995,7 +995,8 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             words={fullAccess.offer.words}
             includeRealName={false}
             onRun={fullAccess.offer.run}
-            onApproved={(reply, style) => decideFullAccess({ mode: 'bundle', reply, style })}
+            // The style on file is the device's answer (`reply.style`), not the tap.
+            onApproved={(reply) => decideFullAccess({ mode: 'bundle', reply, style: reply.style })}
             onSeparately={() => decideFullAccess({ mode: 'separate' })}
             onBack={() => decideFullAccess({ mode: 'cancel' })}
             showSeparatelyHint

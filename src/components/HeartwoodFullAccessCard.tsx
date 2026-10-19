@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { FULL_ACCESS_COPY, type NarrowResult, type OwnerStatus, type OwnerStyle } from '../lib/heartwood-one-hold';
+import { FULL_ACCESS_COPY, type NarrowResult, type OwnerStatus, type StatusStyle } from '../lib/heartwood-one-hold';
 import type { TurnOffResult } from '../lib/heartwood-owner-ops';
 
-export type OwnerChoiceKind = 'offer' | 'again' | 'everyday';
+export type OwnerChoiceKind = 'offer' | 'again' | 'everyday' | 'restyle';
 
 export interface HeartwoodFullAccessCardProps {
   status: OwnerStatus | null;
@@ -17,10 +17,11 @@ export interface HeartwoodFullAccessCardProps {
   onOpenChoice: (kind: OwnerChoiceKind) => void;
 }
 
-const STYLE_NAME: Record<OwnerStyle, string> = { everyday: 'Everyday', careful: 'Extra careful' };
-const STYLE_BODY: Record<OwnerStyle, string> = {
+const STYLE_NAME: Record<StatusStyle, string> = { everyday: 'Everyday', careful: 'Extra careful', custom: FULL_ACCESS_COPY.customStyleName };
+const STYLE_BODY: Record<StatusStyle, string> = {
   everyday: FULL_ACCESS_COPY.everyday.body,
   careful: FULL_ACCESS_COPY.careful.body,
+  custom: FULL_ACCESS_COPY.customStyleBody,
 };
 
 const small = { fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8, lineHeight: 1.45 } as const;
@@ -76,6 +77,12 @@ export function HeartwoodFullAccessCard({
             {status.style === 'careful' && (
               <button className="btn btn-secondary" disabled={busy} onClick={() => onOpenChoice('everyday')}>
                 Switch back to Everyday
+              </button>
+            )}
+            {status.style === 'custom' && (
+              // W4: a list an operator changed. A hold on the Heartwood sets it again.
+              <button className="btn btn-secondary" disabled={busy} onClick={() => onOpenChoice('restyle')}>
+                {FULL_ACCESS_COPY.chooseStyleAgain}
               </button>
             )}
             {!confirmOff && (

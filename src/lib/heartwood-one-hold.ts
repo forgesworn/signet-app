@@ -25,10 +25,23 @@ export const CAP_OWNER_NARROW = 'heartwood_owner_narrow';
 
 /** The bundle waits out the device's 90 s queue TTL plus its 45 s card window (A7). */
 export const BUNDLE_TIMEOUT_MS = 140_000;
+/**
+ * The longest A8 holds backups for the router probe and the first owner-status
+ * answer: the probe's own timeouts plus the 20 s status call, rounded up. A
+ * Heartwood that has not answered by then gets today's cards.
+ */
+export const OWNER_HOLD_CAP_MS = 60_000;
 /** Status and narrow never raise a card. */
 export const OWNER_QUICK_TIMEOUT_MS = 20_000;
 
+/** The two styles an owner can ASK for in a bundle. */
 export type OwnerStyle = 'everyday' | 'careful';
+/**
+ * What `heartwood_owner_status` can report: the two styles above, or `custom`
+ * (W4), a non-empty kinds list that is neither of them, e.g. one an operator
+ * narrowed in Sapwood. Never sent in a request.
+ */
+export type StatusStyle = OwnerStyle | 'custom';
 
 /** The only list the firmware sets for Extra careful (4.6). */
 export const CAREFUL_KINDS: readonly number[] = [30078, 22242];
@@ -38,17 +51,23 @@ const HEX64 = /^[0-9a-f]{64}$/;
 export type RequestFn = (method: string, params: string[], timeoutMs?: number) => Promise<string>;
 
 // ---------------------------------------------------------------------------
-// The three words (4.2)
+// The five check words (W1, 4.2)
 // ---------------------------------------------------------------------------
 
 const WORDS_PREFIX = new TextEncoder().encode('heartwood-pair-words');
 
+/** How many check words the FULL ACCESS card shows (5 x 11 = 55 bits, as the phone-enrol card). */
+export const PAIR_WORD_COUNT = 5;
+
+export type PairWords = [string, string, string, string, string];
+
 /**
  * `d = SHA-256("heartwood-pair-words" || 0x00 || client_pubkey_32)`; word i is
- * the spoken-token en-v1 word at `u16_be(d[2i], d[2i+1]) % 2048`, i = 0..2.
- * `encodeAsWords` is exactly that encoding.
+ * the spoken-token en-v1 word at `u16_be(d[2i], d[2i+1]) % 2048`, i = 0..4
+ * (`d[0..10]`). `encodeAsWords` is exactly that encoding. The first three words
+ * are the ones the three-word version showed.
  */
-export function pairWordsForClient(clientPubkeyHex: string): [string, string, string] {
+export function pairWordsForClient(clientPubkeyHex: string): PairWords {
   const hex = (clientPubkeyHex || '').trim().toLowerCase();
   if (!HEX64.test(hex)) throw new Error('client pubkey must be 64 hex chars');
   const key = hexToBytes(hex);
@@ -57,16 +76,18 @@ export function pairWordsForClient(clientPubkeyHex: string): [string, string, st
   input[WORDS_PREFIX.length] = 0;
   input.set(key, WORDS_PREFIX.length + 1);
   const d = sha256(input);
-  const words = encodeAsWords(d, 3);
+  const words = encodeAsWords(d, PAIR_WORD_COUNT);
   input.fill(0);
   key.fill(0);
-  return [words[0], words[1], words[2]];
+  return [words[0], words[1], words[2], words[3], words[4]];
 }
 
 // ---------------------------------------------------------------------------
-// The card, as the choice screen draws it (4.2, 4.6). Same lines, word for word.
-// The words are not on the card at rest: the Heartwood shows them only on the
-// hold screen, while the button is held (letting go declines).
+// The card, as the choice screen draws it (4.2, 4.6, W2). Same lines, word for word.
+// The Heartwood pages the five words AT REST, two at a time ("1-2 of 5",
+// "3-4 of 5", "5 of 5"), each page for its full dwell, and repeats them. The
+// hold counts only once every page has had its dwell and the button has been
+// seen up since; letting go before 5 s declines.
 // ---------------------------------------------------------------------------
 
 export interface CardLines {
@@ -75,8 +96,8 @@ export interface CardLines {
   label: string;
   /** False when `label` is the placeholder, so the line count still matches the Heartwood's card. */
   labelKnown: boolean;
-  wordsLine1: string;
-  wordsLine2: string;
+  /** The word pages as the Heartwood pages them, e.g. `1-2 of 5`: `nice never`. */
+  wordPages: { label: string; words: string }[];
   scope: string;
   /** Everyday: one line. Extra careful: two. */
   powers: string[];
@@ -102,8 +123,19 @@ export function cardLabelLine(label: string, maxChars: number = CARD_LABEL_MAX_C
   return printable.length <= room ? printable : `${printable.slice(0, room - 2)}..`;
 }
 
+/** The pages the Heartwood shows the words in (W2): two at a time, then the last one on its own. */
+export function wordPages(words: readonly string[]): { label: string; words: string }[] {
+  const pages: { label: string; words: string }[] = [];
+  for (let i = 0; i < words.length; i += 2) {
+    const chunk = words.slice(i, i + 2);
+    const label = chunk.length === 2 ? `${i + 1}-${i + 2} of ${words.length}` : `${i + 1} of ${words.length}`;
+    pages.push({ label, words: chunk.join(' ') });
+  }
+  return pages;
+}
+
 export function cardLines(args: {
-  words: readonly [string, string, string];
+  words: readonly string[];
   label?: string | null;
   realName: boolean;
   style: OwnerStyle;
@@ -113,11 +145,10 @@ export function cardLines(args: {
     header: 'FULL ACCESS',
     label: label ? cardLabelLine(label) : CARD_LABEL_PLACEHOLDER,
     labelKnown: label !== '',
-    wordsLine1: `${args.words[0]} ${args.words[1]}`,
-    wordsLine2: args.words[2],
+    wordPages: wordPages(args.words),
     scope: args.realName ? 'PERSONA + REAL NAME' : 'PERSONA ONLY',
     powers: args.style === 'careful'
-      ? ['SIGNS ALONE: BACKUPS', 'ASKS: EVERYTHING ELSE']
+      ? ['SIGNS ALONE: BACKUPS, APP DATA', 'ASKS: EVERYTHING ELSE']
       : ['SIGN IN, POST, BACKUP'],
     hold: 'HOLD 5 SECONDS',
   };
@@ -129,19 +160,25 @@ export function cardLines(args: {
 
 export const FULL_ACCESS_COPY = {
   heading: 'Give this phone full access?',
-  covers: 'This phone can sign in, post and back up as your persona (and your real name, if you use it), including your children\'s backups. You can take it back in Settings.',
+  covers: 'Everyday lets this phone sign anything and read your messages as your persona (and your real name, if you use it), including your children\'s backups. Extra careful limits what signs without you. You can take it back in Settings.',
   realNameForLegacyBackups: 'Your older backups still sign with your real-name key, so this includes it.',
-  expect: 'Your Heartwood will show FULL ACCESS and these three words. Start holding its button: the words appear on the Heartwood while you hold. If they match, keep holding for 5 seconds. If they don\'t, let go.',
+  expect: 'Your Heartwood will show FULL ACCESS and five words, two at a time. Check every word matches the ones here. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
   warning: 'Your Heartwood only shows FULL ACCESS when you start it here. If it ever shows it at another time, don\'t hold the button.',
   setUp: 'Set up with one hold',
   separately: 'Approve each thing separately',
   styleHeading: 'How should this phone sign?',
   everyday: { name: 'Everyday', tag: 'recommended', body: 'Sign-ins, posts and backups happen from your phone, at home or away. Your Heartwood is needed for big things: new keys, money, your real name the first time.' },
-  careful: { name: 'Extra careful', tag: '', body: 'Only backups happen on their own. Every sign-in, post and message asks on your Heartwood, so they wait until you\'re home.' },
-  holding: 'Start holding the button on your Heartwood. The three words above appear on it while you hold. If they match, keep holding for 5 seconds. If they don\'t, let go.',
-  wordsWhileHolding: 'while you hold:',
-  declined: 'Full access wasn\'t approved. Nothing changed.',
+  careful: { name: 'Extra careful', tag: '', body: 'Backups, app data and relay logins happen on their own, and reading messages still works. Signing in to sites, posting and sending messages ask on your Heartwood, so they wait until you\'re home.' },
+  holding: 'Your Heartwood is showing FULL ACCESS and five words, two at a time. Check every word matches the ones above. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
+  wordsHeading: 'The five words:',
+  declined: 'Full access wasn\'t approved. Nothing changed. You can try again in a minute.',
   noAnswer: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: check Settings, Advanced. You can also try again.',
+  // Onboarding has no Settings yet, so it cannot point there.
+  noAnswerOnboarding: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on. You can try again in a minute.',
+  anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute.',
+  cardShownRecently: 'Your Heartwood showed a full access card a moment ago, so it won\'t show another yet. Nothing changed. You can try again in a minute.',
+  saveFailed: 'Your Heartwood couldn\'t save that. Nothing changed.',
+  saveFailedFatal: 'Your Heartwood couldn\'t save that and needs attention. Connect it by cable and check it in Sapwood.',
   busy: 'Your Heartwood was busy. Nothing changed. Try again.',
   changed: 'Something changed on your Heartwood while it waited. Nothing changed here. Try again.',
   tryAgain: 'Try again',
@@ -152,7 +189,14 @@ export const FULL_ACCESS_COPY = {
   realNameFirstUse: 'The first time you use your real name, your Heartwood will ask you to confirm it once.',
   needsHeartwood: 'This needs your Heartwood. Try again when you\'re with it.',
   lostPhone: 'If you lose this phone, remove it in Sapwood.',
-  sapwoodForget: 'Choose Forget approvals for this phone in Sapwood.',
+  // Sapwood: the consent panel's "Withdraw all for this client" drops the mark, but it only shows
+  // while the client still has a remembered approval. Edit or Remove drops it too.
+  sapwoodForget: 'In Sapwood, open this phone\'s pairing and choose Withdraw all for this client. If that button isn\'t there, choose Edit or Remove for the pairing instead.',
+  turnOffUnconfirmed: 'Your Heartwood still shows full access as on, so it was not turned off.',
+  customStyleName: 'Custom',
+  customStyleBody: 'Changed in Sapwood, so your Heartwood signs only some things on its own. Choose a style again to set it with a hold on your Heartwood.',
+  chooseStyleAgain: 'Choose a style again',
+  customNarrow: 'Your Heartwood\'s list was changed in Sapwood, so this changed nothing. Choose a style again to set it with a hold.',
   offerExisting: 'Give this phone full access: one hold on your Heartwood',
   approveAgain: 'Approve this phone again on your Heartwood',
   pairAgain: 'Pair again from My Signet',
@@ -163,7 +207,7 @@ export const PAIRING_PROBLEM_COPY = {
   strict: 'Pair My Signet in Sapwood with the cable plugged in.',
   everything: 'Pair My Signet with Everything access in Sapwood.',
   shared: 'This pairing is used by another device. Make a separate link for this phone in Sapwood.',
-  phoneMayOk: 'Turn off \'Phone may OK\' for My Signet in Sapwood.',
+  phoneMayOk: 'Turn off \'Approve from my phone\' for My Signet in Sapwood.',
 } as const;
 
 /** Plain words for the `-4` limits; today's flow runs afterwards. */
@@ -221,6 +265,13 @@ export function addChildPressPreview(name: string, fullAccess: boolean = false):
 // ---------------------------------------------------------------------------
 
 export interface OwnerOfferInput {
+  /** Signing mode is bunker on an owner install (never a paired child). */
+  bunkerMode: boolean;
+  /**
+   * The router probe has settled: a router is installed, or the probe gave up
+   * (`unsupported`). Until then `supported` cannot be known.
+   */
+  routerSettled: boolean;
   supported: boolean;
   /** A style is on file: this install ran the hold before. */
   everHadFullAccess: boolean;
@@ -239,9 +290,12 @@ export interface OwnerOfferState {
   /** Show "Approve this phone again". */
   offer: boolean;
   /**
-   * Hold the backups. ONLY while the first answer is pending, so a card is not
-   * queued beside the one the owner may be asked for. Once the answer is in,
-   * even `owner:false`, backups run (today's cards): a pairing the owner
+   * Hold the backups. ONLY until the router probe has settled AND the first
+   * owner-status answer is in (A8), so a card is not queued beside the one the
+   * owner may be asked for. "Settled" is success or failure: a router that
+   * lists no bundle method, a failed probe or an unanswered status all release
+   * the hold (the caller also bounds the wait). Once the answer is in, even
+   * `owner:false`, backups run (today's cards): a pairing the owner
    * deliberately cleared in Sapwood must not stall every start until "Not now".
    */
   holdBackups: boolean;
@@ -254,8 +308,28 @@ export function ownerOfferState(i: OwnerOfferInput): OwnerOfferState {
   // own banner re-queues today's cards.
   const offer = i.supported && i.everHadFullAccess && !i.dismissed
     && (lost || (i.vaultNeedsApproval && i.statusOwner !== true));
-  const holdBackups = i.everHadFullAccess && i.supported && i.awaitingFirstStatus;
+  const statusPending = i.supported && i.awaitingFirstStatus;
+  const holdBackups = i.everHadFullAccess && i.bunkerMode && (!i.routerSettled || statusPending);
   return { lost, offer, holdBackups };
+}
+
+/**
+ * A2: will the first use of the real name raise a card on the Heartwood?
+ * Only when the grant on file does not cover `natural-person`. With nothing on
+ * file (an install that ran the hold before the grant was recorded) the answer
+ * is today's: a Heartwood that supports the hold asks once. A mark the device
+ * has dropped (`ownerOn === false`) covers nothing either.
+ */
+export function realNameFirstUseAsks(args: {
+  supported: boolean;
+  /** The `act_as` the device echoed at the last hold; undefined = none on file. */
+  storedActAs: readonly string[] | undefined;
+  /** `heartwood_owner_status`'s `owner`, `null` = not known. */
+  ownerOn: boolean | null;
+}): boolean {
+  if (!args.supported) return false;
+  if (!args.storedActAs) return true;
+  return !(args.ownerOn !== false && args.storedActAs.includes('natural-person'));
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +345,14 @@ export interface BundleParamArgs {
   expect?: { naturalPerson?: string; persona?: string };
 }
 
+/** The identities a bundle may name (W6): any other name is `-3 malformed bundle`. */
+export const BUNDLE_IDENTITY_NAMES: readonly string[] = ['persona', 'natural-person'];
+
+/** The `act_as` list a request asks for. */
+export function requestedActAs(args: Pick<BundleParamArgs, 'actAsNaturalPerson'>): string[] {
+  return args.actAsNaturalPerson ? ['natural-person', 'persona'] : ['persona'];
+}
+
 /** The single JSON-string param of `heartwood_approve_bundle`. */
 export function buildBundleParam(args: BundleParamArgs): string {
   const expectEntries: Record<string, string> = {};
@@ -279,7 +361,7 @@ export function buildBundleParam(args: BundleParamArgs): string {
   const body: Record<string, unknown> = {
     v: 1,
     personas: ['natural-person', 'persona'],
-    act_as: args.actAsNaturalPerson ? ['natural-person', 'persona'] : ['persona'],
+    act_as: requestedActAs(args),
     ...(Object.keys(expectEntries).length > 0 ? { expect: expectEntries } : {}),
     create: args.create,
     style: args.style,
@@ -290,6 +372,7 @@ export function buildBundleParam(args: BundleParamArgs): string {
 export interface BundleSuccess {
   naturalPerson: string;
   persona: string;
+  /** The identities the device says this phone may act as: what the grant really is, kept on file. */
   actAs: string[];
   style: OwnerStyle;
 }
@@ -305,7 +388,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  */
 export function parseBundleReply(
   raw: string,
-  ctx: { masterPubkey: string; requestedStyle: OwnerStyle; expect?: { naturalPerson?: string; persona?: string } },
+  ctx: {
+    masterPubkey: string;
+    requestedStyle: OwnerStyle;
+    expect?: { naturalPerson?: string; persona?: string };
+    /** What the request asked `act_as` to be. When given, the echo must not name anything else. */
+    requestedActAs?: readonly string[];
+  },
 ): BundleSuccess | null {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
@@ -324,7 +413,15 @@ export function parseBundleReply(
   if (ctx.expect?.persona && ctx.expect.persona.toLowerCase() !== persona) return null;
   // The firmware always sends `owner:true` on success; a reply without it is not one.
   if (parsed.owner !== true) return null;
-  const actAs = Array.isArray(parsed.act_as) ? parsed.act_as.filter((x): x is string => typeof x === 'string') : [];
+  // The echo is the device's own statement of what it granted. It must be a
+  // list of known names that includes the persona and nothing wider than the
+  // request asked for; a narrower grant is accepted and recorded as it is, so
+  // the real-name copy stays true.
+  if (!Array.isArray(parsed.act_as) || !parsed.act_as.every((x): x is string => typeof x === 'string')) return null;
+  const actAs = [...new Set(parsed.act_as.map(x => x.toLowerCase()))];
+  if (!actAs.includes('persona')) return null;
+  if (!actAs.every(x => BUNDLE_IDENTITY_NAMES.includes(x))) return null;
+  if (ctx.requestedActAs && !actAs.every(x => ctx.requestedActAs!.includes(x))) return null;
   const style: OwnerStyle = parsed.style === 'careful' || parsed.style === 'everyday' ? parsed.style : ctx.requestedStyle;
   return { naturalPerson: np, persona, actAs, style };
 }
@@ -346,7 +443,7 @@ export interface BundleFailure {
   action: BundleFailureAction;
   message: string;
   code:
-    | 'declined' | 'no-answer' | 'busy' | 'changed' | 'unreachable' | 'strict' | 'kinds-list' | 'shared' | 'every-request' | 'phone-may-ok'
+    | 'declined' | 'no-answer' | 'busy' | 'changed' | 'another-card' | 'card-recent' | 'save-failed' | 'unreachable' | 'strict' | 'kinds-list' | 'shared' | 'every-request' | 'phone-may-ok'
     | 'approval-list-full' | 'storage-full' | 'no-persona-tree' | 'method-list-full'
     | 'pubkey-mismatch' | 'persona-missing' | 'missing-key' | 'malformed' | 'child' | 'bad-reply' | 'other';
 }
@@ -380,11 +477,24 @@ export function classifyBundleError(err: unknown): BundleFailure {
   // was busy with another card. Nothing was granted; the owner taps Try again.
   if (/signer is busy|busy with another approval/.test(lower)) return { action: 'retry', code: 'busy', message: FULL_ACCESS_COPY.busy };
   if (/send the request again|approval_changed/.test(lower)) return { action: 'retry', code: 'changed', message: FULL_ACCESS_COPY.changed };
+  // W3: one full-access card at a time. Both are `-1 unauthorised: ...`; tested
+  // before the bare `unauthorised`. A client that keeps sending bundles can
+  // block pairing but never gets the mark, so the owner waits a minute.
+  if (/another full access request arrived/.test(lower)) return { action: 'retry', code: 'another-card', message: FULL_ACCESS_COPY.anotherCard };
+  if (/full access card shown recently/.test(lower)) return { action: 'retry', code: 'card-recent', message: FULL_ACCESS_COPY.cardShownRecently };
   if (/^unauthori[sz]ed$/.test(lower)) return { action: 'continue', code: 'strict', message: PAIRING_PROBLEM_COPY.strict };
   if (/approval list full/.test(lower)) return { action: 'silent', code: 'approval-list-full', message: '' };
   if (/storage full/.test(lower)) return { action: 'continue', code: 'storage-full', message: DEVICE_LIMIT_COPY.storageFull };
   if (/no persona tree/.test(lower)) return { action: 'continue', code: 'no-persona-tree', message: DEVICE_LIMIT_COPY.noPersonaTree };
   if (/method list full/.test(lower)) return { action: 'continue', code: 'method-list-full', message: DEVICE_LIMIT_COPY.methodListFull };
+  // The `-4` save failures after a press: the slot step could not be made
+  // durable and was rolled back (nip46_handler.rs `persist_bind_or_rollback`),
+  // or the persona registry could not be written. The fatal variant could not
+  // restore the prior policy, so it must not say nothing changed.
+  if (/fatal storage error/.test(lower)) return { action: 'continue', code: 'save-failed', message: FULL_ACCESS_COPY.saveFailedFatal };
+  if (/could not persist|persona (state|count|chunk|entry|registry)|failed to (inspect|read|verify|write) persona/.test(lower)) {
+    return { action: 'retry', code: 'save-failed', message: FULL_ACCESS_COPY.saveFailed };
+  }
   if (/pubkey mismatch/.test(lower)) return { action: 'mismatch', code: 'pubkey-mismatch', message: FULL_ACCESS_COPY.pairingMismatch };
   if (/persona missing/.test(lower)) return { action: 'mismatch', code: 'persona-missing', message: FULL_ACCESS_COPY.personaMissing };
   if (/malformed bundle/.test(lower)) return { action: 'silent', code: 'malformed', message: '' };
@@ -426,6 +536,7 @@ export async function runApproveBundle(
     masterPubkey: args.masterPubkey,
     requestedStyle: args.style,
     expect: args.expect,
+    requestedActAs: requestedActAs(args),
   });
   if (!reply) {
     return { ok: false, failure: { action: 'silent', code: 'bad-reply', message: '' } };
@@ -439,14 +550,14 @@ export async function runApproveBundle(
 
 export interface OwnerStatus {
   owner: boolean;
-  style: OwnerStyle;
+  style: StatusStyle;
 }
 
 export function parseOwnerStatus(raw: string): OwnerStatus | null {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
   if (!isRecord(parsed) || typeof parsed.owner !== 'boolean') return null;
-  const style: OwnerStyle = parsed.style === 'careful' ? 'careful' : 'everyday';
+  const style: StatusStyle = parsed.style === 'careful' || parsed.style === 'custom' ? parsed.style : 'everyday';
   return { owner: parsed.owner, style };
 }
 
@@ -459,7 +570,8 @@ export async function fetchOwnerStatus(request: RequestFn): Promise<OwnerStatus 
   }
 }
 
-export type NarrowResult = { ok: true; changed: boolean } | { ok: false; message: string };
+/** `style: 'custom'` = the device answered that the slot's list is custom and changed nothing (W4). */
+export type NarrowResult = { ok: true; changed: boolean } | { ok: false; message: string; style?: 'custom' };
 
 /** Everyday -> Extra careful. Raises no card and can never widen. */
 export async function narrowToCareful(request: RequestFn): Promise<NarrowResult> {
@@ -475,6 +587,8 @@ export async function narrowToCareful(request: RequestFn): Promise<NarrowResult>
   try {
     const parsed: unknown = JSON.parse(raw);
     if (isRecord(parsed) && parsed.style === 'careful') return { ok: true, changed: parsed.changed === true };
+    // W4: narrowing a custom slot changes nothing and says so.
+    if (isRecord(parsed) && parsed.style === 'custom') return { ok: false, message: FULL_ACCESS_COPY.customNarrow, style: 'custom' };
   } catch { /* fall through */ }
   return { ok: false, message: 'Your Heartwood gave an unexpected answer. Nothing was changed.' };
 }
@@ -495,7 +609,7 @@ export function sameKey(a: string | null | undefined, b: string | null | undefin
 
 /** What App.tsx hands the onboarding screen once the Heartwood lists the bundle method. */
 export interface FullAccessOffer {
-  words: [string, string, string];
+  words: PairWords;
   /** Send ONE bundle. The screen calls this from the tap only. */
   run: (style: OwnerStyle) => Promise<BundleRunResult>;
 }
@@ -531,13 +645,21 @@ export async function negotiateFullAccess(args: {
   if (!supportsApproveBundle(methods)) return { mode: 'separate' };
   return args.ui.chooseFullAccess({
     words: pairWordsForClient(args.clientPubkeyHex),
-    run: (style) => runApproveBundle(args.request, {
-      // m8 / A1: false is right here. Onboarding runs before any identity
-      // exists, and the identity it creates is persona-first with the real-name
-      // slot dormant (`naturalPersonActive: false`), so there is no active real
-      // identity to include. An existing install passes `isNaturalPersonActive`
-      // through `useHeartwoodOwner` (`includeRealName`).
-      create: true, actAsNaturalPerson: false, style, masterPubkey: args.masterPubkey,
-    }),
+    run: async (style) => {
+      const out = await runApproveBundle(args.request, {
+        // m8 / A1: false is right here. Onboarding runs before any identity
+        // exists, and the identity it creates is persona-first with the real-name
+        // slot dormant (`naturalPersonActive: false`), so there is no active real
+        // identity to include. An existing install passes `isNaturalPersonActive`
+        // through `useHeartwoodOwner` (`includeRealName`).
+        create: true, actAsNaturalPerson: false, style, masterPubkey: args.masterPubkey,
+      });
+      // Onboarding has no Settings page to check, so the generic line that
+      // sends the owner there is replaced.
+      if (!out.ok && out.failure.code === 'no-answer') {
+        return { ok: false, failure: { ...out.failure, message: FULL_ACCESS_COPY.noAnswerOnboarding } };
+      }
+      return out;
+    },
   });
 }

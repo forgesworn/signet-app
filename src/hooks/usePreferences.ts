@@ -263,11 +263,17 @@ export function usePreferences() {
    * One-hold pairing: the signing style on file for this phone (A8, A11).
    * `undefined` clears it (the owner turned full access off).
    */
-  const setHeartwoodOwnerStyle = useCallback(async (style: 'everyday' | 'careful' | undefined) => {
+  const setHeartwoodOwnerStyle = useCallback(async (style: 'everyday' | 'careful' | 'custom' | undefined, actAs?: readonly string[]) => {
     await applyFresh(p => {
-      if (p.heartwoodOwnerStyle === style) return p;
+      const sameActAs = actAs === undefined
+        || (p.heartwoodOwnerActAs?.length === actAs.length && actAs.every((x, i) => p.heartwoodOwnerActAs![i] === x));
+      if (p.heartwoodOwnerStyle === style && sameActAs) return p;
       const next = { ...p };
-      if (style === undefined) delete next.heartwoodOwnerStyle; else next.heartwoodOwnerStyle = style;
+      if (style === undefined) { delete next.heartwoodOwnerStyle; delete next.heartwoodOwnerActAs; }
+      else {
+        next.heartwoodOwnerStyle = style;
+        if (actAs !== undefined) next.heartwoodOwnerActAs = [...actAs];
+      }
       return next;
     });
   }, [applyFresh]);

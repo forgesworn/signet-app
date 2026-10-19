@@ -5,7 +5,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, addChildRaisesCards, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, addChildRaisesCards, realNameFirstUseAsks, wordPages, requestedActAs, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
 import { BunkerRequestTimeoutError, SIGNER_REQUEST_TIMEOUT_MS } from './signing-backend';
 
@@ -22,13 +22,14 @@ describe('pairWordsForClient', () => {
     const msg = new Uint8Array(prefix.length + 32);
     msg.set(prefix); msg.set(key, prefix.length);
     const d = sha256(msg);
-    const expected = [0, 1, 2].map(i => WORDLIST[((d[2 * i] << 8) | d[2 * i + 1]) % 2048]);
+    const expected = [0, 1, 2, 3, 4].map(i => WORDLIST[((d[2 * i] << 8) | d[2 * i + 1]) % 2048]);
     expect(pairWordsForClient(VECTOR_CLIENT)).toEqual(expected);
   });
 
-  it('pins the three words for the vector key', () => {
-    // Pinned from this implementation; compare against the firmware's own vector when it lands.
+  it('pins the five words for the vector key (W1): the first three are the old three', () => {
+    // The same vector is pinned in heartwood-esp32 (common/src/owner_pairing.rs).
     expect(pairWordsForClient(VECTOR_CLIENT)).toEqual(PINNED_WORDS);
+    expect(PINNED_WORDS.slice(0, 3)).toEqual(['nice', 'never', 'repair']);
   });
 
   it('is case-insensitive, deterministic and differs per key', () => {
@@ -48,20 +49,22 @@ describe('pairWordsForClient', () => {
   });
 });
 
-const PINNED_WORDS: [string, string, string] = ['nice', 'never', 'repair'];
+const PINNED_WORDS = ['nice', 'never', 'repair', 'area', 'upgrade'];
 
 describe('cardLines', () => {
-  const words: [string, string, string] = ['one', 'two', 'three'];
+  const words = ['one', 'two', 'three', 'four', 'five'];
   it('everyday, persona only', () => {
     expect(cardLines({ words, label: 'my signet', realName: false, style: 'everyday' })).toEqual({
-      header: 'FULL ACCESS', label: 'my signet', labelKnown: true, wordsLine1: 'one two', wordsLine2: 'three',
+      header: 'FULL ACCESS', label: 'my signet', labelKnown: true,
+      wordPages: [{ label: '1-2 of 5', words: 'one two' }, { label: '3-4 of 5', words: 'three four' }, { label: '5 of 5', words: 'five' }],
       scope: 'PERSONA ONLY', powers: ['SIGN IN, POST, BACKUP'], hold: 'HOLD 5 SECONDS',
     });
   });
   it('extra careful with the real name', () => {
     const c = cardLines({ words, realName: true, style: 'careful' });
     expect(c.scope).toBe('PERSONA + REAL NAME');
-    expect(c.powers).toEqual(['SIGNS ALONE: BACKUPS', 'ASKS: EVERYTHING ELSE']);
+    // W9: never claim less than what signs alone (backups, app data under a granted identity, relay logins).
+    expect(c.powers).toEqual(['SIGNS ALONE: BACKUPS, APP DATA', 'ASKS: EVERYTHING ELSE']);
     // No label known here (onboarding): a placeholder keeps the Heartwood's line count.
     expect(c.label).toBe(CARD_LABEL_PLACEHOLDER);
     expect(c.labelKnown).toBe(false);
@@ -73,6 +76,43 @@ describe('cardLines', () => {
     expect(cardLabelLine('a'.repeat(30))).toBe(`${'a'.repeat(19)}..`);
     expect(cardLabelLine('abcdefgh', 3)).toBe('a..');
     expect(cardLabelLine('abcdefgh', 1)).toBe('a..');
+  });
+});
+
+describe('wordPages (W2)', () => {
+  it('pages five words two at a time, like the Heartwood', () => {
+    expect(wordPages(['a', 'b', 'c', 'd', 'e'])).toEqual([
+      { label: '1-2 of 5', words: 'a b' }, { label: '3-4 of 5', words: 'c d' }, { label: '5 of 5', words: 'e' },
+    ]);
+  });
+});
+
+describe('five-word copy (W2, W9, W10)', () => {
+  it('no longer says the words appear while the button is held', () => {
+    for (const text of [FULL_ACCESS_COPY.expect, FULL_ACCESS_COPY.holding]) {
+      expect(text).not.toMatch(/while you hold|appear on/i);
+      expect(text).toMatch(/five words, two at a time/);
+      expect(text).toMatch(/hold its button for 5 seconds/);
+      expect(text).toMatch(/If any word doesn't match, don't hold/);
+    }
+    expect(FULL_ACCESS_COPY.expect).toBe('Your Heartwood will show FULL ACCESS and five words, two at a time. Check every word matches the ones here. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.');
+  });
+  it('the Everyday line says the phone can sign anything and read messages', () => {
+    expect(FULL_ACCESS_COPY.covers).toMatch(/sign anything and read your messages as your persona \(and your real name, if you use it\)/);
+  });
+  it('Extra careful says what really signs alone (W9)', () => {
+    expect(FULL_ACCESS_COPY.careful.body).toBe('Backups, app data and relay logins happen on their own, and reading messages still works. Signing in to sites, posting and sending messages ask on your Heartwood, so they wait until you\'re home.');
+  });
+  it('Sapwood labels are the ones Sapwood shows (W10)', () => {
+    expect(PAIRING_PROBLEM_COPY.phoneMayOk).toContain('Approve from my phone');
+    expect(PAIRING_PROBLEM_COPY.phoneMayOk).not.toContain('Phone may OK');
+    expect(FULL_ACCESS_COPY.sapwoodForget).toContain('Withdraw all for this client');
+    expect(FULL_ACCESS_COPY.sapwoodForget).toMatch(/Edit or Remove/);
+    expect(FULL_ACCESS_COPY.sapwoodForget).not.toContain('Forget approvals');
+  });
+  it('the onboarding no-answer line does not point to Settings', () => {
+    expect(FULL_ACCESS_COPY.noAnswer).toContain('Settings, Advanced');
+    expect(FULL_ACCESS_COPY.noAnswerOnboarding).not.toMatch(/Settings|Advanced/);
   });
 });
 
@@ -113,6 +153,26 @@ describe('buildBundleParam', () => {
 
 describe('parseBundleReply', () => {
   const ctx = { masterPubkey: MASTER, requestedStyle: 'everyday' as const };
+  const keys = { 'natural-person': NP, persona: PERSONA };
+  const reply = (act_as: unknown) => JSON.stringify({ v: 1, pubkeys: keys, act_as, owner: true, style: 'everyday' });
+  it('note 1: the act_as echo is checked against what was asked and kept', () => {
+    const both = { ...ctx, requestedActAs: ['natural-person', 'persona'] };
+    expect(parseBundleReply(reply(['natural-person', 'persona']), both)?.actAs).toEqual(['natural-person', 'persona']);
+    // Narrower than asked is the truth about the grant: accepted, recorded as it is.
+    expect(parseBundleReply(reply(['persona']), both)?.actAs).toEqual(['persona']);
+    // Wider than asked, or a name nobody asked for, is not a success.
+    expect(parseBundleReply(reply(['natural-person', 'persona']), { ...ctx, requestedActAs: ['persona'] })).toBeNull();
+    expect(parseBundleReply(reply(['persona', 'dependant-1']), both)).toBeNull();
+    // No persona, no list, or a list of junk: unusable.
+    expect(parseBundleReply(reply(['natural-person']), both)).toBeNull();
+    expect(parseBundleReply(reply(undefined), both)).toBeNull();
+    expect(parseBundleReply(reply([1, 'persona']), both)).toBeNull();
+  });
+  it('requestedActAs matches what buildBundleParam sends (W6: only two names)', () => {
+    for (const actAsNaturalPerson of [true, false]) {
+      expect(requestedActAs({ actAsNaturalPerson })).toEqual(JSON.parse(buildBundleParam({ create: true, actAsNaturalPerson, style: 'everyday' })).act_as);
+    }
+  });
   it('accepts the pinned 4.1 shape', () => {
     const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'careful' });
     expect(parseBundleReply(raw, ctx)).toEqual({ naturalPerson: NP, persona: PERSONA, actAs: ['persona'], style: 'careful' });
@@ -138,7 +198,7 @@ describe('parseBundleReply', () => {
     expect(parseBundleReply('[]', ctx)).toBeNull();
     // m10: the firmware always sends owner:true, so a reply without it is not a success.
     expect(parseBundleReply(JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA } }), ctx)).toBeNull();
-    const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true });
+    const raw = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true });
     expect(parseBundleReply(raw, { ...ctx, expect: { persona: 'd'.repeat(64) } })).toBeNull();
     expect(parseBundleReply(raw, { ...ctx, expect: { persona: PERSONA, naturalPerson: NP } })).not.toBeNull();
   });
@@ -166,11 +226,32 @@ describe('classifyBundleError', () => {
     ['persona missing', 'mismatch', FULL_ACCESS_COPY.personaMissing],
     ['malformed bundle', 'silent', ''],
     ['bundle names a child', 'silent', ''],
+    // W3: one full-access card at a time. Both are retry, with a "try again in a minute" line.
+    ['unauthorised: another full access request arrived', 'retry', FULL_ACCESS_COPY.anotherCard],
+    ['unauthorised: full access card shown recently', 'retry', FULL_ACCESS_COPY.cardShownRecently],
+    // The -4 save failures (nip46_handler.rs persist_bind_or_rollback).
+    ['could not persist client policy; request was not applied', 'retry', FULL_ACCESS_COPY.saveFailed],
     ['user denied', 'retry', FULL_ACCESS_COPY.declined],
     ['timeout', 'retry', FULL_ACCESS_COPY.declined],
     ['something unforeseen', 'silent', ''],
   ])('%s', (err, action, message) => {
     expect(classifyBundleError(err)).toMatchObject({ action, message });
+  });
+  it('W3 codes, and the retry copy tells the owner to wait a minute', () => {
+    expect(classifyBundleError('unauthorised: another full access request arrived').code).toBe('another-card');
+    expect(classifyBundleError('unauthorised: full access card shown recently').code).toBe('card-recent');
+    // The bare "unauthorised" is still a strict pairing.
+    expect(classifyBundleError('unauthorised').code).toBe('strict');
+    for (const text of [FULL_ACCESS_COPY.declined, FULL_ACCESS_COPY.anotherCard, FULL_ACCESS_COPY.cardShownRecently]) {
+      expect(text).toMatch(/try again in a minute/i);
+    }
+  });
+  it('note 3: a failed save says so and says nothing changed; the fatal one does not', () => {
+    expect(classifyBundleError('could not persist client policy; request was not applied'))
+      .toMatchObject({ action: 'retry', code: 'save-failed', message: 'Your Heartwood couldn\'t save that. Nothing changed.' });
+    const fatal = classifyBundleError('fatal storage error: could not restore prior client policy; take the device offline for USB recovery');
+    expect(fatal.code).toBe('save-failed');
+    expect(fatal.message).not.toMatch(/Nothing changed/);
   });
   it('our own expiry and a transport failure', () => {
     // m3: our own expiry is "no answer", which does not claim nothing changed.
@@ -234,6 +315,8 @@ describe('owner status and narrow', () => {
   it('parses status and defaults the style', () => {
     expect(parseOwnerStatus('{"owner":true,"style":"careful"}')).toEqual({ owner: true, style: 'careful' });
     expect(parseOwnerStatus('{"owner":false}')).toEqual({ owner: false, style: 'everyday' });
+    expect(parseOwnerStatus('{"owner":true,"style":"custom"}')).toEqual({ owner: true, style: 'custom' });
+    expect(parseOwnerStatus('{"owner":true,"style":"weird"}')).toEqual({ owner: true, style: 'everyday' });
     expect(parseOwnerStatus('{"owner":"yes"}')).toBeNull();
     expect(parseOwnerStatus('x')).toBeNull();
   });
@@ -246,6 +329,10 @@ describe('owner status and narrow', () => {
     expect(await narrowToCareful(request)).toEqual({ ok: true, changed: true });
     expect(request.mock.calls[0][0]).toBe('heartwood_owner_narrow');
     expect(JSON.parse(request.mock.calls[0][1][0])).toEqual({ v: 1, style: 'careful' });
+  });
+  it('W4: narrowing a custom slot changes nothing and says so', async () => {
+    const out = await narrowToCareful(vi.fn().mockResolvedValue('{"style":"custom","changed":false}'));
+    expect(out).toEqual({ ok: false, message: FULL_ACCESS_COPY.customNarrow, style: 'custom' });
   });
   it('narrow on an unmarked pairing says so', async () => {
     const out = await narrowToCareful(vi.fn().mockRejectedValue('unauthorised'));
@@ -270,7 +357,7 @@ describe('capability gate and press preview', () => {
 });
 
 describe('negotiateFullAccess (A1)', () => {
-  const okReply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, owner: true, style: 'everyday' });
+  const okReply = JSON.stringify({ v: 1, pubkeys: { 'natural-person': NP, persona: PERSONA }, act_as: ['persona'], owner: true, style: 'everyday' });
   const base = { clientPubkeyHex: VECTOR_CLIENT, masterPubkey: MASTER };
 
   it('asks nothing and sends nothing without a UI', async () => {
@@ -326,6 +413,18 @@ describe('negotiateFullAccess (A1)', () => {
   });
 });
 
+describe('onboarding no-answer (A1)', () => {
+  it('replaces the Settings pointer with the onboarding line', async () => {
+    let seen: unknown;
+    const ui = { chooseFullAccess: vi.fn(async (offer: FullAccessOffer) => { seen = await offer.run('everyday'); return { mode: 'separate' as const }; }) };
+    await negotiateFullAccess({
+      ui, clientPubkeyHex: VECTOR_CLIENT, masterPubkey: MASTER, probe: async () => ['heartwood_approve_bundle'],
+      request: vi.fn().mockRejectedValue(new BunkerRequestTimeoutError('heartwood_approve_bundle')),
+    });
+    expect(seen).toMatchObject({ ok: false, failure: { code: 'no-answer', message: FULL_ACCESS_COPY.noAnswerOnboarding } });
+  });
+});
+
 describe('A7 timeouts', () => {
   it('anything that may raise a card waits at least 45 s; the bundle waits 140 s', () => {
     expect(CARD_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
@@ -339,11 +438,30 @@ describe('A7 timeouts', () => {
 
 describe('ownerOfferState (A8, M2, m2)', () => {
   const base = {
+    bunkerMode: true, routerSettled: true,
     supported: true, everHadFullAccess: true, statusOwner: null as boolean | null,
     awaitingFirstStatus: false, vaultNeedsApproval: false, dismissed: false,
   };
-  it('holds backups only while the first status answer is pending', () => {
+  it('holds backups while the first status answer is pending', () => {
     expect(ownerOfferState({ ...base, awaitingFirstStatus: true }).holdBackups).toBe(true);
+  });
+  it('review 2: also holds them until the router probe has settled, before `supported` can be known', () => {
+    const early = { ...base, routerSettled: false, supported: false, awaitingFirstStatus: false };
+    expect(ownerOfferState(early).holdBackups).toBe(true);
+    // The router is in but the first status answer has not come.
+    expect(ownerOfferState({ ...base, awaitingFirstStatus: true }).holdBackups).toBe(true);
+    // Both settled: backups run.
+    expect(ownerOfferState(base).holdBackups).toBe(false);
+  });
+  it('review 2: a failed probe, a router with no bundle method or a failed status releases the hold', () => {
+    // Probe gave up (settled, no router): supported false, nothing to wait for.
+    expect(ownerOfferState({ ...base, supported: false }).holdBackups).toBe(false);
+    // Status failed: the answer is still "settled" (awaitingFirstStatus false), unknown is not off.
+    expect(ownerOfferState({ ...base, statusOwner: null, awaitingFirstStatus: false }).holdBackups).toBe(false);
+  });
+  it('review 2: only for a bunker install with a style on file', () => {
+    expect(ownerOfferState({ ...base, routerSettled: false, bunkerMode: false }).holdBackups).toBe(false);
+    expect(ownerOfferState({ ...base, routerSettled: false, everHadFullAccess: false }).holdBackups).toBe(false);
   });
   it('M2: once owner:false is known the offer shows but backups run (a deliberate Forget approvals must not stall every start)', () => {
     const s = ownerOfferState({ ...base, statusOwner: false });
@@ -360,6 +478,21 @@ describe('ownerOfferState (A8, M2, m2)', () => {
     expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: null }).offer).toBe(true);
     expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: false }).offer).toBe(true);
     expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: true }).offer).toBe(false);
+  });
+});
+
+describe('realNameFirstUseAsks (A2, review 3)', () => {
+  it('keeps today\'s answer when nothing is stored', () => {
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: undefined, ownerOn: true })).toBe(true);
+    expect(realNameFirstUseAsks({ supported: false, storedActAs: undefined, ownerOn: null })).toBe(false);
+  });
+  it('a grant that covers natural-person promises no card', () => {
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: true })).toBe(false);
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: null })).toBe(false);
+  });
+  it('a persona-only grant, or a mark the device has dropped, still asks once', () => {
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['persona'], ownerOn: true })).toBe(true);
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: false })).toBe(true);
   });
 });
 

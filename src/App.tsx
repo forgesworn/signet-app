@@ -251,12 +251,15 @@ import { PairDependantDevice } from './pages/PairDependantDevice';
 import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
-import { resolveOnboardingKeys, HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
+import { HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
 import {
-  negotiateFullAccess, ownerOfferState, addChildRaisesCards, FULL_ACCESS_COPY,
-  type FullAccessDecision, type HeartwoodConnectUi, type OwnerStyle,
+  ownerOfferState, addChildRaisesCards, realNameFirstUseAsks, OWNER_HOLD_CAP_MS, FULL_ACCESS_COPY,
+  type FullAccessDecision, type HeartwoodConnectUi,
 } from './lib/heartwood-one-hold';
 import { useHeartwoodOwner } from './hooks/useHeartwoodOwner';
+import {
+  resolveHeartwoodConnect, HeartwoodConnectCancelled, HeartwoodConnectFailed, type OwnerGrantOnFile,
+} from './lib/heartwood-connect';
 import { PRIVATE_VAULT_NEEDS_APPROVAL_COPY } from './lib/vault-approval';
 import type { OwnerChoiceKind } from './components/HeartwoodFullAccessCard';
 import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
@@ -4381,23 +4384,6 @@ export function App() {
   const operatorEnabled = !!encryptionKey && preferences.signingMode !== 'paired-child';
   const heartwoodOperator = useHeartwoodOperator({ encryptionKey, enabled: operatorEnabled });
 
-  // C3 policy push: whenever dependants / grants change (or the client
-  // comes up), debounce and push each changed family slot's compiled
-  // policy to the device. `grantsForSync` is the live set incl. tombstones.
-  const policyPush = usePolicyPush({
-    client: heartwoodOperator.client,
-    enabled: operatorEnabled,
-    encryptionKey,
-    signingMode: preferences.signingMode,
-    dependants,
-    grants: grantsForSync,
-    childRules: isPairedChild ? [] : childRules,
-    approvedOnceKinds: isPairedChild ? {} : approvedOnceKinds,
-    // A31: the push compiles from reads taken inside the operator lock.
-    getApprovedOnce: isPairedChild ? undefined : approvedOnceStore.get,
-    loadChildRules: isPairedChild || !encryptionKey ? undefined : () => listAllChildRules(encryptionKey),
-  });
-
   // One-hold pairing (spec A1b, A8-A11): is this phone's pairing an owner
   // pairing, and in which style. Gated on the Heartwood listing the bundle
   // method, so older firmware sees no new request at all. Never on a
@@ -4418,10 +4404,24 @@ export function App() {
     storedStyle: preferences.heartwoodOwnerStyle,
     onStyleChange: setHeartwoodOwnerStyle,
   });
+  // A2: the first use of the real name asks once on the Heartwood, unless the
+  // grant the device echoed already covers it (an `act_as` with natural-person).
+  const realNameCardExpected = realNameFirstUseAsks({
+    supported: heartwoodOwner.supported,
+    storedActAs: preferences.heartwoodOwnerActAs,
+    ownerOn: heartwoodOwner.status?.owner ?? null,
+  });
   // A8: the offer to approve this phone again, dismissable for the session.
   const [ownerAgainDismissed, setOwnerAgainDismissed] = useState(false);
   const [pendingOwnerChoice, setPendingOwnerChoice] = useState<OwnerChoiceKind | null>(null);
-  const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldsBackups } = ownerOfferState({
+  // A8: while a style is on file, backups wait for the router probe AND the
+  // first owner-status answer. "Settled" is success or failure; the wait is
+  // also capped (OWNER_HOLD_CAP_MS) so a Heartwood that never answers cannot
+  // stop backups for the whole session.
+  const ownerRouterSettled = bunkerRouter !== null || routerProbeState === 'unsupported';
+  const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldBackupsRaw } = ownerOfferState({
+    bunkerMode: preferences.signingMode === 'bunker' && !isPairedChild,
+    routerSettled: ownerRouterSettled,
     supported: heartwoodOwner.supported,
     everHadFullAccess: heartwoodOwner.everHadFullAccess,
     statusOwner: heartwoodOwner.status?.owner ?? null,
@@ -4429,6 +4429,35 @@ export function App() {
     vaultNeedsApproval: privateVaultHealth.needsApproval === true,
     dismissed: ownerAgainDismissed,
   });
+  const [ownerHoldLapsed, setOwnerHoldLapsed] = useState(false);
+  useEffect(() => {
+    if (!ownerHoldBackupsRaw) { setOwnerHoldLapsed(false); return; }
+    const timer = setTimeout(() => setOwnerHoldLapsed(true), OWNER_HOLD_CAP_MS);
+    return () => clearTimeout(timer);
+  }, [ownerHoldBackupsRaw]);
+  const ownerHoldsBackups = ownerHoldBackupsRaw && !ownerHoldLapsed;
+
+  // C3 policy push: whenever dependants / grants change (or the client
+  // comes up), debounce and push each changed family slot's compiled
+  // policy to the device. `grantsForSync` is the live set incl. tombstones.
+  const policyPush = usePolicyPush({
+    client: heartwoodOperator.client,
+    enabled: operatorEnabled,
+    encryptionKey,
+    signingMode: preferences.signingMode,
+    dependants,
+    grants: grantsForSync,
+    childRules: isPairedChild ? [] : childRules,
+    approvedOnceKinds: isPairedChild ? {} : approvedOnceKinds,
+    // A31: the push compiles from reads taken inside the operator lock.
+    getApprovedOnce: isPairedChild ? undefined : approvedOnceStore.get,
+    loadChildRules: isPairedChild || !encryptionKey ? undefined : () => listAllChildRules(encryptionKey),
+    // A full-access hold is a slot change on the device. A push whose list read
+    // came before the press and whose update lands after it would write back a
+    // methods list without the mark, so no push runs while the hold waits.
+    paused: heartwoodOwner.busy,
+  });
+
 
   // Approve from my phone, per app, for the owner's own pairings (Advanced
   // settings, inside the operator key card). The compiler's classification
@@ -5858,15 +5887,19 @@ export function App() {
     // throws rather than fall back to the master; only a signer that does not
     // speak heartwood_list_identities is treated as a generic single-key one.
     let keys: OnboardingKeys;
-    let ownerStyle: OwnerStyle | undefined;
+    let ownerGrant: OwnerGrantOnFile | undefined;
+    let fullAccess: FullAccessDecision | undefined;
     // One-hold pairing (A1): ONE capabilities attempt with a 20 s timeout. If
     // the Heartwood lists the bundle method, the owner chooses on a full-screen
     // card; the bundle is sent only from that tap. Anything else (an older
     // Heartwood, a generic signer, no answer) is today's flow, unchanged.
-    let fullAccess: FullAccessDecision | undefined = held?.fullAccess;
-    if (!fullAccess) {
-      fullAccess = await negotiateFullAccess({
+    // `resolveHeartwoodConnect` also takes the keys from the reply or from
+    // today's flow, and works out what the device said was granted.
+    try {
+      ({ keys, ownerGrant, fullAccess } = await resolveHeartwoodConnect({
+        signer: bunker,
         ui,
+        held: held?.fullAccess,
         probe: async () => {
           const outcome = await BunkerBackendRouter.probe(bunker, clientSecret, undefined, 20_000);
           if (outcome.kind !== 'router') return null;
@@ -5874,36 +5907,22 @@ export function App() {
           outcome.router.destroy();
           return methods;
         },
-        clientPubkeyHex: bunker.transportClientPubkeyHex,
-        masterPubkey: bunker.activePublicKeyHex,
-        request: (method, params, timeoutMs) => bunker.request(method, params, timeoutMs),
-      });
-      if (fullAccess.mode === 'cancel') {
+      }));
+    } catch (failure) {
+      if (failure instanceof HeartwoodConnectCancelled) {
         bunker.destroy();
         heartwoodOnboardingRef.current = null;
-        throw new Error('Cancelled. Nothing was changed.');
+        throw new Error(failure.message);
       }
-    }
-    try {
-      if (fullAccess?.mode === 'bundle') {
-        // The reply is already validated (hex64, not the master, real identity
-        // differs from the persona) by `parseBundleReply`.
-        keys = { kind: 'heartwood', naturalPerson: fullAccess.reply.naturalPerson, persona: fullAccess.reply.persona };
-        ownerStyle = fullAccess.style;
-      } else {
-        keys = await resolveOnboardingKeys(
-          (method, params) => bunker.request(method, params),
-          bunker.activePublicKeyHex,
-        );
-      }
-    } catch (err) {
+      if (!(failure instanceof HeartwoodConnectFailed)) throw failure;
+      const err = failure.original;
       if (err instanceof HeartwoodOnboardingError && err.reason === 'unreachable') {
         // The socket may be dead (the signer pool does not reconnect), so a
         // retry builds a fresh connection from the same bunker:// URI.
         bunker.destroy();
         heartwoodOnboardingRef.current = null;
       } else {
-        heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret, fullAccess };
+        heartwoodOnboardingRef.current = { bunkerUri, bunker, clientSecret, fullAccess: failure.fullAccess };
       }
       throw err;
     }
@@ -5947,7 +5966,7 @@ export function App() {
     // state isn't set until the auth-setup flow below completes).
     await savePreferences({
       ...(await getPreferences(key)), activeAccountId: npPubkey, signingMode: 'bunker', bunkerUri,
-      ...(ownerStyle ? { heartwoodOwnerStyle: ownerStyle } : {}),
+      ...(ownerGrant ? { heartwoodOwnerStyle: ownerGrant.style, heartwoodOwnerActAs: ownerGrant.actAs } : {}),
     }, key);
     await reloadPreferences(key);
     await saveBunkerSecret(clientSecret, key);
@@ -6898,7 +6917,7 @@ export function App() {
     // Clear preferences
     const prefs = await getPreferences();
     // The style on file belonged to the pairing we are leaving.
-    await savePreferences({ ...prefs, signingMode: 'local', bunkerUri: undefined, heartwoodOwnerStyle: undefined });
+    await savePreferences({ ...prefs, signingMode: 'local', bunkerUri: undefined, heartwoodOwnerStyle: undefined, heartwoodOwnerActAs: undefined });
 
     // Delete bunker secret
     await deleteBunkerSecret();
@@ -10377,7 +10396,7 @@ export function App() {
   // A8: this phone had full access and the Heartwood no longer shows it (the
   // pairing was edited, restored or had its approvals forgotten), or a private
   // backup request was refused. One quiet line; the button opens the choice
-  // screen in Settings, where the owner checks the three words first.
+  // screen in Settings, where the owner checks the five words first.
   const ownerAgainBanner = (!isPairedChild && ownerAgainOffer) ? (
     <div className="vault-approval-banner">
       <span className="vault-approval-banner-text">{ownerLost ? 'This phone no longer has full access on your Heartwood.' : PRIVATE_VAULT_NEEDS_APPROVAL_COPY}</span>
@@ -11905,7 +11924,7 @@ export function App() {
     return renderSettingsPage('activate-real-identity', 'Your real identity', (
       <ActivateRealIdentity
         target={{ kind: 'owner' }}
-        heartwoodFirstUse={heartwoodOwner.supported}
+        heartwoodFirstUse={realNameCardExpected}
         backupStep={words.length === 0 ? 'none' : backupStep}
         recoveryWords={words}
         onActivate={activateNaturalPerson}
@@ -12847,7 +12866,7 @@ export function App() {
       onApprove: handleApproveAuthGuarded,
       onDeny: handleDenyAuth,
       initialError: pickerInitialError ?? undefined,
-      realNameNeedsHeartwood: heartwoodOwner.supported,
+      realNameNeedsHeartwood: realNameCardExpected,
       isPairedChild,
       childDirect,
       // A paired-child install cannot activate the owner's real identity.

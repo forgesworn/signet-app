@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { FullAccessChoice } from './FullAccessChoice';
 import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, classifyBundleError, separatelyHint, type BundleRunResult } from '../lib/heartwood-one-hold';
 
-const WORDS: [string, string, string] = ['nice', 'never', 'repair'];
+const WORDS = ['nice', 'never', 'repair', 'area', 'upgrade'];
 const NP = 'a'.repeat(64);
 const PERSONA = 'b'.repeat(64);
 const OK: BundleRunResult = { ok: true, reply: { naturalPerson: NP, persona: PERSONA, actAs: ['persona'], style: 'everyday' } };
@@ -24,7 +24,7 @@ function setup(over: Partial<React.ComponentProps<typeof FullAccessChoice>> = {}
 }
 
 describe('FullAccessChoice', () => {
-  it('shows the heading, the covers line, the warning and the card with the three words', () => {
+  it('shows the heading, the covers line, the warning and the card with the five words', () => {
     setup();
     expect(screen.getByRole('heading', { name: FULL_ACCESS_COPY.heading })).toBeTruthy();
     expect(screen.getByText(FULL_ACCESS_COPY.covers)).toBeTruthy();
@@ -32,7 +32,8 @@ describe('FullAccessChoice', () => {
     const card = screen.getByTestId('full-access-card');
     expect(card.textContent).toContain('FULL ACCESS');
     expect(card.textContent).toContain('nice never');
-    expect(card.textContent).toContain('repair');
+    expect(card.textContent).toContain('repair area');
+    expect(card.textContent).toContain('upgrade');
     expect(card.textContent).toContain('PERSONA ONLY');
     expect(card.textContent).toContain('SIGN IN, POST, BACKUP');
     expect(card.textContent).toContain('HOLD 5 SECONDS');
@@ -54,7 +55,7 @@ describe('FullAccessChoice', () => {
     const p = setup();
     fireEvent.click(screen.getByLabelText(/Extra careful/));
     const card = screen.getByTestId('full-access-card');
-    expect(card.textContent).toContain('SIGNS ALONE: BACKUPS');
+    expect(card.textContent).toContain('SIGNS ALONE: BACKUPS, APP DATA');
     expect(card.textContent).toContain('ASKS: EVERYTHING ELSE');
     expect(card.textContent).not.toContain('SIGN IN, POST, BACKUP');
     fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
@@ -168,16 +169,75 @@ describe('FullAccessChoice', () => {
     expect(screen.queryByText(FULL_ACCESS_COPY.realNameForLegacyBackups)).toBeNull();
   });
 
-  it('firmware: the words show only while the button is held, so the card drawing is the at-rest card with the words under "while you hold:"', () => {
+  it('W2: the five words are drawn in the Heartwood\'s pages, at rest, two at a time, not "while you hold"', () => {
     setup();
-    expect(FULL_ACCESS_COPY.expect).toBe(
-      'Your Heartwood will show FULL ACCESS and these three words. Start holding its button: the words appear on the Heartwood while you hold. If they match, keep holding for 5 seconds. If they don\'t, let go.',
-    );
     expect(screen.getByText(FULL_ACCESS_COPY.expect)).toBeTruthy();
+    expect(FULL_ACCESS_COPY.expect).toContain('five words, two at a time');
+    const pages = screen.getAllByTestId('full-access-word-page').map(el => el.textContent);
+    expect(pages).toEqual(['1-2 of 5nice never', '3-4 of 5repair area', '5 of 5upgrade']);
     const text = screen.getByTestId('full-access-card').textContent ?? '';
-    expect(text.indexOf('HOLD 5 SECONDS')).toBeGreaterThan(-1);
-    expect(text.indexOf('while you hold:')).toBeGreaterThan(text.indexOf('HOLD 5 SECONDS'));
-    expect(text.indexOf('nice never')).toBeGreaterThan(text.indexOf('while you hold:'));
+    expect(text).not.toContain('while you hold');
+    // The words come after the card's own lines, like the Heartwood's order.
     expect(text.indexOf('PERSONA ONLY')).toBeLessThan(text.indexOf('nice never'));
+    expect(text.indexOf('HOLD 5 SECONDS')).toBeLessThan(text.indexOf('nice never'));
+    expect(screen.getByTestId('full-access-card').getAttribute('aria-label')).toContain('1-2 of 5: nice never; 3-4 of 5: repair area; 5 of 5: upgrade');
+  });
+
+  it('W2: the running line is the same instruction, with no "words appear while you hold"', async () => {
+    let release!: (r: BundleRunResult) => void;
+    setup({ onRun: vi.fn(() => new Promise<BundleRunResult>(r => { release = r; })) });
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    const running = await screen.findByText(FULL_ACCESS_COPY.holding);
+    expect(running.textContent).toContain('five words, two at a time');
+    expect(running.textContent).not.toMatch(/while you hold|appear/);
+    release(OK);
+  });
+
+  it('fits at phone width: no drawn line is longer than 32 characters, even for the longest words, and the drawing wraps', () => {
+    const longest = ['abstract', 'accident', 'activity', 'actually', 'aluminum'];
+    setup({ words: longest, includeRealName: true, label: 'a'.repeat(30), initialStyle: 'careful' });
+    const card = screen.getByTestId('full-access-card');
+    const lines = Array.from(card.querySelectorAll('div')).filter(d => d.children.length === 0).map(d => d.textContent ?? '');
+    expect(lines.length).toBeGreaterThan(5);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(32);
+    for (const page of screen.getAllByTestId('full-access-word-page')) {
+      expect((page.textContent ?? '').length).toBeLessThanOrEqual(8 + 17);
+    }
+    expect(card.style.overflowWrap).toBe('anywhere');
+  });
+
+  it('W3: the two one-card-at-a-time refusals offer Try again with the wait-a-minute line', async () => {
+    for (const text of ['unauthorised: another full access request arrived', 'unauthorised: full access card shown recently']) {
+      const failure = classifyBundleError(text);
+      const { unmount } = render(
+        <FullAccessChoice words={WORDS} includeRealName={false} onRun={vi.fn().mockResolvedValue({ ok: false, failure })} onApproved={vi.fn()} onSeparately={vi.fn()} />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/try again in a minute/i);
+      expect(screen.getByRole('button', { name: FULL_ACCESS_COPY.tryAgain })).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('note 3: a failed save shows the plain line and Try again', async () => {
+    const failure = classifyBundleError('could not persist client policy; request was not applied');
+    setup({ onRun: vi.fn().mockResolvedValue({ ok: false, failure }) });
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Your Heartwood couldn\'t save that. Nothing changed.');
+    expect(screen.getByRole('button', { name: FULL_ACCESS_COPY.tryAgain })).toBeTruthy();
+  });
+
+  it('the declined line tells the owner to wait a minute', async () => {
+    const failure = classifyBundleError('user denied');
+    setup({ onRun: vi.fn().mockResolvedValue({ ok: false, failure }) });
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    expect((await screen.findByRole('alert')).textContent).toContain('You can try again in a minute.');
+  });
+
+  it('W9: Extra careful\'s body is the honest one', () => {
+    setup();
+    expect(screen.getByText(FULL_ACCESS_COPY.careful.body)).toBeTruthy();
+    expect(FULL_ACCESS_COPY.careful.body).toContain('Backups, app data and relay logins');
   });
 });

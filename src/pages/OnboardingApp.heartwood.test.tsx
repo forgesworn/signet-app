@@ -40,7 +40,7 @@ describe('OnboardingApp Heartwood connect', () => {
     });
     let decision: FullAccessDecision | undefined;
     const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
-      const offer: FullAccessOffer = { words: ['nice', 'never', 'repair'], run };
+      const offer: FullAccessOffer = { words: ['nice', 'never', 'repair', 'area', 'upgrade'], run };
       decision = await ui!.chooseFullAccess(offer);
     });
     openNameStep(onConnectHeartwood);
@@ -53,10 +53,28 @@ describe('OnboardingApp Heartwood connect', () => {
     expect(run).toHaveBeenCalledWith('everyday');
   });
 
+  it('note 2: the decision carries the style the device answered with, not the one tapped', async () => {
+    // The device answered careful although Everyday was tapped.
+    const run = vi.fn().mockResolvedValue({
+      ok: true,
+      reply: { naturalPerson: 'a'.repeat(64), persona: 'b'.repeat(64), actAs: ['persona'], style: 'careful' },
+    });
+    let decision: FullAccessDecision | undefined;
+    const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
+      decision = await ui!.chooseFullAccess({ words: ['nice', 'never', 'repair', 'area', 'upgrade'], run });
+    });
+    openNameStep(onConnectHeartwood);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    fireEvent.click(await screen.findByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    await waitFor(() => expect(decision?.mode).toBe('bundle'));
+    expect(run).toHaveBeenCalledWith('everyday');
+    expect(decision).toMatchObject({ mode: 'bundle', style: 'careful', reply: { style: 'careful' } });
+  });
+
   it('"Approve each thing separately" resolves to today\'s flow and shows the connecting screen again', async () => {
     let decision: FullAccessDecision | undefined;
     const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
-      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c'], run: vi.fn() });
+      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c', 'd', 'e'], run: vi.fn() });
       await new Promise(() => {}); // stay "connecting"
     });
     openNameStep(onConnectHeartwood);
@@ -77,7 +95,7 @@ describe('OnboardingApp Heartwood connect', () => {
   it('m9: leaving the choice screen by unmounting answers cancel, so the connect does not hang', async () => {
     let decision: FullAccessDecision | undefined;
     const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
-      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c'], run: vi.fn() });
+      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c', 'd', 'e'], run: vi.fn() });
     });
     openNameStep(onConnectHeartwood);
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
@@ -90,7 +108,7 @@ describe('OnboardingApp Heartwood connect', () => {
   it('m9: Back on the choice screen still answers cancel', async () => {
     let decision: FullAccessDecision | undefined;
     const onConnectHeartwood = vi.fn(async (_u: string, _n: string, ui?: HeartwoodConnectUi) => {
-      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c'], run: vi.fn() });
+      decision = await ui!.chooseFullAccess({ words: ['a', 'b', 'c', 'd', 'e'], run: vi.fn() });
     });
     openNameStep(onConnectHeartwood);
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));

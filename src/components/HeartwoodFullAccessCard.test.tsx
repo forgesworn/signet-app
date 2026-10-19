@@ -98,4 +98,26 @@ describe('HeartwoodFullAccessCard', () => {
     setup({ status: null, checking: true });
     expect(screen.getByText('Full access: checking…')).toBeTruthy();
   });
+
+  it('review 1: a turn-off the device did not confirm shows a plain error and the line stays "on"', async () => {
+    const p = setup({ hasOperatorKey: true, turnOff: vi.fn().mockResolvedValue({ ok: false, message: FULL_ACCESS_COPY.turnOffUnconfirmed, status: { owner: true, style: 'everyday' } }) });
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off full access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, turn it off' }));
+    expect(await screen.findByText(FULL_ACCESS_COPY.turnOffUnconfirmed)).toBeTruthy();
+    expect(p.turnOff).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Full access: on for this phone')).toBeTruthy();
+    expect(screen.queryByText(/Full access is off for this phone/)).toBeNull();
+  });
+
+  it('W4: a custom style is shown in plain words and can be chosen again through the hold', () => {
+    const p = setup({ status: { owner: true, style: 'custom' } });
+    expect(screen.getByText('Full access: on for this phone')).toBeTruthy();
+    expect(screen.getByText(/Custom\./)).toBeTruthy();
+    expect(screen.getByText(new RegExp(FULL_ACCESS_COPY.customStyleBody.slice(0, 30)))).toBeTruthy();
+    // It is not Everyday or Extra careful, so neither switch is offered; re-choosing is.
+    expect(screen.queryByRole('button', { name: 'Switch to Extra careful' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Switch back to Everyday' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.chooseStyleAgain }));
+    expect(p.onOpenChoice).toHaveBeenCalledWith('restyle');
+  });
 });

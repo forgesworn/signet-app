@@ -23,8 +23,8 @@ import type { HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { listClients, clearClientIdentities } from '../lib/heartwood-mgmt';
 import { withOperatorLock } from '../lib/operator-lock';
 import {
-  CAP_OWNER_NARROW, fetchOwnerStatus, narrowToCareful, pairWordsForClient, runApproveBundle, supportsApproveBundle,
-  type BundleRunResult, type NarrowResult, type OwnerStatus, type OwnerStyle,
+  CAP_OWNER_NARROW, FULL_ACCESS_COPY, fetchOwnerStatus, narrowToCareful, pairWordsForClient, runApproveBundle, supportsApproveBundle,
+  type BundleRunResult, type NarrowResult, type OwnerStatus, type OwnerStyle, type PairWords, type StatusStyle,
 } from '../lib/heartwood-one-hold';
 import { ownSlotInfo, turnOffFullAccess, type TurnOffResult } from '../lib/heartwood-owner-ops';
 
@@ -43,8 +43,12 @@ export interface UseHeartwoodOwnerArgs {
   /** `act_as` includes the real identity (it is in use, or legacy rails still sign as it). */
   includeRealName: boolean;
   /** The style on file (`AppPreferences.heartwoodOwnerStyle`); undefined = never ran the hold here. */
-  storedStyle: OwnerStyle | undefined;
-  onStyleChange: (style: OwnerStyle | undefined) => void | Promise<void>;
+  storedStyle: StatusStyle | undefined;
+  /**
+   * Keep the style (and, when given, the `act_as` the device echoed) on file;
+   * `undefined` clears both. An omitted `actAs` leaves the one on file alone.
+   */
+  onStyleChange: (style: StatusStyle | undefined, actAs?: readonly string[]) => void | Promise<void>;
 }
 
 export interface UseHeartwoodOwnerReturn {
@@ -71,7 +75,7 @@ export interface UseHeartwoodOwnerReturn {
   hasOperatorKey: boolean;
   /** A bundle is in flight (the vault poller must not queue cards beside it). */
   busy: boolean;
-  words: [string, string, string] | null;
+  words: PairWords | null;
   includeRealName: boolean;
   /** Everyday -> Extra careful is one tap and needs the narrow method. */
   canNarrow: boolean;
@@ -106,7 +110,7 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
   const awaitingFirstStatus = supported && !(settled !== null && settled.router === router);
 
   const clientPubkey = bunker?.transportClientPubkeyHex ?? '';
-  const words = useMemo<[string, string, string] | null>(() => {
+  const words = useMemo<PairWords | null>(() => {
     if (!supported || !clientPubkey) return null;
     try { return pairWordsForClient(clientPubkey); } catch { return null; }
   }, [supported, clientPubkey]);
@@ -173,7 +177,8 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
       });
       if (out.ok) {
         setStatus({ owner: true, style: out.reply.style });
-        await onStyleChange(out.reply.style);
+        // The device's own echo of what it granted, not what was asked.
+        await onStyleChange(out.reply.style, out.reply.actAs);
       } else if (out.failure.code === 'no-answer' || out.failure.code === 'bad-reply') {
         // The press may have landed after we stopped listening (m3): ask the
         // device again rather than leave the status line saying "off".
@@ -191,6 +196,10 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
     if (out.ok) {
       setStatus({ owner: true, style: 'careful' });
       await onStyleChange('careful');
+    } else if (out.style === 'custom') {
+      // W4: the slot's list is custom; nothing changed. Show it as it is.
+      setStatus({ owner: true, style: 'custom' });
+      await onStyleChange('custom');
     }
     return out;
   }, [request, onStyleChange]);
@@ -202,22 +211,29 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
       // "approve again" offer would return on every start (M2). If they do not
       // follow through, the next status check puts the style back.
       await onStyleChange(undefined);
-      return { ok: false, message: 'Choose Forget approvals for this phone in Sapwood.' };
+      return { ok: false, message: FULL_ACCESS_COPY.sapwoodForget };
     }
     const out = await withOperatorLock(operatorClient, () => turnOffFullAccess(
       {
         listClients: () => listClients(operatorClient),
-        clearClientIdentities: (slot) => clearClientIdentities(operatorClient, slot),
+        clearClientIdentities: (slot, client) => clearClientIdentities(operatorClient, slot, client),
+        // "Off" is believed only from the device itself, over the phone's own pairing.
+        readOwnerStatus: () => fetchOwnerStatus(request),
       },
       clientPubkey,
     ));
     if (out.ok) {
-      // A deliberate turn-off: this is no longer "lost", so the offer goes back to the first-time wording.
+      // The re-read said `owner:false`. A deliberate turn-off: this is no
+      // longer "lost", so the offer goes back to the first-time wording.
+      setStatus({ owner: false, style: 'everyday' });
       await onStyleChange(undefined);
       setRefreshTick((t) => t + 1);
+    } else if (out.status) {
+      // The device still says owner: keep the line on what it said.
+      setStatus(out.status);
     }
     return out;
-  }, [operatorClient, clientPubkey, onStyleChange]);
+  }, [operatorClient, clientPubkey, onStyleChange, request]);
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
