@@ -263,14 +263,61 @@ export async function fetchEvents(
   filters: NostrFilter[],
   opts?: { timeoutMs?: number; relays?: string[] },
 ): Promise<NostrEvent[]> {
-  return (await fetchEventsWithReach(filters, opts)).events;
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const targetUrls = opts?.relays && opts.relays.length > 0
+    ? opts.relays.filter(u => isValidRelayUrl(u))
+    : configs.filter(r => r.enabled && r.read).map(r => r.url);
+  if (targetUrls.length === 0) return [];
+  const settled = await Promise.allSettled(targetUrls.map(async url => {
+    const c = clientFor(url);
+    await ensureConnected(c, timeoutMs);
+    return withTimeout(c.fetch(filters, timeoutMs), timeoutMs, 'fetch timeout');
+  }));
+  const byId = new Map<string, NostrEvent>();
+  for (const s of settled) {
+    if (s.status === 'fulfilled') {
+      for (const ev of s.value as NostrEvent[]) {
+        if (ev && typeof ev.id === 'string' && !byId.has(ev.id)) byId.set(ev.id, ev);
+      }
+    }
+  }
+  return [...byId.values()];
+}
+
+/** One relay's answer: its events and whether it said EOSE (end of stored
+ *  events) before the timeout. Without EOSE the relay did not really answer
+ *  (timed out, or refused the request); `RelayClient.fetch` resolves the same
+ *  way in both cases, so this subscribes directly. */
+function fetchUntilEose(
+  c: RelayClient, filters: NostrFilter[], timeoutMs: number,
+): Promise<{ events: NostrEvent[]; eose: boolean }> {
+  return new Promise(resolve => {
+    const events: NostrEvent[] = [];
+    let finished = false;
+    let subId = '';
+    const finish = (eose: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try { c.closeSubscription(subId); } catch { /* socket already gone */ }
+      resolve({ events, eose });
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    try {
+      subId = c.subscribe(filters, ev => { events.push(ev); }, () => finish(true));
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 /** `fetchEvents`, plus how many relays were asked and how many answered.
- *  `fetchEvents` hides a total outage behind an empty list; a caller that
- *  must tell "nothing there" from "couldn't reach anyone" reads `reached`
- *  (0 of a non-zero `attempted` is an outage). Same relay selection, merge
- *  and dedupe as `fetchEvents`.
+ *  A relay is "reached" only if it sent EOSE within the timeout; a failed
+ *  connect, a timeout or a refused request is unreached. `fetchEvents` hides
+ *  a total outage behind an empty list; a caller that must tell "nothing
+ *  there" from "couldn't reach anyone" reads `reached` (0 of a non-zero
+ *  `attempted` is an outage). Same relay selection, merge and dedupe as
+ *  `fetchEvents`.
  */
 export async function fetchEventsWithReach(
   filters: NostrFilter[],
@@ -281,22 +328,21 @@ export async function fetchEventsWithReach(
     ? opts.relays.filter(u => isValidRelayUrl(u))
     : configs.filter(r => r.enabled && r.read).map(r => r.url);
   if (targetUrls.length === 0) return { events: [], attempted: 0, reached: 0 };
-  const settled = await Promise.allSettled(targetUrls.map(async url => {
+  const settled = await Promise.allSettled([...new Set(targetUrls)].map(async url => {
     const c = clientFor(url);
     await ensureConnected(c, timeoutMs);
-    return withTimeout(c.fetch(filters, timeoutMs), timeoutMs, 'fetch timeout');
+    return fetchUntilEose(c, filters, timeoutMs);
   }));
   const byId = new Map<string, NostrEvent>();
   let reached = 0;
   for (const s of settled) {
-    if (s.status === 'fulfilled') {
-      reached++;
-      for (const ev of s.value as NostrEvent[]) {
-        if (ev && typeof ev.id === 'string' && !byId.has(ev.id)) byId.set(ev.id, ev);
-      }
+    if (s.status !== 'fulfilled') continue;
+    for (const ev of s.value.events) {
+      if (ev && typeof ev.id === 'string' && !byId.has(ev.id)) byId.set(ev.id, ev);
     }
+    if (s.value.eose) reached++;
   }
-  return { events: [...byId.values()], attempted: targetUrls.length, reached };
+  return { events: [...byId.values()], attempted: settled.length, reached };
 }
 
 /** Open a live subscription on every relay in `relays` (an empty list falls

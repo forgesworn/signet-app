@@ -24,3 +24,6 @@ export const KEEP_RELAYS: readonly string[] = ['wss://relay.damus.io', 'wss://no
 
 /** A status newer than this (seconds) counts as online; Bothy republishes every 300 s. */
 export const KEEP_ONLINE_WINDOW_S = 600;
+
+/** A status dated further than this (seconds) into the future is not believed. */
+export const KEEP_FUTURE_SKEW_S = 300;

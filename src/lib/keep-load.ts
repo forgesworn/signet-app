@@ -14,20 +14,22 @@ export type KeepLoadResult =
  * "no Keep yet".
  */
 export async function loadMyKeeps(owned: readonly string[]): Promise<KeepLoadResult> {
+  const nowS = () => Math.floor(Date.now() / 1000);
   const authors = [...new Set(owned.map(k => k.toLowerCase()).filter(k => /^[0-9a-f]{64}$/.test(k)))];
-  if (authors.length === 0) return { ok: true, keeps: [], now: Math.floor(Date.now() / 1000) };
+  if (authors.length === 0) return { ok: true, keeps: [], now: nowS() };
   const claimsRes = await fetchEventsWithReach(
     [{ kinds: [KEEP_CLAIM_KIND], authors, limit: 200 } as NostrFilter],
     { relays: [...KEEP_RELAYS] },
   );
   if (claimsRes.reached === 0) return { ok: false };
   const claims = pickActiveClaims(claimsRes.events, authors);
-  if (claims.length === 0) return { ok: true, keeps: [], now: Math.floor(Date.now() / 1000) };
+  if (claims.length === 0) return { ok: true, keeps: [], now: nowS() };
   const statusRes = await fetchEventsWithReach(
     claims.map(c => ({ kinds: [KEEP_STATUS_KIND], authors: [c.node], limit: 5 } as NostrFilter)),
     { relays: [...KEEP_RELAYS] },
   );
   if (statusRes.reached === 0) return { ok: false };
-  const keeps = claims.map(claim => ({ claim, status: pickStatus(statusRes.events, claim) }));
-  return { ok: true, keeps, now: Math.floor(Date.now() / 1000) };
+  const now = nowS();
+  const keeps = claims.map(claim => ({ claim, status: pickStatus(statusRes.events, claim, now) }));
+  return { ok: true, keeps, now };
 }

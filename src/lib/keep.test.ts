@@ -8,6 +8,7 @@ import { claimEvent, newKey, statusEvent } from './keep-fixtures';
 const me = newKey();
 const persona = newKey();
 const node = newKey();
+const NOW = 10_000;
 
 describe('pickActiveClaims', () => {
   it('accepts a valid claim from the master key or a persona', () => {
@@ -42,6 +43,34 @@ describe('pickActiveClaims', () => {
     expect(claims[0].name).toBe('New name');
   });
 
+  it('breaks a timestamp tie by the lowest event id', () => {
+    const x = claimEvent(me, node.pk, { createdAt: 500, name: 'X name' });
+    const y = claimEvent(me, node.pk, { createdAt: 500, name: 'Y name' });
+    const lowest = x.id < y.id ? 'X name' : 'Y name';
+    expect(pickActiveClaims([x, y], [me.pk])[0].name).toBe(lowest);
+    expect(pickActiveClaims([y, x], [me.pk])[0].name).toBe(lowest);
+  });
+
+  it('resolves one node claimed from two of your own keys by the newest claim', () => {
+    const fromMe = claimEvent(me, node.pk, { createdAt: 100, name: 'From master' });
+    const fromPersona = claimEvent(persona, node.pk, { createdAt: 200, name: 'From persona' });
+    const both = pickActiveClaims([fromMe, fromPersona], [me.pk, persona.pk]);
+    expect(both).toHaveLength(1);
+    expect(both[0]).toMatchObject({ name: 'From persona', author: persona.pk });
+    const retiredLater = claimEvent(persona, node.pk, { createdAt: 300, status: 'retired' });
+    expect(pickActiveClaims([fromMe, fromPersona, retiredLater], [me.pk, persona.pk])).toEqual([]);
+  });
+
+  it('cleans and caps the public name and region (control characters, 32 and 64 bytes)', () => {
+    const dirty = claimEvent(me, node.pk, { name: 'Ki\u202Etchen\u0007 box' });
+    expect(pickActiveClaims([dirty], [me.pk])[0].name).toBe('Kitchen box');
+    const long = claimEvent(me, node.pk, { name: 'é'.repeat(20), region: 'r'.repeat(80) });
+    const c = pickActiveClaims([long], [me.pk])[0];
+    expect(new TextEncoder().encode(c.name!).length).toBeLessThanOrEqual(32);
+    expect(c.name).toBe('é'.repeat(16));
+    expect(c.region).toBe('r'.repeat(64));
+  });
+
   it('hides a retired claim, including when it is newer than an active one', () => {
     const active = claimEvent(me, node.pk, { createdAt: 100 });
     const retired = claimEvent(me, node.pk, { createdAt: 200, status: 'retired' });
@@ -64,27 +93,41 @@ describe('pickStatus', () => {
   it('takes the newest valid status and reads free space and software', () => {
     const older = statusEvent(node, claim.eventId, { createdAt: 100, free: 1 << 30 });
     const newest = statusEvent(node, claim.eventId, { createdAt: 500, free: 5 * 2 ** 30, software: 'bothy-node/0.1.0' });
-    expect(pickStatus([older, newest], claim)).toEqual({ createdAt: 500, freeBytes: 5 * 2 ** 30, software: 'bothy-node/0.1.0' });
+    expect(pickStatus([older, newest], claim, NOW)).toEqual({ createdAt: 500, freeBytes: 5 * 2 ** 30, software: 'bothy-node/0.1.0' });
   });
 
   it('ignores a status whose claim tag names a different claim', () => {
-    expect(pickStatus([statusEvent(node, 'ab'.repeat(32))], claim)).toBeNull();
+    expect(pickStatus([statusEvent(node, 'ab'.repeat(32))], claim, NOW)).toBeNull();
   });
 
   it('ignores a status from the wrong author', () => {
     const impostor = newKey();
-    expect(pickStatus([statusEvent(impostor, claim.eventId)], claim)).toBeNull();
+    expect(pickStatus([statusEvent(impostor, claim.eventId)], claim, NOW)).toBeNull();
   });
 
   it('ignores a forged status and falls back to an older valid one', () => {
     const valid = statusEvent(node, claim.eventId, { createdAt: 100 });
     const good = statusEvent(node, claim.eventId, { createdAt: 900 });
     const forged = { ...good, sig: good.sig.slice(0, -2) + (good.sig.endsWith('00') ? '11' : '00') } as NostrEvent;
-    expect(pickStatus([forged, valid], claim)?.createdAt).toBe(100);
+    expect(pickStatus([forged, valid], claim, NOW)?.createdAt).toBe(100);
+  });
+
+  it('ignores a status dated more than five minutes in the future, accepts one within skew', () => {
+    const skewed = statusEvent(node, claim.eventId, { createdAt: NOW + 301 });
+    const ok = statusEvent(node, claim.eventId, { createdAt: NOW + 300 });
+    const older = statusEvent(node, claim.eventId, { createdAt: NOW - 50 });
+    expect(pickStatus([skewed], claim, NOW)).toBeNull();
+    expect(pickStatus([skewed, older], claim, NOW)?.createdAt).toBe(NOW - 50);
+    expect(pickStatus([ok], claim, NOW)?.createdAt).toBe(NOW + 300);
+  });
+
+  it('cleans the software string', () => {
+    const e = statusEvent(node, claim.eventId, { createdAt: 100, software: 'bothy\u202E-node/0.1.0' });
+    expect(pickStatus([e], claim, NOW)?.software).toBe('bothy-node/0.1.0');
   });
 
   it('returns null when there is no status', () => {
-    expect(pickStatus([], claim)).toBeNull();
+    expect(pickStatus([], claim, NOW)).toBeNull();
   });
 });
 

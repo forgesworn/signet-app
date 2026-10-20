@@ -10,7 +10,8 @@
  */
 import { verifyEvent } from 'nostr-tools/pure';
 import type { NostrEvent } from 'signet-protocol';
-import { KEEP_CLAIM_KIND, KEEP_ONLINE_WINDOW_S, KEEP_STATUS_KIND } from './keep-wire';
+import { sanitizeDisplayName } from './text-sanitize';
+import { KEEP_CLAIM_KIND, KEEP_FUTURE_SKEW_S, KEEP_ONLINE_WINDOW_S, KEEP_STATUS_KIND } from './keep-wire';
 
 export type KeepRole = 'box' | 'phone';
 
@@ -42,6 +43,23 @@ export interface Keep {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+const NAME_MAX_BYTES = 32;
+const REGION_MAX_BYTES = 64;
+const SOFTWARE_MAX_BYTES = 64;
+
+/** Strip control/bidi characters, then cut to at most `maxBytes` UTF-8 bytes (whole characters only). */
+function cleanText(raw: string | undefined, maxBytes: number): string | undefined {
+  if (raw === undefined) return undefined;
+  let out = '';
+  let bytes = 0;
+  for (const ch of sanitizeDisplayName(raw, maxBytes)) {
+    const n = new TextEncoder().encode(ch).length;
+    if (bytes + n > maxBytes) break;
+    out += ch;
+    bytes += n;
+  }
+  return out || undefined;
+}
 
 function tagValues(event: NostrEvent, name: string): string[][] {
   return event.tags.filter(t => Array.isArray(t) && t[0] === name);
@@ -85,11 +103,11 @@ function parseClaim(event: NostrEvent): (KeepClaim & { active: boolean }) | null
   if (role !== 'box' && role !== 'phone') return null;
   const status = singleValue(event, 'status');
   if (status !== 'active' && status !== 'retired') return null;
-  const name = singleValue(event, 'name');
-  const region = singleValue(event, 'region');
+  const name = cleanText(singleValue(event, 'name'), NAME_MAX_BYTES);
+  const region = cleanText(singleValue(event, 'region'), REGION_MAX_BYTES);
   return {
     node, eventId: event.id, author: event.pubkey, createdAt: event.created_at, role,
-    region: region || undefined, name: name || undefined, active: status === 'active',
+    region, name, active: status === 'active',
   };
 }
 
@@ -115,12 +133,17 @@ export function pickActiveClaims(events: NostrEvent[], owned: readonly string[])
     .sort((a, b) => b.createdAt - a.createdAt || (a.node < b.node ? -1 : 1));
 }
 
-/** The newest status for `claim` that verifies, is signed by the node, and names this claim. */
-export function pickStatus(events: NostrEvent[], claim: KeepClaim): KeepStatus | null {
+/**
+ * The newest status for `claim` that verifies, is signed by the node, and names
+ * this claim. A status dated more than five minutes after `nowSeconds` is
+ * dropped (Bothy V2 rule 10): otherwise a skewed clock would pin "Online".
+ */
+export function pickStatus(events: NostrEvent[], claim: KeepClaim, nowSeconds: number): KeepStatus | null {
   let best: NostrEvent | null = null;
   for (const event of events) {
     if (event.kind !== KEEP_STATUS_KIND) continue;
     if (event.pubkey !== claim.node) continue;
+    if (event.created_at > nowSeconds + KEEP_FUTURE_SKEW_S) continue;
     if (singleValue(event, 'claim') !== claim.eventId) continue;
     if (best && !newer(event, best)) continue;
     if (!validSignature(event)) continue;
@@ -129,11 +152,12 @@ export function pickStatus(events: NostrEvent[], claim: KeepClaim): KeepStatus |
   if (!best) return null;
   const free = singleValue(best, 'free');
   const software = tagValues(best, 'software');
-  const name = software.length === 1 ? software[0][1] : undefined;
+  const softwareName = software.length === 1 && typeof software[0][1] === 'string'
+    ? cleanText(software[0][1], SOFTWARE_MAX_BYTES) : undefined;
   return {
     createdAt: best.created_at,
     freeBytes: free !== undefined && /^\d{1,15}$/.test(free) ? Number(free) : undefined,
-    software: typeof name === 'string' && name.length > 0 && name.length <= 64 ? name : undefined,
+    software: softwareName,
   };
 }
 

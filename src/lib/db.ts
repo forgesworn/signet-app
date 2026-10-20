@@ -1,5 +1,6 @@
 import { ensureContactsDeviceId } from './contacts-v2-ids';
 import { clearQrCardPrefs } from './qr-card-prefs';
+import { clearKeepNicknames } from './keep-nicknames';
 // IndexedDB storage for MySignet family app
 
 import { openDB, unwrap, type IDBPDatabase } from 'idb';
@@ -2600,6 +2601,7 @@ export async function purgeAllUserData(): Promise<void> {
   forgetDerivedKeys();
   forgetSyncCacheKeys();
   clearQrCardPrefs();
+  clearKeepNicknames();
   const db = await getDB();
   await db.clear('identity');
   await db.clear('contacts');
