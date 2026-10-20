@@ -13,6 +13,7 @@ import {
   displayName, formatBytes, presenceLabel, presenceOf, roleLabel, type Keep,
 } from '../lib/keep';
 import { NICKNAME_MAX, loadNicknames, setNickname } from '../lib/keep-nicknames';
+import { KEEP_PREVIEW_BANNER, keepPreviewEnabled, keepPreviewKeeps } from '../lib/keep-preview';
 
 interface Props {
   /** Every public key a claim of this user's may be signed by (see `keepAuthorPubkeys`), hex. */
@@ -24,12 +25,23 @@ interface Props {
 
 type State = { phase: 'loading' } | { phase: 'error' } | { phase: 'ready'; keeps: Keep[]; now: number };
 
+/** Dev builds only: `?keep-preview` shows sample Keeps. Every use below is also behind `import.meta.env.DEV`, so a production build drops the preview code. */
+const previewOn = () => import.meta.env.DEV && keepPreviewEnabled(import.meta.env.DEV, window.location.search);
+
 const FOOTNOTE = 'Managing a Keep from here is coming later.';
 
 const INTRO = 'See the Keep you\u2019ve set up at home and whether it\u2019s online.';
 
 function Intro() {
   return <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>{INTRO}</p>;
+}
+
+function PreviewBanner() {
+  return (
+    <div className="card card-warning" role="note" data-testid="keep-preview-banner" style={{ fontSize: '0.85rem', marginBottom: 16 }}>
+      {KEEP_PREVIEW_BANNER}
+    </div>
+  );
 }
 
 function Footnote() {
@@ -101,12 +113,19 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
   const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames(scope));
   const [attempt, setAttempt] = useState(0);
   const ownedKey = ownedPubkeys.join(',');
+  const [preview] = useState(previewOn);
 
   // Settings keeps its window scroll when this page opens; start at the top.
   useEffect(() => { try { window.scrollTo?.(0, 0); } catch { /* no scrolling here */ } }, []);
 
   useEffect(() => {
     let cancelled = false;
+    if (import.meta.env.DEV && preview) {
+      // Sample data (dev only): no relay is read, the rows render as real ones do.
+      const now = Math.floor(Date.now() / 1000);
+      setState({ phase: 'ready', keeps: keepPreviewKeeps(ownedKey.split(',')[0] || '0'.repeat(64), now), now });
+      return;
+    }
     setState({ phase: 'loading' });
     loadMyKeeps(ownedKey ? ownedKey.split(',') : []).then(
       (r: KeepLoadResult) => {
@@ -116,7 +135,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
       () => { if (!cancelled) setState({ phase: 'error' }); },
     );
     return () => { cancelled = true; };
-  }, [ownedKey, attempt]);
+  }, [ownedKey, attempt, preview]);
 
   const retry = useCallback(() => setAttempt(n => n + 1), []);
 
@@ -161,6 +180,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
 
   return (
     <div className="fade-in" role="main">
+      {import.meta.env.DEV && preview && <PreviewBanner />}
       <Intro />
       <div className="card card-flush">
         {state.keeps.map((keep, i) => (

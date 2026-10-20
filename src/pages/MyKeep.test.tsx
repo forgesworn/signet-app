@@ -169,5 +169,39 @@ describe('MyKeep', () => {
     render(<MyKeep ownedPubkeys={[me.pk]} scope="id2" onBack={onBack} />);
     expect(await screen.findByTestId('keep-row')).toHaveTextContent('Kitchen box');
   });
+
+  describe('dev preview', () => {
+    afterEach(() => { window.history.replaceState({}, '', '/'); });
+
+    it('shows no banner and reads relays without the flag', async () => {
+      relayHolding([]);
+      render(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} />);
+      await screen.findByText('No Keep yet.');
+      expect(screen.queryByTestId('keep-preview-banner')).not.toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it('with ?keep-preview shows the banner and both sample Keeps, without any relay read', async () => {
+      window.history.replaceState({}, '', '/?keep-preview');
+      render(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} />);
+      const rows = await screen.findAllByTestId('keep-row');
+      expect(screen.getByTestId('keep-preview-banner')).toHaveTextContent('Preview \u2014 sample Keeps, not real ones.');
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toHaveTextContent('Online');
+      expect(rows[0]).toHaveTextContent('Home device · Scotland · 412 GB free · bothy-node 0.3.1');
+      expect(rows[1]).toHaveTextContent('Last seen 3 days ago');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('lets a nickname be set on a sample Keep', async () => {
+      window.history.replaceState({}, '', '/?keep-preview');
+      render(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} />);
+      const [first] = await screen.findAllByTestId('keep-row');
+      fireEvent.click(first.querySelector('button')!);
+      fireEvent.change(screen.getByLabelText('Nickname'), { target: { value: 'Study' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(screen.getAllByTestId('keep-row')[0]).toHaveTextContent('Study');
+    });
+  });
 });
 
