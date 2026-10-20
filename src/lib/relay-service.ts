@@ -263,25 +263,40 @@ export async function fetchEvents(
   filters: NostrFilter[],
   opts?: { timeoutMs?: number; relays?: string[] },
 ): Promise<NostrEvent[]> {
+  return (await fetchEventsWithReach(filters, opts)).events;
+}
+
+/** `fetchEvents`, plus how many relays were asked and how many answered.
+ *  `fetchEvents` hides a total outage behind an empty list; a caller that
+ *  must tell "nothing there" from "couldn't reach anyone" reads `reached`
+ *  (0 of a non-zero `attempted` is an outage). Same relay selection, merge
+ *  and dedupe as `fetchEvents`.
+ */
+export async function fetchEventsWithReach(
+  filters: NostrFilter[],
+  opts?: { timeoutMs?: number; relays?: string[] },
+): Promise<{ events: NostrEvent[]; attempted: number; reached: number }> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const targetUrls = opts?.relays && opts.relays.length > 0
     ? opts.relays.filter(u => isValidRelayUrl(u))
     : configs.filter(r => r.enabled && r.read).map(r => r.url);
-  if (targetUrls.length === 0) return [];
+  if (targetUrls.length === 0) return { events: [], attempted: 0, reached: 0 };
   const settled = await Promise.allSettled(targetUrls.map(async url => {
     const c = clientFor(url);
     await ensureConnected(c, timeoutMs);
     return withTimeout(c.fetch(filters, timeoutMs), timeoutMs, 'fetch timeout');
   }));
   const byId = new Map<string, NostrEvent>();
+  let reached = 0;
   for (const s of settled) {
     if (s.status === 'fulfilled') {
+      reached++;
       for (const ev of s.value as NostrEvent[]) {
         if (ev && typeof ev.id === 'string' && !byId.has(ev.id)) byId.set(ev.id, ev);
       }
     }
   }
-  return [...byId.values()];
+  return { events: [...byId.values()], attempted: targetUrls.length, reached };
 }
 
 /** Open a live subscription on every relay in `relays` (an empty list falls
