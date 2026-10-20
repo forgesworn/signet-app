@@ -80,16 +80,16 @@ function KeepRow({ keep, now, nickname, last, onNickname }: {
             autoFocus
             style={{ flex: 1, minWidth: 0 }}
           />
-          <button type="submit" className="btn btn-ghost" style={{ fontSize: '0.8rem', padding: '6px 12px' }}>Save</button>
-          <button type="button" className="btn btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: '0.8rem', padding: '6px 12px' }}>Cancel</button>
+          <button type="submit" className="btn btn-ghost" style={{ fontSize: '0.8rem', padding: '6px 12px', width: 'auto', flexShrink: 0 }}>Save</button>
+          <button type="button" className="btn btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: '0.8rem', padding: '6px 12px', width: 'auto', flexShrink: 0 }}>Cancel</button>
         </form>
       ) : (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2, minWidth: 0 }}>{displayName(claim, nickname)}</div>
+          <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2, minWidth: 0, flex: 1, overflowWrap: 'anywhere' }}>{displayName(claim, nickname)}</div>
           <button
             className="btn btn-ghost"
             onClick={() => { setDraft(nickname ?? ''); setEditing(true); }}
-            style={{ fontSize: '0.8rem', padding: '6px 12px', flexShrink: 0 }}
+            style={{ fontSize: '0.8rem', padding: '6px 12px', flexShrink: 0, width: 'auto' }}
           >
             Rename
           </button>
