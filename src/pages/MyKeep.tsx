@@ -15,16 +15,25 @@ import {
 import { NICKNAME_MAX, loadNicknames, setNickname } from '../lib/keep-nicknames';
 
 interface Props {
-  /** Every public key this user owns (master and personas), hex. */
+  /** Every public key a claim of this user's may be signed by (see `keepAuthorPubkeys`), hex. */
   ownedPubkeys: string[];
+  /** Identity id; nicknames are saved per identity. */
+  scope: string;
+  onBack: () => void;
 }
 
 type State = { phase: 'loading' } | { phase: 'error' } | { phase: 'ready'; keeps: Keep[]; now: number };
 
 const FOOTNOTE = 'Managing a Keep from here is coming later.';
 
+const INTRO = 'See the Keep you\u2019ve set up at home and whether it\u2019s online.';
+
+function Intro() {
+  return <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>{INTRO}</p>;
+}
+
 function Footnote() {
-  return <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 16 }}>{FOOTNOTE}</p>;
+  return <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 16, textAlign: 'center' }}>{FOOTNOTE}</p>;
 }
 
 function KeepRow({ keep, now, nickname, last, onNickname }: {
@@ -87,11 +96,14 @@ function KeepRow({ keep, now, nickname, last, onNickname }: {
   );
 }
 
-export function MyKeep({ ownedPubkeys }: Props) {
+export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
   const [state, setState] = useState<State>({ phase: 'loading' });
-  const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames());
+  const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames(scope));
   const [attempt, setAttempt] = useState(0);
   const ownedKey = ownedPubkeys.join(',');
+
+  // Settings keeps its window scroll when this page opens; start at the top.
+  useEffect(() => { try { window.scrollTo?.(0, 0); } catch { /* no scrolling here */ } }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,6 +123,7 @@ export function MyKeep({ ownedPubkeys }: Props) {
   if (state.phase === 'loading') {
     return (
       <div className="fade-in" role="main">
+        <Intro />
         <p role="status" style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', textAlign: 'center', padding: 24 }}>
           Looking for your Keep&hellip;
         </p>
@@ -121,6 +134,7 @@ export function MyKeep({ ownedPubkeys }: Props) {
   if (state.phase === 'error') {
     return (
       <div className="fade-in" role="main">
+        <Intro />
         <div className="empty-state">
           <p className="empty-state-text" role="alert">Couldn&apos;t reach the network. Try again.</p>
           <button className="btn btn-secondary" onClick={retry}>Try again</button>
@@ -138,14 +152,16 @@ export function MyKeep({ ownedPubkeys }: Props) {
           <p className="empty-state-text">
             A Keep is a small device at home that looks after your things. You can set one up with the Bothy app.
           </p>
+          <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
+          <Footnote />
         </div>
-        <Footnote />
       </div>
     );
   }
 
   return (
     <div className="fade-in" role="main">
+      <Intro />
       <div className="card card-flush">
         {state.keeps.map((keep, i) => (
           <KeepRow
@@ -154,11 +170,14 @@ export function MyKeep({ ownedPubkeys }: Props) {
             now={state.now}
             nickname={nicknames[keep.claim.node]}
             last={i === state.keeps.length - 1}
-            onNickname={(node, value) => setNicknames(setNickname(node, value))}
+            onNickname={(node, value) => setNicknames(setNickname(scope, node, value))}
           />
         ))}
       </div>
       <Footnote />
+      <div style={{ textAlign: 'center', marginTop: 8 }}>
+        <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
+      </div>
     </div>
   );
 }

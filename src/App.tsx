@@ -232,6 +232,7 @@ import { ApproveConnect } from './pages/ApproveConnect';
 import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
+import { keepAuthorPubkeys } from './lib/keep-owner';
 import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
 import type { AuthSelection } from './pages/ApproveAuth';
@@ -10735,7 +10736,16 @@ export function App() {
   }
 
   if (page === 'my-keep' && !isPairedChild) {
-    return renderSettingsPage('my-keep', 'My Keep', <MyKeep ownedPubkeys={ownerSlotPubkeys(identity)} />);
+    return renderSettingsPage('my-keep', 'My Keep', <MyKeep
+      scope={identity.id}
+      onBack={() => navigateBack()}
+      ownedPubkeys={keepAuthorPubkeys({
+        slotPubkeys: ownerSlotPubkeys(identity),
+        signingMode: preferences.signingMode,
+        bunkerUri: preferences.bunkerUri,
+        liveSignerPubkey: bunkerBackend?.activePublicKeyHex,
+      })}
+    />);
   }
 
   if (page === 'roster') {
