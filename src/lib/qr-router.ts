@@ -35,9 +35,13 @@ export { QR_MAX_PAYLOAD_SIZE };
  * relay for relay-mode delivery, primary first (up to three, from repeated
  * `relay=` params). Invariant: when `relay` is set, `relay === relays[0]`;
  * when it is not, `relays` is empty. signet-protocol stays single-relay.
+ *
+ * `name` is the app name a `?auth=1` URL asked for (`name=`), cleaned the way
+ * the URL handler cleans it, so a link scanned in-app keeps it too. Absent
+ * when the consumer named none, and on protocol (JSON/compact) QRs.
  */
-export type AuthRequest = ProtocolAuthRequest & { relays: string[] };
-export type LoginRequest = ProtocolLoginRequest & { relays: string[] };
+export type AuthRequest = ProtocolAuthRequest & { relays: string[]; name?: string };
+export type LoginRequest = ProtocolLoginRequest & { relays: string[]; name?: string };
 
 /** A protocol-parsed request (JSON/compact QR) carries at most its one relay. */
 function withSingleRelay<T extends ProtocolAuthRequest | ProtocolLoginRequest>(request: T): T & { relays: string[] } {

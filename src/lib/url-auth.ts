@@ -15,6 +15,7 @@ import type { ConsumerHint, KeypairToken } from '../types';
 import {
   parseUrlAuthParams as protocolParse,
   buildAuthCallbackUrl as protocolBuildCallback,
+  getUrlAuthSiteName,
 } from 'signet-protocol';
 import type { UnsignedEvent } from 'signet-protocol';
 import type { LoginRequest, AuthRequest } from './qr-router';
@@ -119,7 +120,21 @@ export function parseAuthRelays(search: string, primary: string | undefined): st
 export function parseUrlAuthRequest(search: string): LoginRequest | null {
   const request = protocolParse(search);
   if (!request) return null;
-  return { ...request, relays: parseAuthRelays(search, request.relay) };
+  // The requested app name rides on the request, because the in-app scanner
+  // routes a scanned link straight to approval and never reaches the URL
+  // handler that records the site name.
+  const name = getUrlAuthSiteName(search);
+  return { ...request, relays: parseAuthRelays(search, request.relay), ...(name ? { name } : {}) };
+}
+
+/**
+ * The app name a relay-mode sign-in binds into its `app` tag: the one the URL
+ * handler recorded, else the one the request carries (a link scanned in-app).
+ * A consumer that asked for a name rejects a response without it
+ * (signet-login: `app-mismatch`). Undefined when it named none.
+ */
+export function relaySignInAppName(urlAuthSiteName: string, request: { name?: string } | null | undefined): string | undefined {
+  return urlAuthSiteName || request?.name || undefined;
 }
 
 /** Consumer relays of a pending request, primary first ([] when not relay mode). */
