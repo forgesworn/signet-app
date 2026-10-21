@@ -3,6 +3,10 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.21.5
+- Remote signing works again: the signer moves from nos.lol, which stopped answering around 19 October, to relay.primal.net. Installs on the old default move automatically, and synced settings carry the new relay to your other devices
+- Apps and devices paired only over nos.lol need pairing again
+
 ## 0.21.4
 - Signing in to a site by scanning its QR code with My Signet's own scanner now works for sites that ask for their app name, instead of the site refusing it with an app mismatch
 

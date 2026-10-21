@@ -51,15 +51,15 @@ describe('getRelayUrl', () => {
 });
 
 describe('defaultRelays', () => {
-  it('returns five public relays with nos.lol primary and nostr.band read-only', async () => {
+  it('returns five public relays with relay.primal.net primary and nostr.band read-only', async () => {
     const rs = await freshRelayService();
     const d = rs.defaultRelays();
     expect(d).toHaveLength(5);
-    expect(d[0].url).toBe('wss://nos.lol');
+    expect(d[0].url).toBe('wss://relay.primal.net');
     expect(d[0]).toMatchObject({ enabled: true, read: true, write: true }); // primary
     const band = d.find(r => r.url === 'wss://relay.nostr.band');
     expect(band).toMatchObject({ enabled: true, read: true, write: false });
-    expect(d.filter(r => r.write).length).toBe(4); // nos.lol + damus + primal + ditto
+    expect(d.filter(r => r.write).length).toBe(4); // primal + oxtr + damus + ditto
   });
 });
 
@@ -97,7 +97,7 @@ describe('DEFAULT_RELAY_URL under Capacitor', () => {
     });
     try {
       const rs = await freshRelayService();
-      expect(rs.DEFAULT_RELAY_URL).toBe('wss://nos.lol');
+      expect(rs.DEFAULT_RELAY_URL).toBe('wss://relay.primal.net');
     } finally {
       vi.unstubAllGlobals();
     }
