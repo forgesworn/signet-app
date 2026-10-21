@@ -239,11 +239,14 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
         }}
         onApproved={() => setOwnerChoice(null)}
         onSeparately={() => {
-          // A8: leaving the re-approve prompt without holding (Not now, or Close after a
-          // problem) answers it, so the waiting backups are released.
+          // A8: an explicit "Not now" answers the re-approve prompt, so the waiting backups
+          // are released.
           if (again) onOwnerAgainDeclined?.();
           setOwnerChoice(null);
         }}
+        // "Close" after a pairing problem is not an answer: the prompt, the style on file
+        // and the backups' wait all stay until the owner holds again or says "Not now".
+        onClose={() => setOwnerChoice(null)}
         separatelyLabel="Not now"
         continueLabel="Close"
         silentMessage={OWNER_SILENT_MESSAGE}

@@ -258,6 +258,7 @@ import {
 } from './lib/heartwood-one-hold';
 import { useHeartwoodOwner } from './hooks/useHeartwoodOwner';
 import { useOwnerHoldCap } from './hooks/useOwnerHoldCap';
+import { useStickyOwnerStatus } from './hooks/useStickyOwnerStatus';
 import {
   resolveHeartwoodConnect, HeartwoodConnectCancelled, HeartwoodConnectFailed, type OwnerGrantOnFile,
 } from './lib/heartwood-connect';
@@ -4414,12 +4415,20 @@ export function App() {
   });
   // A8: the offer to approve this phone again, dismissable for the session.
   const [ownerAgainDismissed, setOwnerAgainDismissed] = useState(false);
+  // A lock ends the session's "Not now": a later unlock that finds the mark gone offers it again.
+  useEffect(() => { if (!encryptionKey) setOwnerAgainDismissed(false); }, [encryptionKey]);
   const [pendingOwnerChoice, setPendingOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   // A8: while a style is on file, backups wait for the router probe AND the
   // first owner-status answer. "Settled" is success or failure; the wait is
   // also capped (OWNER_HOLD_CAP_MS) so a Heartwood that never answers cannot
   // stop backups for the whole session.
   const ownerRouterSettled = bunkerRouter !== null || routerProbeState === 'unsupported';
+  // "The mark is gone" is sticky for the unlock: a failed later status read must not
+  // release the backups held for the owner's answer, nor hide the prompt offering it.
+  const ownerStatusSticky = useStickyOwnerStatus(
+    heartwoodOwner.status?.owner ?? null,
+    !!encryptionKey && preferences.signingMode === 'bunker' && !isPairedChild && heartwoodOwner.everHadFullAccess,
+  );
   const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldBackupsAll, holdUntilAnswered: ownerHoldUntilAnswered } = ownerOfferState({
     // Unlocked only: preferences load without the key, so a locked app would
     // otherwise count as "holding" and run the cap on the PIN screen.
@@ -4427,7 +4436,7 @@ export function App() {
     routerSettled: ownerRouterSettled,
     supported: heartwoodOwner.supported,
     everHadFullAccess: heartwoodOwner.everHadFullAccess,
-    statusOwner: heartwoodOwner.status?.owner ?? null,
+    statusOwner: ownerStatusSticky,
     awaitingFirstStatus: heartwoodOwner.awaitingFirstStatus,
     vaultNeedsApproval: privateVaultHealth.needsApproval === true,
     dismissed: ownerAgainDismissed,
@@ -11281,6 +11290,7 @@ export function App() {
           status: heartwoodOwner.status,
           checking: heartwoodOwner.checking,
           everHadFullAccess: heartwoodOwner.everHadFullAccess,
+          markLost: ownerLost,
           label: heartwoodOwner.label,
           hasOperatorKey: heartwoodOwner.hasOperatorKey,
           canNarrow: heartwoodOwner.canNarrow,

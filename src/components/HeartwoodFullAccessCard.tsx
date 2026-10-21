@@ -8,6 +8,11 @@ export interface HeartwoodFullAccessCardProps {
   status: OwnerStatus | null;
   checking: boolean;
   everHadFullAccess: boolean;
+  /**
+   * The mark was seen gone this unlock, though a later read failed (`status` is
+   * `null`): the approve-again button stays, beside "couldn't check just now".
+   */
+  markLost?: boolean;
   label: string | null;
   hasOperatorKey: boolean;
   canNarrow: boolean;
@@ -40,7 +45,7 @@ const small = { fontSize: '0.85rem', color: 'var(--text-secondary)', marginBotto
  * on older firmware nothing here exists.
  */
 export function HeartwoodFullAccessCard({
-  status, checking, everHadFullAccess, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice, offerIncludesRealName = false, outcome = null, outcomeIsProblem = false, onOutcomeClear,
+  status, checking, everHadFullAccess, markLost = false, label, hasOperatorKey, canNarrow, narrow, turnOff, onOpenChoice, offerIncludesRealName = false, outcome = null, outcomeIsProblem = false, onOutcomeClear,
 }: HeartwoodFullAccessCardProps) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -117,7 +122,7 @@ export function HeartwoodFullAccessCard({
         </>
       )}
 
-      {status && !status.owner && (
+      {((status && !status.owner) || (status === null && markLost && everHadFullAccess)) && (
         everHadFullAccess ? (
           <>
             <p style={small}>

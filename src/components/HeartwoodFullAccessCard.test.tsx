@@ -41,6 +41,18 @@ describe('HeartwoodFullAccessCard', () => {
     expect(screen.getByText(FULL_ACCESS_COPY.covers)).toBeTruthy();
   });
 
+  it('A1: after owner:false was seen, a failed read still offers "Approve this phone again" beside "couldn\'t check"', () => {
+    const props = setup({ status: null, markLost: true, everHadFullAccess: true });
+    expect(screen.getByText('Full access: couldn\'t check just now.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.approveAgain }));
+    expect(props.onOpenChoice).toHaveBeenCalledWith('again');
+  });
+
+  it('A1: an unknown status with nothing seen offers nothing', () => {
+    setup({ status: null, markLost: false, everHadFullAccess: true });
+    expect(screen.queryByRole('button', { name: FULL_ACCESS_COPY.approveAgain })).toBeNull();
+  });
+
   it('the on-state Everyday body does not mention the real name', () => {
     setup();
     expect(screen.queryByText(/real name/i)).toBeNull();

@@ -353,6 +353,8 @@ describe('useHeartwoodOwner', () => {
       await act(async () => { out = await result.current.run('everyday'); });
       expect(out).toMatchObject({ ok: false, failure: { code: 'card-recent', message: FULL_ACCESS_COPY.cardShownRecently } });
       expect(onStyleChange).not.toHaveBeenCalled();
+      // A7: the owner:true status that was read is shown, not thrown away.
+      expect(result.current.status).toEqual({ owner: true, style: 'careful' });
     });
 
     it('status says owner:false: the original line stands', async () => {

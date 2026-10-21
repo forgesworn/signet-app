@@ -203,6 +203,8 @@ export const FULL_ACCESS_COPY = {
   noAnswerSettings: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: the status here will update when your Heartwood answers. You can also try again in a minute.',
   // Onboarding has no Settings yet, so it cannot point there.
   noAnswerOnboarding: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on. You can try again in a minute.',
+  // Onboarding: a lost success reply, found out by re-reading the status. It has no Settings page to point to.
+  mayAlreadyOn: 'Your Heartwood may already have given this phone full access. You can try again in a minute.',
   anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute. If you didn\'t start another pairing, something else is sending requests: don\'t hold its button.',
   cardShownRecently: 'Your Heartwood showed a full access card a moment ago, so it won\'t show another yet. Nothing changed. You can try again in a minute.',
   saveFailed: 'Your Heartwood couldn\'t save that, so nothing changed. It may be out of space: remove pairings you no longer use in Sapwood, then try again.',
@@ -662,7 +664,8 @@ const LOST_REPLY_CODES: readonly BundleFailure['code'][] = ['no-answer', 'card-r
  * another style (a style change) and whose bundle never landed reads
  * `owner:true` with the OLD style, and that is not a success. A status that
  * fails, says `owner:false` or reports another style leaves the original
- * failure alone.
+ * failure alone. Whatever status was read is returned either way, so the caller
+ * can show what the device says.
  */
 export async function recoverLostReply(
   out: BundleRunResult,
@@ -672,7 +675,7 @@ export async function recoverLostReply(
   if (out.ok || !LOST_REPLY_CODES.includes(out.failure.code)) return { result: out, status: null };
   let status: OwnerStatus | null;
   try { status = await readStatus(); } catch { status = null; }
-  if (!status || !status.owner || status.style !== ctx.style) return { result: out, status: null };
+  if (!status || !status.owner || status.style !== ctx.style) return { result: out, status };
   return {
     status,
     result: {
@@ -748,8 +751,14 @@ export async function negotiateFullAccess(args: {
       });
       // Onboarding has no Settings page to check, so the generic line that
       // sends the owner there is replaced.
-      if (!out.ok && out.failure.code === 'no-answer') {
-        return { ok: false, failure: { ...out.failure, message: FULL_ACCESS_COPY.noAnswerOnboarding } };
+      if (!out.ok && (out.failure.code === 'no-answer' || out.failure.code === 'card-recent')) {
+        // The success reply is ephemeral: if it was lost, full access may be on while the
+        // line says "nothing changed". Ask the device. No key recovery here: a `create:true`
+        // success carries the keys and the status reply does not.
+        let status: OwnerStatus | null;
+        try { status = await fetchOwnerStatus(args.request); } catch { status = null; }
+        if (status?.owner) return { ok: false, failure: { ...out.failure, message: FULL_ACCESS_COPY.mayAlreadyOn } };
+        if (out.failure.code === 'no-answer') return { ok: false, failure: { ...out.failure, message: FULL_ACCESS_COPY.noAnswerOnboarding } };
       }
       return out;
     },

@@ -85,6 +85,21 @@ describe('useOwnerHoldCap does not release the A8 owner-answer hold', () => {
   });
 });
 
+describe('useOwnerHoldCap with a slow status (A4)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+  it('the cap releases the status wait, and an owner:false that arrives later re-engages the hold', () => {
+    const h = renderHook((p: { raw: boolean; until: boolean }) => useOwnerHoldCap(p.raw, true, CAP, p.until), { initialProps: { raw: true, until: false } });
+    act(() => { vi.advanceTimersByTime(CAP); });
+    expect(h.result.current).toBe(false);
+    // The status finally answers owner:false: the owner hold starts, even though backups may already be queued.
+    h.rerender({ raw: true, until: true });
+    expect(h.result.current).toBe(true);
+    act(() => { vi.advanceTimersByTime(CAP * 5); });
+    expect(h.result.current).toBe(true);
+  });
+});
+
 describe('ownerOfferState holds only while unlocked (B1)', () => {
   const base = {
     bunkerMode: true, routerSettled: false, supported: false, everHadFullAccess: true,

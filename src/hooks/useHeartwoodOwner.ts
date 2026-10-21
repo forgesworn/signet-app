@@ -185,14 +185,14 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
       // The success reply is ephemeral: if it was lost, the press may still have
       // landed. Ask the device before telling the owner "no answer" or "shown a
       // moment ago, nothing changed".
-      const { result: out, status: recoveredStatus } = await recoverLostReply(
+      const { result: out, status: readStatus } = await recoverLostReply(
         sent, () => fetchOwnerStatus(request),
         { naturalPerson: naturalPersonPubkey, persona: personaPubkey, style, actAsNaturalPerson: includeRealName },
       );
-      if (recoveredStatus) {
+      if (out.ok && out.reply.recovered && readStatus) {
         // Keep the style the device reports; it carries no `act_as`, so the one on file stays.
-        setStatus(recoveredStatus);
-        await onStyleChange(recoveredStatus.style);
+        setStatus(readStatus);
+        await onStyleChange(readStatus.style);
       } else if (out.ok) {
         setStatus({ owner: true, style: out.reply.style });
         // The device's own echo of what it granted, not what was asked.
@@ -202,6 +202,9 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
         // device again rather than leave the status line saying "off".
         setRefreshTick((t) => t + 1);
       }
+      // A status was read but the run does not count as a success (another style, or
+      // off): the Settings line shows what the device says, not what it had before.
+      if (!out.ok && readStatus) setStatus(readStatus);
       return out;
     } finally {
       busyRef.current = false;

@@ -83,6 +83,16 @@ describe('Settings -> Heartwood full access', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy();
   });
 
+  it('A8: "Close" after a pairing problem is not an answer; "Not now" is', async () => {
+    const declined = vi.fn();
+    const run = vi.fn().mockResolvedValue({ ok: false, failure: { action: 'continue', code: 'strict', message: PAIRING_PROBLEM_COPY.strict } });
+    renderSettings(owner({ everHadFullAccess: true, storedStyle: 'everyday', run }), { openOwnerChoice: 'again', onOwnerChoiceHandled: vi.fn(), onOwnerAgainDeclined: declined });
+    fireEvent.click(await screen.findByRole('button', { name: FULL_ACCESS_COPY.setUp }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Close' }));
+    expect(declined).not.toHaveBeenCalled();
+    expect(await screen.findByText('Connected to Heartwood signer.')).toBeTruthy();
+  });
+
   it('A8: re-run starts on the style on file', async () => {
     const o = owner({ everHadFullAccess: true, storedStyle: 'careful' });
     renderSettings(o);

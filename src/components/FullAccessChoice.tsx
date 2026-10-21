@@ -41,6 +41,12 @@ export interface FullAccessChoiceProps {
   onApproved: (reply: BundleSuccess, style: OwnerStyle) => void;
   /** "Approve each thing separately" (or "Not now" in Settings), or a pairing problem the owner has read. */
   onSeparately: () => void;
+  /**
+   * The Close button that follows a pairing problem. When given, it is called
+   * instead of `onSeparately`, so a caller can tell "closed after a problem"
+   * from an explicit "Not now". Absent, Close behaves as `onSeparately`.
+   */
+  onClose?: () => void;
   /** Back out of the whole flow (onboarding only). */
   onBack?: () => void;
   /** Label for the secondary button. */
@@ -63,7 +69,7 @@ type Phase =
   | { kind: 'problem'; failure: BundleFailure };
 
 export function FullAccessChoice({
-  words, label, includeRealName, realNameForLegacyBackups = false, initialStyle = 'everyday', onRun, onApproved, onSeparately, onBack,
+  words, label, includeRealName, realNameForLegacyBackups = false, initialStyle = 'everyday', onRun, onApproved, onSeparately, onClose, onBack,
   separatelyLabel = FULL_ACCESS_COPY.separately, showSeparatelyHint = false, continueLabel = 'Continue', silentMessage,
 }: FullAccessChoiceProps) {
   const [style, setStyle] = useState<OwnerStyle>(initialStyle);
@@ -182,7 +188,7 @@ export function FullAccessChoice({
         )}
 
         {problem && !canRetry ? (
-          <button className="btn btn-primary" onClick={onSeparately}>{continueLabel}</button>
+          <button className="btn btn-primary" onClick={onClose ?? onSeparately}>{continueLabel}</button>
         ) : (
           <>
             <button className="btn btn-primary" onClick={() => void run()} disabled={running}>

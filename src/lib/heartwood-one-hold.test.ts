@@ -459,6 +459,38 @@ describe('onboarding no-answer (A1)', () => {
   });
 });
 
+describe('onboarding lost reply (A2): the status is re-read before "nothing changed"', () => {
+  async function runWith(request: (m: string) => Promise<string>) {
+    let seen: unknown;
+    const ui = { chooseFullAccess: vi.fn(async (offer: FullAccessOffer) => { seen = await offer.run('everyday'); return { mode: 'separate' as const }; }) };
+    const req = vi.fn(async (m: string) => request(m));
+    await negotiateFullAccess({ ui, clientPubkeyHex: VECTOR_CLIENT, masterPubkey: MASTER, probe: async () => ['heartwood_approve_bundle'], request: req });
+    return { seen, req };
+  }
+  const refuse = (msg: unknown) => (m: string, status: string) => (m === 'heartwood_owner_status' ? Promise.resolve(status) : Promise.reject(msg));
+  it('"shown recently" with owner:true says full access may already be on, not "Nothing changed"', async () => {
+    const { seen } = await runWith(m => refuse('unauthorised: full access card shown recently')(m, '{"owner":true,"style":"everyday"}'));
+    expect(seen).toMatchObject({ ok: false, failure: { code: 'card-recent', action: 'retry', message: FULL_ACCESS_COPY.mayAlreadyOn } });
+    expect(FULL_ACCESS_COPY.mayAlreadyOn).not.toMatch(/Nothing changed|Settings/);
+  });
+  it('no answer with owner:true says the same', async () => {
+    const { seen } = await runWith(m => m === 'heartwood_owner_status' ? Promise.resolve('{"owner":true}') : Promise.reject(new BunkerRequestTimeoutError('x')));
+    expect(seen).toMatchObject({ ok: false, failure: { code: 'no-answer', message: FULL_ACCESS_COPY.mayAlreadyOn } });
+  });
+  it('owner:false or an unreadable status keeps today\'s lines', async () => {
+    for (const status of ['{"owner":false}', 'junk']) {
+      const a = await runWith(m => refuse('unauthorised: full access card shown recently')(m, status));
+      expect(a.seen).toMatchObject({ ok: false, failure: { code: 'card-recent', message: FULL_ACCESS_COPY.cardShownRecently } });
+      const b = await runWith(m => m === 'heartwood_owner_status' ? Promise.resolve(status) : Promise.reject(new BunkerRequestTimeoutError('x')));
+      expect(b.seen).toMatchObject({ ok: false, failure: { code: 'no-answer', message: FULL_ACCESS_COPY.noAnswerOnboarding } });
+    }
+  });
+  it('other refusals are not re-read', async () => {
+    const { req } = await runWith(() => Promise.reject('user denied'));
+    expect(req.mock.calls.map(c => c[0])).toEqual(['heartwood_approve_bundle']);
+  });
+});
+
 describe('A7 timeouts', () => {
   it('anything that may raise a card waits at least 45 s; the bundle waits 140 s', () => {
     expect(CARD_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
@@ -573,7 +605,8 @@ describe('recoverLostReply (re-check note 3)', () => {
       const f = failure(code);
       const r = await recoverLostReply(f, async () => ({ owner: true, style: 'careful' }), { ...ctx, style: 'everyday' });
       expect(r.result).toBe(f);
-      expect(r.status).toBeNull();
+      // A7: the status that was read is still handed back, so the Settings line can show it.
+      expect(r.status).toEqual({ owner: true, style: 'careful' });
     }
     // A custom style is not what was asked for either.
     const f = failure('card-recent');
@@ -589,8 +622,12 @@ describe('recoverLostReply (re-check note 3)', () => {
   });
   it('keeps the original failure for owner:false, an unreadable status or a throwing read', async () => {
     const f = failure('no-answer');
-    expect((await recoverLostReply(f, async () => ({ owner: false, style: 'everyday' }), ctx)).result).toBe(f);
-    expect((await recoverLostReply(f, async () => null, ctx)).result).toBe(f);
+    const off = await recoverLostReply(f, async () => ({ owner: false, style: 'everyday' }), ctx);
+    expect(off.result).toBe(f);
+    expect(off.status).toEqual({ owner: false, style: 'everyday' });
+    const none = await recoverLostReply(f, async () => null, ctx);
+    expect(none.result).toBe(f);
+    expect(none.status).toBeNull();
     expect((await recoverLostReply(f, async () => { throw new Error('x'); }, ctx)).result).toBe(f);
   });
   it('does not read the status for other failures or for a success', async () => {
