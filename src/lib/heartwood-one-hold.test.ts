@@ -5,7 +5,7 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   pairWordsForClient, cardLines, buildBundleParam, parseBundleReply, classifyBundleError,
   runApproveBundle, parseOwnerStatus, fetchOwnerStatus, narrowToCareful, supportsApproveBundle,
-  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, addChildRaisesCards, realNameFirstUseAsks, wordPages, requestedActAs, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
+  addChildPressPreview, negotiateFullAccess, cardLabelLine, CARD_LABEL_PLACEHOLDER, separatelyHint, separateCardCount, ownerOfferState, addChildRaisesCards, realNameFirstUseAsks, recoverLostReply, wordPages, requestedActAs, type FullAccessOffer, BUNDLE_TIMEOUT_MS, CARD_REQUEST_TIMEOUT_MS, OWNER_QUICK_TIMEOUT_MS, PAIRING_PROBLEM_COPY, FULL_ACCESS_COPY, DEVICE_LIMIT_COPY,
 } from './heartwood-one-hold';
 import { BunkerRequestTimeoutError, SIGNER_REQUEST_TIMEOUT_MS } from './signing-backend';
 
@@ -120,6 +120,12 @@ describe('five-word copy (W2, W9, W10)', () => {
     expect(FULL_ACCESS_COPY.sapwoodForget).toContain('Withdraw all for this client');
     expect(FULL_ACCESS_COPY.sapwoodForget).toMatch(/Edit or Remove/);
     expect(FULL_ACCESS_COPY.sapwoodForget).not.toContain('Forget approvals');
+  });
+  it('re-check note 1: the another-card line keeps the security advice', () => {
+    expect(FULL_ACCESS_COPY.anotherCard).toBe('Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute. If you didn\'t start another pairing, something else is sending requests: don\'t hold its button.');
+  });
+  it('re-check note 4: the warning names the tap', () => {
+    expect(FULL_ACCESS_COPY.warning).toBe('Your Heartwood shows FULL ACCESS only after you tap Set up with one hold. If it shows before that, don\'t hold the button.');
   });
   it('the onboarding no-answer line does not point to Settings', () => {
     expect(FULL_ACCESS_COPY.noAnswer).toContain('Settings, Advanced');
@@ -491,13 +497,33 @@ describe('ownerOfferState (A8, M2, m2)', () => {
     expect(ownerOfferState({ ...base, routerSettled: false, bunkerMode: false }).holdBackups).toBe(false);
     expect(ownerOfferState({ ...base, routerSettled: false, everHadFullAccess: false }).holdBackups).toBe(false);
   });
-  it('M2: once owner:false is known the offer shows but backups run (a deliberate Forget approvals must not stall every start)', () => {
+  it('re-check note 2: while the mark is gone the backups wait for the owner to answer the A8 prompt', () => {
     const s = ownerOfferState({ ...base, statusOwner: false });
-    expect(s).toEqual({ lost: true, offer: true, holdBackups: false });
+    expect(s).toEqual({ lost: true, offer: true, holdBackups: true, holdUntilAnswered: true });
+  });
+  it('re-check note 2: holding again (owner:true), or "Not now" / closing the prompt, releases the hold', () => {
+    // The hold worked: status turns owner:true.
+    expect(ownerOfferState({ ...base, statusOwner: true })).toEqual({ lost: false, offer: false, holdBackups: false, holdUntilAnswered: false });
+    // Banner or choice-screen "Not now", or Close after a problem.
+    expect(ownerOfferState({ ...base, statusOwner: false, dismissed: true })).toEqual({ lost: true, offer: false, holdBackups: false, holdUntilAnswered: false });
+  });
+  it('re-check note 2: the owner hold needs a style on file; without one nothing is lost and nothing is held', () => {
+    expect(ownerOfferState({ ...base, everHadFullAccess: false, statusOwner: false })).toEqual({ lost: false, offer: false, holdBackups: false, holdUntilAnswered: false });
+  });
+  it('re-check note 2: an unanswered status, or owner:true, never makes the owner hold; the status wait stays the capped part', () => {
+    expect(ownerOfferState({ ...base, statusOwner: null }).holdUntilAnswered).toBe(false);
+    expect(ownerOfferState({ ...base, awaitingFirstStatus: true })).toMatchObject({ holdBackups: true, holdUntilAnswered: false });
+    expect(ownerOfferState({ ...base, statusOwner: true, awaitingFirstStatus: true })).toMatchObject({ holdBackups: true, holdUntilAnswered: false });
+  });
+  it('re-check note 2: a refused backup with the mark unknown offers the prompt but holds nothing', () => {
+    expect(ownerOfferState({ ...base, vaultNeedsApproval: true, statusOwner: null })).toEqual({ lost: false, offer: true, holdBackups: false, holdUntilAnswered: false });
+  });
+  it('re-check note 2: a locked app (bunkerMode false) holds nothing, whatever the status', () => {
+    expect(ownerOfferState({ ...base, bunkerMode: false, statusOwner: false }).holdBackups).toBe(false);
   });
   it('never holds backups for an install that never ran the hold, or on old firmware', () => {
     expect(ownerOfferState({ ...base, everHadFullAccess: false, awaitingFirstStatus: true }).holdBackups).toBe(false);
-    expect(ownerOfferState({ ...base, supported: false, awaitingFirstStatus: true, statusOwner: false })).toEqual({ lost: false, offer: false, holdBackups: false });
+    expect(ownerOfferState({ ...base, supported: false, awaitingFirstStatus: true, statusOwner: false })).toEqual({ lost: false, offer: false, holdBackups: false, holdUntilAnswered: false });
   });
   it('"Not now" ends the offer for the session', () => {
     expect(ownerOfferState({ ...base, statusOwner: false, dismissed: true }).offer).toBe(false);
@@ -516,11 +542,45 @@ describe('realNameFirstUseAsks (A2, review 3)', () => {
   });
   it('a grant that covers natural-person promises no card', () => {
     expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: true })).toBe(false);
-    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: null })).toBe(false);
+  });
+  it('re-check note 5: while the status is unknown it may ask, so no card is promised', () => {
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: null })).toBe(true);
+    expect(realNameFirstUseAsks({ supported: true, storedActAs: ['persona'], ownerOn: null })).toBe(true);
+    expect(realNameFirstUseAsks({ supported: false, storedActAs: ['natural-person', 'persona'], ownerOn: null })).toBe(false);
   });
   it('a persona-only grant, or a mark the device has dropped, still asks once', () => {
     expect(realNameFirstUseAsks({ supported: true, storedActAs: ['persona'], ownerOn: true })).toBe(true);
     expect(realNameFirstUseAsks({ supported: true, storedActAs: ['natural-person', 'persona'], ownerOn: false })).toBe(true);
+  });
+});
+
+describe('recoverLostReply (re-check note 3)', () => {
+  const ctx = { naturalPerson: 'a'.repeat(64), persona: 'b'.repeat(64), style: 'everyday' as const, actAsNaturalPerson: false };
+  const failure = (code: 'no-answer' | 'card-recent' | 'declined') => ({ ok: false as const, failure: { action: 'retry' as const, code, message: 'x' } });
+  it('turns a lost reply into success when the status says owner:true', async () => {
+    for (const code of ['no-answer', 'card-recent'] as const) {
+      const r = await recoverLostReply(failure(code), async () => ({ owner: true, style: 'careful' }), ctx);
+      expect(r.status).toEqual({ owner: true, style: 'careful' });
+      expect(r.result).toEqual({ ok: true, reply: { naturalPerson: ctx.naturalPerson, persona: ctx.persona, style: 'everyday', actAs: ['persona'], recovered: true } });
+    }
+  });
+  it('asks for the real name in act_as only when the request did', async () => {
+    const r = await recoverLostReply(failure('card-recent'), async () => ({ owner: true, style: 'everyday' }), { ...ctx, actAsNaturalPerson: true });
+    expect(r.result).toMatchObject({ ok: true, reply: { actAs: ['natural-person', 'persona'] } });
+  });
+  it('keeps the original failure for owner:false, an unreadable status or a throwing read', async () => {
+    const f = failure('no-answer');
+    expect((await recoverLostReply(f, async () => ({ owner: false, style: 'everyday' }), ctx)).result).toBe(f);
+    expect((await recoverLostReply(f, async () => null, ctx)).result).toBe(f);
+    expect((await recoverLostReply(f, async () => { throw new Error('x'); }, ctx)).result).toBe(f);
+  });
+  it('does not read the status for other failures or for a success', async () => {
+    const read = vi.fn(async () => ({ owner: true, style: 'everyday' as const }));
+    const f = failure('declined');
+    expect((await recoverLostReply(f, read, ctx)).result).toBe(f);
+    const ok = { ok: true as const, reply: { naturalPerson: 'a', persona: 'b', actAs: ['persona'], style: 'everyday' as const } };
+    expect((await recoverLostReply(ok, read, ctx)).result).toBe(ok);
+    expect(read).not.toHaveBeenCalled();
   });
 });
 

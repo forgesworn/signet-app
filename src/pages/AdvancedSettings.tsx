@@ -96,12 +96,14 @@ interface Props {
   heartwoodOwner?: HeartwoodOwnerSettingsProps;
   /** Open the choice screen straight away (the "approve again" banner lands here). */
   openOwnerChoice?: OwnerChoiceKind | null;
+  /** The owner left the "approve this phone again" choice without holding: backups stop waiting for it. */
+  onOwnerAgainDeclined?: () => void;
   onOwnerChoiceHandled?: () => void;
 }
 
 const OWNER_SILENT_MESSAGE = "Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off.";
 
-export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerChoiceHandled }: Props) {
+export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerAgainDeclined, onOwnerChoiceHandled }: Props) {
   const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   useEffect(() => {
     if (!openOwnerChoice) return;
@@ -225,14 +227,23 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           if (again && !out.ok && out.failure.code === 'strict') {
             out = { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };
           }
-          // The outcome is kept in the Settings card, so a no-answer line must not send the reader to Settings.
+          // The outcome is kept in the Settings card, and the overlay shows the same
+          // failure, so a no-answer line must not send the reader to Settings.
+          if (!out.ok && out.failure.code === 'no-answer') {
+            out = { ok: false, failure: { ...out.failure, message: FULL_ACCESS_COPY.noAnswerSettings } };
+          }
           setOwnerOutcome(out.ok
             ? { text: FULL_ACCESS_COPY.approvedOutcome, problem: false }
-            : { text: out.failure.code === 'no-answer' ? FULL_ACCESS_COPY.noAnswerSettings : (out.failure.message || OWNER_SILENT_MESSAGE), problem: true });
+            : { text: out.failure.message || OWNER_SILENT_MESSAGE, problem: true });
           return out;
         }}
         onApproved={() => setOwnerChoice(null)}
-        onSeparately={() => setOwnerChoice(null)}
+        onSeparately={() => {
+          // A8: leaving the re-approve prompt without holding (Not now, or Close after a
+          // problem) answers it, so the waiting backups are released.
+          if (again) onOwnerAgainDeclined?.();
+          setOwnerChoice(null);
+        }}
         separatelyLabel="Not now"
         continueLabel="Close"
         silentMessage={OWNER_SILENT_MESSAGE}

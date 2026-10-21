@@ -113,6 +113,21 @@ describe('Settings -> Heartwood full access', () => {
     expect(handled).toHaveBeenCalled();
   });
 
+  it('A8: "Not now" on the approve-again choice tells the app, so the waiting backups are released', async () => {
+    const declined = vi.fn();
+    renderSettings(owner({ everHadFullAccess: true, storedStyle: 'everyday' }), { openOwnerChoice: 'again', onOwnerChoiceHandled: vi.fn(), onOwnerAgainDeclined: declined });
+    fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
+    expect(declined).toHaveBeenCalledTimes(1);
+  });
+
+  it('A8: "Not now" on a first-time choice does not touch the approve-again prompt', async () => {
+    const declined = vi.fn();
+    renderSettings(owner(), { onOwnerAgainDeclined: declined });
+    fireEvent.click(screen.getByRole('button', { name: FULL_ACCESS_COPY.offerExisting }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
+    expect(declined).not.toHaveBeenCalled();
+  });
+
   it('m8: a banner request that arrives before the words are ready is dropped, not opened later', async () => {
     const handled = vi.fn();
     const props = { openOwnerChoice: 'again' as const, onOwnerChoiceHandled: handled };
@@ -187,7 +202,9 @@ describe('Settings -> Heartwood full access', () => {
       view.rerender(settings(undefined));
       view.rerender(settings(owner({ run })));
       release({ ok: false, failure: { action: 'retry', code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer } });
-      expect(await screen.findByText(FULL_ACCESS_COPY.noAnswer)).toBeTruthy();
+      // The Settings overlay never sends the reader to Settings: it uses the Settings wording.
+      expect(await screen.findByText(FULL_ACCESS_COPY.noAnswerSettings)).toBeTruthy();
+      expect(screen.queryByText(FULL_ACCESS_COPY.noAnswer)).toBeNull();
       expect(screen.getByRole('button', { name: FULL_ACCESS_COPY.tryAgain })).toBeTruthy();
     });
 

@@ -308,19 +308,69 @@ describe('useHeartwoodOwner', () => {
     expect(result.current.checking).toBe(false);
   });
 
-  it('m3: after our own expiry the status is asked again, so a press that landed late shows as on', async () => {
-    let statusCalls = 0;
-    const bunker = fakeBunker(async (m) => {
-      if (m === 'heartwood_owner_status') { statusCalls += 1; return statusCalls === 1 ? '{"owner":false}' : '{"owner":true,"style":"everyday"}'; }
-      throw new BunkerRequestTimeoutError('heartwood_approve_bundle');
+  describe('lost success reply (re-check note 3): the status is re-read before a failure line is shown', () => {
+    const cardRecent = 'unauthorised: full access card shown recently';
+    function setup(statusAfter: () => Promise<string>, bundleError: () => never) {
+      let statusCalls = 0;
+      const bunker = fakeBunker(async (m) => {
+        if (m === 'heartwood_owner_status') { statusCalls += 1; return statusCalls === 1 ? '{"owner":false}' : statusAfter(); }
+        return bundleError();
+      });
+      const onStyleChange = vi.fn();
+      const hook = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER, onStyleChange, storedStyle: 'everyday' })));
+      return { ...hook, bunker, onStyleChange, calls: () => statusCalls };
+    }
+    const timeout = () => { throw new BunkerRequestTimeoutError('heartwood_approve_bundle'); };
+    const recent = () => { throw cardRecent; };
+
+    it('no answer, status says owner:true: shows success, keeps the style the status reports, leaves act_as alone', async () => {
+      const { result, onStyleChange, calls } = setup(async () => '{"owner":true,"style":"careful"}', timeout);
+      await waitFor(() => expect(result.current.status).toEqual({ owner: false, style: 'everyday' }));
+      onStyleChange.mockClear();
+      let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+      await act(async () => { out = await result.current.run('everyday'); });
+      expect(out).toMatchObject({ ok: true, reply: { recovered: true, naturalPerson: NP, persona: PERSONA } });
+      expect(result.current.status).toEqual({ owner: true, style: 'careful' });
+      expect(onStyleChange).toHaveBeenCalledTimes(1);
+      expect(onStyleChange).toHaveBeenCalledWith('careful');
+      expect(calls()).toBe(2);
     });
-    const { result } = renderHook(() => useHeartwoodOwner(args({ bunker, router: ROUTER })));
-    await waitFor(() => expect(result.current.status).toEqual({ owner: false, style: 'everyday' }));
-    let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
-    await act(async () => { out = await result.current.run('everyday'); });
-    expect(out).toMatchObject({ ok: false, failure: { code: 'no-answer' } });
-    await waitFor(() => expect(result.current.status).toEqual({ owner: true, style: 'everyday' }));
-    expect(statusCalls).toBe(2);
+
+    it('"shown recently", status says owner:true: shows success, not "Nothing changed"', async () => {
+      const { result } = setup(async () => '{"owner":true,"style":"everyday"}', recent);
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+      await act(async () => { out = await result.current.run('everyday'); });
+      expect(out).toMatchObject({ ok: true, reply: { recovered: true } });
+      expect(result.current.status).toEqual({ owner: true, style: 'everyday' });
+    });
+
+    it('status says owner:false: the original line stands', async () => {
+      const { result, onStyleChange } = setup(async () => '{"owner":false}', recent);
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      onStyleChange.mockClear();
+      let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+      await act(async () => { out = await result.current.run('everyday'); });
+      expect(out).toMatchObject({ ok: false, failure: { code: 'card-recent', message: FULL_ACCESS_COPY.cardShownRecently } });
+      expect(onStyleChange).not.toHaveBeenCalled();
+    });
+
+    it('the re-read fails: falls back to the existing line, and a no-answer still asks again later (m3)', async () => {
+      const { result } = setup(async () => { throw new Error('timeout'); }, timeout);
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+      await act(async () => { out = await result.current.run('everyday'); });
+      expect(out).toMatchObject({ ok: false, failure: { code: 'no-answer', message: FULL_ACCESS_COPY.noAnswer } });
+    });
+
+    it('other refusals (declined, another card) are not re-read', async () => {
+      const { result, calls } = setup(async () => '{"owner":true}', () => { throw 'user denied'; });
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+      await act(async () => { out = await result.current.run('everyday'); });
+      expect(out).toMatchObject({ ok: false, failure: { code: 'declined' } });
+      expect(calls()).toBe(1);
+    });
   });
 
   it('m1: with an operator key it reads the methods listed on this phone\'s own pairing', async () => {

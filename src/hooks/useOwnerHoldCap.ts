@@ -7,16 +7,22 @@
  * the lock screen or typing the PIN. When `raw` turns false (a lock, or the
  * answer arriving) the lapse is forgotten, so the next unlock holds again for
  * a full cap from connect.
+ *
+ * `untilAnswered` is the A8 hold that waits for the OWNER (the mark is gone and
+ * the re-approve prompt is open). The cap never releases it: it ends only when
+ * the caller stops passing it (the hold worked, the prompt was declined, or a
+ * lock). It is part of `raw`, and is simply kept out of the cap's clock.
  */
 import { useEffect, useState } from 'react';
 
-export function useOwnerHoldCap(raw: boolean, connected: boolean, capMs: number): boolean {
+export function useOwnerHoldCap(raw: boolean, connected: boolean, capMs: number, untilAnswered = false): boolean {
   const [lapsed, setLapsed] = useState(false);
+  const capped = raw && !untilAnswered;
   useEffect(() => {
-    if (!raw) { setLapsed(false); return; }
+    if (!capped) { setLapsed(false); return; }
     if (!connected) return;
     const timer = setTimeout(() => setLapsed(true), capMs);
     return () => clearTimeout(timer);
-  }, [raw, connected, capMs]);
-  return raw && !lapsed;
+  }, [capped, connected, capMs]);
+  return raw && (untilAnswered || !lapsed);
 }

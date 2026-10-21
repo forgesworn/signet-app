@@ -4420,7 +4420,7 @@ export function App() {
   // also capped (OWNER_HOLD_CAP_MS) so a Heartwood that never answers cannot
   // stop backups for the whole session.
   const ownerRouterSettled = bunkerRouter !== null || routerProbeState === 'unsupported';
-  const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldBackupsRaw } = ownerOfferState({
+  const { lost: ownerLost, offer: ownerAgainOffer, holdBackups: ownerHoldBackupsAll, holdUntilAnswered: ownerHoldUntilAnswered } = ownerOfferState({
     // Unlocked only: preferences load without the key, so a locked app would
     // otherwise count as "holding" and run the cap on the PIN screen.
     bunkerMode: !!encryptionKey && preferences.signingMode === 'bunker' && !isPairedChild,
@@ -4432,7 +4432,17 @@ export function App() {
     vaultNeedsApproval: privateVaultHealth.needsApproval === true,
     dismissed: ownerAgainDismissed,
   });
-  const ownerHoldsBackups = useOwnerHoldCap(ownerHoldBackupsRaw, signerStatus === 'connected', OWNER_HOLD_CAP_MS);
+  // The 60 s cap bounds only the wait for the device. The A8 hold (mark gone, the
+  // re-approve prompt not yet answered) waits for the owner and is never capped:
+  // it ends when the hold works, or the prompt is declined or closed.
+  const ownerHoldsBackups = useOwnerHoldCap(ownerHoldBackupsAll, signerStatus === 'connected', OWNER_HOLD_CAP_MS, ownerHoldUntilAnswered);
+  // The owner declined the re-approve prompt (banner "Not now", or the choice screen's
+  // "Not now" / "Close"): release the hold. A lost mark drops the style on file so
+  // the offer does not come back on every start. A refused backup alone leaves it.
+  const declineOwnerAgain = useCallback(() => {
+    setOwnerAgainDismissed(true);
+    if (ownerLost) void setHeartwoodOwnerStyle(undefined);
+  }, [ownerLost, setHeartwoodOwnerStyle]);
 
   // C3 policy push: whenever dependants / grants change (or the client
   // comes up), debounce and push each changed family slot's compiled
@@ -10404,13 +10414,7 @@ export function App() {
           onClick={() => { setPendingOwnerChoice('again'); navigateTo('settings-advanced'); }}>
           {FULL_ACCESS_COPY.approveAgain}
         </button>
-        <button type="button" className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }} onClick={() => {
-          setOwnerAgainDismissed(true);
-          // The owner has said no to full access for this phone: drop the style on
-          // file so the offer does not come back on every start. Settings still
-          // offers the hold. (A refused backup alone leaves the style alone.)
-          if (ownerLost) void setHeartwoodOwnerStyle(undefined);
-        }}>
+        <button type="button" className="btn btn-ghost" style={{ fontSize: 13, padding: '2px 8px' }} onClick={declineOwnerAgain}>
           Not now
         </button>
       </span>
@@ -11289,6 +11293,7 @@ export function App() {
           run: heartwoodOwner.run,
         } : undefined}
         openOwnerChoice={pendingOwnerChoice}
+        onOwnerAgainDeclined={declineOwnerAgain}
         onOwnerChoiceHandled={() => setPendingOwnerChoice(null)}
         heartwoodOperator={preferences.signingMode !== 'paired-child' ? {
           credential: heartwoodOperator.credential

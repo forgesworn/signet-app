@@ -60,6 +60,31 @@ describe('useOwnerHoldCap (A8, B1)', () => {
   });
 });
 
+describe('useOwnerHoldCap does not release the A8 owner-answer hold', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+  it('the cap lapses a status wait but never the hold that waits for the owner', () => {
+    const h = renderHook((p: { raw: boolean; until: boolean }) => useOwnerHoldCap(p.raw, true, CAP, p.until), { initialProps: { raw: true, until: true } });
+    act(() => { vi.advanceTimersByTime(CAP * 5); });
+    expect(h.result.current).toBe(true);
+    // The owner answered: the hold ends at once.
+    h.rerender({ raw: false, until: false });
+    expect(h.result.current).toBe(false);
+  });
+  it('a status wait that turns into the owner hold is not cut short by time already spent', () => {
+    const h = renderHook((p: { raw: boolean; until: boolean }) => useOwnerHoldCap(p.raw, true, CAP, p.until), { initialProps: { raw: true, until: false } });
+    act(() => { vi.advanceTimersByTime(CAP - 1000); });
+    h.rerender({ raw: true, until: true });
+    act(() => { vi.advanceTimersByTime(CAP * 5); });
+    expect(h.result.current).toBe(true);
+  });
+  it('without the owner hold the cap still releases at the cap', () => {
+    const h = renderHook((p: { raw: boolean; until: boolean }) => useOwnerHoldCap(p.raw, true, CAP, p.until), { initialProps: { raw: true, until: false } });
+    act(() => { vi.advanceTimersByTime(CAP); });
+    expect(h.result.current).toBe(false);
+  });
+});
+
 describe('ownerOfferState holds only while unlocked (B1)', () => {
   const base = {
     bunkerMode: true, routerSettled: false, supported: false, everHadFullAccess: true,

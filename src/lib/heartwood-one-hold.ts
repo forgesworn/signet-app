@@ -185,7 +185,7 @@ export const FULL_ACCESS_COPY = {
   coversPersonaOnly: 'Everyday lets this phone sign anything and read your messages as your persona, including your children\'s backups. Extra careful limits what signs without you. You can take it back in Settings.',
   realNameForLegacyBackups: 'Your older backups still sign with your real-name key, so this includes it.',
   expect: 'Your Heartwood will show FULL ACCESS and five words, two at a time. Check every word matches the ones here. When they\'ve all shown, hold its button for 5 seconds. If any word doesn\'t match, don\'t hold.',
-  warning: 'Your Heartwood only shows FULL ACCESS when you start it here. If it ever shows it at another time, don\'t hold the button.',
+  warning: 'Your Heartwood shows FULL ACCESS only after you tap Set up with one hold. If it shows before that, don\'t hold the button.',
   setUp: 'Set up with one hold',
   separately: 'Approve each thing separately',
   styleHeading: 'How should this phone sign?',
@@ -203,7 +203,7 @@ export const FULL_ACCESS_COPY = {
   noAnswerSettings: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on: the status here will update when your Heartwood answers. You can also try again in a minute.',
   // Onboarding has no Settings yet, so it cannot point there.
   noAnswerOnboarding: 'Your Heartwood didn\'t answer in time. If you did hold its button, full access may already be on. You can try again in a minute.',
-  anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute.',
+  anotherCard: 'Your Heartwood got another full access request at the same moment, so it closed this one. Nothing changed. You can try again in a minute. If you didn\'t start another pairing, something else is sending requests: don\'t hold its button.',
   cardShownRecently: 'Your Heartwood showed a full access card a moment ago, so it won\'t show another yet. Nothing changed. You can try again in a minute.',
   saveFailed: 'Your Heartwood couldn\'t save that, so nothing changed. It may be out of space: remove pairings you no longer use in Sapwood, then try again.',
   saveFailedFatal: 'Your Heartwood couldn\'t save that and needs attention. Connect it by cable and check it in Sapwood.',
@@ -326,10 +326,18 @@ export interface OwnerOfferState {
    * owner may be asked for. "Settled" is success or failure: a router that
    * lists no bundle method, a failed probe or an unanswered status all release
    * the hold (the caller also bounds the wait). Once the answer is in, even
-   * `owner:false`, backups run (today's cards): a pairing the owner
-   * deliberately cleared in Sapwood must not stall every start until "Not now".
+   * `owner:false`, the status wait ends. The A8 prompt is a separate hold
+   * (`holdUntilAnswered`): while a style is on file and the mark is gone,
+   * backups wait for the owner to answer it.
    */
   holdBackups: boolean;
+  /**
+   * The part of `holdBackups` that waits for the OWNER, not for the device: the
+   * mark is known to be gone and the "Approve this phone again" prompt has not
+   * been answered. The caller must NOT put the status-wait cap on this part
+   * (the cap exists for a status that never answers, a different case).
+   */
+  holdUntilAnswered: boolean;
 }
 
 export function ownerOfferState(i: OwnerOfferInput): OwnerOfferState {
@@ -340,8 +348,15 @@ export function ownerOfferState(i: OwnerOfferInput): OwnerOfferState {
   const offer = i.supported && i.everHadFullAccess && !i.dismissed
     && (lost || (i.vaultNeedsApproval && i.statusOwner !== true));
   const statusPending = i.supported && i.awaitingFirstStatus;
-  const holdBackups = i.everHadFullAccess && i.bunkerMode && (!i.routerSettled || statusPending);
-  return { lost, offer, holdBackups };
+  const holdForStatus = i.everHadFullAccess && i.bunkerMode && (!i.routerSettled || statusPending);
+  // A8: while the mark is gone, keep the backups back until the owner answers
+  // the re-approve prompt. Their NPUB AS / REMEMBER AS cards would otherwise
+  // fill the device's four-card queue ahead of the owner's bundle. Answered =
+  // the hold worked (status turns `owner:true`, so `lost` ends) or the prompt
+  // was declined/closed (`dismissed`).
+  const holdUntilAnswered = lost && i.bunkerMode && !i.dismissed;
+  const holdBackups = holdForStatus || holdUntilAnswered;
+  return { lost, offer, holdBackups, holdUntilAnswered };
 }
 
 /**
@@ -360,7 +375,9 @@ export function realNameFirstUseAsks(args: {
 }): boolean {
   if (!args.supported) return false;
   if (!args.storedActAs) return true;
-  return !(args.ownerOn !== false && args.storedActAs.includes('natural-person'));
+  // Unknown (`null`) is the safe side: the mark may have gone since, and then a
+  // card does come, so no card is promised until the device has said `owner:true`.
+  return !(args.ownerOn === true && args.storedActAs.includes('natural-person'));
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +423,11 @@ export interface BundleSuccess {
   /** The identities the device says this phone may act as: what the grant really is, kept on file. */
   actAs: string[];
   style: OwnerStyle;
+  /**
+   * Set when the reply was lost and `heartwood_owner_status` said `owner:true`
+   * instead. `actAs` is then what was asked for, not an echo: do not store it.
+   */
+  recovered?: boolean;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -626,6 +648,37 @@ export async function narrowToCareful(request: RequestFn): Promise<NarrowResult>
     if (isRecord(parsed) && parsed.style === 'custom') return { ok: false, message: FULL_ACCESS_COPY.customNarrow, style: 'custom' };
   } catch { /* fall through */ }
   return { ok: false, message: 'Your Heartwood gave an unexpected answer. Nothing was changed.' };
+}
+
+/** Failures that may hide a success whose reply was lost (the reply is ephemeral). */
+const LOST_REPLY_CODES: readonly BundleFailure['code'][] = ['no-answer', 'card-recent'];
+
+/**
+ * A lost success reply: before telling the owner "no answer" or "a card was
+ * shown a moment ago, nothing changed", ask the device. `owner:true` means full
+ * access is on, so the run counts as a success (`recovered`); the style the
+ * status reports is returned for the caller to keep. A status that fails, or
+ * says `owner:false`, leaves the original failure alone.
+ */
+export async function recoverLostReply(
+  out: BundleRunResult,
+  readStatus: () => Promise<OwnerStatus | null>,
+  ctx: { naturalPerson: string; persona: string; style: OwnerStyle; actAsNaturalPerson: boolean },
+): Promise<{ result: BundleRunResult; status: OwnerStatus | null }> {
+  if (out.ok || !LOST_REPLY_CODES.includes(out.failure.code)) return { result: out, status: null };
+  let status: OwnerStatus | null;
+  try { status = await readStatus(); } catch { status = null; }
+  if (!status || !status.owner) return { result: out, status: null };
+  return {
+    status,
+    result: {
+      ok: true,
+      reply: {
+        naturalPerson: ctx.naturalPerson, persona: ctx.persona, style: ctx.style,
+        actAs: requestedActAs({ actAsNaturalPerson: ctx.actAsNaturalPerson }), recovered: true,
+      },
+    },
+  };
 }
 
 /** Does the device's capability list name the bundle method? */

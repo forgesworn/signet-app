@@ -23,7 +23,7 @@ import type { HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { listClients, clearClientIdentities } from '../lib/heartwood-mgmt';
 import { withOperatorLock } from '../lib/operator-lock';
 import {
-  CAP_OWNER_NARROW, FULL_ACCESS_COPY, fetchOwnerStatus, narrowToCareful, pairWordsForClient, runApproveBundle, supportsApproveBundle,
+  CAP_OWNER_NARROW, FULL_ACCESS_COPY, fetchOwnerStatus, narrowToCareful, pairWordsForClient, recoverLostReply, runApproveBundle, supportsApproveBundle,
   type BundleRunResult, type NarrowResult, type OwnerStatus, type OwnerStyle, type PairWords, type StatusStyle,
 } from '../lib/heartwood-one-hold';
 import { ownSlotInfo, turnOffFullAccess, type TurnOffResult } from '../lib/heartwood-owner-ops';
@@ -179,10 +179,21 @@ export function useHeartwoodOwner(args: UseHeartwoodOwnerArgs): UseHeartwoodOwne
       // bundle goes out under the operator lock. A family push already running
       // (list -> update_client) settles first, and one that starts later reads
       // the slot after the press. The lock is held until the bundle settles.
-      const out = operatorClient && operatorClient.isOpen
+      const sent = operatorClient && operatorClient.isOpen
         ? await withOperatorLock(operatorClient, send)
         : await send();
-      if (out.ok) {
+      // The success reply is ephemeral: if it was lost, the press may still have
+      // landed. Ask the device before telling the owner "no answer" or "shown a
+      // moment ago, nothing changed".
+      const { result: out, status: recoveredStatus } = await recoverLostReply(
+        sent, () => fetchOwnerStatus(request),
+        { naturalPerson: naturalPersonPubkey, persona: personaPubkey, style, actAsNaturalPerson: includeRealName },
+      );
+      if (recoveredStatus) {
+        // Keep the style the device reports; it carries no `act_as`, so the one on file stays.
+        setStatus(recoveredStatus);
+        await onStyleChange(recoveredStatus.style);
+      } else if (out.ok) {
         setStatus({ owner: true, style: out.reply.style });
         // The device's own echo of what it granted, not what was asked.
         await onStyleChange(out.reply.style, out.reply.actAs);
