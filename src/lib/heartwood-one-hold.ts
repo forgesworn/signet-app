@@ -657,8 +657,12 @@ const LOST_REPLY_CODES: readonly BundleFailure['code'][] = ['no-answer', 'card-r
  * A lost success reply: before telling the owner "no answer" or "a card was
  * shown a moment ago, nothing changed", ask the device. `owner:true` means full
  * access is on, so the run counts as a success (`recovered`); the style the
- * status reports is returned for the caller to keep. A status that fails, or
- * says `owner:false`, leaves the original failure alone.
+ * status reports is returned for the caller to keep. Only when the reported
+ * style equals the style this bundle asked for: an owner who was already on in
+ * another style (a style change) and whose bundle never landed reads
+ * `owner:true` with the OLD style, and that is not a success. A status that
+ * fails, says `owner:false` or reports another style leaves the original
+ * failure alone.
  */
 export async function recoverLostReply(
   out: BundleRunResult,
@@ -668,7 +672,7 @@ export async function recoverLostReply(
   if (out.ok || !LOST_REPLY_CODES.includes(out.failure.code)) return { result: out, status: null };
   let status: OwnerStatus | null;
   try { status = await readStatus(); } catch { status = null; }
-  if (!status || !status.owner) return { result: out, status: null };
+  if (!status || !status.owner || status.style !== ctx.style) return { result: out, status: null };
   return {
     status,
     result: {

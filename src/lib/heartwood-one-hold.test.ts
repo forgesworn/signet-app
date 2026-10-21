@@ -559,10 +559,29 @@ describe('recoverLostReply (re-check note 3)', () => {
   const failure = (code: 'no-answer' | 'card-recent' | 'declined') => ({ ok: false as const, failure: { action: 'retry' as const, code, message: 'x' } });
   it('turns a lost reply into success when the status says owner:true', async () => {
     for (const code of ['no-answer', 'card-recent'] as const) {
-      const r = await recoverLostReply(failure(code), async () => ({ owner: true, style: 'careful' }), ctx);
-      expect(r.status).toEqual({ owner: true, style: 'careful' });
+      const r = await recoverLostReply(failure(code), async () => ({ owner: true, style: 'everyday' }), ctx);
+      expect(r.status).toEqual({ owner: true, style: 'everyday' });
       expect(r.result).toEqual({ ok: true, reply: { naturalPerson: ctx.naturalPerson, persona: ctx.persona, style: 'everyday', actAs: ['persona'], recovered: true } });
     }
+  });
+  it('style change: owner already on, status now shows the REQUESTED style: recovered', async () => {
+    const r = await recoverLostReply(failure('no-answer'), async () => ({ owner: true, style: 'everyday' }), { ...ctx, style: 'everyday' });
+    expect(r.result).toMatchObject({ ok: true, reply: { recovered: true, style: 'everyday' } });
+  });
+  it('style change: owner on but status still shows the OLD style: the original line stands', async () => {
+    for (const code of ['no-answer', 'card-recent'] as const) {
+      const f = failure(code);
+      const r = await recoverLostReply(f, async () => ({ owner: true, style: 'careful' }), { ...ctx, style: 'everyday' });
+      expect(r.result).toBe(f);
+      expect(r.status).toBeNull();
+    }
+    // A custom style is not what was asked for either.
+    const f = failure('card-recent');
+    expect((await recoverLostReply(f, async () => ({ owner: true, style: 'custom' }), ctx)).result).toBe(f);
+  });
+  it('first pairing from owner:false: owner:true with the requested style is recovered', async () => {
+    const r = await recoverLostReply(failure('card-recent'), async () => ({ owner: true, style: 'careful' }), { ...ctx, style: 'careful' });
+    expect(r.result).toMatchObject({ ok: true, reply: { recovered: true, style: 'careful' } });
   });
   it('asks for the real name in act_as only when the request did', async () => {
     const r = await recoverLostReply(failure('card-recent'), async () => ({ owner: true, style: 'everyday' }), { ...ctx, actAsNaturalPerson: true });

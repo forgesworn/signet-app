@@ -323,12 +323,12 @@ describe('useHeartwoodOwner', () => {
     const timeout = () => { throw new BunkerRequestTimeoutError('heartwood_approve_bundle'); };
     const recent = () => { throw cardRecent; };
 
-    it('no answer, status says owner:true: shows success, keeps the style the status reports, leaves act_as alone', async () => {
+    it('no answer, status says owner:true in the requested style: shows success, keeps that style, leaves act_as alone', async () => {
       const { result, onStyleChange, calls } = setup(async () => '{"owner":true,"style":"careful"}', timeout);
       await waitFor(() => expect(result.current.status).toEqual({ owner: false, style: 'everyday' }));
       onStyleChange.mockClear();
       let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
-      await act(async () => { out = await result.current.run('everyday'); });
+      await act(async () => { out = await result.current.run('careful'); });
       expect(out).toMatchObject({ ok: true, reply: { recovered: true, naturalPerson: NP, persona: PERSONA } });
       expect(result.current.status).toEqual({ owner: true, style: 'careful' });
       expect(onStyleChange).toHaveBeenCalledTimes(1);
@@ -343,6 +343,16 @@ describe('useHeartwoodOwner', () => {
       await act(async () => { out = await result.current.run('everyday'); });
       expect(out).toMatchObject({ ok: true, reply: { recovered: true } });
       expect(result.current.status).toEqual({ owner: true, style: 'everyday' });
+    });
+
+    it('style change: owner was on, status still shows the old style: the original line stands and nothing is stored', async () => {
+      const { result, onStyleChange } = setup(async () => '{"owner":true,"style":"careful"}', recent);
+      await waitFor(() => expect(result.current.status).not.toBeNull());
+      onStyleChange.mockClear();
+      let out: Awaited<ReturnType<typeof result.current.run>> | undefined;
+      await act(async () => { out = await result.current.run('everyday'); });
+      expect(out).toMatchObject({ ok: false, failure: { code: 'card-recent', message: FULL_ACCESS_COPY.cardShownRecently } });
+      expect(onStyleChange).not.toHaveBeenCalled();
     });
 
     it('status says owner:false: the original line stands', async () => {
