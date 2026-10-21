@@ -191,10 +191,11 @@ imports it.
 
 ## Relay defaults and failover
 
-Fresh installs use `wss://nos.lol`, `wss://relay.damus.io`,
-`wss://relay.primal.net` and `wss://relay.ditto.pub` for reads and writes.
-`wss://relay.nostr.band` is an additional read-only relay. Trotters is retired
-from the defaults and migrated out of saved app relay settings.
+Fresh installs use `wss://relay.primal.net` (primary), `wss://nostr.oxtr.dev`,
+`wss://relay.damus.io` and `wss://relay.ditto.pub` for reads and writes.
+`wss://relay.nostr.band` is an additional read-only relay. nos.lol, which
+stopped answering in October 2026, and an earlier default are retired from the
+defaults and migrated out of saved app relay settings.
 
 Sync uses the full configured pool. Writes succeed on the first relay
 acknowledgement while the other deliveries continue; network operations have

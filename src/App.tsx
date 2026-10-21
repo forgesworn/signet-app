@@ -425,7 +425,7 @@ const NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS = 10_000;
 const NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS = 5_000;
 const AUTH_FLOW_BUNKER_FALLBACK_RELAYS = [
   'wss://relay.damus.io',
-  'wss://nos.lol',
+  'wss://nostr.oxtr.dev',
   'wss://relay.primal.net',
   'wss://relay.ditto.pub',
 ] as const;
