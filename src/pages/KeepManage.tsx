@@ -46,7 +46,8 @@ export function ownerLabel(host: KeepHost, keep: StoredKeep): string {
 
 export function expiryText(expiration: number, now: number): string {
   if (expiration <= now) return 'Expired';
-  const hours = Math.ceil((expiration - now) / 3600);
+  // Nearest hour: `now` can be up to 30 s behind the clock, so a 24 hour pass must not read 25.
+  const hours = Math.max(1, Math.round((expiration - now) / 3600));
   if (hours <= 48) return `Expires in ${hours} hour${hours === 1 ? '' : 's'}`;
   return `Expires ${new Date(expiration * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
 }

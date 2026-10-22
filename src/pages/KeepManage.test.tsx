@@ -25,7 +25,7 @@ vi.mock('../lib/relay-publish', async () => {
 
 import { MyKeep } from './MyKeep';
 import { LocalSigningBackend } from '../lib/signing-backend';
-import type { KeepHost } from './KeepManage';
+import { expiryText, type KeepHost } from './KeepManage';
 
 const KEEP_SK = hexToBytes('0'.repeat(63) + '1');
 const K = getPublicKey(KEEP_SK);
@@ -264,5 +264,18 @@ describe('a claimed Keep', () => {
     await waitFor(() => expect(published).toHaveLength(1));
     expect(lastRumor().kind).toBe(27660);
     expect(screen.queryByRole('heading', { name: 'Games' })).toBeNull();
+  });
+});
+
+describe('expiryText', () => {
+  it('reads 24 hours for a 24 hour pass even when the clock reading is a little old', () => {
+    expect(expiryText(1_000_000 + 86_400, 1_000_000)).toBe('Expires in 24 hours');
+    expect(expiryText(1_000_000 + 86_400, 1_000_000 - 30)).toBe('Expires in 24 hours');
+    expect(expiryText(1_000_000 + 86_379, 1_000_000)).toBe('Expires in 24 hours');
+  });
+  it('rounds to the nearest hour, never below one, and says Expired at the end', () => {
+    expect(expiryText(1_000_000 + 5_400, 1_000_000)).toBe('Expires in 2 hours');
+    expect(expiryText(1_000_000 + 600, 1_000_000)).toBe('Expires in 1 hour');
+    expect(expiryText(1_000_000, 1_000_000)).toBe('Expired');
   });
 });
