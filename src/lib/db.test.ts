@@ -3291,3 +3291,35 @@ describe('contactPictures store (v27)', () => {
     expect(await (await db.getDb()).count('contactPictures')).toBe(0);
   }, TIMEOUT);
 });
+
+describe('claimed Keeps row (K1d)', () => {
+  const keeps = [{ keep: 'ab'.repeat(32), secretish: 'visible-only-when-decrypted' }];
+
+  it('round-trips, encrypted, in one identity-store row with no version change', async () => {
+    const db = await freshDb();
+    await db.saveKeepsRow(keeps, PASSPHRASE);
+    expect(await db.loadKeepsRow(PASSPHRASE)).toEqual(keeps);
+    const raw = await rawOpen();
+    const row = await raw.get('identity', 'keeps') as Record<string, unknown>;
+    raw.close();
+    expect(JSON.stringify(row)).not.toContain('visible-only-when-decrypted');
+    expect(JSON.stringify(row)).not.toContain('ab'.repeat(32));
+  }, TIMEOUT);
+
+  it('returns null with the wrong key or when nothing is stored', async () => {
+    const db = await freshDb();
+    expect(await db.loadKeepsRow(PASSPHRASE)).toBeNull();
+    await db.saveKeepsRow(keeps, PASSPHRASE);
+    expect(await db.loadKeepsRow('wrong-passphrase-here')).toBeNull();
+  }, TIMEOUT);
+
+  it('is not mistaken for an identity, is not cleaned up, and is purged with the rest', async () => {
+    const db = await freshDb();
+    await db.saveKeepsRow(keeps, PASSPHRASE);
+    expect(await db.getAllIdentities()).toEqual([]);
+    await db.cleanupUnencryptedIdentities();
+    expect(await db.loadKeepsRow(PASSPHRASE)).toEqual(keeps);
+    await db.purgeAllUserData();
+    expect(await db.loadKeepsRow(PASSPHRASE)).toBeNull();
+  }, TIMEOUT);
+});

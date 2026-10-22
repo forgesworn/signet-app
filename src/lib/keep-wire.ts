@@ -27,3 +27,30 @@ export const KEEP_ONLINE_WINDOW_S = 600;
 
 /** A status dated further than this (seconds) into the future is not believed. */
 export const KEEP_FUTURE_SKEW_S = 300;
+
+/*
+ * K1d: owner-signed messages between My Signet and a Keep (provisional).
+ *
+ * Every message is a NIP-59 gift wrap whose rumor has one of these kinds and
+ * an empty `content`. They are provisional (the numbers are not allocated) and
+ * must not be used outside K1d testing. Like the constants above, this file is
+ * the only place the numbers live.
+ */
+export const KEEP_MSG_CLAIM_KIND = 27660;
+export const KEEP_MSG_INVITE_KIND = 27661;
+export const KEEP_MSG_REVOKE_KIND = 27662;
+export const KEEP_MSG_ACK_KIND = 27663;
+
+/** Ack `status` values, and the `reason` values that go with `refused`. */
+export const KEEP_ACK_STATUSES = ['paired', 'active', 'revoked', 'refused'] as const;
+export const KEEP_REFUSAL_REASONS = ['expired', 'expiry_too_long', 'revoked', 'full', 'conflict', 'malformed'] as const;
+
+/** Invite lifetimes (seconds): a personal invite 30 days, a guest pass 24 hours. */
+export const KEEP_PERSONAL_INVITE_S = 30 * 86400;
+export const KEEP_GUEST_PASS_S = 24 * 3600;
+
+/** The longest `name` label an invite carries, in characters. */
+export const KEEP_INVITE_LABEL_MAX = 40;
+
+/** How far back to ask relays for acks: the 2-day NIP-59 jitter plus a day. */
+export const KEEP_ACK_LOOKBACK_S = 3 * 86400;

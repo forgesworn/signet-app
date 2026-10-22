@@ -372,6 +372,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== HEARTWOOD_OPERATOR_KEY &&
     r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
+    r.id !== KEEPS_KEY &&
     !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
     !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
     !r.id.startsWith(DEPENDANT_PREFIX),
@@ -582,6 +583,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
     if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
+    if (identity.id === KEEPS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_DIRECT_ROW_PREFIX)) continue;
@@ -2494,6 +2496,32 @@ export async function loadHeartwoodOperator(
 export async function deleteHeartwoodOperator(): Promise<void> {
   const db = await getDB();
   await db.delete('identity', HEARTWOOD_OPERATOR_KEY);
+}
+
+// --- Claimed Keeps (encrypted) ---
+// One `identity`-store row keyed 'keeps': the whole account-level list of Keeps
+// this account has claimed (K1d), JSON encrypted with the unlock key, same
+// pattern as `heartwoodOperator`. It holds invite secrets, so it is encrypted.
+// No IndexedDB version change. Shape and rules live in `keep-store.ts`.
+
+const KEEPS_KEY = 'keeps';
+
+export async function saveKeepsRow(value: unknown, encryptionKey: string): Promise<void> {
+  const encrypted = await encryptSecret(JSON.stringify(value), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: KEEPS_KEY, secret: encrypted });
+}
+
+/** The stored value, or null when nothing is stored, the key is wrong or it is not JSON. */
+export async function loadKeepsRow(encryptionKey: string): Promise<unknown> {
+  const db = await getDB();
+  const record = await db.get('identity', KEEPS_KEY);
+  if (!record || !record.secret) return null;
+  try {
+    return JSON.parse(await decryptSecret(record.secret, encryptionKey));
+  } catch {
+    return null;
+  }
 }
 
 // --- Heartwood vault pubkeys (encrypted) ---
