@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { EffectiveContact, SignetIdentity } from '../types';
-import { accountPersonas, holdsKeyFor, inviteCandidates, keepDepsFor, localBackendFor, personaNameMap } from './keep-personas';
+import { accountPersonas, holdsKeyFor, inviteCandidates, keepDepsFor, localBackendFor, personaNameMap, shouldPromptUnlockForMyKeep } from './keep-personas';
 
 const sk = (n: number) => '0'.repeat(63) + n.toString(16);
 const pk = (n: number) => bytesToHex(hexToBytes(getPublicKey(hexToBytes(sk(n)))));
@@ -117,5 +117,29 @@ describe('inviteCandidates', () => {
       ],
     })], OWNER);
     expect(out[0].persona).toBe(friend);
+  });
+});
+
+describe('shouldPromptUnlockForMyKeep', () => {
+  const base = {
+    onMyKeep: true, loading: false, hasIdentity: true, pairedChild: false, authSetUp: true,
+    unlocked: false, promptOpen: false, alreadyAsked: false,
+  };
+  it('asks for the PIN when My Keep is opened on a locked app', () => {
+    expect(shouldPromptUnlockForMyKeep(base)).toBe(true);
+  });
+  it('waits for the identity and preferences to load', () => {
+    expect(shouldPromptUnlockForMyKeep({ ...base, loading: true })).toBe(false);
+    expect(shouldPromptUnlockForMyKeep({ ...base, hasIdentity: false })).toBe(false);
+  });
+  it('does not ask elsewhere, when unlocked, when a prompt is open, or after a cancel', () => {
+    expect(shouldPromptUnlockForMyKeep({ ...base, onMyKeep: false })).toBe(false);
+    expect(shouldPromptUnlockForMyKeep({ ...base, unlocked: true })).toBe(false);
+    expect(shouldPromptUnlockForMyKeep({ ...base, promptOpen: true })).toBe(false);
+    expect(shouldPromptUnlockForMyKeep({ ...base, alreadyAsked: true })).toBe(false);
+  });
+  it('does not ask a paired child, or where no PIN is set up', () => {
+    expect(shouldPromptUnlockForMyKeep({ ...base, pairedChild: true })).toBe(false);
+    expect(shouldPromptUnlockForMyKeep({ ...base, authSetUp: false })).toBe(false);
   });
 });

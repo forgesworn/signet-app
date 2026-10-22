@@ -26,6 +26,12 @@ interface Props {
   onBack: () => void;
   /** What adding and managing a Keep needs from the app. Absent where that is not offered. */
   keepHost?: KeepHost;
+  /**
+   * Set while the app is locked ('locked') or has the key and is still opening the saved identity
+   * ('unlocking'). The saved Keeps are encrypted and a persona's key is needed to sign, so neither
+   * the list nor "No Keep yet" is shown then: a locked app must not look like one with no Keep.
+   */
+  lock?: { state: 'locked'; onUnlock: () => void } | { state: 'unlocking' };
 }
 
 type State = { phase: 'loading' } | { phase: 'error' } | { phase: 'ready'; keeps: Keep[]; now: number };
@@ -116,7 +122,7 @@ function KeepRow({ keep, now, nickname, last, onNickname }: {
   );
 }
 
-export function MyKeep({ ownedPubkeys, scope, onBack, keepHost }: Props) {
+export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
   const [state, setState] = useState<State>({ phase: 'loading' });
   const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames(scope));
   const [attempt, setAttempt] = useState(0);
@@ -148,6 +154,26 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost }: Props) {
   }, [ownedKey, attempt, preview]);
 
   const retry = useCallback(() => setAttempt(n => n + 1), []);
+
+  if (lock) {
+    return (
+      <div className="fade-in" role="main">
+        <div className="empty-state">
+          <div className="empty-state-icon"><Icon name="home" size={36} /></div>
+          {lock.state === 'locked' ? (
+            <>
+              <h3 className="empty-state-title" data-testid="keep-locked">Locked.</h3>
+              <p className="empty-state-text">Unlock to see your Keeps and add one.</p>
+              <button className="btn btn-primary" onClick={lock.onUnlock}>Unlock</button>
+            </>
+          ) : (
+            <p className="empty-state-text" role="status" data-testid="keep-unlocking">Unlocking&hellip;</p>
+          )}
+          <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
+        </div>
+      </div>
+    );
+  }
 
   if (keepHost && view.t === 'add') {
     return (

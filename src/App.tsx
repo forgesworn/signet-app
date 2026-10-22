@@ -233,7 +233,7 @@ import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
 import { keepAuthorPubkeys } from './lib/keep-owner';
-import { accountPersonas, holdsKeyFor, keepDepsFor, personaNameMap } from './lib/keep-personas';
+import { accountPersonas, holdsKeyFor, keepDepsFor, personaNameMap, shouldPromptUnlockForMyKeep } from './lib/keep-personas';
 import { catchUp as catchUpKeeps } from './lib/keep-service';
 import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
@@ -5459,6 +5459,22 @@ export function App() {
     alwaysOnUnlockPromptRef.current = true;
     void requestAuth({ purpose: 'unlock-app' });
   }, [identityLoading, prefsLoading, identity, encryptionKey, pendingEncryptionKey, showAuthPrompt, preferences.backgroundBunkerEnabled, preferences.signingMode, requestAuth]);
+
+  // My Keep reads the encrypted Keeps and signs with a persona's key, so it needs the
+  // unlocked app like every other page that does. Opening it locked asks for the PIN
+  // once; a cancel is left alone (the page then offers Unlock), and the ask comes
+  // again the next time the page is opened or after the app locks while it is open.
+  const myKeepUnlockPromptRef = useRef(false);
+  useEffect(() => {
+    if (page !== 'my-keep' || encryptionKey) { myKeepUnlockPromptRef.current = false; return; }
+    if (!shouldPromptUnlockForMyKeep({
+      onMyKeep: true, loading: identityLoading || prefsLoading, hasIdentity: !!identity, pairedChild: isPairedChild,
+      authSetUp: isAuthSetUp(), unlocked: !!pendingEncryptionKey, promptOpen: showAuthPrompt,
+      alreadyAsked: myKeepUnlockPromptRef.current,
+    })) return;
+    myKeepUnlockPromptRef.current = true;
+    void requestAuth({ purpose: 'unlock-app' });
+  }, [page, identityLoading, prefsLoading, identity, isPairedChild, encryptionKey, pendingEncryptionKey, showAuthPrompt, requestAuth]);
 
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode and
@@ -10751,6 +10767,9 @@ export function App() {
     return renderSettingsPage('my-keep', 'My Keep', <MyKeep
       scope={identity.id}
       onBack={() => navigateBack()}
+      lock={activeDependant || childDirect ? undefined
+        : !encryptionKey ? { state: 'locked', onUnlock: () => { void requestAuth({ purpose: 'unlock-app' }); } }
+        : identity.encrypted ? { state: 'unlocking' } : undefined}
       keepHost={encryptionKey && !activeDependant && !childDirect ? {
         deps: keepDepsFor(identity, encryptionKey),
         canSign: persona => holdsKeyFor(identity, persona),

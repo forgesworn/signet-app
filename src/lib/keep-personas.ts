@@ -100,3 +100,26 @@ export function inviteCandidates(contacts: readonly EffectiveContact[], owner: s
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
+
+export interface MyKeepUnlockInput {
+  onMyKeep: boolean;
+  loading: boolean;
+  hasIdentity: boolean;
+  pairedChild: boolean;
+  authSetUp: boolean;
+  /** The app holds the key, or is about to (a pending key). */
+  unlocked: boolean;
+  promptOpen: boolean;
+  /** The prompt for this visit has already been shown (a cancel is left alone). */
+  alreadyAsked: boolean;
+}
+
+/**
+ * Whether opening My Keep should raise the PIN prompt. The saved Keeps are
+ * encrypted and signing needs a persona's key, so a locked app asks, once per
+ * visit, as other pages that need the key do.
+ */
+export function shouldPromptUnlockForMyKeep(i: MyKeepUnlockInput): boolean {
+  if (!i.onMyKeep || i.unlocked || i.alreadyAsked || i.promptOpen) return false;
+  return !i.loading && i.hasIdentity && !i.pairedChild && i.authSetUp;
+}

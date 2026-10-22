@@ -48,6 +48,38 @@ describe('MyKeep', () => {
     expect(screen.getByText('Managing a Keep from here is coming later.')).toBeInTheDocument();
   });
 
+  it('locked: asks to unlock, never says "No Keep yet" or offers Add a Keep', async () => {
+    relayHolding([]);
+    const onUnlock = vi.fn();
+    render(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} lock={{ state: 'locked', onUnlock }} />);
+    expect(screen.getByTestId('keep-locked')).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.queryByText('No Keep yet.')).toBeNull();
+    expect(screen.queryByText(/Looking for your Keep/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a Keep' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+    expect(onUnlock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Settings' }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('unlocking: waits, with no empty state and no Add a Keep', async () => {
+    relayHolding([]);
+    render(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} lock={{ state: 'unlocking' }} />);
+    expect(screen.getByTestId('keep-unlocking')).toBeInTheDocument();
+    expect(screen.queryByText('No Keep yet.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Unlock' })).toBeNull();
+  });
+
+  it('once unlocked, the list takes the place of the lock', async () => {
+    relayHolding([]);
+    const { rerender } = render(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} lock={{ state: 'locked', onUnlock: vi.fn() }} />);
+    expect(screen.getByTestId('keep-locked')).toBeInTheDocument();
+    rerender(<MyKeep ownedPubkeys={[me.pk]} scope="id1" onBack={onBack} />);
+    expect(await screen.findByText('No Keep yet.')).toBeInTheDocument();
+    expect(screen.queryByTestId('keep-locked')).toBeNull();
+  });
+
   it('queries claims by authors (never #p) on the Bothy relays, then statuses by node', async () => {
     const claim = claimEvent(me, node.pk);
     relayHolding([claim]);
