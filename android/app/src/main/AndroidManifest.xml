@@ -79,7 +79,7 @@
         </activity>
         <provider
             android:name=".Nip55SignerProvider"
-            android:authorities="app.mysignet.GET_PUBLIC_KEY;app.mysignet.SIGN_EVENT;app.mysignet.NIP44_ENCRYPT;app.mysignet.NIP44_DECRYPT;app.mysignet.PING"
+            android:authorities="${applicationId}.GET_PUBLIC_KEY;${applicationId}.SIGN_EVENT;${applicationId}.NIP44_ENCRYPT;${applicationId}.NIP44_DECRYPT;${applicationId}.PING"
             android:exported="true" />
 
         <provider
