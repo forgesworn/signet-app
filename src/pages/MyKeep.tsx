@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { loadStoredKeeps } from '../lib/keep-service';
+import { KEEPS_UNREADABLE_TEXT } from '../lib/keep-store';
 import { Icon } from '../components/Icon';
 import { loadMyKeeps, type KeepLoadResult } from '../lib/keep-load';
 import {
@@ -122,7 +123,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost }: Props) {
   const ownedKey = ownedPubkeys.join(',');
   const [preview] = useState(previewOn);
   const [view, setView] = useState<View>({ t: 'list' });
-  const { keeps: stored, setKeeps: setStored } = useStoredKeeps(keepHost);
+  const { keeps: stored, setKeeps: setStored, unreadable } = useStoredKeeps(keepHost);
 
   // Settings keeps its window scroll when this page opens; start at the top.
   useEffect(() => { try { window.scrollTo?.(0, 0); } catch { /* no scrolling here */ } }, []);
@@ -174,13 +175,16 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost }: Props) {
     );
   }
 
-  const storedBlock = keepHost && stored.length > 0
+  const storedBlock = keepHost && unreadable
+    ? (
+      <p role="alert" data-testid="keeps-unreadable" style={{ fontSize: '0.9rem', margin: '0 0 16px' }}>{KEEPS_UNREADABLE_TEXT}</p>
+    ) : keepHost && stored.length > 0
     ? (
       <div style={{ marginBottom: 16 }}>
         <StoredKeepRows host={keepHost} keeps={stored} onOpen={keep => setView({ t: 'detail', keep })} />
       </div>
     ) : null;
-  const addButton = keepHost
+  const addButton = keepHost && !unreadable
     ? (
       <div style={{ textAlign: 'center', marginTop: 12 }}>
         <button className="btn btn-primary" onClick={() => setView({ t: 'add' })} style={{ width: 'auto' }}>Add a Keep</button>

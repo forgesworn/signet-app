@@ -3306,11 +3306,11 @@ describe('claimed Keeps row (K1d)', () => {
     expect(JSON.stringify(row)).not.toContain('ab'.repeat(32));
   }, TIMEOUT);
 
-  it('returns null with the wrong key or when nothing is stored', async () => {
+  it('returns null when nothing is stored, and throws (never null) for a row it cannot read', async () => {
     const db = await freshDb();
     expect(await db.loadKeepsRow(PASSPHRASE)).toBeNull();
     await db.saveKeepsRow(keeps, PASSPHRASE);
-    expect(await db.loadKeepsRow('wrong-passphrase-here')).toBeNull();
+    await expect(db.loadKeepsRow('wrong-passphrase-here')).rejects.toThrow();
   }, TIMEOUT);
 
   it('is not mistaken for an identity, is not cleaned up, and is purged with the rest', async () => {

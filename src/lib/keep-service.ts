@@ -18,7 +18,7 @@ import {
   claimRumor, inviteRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
 } from './keep-messages';
 import {
-  applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, withInvite, withKeep,
+  KeepsUnreadableError, applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, withInvite, withKeep,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 import type { KeepPairLink } from './keep-link';
@@ -41,8 +41,18 @@ const nowOf = (deps: KeepDeps) => (deps.now ?? (() => Math.floor(Date.now() / 10
 
 // ---- storage ---------------------------------------------------------------
 
+/**
+ * The stored list: empty only when nothing is stored. A row that exists but
+ * cannot be decrypted or parsed throws `KeepsUnreadableError`, so the next
+ * write can never replace Keeps (and invite grants) this build cannot read.
+ */
 export async function loadStoredKeeps(encryptionKey: string): Promise<StoredKeep[]> {
-  return parseStoredKeeps(await loadKeepsRow(encryptionKey)) ?? [];
+  let raw: unknown;
+  try { raw = await loadKeepsRow(encryptionKey); } catch { throw new KeepsUnreadableError(); }
+  if (raw === null || raw === undefined) return [];
+  const list = parseStoredKeeps(raw);
+  if (!list) throw new KeepsUnreadableError();
+  return list;
 }
 
 // Read-modify-write is serialised: an ack landing while an invite is being

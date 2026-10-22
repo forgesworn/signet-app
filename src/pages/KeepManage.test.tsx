@@ -119,6 +119,17 @@ describe('Add a Keep', () => {
   });
 });
 
+describe('an unreadable saved list', () => {
+  it('says so plainly, offers no Add a Keep, and leaves the row alone', async () => {
+    row = [pairedKeep({ status: 'some-future-status' })];
+    const before = JSON.stringify(row);
+    renderKeep();
+    expect(await screen.findByTestId('keeps-unreadable')).toHaveTextContent(/could not be read/);
+    expect(screen.queryByRole('button', { name: 'Add a Keep' })).toBeNull();
+    expect(JSON.stringify(row)).toBe(before);
+  });
+});
+
 describe('a claimed Keep', () => {
   it('is listed in the account-level list with the persona it belongs to', async () => {
     row = [pairedKeep()];

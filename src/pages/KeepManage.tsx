@@ -14,7 +14,7 @@ import {
   PersonaNotAvailableError, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks, resendClaim,
   resendInvite, revokeInvite, watchAcks, type KeepDeps,
 } from '../lib/keep-service';
-import { inviteStatusLabel, isExpired, type StoredInvite, type StoredKeep } from '../lib/keep-store';
+import { KEEPS_UNREADABLE_TEXT, KeepsUnreadableError, inviteStatusLabel, isExpired, type StoredInvite, type StoredKeep } from '../lib/keep-store';
 import { inviteCandidates } from '../lib/keep-personas';
 import { shareInviteLink } from '../lib/keep-share';
 import { relayHostLabel } from '../lib/relay-url';
@@ -55,6 +55,7 @@ export function expiryText(expiration: number, now: number): string {
 export function useStoredKeeps(host: KeepHost | undefined) {
   const [keeps, setKeeps] = useState<StoredKeep[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [unreadable, setUnreadable] = useState(false);
   const depsRef = useRef(host?.deps);
   depsRef.current = host?.deps;
   const key = host?.deps.encryptionKey ?? '';
@@ -71,7 +72,11 @@ export function useStoredKeeps(host: KeepHost | undefined) {
       if (list.length === 0) return;
       const fresh = await refreshAcks(deps).catch(() => list);
       if (!cancelled) setKeeps(fresh);
-    }, () => { if (!cancelled) setLoaded(true); });
+    }, e => {
+      if (cancelled) return;
+      setLoaded(true);
+      if (e instanceof KeepsUnreadableError) setUnreadable(true);
+    });
     return () => { cancelled = true; };
   }, [key]);
 
@@ -83,7 +88,7 @@ export function useStoredKeeps(host: KeepHost | undefined) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchKey, key]);
 
-  return { keeps, setKeeps, loaded };
+  return { keeps, setKeeps, loaded, unreadable };
 }
 
 function statusLine(keep: StoredKeep): string {
@@ -139,7 +144,8 @@ export function AddKeep({ host, onDone, onCancel }: {
       if (result.kind === 'exists') { onDone(result.keep.keep, 'You have already added this Keep.'); return; }
       onDone(result.keep.keep, result.sent ? undefined : 'Couldn’t reach the Keep. Try Send again in a moment.');
     } catch (e) {
-      setError(e instanceof PersonaNotAvailableError ? NOT_AVAILABLE : 'Something went wrong. Nothing was changed.');
+      setError(e instanceof PersonaNotAvailableError ? NOT_AVAILABLE
+        : e instanceof KeepsUnreadableError ? KEEPS_UNREADABLE_TEXT : 'Something went wrong. Nothing was changed.');
     } finally {
       setBusy(false);
     }
@@ -252,7 +258,8 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
     setBusy(true);
     setMessage('');
     try { await work(); } catch (e) {
-      setMessage(e instanceof PersonaNotAvailableError ? NOT_AVAILABLE : 'Something went wrong. Try again.');
+      setMessage(e instanceof PersonaNotAvailableError ? NOT_AVAILABLE
+        : e instanceof KeepsUnreadableError ? KEEPS_UNREADABLE_TEXT : 'Something went wrong. Try again.');
     } finally { setBusy(false); }
   };
 

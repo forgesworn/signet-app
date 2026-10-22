@@ -55,6 +55,14 @@ export interface StoredKeep {
   invites: StoredInvite[];
 }
 
+/** The stored Keeps are there but cannot be read; nothing may be saved over them. */
+export class KeepsUnreadableError extends Error {
+  constructor() { super('The saved Keeps could not be read'); }
+}
+
+export const KEEPS_UNREADABLE_TEXT =
+  'Your saved Keeps could not be read on this device, so nothing was changed. Your Keeps and invites are still stored. Update My Signet or unlock again, then try once more.';
+
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const STATUSES: readonly string[] = ['waiting', 'active', 'revoked', 'refused'];

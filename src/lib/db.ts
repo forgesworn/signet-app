@@ -2512,16 +2512,16 @@ export async function saveKeepsRow(value: unknown, encryptionKey: string): Promi
   await db.put('identity', { id: KEEPS_KEY, secret: encrypted });
 }
 
-/** The stored value, or null when nothing is stored, the key is wrong or it is not JSON. */
+/**
+ * The stored value, or null when nothing is stored. A row that is there but
+ * cannot be read (wrong key, not JSON) throws, so a caller never mistakes it for
+ * an empty list and saves over it.
+ */
 export async function loadKeepsRow(encryptionKey: string): Promise<unknown> {
   const db = await getDB();
   const record = await db.get('identity', KEEPS_KEY);
   if (!record || !record.secret) return null;
-  try {
-    return JSON.parse(await decryptSecret(record.secret, encryptionKey));
-  } catch {
-    return null;
-  }
+  return JSON.parse(await decryptSecret(record.secret, encryptionKey));
 }
 
 // --- Heartwood vault pubkeys (encrypted) ---

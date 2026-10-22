@@ -6,8 +6,12 @@ import type { NostrEvent } from 'signet-protocol';
 
 // The stored row, held in memory (the real row is covered in db.test.ts).
 let row: unknown = null;
+let dbThrows = false;
 vi.mock('./db', () => ({
-  loadKeepsRow: async () => (row === null ? null : JSON.parse(JSON.stringify(row))),
+  loadKeepsRow: async () => {
+    if (dbThrows) throw new Error('decrypt failed');
+    return row === null ? null : JSON.parse(JSON.stringify(row));
+  },
   saveKeepsRow: async (value: unknown) => { row = JSON.parse(JSON.stringify(value)); },
 }));
 const fetchMock = vi.fn();
@@ -23,6 +27,7 @@ import {
   resendClaim, revokeInvite, updateStoredKeeps, watchAcks, PersonaNotAvailableError, type KeepDeps,
 } from './keep-service';
 import { parseKeepPairLink } from './keep-link';
+import { KeepsUnreadableError } from './keep-store';
 
 const KEEP_SK = hexToBytes('0'.repeat(63) + '1');
 const K = getPublicKey(KEEP_SK);
@@ -46,7 +51,7 @@ const lastRumor = () => unwrapEvent(published[published.length - 1].wrap as neve
 const ackFromKeep = (tags: string[][]) =>
   wrapEvent({ kind: 27663, content: '', created_at: NOW + 1, tags: [['keep', K], ...tags] }, KEEP_SK, O) as unknown as NostrEvent;
 
-beforeEach(() => { row = null; published.length = 0; publishOk = true; fetchMock.mockReset(); subscribeMock.mockReset(); });
+beforeEach(() => { row = null; dbThrows = false; published.length = 0; publishOk = true; fetchMock.mockReset(); subscribeMock.mockReset(); });
 
 describe('claiming', () => {
   it('saves a pending Keep (owner = the persona, personas = [owner]) and sends the claim to its relays', async () => {
@@ -229,6 +234,41 @@ describe('listening for acks', () => {
     const stranger = wrapEvent({ kind: 27663, content: '', created_at: NOW, tags: [['keep', K], ['status', 'paired'], ['claim']] }, KEEP_SK, 'ee'.repeat(32)) as unknown as NostrEvent;
     await applyAckEvents(deps(), [stranger]);
     expect((await loadStoredKeeps('key'))[0].status).toBe('pending');
+  });
+});
+
+describe('an unreadable stored list (never overwritten)', () => {
+  const good = () => ({
+    keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1,
+    invites: [{ grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: 1, expiration: 2, status: 'waiting' }],
+  });
+
+  it('a row with one record this build cannot read is left untouched by a claim, with a clear error', async () => {
+    row = [good(), { ...good(), keep: 'ab'.repeat(32), status: 'a-newer-status' }];
+    const before = JSON.stringify(row);
+    await expect(claimKeep(deps(), link, O)).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(JSON.stringify(row)).toBe(before);
+    expect(published).toHaveLength(0);
+  });
+
+  it('a row that is not a list at all is also left alone by every write', async () => {
+    row = { surprise: true };
+    const before = JSON.stringify(row);
+    await expect(updateStoredKeeps('key', l => [...l])).rejects.toBeInstanceOf(KeepsUnreadableError);
+    await expect(createInvite(deps(), K, { kind: 'guest' })).rejects.toBeInstanceOf(KeepsUnreadableError);
+    await expect(forgetKeep(deps(), K)).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(JSON.stringify(row)).toBe(before);
+  });
+
+  it('a row that cannot be decrypted (the db layer throws) is treated the same way', async () => {
+    dbThrows = true;
+    await expect(loadStoredKeeps('key')).rejects.toBeInstanceOf(KeepsUnreadableError);
+    await expect(claimKeep(deps(), link, O)).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(row).toBeNull();
+  });
+
+  it('nothing stored is an empty list, not an error', async () => {
+    expect(await loadStoredKeeps('key')).toEqual([]);
   });
 });
 
