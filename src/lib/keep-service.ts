@@ -18,7 +18,7 @@ import {
   claimRumor, inviteRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
 } from './keep-messages';
 import {
-  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
+  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, findKeep, markInviteSent, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, resendDue, withInvite, withKeep,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 import type { KeepPairLink } from './keep-link';
@@ -179,6 +179,7 @@ export async function createInvite(
     createdAt: now,
     expiration: now + (req.kind === 'guest' ? KEEP_GUEST_PASS_S : KEEP_PERSONAL_INVITE_S),
     status: 'waiting',
+    sentAt: now,
   };
   let keep: StoredKeep | undefined;
   await updateStoredKeeps(deps.encryptionKey, list => {
@@ -197,7 +198,12 @@ export async function createInvite(
 }
 
 /** Send a waiting invite again (same grant, same tags, so the Keep treats it as a repeat). */
-export function resendInvite(deps: KeepDeps, keep: StoredKeep, invite: StoredInvite): Promise<boolean> {
+export async function resendInvite(deps: KeepDeps, keep: StoredKeep, invite: StoredInvite): Promise<boolean> {
+  const at = nowOf(deps);
+  await updateStoredKeeps(deps.encryptionKey, list => {
+    const found = findKeep(list, keep.keep);
+    return found ? withKeep(list, markInviteSent(found, invite.grant, at)) : list;
+  });
   return send(deps, keep, (b, now) => inviteRumor(b, specOf(keep, invite), now));
 }
 
@@ -207,11 +213,55 @@ export async function revokeInvite(deps: KeepDeps, keepId: string, grant: string
   await updateStoredKeeps(deps.encryptionKey, list => {
     const found = findKeep(list, keepId);
     if (!found) return list;
-    keep = markRevokeSent(found, grant);
+    keep = markRevokeSent(found, grant, nowOf(deps));
     return withKeep(list, keep);
   });
   if (!keep) return false;
   return send(deps, keep, (b, now) => revokeRumor(b, keepId, grant, now));
+}
+
+/**
+ * Send again what the Keep has not answered: invites still waiting and revokes
+ * not yet acked `revoked`, for paired Keeps whose owner persona can still sign,
+ * when the last send is over 10 minutes old (see `resendDue`). Each is stamped
+ * as sent before it goes out, inside the serialised write, so two callers (the
+ * list and the Keep's page opening together) send it once. A send that fails is
+ * tried again after the next 10 minutes, or by the owner with Send again.
+ * Returns how many were sent.
+ */
+export async function resendOutstanding(deps: KeepDeps): Promise<number> {
+  const at = nowOf(deps);
+  const batch: Array<{ keep: StoredKeep; invite: StoredInvite; revoke: boolean }> = [];
+  await updateStoredKeeps(deps.encryptionKey, list => {
+    let next = list as StoredKeep[];
+    for (const k of list) {
+      if (!deps.backendFor(k.claimedBy)) continue;
+      const due = resendDue(k, at);
+      if (due.length === 0) continue;
+      let updated = k;
+      for (const { invite, revoke } of due) {
+        updated = revoke ? markRevokeSent(updated, invite.grant, at) : markInviteSent(updated, invite.grant, at);
+        batch.push({ keep: updated, invite, revoke });
+      }
+      next = withKeep(next, updated);
+    }
+    return next;
+  });
+  let sent = 0;
+  for (const { keep, invite, revoke } of batch) {
+    try {
+      await send(deps, keep, (b, now) => (revoke ? revokeRumor(b, keep.keep, invite.grant, now) : inviteRumor(b, specOf(keep, invite), now)));
+      sent++;
+    } catch { /* tried again at the next opening */ }
+  }
+  return sent;
+}
+
+/** What opening the Keeps does: read the acks, then send again what is still unanswered. Resolves with the new list. */
+export async function catchUp(deps: KeepDeps): Promise<StoredKeep[]> {
+  await refreshAcks(deps);
+  await resendOutstanding(deps);
+  return loadStoredKeeps(deps.encryptionKey);
 }
 
 /** Forget a Keep on this device only (used for a claim that never completed). */

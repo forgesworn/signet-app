@@ -12,7 +12,7 @@
  * and the pure state changes; `keep-service.ts` does the sending.
  */
 import type { KeepAck, RefusalReason } from './keep-messages';
-import { KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_REFUSAL_REASONS } from './keep-wire';
+import { KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S } from './keep-wire';
 
 export type InviteStatus = 'waiting' | 'active' | 'revoked' | 'refused';
 export type InviteKind = 'personal' | 'guest';
@@ -34,6 +34,10 @@ export interface StoredInvite {
   reason?: RefusalReason;
   /** True once a revoke has been sent and its ack has not come yet. */
   revokeSent?: boolean;
+  /** When the invite was last sent (or tried), unix seconds. */
+  sentAt?: number;
+  /** When the revoke was last sent (or tried), unix seconds. */
+  revokeSentAt?: number;
   /** The real time of the newest ack applied (the ack rumor's `created_at`). */
   ackAt?: number;
 }
@@ -85,6 +89,8 @@ function isInvite(v: unknown): v is StoredInvite {
     && typeof i.status === 'string' && STATUSES.includes(i.status)
     && (i.reason === undefined || (KEEP_REFUSAL_REASONS as readonly string[]).includes(i.reason as string))
     && (i.revokeSent === undefined || typeof i.revokeSent === 'boolean')
+    && (i.sentAt === undefined || Number.isSafeInteger(i.sentAt))
+    && (i.revokeSentAt === undefined || Number.isSafeInteger(i.revokeSentAt))
     && (i.ackAt === undefined || Number.isSafeInteger(i.ackAt));
 }
 
@@ -171,8 +177,39 @@ export function withInvite(keep: StoredKeep, invite: StoredInvite): StoredKeep {
   return { ...keep, invites: [...keep.invites.filter(i => i.grant !== invite.grant), invite] };
 }
 
-export function markRevokeSent(keep: StoredKeep, grant: string): StoredKeep {
-  return { ...keep, invites: keep.invites.map(i => (i.grant === grant && i.status !== 'revoked' ? { ...i, revokeSent: true } : i)) };
+/** The revoke is going out (or going out again): note it, and when, until the Keep acks `revoked`. */
+export function markRevokeSent(keep: StoredKeep, grant: string, now?: number): StoredKeep {
+  return {
+    ...keep,
+    invites: keep.invites.map(i => (i.grant === grant && i.status !== 'revoked'
+      ? { ...i, revokeSent: true, ...(now !== undefined ? { revokeSentAt: now } : {}) } : i)),
+  };
+}
+
+/** Note when an invite was last sent. */
+export function markInviteSent(keep: StoredKeep, grant: string, now: number): StoredKeep {
+  return { ...keep, invites: keep.invites.map(i => (i.grant === grant ? { ...i, sentAt: now } : i)) };
+}
+
+/**
+ * What to send again for a paired Keep: an invite still waiting for the Keep,
+ * and a revoke the Keep has not acked `revoked`, once the last send is more
+ * than `KEEP_RESEND_AFTER_S` old. An expired invite is left alone (the Keep
+ * would only refuse it), and so is one the Keep has refused or revoked. The
+ * Keep treats a repeat of either message as idempotent.
+ */
+export function resendDue(keep: StoredKeep, now: number): Array<{ invite: StoredInvite; revoke: boolean }> {
+  if (keep.status !== 'paired') return [];
+  const due: Array<{ invite: StoredInvite; revoke: boolean }> = [];
+  for (const invite of keep.invites) {
+    if (isExpired(invite, now) || invite.status === 'revoked' || invite.status === 'refused') continue;
+    if (invite.revokeSent) {
+      if (now - (invite.revokeSentAt ?? invite.sentAt ?? invite.createdAt) > KEEP_RESEND_AFTER_S) due.push({ invite, revoke: true });
+    } else if (invite.status === 'waiting' && now - (invite.sentAt ?? invite.createdAt) > KEEP_RESEND_AFTER_S) {
+      due.push({ invite, revoke: false });
+    }
+  }
+  return due;
 }
 
 /** How far before our claim a claim ack may be dated and still count (clock difference with the Keep). */

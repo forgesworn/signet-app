@@ -24,7 +24,7 @@ vi.mock('./relay-service', () => ({
 
 import { LocalSigningBackend } from './signing-backend';
 import {
-  applyAckEvents, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
+  applyAckEvents, catchUp, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
   resendClaim, revokeInvite, updateStoredKeeps, watchAcks, PersonaNotAvailableError, type KeepDeps,
 } from './keep-service';
 import { parseKeepPairLink } from './keep-link';
@@ -285,6 +285,117 @@ function ackWrapAt(wrapAt: number, tags: string[][], sealer: Uint8Array = KEEP_S
     kind: 1059, content: nip44.v2.encrypt(JSON.stringify(seal), nip44.v2.utils.getConversationKey(eph, O)), created_at: wrapAt, tags: [['p', O]],
   }, eph) as unknown as NostrEvent;
 }
+
+describe('sending again what the Keep has not answered', () => {
+  const G1 = '11'.repeat(16);
+  const G2 = '55'.repeat(16);
+  let t = NOW;
+  const at = () => deps({ now: () => t });
+  const inv = (grant: string, over: object = {}) => ({
+    grant, secret: grant.repeat(2), kind: 'guest', createdAt: NOW, expiration: NOW + 86400, status: 'waiting', sentAt: NOW, ...over,
+  });
+  const pairedWith = (invites: object[], over: object = {}) => [{
+    keep: K, name: 'Home', relays: ['wss://a.example', 'wss://b.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, invites, ...over,
+  }];
+  const none = { events: [] as NostrEvent[], attempted: 2, reached: 2 };
+  const kinds = () => published.map(p => unwrapEvent(p.wrap as never, KEEP_SK).kind);
+  beforeEach(() => { t = NOW; fetchMock.mockResolvedValue(none); });
+
+  it('waits ten minutes: nothing is sent at five, the invite goes again after ten', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 300;
+    await catchUp(at());
+    expect(published).toHaveLength(0);
+    t = NOW + 601;
+    await catchUp(at());
+    expect(kinds()).toEqual([27661]);
+    const rumor = lastRumor();
+    expect(rumor.tags).toContainEqual(['grant', G1]);
+    expect(rumor.tags).toContainEqual(['secret', G1.repeat(2)]);
+    expect(published[0].relays).toEqual(['wss://a.example', 'wss://b.example']);
+  });
+
+  it('sends it once per ten minutes, however many times the page opens', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 700;
+    await Promise.all([catchUp(at()), catchUp(at())]);
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    expect((await loadStoredKeeps('key'))[0].invites[0].sentAt).toBe(NOW + 700);
+    t = NOW + 700 + 601;
+    await catchUp(at());
+    expect(published).toHaveLength(2);
+  });
+
+  it('sends a revoke the Keep has not acked, and stops once it acks revoked', async () => {
+    row = pairedWith([inv(G1, { status: 'active', revokeSent: true, revokeSentAt: NOW })]);
+    t = NOW + 601;
+    await catchUp(at());
+    expect(kinds()).toEqual([27662]);
+    expect(lastRumor().tags).toEqual([['keep', K], ['grant', G1]]);
+    t = NOW + 601 + 601;
+    fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(NOW + 1000, [['status', 'revoked'], ['grant', G1]])] });
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    expect((await loadStoredKeeps('key'))[0].invites[0]).toMatchObject({ status: 'revoked', revokeSent: false });
+  });
+
+  it('reads the acks first: an invite the Keep has acked meanwhile is not sent again', async () => {
+    row = pairedWith([inv(G1), inv(G2)]);
+    t = NOW + 601;
+    fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(NOW + 500, [['status', 'active'], ['grant', G1]])] });
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    expect(lastRumor().tags).toContainEqual(['grant', G2]);
+  });
+
+  it('reads the acks from every relay in the pairing link', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    await catchUp(at());
+    expect(fetchMock).toHaveBeenCalledWith(expect.anything(), { relays: ['wss://a.example', 'wss://b.example'] });
+  });
+
+  it('leaves alone an expired, refused or revoked invite, an active one, and a Keep still pending', async () => {
+    t = NOW + 90_000;
+    row = pairedWith([inv(G1), inv(G2, { status: 'refused', reason: 'full' }), inv('66'.repeat(16), { status: 'active' }), inv('77'.repeat(16), { status: 'revoked' })]);
+    await catchUp(at());
+    expect(published).toHaveLength(0); // G1 expired (NOW + 86400)
+    row = pairedWith([inv(G1, { expiration: NOW + 10 ** 6 })], { status: 'pending', code: CODE });
+    await catchUp(at());
+    expect(published).toHaveLength(0);
+  });
+
+  it('skips a persona that cannot sign any more, without an error or a stamp', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    await catchUp(deps({ now: () => t, backendFor: () => null }));
+    expect(published).toHaveLength(0);
+    expect((await loadStoredKeeps('key'))[0].invites[0].sentAt).toBe(NOW);
+  });
+
+  it('a failed send is not an error and is tried again after ten more minutes', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    publishOk = false;
+    await expect(catchUp(at())).resolves.toBeDefined();
+    publishOk = true;
+    t = NOW + 700;
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    t = NOW + 601 + 601;
+    await catchUp(at());
+    expect(published).toHaveLength(2);
+  });
+
+  it('a revoke or invite the owner sends by hand is stamped, so it is not sent again at once', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    expect(await revokeInvite(at(), K, G1)).toBe(true);
+    await catchUp(at());
+    expect(kinds()).toEqual([27662]);
+  });
+});
 
 describe('the ack cursor', () => {
   const TWO_DAYS = 2 * 86400;

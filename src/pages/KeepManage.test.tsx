@@ -152,6 +152,22 @@ describe('a claimed Keep', () => {
     expect(rowEl).toHaveTextContent('Owned by Anon');
   });
 
+  it('opening its page sends an unanswered invite again, once, and not a recent one', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const waiting = (grant: string, sentAt: number) => ({
+      grant, secret: grant.repeat(2), kind: 'guest', createdAt: sentAt, sentAt, expiration: now + 86400, status: 'waiting',
+    });
+    row = [pairedKeep({ invites: [waiting('11'.repeat(16), now - 3600), waiting('55'.repeat(16), now - 60)] })];
+    renderKeep();
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    await screen.findByRole('heading', { name: 'Games' });
+    await waitFor(() => expect(published).toHaveLength(1));
+    await new Promise(r => setTimeout(r, 50));
+    expect(published).toHaveLength(1);
+    expect(lastRumor().kind).toBe(27661);
+    expect(lastRumor().tags).toContainEqual(['grant', '11'.repeat(16)]);
+  });
+
   it('puts everything under a Games heading and builds nothing else', async () => {
     row = [pairedKeep()];
     renderKeep();

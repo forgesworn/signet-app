@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EffectiveContact } from '../types';
 import { parseKeepPairLink, type KeepPairLink } from '../lib/keep-link';
 import {
-  PersonaNotAvailableError, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks, resendClaim,
+  PersonaNotAvailableError, catchUp, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, resendClaim,
   resendInvite, revokeInvite, watchAcks, type KeepDeps,
 } from '../lib/keep-service';
 import { KEEPS_UNREADABLE_TEXT, KeepsUnreadableError, inviteStatusLabel, isExpired, type StoredInvite, type StoredKeep } from '../lib/keep-store';
@@ -70,7 +70,7 @@ export function useStoredKeeps(host: KeepHost | undefined) {
       setKeeps(list);
       setLoaded(true);
       if (list.length === 0) return;
-      const fresh = await refreshAcks(deps).catch(() => list);
+      const fresh = await catchUp(deps).catch(() => list);
       if (!cancelled) setKeeps(fresh);
     }, e => {
       if (cancelled) return;
@@ -255,6 +255,15 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // Opening the Keep reads its acks again and sends again what it has not answered.
+  useEffect(() => {
+    let cancelled = false;
+    catchUp(host.deps).then(list => { if (!cancelled) setKeeps(list); }, () => undefined);
+    return () => { cancelled = true; };
+    // Once per Keep opened; `host.deps` is a fresh object each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keep.keep, host.deps.encryptionKey]);
 
   const reload = useCallback(async () => { setKeeps(await loadStoredKeeps(host.deps.encryptionKey)); }, [host.deps.encryptionKey, setKeeps]);
 
