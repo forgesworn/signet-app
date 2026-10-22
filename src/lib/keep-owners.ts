@@ -332,12 +332,14 @@ export function reconcileKeep(keep: StoredKeep, ctx: ReconcileContext): StoredKe
 // ---- words -----------------------------------------------------------------
 
 /**
- * "All of you" when every persona of the account is linked (and the Keep was
- * made for all of them, or there is more than one persona), else "Only A, B".
+ * "All of you" only for a Keep made for all of the account's personas, while
+ * every one of them is still linked; else "Only A, B" naming the linked ones.
+ * Linking the rest by hand does not turn an Only-this-persona Keep into
+ * "All of you": the label follows the scope the Keep was made with.
  */
 export function scopeLabel(keep: StoredKeep, accountPersonas: readonly string[], nameOf: (persona: string) => string): string {
   const all = accountPersonas.length > 0 && accountPersonas.every(p => isLinked(keep, p));
-  if (all && (keep.scope === 'all' || accountPersonas.length > 1)) return 'All of you';
+  if (all && keep.scope === 'all') return 'All of you';
   return `Only ${keep.personas.map(nameOf).join(', ')}`;
 }
 

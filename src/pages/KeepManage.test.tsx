@@ -385,7 +385,9 @@ describe('personas (K1e)', () => {
     const update = published.map(w => unwrapEvent(w as never, KEEP_SK)).find(r => r.kind === 27664)!;
     expect(update.tags).toEqual([['keep', K], ['rev', '1'], ['persona', O, 'games'], ['persona', BOB, 'games']]);
     await waitFor(() => expect(within(section).getByText('Waiting for the Keep')).toBeInTheDocument());
-    expect(screen.getByTestId('keep-scope')).toHaveTextContent('All of you');
+    // Linked by hand, the Keep was still claimed for Only this persona: the label follows that.
+    expect(screen.getByTestId('keep-scope')).toHaveTextContent('Only Anon, Bob');
+    expect(screen.getByTestId('keep-scope')).not.toHaveTextContent('All of you');
   });
 
   it('linking and unlinking a persona ask for the PIN first, and nothing is sent when it is not confirmed', async () => {

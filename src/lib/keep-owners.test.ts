@@ -415,12 +415,23 @@ describe('reconcile', () => {
 
 describe('words', () => {
   const names = (p: string) => ({ [A]: 'Alice', [B]: 'Bob', [C]: 'Cara' } as Record<string, string>)[p];
-  it('All of you when every persona is linked, else Only <names>', () => {
+  it('All of you only for an all-my-personas Keep with every persona linked, else Only <names>', () => {
     const one = paired('one');
     expect(scopeLabel(one, [A, B], names)).toBe('Only Alice');
-    expect(scopeLabel(linkPersona(one, B)!, [A, B], names)).toBe('All of you');
     expect(scopeLabel(paired('all'), [A], names)).toBe('All of you');
     expect(scopeLabel(paired('one'), [A], names)).toBe('Only Alice');
     expect(scopeLabel(linkPersona(one, B)!, [A, B, C], names)).toBe('Only Alice, Bob');
+  });
+
+  it('an Only-this-persona Keep keeps reading Only <names> once every persona is linked by hand', () => {
+    const both = linkPersona(paired('one'), B)!;
+    expect(scopeLabel(both, [A, B], names)).toBe('Only Alice, Bob');
+    expect(scopeLabel(linkPersona(both, C)!, [A, B, C], names)).toBe('Only Alice, Bob, Cara');
+  });
+
+  it('an all-my-personas Keep reads All of you only while every persona is linked', () => {
+    const all = linkPersona(paired('all'), B)!;
+    expect(scopeLabel(all, [A, B], names)).toBe('All of you');
+    expect(scopeLabel(all, [A, B, C], names)).toBe('Only Alice, Bob');
   });
 });
