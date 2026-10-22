@@ -401,7 +401,7 @@ export async function forgetKeep(deps: KeepDeps, keepId: string): Promise<Stored
 /** Open gift wraps and apply the acks inside; wraps that are not valid acks from our Keeps are ignored. */
 export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent[]): Promise<StoredKeep[]> {
   const stored = await loadStoredKeeps(deps.encryptionKey);
-  const acks: Array<{ ack: KeepAck; wrapAt: number }> = [];
+  const acks: Array<{ ack: KeepAck; persona: string; wrapAt: number }> = [];
   for (const wrap of events) {
     const persona = wrap.tags?.find(t => t[0] === 'p')?.[1];
     if (!persona) continue;
@@ -409,30 +409,30 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
     const backend = keeps.size > 0 ? deps.backendFor(persona) : null;
     if (!backend) continue;
     const ack = await unwrapKeepAck(wrap, backend, keeps);
-    if (ack && Number.isSafeInteger(wrap.created_at)) acks.push({ ack, wrapAt: wrap.created_at });
+    if (ack && Number.isSafeInteger(wrap.created_at)) acks.push({ ack, persona, wrapAt: wrap.created_at });
   }
   if (acks.length === 0) return stored;
   const now = nowOf(deps);
   return updateStoredKeeps(deps.encryptionKey, list => advanceAckCursors(
     acks.reduce((l, a) => (a.ack.owners ? applyOwnersAck(l, a.ack, now) : applyAck(l, a.ack)), list),
-    acks.map(a => ({ keep: a.ack.keep, wrapAt: a.wrapAt })), now,
+    acks.map(a => ({ keep: a.ack.keep, persona: a.persona, wrapAt: a.wrapAt })), now,
   ));
 }
 
-/**
- * What to read for each owner persona: its acks on every relay of every one of
- * its Keeps' pairing links, from before the oldest Keep's cursor.
- */
 /** The personas whose key an ack for this Keep may be addressed to: the claimer, every linked persona, the signer of an update. */
 export function ackPersonas(keep: StoredKeep): string[] {
   return [...new Set([keep.claimedBy, ...keep.personas, ...(keep.update ? [keep.update.signer] : [])])];
 }
 
+/**
+ * What to read for each owner persona: its acks on every relay of every one of its Keeps' pairing
+ * links, from before the oldest of the persona's own cursors for those Keeps.
+ */
 function ackScopes(keeps: readonly StoredKeep[], now: number): Array<{ persona: string; relays: string[]; since: number }> {
   const byPersona = new Map<string, StoredKeep[]>();
   for (const k of keeps) for (const p of ackPersonas(k)) byPersona.set(p, [...(byPersona.get(p) ?? []), k]);
   return [...byPersona].map(([persona, group]) => ({
-    persona, relays: [...new Set(group.flatMap(k => k.relays))], since: ackReadSince(group, now),
+    persona, relays: [...new Set(group.flatMap(k => k.relays))], since: ackReadSince(group, persona, now),
   }));
 }
 

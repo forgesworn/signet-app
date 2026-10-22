@@ -410,7 +410,7 @@ describe('the ack cursor', () => {
     fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(W, [['status', 'paired'], ['claim']])] });
     await refreshAcks(deps());
     expect(sinceOf(0)).toBe(NOW - 3 * 86400);
-    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(W);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(W);
     fetchMock.mockResolvedValueOnce(none);
     await refreshAcks(deps());
     expect(sinceOf(1)).toBe(W - TWO_DAYS);
@@ -434,23 +434,23 @@ describe('the ack cursor', () => {
   it('a wrap dated in the future cannot push the cursor past now', async () => {
     await claimKeep(deps(), link, O);
     await applyAckEvents(deps(), [ackWrapAt(NOW + 5 * 86400, [['status', 'paired'], ['claim']])]);
-    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(NOW);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(NOW);
   });
 
   it('a wrap that is not a valid ack from this Keep does not move the cursor', async () => {
     await claimKeep(deps(), link, O);
     const stranger = ackWrapAt(NOW - 10, [['status', 'paired'], ['claim']], hexToBytes('0'.repeat(63) + '9'));
     await applyAckEvents(deps(), [stranger]);
-    expect((await loadStoredKeeps('key'))[0].ackCursor).toBeUndefined();
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBeUndefined();
   });
 
   it('a repeated ack moves the cursor only forward', async () => {
     await claimKeep(deps(), link, O);
     await applyAckEvents(deps(), [ackWrapAt(NOW - 100, [['status', 'paired'], ['claim']])]);
     await applyAckEvents(deps(), [ackWrapAt(NOW - 9000, [['status', 'paired'], ['claim']])]);
-    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(NOW - 100);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(NOW - 100);
     await applyAckEvents(deps(), [ackWrapAt(NOW - 50, [['status', 'paired'], ['claim']])]);
-    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(NOW - 50);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(NOW - 50);
   });
 
   it('the live subscription starts from the same place', async () => {
@@ -476,7 +476,7 @@ describe('the ack cursor', () => {
   it('re-pairing starts the reads afresh', async () => {
     row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: NOW - 100, invites: [] }];
     await claimKeep(deps(), parseKeepPairLink(`signet-keep:pair?k=${K}&c=${'44'.repeat(16)}&n=Home&r=wss://a.example`)!, O);
-    expect((await loadStoredKeeps('key'))[0].ackCursor).toBeUndefined();
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBeUndefined();
   });
 });
 

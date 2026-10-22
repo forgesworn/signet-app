@@ -120,11 +120,13 @@ export interface StoredKeep {
   code?: string;
   claimedAt: number;
   /**
-   * The `created_at` of the newest valid ack wrap read for this Keep (never later than the
-   * moment it was read). The next read starts 2 days before it, since the Keep backdates its
-   * acks by up to 2 days. Absent until the first ack: that read goes 3 days back.
+   * Per owner persona: the `created_at` of the newest valid ack wrap read for this Keep from the
+   * wraps addressed to that persona (never later than the moment it was read). The next read of
+   * that persona's acks starts 2 days before it, since the Keep backdates its acks by up to
+   * 2 days. A persona with none yet reads 3 days back. A K1d record had one cursor for the Keep
+   * (`ackCursor`); it is copied to each owner persona when the record is read.
    */
-  ackCursor?: number;
+  ackCursors?: Record<string, number>;
   invites: StoredInvite[];
 }
 
@@ -198,6 +200,8 @@ function isKeep(v: unknown): boolean {
       && Object.entries(links).every(([p, l]) => HEX64.test(p) && isLink(l))))
     && (k.seen === undefined || (Array.isArray(k.seen) && k.seen.every(p => typeof p === 'string' && HEX64.test(p))))
     && (k.update === undefined || isUpdate(k.update))
+    && (k.ackCursors === undefined || (!!k.ackCursors && typeof k.ackCursors === 'object' && !Array.isArray(k.ackCursors)
+      && Object.entries(k.ackCursors).every(([p, at]) => HEX64.test(p) && Number.isSafeInteger(at))))
     && isK1dKeep(v);
 }
 
@@ -223,7 +227,8 @@ function isK1dKeep(v: unknown): boolean {
  * next time the list is written.
  */
 function migrateKeep(raw: Record<string, unknown>): StoredKeep {
-  const k = raw as unknown as StoredKeep;
+  const { ackCursor: legacyCursor, ...fields } = raw;
+  const k = fields as unknown as StoredKeep;
   const claimer: PersonaLink = { sections: [KEEP_SECTION_GAMES], addedRev: 0, active: true };
   const stored = raw.links ? (raw.links as Record<string, PersonaLink>) : { [k.claimedBy]: claimer };
   // Records made before the time of an update and of an accept was kept read as made at the claim.
@@ -231,9 +236,15 @@ function migrateKeep(raw: Record<string, unknown>): StoredKeep {
     p, l.accept && l.accept.composedAt === undefined ? { ...l, accept: { ...l.accept, composedAt: k.claimedAt } } : l,
   ]));
   const update = k.update && k.update.composedAt === undefined ? { ...k.update, composedAt: k.claimedAt } : k.update;
+  // One cursor for the Keep (K1d, early K1e) becomes the same cursor for each persona whose acks are read.
+  const personas = Object.keys(links);
+  const ackCursors = k.ackCursors ?? (Number.isSafeInteger(legacyCursor)
+    ? Object.fromEntries([...new Set([k.claimedBy, ...personas, ...(update ? [update.signer] : [])])].map(p => [p, legacyCursor as number]))
+    : undefined);
   return {
     ...k,
     ...(update ? { update } : {}),
+    ...(ackCursors ? { ackCursors } : {}),
     scope: (KEEP_SCOPES as readonly unknown[]).includes(raw.scope) ? raw.scope as KeepScope : 'one',
     rev: Number.isSafeInteger(raw.rev) ? raw.rev as number : 0,
     links,
@@ -273,7 +284,7 @@ export function newPendingKeep(a: {
 export function repairKeep(
   keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number; scope?: KeepScope },
 ): StoredKeep {
-  const { ackCursor: _cursor, update: _update, ...rest } = keep; // a new pairing reads acks afresh
+  const { ackCursors: _cursors, update: _update, ...rest } = keep; // a new pairing reads acks afresh
   // A reset Keep has forgotten its owners list: back to the claimer alone at revision 0, to be linked again.
   // The owner personas' own games invites may be gone from the box too: send them again (a repeat is harmless).
   return {
@@ -287,27 +298,40 @@ export function repairKeep(
   };
 }
 
-/** Where a read of the acks for these Keeps (one owner persona) starts: before the oldest cursor. */
-export function ackReadSince(keeps: readonly StoredKeep[], now: number): number {
-  return Math.min(...keeps.map(k => (k.ackCursor === undefined ? now - KEEP_ACK_FIRST_LOOKBACK_S : k.ackCursor - KEEP_ACK_BACKDATE_S)));
+/** Where a read of the acks addressed to `persona` for these Keeps starts: before the oldest of its cursors. */
+export function ackReadSince(keeps: readonly StoredKeep[], persona: string, now: number): number {
+  return Math.min(...keeps.map(k => {
+    const cursor = k.ackCursors?.[persona];
+    return cursor === undefined ? now - KEEP_ACK_FIRST_LOOKBACK_S : cursor - KEEP_ACK_BACKDATE_S;
+  }));
 }
 
 /**
- * Move the ack cursor of each Keep forward to the newest wrap time read for it
+ * Move the ack cursor of each (Keep, persona) forward to the newest wrap time read for it
  * (capped at `now`, so a wrap dated in the future cannot push it past what
  * exists). Returns the same list when nothing moved.
  */
 export function advanceAckCursors(
-  list: readonly StoredKeep[], read: ReadonlyArray<{ keep: string; wrapAt: number }>, now: number,
+  list: readonly StoredKeep[], read: ReadonlyArray<{ keep: string; persona: string; wrapAt: number }>, now: number,
 ): StoredKeep[] {
-  const newest = new Map<string, number>();
-  for (const { keep, wrapAt } of read) newest.set(keep, Math.max(newest.get(keep) ?? -Infinity, Math.min(wrapAt, now)));
+  const newest = new Map<string, Map<string, number>>();
+  for (const { keep, persona, wrapAt } of read) {
+    const byPersona = newest.get(keep) ?? new Map<string, number>();
+    byPersona.set(persona, Math.max(byPersona.get(persona) ?? -Infinity, Math.min(wrapAt, now)));
+    newest.set(keep, byPersona);
+  }
   let changed = false;
   const next = list.map(k => {
-    const at = newest.get(k.keep);
-    if (at === undefined || (k.ackCursor !== undefined && k.ackCursor >= at)) return k;
+    const found = newest.get(k.keep);
+    if (!found) return k;
+    let cursors = k.ackCursors;
+    for (const [persona, at] of found) {
+      if (cursors?.[persona] !== undefined && cursors[persona] >= at) continue;
+      cursors = { ...cursors, [persona]: at };
+    }
+    if (cursors === k.ackCursors) return k;
     changed = true;
-    return { ...k, ackCursor: at };
+    return { ...k, ackCursors: cursors };
   });
   return changed ? next : list as StoredKeep[];
 }

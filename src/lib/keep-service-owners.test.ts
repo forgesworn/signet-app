@@ -22,7 +22,7 @@ vi.mock('./relay-service', () => ({
 
 import { LocalSigningBackend } from './signing-backend';
 import {
-  NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, applyAckEvents, catchUp, changeOwners, claimKeep, loadStoredKeeps,
+  NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, applyAckEvents, catchUp, changeOwners, claimKeep, loadStoredKeeps, refreshAcks,
   settle, watchAcks, type KeepDeps,
 } from './keep-service';
 import { KeepsUnreadableError, type StoredKeep } from './keep-store';
@@ -388,5 +388,56 @@ describe('an unreadable list is never written over', () => {
     expect(k).toMatchObject({ scope: 'one', rev: 0, personas: [A], seen: [A] });
     expect(k.links[A]).toEqual({ sections: ['games'], addedRev: 0, active: true });
     expect(k.invites).toHaveLength(1);
+  });
+});
+
+describe('one ack cursor for each owner persona of a Keep', () => {
+  const both = (extra: object = {}) => [{
+    keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: A, personas: [A, B], scope: 'all', rev: 1, seen: [A, B], status: 'paired',
+    claimedAt: 1, invites: [],
+    links: { [A]: { sections: [], addedRev: 0, active: true }, [B]: { sections: [], addedRev: 1, active: true } }, ...extra,
+  }];
+  const sinceFor = (persona: string) => {
+    const call = fetchMock.mock.calls.find(c => (c[0] as Array<{ '#p': string[] }>)[0]['#p'][0] === persona)!;
+    return (call[0] as Array<{ since: number }>)[0].since;
+  };
+
+  it('an ack to one persona moves only that persona\'s cursor, and each is read from its own cursor', async () => {
+    row = both();
+    const toA = ack(A, [['status', 'updated'], ['rev', '1']], NOW - 100);
+    const toB = ack(B, [['status', 'updated'], ['rev', '1']], NOW - 100);
+    await applyAckEvents(deps(), [toA]);
+    const [afterA] = await loadStoredKeeps('key');
+    expect(afterA.ackCursors).toEqual({ [A]: Math.min(toA.created_at, NOW) });
+    await applyAckEvents(deps(), [toB]);
+    const [both2] = await loadStoredKeeps('key');
+    expect(both2.ackCursors).toEqual({ [A]: Math.min(toA.created_at, NOW), [B]: Math.min(toB.created_at, NOW) });
+    // A's cursor moves on later; B's stays where it was.
+    const later = ack(A, [['status', 'updated'], ['rev', '2']], NOW - 10);
+    await applyAckEvents(deps(), [later]);
+    const [moved] = await loadStoredKeeps('key');
+    expect(moved.ackCursors![B]).toBe(Math.min(toB.created_at, NOW));
+    expect(moved.ackCursors![A]).toBe(Math.min(Math.max(toA.created_at, later.created_at), NOW)); // only forward
+    fetchMock.mockClear();
+    await refreshAcks(deps());
+    expect(sinceFor(A)).toBe(moved.ackCursors![A] - 2 * DAY);
+    expect(sinceFor(B)).toBe(moved.ackCursors![B] - 2 * DAY);
+  });
+
+  it('a persona with no cursor yet reads three days back, whatever the other persona has', async () => {
+    row = both({ ackCursors: { [A]: NOW - 100 } });
+    await refreshAcks(deps());
+    expect(sinceFor(A)).toBe(NOW - 100 - 2 * DAY);
+    expect(sinceFor(B)).toBe(NOW - 3 * DAY);
+  });
+
+  it('the one cursor of a record made before this is copied to each persona that is read', async () => {
+    row = both({ ackCursor: NOW - 5000 });
+    await refreshAcks(deps());
+    expect(sinceFor(A)).toBe(NOW - 5000 - 2 * DAY);
+    expect(sinceFor(B)).toBe(NOW - 5000 - 2 * DAY);
+    const k = (await loadStoredKeeps('key'))[0] as StoredKeep & { ackCursor?: number };
+    expect(k.ackCursor).toBeUndefined();
+    expect(k.ackCursors).toEqual({ [A]: NOW - 5000, [B]: NOW - 5000 });
   });
 });
