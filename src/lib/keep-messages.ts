@@ -4,9 +4,10 @@
  * relay, no storage. See the K1d contract for the wire format.
  *
  * Sending reuses `giftWrap` (rumor -> kind 13 seal signed by the persona ->
- * kind 1059 wrap under a throwaway key). Its `created_at` jitter on seal and
- * wrap is a few seconds, which sits inside NIP-59's "up to two days back"
- * allowance; the rumor carries the real time, as the contract requires.
+ * kind 1059 wrap under a throwaway key). The `created_at` of the seal and of
+ * the wrap are each backdated by a random time of up to two days (standard
+ * NIP-59, so the relays cannot pair our wrap with the Keep's ack by time); the
+ * rumor carries the real time, as the contract requires.
  *
  * Reading an ack follows the contract's receiver rules to the letter: the seal
  * must verify and be signed by a Keep key we know, the rumor's author must be
@@ -21,7 +22,7 @@ import { sanitizeDisplayName } from './text-sanitize';
 import type { DecryptingSigningBackend } from './signing-backend';
 import {
   KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MSG_ACK_KIND, KEEP_MSG_CLAIM_KIND,
-  KEEP_MSG_INVITE_KIND, KEEP_MSG_REVOKE_KIND, KEEP_REFUSAL_REASONS,
+  KEEP_MSG_INVITE_KIND, KEEP_MSG_REVOKE_KIND, KEEP_REFUSAL_REASONS, KEEP_WRAP_JITTER_S,
 } from './keep-wire';
 
 export type AckStatus = typeof KEEP_ACK_STATUSES[number];
@@ -75,7 +76,7 @@ export function revokeRumor(backend: DecryptingSigningBackend, keep: string, gra
 
 /** Wrap one rumor to the Keep; the wrap goes to the Keep's relays. */
 export function wrapForKeep(rumor: UnsignedEvent, keep: string, backend: DecryptingSigningBackend): Promise<NostrEvent> {
-  return giftWrap(rumor, keep, backend);
+  return giftWrap(rumor, keep, backend, { maxJitterS: KEEP_WRAP_JITTER_S });
 }
 
 export interface KeepAck {

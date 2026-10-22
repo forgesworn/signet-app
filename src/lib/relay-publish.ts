@@ -99,9 +99,12 @@ function computeEventId(event: UnsignedEvent): string {
  * window: 0-30s in the past, never in the future. (Widening this needs the
  * consumer's `since` widened in lockstep — see signet-verify.)
  */
-function randomTimestamp(): number {
-  return Math.floor(Date.now() / 1000) - Math.floor(Math.random() * 30);
+function randomTimestamp(maxJitterS = DEFAULT_WRAP_JITTER_S): number {
+  return Math.floor(Date.now() / 1000) - Math.floor(Math.random() * maxJitterS);
 }
+
+/** The default jitter above, in seconds. Callers whose recipient reads further back may pass a larger one. */
+const DEFAULT_WRAP_JITTER_S = 30;
 
 /**
  * Gift-wrap an unsigned event using NIP-17 (kind 1059).
@@ -116,12 +119,19 @@ function randomTimestamp(): number {
  *
  * Exported so modules outside this file (audit log, future NIP-17 emitters)
  * can reuse the single gift-wrap implementation instead of forking it.
+ *
+ * `opts.maxJitterS` widens the backdating of the seal's and the wrap's
+ * `created_at` (each is `now` minus a random 0..maxJitterS-1 seconds). The
+ * default is the 30 s above; only pass more for a recipient that reads far
+ * enough back (the Keep does: standard NIP-59 is up to 2 days).
  */
 export async function giftWrap(
   innerEvent: UnsignedEvent,
   recipientPubkey: string,
   backend: SigningBackend,
+  opts?: { maxJitterS?: number },
 ): Promise<NostrEvent> {
+  const maxJitterS = opts?.maxJitterS ?? DEFAULT_WRAP_JITTER_S;
   // Step 1: Create rumor (unsigned event with ID)
   const rumor = {
     ...innerEvent,
@@ -134,7 +144,7 @@ export async function giftWrap(
   const sealTemplate: UnsignedEvent = {
     kind: 13,
     pubkey: backend.activePublicKeyHex,
-    created_at: randomTimestamp(),
+    created_at: randomTimestamp(maxJitterS),
     tags: [],
     content: encryptedRumor,
   };
@@ -156,7 +166,7 @@ export async function giftWrap(
     const wrapTemplate: UnsignedEvent = {
       kind: 1059,
       pubkey: ephPkHex,
-      created_at: randomTimestamp(),
+      created_at: randomTimestamp(maxJitterS),
       tags: [['p', recipientPubkey]],
       content: encryptedSeal,
     };

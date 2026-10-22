@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { unwrapEvent, wrapEvent } from 'nostr-tools/nip59';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -7,6 +8,7 @@ import { LocalSigningBackend } from './signing-backend';
 import {
   claimRumor, inviteRumor, parseAckRumor, revokeRumor, unwrapKeepAck, wrapForKeep,
 } from './keep-messages';
+import { giftWrap } from './relay-publish';
 
 // The contract's throwaway keys: Keep sk = 63 zeros then 1, owner sk = 63 zeros then 2.
 export const KEEP_SK_HEX = '0'.repeat(63) + '1';
@@ -95,6 +97,60 @@ describe('sending (what the Keep receives)', () => {
     const wrap = await wrapForKeep(claimRumor(owner, K, CODE, NOW), K, owner);
     const stranger = hexToBytes('0'.repeat(63) + '3');
     expect(() => unwrapEvent(wrap, stranger)).toThrow();
+  });
+});
+
+describe('timestamp jitter (NIP-59, up to 2 days)', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const TWO_DAYS = 2 * 86400;
+  const sealOf = (wrap: NostrEvent) => JSON.parse(nip44.v2.decrypt(wrap.content, nip44.v2.utils.getConversationKey(keepSk, wrap.pubkey))) as NostrEvent;
+  const now = () => Math.floor(Date.now() / 1000);
+
+  it('backdates the seal and the wrap by up to two days, never into the future', async () => {
+    let oldest = Infinity;
+    let newest = -Infinity;
+    for (let i = 0; i < 60; i++) {
+      const before = now();
+      const wrap = await wrapForKeep(claimRumor(owner, K, CODE, NOW), K, owner);
+      const after = now();
+      for (const t of [wrap.created_at, sealOf(wrap).created_at]) {
+        expect(t).toBeGreaterThan(before - TWO_DAYS - 1);
+        expect(t).toBeLessThanOrEqual(after);
+        oldest = Math.min(oldest, t); newest = Math.max(newest, t);
+      }
+    }
+    // Spread over the whole range, not the old few seconds.
+    expect(newest - oldest).toBeGreaterThan(86400);
+  });
+
+  it('the two extremes of the random draw stay inside [now - 2 days, now]', async () => {
+    const random = vi.spyOn(Math, 'random');
+    for (const draw of [0, 0.999999999]) {
+      random.mockReturnValue(draw);
+      const before = now();
+      const wrap = await wrapForKeep(claimRumor(owner, K, CODE, NOW), K, owner);
+      const after = now();
+      for (const t of [wrap.created_at, sealOf(wrap).created_at]) {
+        expect(t).toBeGreaterThanOrEqual(before - TWO_DAYS);
+        expect(t).toBeLessThanOrEqual(after);
+      }
+    }
+  });
+
+  it('giftWrap without the option keeps its 30 second window for other callers', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999999999);
+    const before = now();
+    const wrap = await giftWrap(claimRumor(owner, K, CODE, NOW), K, owner);
+    random.mockRestore();
+    for (const t of [wrap.created_at, sealOf(wrap).created_at]) {
+      expect(t).toBeGreaterThanOrEqual(before - 30);
+      expect(t).toBeLessThanOrEqual(now());
+    }
+  });
+
+  it('the rumor inside keeps the real time', async () => {
+    const wrap = await wrapForKeep(claimRumor(owner, K, CODE, NOW), K, owner);
+    expect(openAsKeep(wrap).created_at).toBe(NOW);
   });
 });
 

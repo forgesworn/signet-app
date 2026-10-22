@@ -52,5 +52,17 @@ export const KEEP_GUEST_PASS_S = 24 * 3600;
 /** The longest `name` label an invite carries, in characters. */
 export const KEEP_INVITE_LABEL_MAX = 40;
 
-/** How far back to ask relays for acks: the 2-day NIP-59 jitter plus a day. */
+/** Replaced by the cursor constants below in a following change. */
 export const KEEP_ACK_LOOKBACK_S = 3 * 86400;
+
+/** NIP-59: the seal and wrap of a message to a Keep are backdated by up to this many seconds (2 days). */
+export const KEEP_WRAP_JITTER_S = 2 * 86400;
+
+/** The Keep backdates its acks by up to KEEP_WRAP_JITTER_S too, so a read starts that far before the newest ack seen. */
+export const KEEP_ACK_BACKDATE_S = 2 * 86400;
+
+/** The first read for a Keep (no ack seen yet) goes back this far: the backdating plus a day. */
+export const KEEP_ACK_FIRST_LOOKBACK_S = 3 * 86400;
+
+/** An unanswered invite or revoke is sent again, when the Keep's page opens, once its last send is older than this. */
+export const KEEP_RESEND_AFTER_S = 600;
