@@ -11,10 +11,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EffectiveContact } from '../types';
 import { parseKeepPairLink, type KeepPairLink } from '../lib/keep-link';
 import {
-  PersonaNotAvailableError, catchUp, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, resendClaim,
-  resendInvite, revokeInvite, watchAcks, type KeepDeps,
+  NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, ackPersonas, catchUp, changeOwners, claimKeep, createInvite,
+  forgetKeep, keepShareLink, loadStoredKeeps, resendClaim, resendInvite, retryGamesInvite, revokeInvite, watchAcks,
+  type KeepDeps, type OwnerChange,
 } from '../lib/keep-service';
-import { KEEPS_UNREADABLE_TEXT, KeepsUnreadableError, inviteStatusLabel, isExpired, type StoredInvite, type StoredKeep } from '../lib/keep-store';
+import {
+  KEEPS_UNREADABLE_TEXT, KeepsUnreadableError, inviteStatusLabel, isExpired, refusalText, type KeepScope, type StoredInvite, type StoredKeep,
+} from '../lib/keep-store';
+import { canUnlink, gamesOn, gamesState, isActiveOwner, isLinked, playInvite, scopeLabel, updateFailedText } from '../lib/keep-owners';
+import { KEEP_MAX_OWNER_PERSONAS } from '../lib/keep-wire';
 import { inviteCandidates } from '../lib/keep-personas';
 import { shareInviteLink } from '../lib/keep-share';
 import { relayHostLabel } from '../lib/relay-url';
@@ -28,6 +33,13 @@ export interface KeepHost {
   activePersona: { pubkey: string; name: string } | null;
   /** Persona public key to the name the person gave it. */
   personaNames: Record<string, string>;
+  /** Every persona of the account (dependants left out), with whether this device can sign for it. */
+  personas: Array<{ pubkey: string; name: string; canSign: boolean }>;
+  /**
+   * Opens a link in the phone app registered for it. Only where that means something (the
+   * Android app); absent on the web, where Play here is not offered.
+   */
+  openApp?: (link: string) => void;
   /** The owner directory's contacts; null when this view cannot offer them. */
   contacts: EffectiveContact[] | null;
   /** The PIN / biometric check before a Keep is claimed. True when confirmed. */
@@ -39,9 +51,19 @@ export const NOT_AVAILABLE = 'Not available for this persona yet.';
 const muted = { fontSize: '0.8rem', color: 'var(--text-muted)' } as const;
 const smallBtn = { fontSize: '0.8rem', padding: '6px 12px', width: 'auto', flexShrink: 0 } as const;
 
-export function ownerLabel(host: KeepHost, keep: StoredKeep): string {
-  const name = (p: string) => host.personaNames[p] || `Persona ${p.slice(0, 8)}`;
-  return `Owned by ${keep.personas.map(name).join(', ')}`;
+const nameOf = (host: KeepHost) => (p: string) => host.personaNames[p] || `Persona ${p.slice(0, 8)}`;
+
+/** "All of you" or "Only <persona names>", for every persona alike. Personas this device cannot link do not count against "All". */
+export function keepScopeLabel(host: KeepHost, keep: StoredKeep): string {
+  return scopeLabel(keep, host.personas.filter(p => p.canSign).map(p => p.pubkey), nameOf(host));
+}
+
+function errorText(e: unknown): string {
+  if (e instanceof PersonaNotAvailableError) return NOT_AVAILABLE;
+  if (e instanceof KeepsUnreadableError) return KEEPS_UNREADABLE_TEXT;
+  if (e instanceof NotAnOwnerError) return 'This persona is not linked to the Keep, so it cannot change it.';
+  if (e instanceof OwnerChangeRefusedError) return e.message;
+  return 'Something went wrong. Try again.';
 }
 
 export function expiryText(expiration: number, now: number): string {
@@ -60,7 +82,7 @@ export function useStoredKeeps(host: KeepHost | undefined) {
   const depsRef = useRef(host?.deps);
   depsRef.current = host?.deps;
   const key = host?.deps.encryptionKey ?? '';
-  const watchKey = keeps.map(k => `${k.claimedBy}@${k.relays.join(',')}`).sort().join('|');
+  const watchKey = keeps.map(k => `${ackPersonas(k).join('+')}@${k.relays.join(',')}`).sort().join('|');
 
   useEffect(() => {
     const deps = depsRef.current;
@@ -109,7 +131,7 @@ export function StoredKeepRows({ host, keeps, onOpen }: { host: KeepHost; keeps:
         >
           <div style={{ fontWeight: 600, fontSize: '0.95rem', overflowWrap: 'anywhere' }}>{keep.name}</div>
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{statusLine(keep)}</div>
-          <div style={muted}>{ownerLabel(host, keep)}</div>
+          <div style={muted}>{keepScopeLabel(host, keep)}</div>
         </button>
       ))}
     </div>
@@ -125,6 +147,7 @@ export function AddKeep({ host, onDone, onCancel }: {
   const [link, setLink] = useState<KeepPairLink | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [scope, setScope] = useState<KeepScope>('all');
   const persona = host.activePersona;
   const canSign = !!persona && host.canSign(persona.pubkey);
 
@@ -141,7 +164,7 @@ export function AddKeep({ host, onDone, onCancel }: {
     setError('');
     try {
       if (!await host.confirmClaim(link.name, persona.name)) { setError('Not confirmed. Nothing was sent.'); return; }
-      const result = await claimKeep(host.deps, link, persona.pubkey);
+      const result = await claimKeep(host.deps, link, persona.pubkey, scope);
       if (result.kind === 'exists') { onDone(result.keep.keep, 'You have already added this Keep.'); return; }
       if (result.kind === 'other-owner') {
         const owner = host.personaNames[result.keep.claimedBy] || 'another persona';
@@ -164,9 +187,26 @@ export function AddKeep({ host, onDone, onCancel }: {
           <h3 style={{ margin: '0 0 8px', fontSize: '1.05rem', overflowWrap: 'anywhere' }}>Make {link.name} your Keep?</h3>
           {persona && (
             <p style={{ fontSize: '0.9rem', margin: '0 0 8px' }}>
-              It will belong to <strong>{persona.name}</strong>. Only this persona will be able to say who plays on it.
+              <strong>{persona.name}</strong> will set it up. Who can use it?
             </p>
           )}
+          <fieldset style={{ border: 'none', padding: 0, margin: '0 0 12px' }} disabled={busy}>
+            <legend style={{ ...muted, padding: 0, marginBottom: 4 }}>Who can use this Keep</legend>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6, fontSize: '0.9rem' }}>
+              <input type="radio" name="keep-scope" checked={scope === 'all'} onChange={() => setScope('all')} style={{ marginTop: 3 }} />
+              <span>
+                <strong>All my personas</strong>
+                <span style={{ ...muted, display: 'block' }}>Every persona of yours can use and manage it, including ones you make later.</span>
+              </span>
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: '0.9rem' }}>
+              <input type="radio" name="keep-scope" checked={scope === 'one'} onChange={() => setScope('one')} style={{ marginTop: 3 }} />
+              <span>
+                <strong>Only this persona</strong>
+                <span style={{ ...muted, display: 'block' }}>Just {persona?.name ?? 'this persona'}. You can link others later.</span>
+              </span>
+            </label>
+          </fieldset>
           <p style={{ ...muted, margin: '0 0 12px' }}>Talks to: {link.relays.map(relayHostLabel).join(', ')}</p>
           {!canSign && <p role="alert" style={{ fontSize: '0.9rem', color: 'var(--danger, #b00020)' }}>{NOT_AVAILABLE}</p>}
           {error && <p role="alert" style={{ fontSize: '0.9rem', color: 'var(--danger, #b00020)' }}>{error}</p>}
@@ -242,6 +282,26 @@ function InviteRow({ invite, now, busy, onShare, onRevoke, onResend }: {
   );
 }
 
+function SwitchRow({ label, sub, checked, disabled, onChange, testId }: {
+  label: string; sub?: string; checked: boolean; disabled: boolean; onChange: (on: boolean) => void; testId?: string;
+}) {
+  return (
+    <label
+      data-testid={testId}
+      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--border)' }}
+    >
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: 'block', fontWeight: 600, fontSize: '0.95rem', overflowWrap: 'anywhere' }}>{label}</span>
+        {sub && <span style={{ ...muted, display: 'block' }}>{sub}</span>}
+      </span>
+      <input
+        type="checkbox" role="switch" aria-label={label} checked={checked} disabled={disabled}
+        onChange={e => onChange(e.target.checked)} style={{ width: 22, height: 22, flexShrink: 0 }}
+      />
+    </label>
+  );
+}
+
 export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
   host: KeepHost; keep: StoredKeep; note?: string; setKeeps: (list: StoredKeep[]) => void;
   onBack: () => void; onGone: () => void;
@@ -250,6 +310,11 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(note ?? '');
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const name = nameOf(host);
+  const actor = host.activePersona;
+  // Actions are for the signed-in persona only, and only when the Keep counts it as an active owner and this device holds its key.
+  const actorIsOwner = !!actor && isActiveOwner(keep, actor.pubkey);
+  const canAct = actorIsOwner && host.canSign(actor.pubkey);
   const canSign = host.canSign(keep.claimedBy);
 
   useEffect(() => {
@@ -272,11 +337,14 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
     if (busy) return;
     setBusy(true);
     setMessage('');
-    try { await work(); } catch (e) {
-      setMessage(e instanceof PersonaNotAvailableError ? NOT_AVAILABLE
-        : e instanceof KeepsUnreadableError ? KEEPS_UNREADABLE_TEXT : 'Something went wrong. Try again.');
-    } finally { setBusy(false); }
+    try { await work(); } catch (e) { setMessage(errorText(e)); } finally { setBusy(false); }
   };
+
+  const change = (c: OwnerChange, done?: string) => run(async () => {
+    if (!actor) return;
+    setKeeps(await changeOwners(host.deps, keep.keep, actor.pubkey, c));
+    if (done) setMessage(done);
+  });
 
   const shareOutcome = (outcome: string) => {
     if (outcome === 'copied') setMessage('Link copied.');
@@ -287,17 +355,29 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
     // The share sheet needs the tap that started this, so it opens as soon as the invite is
     // saved, while the wrap for the Keep is still being sent.
     let sharing: Promise<string> = Promise.resolve('');
-    const made = await createInvite(host.deps, keep.keep, req, saved => {
+    const made = await createInvite(host.deps, keep.keep, { ...req, actor: actor?.pubkey }, saved => {
       sharing = shareInviteLink(keepShareLink(keep.keep, saved.secret));
     });
     await reload();
     setPicking(false);
-    if (!made.sent) setMessage('Couldn\u2019t reach the Keep yet. Use Send again on the invite.');
+    if (!made.sent) setMessage('Couldn’t reach the Keep yet. Use Send again on the invite.');
     shareOutcome(await sharing);
   });
 
-  const candidates = picking && host.contacts ? inviteCandidates(host.contacts, keep.claimedBy) : [];
-  const invites = [...keep.invites].sort((a, b) => b.createdAt - a.createdAt);
+  // The link holds a secret: it is built here, in the tap, and handed to the phone's own app opener.
+  const playHere = () => {
+    const invite = actor ? playInvite(keep, actor.pubkey, Math.floor(Date.now() / 1000)) : null;
+    if (!invite || !host.openApp) return;
+    host.openApp(keepShareLink(keep.keep, invite.secret));
+    setMessage('Opening Stampede…');
+  };
+
+  const candidates = picking && host.contacts && actor ? inviteCandidates(host.contacts, actor.pubkey) : [];
+  // The owner personas' own games invites are managed by Used by, not listed as invites for members.
+  const invites = keep.invites.filter(i => !i.gamesFor).sort((a, b) => b.createdAt - a.createdAt);
+  const failedText = updateFailedText(keep.update);
+  const linkableCount = keep.personas.length;
+  const mine = actor && isLinked(keep, actor.pubkey);
 
   return (
     <div className="fade-in" role="main">
@@ -306,7 +386,8 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
         <div style={{ fontSize: '0.85rem', color: keep.status === 'paired' ? 'var(--success)' : 'var(--text-secondary)', fontWeight: 500 }}>
           {statusLine(keep)}
         </div>
-        <div style={muted}>{ownerLabel(host, keep)}</div>
+        <div style={muted} data-testid="keep-scope">{keepScopeLabel(host, keep)}</div>
+        {keep.update && !keep.update.failed && keep.status === 'paired' && <div style={muted}>Updating the Keep…</div>}
       </div>
 
       {message && <p role="status" style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: '0 0 12px' }}>{message}</p>}
@@ -329,67 +410,153 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
             </button>
           </div>
         </div>
+      ) : !actorIsOwner ? (
+        <div className="card" style={{ padding: 16 }} data-testid="not-linked">
+          <p style={{ fontSize: '0.9rem', margin: 0, color: 'var(--text-secondary)' }}>
+            {mine
+              ? `Waiting for the Keep to confirm ${actor ? name(actor.pubkey) : 'this persona'}.`
+              : `${actor ? name(actor.pubkey) : 'This persona'} isn’t linked to this Keep.`}
+            {' '}It is used and managed from {keep.personas.map(name).join(', ')}.
+          </p>
+        </div>
+      ) : !canAct ? (
+        <div className="card" style={{ padding: 16 }}>
+          <p role="alert" style={{ fontSize: '0.9rem', margin: 0 }}>{NOT_AVAILABLE}</p>
+        </div>
       ) : (
-        <section aria-labelledby="keep-games">
-          <h3 id="keep-games" className="section-title" style={{ margin: '0 0 8px' }}>Games</h3>
-          <div className="card card-flush">
-            <div style={{ padding: '14px 16px' }}>
-              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Who can play</div>
-              {!canSign ? (
-                <p role="alert" style={{ fontSize: '0.9rem', margin: '4px 0 0' }}>{NOT_AVAILABLE}</p>
-              ) : (
-                <>
-                  <p style={{ ...muted, margin: '0 0 10px' }}>Only people you invite can play on this Keep.</p>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button className="btn btn-primary" disabled={busy} style={{ width: 'auto' }} onClick={() => setPicking(p => !p)}>
-                      Invite a friend
-                    </button>
-                    <button className="btn btn-secondary" disabled={busy} style={{ width: 'auto' }}
-                      onClick={() => { void makeInvite({ kind: 'guest' }); }}>
-                      Guest pass
-                    </button>
-                  </div>
-                </>
-              )}
-              {picking && (
-                <div data-testid="contact-picker" style={{ marginTop: 12 }}>
-                  {host.contacts === null ? (
-                    <p style={muted}>Open My Signet from your own card to pick a contact.</p>
-                  ) : candidates.length === 0 ? (
-                    <p style={muted}>No Kin or Kith on {host.personaNames[keep.claimedBy] || 'this persona'}’s contacts yet. A guest pass works for anyone.</p>
-                  ) : (
-                    candidates.map(c => (
-                      <button
-                        key={c.contactId}
-                        className="row-button"
-                        disabled={busy}
-                        data-testid="contact-option"
-                        onClick={() => { void makeInvite({ kind: 'personal', persona: c.persona, label: c.name }); }}
-                        style={{ width: '100%', textAlign: 'left', padding: '10px 0', borderBottom: '1px solid var(--border)' }}
-                      >
-                        <span style={{ fontWeight: 600 }}>{c.name}</span>
-                        <span style={{ ...muted, marginLeft: 8 }}>{c.tier === 'kin' ? 'Kin' : 'Kith'}</span>
-                      </button>
-                    ))
-                  )}
+        <>
+          <section aria-labelledby="keep-personas" style={{ marginBottom: 16 }}>
+            <h3 id="keep-personas" className="section-title" style={{ margin: '0 0 8px' }}>Linked personas</h3>
+            <div className="card" style={{ padding: '4px 16px 12px' }}>
+              <p style={{ ...muted, margin: '8px 0 0' }}>The Keep will be able to tell that these personas are the same person. Nobody else can.</p>
+              {host.personas.map(p => {
+                const linked = isLinked(keep, p.pubkey);
+                const confirmed = isActiveOwner(keep, p.pubkey);
+                const last = linked && !canUnlink(keep, p.pubkey);
+                const full = !linked && linkableCount >= KEEP_MAX_OWNER_PERSONAS;
+                const sub = !p.canSign && !linked ? NOT_AVAILABLE
+                  : last ? 'The Keep needs at least one persona it has confirmed.'
+                  : full ? 'The most personas a Keep can have.'
+                  : linked && !confirmed ? 'Waiting for the Keep' : undefined;
+                return (
+                  <SwitchRow
+                    key={p.pubkey} testId="linked-persona" label={p.name} sub={sub} checked={linked}
+                    disabled={busy || last || full || (!linked && !p.canSign)}
+                    onChange={on => { void change({ kind: on ? 'link' : 'unlink', persona: p.pubkey }); }}
+                  />
+                );
+              })}
+              {failedText && (
+                <div style={{ marginTop: 10 }}>
+                  <p role="alert" style={{ fontSize: '0.85rem', margin: '0 0 6px' }}>{failedText}</p>
+                  <button className="btn btn-secondary" disabled={busy} style={smallBtn} onClick={() => { void change({ kind: 'retry' }); }}>Try again</button>
                 </div>
               )}
             </div>
-            {invites.length === 0 && <div style={{ ...muted, padding: '0 16px 14px' }}>No invites yet.</div>}
-            {invites.map(invite => (
-              <InviteRow
-                key={invite.grant} invite={invite} now={now} busy={busy}
-                onShare={i => { void run(async () => { shareOutcome(await shareInviteLink(keepShareLink(keep.keep, i.secret))); }); }}
-                onResend={i => { void run(async () => { setMessage((await resendInvite(host.deps, keep, i)) ? 'Sent again.' : 'Couldn’t reach the Keep.'); }); }}
-                onRevoke={i => { void run(async () => {
-                  const sent = await revokeInvite(host.deps, keep.keep, i.grant);
-                  await reload();
-                  setMessage(sent ? 'Revoke sent. It applies as soon as the Keep is online.' : 'Couldn’t reach the Keep yet. It will apply when you send it again.');
-                }); }}
-              />
-            ))}
-          </div>
-        </section>
+          </section>
+
+          <section aria-labelledby="keep-games">
+            <h3 id="keep-games" className="section-title" style={{ margin: '0 0 8px' }}>Games</h3>
+            <div className="card card-flush">
+              <div style={{ padding: '14px 16px' }}>
+                <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Used by</div>
+                <div data-testid="used-by">
+                  {keep.personas.map(p => {
+                    const state = gamesState(keep, p, now);
+                    const on = gamesOn(keep, p);
+                    const sub = state === 'waiting' ? 'Waiting for the Keep'
+                      : state === 'refused' ? `The Keep said no: ${refusalText(keep.invites.filter(i => i.gamesFor === p).sort((x, y) => y.createdAt - x.createdAt)[0]?.reason)}`
+                      : undefined;
+                    return (
+                      <div key={p}>
+                        <SwitchRow
+                          testId="used-by-persona" label={name(p)} sub={sub} checked={on} disabled={busy || !host.canSign(p) && !on}
+                          onChange={next => { void change({ kind: 'games', persona: p, on: next }); }}
+                        />
+                        {state === 'refused' && (
+                          <button className="btn btn-ghost" disabled={busy} style={{ ...smallBtn, marginBottom: 6 }}
+                            onClick={() => { void run(async () => { setKeeps(await retryGamesInvite(host.deps, keep.keep, actor!.pubkey, p)); }); }}>
+                            Try again
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {actor && isLinked(keep, actor.pubkey) && gamesOn(keep, actor.pubkey) && (
+                <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }} data-testid="play-here">
+                  <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Play here</div>
+                  {host.openApp ? (
+                    <>
+                      <p style={{ ...muted, margin: '0 0 10px' }}>
+                        Opens Stampede on this phone. Stampede must be installed and signed in as <strong>{actor.name}</strong>.
+                      </p>
+                      <button className="btn btn-primary" style={{ width: 'auto' }}
+                        disabled={busy || !playInvite(keep, actor.pubkey, now)} onClick={playHere}>
+                        Play here
+                      </button>
+                      {!playInvite(keep, actor.pubkey, now) && <p style={{ ...muted, margin: '8px 0 0' }}>Waiting for the Keep to say {actor.name} can play.</p>}
+                    </>
+                  ) : (
+                    <p style={{ ...muted, margin: 0 }}>Open My Signet on your phone to play from here.</p>
+                  )}
+                </div>
+              )}
+
+              <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Who can play</div>
+                <p style={{ ...muted, margin: '0 0 10px' }}>Only people you invite can play on this Keep.</p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary" disabled={busy} style={{ width: 'auto' }} onClick={() => setPicking(p => !p)}>
+                    Invite a friend
+                  </button>
+                  <button className="btn btn-secondary" disabled={busy} style={{ width: 'auto' }}
+                    onClick={() => { void makeInvite({ kind: 'guest' }); }}>
+                    Guest pass
+                  </button>
+                </div>
+                {picking && (
+                  <div data-testid="contact-picker" style={{ marginTop: 12 }}>
+                    {host.contacts === null ? (
+                      <p style={muted}>Open My Signet from your own card to pick a contact.</p>
+                    ) : candidates.length === 0 ? (
+                      <p style={muted}>No Kin or Kith on {actor ? name(actor.pubkey) : 'this persona'}’s contacts yet. A guest pass works for anyone.</p>
+                    ) : (
+                      candidates.map(c => (
+                        <button
+                          key={c.contactId}
+                          className="row-button"
+                          disabled={busy}
+                          data-testid="contact-option"
+                          onClick={() => { void makeInvite({ kind: 'personal', persona: c.persona, label: c.name }); }}
+                          style={{ width: '100%', textAlign: 'left', padding: '10px 0', borderBottom: '1px solid var(--border)' }}
+                        >
+                          <span style={{ fontWeight: 600 }}>{c.name}</span>
+                          <span style={{ ...muted, marginLeft: 8 }}>{c.tier === 'kin' ? 'Kin' : 'Kith'}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+              {invites.length === 0 && <div style={{ ...muted, padding: '0 16px 14px' }}>No invites yet.</div>}
+              {invites.map(invite => (
+                <InviteRow
+                  key={invite.grant} invite={invite} now={now} busy={busy}
+                  onShare={i => { void run(async () => { shareOutcome(await shareInviteLink(keepShareLink(keep.keep, i.secret))); }); }}
+                  onResend={i => { void run(async () => { setMessage((await resendInvite(host.deps, keep, i, actor?.pubkey)) ? 'Sent again.' : 'Couldn’t reach the Keep.'); }); }}
+                  onRevoke={i => { void run(async () => {
+                    const sent = await revokeInvite(host.deps, keep.keep, i.grant, actor?.pubkey);
+                    await reload();
+                    setMessage(sent ? 'Revoke sent. It applies as soon as the Keep is online.' : 'Couldn’t reach the Keep yet. It will apply when you send it again.');
+                  }); }}
+                />
+              ))}
+            </div>
+          </section>
+        </>
       )}
 
       <div style={{ textAlign: 'center', marginTop: 16 }}>

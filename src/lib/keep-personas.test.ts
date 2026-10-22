@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { EffectiveContact, SignetIdentity } from '../types';
-import { holdsKeyFor, inviteCandidates, localBackendFor, personaNameMap } from './keep-personas';
+import { accountPersonas, holdsKeyFor, inviteCandidates, keepDepsFor, localBackendFor, personaNameMap } from './keep-personas';
 
 const sk = (n: number) => '0'.repeat(63) + n.toString(16);
 const pk = (n: number) => bytesToHex(hexToBytes(getPublicKey(hexToBytes(sk(n)))));
@@ -40,6 +40,39 @@ describe('localBackendFor', () => {
 describe('personaNameMap', () => {
   it('names the personas by the name the person gave them', () => {
     expect(personaNameMap(identity())[pk(2)]).toBe('Anon');
+  });
+});
+
+describe('accountPersonas (what an All-my-personas Keep links)', () => {
+  const extra = { publicKey: pk(3), privateKey: sk(3), displayName: 'Work', derivationName: 'persona-2' };
+
+  it('lists the persona and the extra personas, and the real-name persona only once activated', () => {
+    const dormant = identity({ extraPersonas: [extra] as never, naturalPersonActive: false });
+    expect(accountPersonas(dormant).map(p => p.pubkey)).toEqual([pk(2), pk(3)]);
+    const active = identity({ extraPersonas: [extra] as never, naturalPersonActive: true });
+    expect(accountPersonas(active).map(p => p.pubkey)).toEqual([pk(2), pk(3), pk(1)]);
+  });
+
+  it('includes the professional persona', () => {
+    const id = identity({ professionalPersona: { publicKey: pk(4), privateKey: sk(4), displayName: 'Pro' } as never });
+    expect(accountPersonas(id).map(p => p.pubkey)).toContain(pk(4));
+  });
+
+  it('never lists a dependant\'s personas: they are separate records', () => {
+    const id = identity({ extraPersonas: [extra] as never });
+    expect(accountPersonas(id).map(p => p.pubkey)).not.toContain(pk(9));
+    expect(accountPersonas(null)).toEqual([]);
+  });
+
+  it('says which personas this device can sign for; a bunker persona cannot be linked', () => {
+    const id = identity({ extraPersonas: [{ ...extra, privateKey: '' }] as never, naturalPersonActive: false });
+    expect(accountPersonas(id)).toEqual([
+      { pubkey: pk(2), name: 'Anon', canSign: true },
+      { pubkey: pk(3), name: 'Work', canSign: false },
+    ]);
+    expect(keepDepsFor(id, 'k').eligiblePersonas!()).toEqual([pk(2)]);
+    expect(keepDepsFor(id, 'k').backendFor(pk(3))).toBeNull();
+    expect(keepDepsFor(id, 'k').personaName!(pk(2))).toBe('Anon');
   });
 });
 

@@ -8,6 +8,7 @@ import { contactIdentityLists } from './contacts-v2-identity-lists';
 import { contactDisplayName } from './contacts-v2-name';
 import { isVisibleContact } from './contacts-v2-list';
 import { LocalSigningBackend } from './signing-backend';
+import type { KeepDeps } from './keep-service';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -47,6 +48,31 @@ export function holdsKeyFor(identity: SignetIdentity | null, pubkey: string): bo
 /** Persona public key -> the name the person gave it. */
 export function personaNameMap(identity: SignetIdentity | null): Record<string, string> {
   return Object.fromEntries(contactIdentityLists(identity).map(l => [l.ownerIdentityPubkey, l.label]));
+}
+
+export interface AccountPersona { pubkey: string; name: string; canSign: boolean }
+
+/**
+ * Every persona of the account, in the order the contact lists use, and whether
+ * this device can sign for it. The same universe as the contact lists: the
+ * persona, the extra personas, the real-name persona when activated, the
+ * professional one. A dependant's personas belong to the dependant's own record
+ * and are never in it, so a Keep is never linked to a child's persona.
+ */
+export function accountPersonas(identity: SignetIdentity | null): AccountPersona[] {
+  return contactIdentityLists(identity).map(l => ({
+    pubkey: l.ownerIdentityPubkey, name: l.label, canSign: holdsKeyFor(identity, l.ownerIdentityPubkey),
+  }));
+}
+
+/** What the Keep service needs of this account: keys from the unlocked identity, and the personas an All-my-personas Keep links. */
+export function keepDepsFor(identity: SignetIdentity | null, encryptionKey: string): KeepDeps {
+  return {
+    encryptionKey,
+    backendFor: persona => localBackendFor(identity, persona),
+    eligiblePersonas: () => accountPersonas(identity).filter(p => p.canSign).map(p => p.pubkey),
+    personaName: persona => personaNameMap(identity)[persona] || `Persona ${persona.slice(0, 8)}`,
+  };
 }
 
 export interface InviteCandidate {

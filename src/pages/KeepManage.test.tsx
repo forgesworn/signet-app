@@ -32,6 +32,10 @@ const K = getPublicKey(KEEP_SK);
 const OWNER_HEX = '0'.repeat(63) + '2';
 const O = getPublicKey(hexToBytes(OWNER_HEX));
 const FRIEND = getPublicKey(hexToBytes('0'.repeat(63) + '3'));
+const BOB_HEX = '0'.repeat(63) + '4';
+const BOB = getPublicKey(hexToBytes(BOB_HEX));
+const SKS: Record<string, string> = { [O]: OWNER_HEX, [BOB]: BOB_HEX };
+void SKS;
 const CODE = '33'.repeat(16);
 const LINK = `signet-keep:pair?k=${K}&c=${CODE}&n=Kitchen%20Keep&r=wss%3A%2F%2Frelay.example.com`;
 
@@ -45,19 +49,24 @@ const contact = (id: string, name: string, tier: 'kin' | 'kith' | 'ken', pubkey:
 
 function host(over: Partial<KeepHost> = {}): KeepHost {
   return {
-    deps: { encryptionKey: 'key', backendFor: p => (p === O ? new LocalSigningBackend(OWNER_HEX) : null) },
+    deps: {
+      encryptionKey: 'key', backendFor: p => (p === O ? new LocalSigningBackend(OWNER_HEX) : null),
+      eligiblePersonas: () => [O], personaName: () => 'Anon',
+    },
     canSign: p => p === O,
     activePersona: { pubkey: O, name: 'Anon' },
     personaNames: { [O]: 'Anon' },
+    personas: [{ pubkey: O, name: 'Anon', canSign: true }],
     contacts: [contact('1', 'Dave', 'kin', FRIEND), contact('2', 'Kenny', 'ken', 'ee'.repeat(32))],
     confirmClaim: vi.fn(async () => true),
     ...over,
   };
 }
 
+// A K1d-shaped record whose owner has Games off, so these tests are about the members' invites only.
 const pairedKeep = (over: object = {}) => ({
   keep: K, name: 'Kitchen Keep', relays: ['wss://relay.example.com'], claimedBy: O, personas: [O],
-  status: 'paired', claimedAt: 1, invites: [], ...over,
+  status: 'paired', claimedAt: 1, invites: [], links: { [O]: { sections: [], addedRev: 0, active: true } }, ...over,
 });
 
 const share = vi.fn();
@@ -81,13 +90,14 @@ describe('Add a Keep', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     expect(screen.getByText('Make Kitchen Keep your Keep?')).toBeInTheDocument();
     expect(screen.getByText('Anon')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /All my personas/ })).toBeChecked();
     expect(published).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Make it my Keep' }));
     await screen.findByText('Waiting for the Keep');
     expect(h.confirmClaim).toHaveBeenCalledWith('Kitchen Keep', 'Anon');
     expect(published).toHaveLength(1);
-    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE]]);
-    expect(screen.getByText('Owned by Anon')).toBeInTheDocument();
+    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE], ['scope', 'all']]);
+    expect(screen.getByText('All of you')).toBeInTheDocument();
   });
 
   it('adding a stored Keep again with a new link pairs it again and waits for the Keep', async () => {
@@ -98,7 +108,7 @@ describe('Add a Keep', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Make it my Keep' }));
     expect((await screen.findAllByText(/Waiting for the Keep/)).length).toBeGreaterThan(0);
-    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE]]);
+    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE], ['scope', 'all']]);
     expect((row as Array<{ invites: unknown[] }>)[0].invites).toHaveLength(1);
   });
 
@@ -143,13 +153,13 @@ describe('an unreadable saved list', () => {
 });
 
 describe('a claimed Keep', () => {
-  it('is listed in the account-level list with the persona it belongs to', async () => {
+  it('is listed in the account-level list, labelled with who it is for', async () => {
     row = [pairedKeep()];
     renderKeep();
     const rowEl = await screen.findByTestId('stored-keep-row');
     expect(rowEl).toHaveTextContent('Kitchen Keep');
     expect(rowEl).toHaveTextContent('Connected');
-    expect(rowEl).toHaveTextContent('Owned by Anon');
+    expect(rowEl).toHaveTextContent('Only Anon');
   });
 
   it('opening its page sends an unanswered invite again, once, and not a recent one', async () => {
@@ -168,13 +178,14 @@ describe('a claimed Keep', () => {
     expect(lastRumor().tags).toContainEqual(['grant', '11'.repeat(16)]);
   });
 
-  it('puts everything under a Games heading and builds nothing else', async () => {
+  it('puts the members\' invites under a Games heading, after Linked personas, and builds no Backups section', async () => {
     row = [pairedKeep()];
     renderKeep();
     fireEvent.click(await screen.findByTestId('stored-keep-row'));
     expect(await screen.findByRole('heading', { name: 'Games' })).toBeInTheDocument();
     expect(screen.queryByText(/backup/i)).toBeNull();
     expect(screen.getByText('Who can play')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Linked personas' })).toBeInTheDocument();
   });
 
   it('Invite a friend lists Kin and Kith only, sends the invite, opens the share sheet with the stampede link', async () => {
@@ -254,6 +265,7 @@ describe('a claimed Keep', () => {
     fireEvent.click(await screen.findByTestId('stored-keep-row'));
     expect(await screen.findByRole('alert')).toHaveTextContent('Not available for this persona yet.');
     expect(screen.queryByRole('button', { name: 'Invite a friend' })).toBeNull();
+    expect(screen.queryByRole('switch')).toBeNull();
   });
 
   it('a Keep still waiting offers Send again and Forget, and no invites', async () => {
@@ -277,5 +289,157 @@ describe('expiryText', () => {
     expect(expiryText(1_000_000 + 5_400, 1_000_000)).toBe('Expires in 2 hours');
     expect(expiryText(1_000_000 + 600, 1_000_000)).toBe('Expires in 1 hour');
     expect(expiryText(1_000_000, 1_000_000)).toBe('Expired');
+  });
+});
+
+describe('personas (K1e)', () => {
+  const twoDeps = (): KeepHost['deps'] => ({
+    encryptionKey: 'key',
+    backendFor: p => (SKS[p] ? new LocalSigningBackend(SKS[p]) : null),
+    eligiblePersonas: () => [O, BOB],
+    personaName: p => (p === O ? 'Anon' : 'Bob'),
+    now: undefined,
+  });
+  const two = (over: Partial<KeepHost> = {}): KeepHost => host({
+    deps: twoDeps(),
+    canSign: p => !!SKS[p],
+    personaNames: { [O]: 'Anon', [BOB]: 'Bob' },
+    personas: [{ pubkey: O, name: 'Anon', canSign: true }, { pubkey: BOB, name: 'Bob', canSign: true }],
+    ...over,
+  });
+  const link = (over: object = {}) => ({
+    ...pairedKeep(), scope: 'one', rev: 0, seen: [O],
+    links: { [O]: { sections: ['games'], addedRev: 0, active: true } }, ...over,
+  });
+  const bothLinked = (invites: object[] = []) => link({
+    scope: 'all', rev: 1, personas: [O, BOB], seen: [O, BOB], invites,
+    links: { [O]: { sections: ['games'], addedRev: 0, active: true }, [BOB]: { sections: ['games'], addedRev: 1, active: true } },
+  });
+  const gamesInvite = (persona: string, over: object = {}) => ({
+    grant: (persona === O ? '0a' : '0b').repeat(16), secret: (persona === O ? 'aa' : 'bb').repeat(32), kind: 'personal', persona,
+    gamesFor: persona, label: 'x (owner)', createdAt: 1, sentAt: Math.floor(Date.now() / 1000), expiration: Math.floor(Date.now() / 1000) + 300 * 86400,
+    status: 'active', ...over,
+  });
+  const kindsPublished = () => published.map(w => unwrapEvent(w as never, KEEP_SK).kind);
+
+  it('Add a Keep asks All my personas (default) or Only this persona, and the claim carries the choice', async () => {
+    renderKeep(two());
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a Keep' }));
+    fireEvent.change(screen.getByLabelText('Keep link'), { target: { value: LINK } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByRole('radio', { name: /All my personas/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: /Only this persona/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make it my Keep' }));
+    await screen.findAllByText(/Waiting for the Keep/);
+    expect(lastRumor().tags).toContainEqual(['scope', 'one']);
+    expect((row as Array<{ scope: string }>)[0].scope).toBe('one');
+  });
+
+  it('every Keep shows for every persona, labelled All of you or Only <names>', async () => {
+    row = [link(), { ...bothLinked(), keep: 'cd'.repeat(32), name: 'Shed Keep' }];
+    renderKeep(two({ activePersona: { pubkey: BOB, name: 'Bob' } }));
+    const rows = await screen.findAllByTestId('stored-keep-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Only Anon');
+    expect(rows[1]).toHaveTextContent('All of you');
+  });
+
+  it('signed in as a persona the Keep is not linked to: it shows, with no actions', async () => {
+    row = [link()];
+    renderKeep(two({ activePersona: { pubkey: BOB, name: 'Bob' } }));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    expect(await screen.findByTestId('not-linked')).toHaveTextContent('Bob isn’t linked to this Keep');
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Guest pass' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Play here' })).toBeNull();
+  });
+
+  it('Linked personas has a switch per persona and the privacy note; switching Bob on sends his update and accept together', async () => {
+    row = [link()];
+    renderKeep(two());
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const section = (await screen.findByRole('heading', { name: 'Linked personas' })).closest('section')!;
+    expect(section).toHaveTextContent('The Keep will be able to tell that these personas are the same person. Nobody else can.');
+    const anon = within(section).getByRole('switch', { name: 'Anon' });
+    expect(anon).toBeChecked();
+    expect(anon).toBeDisabled(); // the only persona the Keep has confirmed
+    const bob = within(section).getByRole('switch', { name: 'Bob' });
+    expect(bob).not.toBeChecked();
+    fireEvent.click(bob);
+    const owners = () => kindsPublished().filter(k => k === 27664 || k === 27665);
+    await waitFor(() => expect(owners()).toEqual([27664, 27665]));
+    const update = published.map(w => unwrapEvent(w as never, KEEP_SK)).find(r => r.kind === 27664)!;
+    expect(update.tags).toEqual([['keep', K], ['rev', '1'], ['persona', O, 'games'], ['persona', BOB, 'games']]);
+    await waitFor(() => expect(within(section).getByText('Waiting for the Keep')).toBeInTheDocument());
+    expect(screen.getByTestId('keep-scope')).toHaveTextContent('All of you');
+  });
+
+  it('a persona without a local key cannot be linked: "Not available for this persona yet."', async () => {
+    row = [link()];
+    renderKeep(two({ personas: [{ pubkey: O, name: 'Anon', canSign: true }, { pubkey: BOB, name: 'Bob', canSign: false }] }));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const section = (await screen.findByRole('heading', { name: 'Linked personas' })).closest('section')!;
+    const bob = within(section).getByRole('switch', { name: 'Bob' });
+    expect(bob).toBeDisabled();
+    expect(section).toHaveTextContent('Not available for this persona yet.');
+  });
+
+  it('Games has Used by with a switch per linked persona, and Used by off revokes that persona\'s invite', async () => {
+    row = [bothLinked([gamesInvite(O), gamesInvite(BOB)])];
+    renderKeep(two());
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const usedBy = await screen.findByTestId('used-by');
+    const bob = within(usedBy).getByRole('switch', { name: 'Bob' });
+    expect(within(usedBy).getByRole('switch', { name: 'Anon' })).toBeChecked();
+    expect(bob).toBeChecked();
+    fireEvent.click(bob);
+    await waitFor(() => expect(kindsPublished()).toEqual([27664, 27662]));
+    const revoke = unwrapEvent(published[1] as never, KEEP_SK);
+    expect(revoke.tags).toEqual([['keep', K], ['grant', '0b'.repeat(16)]]);
+    await waitFor(() => expect(within(screen.getByTestId('used-by')).getByRole('switch', { name: 'Bob' })).not.toBeChecked());
+  });
+
+  it('Play here opens stampede://keep/<K>/<secret> for the signed-in persona, with the line about signing in as it', async () => {
+    const openApp = vi.fn();
+    row = [bothLinked([gamesInvite(O), gamesInvite(BOB)])];
+    renderKeep(two({ openApp, activePersona: { pubkey: BOB, name: 'Bob' } }));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const block = await screen.findByTestId('play-here');
+    expect(block).toHaveTextContent('Stampede must be installed and signed in as Bob');
+    fireEvent.click(within(block).getByRole('button', { name: 'Play here' }));
+    expect(openApp).toHaveBeenCalledWith(`stampede://keep/${K}/${'bb'.repeat(32)}`);
+    expect(document.body.textContent).not.toContain('bb'.repeat(32));
+  });
+
+  it('Play here waits until the Keep says the persona can play, and is not offered on the web', async () => {
+    const openApp = vi.fn();
+    row = [bothLinked([gamesInvite(O), gamesInvite(BOB, { status: 'waiting' })])];
+    const view = renderKeep(two({ openApp, activePersona: { pubkey: BOB, name: 'Bob' } }));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const block = await screen.findByTestId('play-here');
+    expect(within(block).getByRole('button', { name: 'Play here' })).toBeDisabled();
+    view.unmount();
+    renderKeep(two({ activePersona: { pubkey: BOB, name: 'Bob' } }));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    expect(within(await screen.findByTestId('play-here')).queryByRole('button', { name: 'Play here' })).toBeNull();
+  });
+
+  it('the owner personas\' own games invites are not listed under Who can play', async () => {
+    row = [bothLinked([gamesInvite(O), gamesInvite(BOB)])];
+    renderKeep(two());
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    await screen.findByTestId('used-by');
+    expect(screen.queryAllByTestId('invite-row')).toHaveLength(0);
+    expect(screen.getByText('No invites yet.')).toBeInTheDocument();
+  });
+
+  it('a Keep the Keep refused to update says so and offers Try again', async () => {
+    row = [{ ...bothLinked([gamesInvite(O), gamesInvite(BOB)]), update: { rev: 2, signer: O, personas: [{ persona: O, sections: ['games'] }], sentAt: 5, failed: 'malformed' } }];
+    renderKeep(two());
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const section = (await screen.findByRole('heading', { name: 'Linked personas' })).closest('section')!;
+    expect(within(section).getByRole('alert')).toHaveTextContent('did not take the change');
+    fireEvent.click(within(section).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(kindsPublished()).toContain(27664));
   });
 });

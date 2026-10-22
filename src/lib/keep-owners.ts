@@ -226,6 +226,12 @@ function newGamesInvite(persona: string, ctx: ReconcileContext): StoredInvite {
   };
 }
 
+/** A new games invite for a persona whose last one the Keep refused (the owner chose to try again). Null if there is nothing to retry. */
+export function retryGames(keep: StoredKeep, persona: string, ctx: ReconcileContext): StoredKeep | null {
+  if (gamesState(keep, persona, ctx.now) !== 'refused') return null;
+  return { ...keep, invites: [...keep.invites, newGamesInvite(persona, ctx)] };
+}
+
 export interface ReconcileContext {
   now: number;
   /** Every persona of the account this device can sign for, dependants left out. */

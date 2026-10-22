@@ -23,7 +23,7 @@ import {
 } from './keep-store';
 import {
   applyOwnersAck, canUnlink, composeUpdate, isActiveOwner, linkPersona, markOwnersSent, ownersDue, pickSigner, reconcileKeep,
-  setSection, unlinkPersona, type ReconcileContext,
+  retryGames, setSection, unlinkPersona, type ReconcileContext,
 } from './keep-owners';
 import type { KeepPairLink } from './keep-link';
 import { KEEP_GUEST_PASS_S, KEEP_PERSONAL_INVITE_S, KEEP_SECTION_GAMES } from './keep-wire';
@@ -368,6 +368,19 @@ export async function changeOwners(deps: KeepDeps, keepId: string, actor: string
     }
     const composed = composeUpdate(changed, actor);
     return withKeep(list, reconcileKeep(composed, reconcileContext(deps)));
+  });
+  return settle(deps);
+}
+
+/** Try again a games invite the Keep refused: a new grant for the persona, sent at once. */
+export async function retryGamesInvite(deps: KeepDeps, keepId: string, actor: string, persona: string): Promise<StoredKeep[]> {
+  if (!deps.backendFor(actor)) throw new PersonaNotAvailableError();
+  await updateStoredKeeps(deps.encryptionKey, list => {
+    const found = findKeep(list, keepId);
+    if (!found || found.status !== 'paired') throw new OwnerChangeRefusedError('This Keep is not connected yet.');
+    if (!isActiveOwner(found, actor)) throw new NotAnOwnerError();
+    const next = retryGames(found, persona, reconcileContext(deps));
+    return next ? withKeep(list, next) : list;
   });
   return settle(deps);
 }

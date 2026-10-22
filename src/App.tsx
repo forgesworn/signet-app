@@ -233,7 +233,8 @@ import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
 import { keepAuthorPubkeys } from './lib/keep-owner';
-import { holdsKeyFor, localBackendFor, personaNameMap } from './lib/keep-personas';
+import { accountPersonas, holdsKeyFor, keepDepsFor, personaNameMap } from './lib/keep-personas';
+import { catchUp as catchUpKeeps } from './lib/keep-service';
 import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
 import type { AuthSelection } from './pages/ApproveAuth';
@@ -2470,6 +2471,16 @@ export function App() {
     inviteNotifications.current = notifier;
     return () => { inviteNotifications.current = null; void notifier.stop(); };
   }, [encryptionKey, identity?.naturalPerson.publicKey, preferences.signingMode]);
+  // Keeps this account has claimed (K1e): when the app runs, and when a persona is made, read their acks, link
+  // the new persona on an All-my-personas Keep, keep each owner persona's games invite renewed, and send what is due.
+  const keepPersonaKey = identity ? accountPersonas(identity).map(p => `${p.pubkey}${p.canSign ? '+' : '-'}`).join(',') : '';
+  useEffect(() => {
+    if (!encryptionKey || !identity || identity.encrypted || activeDependant || childDirect || isPairedChild || !keepPersonaKey) return;
+    const timer = setTimeout(() => { void catchUpKeeps(keepDepsFor(identity, encryptionKey)).catch(() => undefined); }, 4000);
+    return () => clearTimeout(timer);
+    // The identity object changes with every edit; the persona keys and the lock are what matter here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey, keepPersonaKey, activeDependant?.id, childDirect, isPairedChild]);
   const inviteScopes = useMemo(() => identity && !isPairedChild
     ? [{ directoryId: 'owner', identities: contactIdentityLists(identity, null).map(i => i.ownerIdentityPubkey) },
       ...dependants.map(dep => ({ directoryId: `dependant:${dep.id}`, identities: contactIdentityLists(identity, dep).map(i => i.ownerIdentityPubkey) }))] : [],
@@ -10741,8 +10752,13 @@ export function App() {
       scope={identity.id}
       onBack={() => navigateBack()}
       keepHost={encryptionKey && !activeDependant && !childDirect ? {
-        deps: { encryptionKey, backendFor: persona => localBackendFor(identity, persona) },
+        deps: keepDepsFor(identity, encryptionKey),
         canSign: persona => holdsKeyFor(identity, persona),
+        personas: accountPersonas(identity),
+        // Play here hands stampede://keep/<K>/<secret> to Android through the WebView: Capacitor's
+        // bridge sends a link to another host to ACTION_VIEW (Bridge.launchIntent). Same call as the other
+        // external links in this app. Not offered on the web.
+        openApp: isNativeApp() ? (link: string) => { window.open(link, '_blank', 'noopener'); } : undefined,
         activePersona: carousel.activeIdentity.publicKey
           ? { pubkey: carousel.activeIdentity.publicKey.toLowerCase(), name: personaNameMap(identity)[carousel.activeIdentity.publicKey.toLowerCase()] || 'this persona' }
           : null,
