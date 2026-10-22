@@ -185,7 +185,12 @@ describe('inviting and revoking', () => {
   });
 
   it('refuses to invite from a persona that cannot sign any more', async () => {
-    await expect(createInvite(deps({ backendFor: () => null }), K, { kind: 'guest' })).rejects.toBeInstanceOf(PersonaNotAvailableError);
+    const onSaved = vi.fn();
+    await expect(createInvite(deps({ backendFor: () => null }), K, { kind: 'guest' }, onSaved)).rejects.toBeInstanceOf(PersonaNotAvailableError);
+    // Nothing was saved, shared or sent.
+    expect(onSaved).not.toHaveBeenCalled();
+    expect((await loadStoredKeeps('key'))[0].invites).toEqual([]);
+    expect(published).toHaveLength(0);
   });
 
   it('two writes at once both land', async () => {

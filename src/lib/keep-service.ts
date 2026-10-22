@@ -150,6 +150,12 @@ export async function createInvite(
   /** Called once the invite is saved and before it is sent, so a share sheet can open inside the user's tap. */
   onSaved?: (invite: StoredInvite) => void,
 ): Promise<{ keep: StoredKeep; invite: StoredInvite; sent: boolean }> {
+  if (req.kind === 'personal' && !/^[0-9a-f]{64}$/.test(req.persona ?? '')) throw new Error('Invalid invite');
+  // Check the owner persona can still sign before anything is saved or shared:
+  // otherwise the friend would get a link the Keep never hears of.
+  const target = findKeep(await loadStoredKeeps(deps.encryptionKey), keepId);
+  if (!target) throw new Error('Unknown Keep');
+  if (!deps.backendFor(target.claimedBy)) throw new PersonaNotAvailableError();
   const now = nowOf(deps);
   const invite: StoredInvite = {
     grant: randomHex(16), secret: randomHex(32), kind: req.kind,
@@ -159,7 +165,6 @@ export async function createInvite(
     expiration: now + (req.kind === 'guest' ? KEEP_GUEST_PASS_S : KEEP_PERSONAL_INVITE_S),
     status: 'waiting',
   };
-  if (req.kind === 'personal' && !/^[0-9a-f]{64}$/.test(req.persona ?? '')) throw new Error('Invalid invite');
   let keep: StoredKeep | undefined;
   await updateStoredKeeps(deps.encryptionKey, list => {
     const found = findKeep(list, keepId);
