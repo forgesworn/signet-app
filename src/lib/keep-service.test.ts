@@ -121,6 +121,14 @@ describe('inviting and revoking', () => {
     expect(invite.expiration).toBe(NOW + 86400);
     expect(lastRumor().tags).toContainEqual(['guest']);
     expect(lastRumor().tags.some(t => t[0] === 'p')).toBe(false);
+    expect(lastRumor().tags.some(t => t[0] === 'name')).toBe(false);
+  });
+
+  it('tells the caller the invite is saved before it is sent', async () => {
+    const order: string[] = [];
+    await createInvite(deps({ publish: async (_w, relays) => { order.push('sent'); return relays.map(() => true); } }), K, { kind: 'guest' },
+      () => { order.push('saved'); });
+    expect(order).toEqual(['saved', 'sent']);
   });
 
   it('every invite gets its own grant and secret', async () => {

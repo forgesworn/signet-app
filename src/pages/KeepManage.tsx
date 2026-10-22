@@ -262,13 +262,15 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
   };
 
   const makeInvite = (req: Parameters<typeof createInvite>[2]) => run(async () => {
-    // The share sheet needs the tap that started this, so it opens as soon as the invite exists,
-    // while the Keep's copy is still on its way.
-    const made = await createInvite(host.deps, keep.keep, req);
-    const sharing = shareInviteLink(keepShareLink(keep.keep, made.invite.secret));
+    // The share sheet needs the tap that started this, so it opens as soon as the invite is
+    // saved, while the wrap for the Keep is still being sent.
+    let sharing: Promise<string> = Promise.resolve('');
+    const made = await createInvite(host.deps, keep.keep, req, saved => {
+      sharing = shareInviteLink(keepShareLink(keep.keep, saved.secret));
+    });
     await reload();
     setPicking(false);
-    if (!made.sent) setMessage('Couldn’t reach the Keep yet. Use Send again on the invite.');
+    if (!made.sent) setMessage('Couldn\u2019t reach the Keep yet. Use Send again on the invite.');
     shareOutcome(await sharing);
   });
 

@@ -137,12 +137,14 @@ export function keepShareLink(keep: string, secret: string): string {
  */
 export async function createInvite(
   deps: KeepDeps, keepId: string, req: InviteRequest,
+  /** Called once the invite is saved and before it is sent, so a share sheet can open inside the user's tap. */
+  onSaved?: (invite: StoredInvite) => void,
 ): Promise<{ keep: StoredKeep; invite: StoredInvite; sent: boolean }> {
   const now = nowOf(deps);
   const invite: StoredInvite = {
     grant: randomHex(16), secret: randomHex(32), kind: req.kind,
     ...(req.kind === 'personal' ? { persona: req.persona } : {}),
-    label: req.kind === 'guest' ? 'Guest pass' : req.label,
+    ...(req.kind === 'personal' && req.label ? { label: req.label } : {}),
     createdAt: now,
     expiration: now + (req.kind === 'guest' ? KEEP_GUEST_PASS_S : KEEP_PERSONAL_INVITE_S),
     status: 'waiting',
@@ -156,6 +158,7 @@ export async function createInvite(
     return withKeep(list, keep);
   });
   if (!keep) throw new Error('Unknown Keep');
+  onSaved?.(invite);
   const sent = await send(deps, keep, (b, t) => inviteRumor(b, specOf(keep!, invite), t)).catch(e => {
     if (e instanceof PersonaNotAvailableError) throw e;
     return false;
