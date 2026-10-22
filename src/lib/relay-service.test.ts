@@ -51,14 +51,13 @@ describe('getRelayUrl', () => {
 });
 
 describe('defaultRelays', () => {
-  it('returns five public relays with relay.primal.net primary and nostr.band read-only', async () => {
+  it('returns four public relays with relay.primal.net primary, all writable, and no nostr.band', async () => {
     const rs = await freshRelayService();
     const d = rs.defaultRelays();
-    expect(d).toHaveLength(5);
+    expect(d).toHaveLength(4);
     expect(d[0].url).toBe('wss://relay.primal.net');
     expect(d[0]).toMatchObject({ enabled: true, read: true, write: true }); // primary
-    const band = d.find(r => r.url === 'wss://relay.nostr.band');
-    expect(band).toMatchObject({ enabled: true, read: true, write: false });
+    expect(d.find(r => r.url === 'wss://relay.nostr.band')).toBeUndefined();
     expect(d.filter(r => r.write).length).toBe(4); // primal + oxtr + damus + ditto
   });
 });

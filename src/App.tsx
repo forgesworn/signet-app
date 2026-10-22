@@ -10437,8 +10437,16 @@ export function App() {
   // render site below, so the user sees it regardless of which page they're
   // on when the new SW lands. Sync banners are informational, so they sit
   // below signer status.
+  // Same edit as the "Enabled" checkbox in Advanced settings: the relay stays in the list. The last enabled write relay is kept, as there.
+  const disableVaultRelay = (url: string) => {
+    const list = preferences.relays?.length ? preferences.relays : defaultRelays();
+    const target = list.find(r => r.url === url);
+    if (!target || (target.enabled && target.write && list.filter(r => r.enabled && r.write).length <= 1)) return;
+    void setRelays(list.map(r => (r.url === url ? { ...r, enabled: false } : r)));
+  };
   const privateVaultBanner = !isPairedChild && encryptionKey ? <PrivateVaultStatus key={privateVaultSession}
     onRotate={privateVaultSupported && !activeDependant && supportsPrivateVaultRotationLock() ? rotatePrivateBackup : undefined}
+    onDisableRelay={disableVaultRelay}
     health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;

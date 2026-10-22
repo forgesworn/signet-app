@@ -40,6 +40,8 @@ export type PrivateVaultSyncResult = {
   confirmedRelays?: string[];
   /** On `verified`: vaultContentHash of the local snapshot that was verified. */
   revision?: string;
+  /** On `unavailable`: the write relays that did not answer, when the protocol named them. */
+  failedRelays?: string[];
 };
 
 /** One bounded sync cycle. Scheduling and UI stay with the caller. */
@@ -125,11 +127,13 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
           current();
         }
       }
-      return { author: backend.activePublicKeyHex, reader: relayVaultReader(args.relays.read, backend),
+      // Vault reads use the relays the vault writes to: a relay this device never writes backups to holds none of them, and the protocol requires every queried relay to answer.
+      return { author: backend.activePublicKeyHex, reader: relayVaultReader(args.relays.write, backend),
         sequenceFloors: { [deviceKey.publicKey]: state.confirmed?.sequence ?? 0 } };
     }, vaultPurpose(args.adapter.dataset), args.now, minRotation);
     current();
-    if (restored.state === 'unavailable' || restored.state === 'unusable') return { state: restored.state, canonical };
+    if (restored.state === 'unavailable') return { state: 'unavailable', canonical, ...(restored.failedRelays?.length ? { failedRelays: restored.failedRelays } : {}) };
+    if (restored.state === 'unusable') return { state: 'unusable', canonical };
     canonical ||= restored.state === 'ready';
     if (restored.state === 'absent' && args.allowInitialPublish === false) return { state: 'waiting-legacy', canonical };
     const rotation = restored.state === 'ready' ? Math.max(...restored.snapshots.map(s => s.checkpoint.rotation)) : 0;
