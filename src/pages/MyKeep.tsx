@@ -153,6 +153,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost }: Props) {
     return (
       <AddKeep
         host={keepHost}
+        known={stored}
         onCancel={() => setView({ t: 'list' })}
         onDone={(keep, note) => {
           loadStoredKeeps(keepHost.deps.encryptionKey).then(setStored, () => undefined);

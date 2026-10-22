@@ -142,8 +142,11 @@ export function StoredKeepRows({ host, keeps, onOpen }: { host: KeepHost; keeps:
 
 // ---- Add a Keep ------------------------------------------------------------
 
-export function AddKeep({ host, onDone, onCancel }: {
-  host: KeepHost; onDone: (keep: string, note?: string) => void; onCancel: () => void;
+export function AddKeep({ host, known, onDone, onCancel }: {
+  host: KeepHost;
+  /** The Keeps already stored: adding one of them again starts on the choice it has. */
+  known?: readonly StoredKeep[];
+  onDone: (keep: string, note?: string) => void; onCancel: () => void;
 }) {
   const [text, setText] = useState('');
   const [link, setLink] = useState<KeepPairLink | null>(null);
@@ -157,6 +160,7 @@ export function AddKeep({ host, onDone, onCancel }: {
     const parsed = parseKeepPairLink(text);
     if (!parsed) { setError('That is not a Keep link. Copy it again from the Keep’s own screen.'); return; }
     setError('');
+    setScope(known?.find(k => k.keep === parsed.keep)?.scope ?? 'all');
     setLink(parsed);
   };
 

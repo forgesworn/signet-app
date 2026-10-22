@@ -154,15 +154,32 @@ describe('K1d records read as K1e', () => {
     expect(k).toMatchObject({ scope: 'all', rev: 0, personas: [O] });
   });
 
-  it('pairing again goes back to the claimer alone at revision 0 and sends its games invites again', () => {
-    const base = { ...paired(), scope: 'all' as const, rev: 4, update: { rev: 4, signer: O, personas: [], sentAt: 1, composedAt: 1 } };
+  it('pairing again keeps the list, the revision and the personas met, makes the others accept again, and sends the games invites again', () => {
+    const base = { ...paired(), scope: 'all' as const, rev: 4, update: { rev: 6, signer: O, personas: [], sentAt: 1, composedAt: 1 } };
     const B = 'ee'.repeat(32);
-    const withB = { ...base, personas: [O, B], links: { ...base.links, [B]: { sections: ['games'], active: true } } };
+    const C = 'ff'.repeat(32);
+    const withB = {
+      ...base, personas: [O, B], seen: [O, B, C],
+      links: { ...base.links, [B]: { sections: ['games'], addedRev: 3, active: true, accept: undefined } },
+    };
     const kept = withInvite(withB, invite({ gamesFor: O, status: 'active', ackAt: 9 }));
-    const again = repairKeep(kept, { name: 'N', relays: ['wss://z.example'], code: '44'.repeat(16), now: 99, scope: 'one' });
-    expect(again).toMatchObject({ status: 'pending', scope: 'one', rev: 0, personas: [O], seen: [O] });
+    const again = repairKeep({ ...kept, ackCursors: { [O]: 5 } }, { name: 'N', relays: ['wss://z.example'], code: '44'.repeat(16), now: 99 });
+    // scope stays unless the new claim says otherwise; the unanswered update's revision is not reused
+    expect(again).toMatchObject({ status: 'pending', scope: 'all', rev: 6, personas: [O, B], seen: [O, B, C] });
     expect(again.update).toBeUndefined();
-    expect(Object.keys(again.links)).toEqual([O]);
+    expect(again.ackCursors).toBeUndefined();
+    expect(again.links[O]).toMatchObject({ active: true });
+    expect(again.links[B]).toMatchObject({ sections: ['games'], addedRev: 3, active: false });
     expect(again.invites[0]).toMatchObject({ gamesFor: O, status: 'waiting', sentAt: 0 });
+    expect(repairKeep(kept, { name: 'N', relays: [], code: '44'.repeat(16), now: 99, scope: 'one' }).scope).toBe('one');
+  });
+
+  it('pairing again puts the claimer back on the list if it had been taken off', () => {
+    const B = 'ee'.repeat(32);
+    const k = { ...paired(), personas: [B], links: { [B]: { sections: [], active: true } } };
+    const again = repairKeep(k, { name: 'N', relays: ['wss://z.example'], code: '44'.repeat(16), now: 99 });
+    expect(again.personas).toEqual([O, B]);
+    expect(again.links[O].active).toBe(true);
+    expect(again.links[B].active).toBe(false);
   });
 });

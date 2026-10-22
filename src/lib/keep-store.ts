@@ -277,22 +277,39 @@ export function newPendingKeep(a: {
 }
 
 /**
- * A stored Keep that took a new pairing link (it restarted or was reset): back
- * to `pending` with the new code, relays and name. Its invites stay; the acks
- * decide what the Keep still knows of them.
+ * A stored Keep that took a new pairing link (it restarted, was reset, or was added again while still
+ * paired): back to `pending` with the new code, relays and name. Its invites stay; the acks decide what
+ * the Keep still knows of them.
+ *
+ * The Keep may or may not have forgotten its owners list, and this cannot tell. So the list, the
+ * revision and the personas already met are kept; the claimer alone is active (its claim is its
+ * acceptance) and every other linked persona must accept again. The caller then makes an update at a
+ * higher revision (see `composeUpdate`), which a reset Keep takes from revision 0 and a Keep that was
+ * not reset takes over its own list, accepts being repeat-safe at the Keep. Nothing the owner chose is
+ * lost either way, and nothing is linked that the owner had not linked.
  */
 export function repairKeep(
   keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number; scope?: KeepScope },
 ): StoredKeep {
-  const { ackCursors: _cursors, update: _update, ...rest } = keep; // a new pairing reads acks afresh
-  // A reset Keep has forgotten its owners list: back to the claimer alone at revision 0, to be linked again.
+  const { ackCursors: _cursors, update, ...rest } = keep; // a new pairing reads acks afresh
+  const claimer = keep.claimedBy;
+  const mine = keep.links[claimer];
+  const links: Record<string, PersonaLink> = {
+    [claimer]: { sections: mine?.sections ?? [KEEP_SECTION_GAMES], addedRev: mine?.addedRev ?? 0, active: true },
+  };
+  for (const [persona, link] of Object.entries(keep.links)) {
+    if (persona === claimer) continue;
+    const { accept: _accept, ...held } = link;
+    links[persona] = { ...held, active: false };
+  }
   // The owner personas' own games invites may be gone from the box too: send them again (a repeat is harmless).
   return {
     ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now,
-    scope: a.scope ?? keep.scope, rev: 0,
-    personas: [keep.claimedBy],
-    links: { [keep.claimedBy]: { sections: keep.links[keep.claimedBy]?.sections ?? [KEEP_SECTION_GAMES], addedRev: 0, active: true } },
-    seen: [keep.claimedBy],
+    scope: a.scope ?? keep.scope,
+    // An update that was never answered may have been taken: number the next one above it.
+    rev: Math.max(keep.rev, update?.rev ?? 0),
+    personas: Object.keys(links), links,
+    seen: keep.seen.includes(claimer) ? keep.seen : [...keep.seen, claimer],
     invites: keep.invites.map(i => (i.gamesFor && i.status !== 'revoked' && i.status !== 'refused' && !i.revokeSent
       ? { ...i, status: 'waiting' as const, sentAt: 0 } : i)),
   };

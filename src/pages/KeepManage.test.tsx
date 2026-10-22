@@ -109,7 +109,8 @@ describe('Add a Keep', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Make it my Keep' }));
     expect((await screen.findAllByText(/Waiting for the Keep/)).length).toBeGreaterThan(0);
-    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE], ['scope', 'all']]);
+    // A Keep stored without a choice is one for a single persona: adding it again starts there, not on All.
+    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE], ['scope', 'one']]);
     expect((row as Array<{ invites: unknown[] }>)[0].invites).toHaveLength(1);
   });
 
@@ -334,6 +335,15 @@ describe('personas (K1e)', () => {
     await screen.findAllByText(/Waiting for the Keep/);
     expect(lastRumor().tags).toContainEqual(['scope', 'one']);
     expect((row as Array<{ scope: string }>)[0].scope).toBe('one');
+  });
+
+  it('adding a Keep that is already stored starts on the choice it has', async () => {
+    row = [link({ status: 'paired' })]; // scope one
+    renderKeep(two());
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a Keep' }));
+    fireEvent.change(screen.getByLabelText('Keep link'), { target: { value: LINK } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByRole('radio', { name: /Only this persona/ })).toBeChecked();
   });
 
   it('every Keep shows for every persona, labelled All of you or Only <names>', async () => {

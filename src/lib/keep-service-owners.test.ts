@@ -441,3 +441,37 @@ describe('one ack cursor for each owner persona of a Keep', () => {
     expect(k.ackCursors).toEqual({ [A]: NOW - 5000, [B]: NOW - 5000 });
   });
 });
+
+describe('adding a Keep again with a new pairing link', () => {
+  const link2 = parseKeepPairLink(`signet-keep:pair?k=${K}&c=${'44'.repeat(16)}&n=Home&r=wss://a.example`)!;
+  const owned = () => [{
+    keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: A, personas: [A, B], scope: 'one', rev: 3, seen: [A, B], status: 'paired',
+    claimedAt: 1, invites: [],
+    links: { [A]: { sections: [], addedRev: 0, active: true }, [B]: { sections: [], addedRev: 3, active: true } },
+  }];
+
+  it('keeps the owner list and the choice of who can use it, and sends the list again at the next revision once paired', async () => {
+    row = owned();
+    await claimKeep(deps(), link2, A, 'one');
+    published.length = 0;
+    const [pending] = await loadStoredKeeps('key');
+    expect(pending).toMatchObject({ status: 'pending', scope: 'one', rev: 3, personas: [A, B], seen: [A, B] });
+    expect(pending.links[B]).toMatchObject({ active: false, accept: { rev: 4 } });
+    expect(pending.update).toMatchObject({ rev: 4, signer: A });
+    await applyAckEvents(deps(), [ack(A, [['status', 'paired'], ['claim']], NOW + 5)]);
+    await settle(deps());
+    const update = rumors().find(r => r.kind === 27664)!;
+    expect(update.tags).toEqual([['keep', K], ['rev', '4'], ['persona', A], ['persona', B]]);
+    expect(kinds()).not.toContain(27665); // Bob's accept waits for the update's ack
+  });
+
+  it('a Keep whose list was not reset takes it over; a repeated update is no harm, and an old ack of the first pairing is not believed', async () => {
+    row = owned();
+    await claimKeep(deps(), link2, A, 'one');
+    await applyAckEvents(deps(), [ack(A, [['status', 'paired'], ['claim']], NOW + 5)]);
+    await applyAckEvents(deps(), [ack(B, [['status', 'updated'], ['rev', '3']], NOW - 3600)]); // from before the claim
+    expect((await loadStoredKeeps('key'))[0].links[B].active).toBe(false);
+    await applyAckEvents(deps(), [ack(B, [['status', 'updated'], ['rev', '4']], NOW + 10)]);
+    expect((await loadStoredKeeps('key'))[0].links[B].active).toBe(true);
+  });
+});

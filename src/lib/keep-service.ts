@@ -134,7 +134,9 @@ export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: s
       if (existing.status === 'pending' && existing.code === link.code) { out.kind = 'exists'; return list; }
       if (existing.claimedBy !== claimedBy) { out.kind = 'other-owner'; return list; }
       out.kind = 'repair';
-      out.keep = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps), scope });
+      const repaired = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps), scope });
+      // The list goes out again at a higher revision once the Keep has paired (see `repairKeep`).
+      out.keep = repaired.scope === 'all' || repaired.personas.length > 1 ? composeUpdate(repaired, claimedBy, nowOf(deps)) : repaired;
       return withKeep(list, out.keep);
     }
     out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps), scope });
