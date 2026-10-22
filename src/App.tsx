@@ -10766,6 +10766,8 @@ export function App() {
         contacts: contactsScope.directoryId === 'owner' && !contactsV2.loading ? contactsV2.effective : null,
         confirmClaim: async (keepName, personaName) =>
           (await requestFreshAuth({ purpose: 'manage-keep', keepName, personaName })) !== null,
+        confirmOwnerChange: async (keepName, personaName, linking) =>
+          (await requestFreshAuth({ purpose: 'manage-keep', keepName, personaName, action: linking ? 'link' : 'unlink' })) !== null,
       } : undefined}
       ownedPubkeys={keepAuthorPubkeys({
         slotPubkeys: ownerSlotPubkeys(identity),

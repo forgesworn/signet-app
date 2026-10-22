@@ -59,6 +59,7 @@ function host(over: Partial<KeepHost> = {}): KeepHost {
     personas: [{ pubkey: O, name: 'Anon', canSign: true }],
     contacts: [contact('1', 'Dave', 'kin', FRIEND), contact('2', 'Kenny', 'ken', 'ee'.repeat(32))],
     confirmClaim: vi.fn(async () => true),
+    confirmOwnerChange: vi.fn(async () => true),
     ...over,
   };
 }
@@ -356,16 +357,18 @@ describe('personas (K1e)', () => {
 
   it('Linked personas has a switch per persona and the privacy note; switching Bob on sends the update, and his accept follows the update\'s ack', async () => {
     row = [link()];
-    renderKeep(two());
+    const h = two();
+    renderKeep(h);
     fireEvent.click(await screen.findByTestId('stored-keep-row'));
     const section = (await screen.findByRole('heading', { name: 'Linked personas' })).closest('section')!;
-    expect(section).toHaveTextContent('The Keep will be able to tell that these personas are the same person. Nobody else can.');
+    expect(section).toHaveTextContent('The Keep will be able to tell that these personas are the same person, and the relays it uses may be able to as well. Nobody else can.');
     const anon = within(section).getByRole('switch', { name: 'Anon' });
     expect(anon).toBeChecked();
     expect(anon).toBeDisabled(); // the only persona the Keep has confirmed
     const bob = within(section).getByRole('switch', { name: 'Bob' });
     expect(bob).not.toBeChecked();
     fireEvent.click(bob);
+    await waitFor(() => expect(h.confirmOwnerChange).toHaveBeenCalledWith('Kitchen Keep', 'Bob', true));
     const owners = () => kindsPublished().filter(k => k === 27664 || k === 27665);
     await waitFor(() => expect(owners()).toEqual([27664]));
     expect(owners()).not.toContain(27665);
@@ -373,6 +376,33 @@ describe('personas (K1e)', () => {
     expect(update.tags).toEqual([['keep', K], ['rev', '1'], ['persona', O, 'games'], ['persona', BOB, 'games']]);
     await waitFor(() => expect(within(section).getByText('Waiting for the Keep')).toBeInTheDocument());
     expect(screen.getByTestId('keep-scope')).toHaveTextContent('All of you');
+  });
+
+  it('linking and unlinking a persona ask for the PIN first, and nothing is sent when it is not confirmed', async () => {
+    row = [link()];
+    const h = two({ confirmOwnerChange: vi.fn(async () => false) });
+    renderKeep(h);
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const section = (await screen.findByRole('heading', { name: 'Linked personas' })).closest('section')!;
+    fireEvent.click(within(section).getByRole('switch', { name: 'Bob' }));
+    await waitFor(() => expect(h.confirmOwnerChange).toHaveBeenCalledWith('Kitchen Keep', 'Bob', true));
+    expect(await screen.findByText('Not confirmed. Nothing was sent.')).toBeInTheDocument();
+    expect(kindsPublished()).not.toContain(27664); // no owners update (a games invite for the claimer may go)
+    expect((row as Array<{ personas: string[] }>)[0].personas).toEqual([O]);
+  });
+
+  it('unlinking asks for the PIN as well; Games on or off and Try again do not', async () => {
+    row = [{ ...bothLinked([gamesInvite(O), gamesInvite(BOB)]), rev: 1 }];
+    const h = two();
+    renderKeep(h);
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    const used = await screen.findByTestId('used-by');
+    fireEvent.click(within(used).getByRole('switch', { name: 'Bob' }));
+    await waitFor(() => expect(kindsPublished()).toContain(27664));
+    expect(h.confirmOwnerChange).not.toHaveBeenCalled();
+    const section = screen.getByRole('heading', { name: 'Linked personas' }).closest('section')!;
+    fireEvent.click(within(section).getByRole('switch', { name: 'Bob' }));
+    await waitFor(() => expect(h.confirmOwnerChange).toHaveBeenCalledWith('Kitchen Keep', 'Bob', false));
   });
 
   it('a persona without a local key cannot be linked: "Not available for this persona yet."', async () => {

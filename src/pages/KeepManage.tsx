@@ -44,6 +44,8 @@ export interface KeepHost {
   contacts: EffectiveContact[] | null;
   /** The PIN / biometric check before a Keep is claimed. True when confirmed. */
   confirmClaim: (keepName: string, personaName: string) => Promise<boolean>;
+  /** The same check before an owner persona is linked to a Keep or unlinked from it. True when confirmed. */
+  confirmOwnerChange: (keepName: string, personaName: string, linking: boolean) => Promise<boolean>;
 }
 
 export const NOT_AVAILABLE = 'Not available for this persona yet.';
@@ -342,6 +344,11 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
 
   const change = (c: OwnerChange, done?: string) => run(async () => {
     if (!actor) return;
+    // Linking or unlinking a persona asks for the PIN, as the claim does. Trying again repeats a change already confirmed.
+    if ((c.kind === 'link' || c.kind === 'unlink') && !await host.confirmOwnerChange(keep.name, name(c.persona), c.kind === 'link')) {
+      setMessage('Not confirmed. Nothing was sent.');
+      return;
+    }
     setKeeps(await changeOwners(host.deps, keep.keep, actor.pubkey, c));
     if (done) setMessage(done);
   });
@@ -428,7 +435,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
           <section aria-labelledby="keep-personas" style={{ marginBottom: 16 }}>
             <h3 id="keep-personas" className="section-title" style={{ margin: '0 0 8px' }}>Linked personas</h3>
             <div className="card" style={{ padding: '4px 16px 12px' }}>
-              <p style={{ ...muted, margin: '8px 0 0' }}>The Keep will be able to tell that these personas are the same person. Nobody else can.</p>
+              <p style={{ ...muted, margin: '8px 0 0' }}>The Keep will be able to tell that these personas are the same person, and the relays it uses may be able to as well. Nobody else can.</p>
               {host.personas.map(p => {
                 const linked = isLinked(keep, p.pubkey);
                 const confirmed = isActiveOwner(keep, p.pubkey);
