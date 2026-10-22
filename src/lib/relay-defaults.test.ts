@@ -8,7 +8,7 @@ const relay = (url: string) => ({ url, enabled: true, read: true, write: true })
 describe('retired default relay migration', () => {
   it('uses relay.primal.net as the production relay and first default', () => {
     expect(PRODUCTION_RELAY_URL).toBe(primal);
-    expect(defaultRelays().map(r => r.url)).toEqual([primal, 'wss://nostr.oxtr.dev', 'wss://relay.damus.io', 'wss://relay.ditto.pub']);
+    expect(defaultRelays().map(r => r.url)).toEqual([primal, 'wss://relay.damus.io', 'wss://relay.ditto.pub']);
     expect(defaultRelays().every(r => r.write)).toBe(true);
   });
   it('replaces an old single-relay install with the full remaining pool', () => {

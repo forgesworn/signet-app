@@ -7,9 +7,9 @@ export const PRODUCTION_RELAY_URL = 'wss://relay.primal.net';
 export const DEFAULT_RELAY_URL = typeof window !== 'undefined' && window.location?.hostname === 'localhost' && !isNativeApp()
   ? 'ws://localhost:7777' : PRODUCTION_RELAY_URL;
 
-/** Public defaults. */
+/** Public defaults. Kept short: a private-backup read needs every write relay to answer. */
 export function defaultRelays(): RelayConfig[] {
-  const urls = [PRODUCTION_RELAY_URL, 'wss://nostr.oxtr.dev', 'wss://relay.damus.io', 'wss://relay.ditto.pub'];
+  const urls = [PRODUCTION_RELAY_URL, 'wss://relay.damus.io', 'wss://relay.ditto.pub'];
   if (DEFAULT_RELAY_URL !== PRODUCTION_RELAY_URL) urls.unshift(DEFAULT_RELAY_URL);
   return urls.map(url => ({ url, enabled: true, read: true, write: true }));
 }
