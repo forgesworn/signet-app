@@ -17,6 +17,7 @@
 import { getEventHash, verifyEvent } from 'nostr-tools/pure';
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import { giftWrap } from './relay-publish';
+import { sanitizeDisplayName } from './text-sanitize';
 import type { DecryptingSigningBackend } from './signing-backend';
 import {
   KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MSG_ACK_KIND, KEEP_MSG_CLAIM_KIND,
@@ -51,7 +52,7 @@ export function claimRumor(backend: DecryptingSigningBackend, keep: string, code
   return rumorTemplate(backend, KEEP_MSG_CLAIM_KIND, [['keep', keep], ['code', code]], now);
 }
 
-/** Exactly one of `persona` / `guest`; `label` is cut to the contract's 40 characters. */
+/** Exactly one of `persona` / `guest`; `label` loses control and bidi characters and is cut to the contract's 40. */
 export function inviteRumor(backend: DecryptingSigningBackend, spec: InviteSpec, now: number): UnsignedEvent {
   if (!HEX64.test(spec.keep) || !HEX32.test(spec.grant) || !HEX64.test(spec.secret)) throw new Error('Invalid invite');
   if (!Number.isSafeInteger(spec.expiration) || spec.expiration <= 0) throw new Error('Invalid invite');
@@ -62,7 +63,7 @@ export function inviteRumor(backend: DecryptingSigningBackend, spec: InviteSpec,
     ['expiration', String(spec.expiration)],
     spec.persona ? ['p', spec.persona] : ['guest'],
   ];
-  const label = Array.from(spec.label ?? '').slice(0, KEEP_INVITE_LABEL_MAX).join('').trim();
+  const label = sanitizeDisplayName(spec.label ?? '', KEEP_INVITE_LABEL_MAX);
   if (label) tags.push(['name', label]);
   return rumorTemplate(backend, KEEP_MSG_INVITE_KIND, tags, now);
 }

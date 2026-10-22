@@ -74,6 +74,11 @@ describe('sending (what the Keep receives)', () => {
     expect(r.tags.find(t => t[0] === 'name')![1]).toHaveLength(40);
   });
 
+  it('strips control and bidi characters from the label before it goes to the Keep', () => {
+    const r = inviteRumor(owner, { keep: K, grant: GRANT, secret: SECRET, expiration: NOW + 1, persona: 'ee'.repeat(32), label: '  Da\u202Eve\u0000\n\u200Bx  ' }, NOW);
+    expect(r.tags.find(t => t[0] === 'name')![1]).toBe('Davex');
+  });
+
   it('refuses an invite that is both or neither personal and guest', () => {
     const base = { keep: K, grant: GRANT, secret: SECRET, expiration: NOW + 1 };
     expect(() => inviteRumor(owner, base, NOW)).toThrow();
