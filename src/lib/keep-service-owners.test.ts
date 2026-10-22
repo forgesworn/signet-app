@@ -1,0 +1,355 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getPublicKey } from 'nostr-tools/pure';
+import { unwrapEvent, wrapEvent } from 'nostr-tools/nip59';
+import { hexToBytes } from '@noble/hashes/utils.js';
+import type { NostrEvent } from 'signet-protocol';
+
+let row: unknown = null;
+let dbThrows = false;
+vi.mock('./db', () => ({
+  loadKeepsRow: async () => {
+    if (dbThrows) throw new Error('decrypt failed');
+    return row === null ? null : JSON.parse(JSON.stringify(row));
+  },
+  saveKeepsRow: async (value: unknown) => { row = JSON.parse(JSON.stringify(value)); },
+}));
+const fetchMock = vi.fn();
+const subscribeMock = vi.fn();
+vi.mock('./relay-service', () => ({
+  fetchEventsWithReach: (...a: unknown[]) => fetchMock(...a),
+  subscribeEvents: (...a: unknown[]) => subscribeMock(...a),
+}));
+
+import { LocalSigningBackend } from './signing-backend';
+import {
+  NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, applyAckEvents, catchUp, changeOwners, claimKeep, loadStoredKeeps,
+  settle, watchAcks, type KeepDeps,
+} from './keep-service';
+import { KeepsUnreadableError, type StoredKeep } from './keep-store';
+import { parseKeepPairLink } from './keep-link';
+
+const KEEP_SK = hexToBytes('0'.repeat(63) + '1');
+const K = getPublicKey(KEEP_SK);
+const SK_A = '0'.repeat(63) + '2';
+const SK_B = '0'.repeat(63) + '3';
+const SK_C = '0'.repeat(63) + '4';
+const A = getPublicKey(hexToBytes(SK_A));
+const B = getPublicKey(hexToBytes(SK_B));
+const C = getPublicKey(hexToBytes(SK_C));
+const SKS: Record<string, string> = { [A]: SK_A, [B]: SK_B, [C]: SK_C };
+const NAMES: Record<string, string> = { [A]: 'Alice', [B]: 'Bob', [C]: 'Cara' };
+const NOW = 1_800_000_000;
+const DAY = 86400;
+const CODE = '33'.repeat(16);
+const link = parseKeepPairLink(`signet-keep:pair?k=${K}&c=${CODE}&n=Home&r=wss://a.example`)!;
+
+const published: Array<{ wrap: NostrEvent; relays: readonly string[] }> = [];
+let t = NOW;
+let held = [A, B];
+let account = [A, B];
+const deps = (over: Partial<KeepDeps> = {}): KeepDeps => ({
+  encryptionKey: 'key',
+  backendFor: p => (held.includes(p) ? new LocalSigningBackend(SKS[p]) : null),
+  eligiblePersonas: () => account.filter(p => held.includes(p)),
+  personaName: p => NAMES[p],
+  publish: async (wrap, relays) => { published.push({ wrap, relays }); return relays.map(() => true); },
+  now: () => t,
+  ...over,
+});
+const rumors = () => published.map(p => unwrapEvent(p.wrap as never, KEEP_SK));
+const kinds = () => rumors().map(r => r.kind);
+const tag = (r: { tags: string[][] }, name: string) => r.tags.find(x => x[0] === name);
+const ack = (to: string, tags: string[][], at = NOW + 1) =>
+  wrapEvent({ kind: 27663, content: '', created_at: at, tags: [['keep', K], ...tags] }, KEEP_SK, to) as unknown as NostrEvent;
+const stored = async () => (await loadStoredKeeps('key'))[0];
+
+beforeEach(() => {
+  row = null; dbThrows = false; published.length = 0; t = NOW; held = [A, B]; account = [A, B];
+  fetchMock.mockReset(); subscribeMock.mockReset();
+  fetchMock.mockResolvedValue({ events: [], attempted: 1, reached: 1 });
+});
+
+/** Claim as A with the given scope and let the Keep's paired ack in. */
+async function pairedKeep(scope: 'all' | 'one') {
+  await claimKeep(deps(), link, A, scope);
+  published.length = 0;
+  await applyAckEvents(deps(), [ack(A, [['status', 'paired'], ['claim']])]);
+}
+
+describe('claiming with a scope', () => {
+  it('the claim carries the scope and the record keeps it', async () => {
+    await claimKeep(deps(), link, A, 'all');
+    expect(rumors()[0].tags).toEqual([['keep', K], ['code', CODE], ['scope', 'all']]);
+    expect(await stored()).toMatchObject({ scope: 'all', rev: 0, personas: [A] });
+  });
+});
+
+describe('an All my personas Keep, once paired', () => {
+  it('sends update rev 1 listing both personas with games, then Bob\'s accept, then the games invites', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    expect(kinds()).toEqual([27664, 27665, 27661, 27661]);
+    const [update, accept, ...invites] = rumors();
+    expect(update.pubkey).toBe(A);
+    expect(update.tags).toEqual([['keep', K], ['rev', '1'], ['persona', A, 'games'], ['persona', B, 'games']]);
+    expect(accept.pubkey).toBe(B);
+    expect(accept.tags).toEqual([['keep', K], ['rev', '1']]);
+    expect(invites.map(r => tag(r, 'p')![1]).sort()).toEqual([A, B].sort());
+    expect(invites.map(r => tag(r, 'name')![1]).sort()).toEqual(['Alice (owner)', 'Bob (owner)']);
+    for (const r of invites) {
+      expect(r.pubkey).toBe(A);
+      expect(Number(tag(r, 'expiration')![1])).toBe(NOW + 365 * DAY - 3600);
+    }
+  });
+
+  it('sends each thing once, however often it is settled', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    await Promise.all([settle(deps()), settle(deps())]);
+    await catchUp(deps());
+    expect(published).toHaveLength(4);
+  });
+
+  it('Bob becomes active on the Keep\'s updated ack to Bob; the update is done on the ack to Alice', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    await applyAckEvents(deps(), [ack(B, [['status', 'updated'], ['rev', '1']]), ack(A, [['status', 'updated'], ['rev', '1']])]);
+    const k = await stored();
+    expect(k.rev).toBe(1);
+    expect(k.update).toBeUndefined();
+    expect(k.links[B]).toMatchObject({ active: true });
+    expect(k.links[B].accept).toBeUndefined();
+  });
+
+  it('an accept the Keep held as pending is sent again once the update lands', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    await applyAckEvents(deps(), [ack(B, [['status', 'pending'], ['rev', '0']])]);
+    published.length = 0;
+    t += 700;
+    await settle(deps());
+    expect(kinds()).toContain(27664); // the update goes again; the accept waits for it
+    expect(kinds()).not.toContain(27665);
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '1']])]);
+    published.length = 0;
+    await settle(deps());
+    expect(kinds()).toEqual([27665]);
+    expect(rumors()[0].pubkey).toBe(B);
+  });
+
+  it('refused stale: takes the Keep\'s revision and sends again one higher, with a fresh accept', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'refused'], ['reason', 'stale'], ['rev', '5']])]);
+    await settle(deps());
+    expect(kinds()).toEqual([27664, 27665]);
+    expect(tag(rumors()[0], 'rev')![1]).toBe('6');
+    expect(tag(rumors()[1], 'rev')![1]).toBe('6');
+  });
+
+  it('an unanswered update and accept go again after ten minutes', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    published.length = 0;
+    t += 601;
+    await settle(deps());
+    expect(kinds()).toEqual([27664, 27665, 27661, 27661]);
+  });
+
+  it('a persona created later is linked by the next update and accept', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    await applyAckEvents(deps(), [
+      ack(A, [['status', 'updated'], ['rev', '1']]), ack(B, [['status', 'updated'], ['rev', '1']]),
+      ack(A, [['status', 'active'], ['grant', (await stored()).invites[0].grant]]),
+    ]);
+    published.length = 0;
+    held = [A, B, C]; account = [A, B, C];
+    await catchUp(deps());
+    const [update, accept] = rumors();
+    expect(update.kind).toBe(27664);
+    expect(update.tags.filter(x => x[0] === 'persona').map(x => x[1])).toEqual([A, B, C]);
+    expect(tag(update, 'rev')![1]).toBe('2');
+    expect(accept.kind).toBe(27665);
+    expect(accept.pubkey).toBe(C);
+  });
+});
+
+describe('an Only this persona Keep', () => {
+  it('sends no update by itself, only the owner\'s own games invite', async () => {
+    await pairedKeep('one');
+    await settle(deps());
+    expect(kinds()).toEqual([27661]);
+  });
+
+  it('linking Bob by hand sends the update and Bob\'s accept together', async () => {
+    await pairedKeep('one');
+    await settle(deps());
+    published.length = 0;
+    await changeOwners(deps(), K, A, { kind: 'link', persona: B });
+    expect(kinds().slice(0, 2)).toEqual([27664, 27665]);
+    expect(rumors()[0].tags).toEqual([['keep', K], ['rev', '1'], ['persona', A, 'games'], ['persona', B, 'games']]);
+    expect(rumors()[1].pubkey).toBe(B);
+    expect(kinds().slice(2)).toEqual([27661]); // Bob's games invite
+  });
+
+  it('a persona whose key is not held cannot be linked ("Not available for this persona yet")', async () => {
+    await pairedKeep('one');
+    await expect(changeOwners(deps(), K, A, { kind: 'link', persona: C })).rejects.toBeInstanceOf(PersonaNotAvailableError);
+    expect(published).toHaveLength(0);
+    expect((await stored()).personas).toEqual([A]);
+  });
+
+  it('a persona that is not an active owner cannot change anything', async () => {
+    await pairedKeep('one');
+    await expect(changeOwners(deps(), K, B, { kind: 'games', persona: A, on: false })).rejects.toBeInstanceOf(NotAnOwnerError);
+  });
+
+  it('the only active owner cannot be unlinked', async () => {
+    await pairedKeep('one');
+    await expect(changeOwners(deps(), K, A, { kind: 'unlink', persona: A })).rejects.toBeInstanceOf(OwnerChangeRefusedError);
+  });
+});
+
+describe('switches on a linked Keep', () => {
+  async function bothLinked() {
+    await pairedKeep('all');
+    await settle(deps());
+    const k = await stored();
+    await applyAckEvents(deps(), [
+      ack(A, [['status', 'updated'], ['rev', '1']]), ack(B, [['status', 'updated'], ['rev', '1']]),
+      ...k.invites.map(i => ack(A, [['status', 'active'], ['grant', i.grant]])),
+    ]);
+    published.length = 0;
+  }
+
+  it('Games off for Bob: the update lists Bob without games, and his games invite is revoked', async () => {
+    await bothLinked();
+    await changeOwners(deps(), K, A, { kind: 'games', persona: B, on: false });
+    expect(kinds()).toEqual([27664, 27662]);
+    expect(rumors()[0].tags).toEqual([['keep', K], ['rev', '2'], ['persona', A, 'games'], ['persona', B]]);
+    const bobInvite = (await stored()).invites.find(i => i.gamesFor === B)!;
+    expect(rumors()[1].tags).toEqual([['keep', K], ['grant', bobInvite.grant]]);
+    expect(bobInvite.revokeSent).toBe(true);
+  });
+
+  it('Games back on makes a new invite for Bob', async () => {
+    await bothLinked();
+    await changeOwners(deps(), K, A, { kind: 'games', persona: B, on: false });
+    published.length = 0;
+    await changeOwners(deps(), K, A, { kind: 'games', persona: B, on: true });
+    expect(kinds()).toEqual([27664, 27661]);
+    expect(tag(rumors()[1], 'p')![1]).toBe(B);
+  });
+
+  it('unlinking Bob: an update without him, and his games invite revoked, signed by Alice', async () => {
+    await bothLinked();
+    await changeOwners(deps(), K, A, { kind: 'unlink', persona: B });
+    expect(kinds()).toEqual([27664, 27662]);
+    expect(rumors()[0].tags).toEqual([['keep', K], ['rev', '2'], ['persona', A, 'games']]);
+    expect(rumors()[1].pubkey).toBe(A);
+    expect((await stored()).personas).toEqual([A]);
+  });
+
+  it('an unlinked persona is not linked again when the app next runs', async () => {
+    await bothLinked();
+    await changeOwners(deps(), K, A, { kind: 'unlink', persona: B });
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '2']])]);
+    await catchUp(deps());
+    expect(kinds()).not.toContain(27664);
+  });
+
+  it('Bob (active) can unlink Alice and keeps the Keep, signing as himself', async () => {
+    await bothLinked();
+    await changeOwners(deps(), K, B, { kind: 'unlink', persona: A });
+    expect(rumors()[0].pubkey).toBe(B);
+    expect(rumors()[0].tags).toEqual([['keep', K], ['rev', '2'], ['persona', B, 'games']]);
+    const revoke = rumors().find(r => r.kind === 27662)!;
+    expect(revoke.pubkey).toBe(B); // the remaining active owner signs the revoke of Alice's games invite
+  });
+
+  it('a retry after the Keep gave the update up makes it again at a newer revision', async () => {
+    await bothLinked();
+    await changeOwners(deps(), K, A, { kind: 'games', persona: B, on: false });
+    await applyAckEvents(deps(), [ack(A, [['status', 'refused'], ['reason', 'malformed']])]);
+    expect((await stored()).update?.failed).toBe('malformed');
+    published.length = 0;
+    await changeOwners(deps(), K, A, { kind: 'retry' });
+    expect(kinds()).toEqual([27664]);
+    expect(tag(rumors()[0], 'rev')![1]).toBe('3');
+  });
+});
+
+describe('renewing a games invite', () => {
+  it('a new grant goes first; the old one is revoked after the new one is acked active', async () => {
+    await pairedKeep('one');
+    await settle(deps());
+    const first = (await stored()).invites[0];
+    await applyAckEvents(deps(), [ack(A, [['status', 'active'], ['grant', first.grant]])]);
+    published.length = 0;
+    t = NOW + (365 - 29) * DAY;
+    await catchUp(deps());
+    expect(kinds()).toEqual([27661]);
+    const fresh = (await stored()).invites.find(i => i.grant !== first.grant)!;
+    expect(tag(rumors()[0], 'grant')![1]).toBe(fresh.grant);
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'active'], ['grant', fresh.grant]], t + 1)]);
+    await settle(deps());
+    expect(kinds()).toEqual([27662]);
+    expect(tag(rumors()[0], 'grant')![1]).toBe(first.grant);
+  });
+});
+
+describe('reading acks addressed to every owner persona', () => {
+  it('asks for wraps to each linked persona, not only the claimer', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    fetchMock.mockClear();
+    await catchUp(deps());
+    const asked = fetchMock.mock.calls.map(c => (c[0] as Array<{ '#p': string[] }>)[0]['#p'][0]).sort();
+    expect(asked).toEqual([A, B].sort());
+  });
+
+  it('listens live for each, and sends what an ack makes due', async () => {
+    await pairedKeep('all');
+    const handlers: Array<(e: NostrEvent) => void> = [];
+    subscribeMock.mockImplementation((_f: unknown, _r: unknown, on: (e: NostrEvent) => void) => { handlers.push(on); return () => undefined; });
+    const k = await stored();
+    const onChange = vi.fn();
+    const stop = watchAcks(deps(), [k], onChange);
+    expect(handlers.length).toBeGreaterThanOrEqual(1);
+    // After `paired`, the update is already due; the live path sends it without waiting for the next opening.
+    const e = ack(A, [['status', 'refused'], ['reason', 'stale'], ['rev', '3']]);
+    await settle(deps());
+    published.length = 0;
+    for (const h of handlers) h(e);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+    stop();
+    expect(kinds()).toContain(27664);
+  });
+});
+
+describe('an unreadable list is never written over', () => {
+  it('a change of the owner list fails and writes nothing', async () => {
+    await pairedKeep('one');
+    const before = JSON.stringify(row);
+    dbThrows = true;
+    await expect(changeOwners(deps(), K, A, { kind: 'link', persona: B })).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(JSON.stringify(row)).toBe(before);
+    expect(published).toHaveLength(0);
+  });
+
+  it('a K1d record that reads fine is migrated and saved in the K1e shape the first time it is written', async () => {
+    const k1d = {
+      keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: A, personas: [A], status: 'paired', claimedAt: 1, invites: [],
+    };
+    row = [k1d];
+    await settle(deps());
+    const [k] = row as StoredKeep[];
+    expect(k).toMatchObject({ scope: 'one', rev: 0, personas: [A], seen: [A] });
+    expect(k.links[A]).toEqual({ sections: ['games'], addedRev: 0, active: true });
+    expect(k.invites).toHaveLength(1);
+  });
+});

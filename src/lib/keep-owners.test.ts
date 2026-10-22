@@ -282,7 +282,7 @@ describe('reconcile', () => {
 
   it('members\' invites are left alone', () => {
     const member: StoredInvite = { grant: '9'.repeat(32), secret: '8'.repeat(64), kind: 'guest', createdAt: 1, expiration: NOW + DAY, status: 'active' };
-    const k = reconcileKeep({ ...paired('one'), invites: [member] }, setSection === null ? ctx() : ctx());
+    const k = reconcileKeep({ ...paired('one'), invites: [member] }, ctx());
     expect(k.invites[0]).toBe(member);
   });
 });

@@ -15,19 +15,30 @@ import type { DecryptingSigningBackend } from './signing-backend';
 import { publishWrappedToRelays } from './relay-publish';
 import { fetchEventsWithReach, subscribeEvents } from './relay-service';
 import {
-  claimRumor, inviteRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
+  claimRumor, inviteRumor, ownerAcceptRumor, ownersUpdateRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
 } from './keep-messages';
 import {
   KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, findKeep, markInviteSent, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, resendDue, withInvite, withKeep,
-  type StoredInvite, type StoredKeep,
+  type KeepScope, type StoredInvite, type StoredKeep,
 } from './keep-store';
+import {
+  applyOwnersAck, canUnlink, composeUpdate, isActiveOwner, linkPersona, markOwnersSent, ownersDue, pickSigner, reconcileKeep,
+  setSection, unlinkPersona, type ReconcileContext,
+} from './keep-owners';
 import type { KeepPairLink } from './keep-link';
-import { KEEP_GUEST_PASS_S, KEEP_PERSONAL_INVITE_S } from './keep-wire';
+import { KEEP_GUEST_PASS_S, KEEP_PERSONAL_INVITE_S, KEEP_SECTION_GAMES } from './keep-wire';
 
 export interface KeepDeps {
   encryptionKey: string;
   /** The signing backend for a persona this device holds the key of; null otherwise. */
   backendFor: (persona: string) => DecryptingSigningBackend | null;
+  /**
+   * Every persona of the account this device can sign for, dependants left out (K1e). An
+   * `all` Keep links these, new ones too. Absent: nothing is linked by itself.
+   */
+  eligiblePersonas?: () => string[];
+  /** The name the person gave a persona, for the label of its games invite. */
+  personaName?: (persona: string) => string;
   /** Defaults to publishing to each relay and reporting which accepted. */
   publish?: (wrap: NostrEvent, relays: readonly string[]) => Promise<boolean[]>;
   now?: () => number;
@@ -35,6 +46,16 @@ export interface KeepDeps {
 
 export class PersonaNotAvailableError extends Error {
   constructor() { super('Not available for this persona yet'); }
+}
+
+/** The signed-in persona is not an active owner persona of this Keep. */
+export class NotAnOwnerError extends Error {
+  constructor() { super('This persona is not linked to the Keep'); }
+}
+
+/** A change of the owner list that cannot be made (full list, or no active owner would remain). */
+export class OwnerChangeRefusedError extends Error {
+  constructor(message: string) { super(message); }
 }
 
 const nowOf = (deps: KeepDeps) => (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
@@ -76,10 +97,10 @@ export function updateStoredKeeps(
 // ---- sending ---------------------------------------------------------------
 
 async function send(
-  deps: KeepDeps, keep: StoredKeep,
+  deps: KeepDeps, keep: StoredKeep, signer: string,
   build: (backend: DecryptingSigningBackend, now: number) => ReturnType<typeof claimRumor>,
 ): Promise<boolean> {
-  const backend = deps.backendFor(keep.claimedBy);
+  const backend = deps.backendFor(signer);
   if (!backend) throw new PersonaNotAvailableError();
   const wrap = await wrapForKeep(build(backend, nowOf(deps)), keep.keep, backend);
   const results = await (deps.publish ?? publishWrappedToRelays)(wrap, keep.relays);
@@ -103,7 +124,7 @@ export type ClaimResult =
  * pairs it again: the record and its invites stay, the code, relays and name
  * come from the new link, and it waits for the Keep as a new claim does.
  */
-export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: string): Promise<ClaimResult> {
+export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: string, scope: KeepScope = 'one'): Promise<ClaimResult> {
   if (!deps.backendFor(claimedBy)) throw new PersonaNotAvailableError();
   const out: { kind: 'exists' | 'other-owner' | 'new' | 'repair'; keep?: StoredKeep } = { kind: 'new' };
   await updateStoredKeeps(deps.encryptionKey, list => {
@@ -113,15 +134,15 @@ export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: s
       if (existing.status === 'pending' && existing.code === link.code) { out.kind = 'exists'; return list; }
       if (existing.claimedBy !== claimedBy) { out.kind = 'other-owner'; return list; }
       out.kind = 'repair';
-      out.keep = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps) });
+      out.keep = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps), scope });
       return withKeep(list, out.keep);
     }
-    out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps) });
+    out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps), scope });
     return withKeep(list, out.keep);
   });
   if (out.kind === 'exists' || out.kind === 'other-owner') return { kind: out.kind, keep: out.keep! };
   const keep = out.keep!;
-  const sent = await send(deps, keep, (b, now) => claimRumor(b, keep.keep, link.code, now)).catch(() => false);
+  const sent = await send(deps, keep, claimedBy, (b, now) => claimRumor(b, keep.keep, link.code, now, keep.scope)).catch(() => false);
   return { kind: 'claimed', keep, sent, ...(out.kind === 'repair' ? { repaired: true } : {}) };
 }
 
@@ -129,7 +150,7 @@ export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: s
 export async function resendClaim(deps: KeepDeps, keep: StoredKeep): Promise<boolean> {
   if (keep.status !== 'pending' || !keep.code) return false;
   const code = keep.code;
-  return send(deps, keep, (b, now) => claimRumor(b, keep.keep, code, now));
+  return send(deps, keep, keep.claimedBy, (b, now) => claimRumor(b, keep.keep, code, now, keep.scope));
 }
 
 function randomHex(bytes: number): string {
@@ -141,6 +162,15 @@ export interface InviteRequest {
   /** Personal invite: the contact's persona key and their name. */
   persona?: string;
   label?: string;
+  /** The signed-in persona, which signs it (it must be an active owner persona). Absent: the claimer, or another active owner. */
+  actor?: string;
+}
+
+/** The owner persona to sign with: the actor if it is an active owner we hold, else the claimer or another active one. */
+function signerFor(deps: KeepDeps, keep: StoredKeep, actor?: string): string {
+  const signer = pickSigner(keep, p => deps.backendFor(p) !== null, actor);
+  if (!signer) throw new PersonaNotAvailableError();
+  return signer;
 }
 
 function specOf(keep: StoredKeep, invite: StoredInvite): InviteSpec {
@@ -170,7 +200,7 @@ export async function createInvite(
   // otherwise the friend would get a link the Keep never hears of.
   const target = findKeep(await loadStoredKeeps(deps.encryptionKey), keepId);
   if (!target) throw new Error('Unknown Keep');
-  if (!deps.backendFor(target.claimedBy)) throw new PersonaNotAvailableError();
+  const signer = signerFor(deps, target, req.actor);
   const now = nowOf(deps);
   const invite: StoredInvite = {
     grant: randomHex(16), secret: randomHex(32), kind: req.kind,
@@ -190,7 +220,7 @@ export async function createInvite(
   });
   if (!keep) throw new Error('Unknown Keep');
   onSaved?.(invite);
-  const sent = await send(deps, keep, (b, t) => inviteRumor(b, specOf(keep!, invite), t)).catch(e => {
+  const sent = await send(deps, keep, signer, (b, t) => inviteRumor(b, specOf(keep!, invite), t)).catch(e => {
     if (e instanceof PersonaNotAvailableError) throw e;
     return false;
   });
@@ -198,17 +228,18 @@ export async function createInvite(
 }
 
 /** Send a waiting invite again (same grant, same tags, so the Keep treats it as a repeat). */
-export async function resendInvite(deps: KeepDeps, keep: StoredKeep, invite: StoredInvite): Promise<boolean> {
+export async function resendInvite(deps: KeepDeps, keep: StoredKeep, invite: StoredInvite, actor?: string): Promise<boolean> {
+  const signer = signerFor(deps, keep, actor);
   const at = nowOf(deps);
   await updateStoredKeeps(deps.encryptionKey, list => {
     const found = findKeep(list, keep.keep);
     return found ? withKeep(list, markInviteSent(found, invite.grant, at)) : list;
   });
-  return send(deps, keep, (b, now) => inviteRumor(b, specOf(keep, invite), now));
+  return send(deps, keep, signer, (b, now) => inviteRumor(b, specOf(keep, invite), now));
 }
 
 /** Mark the revoke as sent (saved first), then send it. The ack makes it final. */
-export async function revokeInvite(deps: KeepDeps, keepId: string, grant: string): Promise<boolean> {
+export async function revokeInvite(deps: KeepDeps, keepId: string, grant: string, actor?: string): Promise<boolean> {
   let keep: StoredKeep | undefined;
   await updateStoredKeeps(deps.encryptionKey, list => {
     const found = findKeep(list, keepId);
@@ -217,51 +248,134 @@ export async function revokeInvite(deps: KeepDeps, keepId: string, grant: string
     return withKeep(list, keep);
   });
   if (!keep) return false;
-  return send(deps, keep, (b, now) => revokeRumor(b, keepId, grant, now));
+  return send(deps, keep, signerFor(deps, keep, actor), (b, now) => revokeRumor(b, keepId, grant, now));
 }
 
 /**
- * Send again what the Keep has not answered: invites still waiting and revokes
- * not yet acked `revoked`, for paired Keeps whose owner persona can still sign,
- * when the last send is over 10 minutes old (see `resendDue`). Each is stamped
- * as sent before it goes out, inside the serialised write, so two callers (the
- * list and the Keep's page opening together) send it once. A send that fails is
- * tried again after the next 10 minutes, or by the owner with Send again.
+ * Send again what the Keep has not answered: an owners update and accepts (K1e), invites still
+ * waiting and revokes not yet acked `revoked`, for paired Keeps, when the last send is over 10
+ * minutes old (see `ownersDue`, `resendDue`). Things just made (`sentAt` 0) are due at once.
+ * Each is stamped as sent before it goes out, inside the serialised write, so two callers (the
+ * list and the Keep's page opening together) send it once. A send that fails is tried again after
+ * the next 10 minutes, or by the owner with Send again. An accept is signed by its own persona;
+ * the rest by an owner persona the Keep counts as active. Order: update, accepts, invites, revokes.
  * Returns how many were sent.
  */
 export async function resendOutstanding(deps: KeepDeps): Promise<number> {
   const at = nowOf(deps);
-  const batch: Array<{ keep: StoredKeep; invite: StoredInvite; revoke: boolean }> = [];
+  const canSign = (p: string) => deps.backendFor(p) !== null;
+  const batch: Array<{ keep: StoredKeep; signer: string; build: (b: DecryptingSigningBackend, now: number) => ReturnType<typeof claimRumor> }> = [];
   await updateStoredKeeps(deps.encryptionKey, list => {
     let next = list as StoredKeep[];
     for (const k of list) {
-      if (!deps.backendFor(k.claimedBy)) continue;
-      const due = resendDue(k, at);
-      if (due.length === 0) continue;
       let updated = k;
-      for (const { invite, revoke } of due) {
-        updated = revoke ? markRevokeSent(updated, invite.grant, at) : markInviteSent(updated, invite.grant, at);
-        batch.push({ keep: updated, invite, revoke });
+      const owners = ownersDue(k, at);
+      const stamped = { update: false, accepts: [] as string[] };
+      const out: typeof batch = [];
+      const update = k.update;
+      if (owners.update && update && canSign(update.signer)) {
+        stamped.update = true;
+        out.push({ keep: k, signer: update.signer, build: (b, now) => ownersUpdateRumor(b, k.keep, update.rev, update.personas, now) });
       }
+      for (const p of owners.accepts) {
+        const rev = k.links[p].accept!.rev;
+        if (!canSign(p)) continue;
+        stamped.accepts.push(p);
+        out.push({ keep: k, signer: p, build: (b, now) => ownerAcceptRumor(b, k.keep, rev, now) });
+      }
+      updated = markOwnersSent(updated, stamped, at);
+      const signer = pickSigner(k, canSign);
+      if (signer) {
+        for (const { invite, revoke } of resendDue(k, at)) {
+          updated = revoke ? markRevokeSent(updated, invite.grant, at) : markInviteSent(updated, invite.grant, at);
+          out.push({ keep: k, signer, build: (b, now) => (revoke ? revokeRumor(b, k.keep, invite.grant, now) : inviteRumor(b, specOf(k, invite), now)) });
+        }
+      }
+      if (out.length === 0) continue;
+      batch.push(...out.map(o => ({ ...o, keep: updated })));
       next = withKeep(next, updated);
     }
     return next;
   });
   let sent = 0;
-  for (const { keep, invite, revoke } of batch) {
+  for (const { keep, signer, build } of batch) {
     try {
-      await send(deps, keep, (b, now) => (revoke ? revokeRumor(b, keep.keep, invite.grant, now) : inviteRumor(b, specOf(keep, invite), now)));
+      await send(deps, keep, signer, build);
       sent++;
     } catch { /* tried again at the next opening */ }
   }
   return sent;
 }
 
-/** What opening the Keeps does: read the acks, then send again what is still unanswered. Resolves with the new list. */
-export async function catchUp(deps: KeepDeps): Promise<StoredKeep[]> {
-  await refreshAcks(deps);
+// ---- owner personas (K1e) --------------------------------------------------
+
+function reconcileContext(deps: KeepDeps): ReconcileContext {
+  return {
+    now: nowOf(deps),
+    eligible: deps.eligiblePersonas?.() ?? [],
+    canSign: p => deps.backendFor(p) !== null,
+    nameOf: deps.personaName ?? (p => `Persona ${p.slice(0, 8)}`),
+    randomHex,
+  };
+}
+
+/** Bring every paired Keep in line with what the owner wants (see `reconcileKeep`) and save it. Sends nothing. */
+export function reconcileKeeps(deps: KeepDeps): Promise<StoredKeep[]> {
+  return updateStoredKeeps(deps.encryptionKey, list => {
+    const ctx = reconcileContext(deps);
+    let changed = false;
+    const next = list.map(k => { const r = reconcileKeep(k, ctx); if (r !== k) changed = true; return r; });
+    return changed ? next : list;
+  });
+}
+
+/** Reconcile, then send whatever is due. Resolves with the new list. */
+export async function settle(deps: KeepDeps): Promise<StoredKeep[]> {
+  await reconcileKeeps(deps);
   await resendOutstanding(deps);
   return loadStoredKeeps(deps.encryptionKey);
+}
+
+export type OwnerChange =
+  | { kind: 'link'; persona: string }
+  | { kind: 'unlink'; persona: string }
+  | { kind: 'games'; persona: string; on: boolean }
+  /** Make the update again after the Keep gave it up. */
+  | { kind: 'retry' };
+
+/**
+ * Change the owner list as `actor`, the signed-in persona, which must be an active owner persona
+ * of the Keep with its key on this device. The new list goes out as the next revision; a persona
+ * being added also needs its own key (it signs its accept, in the same tap). Games off, or
+ * unlinking, revokes that persona's games invite; Games on makes one. Resolves with the new list.
+ */
+export async function changeOwners(deps: KeepDeps, keepId: string, actor: string, change: OwnerChange): Promise<StoredKeep[]> {
+  if (!deps.backendFor(actor)) throw new PersonaNotAvailableError();
+  if (change.kind === 'link' && !deps.backendFor(change.persona)) throw new PersonaNotAvailableError();
+  await updateStoredKeeps(deps.encryptionKey, list => {
+    const found = findKeep(list, keepId);
+    if (!found || found.status !== 'paired') throw new OwnerChangeRefusedError('This Keep is not connected yet.');
+    if (!isActiveOwner(found, actor)) throw new NotAnOwnerError();
+    let changed: StoredKeep | null = found;
+    if (change.kind === 'link') changed = linkPersona(found, change.persona);
+    else if (change.kind === 'unlink') changed = canUnlink(found, change.persona) ? unlinkPersona(found, change.persona) : null;
+    else if (change.kind === 'games') changed = setSection(found, change.persona, KEEP_SECTION_GAMES, change.on);
+    else if (!found.update?.failed) changed = null;
+    if (!changed) {
+      if (change.kind === 'link') throw new OwnerChangeRefusedError('That persona is already linked, or the list is full.');
+      if (change.kind === 'unlink') throw new OwnerChangeRefusedError('At least one persona the Keep has confirmed must stay linked.');
+      return list; // nothing to change
+    }
+    const composed = composeUpdate(changed, actor);
+    return withKeep(list, reconcileKeep(composed, reconcileContext(deps)));
+  });
+  return settle(deps);
+}
+
+/** What opening the Keeps does: read the acks, bring the owner list and games invites in line, send what is due. Resolves with the new list. */
+export async function catchUp(deps: KeepDeps): Promise<StoredKeep[]> {
+  await refreshAcks(deps);
+  return settle(deps);
 }
 
 /** Forget a Keep on this device only (used for a claim that never completed). */
@@ -278,7 +392,7 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
   for (const wrap of events) {
     const persona = wrap.tags?.find(t => t[0] === 'p')?.[1];
     if (!persona) continue;
-    const keeps = new Set(stored.filter(k => k.claimedBy === persona).map(k => k.keep));
+    const keeps = new Set(stored.filter(k => ackPersonas(k).includes(persona)).map(k => k.keep));
     const backend = keeps.size > 0 ? deps.backendFor(persona) : null;
     if (!backend) continue;
     const ack = await unwrapKeepAck(wrap, backend, keeps);
@@ -287,7 +401,7 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
   if (acks.length === 0) return stored;
   const now = nowOf(deps);
   return updateStoredKeeps(deps.encryptionKey, list => advanceAckCursors(
-    acks.reduce((l, a) => applyAck(l, a.ack), list),
+    acks.reduce((l, a) => (a.ack.owners ? applyOwnersAck(l, a.ack) : applyAck(l, a.ack)), list),
     acks.map(a => ({ keep: a.ack.keep, wrapAt: a.wrapAt })), now,
   ));
 }
@@ -296,9 +410,14 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
  * What to read for each owner persona: its acks on every relay of every one of
  * its Keeps' pairing links, from before the oldest Keep's cursor.
  */
+/** The personas whose key an ack for this Keep may be addressed to: the claimer, every linked persona, the signer of an update. */
+export function ackPersonas(keep: StoredKeep): string[] {
+  return [...new Set([keep.claimedBy, ...keep.personas, ...(keep.update ? [keep.update.signer] : [])])];
+}
+
 function ackScopes(keeps: readonly StoredKeep[], now: number): Array<{ persona: string; relays: string[]; since: number }> {
   const byPersona = new Map<string, StoredKeep[]>();
-  for (const k of keeps) byPersona.set(k.claimedBy, [...(byPersona.get(k.claimedBy) ?? []), k]);
+  for (const k of keeps) for (const p of ackPersonas(k)) byPersona.set(p, [...(byPersona.get(p) ?? []), k]);
   return [...byPersona].map(([persona, group]) => ({
     persona, relays: [...new Set(group.flatMap(k => k.relays))], since: ackReadSince(group, now),
   }));
@@ -326,7 +445,8 @@ export function watchAcks(deps: KeepDeps, keeps: readonly StoredKeep[], onChange
     return subscribeEvents([filter], relays, event => {
       if (seen.has(event.id)) return;
       seen.add(event.id);
-      void applyAckEvents(deps, [event]).then(onChange, () => undefined);
+      // An ack can make something due (an update after `paired`, an accept after `updated`): send it now.
+      void applyAckEvents(deps, [event]).then(() => settle(deps)).then(onChange, () => undefined);
     });
   });
   return () => stops.forEach(stop => stop());

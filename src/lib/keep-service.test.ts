@@ -64,7 +64,7 @@ describe('claiming', () => {
     expect(published[0].relays).toEqual(['wss://a.example', 'wss://b.example']);
     const rumor = lastRumor();
     expect(rumor).toMatchObject({ kind: 27660, pubkey: O });
-    expect(rumor.tags).toEqual([['keep', K], ['code', CODE]]);
+    expect(rumor.tags).toEqual([['keep', K], ['code', CODE], ['scope', 'one']]);
   });
 
   it('keeps the Keep when no relay took the claim, so it can be sent again', async () => {
@@ -106,7 +106,7 @@ describe('claiming', () => {
       expect(keep.invites).toEqual([invite]);
       expect(published).toHaveLength(1);
       expect(published[0].relays).toEqual(['wss://c.example']);
-      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2]]);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2], ['scope', 'one']]);
     });
 
     it('re-pairs a paired Keep that was reset: back to waiting, invites kept', async () => {
@@ -115,7 +115,7 @@ describe('claiming', () => {
       const [keep] = await loadStoredKeeps('key');
       expect(keep).toMatchObject({ status: 'pending', code: CODE2 });
       expect(keep.invites).toHaveLength(1);
-      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2]]);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2], ['scope', 'one']]);
       // ... and the new paired ack finishes it.
       await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim']])]);
       expect((await loadStoredKeeps('key'))[0]).toMatchObject({ status: 'paired' });
@@ -128,7 +128,7 @@ describe('claiming', () => {
       publishOk = true;
       const [keep] = await loadStoredKeeps('key');
       expect(await resendClaim(deps(), keep)).toBe(true);
-      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2]]);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2], ['scope', 'one']]);
     });
 
     it('the same code again is still "already added" and sends nothing', async () => {
@@ -296,6 +296,8 @@ describe('sending again what the Keep has not answered', () => {
   });
   const pairedWith = (invites: object[], over: object = {}) => [{
     keep: K, name: 'Home', relays: ['wss://a.example', 'wss://b.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, invites, ...over,
+    // These K1d scenarios are about invites; the owner's own games invite has its own tests below.
+    links: { [O]: { sections: [], addedRev: 0, active: true } },
   }];
   const none = { events: [] as NostrEvent[], attempted: 2, reached: 2 };
   const kinds = () => published.map(p => unwrapEvent(p.wrap as never, KEEP_SK).kind);
