@@ -18,7 +18,7 @@ import {
   claimRumor, inviteRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
 } from './keep-messages';
 import {
-  KeepsUnreadableError, applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, withInvite, withKeep,
+  KeepsUnreadableError, applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 import type { KeepPairLink } from './keep-link';
@@ -87,27 +87,42 @@ async function send(
 }
 
 export type ClaimResult =
+  /** Already added with this very code (a repeat paste): nothing was changed or sent. */
   | { kind: 'exists'; keep: StoredKeep }
-  | { kind: 'claimed'; keep: StoredKeep; sent: boolean };
+  /** Stored under a different owner persona: it is not re-paired from this one. */
+  | { kind: 'other-owner'; keep: StoredKeep }
+  /** `repaired`: the Keep was already stored and took a new code, keeping its invites. */
+  | { kind: 'claimed'; keep: StoredKeep; sent: boolean; repaired?: boolean };
 
 /**
  * Send the claim. The record is saved first (as `pending`), so a failure to
  * reach the relays leaves a Keep the owner can send again, not a lost code.
+ *
+ * A Keep that is already stored but now shows a different pairing code has been
+ * restarted or reset (the code changes at each start). Adding it again then
+ * pairs it again: the record and its invites stay, the code, relays and name
+ * come from the new link, and it waits for the Keep as a new claim does.
  */
 export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: string): Promise<ClaimResult> {
   if (!deps.backendFor(claimedBy)) throw new PersonaNotAvailableError();
-  let created: StoredKeep | null = null;
-  let existing: StoredKeep | undefined;
+  const out: { kind: 'exists' | 'other-owner' | 'new' | 'repair'; keep?: StoredKeep } = { kind: 'new' };
   await updateStoredKeeps(deps.encryptionKey, list => {
-    existing = findKeep(list, link.keep);
-    if (existing) return list;
-    created = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps) });
-    return withKeep(list, created);
+    const existing = findKeep(list, link.keep);
+    if (existing) {
+      out.keep = existing;
+      if (existing.status === 'pending' && existing.code === link.code) { out.kind = 'exists'; return list; }
+      if (existing.claimedBy !== claimedBy) { out.kind = 'other-owner'; return list; }
+      out.kind = 'repair';
+      out.keep = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps) });
+      return withKeep(list, out.keep);
+    }
+    out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps) });
+    return withKeep(list, out.keep);
   });
-  if (existing) return { kind: 'exists', keep: existing };
-  const keep = created!;
+  if (out.kind === 'exists' || out.kind === 'other-owner') return { kind: out.kind, keep: out.keep! };
+  const keep = out.keep!;
   const sent = await send(deps, keep, (b, now) => claimRumor(b, keep.keep, link.code, now)).catch(() => false);
-  return { kind: 'claimed', keep, sent };
+  return { kind: 'claimed', keep, sent, ...(out.kind === 'repair' ? { repaired: true } : {}) };
 }
 
 /** Send the claim again (a lost first claim or a lost `paired` ack). Pending Keeps only. */

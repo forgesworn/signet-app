@@ -142,6 +142,11 @@ export function AddKeep({ host, onDone, onCancel }: {
       if (!await host.confirmClaim(link.name, persona.name)) { setError('Not confirmed. Nothing was sent.'); return; }
       const result = await claimKeep(host.deps, link, persona.pubkey);
       if (result.kind === 'exists') { onDone(result.keep.keep, 'You have already added this Keep.'); return; }
+      if (result.kind === 'other-owner') {
+        const owner = host.personaNames[result.keep.claimedBy] || 'another persona';
+        setError(`This Keep already belongs to ${owner}. Switch to that persona to pair it again. Nothing was sent.`);
+        return;
+      }
       onDone(result.keep.keep, result.sent ? undefined : 'Couldn’t reach the Keep. Try Send again in a moment.');
     } catch (e) {
       setError(e instanceof PersonaNotAvailableError ? NOT_AVAILABLE

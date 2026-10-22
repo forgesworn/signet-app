@@ -88,6 +88,72 @@ describe('claiming', () => {
     expect(published).toHaveLength(1);
   });
 
+  describe('adding a Keep that is already stored, with a new pairing link', () => {
+    const CODE2 = '44'.repeat(16);
+    const link2 = parseKeepPairLink(`signet-keep:pair?k=${K}&c=${CODE2}&n=Home%20Two&r=wss://c.example`)!;
+    const invite = { grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: 1, expiration: NOW + 99, status: 'active', ackAt: 5 };
+    const stored = (over: object = {}) => ({
+      keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'pending', code: CODE, claimedAt: 1, invites: [invite], ...over,
+    });
+
+    it('re-pairs a pending Keep: new code, relays and name, same invites, a new claim sent', async () => {
+      row = [stored()];
+      const result = await claimKeep(deps(), link2, O);
+      expect(result).toMatchObject({ kind: 'claimed', sent: true, repaired: true });
+      const [keep] = await loadStoredKeeps('key');
+      expect(keep).toMatchObject({ status: 'pending', code: CODE2, name: 'Home Two', relays: ['wss://c.example'], claimedAt: NOW });
+      expect(keep.invites).toEqual([invite]);
+      expect(published).toHaveLength(1);
+      expect(published[0].relays).toEqual(['wss://c.example']);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2]]);
+    });
+
+    it('re-pairs a paired Keep that was reset: back to waiting, invites kept', async () => {
+      row = [stored({ status: 'paired', code: undefined })];
+      expect(await claimKeep(deps(), link2, O)).toMatchObject({ kind: 'claimed', repaired: true });
+      const [keep] = await loadStoredKeeps('key');
+      expect(keep).toMatchObject({ status: 'pending', code: CODE2 });
+      expect(keep.invites).toHaveLength(1);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2]]);
+      // ... and the new paired ack finishes it.
+      await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim']])]);
+      expect((await loadStoredKeeps('key'))[0]).toMatchObject({ status: 'paired' });
+    });
+
+    it('keeps the new record when the new claim could not be sent, so Send again works', async () => {
+      row = [stored()];
+      publishOk = false;
+      expect(await claimKeep(deps(), link2, O)).toMatchObject({ kind: 'claimed', sent: false, repaired: true });
+      publishOk = true;
+      const [keep] = await loadStoredKeeps('key');
+      expect(await resendClaim(deps(), keep)).toBe(true);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2]]);
+    });
+
+    it('the same code again is still "already added" and sends nothing', async () => {
+      row = [stored()];
+      expect(await claimKeep(deps(), link, O)).toMatchObject({ kind: 'exists' });
+      expect(published).toHaveLength(0);
+    });
+
+    it('does not move a Keep to another owner persona', async () => {
+      const other = '0'.repeat(63) + '3';
+      row = [stored()];
+      const result = await claimKeep(deps({ backendFor: p => (p === getPublicKey(hexToBytes(other)) ? new LocalSigningBackend(other) : null) }), link2, getPublicKey(hexToBytes(other)));
+      expect(result).toMatchObject({ kind: 'other-owner' });
+      expect((await loadStoredKeeps('key'))[0]).toMatchObject({ code: CODE, claimedBy: O });
+      expect(published).toHaveLength(0);
+    });
+
+    it('an old paired ack from before the reset does not pair the new claim', async () => {
+      row = [stored({ status: 'paired', code: undefined })];
+      await claimKeep(deps(), link2, O);
+      const stale = wrapEvent({ kind: 27663, content: '', created_at: NOW - 86400, tags: [['keep', K], ['status', 'paired'], ['claim']] }, KEEP_SK, O) as unknown as NostrEvent;
+      await applyAckEvents(deps(), [stale]);
+      expect((await loadStoredKeeps('key'))[0].status).toBe('pending');
+    });
+  });
+
   it('the paired ack from the Keep makes it paired and forgets the code', async () => {
     await claimKeep(deps(), link, O);
     await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim']])]);

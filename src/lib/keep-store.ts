@@ -116,6 +116,15 @@ export function newPendingKeep(a: {
   };
 }
 
+/**
+ * A stored Keep that took a new pairing link (it restarted or was reset): back
+ * to `pending` with the new code, relays and name. Its invites stay; the acks
+ * decide what the Keep still knows of them.
+ */
+export function repairKeep(keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number }): StoredKeep {
+  return { ...keep, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now };
+}
+
 export function findKeep(list: readonly StoredKeep[], keep: string): StoredKeep | undefined {
   return list.find(k => k.keep === keep);
 }
@@ -133,6 +142,9 @@ export function markRevokeSent(keep: StoredKeep, grant: string): StoredKeep {
   return { ...keep, invites: keep.invites.map(i => (i.grant === grant && i.status !== 'revoked' ? { ...i, revokeSent: true } : i)) };
 }
 
+/** How far before our claim a claim ack may be dated and still count (clock difference with the Keep). */
+export const CLAIM_ACK_SKEW_S = 600;
+
 /**
  * Apply one ack from the Keep. A revoke is final (a late `active` never undoes
  * it); otherwise the newest ack by its real time wins. Returns the same object
@@ -143,6 +155,9 @@ export function applyAck(list: readonly StoredKeep[], ack: KeepAck): StoredKeep[
   if (!keep) return list as StoredKeep[];
   if (ack.claim) {
     if (keep.status === 'paired') return list as StoredKeep[];
+    // A claim ack carries no code, so an ack from an earlier pairing (before a reset) must not
+    // pair a claim made after it: only acks dated near or after this claim count.
+    if (ack.at < keep.claimedAt - CLAIM_ACK_SKEW_S) return list as StoredKeep[];
     const { code: _code, ...rest } = keep;
     return withKeep(list, { ...rest, status: 'paired' });
   }

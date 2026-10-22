@@ -90,6 +90,18 @@ describe('Add a Keep', () => {
     expect(screen.getByText('Owned by Anon')).toBeInTheDocument();
   });
 
+  it('adding a stored Keep again with a new link pairs it again and waits for the Keep', async () => {
+    row = [pairedKeep({ invites: [{ grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: 1, expiration: 2e9, status: 'active' }] })];
+    renderKeep();
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a Keep' }));
+    fireEvent.change(screen.getByLabelText('Keep link'), { target: { value: LINK } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make it my Keep' }));
+    expect((await screen.findAllByText(/Waiting for the Keep/)).length).toBeGreaterThan(0);
+    expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE]]);
+    expect((row as Array<{ invites: unknown[] }>)[0].invites).toHaveLength(1);
+  });
+
   it('says so when the link is not a Keep link', async () => {
     renderKeep();
     fireEvent.click(await screen.findByRole('button', { name: 'Add a Keep' }));

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyAck, inviteStatusLabel, markRevokeSent, newPendingKeep, parseStoredKeeps, withInvite, withKeep,
+  applyAck, inviteStatusLabel, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 
@@ -37,6 +37,19 @@ describe('applyAck', () => {
     const next = applyAck([pending()], { keep: K, status: 'paired', claim: true, at: 5 });
     expect(next[0].status).toBe('paired');
     expect(next[0].code).toBeUndefined();
+  });
+
+  it('a claim ack dated well before the claim is from an earlier pairing and is ignored', () => {
+    const k = { ...pending(), claimedAt: 100_000 };
+    const list = [k];
+    expect(applyAck(list, { keep: K, status: 'paired', claim: true, at: 100_000 - 601 })).toBe(list);
+    expect(applyAck(list, { keep: K, status: 'paired', claim: true, at: 100_000 - 60 })[0].status).toBe('paired');
+  });
+
+  it('repairKeep goes back to pending with the new code, relays and name, and keeps the invites', () => {
+    const k = repairKeep(withInvite(paired(), invite()), { name: 'New', relays: ['wss://z.example'], code: '44'.repeat(16), now: 999 });
+    expect(k).toMatchObject({ status: 'pending', code: '44'.repeat(16), name: 'New', relays: ['wss://z.example'], claimedAt: 999 });
+    expect(k.invites).toHaveLength(1);
   });
 
   it('a repeated paired ack changes nothing (same list back)', () => {
