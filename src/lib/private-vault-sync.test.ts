@@ -20,7 +20,7 @@ function setup() {
   const backend = localVaultBackend(WORDS, 'profiles');
   const args = { adapter: { dataset: 'profiles' as const, snapshot: vi.fn(async () => '{"v":1}'), merge: vi.fn(async () => {}) },
     ownerPubkey: 'a'.repeat(64), encryptionKey: 'unlock', relays: { read: [] as string[], write: [] as string[] },
-    resolve: async () => backend, isCurrent: () => true, now: 1700000000 };
+    resolve: async (_rotation: number) => backend, isCurrent: () => true, now: 1700000000 };
   return { args, backend };
 }
 it('persists the signed candidate before attempting a relay write', async () => {
@@ -157,6 +157,14 @@ it('says which relays hold the stored confirmed copy when a read is unavailable'
   remote.mockImplementation(async resolve => { await resolve(0); return { state: 'unavailable', failedRelays: ['wss://relay.damus.io'] }; });
   expect(await syncPrivateVaultDataset(args)).toMatchObject({ state: 'unavailable', failedRelays: ['wss://relay.damus.io'],
     heldOn: ['wss://relay.damus.io'] });
+});
+it('keeps the confirmed rotation\'s relays when the protocol then probes an unconfirmed successor rotation', async () => {
+  const { args, backend } = setup();
+  const successor = localVaultBackend(WORDS, 'profiles', 1);
+  args.resolve = async (rotation: number) => rotation === 0 ? backend : successor;
+  await confirmCopyOn(args, backend, ['wss://relay.damus.io']);
+  remote.mockImplementation(async resolve => { await resolve(0); await resolve(1); return { state: 'unavailable', failedRelays: ['wss://relay.damus.io'] }; });
+  expect(await syncPrivateVaultDataset(args)).toMatchObject({ state: 'unavailable', heldOn: ['wss://relay.damus.io'] });
 });
 it('reports no holding relays when this device has no confirmed copy', async () => {
   const { args } = setup();

@@ -107,7 +107,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
       backends.set(rotation, backend);
       let state = await loadVaultBackup(backend.activePublicKeyHex, args.encryptionKey);
       canonical ||= !!state.confirmed;
-      heldOn = state.confirmed?.relays ?? [];
+      if (state.confirmed) heldOn = state.confirmed.relays; // a probe of an unconfirmed successor must not clear it
       const next = state.pending?.manifest.nextRotation;
       if (next !== undefined && state.pending) {
         const forwarding = { backend, dataset: args.adapter.dataset, from: rotation, to: next,
@@ -121,7 +121,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
           forwardRetries.delete(retryKey);
           state = await loadVaultBackup(backend.activePublicKeyHex, args.encryptionKey);
           canonical ||= !!state.confirmed;
-          heldOn = state.confirmed?.relays ?? [];
+          if (state.confirmed) heldOn = state.confirmed.relays; // a probe of an unconfirmed successor must not clear it
         } else {
           if (due) noteForwardFailure(retryKey, args.now);
           // The pointer is optional once rotation `next` is complete and newest:
