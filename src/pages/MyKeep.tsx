@@ -7,6 +7,7 @@
  * pair, rename on the network) is not built yet; the footnote says so.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { loadStoredKeeps } from '../lib/keep-service';
 import { Icon } from '../components/Icon';
 import { loadMyKeeps, type KeepLoadResult } from '../lib/keep-load';
 import {
@@ -14,6 +15,7 @@ import {
 } from '../lib/keep';
 import { NICKNAME_MAX, loadNicknames, setNickname } from '../lib/keep-nicknames';
 import { KEEP_PREVIEW_BANNER, keepPreviewEnabled, keepPreviewKeeps } from '../lib/keep-preview';
+import { AddKeep, KeepDetail, StoredKeepRows, useStoredKeeps, type KeepHost } from './KeepManage';
 
 interface Props {
   /** Every public key a claim of this user's may be signed by (see `keepAuthorPubkeys`), hex. */
@@ -21,6 +23,8 @@ interface Props {
   /** Identity id; nicknames are saved per identity. */
   scope: string;
   onBack: () => void;
+  /** What adding and managing a Keep needs from the app. Absent where that is not offered. */
+  keepHost?: KeepHost;
 }
 
 type State = { phase: 'loading' } | { phase: 'error' } | { phase: 'ready'; keeps: Keep[]; now: number };
@@ -29,6 +33,9 @@ type State = { phase: 'loading' } | { phase: 'error' } | { phase: 'ready'; keeps
 const previewOn = () => import.meta.env.DEV && keepPreviewEnabled(import.meta.env.DEV, window.location.search);
 
 const FOOTNOTE = 'Managing a Keep from here is coming later.';
+const FOOTNOTE_WITH_HOST = 'Keeps set up with the Bothy app can\u2019t be managed from here yet.';
+
+type View = { t: 'list' } | { t: 'add' } | { t: 'detail'; keep: string; note?: string };
 
 const INTRO = 'See the Keep you\u2019ve set up at home and whether it\u2019s online.';
 
@@ -44,8 +51,8 @@ function PreviewBanner() {
   );
 }
 
-function Footnote() {
-  return <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 16, textAlign: 'center' }}>{FOOTNOTE}</p>;
+function Footnote({ text = FOOTNOTE }: { text?: string }) {
+  return <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 16, textAlign: 'center' }}>{text}</p>;
 }
 
 function KeepRow({ keep, now, nickname, last, onNickname }: {
@@ -108,12 +115,14 @@ function KeepRow({ keep, now, nickname, last, onNickname }: {
   );
 }
 
-export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
+export function MyKeep({ ownedPubkeys, scope, onBack, keepHost }: Props) {
   const [state, setState] = useState<State>({ phase: 'loading' });
   const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames(scope));
   const [attempt, setAttempt] = useState(0);
   const ownedKey = ownedPubkeys.join(',');
   const [preview] = useState(previewOn);
+  const [view, setView] = useState<View>({ t: 'list' });
+  const { keeps: stored, setKeeps: setStored } = useStoredKeeps(keepHost);
 
   // Settings keeps its window scroll when this page opens; start at the top.
   useEffect(() => { try { window.scrollTo?.(0, 0); } catch { /* no scrolling here */ } }, []);
@@ -139,10 +148,50 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
 
   const retry = useCallback(() => setAttempt(n => n + 1), []);
 
+  if (keepHost && view.t === 'add') {
+    return (
+      <AddKeep
+        host={keepHost}
+        onCancel={() => setView({ t: 'list' })}
+        onDone={(keep, note) => {
+          loadStoredKeeps(keepHost.deps.encryptionKey).then(setStored, () => undefined);
+          setView({ t: 'detail', keep, note });
+        }}
+      />
+    );
+  }
+  const openKeep = keepHost && view.t === 'detail' ? stored.find(k => k.keep === view.keep) : undefined;
+  if (keepHost && openKeep) {
+    return (
+      <KeepDetail
+        host={keepHost}
+        keep={openKeep}
+        note={view.t === 'detail' ? view.note : undefined}
+        setKeeps={setStored}
+        onBack={() => setView({ t: 'list' })}
+        onGone={() => setView({ t: 'list' })}
+      />
+    );
+  }
+
+  const storedBlock = keepHost && stored.length > 0
+    ? (
+      <div style={{ marginBottom: 16 }}>
+        <StoredKeepRows host={keepHost} keeps={stored} onOpen={keep => setView({ t: 'detail', keep })} />
+      </div>
+    ) : null;
+  const addButton = keepHost
+    ? (
+      <div style={{ textAlign: 'center', marginTop: 12 }}>
+        <button className="btn btn-primary" onClick={() => setView({ t: 'add' })} style={{ width: 'auto' }}>Add a Keep</button>
+      </div>
+    ) : null;
+
   if (state.phase === 'loading') {
     return (
       <div className="fade-in" role="main">
         <Intro />
+        {storedBlock}
         <p role="status" style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', textAlign: 'center', padding: 24 }}>
           Looking for your Keep&hellip;
         </p>
@@ -154,15 +203,29 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
     return (
       <div className="fade-in" role="main">
         <Intro />
+        {storedBlock}
         <div className="empty-state">
           <p className="empty-state-text" role="alert">Couldn&apos;t reach the network. Try again.</p>
           <button className="btn btn-secondary" onClick={retry}>Try again</button>
+          {addButton}
         </div>
       </div>
     );
   }
 
   if (state.keeps.length === 0) {
+    if (storedBlock) {
+      return (
+        <div className="fade-in" role="main">
+          <Intro />
+          {storedBlock}
+          {addButton}
+          <div style={{ textAlign: 'center', marginTop: 8 }}>
+            <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="fade-in" role="main">
         <div className="empty-state">
@@ -171,8 +234,9 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
           <p className="empty-state-text">
             A Keep is a small device at home that looks after your things. You can set one up with the Bothy app.
           </p>
+          {keepHost && <button className="btn btn-primary" onClick={() => setView({ t: 'add' })}>Add a Keep</button>}
           <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
-          <Footnote />
+          {!keepHost && <Footnote />}
         </div>
       </div>
     );
@@ -182,6 +246,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
     <div className="fade-in" role="main">
       {import.meta.env.DEV && preview && <PreviewBanner />}
       <Intro />
+      {storedBlock}
       <div className="card card-flush">
         {state.keeps.map((keep, i) => (
           <KeepRow
@@ -194,7 +259,8 @@ export function MyKeep({ ownedPubkeys, scope, onBack }: Props) {
           />
         ))}
       </div>
-      <Footnote />
+      <Footnote text={keepHost ? FOOTNOTE_WITH_HOST : FOOTNOTE} />
+      {addButton}
       <div style={{ textAlign: 'center', marginTop: 8 }}>
         <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
       </div>

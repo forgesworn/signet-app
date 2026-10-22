@@ -233,6 +233,7 @@ import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
 import { keepAuthorPubkeys } from './lib/keep-owner';
+import { holdsKeyFor, localBackendFor, personaNameMap } from './lib/keep-personas';
 import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
 import type { AuthSelection } from './pages/ApproveAuth';
@@ -10739,6 +10740,17 @@ export function App() {
     return renderSettingsPage('my-keep', 'My Keep', <MyKeep
       scope={identity.id}
       onBack={() => navigateBack()}
+      keepHost={encryptionKey && !activeDependant && !childDirect ? {
+        deps: { encryptionKey, backendFor: persona => localBackendFor(identity, persona) },
+        canSign: persona => holdsKeyFor(identity, persona),
+        activePersona: carousel.activeIdentity.publicKey
+          ? { pubkey: carousel.activeIdentity.publicKey.toLowerCase(), name: personaNameMap(identity)[carousel.activeIdentity.publicKey.toLowerCase()] || 'this persona' }
+          : null,
+        personaNames: personaNameMap(identity),
+        contacts: contactsScope.directoryId === 'owner' && !contactsV2.loading ? contactsV2.effective : null,
+        confirmClaim: async (keepName, personaName) =>
+          (await requestFreshAuth({ purpose: 'manage-keep', keepName, personaName })) !== null,
+      } : undefined}
       ownedPubkeys={keepAuthorPubkeys({
         slotPubkeys: ownerSlotPubkeys(identity),
         signingMode: preferences.signingMode,

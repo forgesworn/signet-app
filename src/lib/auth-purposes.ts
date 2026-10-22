@@ -78,6 +78,7 @@ export type AuthPurpose =
   | 'manage-signing-session'
   | 'manage-dependant'
   | 'manage-bot'
+  | 'manage-keep'
   | 'rotate-backup-key'
   | 'reveal-recovery-words'
   | 'change-biometric'
@@ -135,6 +136,7 @@ export type PurposeContext =
   | { purpose: 'manage-signing-session'; minutes?: number }
   | { purpose: 'manage-dependant'; depName: string; action: keyof typeof DEPENDANT_ACTION_TITLES }
   | { purpose: 'manage-bot'; action: keyof typeof BOT_ACTION_TITLES; botName?: string; siteName?: string }
+  | { purpose: 'manage-keep'; keepName: string; personaName: string }
   | { purpose: 'rotate-backup-key' }
   | { purpose: 'reveal-recovery-words' }
   | { purpose: 'change-biometric'; enabled: boolean }
@@ -232,6 +234,14 @@ export const PURPOSES: Record<AuthPurpose, PurposeConfig> = {
         'reveal-key': `Show the recovery key for ${bot}. Anyone with this key can sign as the bot.`,
       };
       return `${actions[ctx.action]} Confirm with your PIN or biometrics.`;
+    },
+  },
+  'manage-keep': {
+    tier: 2, icon: 'key-plus', accent: 'warning',
+    title: () => 'Make this your Keep',
+    description: raw => {
+      const ctx = as(raw, 'manage-keep');
+      return `**${ctx.keepName}** will belong to **${ctx.personaName}**, and only this persona will be able to say who plays on it. Confirm with your PIN or biometrics.`;
     },
   },
   'rotate-backup-key': {
