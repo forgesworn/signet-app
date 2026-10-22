@@ -22,7 +22,7 @@ vi.mock('./relay-service', () => ({
 
 import { LocalSigningBackend } from './signing-backend';
 import {
-  NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, applyAckEvents, catchUp, changeOwners, claimKeep, loadStoredKeeps, refreshAcks,
+  NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, applyAckEvents, catchUp, changeOwners, claimKeep, loadStoredKeeps, refreshAcks, updateStoredKeeps,
   settle, watchAcks, type KeepDeps,
 } from './keep-service';
 import { KeepsUnreadableError, type StoredKeep } from './keep-store';
@@ -473,5 +473,18 @@ describe('adding a Keep again with a new pairing link', () => {
     expect((await loadStoredKeeps('key'))[0].links[B].active).toBe(false);
     await applyAckEvents(deps(), [ack(B, [['status', 'updated'], ['rev', '4']], NOW + 10)]);
     expect((await loadStoredKeeps('key'))[0].links[B].active).toBe(true);
+  });
+});
+
+describe('the last revision', () => {
+  it('a change at the last storable revision is refused with a plain message and nothing is written', async () => {
+    await pairedKeep('one');
+    await updateStoredKeeps('key', l => l.map(k => ({ ...k, rev: Number.MAX_SAFE_INTEGER })));
+    const before = JSON.stringify(row);
+    published.length = 0;
+    await expect(changeOwners(deps(), K, A, { kind: 'link', persona: B })).rejects.toThrow(/revisions/);
+    expect(JSON.stringify(row)).toBe(before);
+    expect(published).toHaveLength(0);
+    expect(await loadStoredKeeps('key')).toHaveLength(1); // still readable
   });
 });

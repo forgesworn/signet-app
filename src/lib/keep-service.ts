@@ -22,7 +22,7 @@ import {
   type KeepScope, type StoredInvite, type StoredKeep,
 } from './keep-store';
 import {
-  applyOwnersAck, canUnlink, composeUpdate, isActiveOwner, linkPersona, markOwnersSent, ownersDue, pickSigner, reconcileKeep,
+  REVISION_LIMIT_TEXT, applyOwnersAck, canCompose, canUnlink, composeUpdate, isActiveOwner, linkPersona, markOwnersSent, ownersDue, pickSigner, reconcileKeep,
   retryGames, setSection, unlinkPersona, type ReconcileContext,
 } from './keep-owners';
 import type { KeepPairLink } from './keep-link';
@@ -136,7 +136,7 @@ export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: s
       out.kind = 'repair';
       const repaired = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps), scope });
       // The list goes out again at a higher revision once the Keep has paired (see `repairKeep`).
-      out.keep = repaired.scope === 'all' || repaired.personas.length > 1 ? composeUpdate(repaired, claimedBy, nowOf(deps)) : repaired;
+      out.keep = (repaired.scope === 'all' || repaired.personas.length > 1) && canCompose(repaired) ? composeUpdate(repaired, claimedBy, nowOf(deps)) : repaired;
       return withKeep(list, out.keep);
     }
     out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps), scope });
@@ -368,6 +368,7 @@ export async function changeOwners(deps: KeepDeps, keepId: string, actor: string
       if (change.kind === 'unlink') throw new OwnerChangeRefusedError('At least one persona the Keep has confirmed must stay linked.');
       return list; // nothing to change
     }
+    if (!canCompose(changed)) throw new OwnerChangeRefusedError(REVISION_LIMIT_TEXT);
     const composed = composeUpdate(changed, actor, nowOf(deps));
     return withKeep(list, reconcileKeep(composed, reconcileContext(deps)));
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  activeOwners, applyOwnersAck, canUnlink, composeUpdate, gamesState, isActiveOwner, linkPersona, markOwnersSent, ownersDue,
+  activeOwners, applyOwnersAck, canCompose, canUnlink, composeUpdate, gamesState, isActiveOwner, linkPersona, markOwnersSent, ownersDue,
   pickSigner, playInvite, reconcileKeep, retryGames, scopeLabel, setSection, unlinkPersona, type ReconcileContext,
 } from './keep-owners';
 import { newPendingKeep, parseStoredKeeps, type StoredInvite, type StoredKeep } from './keep-store';
@@ -372,6 +372,26 @@ describe('reconcile', () => {
     // With plenty of time left on the old invite a refused renewal is not an issue to show.
     const plenty = { ...refused, invites: refused.invites.map(i => (i.grant === old.grant ? { ...i, expiration: NOW + 200 * DAY } : i)) };
     expect(gamesState(plenty, A, NOW)).toBe('ready');
+  });
+
+  it('no ack can store a revision the next one cannot follow, and no change is composed past the last storable revision', () => {
+    const top = Number.MAX_SAFE_INTEGER;
+    const k = composeUpdate(linkPersona(paired(), B)!, A, NOW);
+    const list = [k];
+    expect(applyOwnersAck(list, ack({ status: 'updated', rev: top, to: A, at: NOW + 1 }), NOW)).toBe(list);
+    expect(applyOwnersAck(list, ack({ status: 'updated', rev: 2 ** 53, to: A, at: NOW + 1 }), NOW)).toBe(list);
+    // A stale refusal at the top: one retry fits (rev top), the next compose does not.
+    const first = applyOwnersAck(list, ack({ status: 'refused', reason: 'stale', rev: top - 1, to: A, at: NOW + 1 }), NOW)[0];
+    expect(first.update).toMatchObject({ rev: top, retried: true });
+    expect(canCompose(first)).toBe(false);
+    expect(() => composeUpdate(first, A, NOW)).toThrow(RangeError);
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify([first])))).not.toBeNull();
+  });
+
+  it('reconcile does not compose a list past the last storable revision', () => {
+    const k = { ...paired('all'), rev: Number.MAX_SAFE_INTEGER - 1, update: undefined };
+    const top = reconcileKeep({ ...k, rev: Number.MAX_SAFE_INTEGER }, ctx());
+    expect(top.update).toBeUndefined();
   });
 
   it('a revision from an ack at the top of what is believed still makes an update that can be stored', () => {

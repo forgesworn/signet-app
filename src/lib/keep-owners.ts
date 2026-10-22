@@ -54,11 +54,22 @@ function withLinks(keep: StoredKeep, links: Record<string, PersonaLink>): Stored
 // ---- changing the list -----------------------------------------------------
 
 /**
+ * True when the next revision is one that can be stored: the saved Keeps hold a revision as a safe
+ * integer, and one that is not makes the whole list unreadable. Callers check this and refuse the change.
+ */
+export function canCompose(keep: StoredKeep): boolean {
+  return Math.max(keep.rev, keep.update?.rev ?? 0) < Number.MAX_SAFE_INTEGER;
+}
+
+export const REVISION_LIMIT_TEXT = 'This Keep has used up the revisions it can count. Nothing was changed.';
+
+/**
  * Make an owners update from the current links, at the next revision, signed
  * by `signer`; and an accept for each linked persona the Keep has not yet
  * confirmed. It replaces any update that has not been answered.
  */
 export function composeUpdate(keep: StoredKeep, signer: string, now: number): StoredKeep {
+  if (!canCompose(keep)) throw new RangeError('The Keep has no higher revision left');
   const rev = Math.max(keep.rev, keep.update?.rev ?? 0) + 1;
   const links: Record<string, PersonaLink> = {};
   for (const p of keep.personas) {
@@ -121,6 +132,7 @@ export function applyOwnersAck(list: readonly StoredKeep[], ack: KeepAck, now: n
   const keep = list.find(k => k.keep === ack.keep);
   if (!keep || !ack.owners || !ack.to) return list as StoredKeep[];
   if (ack.at < keep.claimedAt - CLAIM_ACK_SKEW_S) return list as StoredKeep[]; // from before this pairing
+  if (ack.rev !== undefined && !(Number.isSafeInteger(ack.rev) && ack.rev < Number.MAX_SAFE_INTEGER)) return list as StoredKeep[]; // never stored: the next revision must be storable
   const to = ack.to;
   const update = keep.update;
   const link = keep.links[to];
@@ -156,6 +168,8 @@ export function applyOwnersAck(list: readonly StoredKeep[], ack: KeepAck, now: n
       next = { ...next, rev: Math.max(next.rev, ack.rev) };
       if (update.retried) {
         next = { ...next, update: { ...seen, failed: 'stale' } };
+      } else if (!canCompose({ ...next, update: seen })) {
+        next = { ...next, update: { ...seen, failed: 'stale' } }; // no higher revision to try
       } else {
         const again = composeUpdate({ ...next, update: seen }, update.signer, now);
         next = { ...again, update: { ...again.update!, retried: true } };
@@ -280,7 +294,7 @@ export function reconcileKeep(keep: StoredKeep, ctx: ReconcileContext): StoredKe
     const fresh = ctx.eligible.filter(p => !k.seen.includes(p) && !isLinked(k, p)).slice(0, Math.max(room, 0));
     // Right after pairing, an `all` Keep sends its first list (rev 1) even with only the claimer on it.
     const first = k.rev === 0 && !k.update;
-    const signer = fresh.length > 0 || first ? pickSigner(k, ctx.canSign) : null;
+    const signer = (fresh.length > 0 || first) && canCompose(k) ? pickSigner(k, ctx.canSign) : null;
     if (signer) {
       let added: StoredKeep = k;
       for (const p of fresh) added = linkPersona(added, p) ?? added;
