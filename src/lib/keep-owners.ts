@@ -258,7 +258,9 @@ export function reconcileKeep(keep: StoredKeep, ctx: ReconcileContext): StoredKe
   if (k.scope === 'all' && !k.update?.failed) {
     const room = KEEP_MAX_OWNER_PERSONAS - k.personas.length;
     const fresh = ctx.eligible.filter(p => !k.seen.includes(p) && !isLinked(k, p)).slice(0, Math.max(room, 0));
-    const signer = fresh.length > 0 ? pickSigner(k, ctx.canSign) : null;
+    // Right after pairing, an `all` Keep sends its first list (rev 1) even with only the claimer on it.
+    const first = k.rev === 0 && !k.update;
+    const signer = fresh.length > 0 || first ? pickSigner(k, ctx.canSign) : null;
     if (signer) {
       let added: StoredKeep = k;
       for (const p of fresh) added = linkPersona(added, p) ?? added;

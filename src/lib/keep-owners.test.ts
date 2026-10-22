@@ -176,6 +176,14 @@ describe('reconcile', () => {
     expect(k.seen).toEqual([A, B]);
   });
 
+  it('an all-my-personas Keep of a single persona still sends its first list, once', () => {
+    const k = reconcileKeep(paired('all'), ctx({ eligible: [A] }));
+    expect(k.update).toMatchObject({ rev: 1, signer: A, personas: [{ persona: A, sections: ['games'] }] });
+    expect(reconcileKeep(k, ctx({ eligible: [A] }))).toBe(k);
+    const done = apply(k, { rev: 1, to: A });
+    expect(reconcileKeep(done, ctx({ eligible: [A] })).update).toBeUndefined();
+  });
+
   it('an only-this-persona Keep links nothing by itself', () => {
     const k = reconcileKeep(paired('one'), ctx());
     expect(k.update).toBeUndefined();
@@ -196,7 +204,7 @@ describe('reconcile', () => {
   });
 
   it('does not link a persona nobody can sign for, or when no owner key is held', () => {
-    expect(reconcileKeep(paired('all'), ctx({ eligible: [A], canSign: () => true })).update).toBeUndefined();
+    expect(reconcileKeep(paired('all'), ctx({ eligible: [A], canSign: () => true })).personas).toEqual([A]);
     expect(reconcileKeep(paired('all'), ctx({ canSign: () => false })).update).toBeUndefined();
     expect(reconcileKeep(paired('all'), ctx({ canSign: p => p === A, eligible: [A, B] })).personas).toEqual([A, B]); // B is the persona the claimer lists; its key is checked by the caller's eligible list
   });
