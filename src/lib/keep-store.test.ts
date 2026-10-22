@@ -30,6 +30,21 @@ describe('stored Keep record', () => {
   });
 });
 
+describe('a record made before the times of an update and an accept were kept', () => {
+  it('reads them as made at the claim, and is still readable', () => {
+    const B = 'ee'.repeat(32);
+    const raw = JSON.parse(JSON.stringify({
+      ...paired(), claimedAt: 777, rev: 1,
+      personas: [O, B],
+      links: { [O]: { sections: ['games'], active: true }, [B]: { sections: ['games'], active: false, accept: { rev: 2, sentAt: 5 } } },
+      update: { rev: 2, signer: O, personas: [{ persona: O, sections: ['games'] }], sentAt: 5 },
+    }));
+    const [k] = parseStoredKeeps([raw])!;
+    expect(k.update!.composedAt).toBe(777);
+    expect(k.links[B].accept!.composedAt).toBe(777);
+  });
+});
+
 describe('applyAck', () => {
   const ack = (o: object) => ({ keep: K, claim: false, status: 'active' as const, grant: G, at: 1000, ...o });
 
@@ -140,7 +155,7 @@ describe('K1d records read as K1e', () => {
   });
 
   it('pairing again goes back to the claimer alone at revision 0 and sends its games invites again', () => {
-    const base = { ...paired(), scope: 'all' as const, rev: 4, update: { rev: 4, signer: O, personas: [], sentAt: 1 } };
+    const base = { ...paired(), scope: 'all' as const, rev: 4, update: { rev: 4, signer: O, personas: [], sentAt: 1, composedAt: 1 } };
     const B = 'ee'.repeat(32);
     const withB = { ...base, personas: [O, B], links: { ...base.links, [B]: { sections: ['games'], active: true } } };
     const kept = withInvite(withB, invite({ gamesFor: O, status: 'active', ackAt: 9 }));

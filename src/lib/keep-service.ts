@@ -366,7 +366,7 @@ export async function changeOwners(deps: KeepDeps, keepId: string, actor: string
       if (change.kind === 'unlink') throw new OwnerChangeRefusedError('At least one persona the Keep has confirmed must stay linked.');
       return list; // nothing to change
     }
-    const composed = composeUpdate(changed, actor);
+    const composed = composeUpdate(changed, actor, nowOf(deps));
     return withKeep(list, reconcileKeep(composed, reconcileContext(deps)));
   });
   return settle(deps);
@@ -414,7 +414,7 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
   if (acks.length === 0) return stored;
   const now = nowOf(deps);
   return updateStoredKeeps(deps.encryptionKey, list => advanceAckCursors(
-    acks.reduce((l, a) => (a.ack.owners ? applyOwnersAck(l, a.ack) : applyAck(l, a.ack)), list),
+    acks.reduce((l, a) => (a.ack.owners ? applyOwnersAck(l, a.ack, now) : applyAck(l, a.ack)), list),
     acks.map(a => ({ keep: a.ack.keep, wrapAt: a.wrapAt })), now,
   ));
 }

@@ -111,9 +111,9 @@ describe('K updated fixture, opened as the owner', () => {
   it('is applied to a pending update at that revision: the update is in', async () => {
     const wrap = JSON.parse(readFileSync(new URL('./fixtures/k-updated.json', import.meta.url), 'utf8')) as NostrEvent;
     const ack = (await unwrapKeepAck(wrap, new LocalSigningBackend(FIXTURE.ownerSk), new Set([K])))!;
-    const keep = composeUpdate({ ...linkPersona(newPaired(), B)!, rev: ack.rev! - 1 }, O);
+    const keep = composeUpdate({ ...linkPersona(newPaired(), B)!, rev: ack.rev! - 1 }, O, ack.at);
     expect(keep.update!.rev).toBe(ack.rev);
-    const [next] = applyOwnersAck([keep], ack);
+    const [next] = applyOwnersAck([keep], ack, ack.at);
     expect(next.update).toBeUndefined();
     expect(next.rev).toBe(ack.rev);
   });

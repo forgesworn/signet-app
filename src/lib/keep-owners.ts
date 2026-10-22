@@ -14,7 +14,7 @@ import {
 } from './keep-wire';
 import type { KeepAck } from './keep-messages';
 import {
-  isExpired, withKeep, type PendingUpdate, type PersonaLink, type StoredInvite, type StoredKeep,
+  CLAIM_ACK_SKEW_S, isExpired, withKeep, type PendingUpdate, type PersonaLink, type StoredInvite, type StoredKeep,
 } from './keep-store';
 
 // ---- who is an owner -------------------------------------------------------
@@ -58,15 +58,17 @@ function withLinks(keep: StoredKeep, links: Record<string, PersonaLink>): Stored
  * by `signer`; and an accept for each linked persona the Keep has not yet
  * confirmed. It replaces any update that has not been answered.
  */
-export function composeUpdate(keep: StoredKeep, signer: string): StoredKeep {
+export function composeUpdate(keep: StoredKeep, signer: string, now: number): StoredKeep {
   const rev = Math.max(keep.rev, keep.update?.rev ?? 0) + 1;
   const links: Record<string, PersonaLink> = {};
   for (const p of keep.personas) {
     const { accept: _old, ...l } = keep.links[p];
-    links[p] = { ...l, addedRev: l.addedRev ?? rev, ...(l.active ? {} : { accept: { rev, sentAt: 0 } }) };
+    links[p] = { ...l, addedRev: l.addedRev ?? rev, ...(l.active ? {} : { accept: { rev, sentAt: 0, composedAt: now } }) };
   }
   const update: PendingUpdate = {
-    rev, signer, sentAt: 0,
+    rev, signer, sentAt: 0, composedAt: now,
+    // A refusal already seen stays a repeat for the update that replaces the refused one.
+    ...(keep.update?.refusedAt !== undefined ? { refusedAt: keep.update.refusedAt } : {}),
     personas: keep.personas.map(p => ({ persona: p, sections: [...links[p].sections] })),
   };
   return { ...withLinks(keep, links), update };
@@ -110,47 +112,56 @@ export function setSection(keep: StoredKeep, persona: string, section: string, o
  * - `refused stale` to the signer of our update: the Keep is at a revision at or above ours. Take its
  *   revision, make the update again one higher, once; the second time it is given up.
  * - any other refusal to the signer of our update: given up.
- * Returns the same list when nothing changed.
+ * Relays return old acks again (after a re-pair, or on every new subscription), and a revision alone does
+ * not say which message an ack answers. So an ack counts only if it is dated after the claim (as the claim
+ * ack already must be) and after the update or accept it answers was made. `now` is the time of any
+ * update this makes again. Returns the same list when nothing changed.
  */
-export function applyOwnersAck(list: readonly StoredKeep[], ack: KeepAck): StoredKeep[] {
+export function applyOwnersAck(list: readonly StoredKeep[], ack: KeepAck, now: number): StoredKeep[] {
   const keep = list.find(k => k.keep === ack.keep);
   if (!keep || !ack.owners || !ack.to) return list as StoredKeep[];
+  if (ack.at < keep.claimedAt - CLAIM_ACK_SKEW_S) return list as StoredKeep[]; // from before this pairing
   const to = ack.to;
   const update = keep.update;
   const link = keep.links[to];
   let next: StoredKeep = keep;
 
   if (ack.status === 'updated' && ack.rev !== undefined) {
+    // The Keep was at this revision when it sent the ack, whatever the ack answers.
     next = { ...next, rev: Math.max(next.rev, ack.rev) };
-    if (update && update.signer === to && !update.failed && ack.rev === update.rev) {
+    if (update && update.signer === to && !update.failed && ack.rev === update.rev && ack.at >= update.composedAt - CLAIM_ACK_SKEW_S) {
       const { update: _done, ...rest } = next;
       const links = { ...rest.links };
       for (const p of rest.personas) {
         const a = links[p].accept;
-        if (a?.pending) links[p] = { ...links[p], accept: { rev: a.rev, sentAt: 0 } };
+        if (a?.pending) links[p] = { ...links[p], accept: { rev: a.rev, sentAt: 0, composedAt: a.composedAt } };
       }
       next = withLinks(rest as StoredKeep, links);
-    } else if (link?.accept && ack.rev >= link.accept.rev) {
+    } else if (link?.accept && ack.rev >= link.accept.rev && ack.at >= link.accept.composedAt - CLAIM_ACK_SKEW_S) {
       const { accept: _accept, ...active } = link;
       next = withLinks(next, { ...next.links, [to]: { ...active, active: true } });
     }
   } else if (ack.status === 'pending' && ack.rev !== undefined) {
     next = { ...next, rev: Math.max(next.rev, ack.rev) };
-    if (link?.accept && !link.accept.pending) {
+    if (link?.accept && !link.accept.pending && ack.at >= link.accept.composedAt - CLAIM_ACK_SKEW_S) {
       next = withLinks(next, { ...next.links, [to]: { ...link, accept: { ...link.accept, pending: true } } });
     }
-  } else if (ack.status === 'refused' && update && update.signer === to && !update.failed) {
+  } else if (
+    ack.status === 'refused' && update && update.signer === to && !update.failed
+    && ack.at >= update.composedAt - CLAIM_ACK_SKEW_S && (update.refusedAt === undefined || ack.at > update.refusedAt)
+  ) {
+    const seen: PendingUpdate = { ...update, refusedAt: ack.at };
     if (ack.reason === 'stale' && ack.rev !== undefined) {
       if (ack.rev < update.rev) return list as StoredKeep[]; // refused an older send of ours; the newer one stands
       next = { ...next, rev: Math.max(next.rev, ack.rev) };
       if (update.retried) {
-        next = { ...next, update: { ...update, failed: 'stale' } };
+        next = { ...next, update: { ...seen, failed: 'stale' } };
       } else {
-        const again = composeUpdate({ ...next, update: undefined }, update.signer);
+        const again = composeUpdate({ ...next, update: seen }, update.signer, now);
         next = { ...again, update: { ...again.update!, retried: true } };
       }
     } else if (ack.reason === 'too_many' || ack.reason === 'malformed') {
-      next = { ...next, update: { ...update, failed: ack.reason } };
+      next = { ...next, update: { ...seen, failed: ack.reason } };
     } else {
       return list as StoredKeep[];
     }
@@ -269,7 +280,7 @@ export function reconcileKeep(keep: StoredKeep, ctx: ReconcileContext): StoredKe
     if (signer) {
       let added: StoredKeep = k;
       for (const p of fresh) added = linkPersona(added, p) ?? added;
-      k = composeUpdate(added, signer);
+      k = composeUpdate(added, signer, now);
     }
   }
 

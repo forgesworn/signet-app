@@ -67,6 +67,8 @@ export interface PersonaLink {
     rev: number;
     /** When it was last sent (0 = not yet), unix seconds. */
     sentAt: number;
+    /** When this accept was made, unix seconds. An ack dated before it cannot be the answer to it. */
+    composedAt: number;
     /** The Keep said `pending`: it has the accept but not the update that lists this persona. */
     pending?: boolean;
   };
@@ -80,6 +82,13 @@ export interface PendingUpdate {
   personas: Array<{ persona: string; sections: string[] }>;
   /** When it was last sent (0 = not yet), unix seconds. */
   sentAt: number;
+  /** When this update was made, unix seconds. An ack dated before it cannot be the answer to it. */
+  composedAt: number;
+  /**
+   * The Keep's time of the newest refusal applied to this update or the ones it replaced. A refusal dated
+   * at or before it is a repeat of one already seen (relays return old acks again), not an answer to this update.
+   */
+  refusedAt?: number;
   /** True once a `refused stale` made us try again with a newer revision. */
   retried?: boolean;
   /** The Keep refused it for good (after the one retry on stale). */
@@ -160,6 +169,7 @@ function isLink(v: unknown): v is PersonaLink {
   return isSections(l.sections) && typeof l.active === 'boolean'
     && (l.addedRev === undefined || Number.isSafeInteger(l.addedRev))
     && (a === undefined || (!!a && typeof a === 'object' && Number.isSafeInteger(a.rev) && Number.isSafeInteger(a.sentAt)
+      && (a.composedAt === undefined || Number.isSafeInteger(a.composedAt))
       && (a.pending === undefined || typeof a.pending === 'boolean')));
 }
 
@@ -171,6 +181,8 @@ function isUpdate(v: unknown): v is PendingUpdate {
       && typeof (p as Record<string, unknown>).persona === 'string' && HEX64.test((p as { persona: string }).persona)
       && isSections((p as Record<string, unknown>).sections))
     && Number.isSafeInteger(u.sentAt)
+    && (u.composedAt === undefined || Number.isSafeInteger(u.composedAt))
+    && (u.refusedAt === undefined || Number.isSafeInteger(u.refusedAt))
     && (u.retried === undefined || typeof u.retried === 'boolean')
     && (u.failed === undefined || u.failed === 'stale' || u.failed === 'too_many' || u.failed === 'malformed');
 }
@@ -213,9 +225,15 @@ function isK1dKeep(v: unknown): boolean {
 function migrateKeep(raw: Record<string, unknown>): StoredKeep {
   const k = raw as unknown as StoredKeep;
   const claimer: PersonaLink = { sections: [KEEP_SECTION_GAMES], addedRev: 0, active: true };
-  const links: Record<string, PersonaLink> = raw.links ? (raw.links as Record<string, PersonaLink>) : { [k.claimedBy]: claimer };
+  const stored = raw.links ? (raw.links as Record<string, PersonaLink>) : { [k.claimedBy]: claimer };
+  // Records made before the time of an update and of an accept was kept read as made at the claim.
+  const links: Record<string, PersonaLink> = Object.fromEntries(Object.entries(stored).map(([p, l]) => [
+    p, l.accept && l.accept.composedAt === undefined ? { ...l, accept: { ...l.accept, composedAt: k.claimedAt } } : l,
+  ]));
+  const update = k.update && k.update.composedAt === undefined ? { ...k.update, composedAt: k.claimedAt } : k.update;
   return {
     ...k,
+    ...(update ? { update } : {}),
     scope: (KEEP_SCOPES as readonly unknown[]).includes(raw.scope) ? raw.scope as KeepScope : 'one',
     rev: Number.isSafeInteger(raw.rev) ? raw.rev as number : 0,
     links,

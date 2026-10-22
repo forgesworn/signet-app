@@ -24,7 +24,7 @@ const ctx = (o: Partial<ReconcileContext> = {}): ReconcileContext => ({
   randomHex: n => (++counter).toString(16).padStart(n * 2, '0'), ...o,
 });
 const ack = (o: Partial<KeepAck>): KeepAck => ({ keep: K, status: 'updated', claim: false, owners: true, at: NOW, ...o });
-const apply = (k: StoredKeep, a: Partial<KeepAck>) => applyOwnersAck([k], ack(a))[0];
+const apply = (k: StoredKeep, a: Partial<KeepAck>) => applyOwnersAck([k], ack(a), NOW)[0];
 
 describe('the owner list', () => {
   it('starts with the claimer active and linking adds a persona that is not', () => {
@@ -45,15 +45,15 @@ describe('the owner list', () => {
   });
 
   it('composeUpdate makes the next revision, lists every persona and asks an accept of each that is not active', () => {
-    const k = composeUpdate(linkPersona(paired(), B)!, A);
-    expect(k.update).toEqual({ rev: 1, signer: A, sentAt: 0, personas: [{ persona: A, sections: ['games'] }, { persona: B, sections: ['games'] }] });
+    const k = composeUpdate(linkPersona(paired(), B)!, A, NOW);
+    expect(k.update).toEqual({ rev: 1, signer: A, sentAt: 0, composedAt: NOW, personas: [{ persona: A, sections: ['games'] }, { persona: B, sections: ['games'] }] });
     expect(k.links[A].accept).toBeUndefined();
     expect(k.links[B]).toMatchObject({ addedRev: 1, active: false, accept: { rev: 1, sentAt: 0 } });
   });
 
   it('a second change before an answer replaces the update at the next revision and the accept follows it', () => {
-    const one = composeUpdate(linkPersona(paired(), B)!, A);
-    const two = composeUpdate(linkPersona(one, C)!, A);
+    const one = composeUpdate(linkPersona(paired(), B)!, A, NOW);
+    const two = composeUpdate(linkPersona(one, C)!, A, NOW);
     expect(two.update!.rev).toBe(2);
     expect(two.links[B].accept!.rev).toBe(2);
     expect(two.links[B].addedRev).toBe(1);
@@ -65,7 +65,7 @@ describe('the owner list', () => {
     expect(canUnlink(k, A)).toBe(false);
     expect(unlinkPersona(k, A)).toBeNull();
     expect(unlinkPersona(k, B)!.personas).toEqual([A]);
-    const both = apply(composeUpdate(k, A), { rev: 1, to: B }); // B's accept acked
+    const both = apply(composeUpdate(k, A, NOW), { rev: 1, to: B }); // B's accept acked
     expect(isActiveOwner(both, B)).toBe(true);
     const noA = unlinkPersona(both, A)!;
     expect(noA.personas).toEqual([B]);
@@ -81,7 +81,7 @@ describe('the owner list', () => {
   });
 
   it('pickSigner prefers the one asked for, then the claimer, and needs the key', () => {
-    const k = apply(composeUpdate(linkPersona(paired(), B)!, A), { rev: 1, to: B });
+    const k = apply(composeUpdate(linkPersona(paired(), B)!, A, NOW), { rev: 1, to: B });
     expect(pickSigner(k, () => true, B)).toBe(B);
     expect(pickSigner(k, () => true)).toBe(A);
     expect(pickSigner(k, p => p === B)).toBe(B);
@@ -92,7 +92,7 @@ describe('the owner list', () => {
 });
 
 describe('acks of an update and an accept', () => {
-  const sent = () => composeUpdate(linkPersona(paired(), B)!, A);
+  const sent = () => composeUpdate(linkPersona(paired(), B)!, A, NOW);
 
   it('updated at the update revision, to its signer, ends the update and learns the revision', () => {
     const k = apply(sent(), { status: 'updated', rev: 1, to: A });
@@ -109,7 +109,7 @@ describe('acks of an update and an accept', () => {
   });
 
   it('an updated for an older revision does not make a newer accept active', () => {
-    const two = composeUpdate(sent(), A); // rev 2, accept rev 2
+    const two = composeUpdate(sent(), A, NOW); // rev 2, accept rev 2
     const k = apply(two, { status: 'updated', rev: 1, to: B });
     expect(isActiveOwner(k, B)).toBe(false);
     expect(k.rev).toBe(1);
@@ -121,7 +121,7 @@ describe('acks of an update and an accept', () => {
     expect(ownersDue({ ...p, update: { ...p.update!, sentAt: NOW } }, NOW + 5000).accepts).toEqual([]); // waits for the update's ack
     const landed = apply({ ...p, links: { ...p.links, [B]: { ...p.links[B], accept: { ...p.links[B].accept!, sentAt: NOW } } } }, { status: 'updated', rev: 1, to: A });
     expect(landed.update).toBeUndefined();
-    expect(landed.links[B].accept).toEqual({ rev: 1, sentAt: 0 });
+    expect(landed.links[B].accept).toEqual({ rev: 1, sentAt: 0, composedAt: NOW });
     expect(ownersDue(landed, NOW).accepts).toEqual([B]);
   });
 
@@ -130,33 +130,90 @@ describe('acks of an update and an accept', () => {
     expect(first.rev).toBe(5);
     expect(first.update).toMatchObject({ rev: 6, retried: true, signer: A, sentAt: 0 });
     expect(first.links[B].accept!.rev).toBe(6);
-    const second = apply(first, { status: 'refused', reason: 'stale', rev: 9, to: A });
+    const second = apply(first, { status: 'refused', reason: 'stale', rev: 9, to: A, at: NOW + 1 });
     expect(second.update).toMatchObject({ rev: 6, failed: 'stale' });
     expect(ownersDue(second, NOW + 99999)).toEqual({ update: false, accepts: [] });
-    expect(composeUpdate(second, A).update).toMatchObject({ rev: 10 });
-    expect(composeUpdate(second, A).update!.failed).toBeUndefined();
+    expect(composeUpdate(second, A, NOW).update).toMatchObject({ rev: 10 });
+    expect(composeUpdate(second, A, NOW).update!.failed).toBeUndefined();
   });
 
   it('a stale ack for an older send than ours is ignored', () => {
-    const k = composeUpdate(sent(), A); // rev 2
+    const k = composeUpdate(sent(), A, NOW); // rev 2
     const list = [k];
-    expect(applyOwnersAck(list, ack({ status: 'refused', reason: 'stale', rev: 1, to: A }))).toBe(list);
+    expect(applyOwnersAck(list, ack({ status: 'refused', reason: 'stale', rev: 1, to: A }), NOW)).toBe(list);
   });
 
   it('too_many and malformed end the update for good; others\' acks change nothing', () => {
     expect(apply(sent(), { status: 'refused', reason: 'too_many', to: A }).update!.failed).toBe('too_many');
     expect(apply(sent(), { status: 'refused', reason: 'malformed', to: A }).update!.failed).toBe('malformed');
     const list = [sent()];
-    expect(applyOwnersAck(list, ack({ status: 'refused', reason: 'malformed', to: C }))).toBe(list);
-    const stranger = applyOwnersAck(list, ack({ status: 'updated', rev: 1, to: C }))[0]; // only the revision is learnt
+    expect(applyOwnersAck(list, ack({ status: 'refused', reason: 'malformed', to: C }), NOW)).toBe(list);
+    const stranger = applyOwnersAck(list, ack({ status: 'updated', rev: 1, to: C }), NOW)[0]; // only the revision is learnt
     expect({ ...stranger, rev: 0 }).toEqual(list[0]);
-    expect(applyOwnersAck(list, { ...ack({ status: 'updated', rev: 1 }), keep: 'ff'.repeat(32), to: A })).toBe(list);
+    expect(applyOwnersAck(list, { ...ack({ status: 'updated', rev: 1 }), keep: 'ff'.repeat(32), to: A }, NOW)).toBe(list);
+  });
+});
+
+describe('acks that answer something older (relays send old ones again)', () => {
+  const claimedAt = NOW - 5 * DAY; // paired(): claimedAt 1 is too far back to tell
+
+  it('an ack from before the claim, after a re-pair, is dropped: it cannot make a persona active or move the revision', () => {
+    // Re-paired at NOW: the update is rev 3 now, and B's accept is outstanding for it. The Keep's previous
+    // pairing sent B an `updated` at rev 7, and a relay hands it back.
+    const repaired = { ...composeUpdate({ ...linkPersona(paired(), B)!, rev: 2, claimedAt: NOW }, A, NOW) };
+    expect(repaired.update!.rev).toBe(3);
+    const old = ack({ status: 'updated', rev: 7, to: B, at: NOW - 3 * DAY });
+    const list = [repaired];
+    expect(applyOwnersAck(list, old, NOW)).toBe(list);
+    expect(isActiveOwner(repaired, B)).toBe(false);
+    // The same ack, dated after the claim, is believed.
+    expect(isActiveOwner(applyOwnersAck(list, { ...old, at: NOW + 5 }, NOW)[0], B)).toBe(true);
+    // A little before the claim is within the clock difference allowed for the claim ack.
+    expect(applyOwnersAck(list, { ...old, at: NOW - 599 }, NOW)).not.toBe(list);
+  });
+
+  it('an updated or pending ack older than the accept it would answer does not touch the accept', () => {
+    const k = { ...composeUpdate(linkPersona(paired(), B)!, A, NOW), claimedAt };
+    const early = NOW - 3600;
+    expect(isActiveOwner(apply(k, { status: 'updated', rev: 1, to: B, at: early }), B)).toBe(false);
+    expect(apply(k, { status: 'pending', rev: 1, to: B, at: early }).links[B].accept!.pending).toBeUndefined();
+    expect(isActiveOwner(apply(k, { status: 'updated', rev: 1, to: B, at: NOW + 1 }), B)).toBe(true);
+    expect(apply(k, { status: 'pending', rev: 1, to: B, at: NOW + 1 }).links[B].accept!.pending).toBe(true);
+  });
+
+  it('an updated ack older than the update does not clear it', () => {
+    const k = { ...composeUpdate(linkPersona(paired(), B)!, A, NOW), claimedAt };
+    expect(apply(k, { status: 'updated', rev: 1, to: A, at: NOW - 3600 }).update).toBeDefined();
+    expect(apply(k, { status: 'updated', rev: 1, to: A, at: NOW + 1 }).update).toBeUndefined();
+  });
+
+  it('an old refusal does not fail a later update, and the same refusal sent again does not fail the try after it', () => {
+    const k0 = { ...composeUpdate(linkPersona(paired(), B)!, A, NOW - DAY), claimedAt };
+    // A refusal of an update made a day ago comes back now.
+    expect(apply(k0, { status: 'refused', reason: 'malformed', to: A, at: NOW - DAY - 3600 }).update!.failed).toBeUndefined();
+    // The refusal that failed the update is the one the owner saw; Try again makes rev 3 a minute later.
+    const refusal = { status: 'refused' as const, reason: 'malformed' as const, to: A, at: NOW - 60 };
+    const failed = apply(composeUpdate(k0, A, NOW - 120), refusal);
+    expect(failed.update).toMatchObject({ failed: 'malformed', refusedAt: NOW - 60 });
+    const retry = composeUpdate(failed, A, NOW);
+    expect(retry.update).toMatchObject({ rev: 3, refusedAt: NOW - 60 });
+    expect(retry.update!.failed).toBeUndefined();
+    const list = [retry];
+    expect(applyOwnersAck(list, ack(refusal), NOW)).toBe(list); // the old refusal again, within the clock allowance
+    expect(apply(retry, { status: 'updated', rev: 3, to: A, at: NOW + 2 }).update).toBeUndefined();
+    expect(apply(retry, { ...refusal, at: NOW + 3 }).update!.failed).toBe('malformed'); // a new refusal still counts
+  });
+
+  it('an old stale refusal does not make the update again', () => {
+    const k = { ...composeUpdate(linkPersona(paired(), B)!, A, NOW), claimedAt };
+    const list = [k];
+    expect(applyOwnersAck(list, ack({ status: 'refused', reason: 'stale', rev: 9, to: A, at: NOW - 3600 }), NOW)).toBe(list);
   });
 });
 
 describe('what is sent again', () => {
   it('an update goes at once and again after ten minutes; the accept waits for the update\'s ack', () => {
-    const k = composeUpdate(linkPersona(paired(), B)!, A);
+    const k = composeUpdate(linkPersona(paired(), B)!, A, NOW);
     expect(ownersDue(k, NOW)).toEqual({ update: true, accepts: [] }); // never sent
     const sent = markOwnersSent(k, { update: true, accepts: [] }, NOW);
     expect(ownersDue(sent, NOW + 599)).toEqual({ update: false, accepts: [] });
@@ -165,7 +222,7 @@ describe('what is sent again', () => {
   });
 
   it('once the update is acked the accept is due; a sent accept is sent again after ten minutes, not before', () => {
-    const acked = apply(composeUpdate(linkPersona(paired(), B)!, A), { rev: 1, to: A });
+    const acked = apply(composeUpdate(linkPersona(paired(), B)!, A, NOW), { rev: 1, to: A });
     expect(ownersDue(acked, NOW)).toEqual({ update: false, accepts: [B] });
     const sent = markOwnersSent(acked, { update: false, accepts: [B] }, NOW);
     expect(ownersDue(sent, NOW + 599)).toEqual({ update: false, accepts: [] });
@@ -173,10 +230,10 @@ describe('what is sent again', () => {
   });
 
   it('a newer update that replaces an unanswered one holds the accept again until it is acked', () => {
-    const one = apply(composeUpdate(linkPersona(paired(), B)!, A), { rev: 1, to: A });
-    const two = composeUpdate(one, A);
+    const one = apply(composeUpdate(linkPersona(paired(), B)!, A, NOW), { rev: 1, to: A });
+    const two = composeUpdate(one, A, NOW);
     expect(ownersDue(two, NOW).accepts).toEqual([]);
-    expect(apply(two, { rev: 2, to: A }).links[B].accept).toEqual({ rev: 2, sentAt: 0 });
+    expect(apply(two, { rev: 2, to: A }).links[B].accept).toEqual({ rev: 2, sentAt: 0, composedAt: NOW });
     expect(ownersDue(apply(two, { rev: 2, to: A }), NOW).accepts).toEqual([B]);
   });
 });
@@ -228,7 +285,7 @@ describe('reconcile', () => {
   it('does nothing before the Keep is paired, and not while an update has failed', () => {
     const pend = { ...paired('all'), status: 'pending' as const };
     expect(reconcileKeep(pend, ctx())).toBe(pend);
-    const failed = { ...paired('all'), update: { rev: 1, signer: A, personas: [], sentAt: 1, failed: 'malformed' as const } };
+    const failed = { ...paired('all'), update: { rev: 1, signer: A, personas: [], sentAt: 1, composedAt: NOW, failed: 'malformed' as const } };
     expect(reconcileKeep(failed, ctx()).update).toBe(failed.update);
   });
 
