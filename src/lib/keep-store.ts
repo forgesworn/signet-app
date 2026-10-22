@@ -12,7 +12,7 @@
  * and the pure state changes; `keep-service.ts` does the sending.
  */
 import type { KeepAck, RefusalReason } from './keep-messages';
-import { KEEP_REFUSAL_REASONS } from './keep-wire';
+import { KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_REFUSAL_REASONS } from './keep-wire';
 
 export type InviteStatus = 'waiting' | 'active' | 'revoked' | 'refused';
 export type InviteKind = 'personal' | 'guest';
@@ -52,6 +52,12 @@ export interface StoredKeep {
   /** The one-time claim code; kept only until paired (a lost first claim can be sent again). */
   code?: string;
   claimedAt: number;
+  /**
+   * The `created_at` of the newest valid ack wrap read for this Keep (never later than the
+   * moment it was read). The next read starts 2 days before it, since the Keep backdates its
+   * acks by up to 2 days. Absent until the first ack: that read goes 3 days back.
+   */
+  ackCursor?: number;
   invites: StoredInvite[];
 }
 
@@ -93,6 +99,7 @@ function isKeep(v: unknown): v is StoredKeep {
     && (k.status === 'pending' || k.status === 'paired')
     && (k.code === undefined || (typeof k.code === 'string' && HEX32.test(k.code)))
     && Number.isSafeInteger(k.claimedAt)
+    && (k.ackCursor === undefined || Number.isSafeInteger(k.ackCursor))
     && Array.isArray(k.invites) && k.invites.every(isInvite);
 }
 
@@ -122,7 +129,33 @@ export function newPendingKeep(a: {
  * decide what the Keep still knows of them.
  */
 export function repairKeep(keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number }): StoredKeep {
-  return { ...keep, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now };
+  const { ackCursor: _cursor, ...rest } = keep; // a new pairing reads acks afresh
+  return { ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now };
+}
+
+/** Where a read of the acks for these Keeps (one owner persona) starts: before the oldest cursor. */
+export function ackReadSince(keeps: readonly StoredKeep[], now: number): number {
+  return Math.min(...keeps.map(k => (k.ackCursor === undefined ? now - KEEP_ACK_FIRST_LOOKBACK_S : k.ackCursor - KEEP_ACK_BACKDATE_S)));
+}
+
+/**
+ * Move the ack cursor of each Keep forward to the newest wrap time read for it
+ * (capped at `now`, so a wrap dated in the future cannot push it past what
+ * exists). Returns the same list when nothing moved.
+ */
+export function advanceAckCursors(
+  list: readonly StoredKeep[], read: ReadonlyArray<{ keep: string; wrapAt: number }>, now: number,
+): StoredKeep[] {
+  const newest = new Map<string, number>();
+  for (const { keep, wrapAt } of read) newest.set(keep, Math.max(newest.get(keep) ?? -Infinity, Math.min(wrapAt, now)));
+  let changed = false;
+  const next = list.map(k => {
+    const at = newest.get(k.keep);
+    if (at === undefined || (k.ackCursor !== undefined && k.ackCursor >= at)) return k;
+    changed = true;
+    return { ...k, ackCursor: at };
+  });
+  return changed ? next : list as StoredKeep[];
 }
 
 export function findKeep(list: readonly StoredKeep[], keep: string): StoredKeep | undefined {

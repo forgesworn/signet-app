@@ -18,11 +18,11 @@ import {
   claimRumor, inviteRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
 } from './keep-messages';
 import {
-  KeepsUnreadableError, applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
+  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, findKeep, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 import type { KeepPairLink } from './keep-link';
-import { KEEP_ACK_LOOKBACK_S, KEEP_GUEST_PASS_S, KEEP_PERSONAL_INVITE_S } from './keep-wire';
+import { KEEP_GUEST_PASS_S, KEEP_PERSONAL_INVITE_S } from './keep-wire';
 
 export interface KeepDeps {
   encryptionKey: string;
@@ -224,7 +224,7 @@ export async function forgetKeep(deps: KeepDeps, keepId: string): Promise<Stored
 /** Open gift wraps and apply the acks inside; wraps that are not valid acks from our Keeps are ignored. */
 export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent[]): Promise<StoredKeep[]> {
   const stored = await loadStoredKeeps(deps.encryptionKey);
-  const acks: KeepAck[] = [];
+  const acks: Array<{ ack: KeepAck; wrapAt: number }> = [];
   for (const wrap of events) {
     const persona = wrap.tags?.find(t => t[0] === 'p')?.[1];
     if (!persona) continue;
@@ -232,27 +232,32 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
     const backend = keeps.size > 0 ? deps.backendFor(persona) : null;
     if (!backend) continue;
     const ack = await unwrapKeepAck(wrap, backend, keeps);
-    if (ack) acks.push(ack);
+    if (ack && Number.isSafeInteger(wrap.created_at)) acks.push({ ack, wrapAt: wrap.created_at });
   }
   if (acks.length === 0) return stored;
-  return updateStoredKeeps(deps.encryptionKey, list => acks.reduce(applyAck, list));
+  const now = nowOf(deps);
+  return updateStoredKeeps(deps.encryptionKey, list => advanceAckCursors(
+    acks.reduce((l, a) => applyAck(l, a.ack), list),
+    acks.map(a => ({ keep: a.ack.keep, wrapAt: a.wrapAt })), now,
+  ));
 }
 
-function ackScopes(keeps: readonly StoredKeep[]): Array<{ persona: string; relays: string[] }> {
-  const byPersona = new Map<string, Set<string>>();
-  for (const k of keeps) {
-    const set = byPersona.get(k.claimedBy) ?? new Set<string>();
-    k.relays.forEach(r => set.add(r));
-    byPersona.set(k.claimedBy, set);
-  }
-  return [...byPersona].map(([persona, relays]) => ({ persona, relays: [...relays] }));
+/**
+ * What to read for each owner persona: its acks on every relay of every one of
+ * its Keeps' pairing links, from before the oldest Keep's cursor.
+ */
+function ackScopes(keeps: readonly StoredKeep[], now: number): Array<{ persona: string; relays: string[]; since: number }> {
+  const byPersona = new Map<string, StoredKeep[]>();
+  for (const k of keeps) byPersona.set(k.claimedBy, [...(byPersona.get(k.claimedBy) ?? []), k]);
+  return [...byPersona].map(([persona, group]) => ({
+    persona, relays: [...new Set(group.flatMap(k => k.relays))], since: ackReadSince(group, now),
+  }));
 }
 
 /** One catch-up read of the acks addressed to each owner persona. Resolves with the updated list. */
 export async function refreshAcks(deps: KeepDeps): Promise<StoredKeep[]> {
   const keeps = await loadStoredKeeps(deps.encryptionKey);
-  const since = nowOf(deps) - KEEP_ACK_LOOKBACK_S;
-  for (const { persona, relays } of ackScopes(keeps)) {
+  for (const { persona, relays, since } of ackScopes(keeps, nowOf(deps))) {
     const filter = { kinds: [1059], '#p': [persona], since } as unknown as NostrFilter;
     const res = await fetchEventsWithReach([filter], { relays }).catch(() => null);
     if (res && res.events.length > 0) await applyAckEvents(deps, res.events);
@@ -266,8 +271,8 @@ export async function refreshAcks(deps: KeepDeps): Promise<StoredKeep[]> {
  */
 export function watchAcks(deps: KeepDeps, keeps: readonly StoredKeep[], onChange: (list: StoredKeep[]) => void): () => void {
   const seen = new Set<string>();
-  const stops = ackScopes(keeps).map(({ persona, relays }) => {
-    const filter = { kinds: [1059], '#p': [persona], since: nowOf(deps) - KEEP_ACK_LOOKBACK_S } as unknown as NostrFilter;
+  const stops = ackScopes(keeps, nowOf(deps)).map(({ persona, relays, since }) => {
+    const filter = { kinds: [1059], '#p': [persona], since } as unknown as NostrFilter;
     return subscribeEvents([filter], relays, event => {
       if (seen.has(event.id)) return;
       seen.add(event.id);

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure';
+import * as nip44 from 'nostr-tools/nip44';
 import { unwrapEvent, wrapEvent } from 'nostr-tools/nip59';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
@@ -268,6 +269,101 @@ describe('inviting and revoking', () => {
   it('forgetting a Keep removes it from this device only', async () => {
     await forgetKeep(deps(), K);
     expect(await loadStoredKeeps('key')).toEqual([]);
+  });
+});
+
+/** An ack from the Keep with an exact wrap `created_at`, built the way NIP-59 does it (the helper above jitters). */
+function ackWrapAt(wrapAt: number, tags: string[][], sealer: Uint8Array = KEEP_SK): NostrEvent {
+  const sealerPk = getPublicKey(sealer);
+  const rumorBase = { kind: 27663, content: '', created_at: NOW, tags: [['keep', K], ...tags], pubkey: sealerPk };
+  const rumor = { ...rumorBase, id: getEventHash(rumorBase) };
+  const seal = finalizeEvent({
+    kind: 13, content: nip44.v2.encrypt(JSON.stringify(rumor), nip44.v2.utils.getConversationKey(sealer, O)), created_at: wrapAt, tags: [],
+  }, sealer);
+  const eph = generateSecretKey();
+  return finalizeEvent({
+    kind: 1059, content: nip44.v2.encrypt(JSON.stringify(seal), nip44.v2.utils.getConversationKey(eph, O)), created_at: wrapAt, tags: [['p', O]],
+  }, eph) as unknown as NostrEvent;
+}
+
+describe('the ack cursor', () => {
+  const TWO_DAYS = 2 * 86400;
+  const sinceOf = (call: number) => (fetchMock.mock.calls[call][0] as Array<{ since: number }>)[0].since;
+  const none = { events: [] as NostrEvent[], attempted: 2, reached: 2 };
+
+  it('the first read goes three days back; after an ack, the next starts two days before that ack\'s wrap', async () => {
+    await claimKeep(deps(), link, O);
+    const W = NOW - 5000;
+    fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(W, [['status', 'paired'], ['claim']])] });
+    await refreshAcks(deps());
+    expect(sinceOf(0)).toBe(NOW - 3 * 86400);
+    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(W);
+    fetchMock.mockResolvedValueOnce(none);
+    await refreshAcks(deps());
+    expect(sinceOf(1)).toBe(W - TWO_DAYS);
+  });
+
+  it('still catches an ack the Keep backdated by the full two days, days after the last one', async () => {
+    // Paired long ago (cursor W), an invite goes out, the Keep acks it much later with a wrap backdated 2 days.
+    const W = NOW - 10 * 86400;
+    row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: W,
+      invites: [{ grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: NOW - 9 * 86400, expiration: NOW + 86400, status: 'waiting', revokeSent: true }] }];
+    // Revoke acked at NOW - 8 days, wrap backdated to NOW - 10 days (= cursor - 0): still >= cursor - 2 days.
+    const ack = ackWrapAt(W - TWO_DAYS + 60, [['status', 'revoked'], ['grant', '11'.repeat(16)]]);
+    fetchMock.mockImplementation(async (filters: Array<{ since: number }>) => ({
+      events: [ack].filter(e => e.created_at >= filters[0].since), attempted: 2, reached: 2,
+    }));
+    const list = await refreshAcks(deps());
+    expect(sinceOf(0)).toBe(W - TWO_DAYS);
+    expect(list[0].invites[0]).toMatchObject({ status: 'revoked', revokeSent: false });
+  });
+
+  it('a wrap dated in the future cannot push the cursor past now', async () => {
+    await claimKeep(deps(), link, O);
+    await applyAckEvents(deps(), [ackWrapAt(NOW + 5 * 86400, [['status', 'paired'], ['claim']])]);
+    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(NOW);
+  });
+
+  it('a wrap that is not a valid ack from this Keep does not move the cursor', async () => {
+    await claimKeep(deps(), link, O);
+    const stranger = ackWrapAt(NOW - 10, [['status', 'paired'], ['claim']], hexToBytes('0'.repeat(63) + '9'));
+    await applyAckEvents(deps(), [stranger]);
+    expect((await loadStoredKeeps('key'))[0].ackCursor).toBeUndefined();
+  });
+
+  it('a repeated ack moves the cursor only forward', async () => {
+    await claimKeep(deps(), link, O);
+    await applyAckEvents(deps(), [ackWrapAt(NOW - 100, [['status', 'paired'], ['claim']])]);
+    await applyAckEvents(deps(), [ackWrapAt(NOW - 9000, [['status', 'paired'], ['claim']])]);
+    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(NOW - 100);
+    await applyAckEvents(deps(), [ackWrapAt(NOW - 50, [['status', 'paired'], ['claim']])]);
+    expect((await loadStoredKeeps('key'))[0].ackCursor).toBe(NOW - 50);
+  });
+
+  it('the live subscription starts from the same place', async () => {
+    row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: NOW - 1000, invites: [] }];
+    subscribeMock.mockReturnValue(vi.fn());
+    watchAcks(deps(), await loadStoredKeeps('key'), vi.fn());
+    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 1000 - TWO_DAYS }]);
+  });
+
+  it('a persona with several Keeps reads from before the oldest cursor, on every relay of every link', async () => {
+    const K2 = getPublicKey(hexToBytes('0'.repeat(63) + '5'));
+    const mk = (keep: string, relays: string[], ackCursor?: number) => ({ keep, name: 'H', relays, claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, invites: [], ...(ackCursor ? { ackCursor } : {}) });
+    row = [mk(K, ['wss://a.example', 'wss://b.example'], NOW - 500), mk(K2, ['wss://c.example'], NOW - 90000)];
+    fetchMock.mockResolvedValue(none);
+    await refreshAcks(deps());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      [{ kinds: [1059], '#p': [O], since: NOW - 90000 - TWO_DAYS }],
+      { relays: ['wss://a.example', 'wss://b.example', 'wss://c.example'] },
+    );
+  });
+
+  it('re-pairing starts the reads afresh', async () => {
+    row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: NOW - 100, invites: [] }];
+    await claimKeep(deps(), parseKeepPairLink(`signet-keep:pair?k=${K}&c=${'44'.repeat(16)}&n=Home&r=wss://a.example`)!, O);
+    expect((await loadStoredKeeps('key'))[0].ackCursor).toBeUndefined();
   });
 });
 
