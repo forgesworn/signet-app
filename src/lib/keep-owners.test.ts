@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeOwners, applyOwnersAck, canUnlink, composeUpdate, gamesState, isActiveOwner, linkPersona, markOwnersSent, ownersDue,
-  pickSigner, playInvite, reconcileKeep, scopeLabel, setSection, unlinkPersona, type ReconcileContext,
+  pickSigner, playInvite, reconcileKeep, retryGames, scopeLabel, setSection, unlinkPersona, type ReconcileContext,
 } from './keep-owners';
-import { newPendingKeep, type StoredInvite, type StoredKeep } from './keep-store';
+import { newPendingKeep, parseStoredKeeps, type StoredInvite, type StoredKeep } from './keep-store';
 import type { KeepAck } from './keep-messages';
 import { KEEP_GAMES_INVITE_S } from './keep-wire';
 
@@ -354,6 +354,31 @@ describe('reconcile', () => {
     const k = withActive(reconcileKeep(paired('one'), ctx()), { status: 'refused', reason: 'full' });
     expect(reconcileKeep(k, ctx())).toBe(k);
     expect(gamesState(k, A, NOW)).toBe('refused');
+  });
+
+  it('a refused renewal is not made again by itself, shows as refused while the old invite still works, and Try again makes one', () => {
+    const first = withActive(reconcileKeep(paired('one'), ctx()), { expiration: NOW + 29 * DAY });
+    const renewed = reconcileKeep(first, ctx());
+    const [old, fresh] = renewed.invites;
+    const refused = { ...renewed, invites: renewed.invites.map(i => (i.grant === fresh.grant ? { ...i, createdAt: NOW + 1, status: 'refused' as const, reason: 'full' as const } : i)) };
+    expect(reconcileKeep(refused, ctx())).toBe(refused);
+    expect(reconcileKeep(refused, ctx({ now: NOW + 3600 }))).toBe(refused);
+    expect(playInvite(refused, A, NOW)!.grant).toBe(old.grant); // Play here still works
+    expect(gamesState(refused, A, NOW)).toBe('refused');
+    const again = retryGames(refused, A, ctx({ now: NOW + 2 }))!;
+    expect(again.invites).toHaveLength(3);
+    expect(gamesState(again, A, NOW + 2)).toBe('ready'); // the old one works and the new one is waiting
+    expect(reconcileKeep(again, ctx({ now: NOW + 2 }))).toBe(again);
+    // With plenty of time left on the old invite a refused renewal is not an issue to show.
+    const plenty = { ...refused, invites: refused.invites.map(i => (i.grant === old.grant ? { ...i, expiration: NOW + 200 * DAY } : i)) };
+    expect(gamesState(plenty, A, NOW)).toBe('ready');
+  });
+
+  it('a revision from an ack at the top of what is believed still makes an update that can be stored', () => {
+    const top = Number.MAX_SAFE_INTEGER - 1;
+    const k = composeUpdate({ ...linkPersona(paired(), B)!, rev: top }, A, NOW);
+    expect(Number.isSafeInteger(k.update!.rev)).toBe(true);
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify([k])))).not.toBeNull();
   });
 
   it('an expired games invite is replaced; a revoked one is not counted', () => {

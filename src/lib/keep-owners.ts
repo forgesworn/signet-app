@@ -227,8 +227,12 @@ export function playInvite(keep: StoredKeep, persona: string, now: number): Stor
 /** Where `persona`'s games invite stands, for the words next to its switch. */
 export function gamesState(keep: StoredKeep, persona: string, now: number): 'off' | 'ready' | 'waiting' | 'refused' {
   if (!gamesOn(keep, persona)) return 'off';
-  if (playInvite(keep, persona, now)) return 'ready';
   const mine = gamesInvitesFor(keep, persona).sort((a, b) => b.createdAt - a.createdAt);
+  const play = playInvite(keep, persona, now);
+  if (play) {
+    // Still playable, but the renewal was refused: say so, so the owner can try again before it runs out.
+    return mine[0]?.status === 'refused' && play.expiration - now < KEEP_GAMES_RENEW_BEFORE_S ? 'refused' : 'ready';
+  }
   if (mine.some(i => liveInvite(i, now))) return 'waiting';
   return mine[0]?.status === 'refused' ? 'refused' : 'waiting';
 }
@@ -298,7 +302,9 @@ export function reconcileKeep(keep: StoredKeep, ctx: ReconcileContext): StoredKe
     const live = mine.filter(i => liveInvite(i, now));
     const newest = [...live].sort((a, b) => b.expiration - a.expiration)[0];
     const latest = [...mine].sort((a, b) => b.createdAt - a.createdAt)[0];
-    const needs = live.length === 0 ? latest?.status !== 'refused' : newest.expiration - now < KEEP_GAMES_RENEW_BEFORE_S;
+    // A refusal of the newest invite stands until the owner tries again; renewing (or making the first one) again
+    // and again would only be refused again each time.
+    const needs = latest?.status !== 'refused' && (live.length === 0 || newest.expiration - now < KEEP_GAMES_RENEW_BEFORE_S);
     if (needs) invites = [...invites, newGamesInvite(p, ctx)];
     // An older invite goes once a newer one is active.
     const active = live.filter(i => i.status === 'active').sort((a, b) => b.expiration - a.expiration)[0];
