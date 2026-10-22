@@ -9,6 +9,8 @@ export const FIXTURE = {
   ownerSk: '0'.repeat(63) + '2',
   /** The invited friend's persona key is the public key of this secret (63 zeros then 3). */
   friendSk: '0'.repeat(63) + '3',
+  /** K1e: the second owner persona is the same key as the friend above (63 zeros then 3). */
+  secondOwnerSk: '0'.repeat(63) + '3',
   code: '00112233445566778899aabbccddeeff',
   grant: 'ffeeddccbbaa99887766554433221100',
   secret: '000102030405060708090a0b0c0d0e0f' + '101112131415161718191a1b1c1d1e1f',

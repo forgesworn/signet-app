@@ -7,6 +7,8 @@ import type { NostrEvent } from 'signet-protocol';
 import { LocalSigningBackend } from './signing-backend';
 import { unwrapKeepAck } from './keep-messages';
 import { FIXTURE } from './keep-fixture-values';
+import { applyOwnersAck, composeUpdate, linkPersona } from './keep-owners';
+import { newPendingKeep } from './keep-store';
 
 /*
  * Cross-check fixtures (K1d contract, last section). `fixtures/keep-m-*.json`
@@ -19,6 +21,7 @@ const keepSk = hexToBytes(FIXTURE.keepSk);
 const K = getPublicKey(keepSk);
 const O = getPublicKey(hexToBytes(FIXTURE.ownerSk));
 const friend = getPublicKey(hexToBytes(FIXTURE.friendSk));
+const B = getPublicKey(hexToBytes(FIXTURE.secondOwnerSk));
 
 describe('M fixtures, opened as the Keep', () => {
   it('claim wrap', () => {
@@ -64,3 +67,59 @@ describe('K ack fixture, opened as the owner', () => {
     expect(ack?.grant).toMatch(/^[0-9a-f]{32}$/);
   });
 });
+
+describe('K1e M fixtures, opened as the Keep', () => {
+  it('owners update wrap: rev 1, both owner personas, games', () => {
+    const wrap = read('keep-m-update.json');
+    expect(wrap.kind).toBe(1059);
+    expect(wrap.tags).toEqual([['p', K]]);
+    expect(verifyEvent(wrap as never)).toBe(true);
+    const rumor = unwrapEvent(wrap as never, keepSk);
+    expect(rumor.kind).toBe(27664);
+    expect(rumor.pubkey).toBe(O);
+    expect(rumor.content).toBe('');
+    expect(rumor.created_at).toBe(FIXTURE.createdAt);
+    expect(rumor.tags).toEqual([['keep', K], ['rev', '1'], ['persona', O, 'games'], ['persona', B, 'games']]);
+  });
+
+  it('owner accept wrap: rev 1, signed by the second owner persona', () => {
+    const wrap = read('keep-m-accept.json');
+    expect(wrap.kind).toBe(1059);
+    expect(wrap.tags).toEqual([['p', K]]);
+    expect(verifyEvent(wrap as never)).toBe(true);
+    const rumor = unwrapEvent(wrap as never, keepSk);
+    expect(rumor.kind).toBe(27665);
+    expect(rumor.pubkey).toBe(B);
+    expect(rumor.content).toBe('');
+    expect(rumor.created_at).toBe(FIXTURE.createdAt);
+    expect(rumor.tags).toEqual([['keep', K], ['rev', '1']]);
+  });
+});
+
+/** The Keep's own `updated` ack (made by the Keep's code, copied here as given). */
+describe('K updated fixture, opened as the owner', () => {
+  it('unwraps as an updated ack with a revision, addressed to the owner persona', async () => {
+    const wrap = JSON.parse(readFileSync(new URL('./fixtures/k-updated.json', import.meta.url), 'utf8')) as NostrEvent;
+    const ack = await unwrapKeepAck(wrap, new LocalSigningBackend(FIXTURE.ownerSk), new Set([K]));
+    expect(wrap.kind).toBe(1059);
+    expect(wrap.tags).toEqual([['p', O]]);
+    expect(ack).toMatchObject({ keep: K, status: 'updated', claim: false, owners: true, to: O });
+    expect(Number.isSafeInteger(ack?.rev)).toBe(true);
+    expect(ack?.rev).toBeGreaterThanOrEqual(1);
+  });
+
+  it('is applied to a pending update at that revision: the update is in', async () => {
+    const wrap = JSON.parse(readFileSync(new URL('./fixtures/k-updated.json', import.meta.url), 'utf8')) as NostrEvent;
+    const ack = (await unwrapKeepAck(wrap, new LocalSigningBackend(FIXTURE.ownerSk), new Set([K])))!;
+    const keep = composeUpdate({ ...linkPersona(newPaired(), B)!, rev: ack.rev! - 1 }, O);
+    expect(keep.update!.rev).toBe(ack.rev);
+    const [next] = applyOwnersAck([keep], ack);
+    expect(next.update).toBeUndefined();
+    expect(next.rev).toBe(ack.rev);
+  });
+});
+
+function newPaired() {
+  const { code: _c, ...rest } = newPendingKeep({ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, code: '33'.repeat(16), now: 1, scope: 'all' });
+  return { ...rest, status: 'paired' as const };
+}
