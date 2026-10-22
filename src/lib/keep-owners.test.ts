@@ -118,7 +118,7 @@ describe('acks of an update and an accept', () => {
   it('pending holds the accept; once the update lands it is sent again', () => {
     const p = apply(sent(), { status: 'pending', rev: 0, to: B });
     expect(p.links[B].accept).toMatchObject({ pending: true });
-    expect(ownersDue({ ...p, update: { ...p.update!, sentAt: NOW } }, NOW + 5000).accepts).toEqual([]); // waits while the update is out
+    expect(ownersDue({ ...p, update: { ...p.update!, sentAt: NOW } }, NOW + 5000).accepts).toEqual([]); // waits for the update's ack
     const landed = apply({ ...p, links: { ...p.links, [B]: { ...p.links[B], accept: { ...p.links[B].accept!, sentAt: NOW } } } }, { status: 'updated', rev: 1, to: A });
     expect(landed.update).toBeUndefined();
     expect(landed.links[B].accept).toEqual({ rev: 1, sentAt: 0 });
@@ -155,13 +155,29 @@ describe('acks of an update and an accept', () => {
 });
 
 describe('what is sent again', () => {
-  it('an unanswered update and accept go again after ten minutes, not before', () => {
+  it('an update goes at once and again after ten minutes; the accept waits for the update\'s ack', () => {
     const k = composeUpdate(linkPersona(paired(), B)!, A);
-    expect(ownersDue(k, NOW)).toEqual({ update: true, accepts: [B] }); // never sent
-    const sent = markOwnersSent(k, { update: true, accepts: [B] }, NOW);
+    expect(ownersDue(k, NOW)).toEqual({ update: true, accepts: [] }); // never sent
+    const sent = markOwnersSent(k, { update: true, accepts: [] }, NOW);
     expect(ownersDue(sent, NOW + 599)).toEqual({ update: false, accepts: [] });
-    expect(ownersDue(sent, NOW + 601)).toEqual({ update: true, accepts: [B] });
+    expect(ownersDue(sent, NOW + 601)).toEqual({ update: true, accepts: [] });
     expect(ownersDue({ ...sent, status: 'pending' }, NOW + 9999)).toEqual({ update: false, accepts: [] });
+  });
+
+  it('once the update is acked the accept is due; a sent accept is sent again after ten minutes, not before', () => {
+    const acked = apply(composeUpdate(linkPersona(paired(), B)!, A), { rev: 1, to: A });
+    expect(ownersDue(acked, NOW)).toEqual({ update: false, accepts: [B] });
+    const sent = markOwnersSent(acked, { update: false, accepts: [B] }, NOW);
+    expect(ownersDue(sent, NOW + 599)).toEqual({ update: false, accepts: [] });
+    expect(ownersDue(sent, NOW + 601)).toEqual({ update: false, accepts: [B] });
+  });
+
+  it('a newer update that replaces an unanswered one holds the accept again until it is acked', () => {
+    const one = apply(composeUpdate(linkPersona(paired(), B)!, A), { rev: 1, to: A });
+    const two = composeUpdate(one, A);
+    expect(ownersDue(two, NOW).accepts).toEqual([]);
+    expect(apply(two, { rev: 2, to: A }).links[B].accept).toEqual({ rev: 2, sentAt: 0 });
+    expect(ownersDue(apply(two, { rev: 2, to: A }), NOW).accepts).toEqual([B]);
   });
 });
 

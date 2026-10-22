@@ -73,6 +73,9 @@ export const KEEP_SCOPES = ['all', 'one'] as const;
 /** The only section defined so far; the Keep keeps unknown section names and ignores them. */
 export const KEEP_SECTION_GAMES = 'games';
 
+/** The highest revision the Keep takes (exact in JavaScript); a higher one is `refused malformed`. */
+export const KEEP_MAX_REV = 2 ** 53;
+
 /** An owners update lists 1 to this many personas. */
 export const KEEP_MAX_OWNER_PERSONAS = 16;
 

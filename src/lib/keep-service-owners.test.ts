@@ -85,11 +85,25 @@ describe('claiming with a scope', () => {
 });
 
 describe('an All my personas Keep, once paired', () => {
-  it('sends update rev 1 listing both personas with games, then Bob\'s accept, then the games invites', async () => {
+  it('sends update rev 1 listing both personas with games and the games invites; Bob\'s accept only after the update\'s ack', async () => {
     await pairedKeep('all');
     await settle(deps());
-    expect(kinds()).toEqual([27664, 27665, 27661, 27661]);
-    const [update, accept, ...invites] = rumors();
+    expect(kinds()).toEqual([27664, 27661, 27661]);
+    expect(kinds()).not.toContain(27665);
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '1']])]);
+    await settle(deps());
+    expect(kinds()).toEqual([27665]);
+  });
+
+  it('the update, the accept and the invites carry the contract fields', async () => {
+    await pairedKeep('all');
+    await settle(deps());
+    const [update, ...invites] = rumors();
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '1']])]);
+    await settle(deps());
+    const [accept] = rumors();
     expect(update.pubkey).toBe(A);
     expect(update.tags).toEqual([['keep', K], ['rev', '1'], ['persona', A, 'games'], ['persona', B, 'games']]);
     expect(accept.pubkey).toBe(B);
@@ -105,6 +119,10 @@ describe('an All my personas Keep, once paired', () => {
   it('sends each thing once, however often it is settled', async () => {
     await pairedKeep('all');
     await settle(deps());
+    await Promise.all([settle(deps()), settle(deps())]);
+    await catchUp(deps());
+    expect(published).toHaveLength(3);
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '1']])]);
     await Promise.all([settle(deps()), settle(deps())]);
     await catchUp(deps());
     expect(published).toHaveLength(4);
@@ -143,9 +161,13 @@ describe('an All my personas Keep, once paired', () => {
     published.length = 0;
     await applyAckEvents(deps(), [ack(A, [['status', 'refused'], ['reason', 'stale'], ['rev', '5']])]);
     await settle(deps());
-    expect(kinds()).toEqual([27664, 27665]);
+    expect(kinds()).toEqual([27664]);
     expect(tag(rumors()[0], 'rev')![1]).toBe('6');
-    expect(tag(rumors()[1], 'rev')![1]).toBe('6');
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '6']])]);
+    await settle(deps());
+    expect(kinds()).toEqual([27665]);
+    expect(tag(rumors()[0], 'rev')![1]).toBe('6');
   });
 
   it('an unanswered update and accept go again after ten minutes', async () => {
@@ -154,7 +176,15 @@ describe('an All my personas Keep, once paired', () => {
     published.length = 0;
     t += 601;
     await settle(deps());
-    expect(kinds()).toEqual([27664, 27665, 27661, 27661]);
+    expect(kinds()).toEqual([27664, 27661, 27661]); // the accept waits for the update's ack
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '1']])]);
+    await settle(deps());
+    expect(kinds()).toEqual([27665]);
+    published.length = 0;
+    t += 601;
+    await settle(deps());
+    expect(kinds()).toEqual([27665, 27661, 27661]); // a lost accept goes again
   });
 
   it('a persona created later is linked by the next update and accept', async () => {
@@ -167,12 +197,16 @@ describe('an All my personas Keep, once paired', () => {
     published.length = 0;
     held = [A, B, C]; account = [A, B, C];
     await catchUp(deps());
-    const [update, accept] = rumors();
-    expect(update.kind).toBe(27664);
+    const update = rumors().find(r => r.kind === 27664)!;
     expect(update.tags.filter(x => x[0] === 'persona').map(x => x[1])).toEqual([A, B, C]);
     expect(tag(update, 'rev')![1]).toBe('2');
-    expect(accept.kind).toBe(27665);
-    expect(accept.pubkey).toBe(C);
+    expect(kinds()).not.toContain(27665); // Cara's accept follows the update's ack
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '2']])]);
+    await settle(deps());
+    expect(kinds()).toEqual([27665]);
+    expect(rumors()[0].pubkey).toBe(C);
+    expect(tag(rumors()[0], 'rev')![1]).toBe('2');
   });
 });
 
@@ -183,15 +217,18 @@ describe('an Only this persona Keep', () => {
     expect(kinds()).toEqual([27661]);
   });
 
-  it('linking Bob by hand sends the update and Bob\'s accept together', async () => {
+  it('linking Bob by hand sends the update, then Bob\'s accept after the update\'s ack', async () => {
     await pairedKeep('one');
     await settle(deps());
     published.length = 0;
     await changeOwners(deps(), K, A, { kind: 'link', persona: B });
-    expect(kinds().slice(0, 2)).toEqual([27664, 27665]);
+    expect(kinds()).toEqual([27664, 27661]); // the update, and Bob's games invite
     expect(rumors()[0].tags).toEqual([['keep', K], ['rev', '1'], ['persona', A, 'games'], ['persona', B, 'games']]);
-    expect(rumors()[1].pubkey).toBe(B);
-    expect(kinds().slice(2)).toEqual([27661]); // Bob's games invite
+    published.length = 0;
+    await applyAckEvents(deps(), [ack(A, [['status', 'updated'], ['rev', '1']])]);
+    await settle(deps());
+    expect(kinds()).toEqual([27665]);
+    expect(rumors()[0].pubkey).toBe(B);
   });
 
   it('a persona whose key is not held cannot be linked ("Not available for this persona yet")', async () => {

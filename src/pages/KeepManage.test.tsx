@@ -354,7 +354,7 @@ describe('personas (K1e)', () => {
     expect(screen.queryByRole('button', { name: 'Play here' })).toBeNull();
   });
 
-  it('Linked personas has a switch per persona and the privacy note; switching Bob on sends his update and accept together', async () => {
+  it('Linked personas has a switch per persona and the privacy note; switching Bob on sends the update, and his accept follows the update\'s ack', async () => {
     row = [link()];
     renderKeep(two());
     fireEvent.click(await screen.findByTestId('stored-keep-row'));
@@ -367,7 +367,8 @@ describe('personas (K1e)', () => {
     expect(bob).not.toBeChecked();
     fireEvent.click(bob);
     const owners = () => kindsPublished().filter(k => k === 27664 || k === 27665);
-    await waitFor(() => expect(owners()).toEqual([27664, 27665]));
+    await waitFor(() => expect(owners()).toEqual([27664]));
+    expect(owners()).not.toContain(27665);
     const update = published.map(w => unwrapEvent(w as never, KEEP_SK)).find(r => r.kind === 27664)!;
     expect(update.tags).toEqual([['keep', K], ['rev', '1'], ['persona', O, 'games'], ['persona', BOB, 'games']]);
     await waitFor(() => expect(within(section).getByText('Waiting for the Keep')).toBeInTheDocument());

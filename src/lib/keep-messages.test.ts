@@ -259,6 +259,16 @@ describe('K1e messages', () => {
     expect(() => ownersUpdateRumor(owner, K, 1, [{ persona: 'x', sections: [] }], NOW)).toThrow();
   });
 
+  it('a revision stops at 2^53: the rumors refuse a higher one and an ack with one is dropped', async () => {
+    const top = 2 ** 53;
+    expect(ownersUpdateRumor(owner, K, top, [{ persona: O, sections: [] }], NOW).tags[1]).toEqual(['rev', String(top)]);
+    expect(() => ownersUpdateRumor(owner, K, top * 2, [{ persona: O, sections: [] }], NOW)).toThrow();
+    expect(() => ownerAcceptRumor(owner, K, top * 2, NOW)).toThrow();
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', String(top - 1)]]), owner, keeps)).toMatchObject({ rev: top - 1 });
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', String(top)]]), owner, keeps)).toBeNull();
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '9999999999999999']]), owner, keeps)).toBeNull();
+  });
+
   it('an owner accept carries the keep and the revision', async () => {
     const b = new LocalSigningBackend('0'.repeat(63) + '3');
     const rumor = openAsKeep(await wrapForKeep(ownerAcceptRumor(b, K, 1, NOW), K, b));

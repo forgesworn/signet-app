@@ -21,7 +21,7 @@ import { giftWrap } from './relay-publish';
 import { sanitizeDisplayName } from './text-sanitize';
 import type { DecryptingSigningBackend } from './signing-backend';
 import {
-  KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MAX_OWNER_PERSONAS, KEEP_MSG_ACCEPT_KIND, KEEP_MSG_ACK_KIND,
+  KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MAX_OWNER_PERSONAS, KEEP_MAX_REV, KEEP_MSG_ACCEPT_KIND, KEEP_MSG_ACK_KIND,
   KEEP_MSG_CLAIM_KIND, KEEP_MSG_INVITE_KIND, KEEP_MSG_OWNERS_KIND, KEEP_MSG_REVOKE_KIND, KEEP_REFUSAL_REASONS,
   KEEP_SCOPES, KEEP_WRAP_JITTER_S,
 } from './keep-wire';
@@ -69,7 +69,7 @@ const SECTION_NAME = /^[a-z0-9_-]{1,32}$/;
 export function ownersUpdateRumor(
   backend: DecryptingSigningBackend, keep: string, rev: number, personas: readonly OwnerPersonaSpec[], now: number,
 ): UnsignedEvent {
-  if (!HEX64.test(keep) || !Number.isSafeInteger(rev) || rev < 1) throw new Error('Invalid update');
+  if (!HEX64.test(keep) || !Number.isInteger(rev) || rev < 1 || rev > KEEP_MAX_REV) throw new Error('Invalid update');
   if (personas.length < 1 || personas.length > KEEP_MAX_OWNER_PERSONAS) throw new Error('Invalid update');
   if (new Set(personas.map(p => p.persona)).size !== personas.length) throw new Error('Invalid update');
   const tags: string[][] = [['keep', keep], ['rev', String(rev)]];
@@ -82,7 +82,7 @@ export function ownersUpdateRumor(
 
 /** "I agree to be an owner persona of this Keep, as listed in update `rev`" (K1e), signed by the persona being added. */
 export function ownerAcceptRumor(backend: DecryptingSigningBackend, keep: string, rev: number, now: number): UnsignedEvent {
-  if (!HEX64.test(keep) || !Number.isSafeInteger(rev) || rev < 1) throw new Error('Invalid accept');
+  if (!HEX64.test(keep) || !Number.isInteger(rev) || rev < 1 || rev > KEEP_MAX_REV) throw new Error('Invalid accept');
   return rumorTemplate(backend, KEEP_MSG_ACCEPT_KIND, [['keep', keep], ['rev', String(rev)]], now);
 }
 
@@ -160,7 +160,8 @@ export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_a
   const grant = grantTag?.[1];
   // K1e: the acks of an owners update / owner accept carry a revision and no grant or claim.
   const revText = single(tags, 'rev')?.[1];
-  const rev = revText !== undefined && /^(0|[1-9]\d{0,15})$/.test(revText) ? Number(revText) : undefined;
+  // A revision the next one cannot follow (the Keep stops at 2^53) is not believed.
+  const rev = revText !== undefined && /^(0|[1-9]\d{0,15})$/.test(revText) && Number(revText) < KEEP_MAX_REV ? Number(revText) : undefined;
   if (!Number.isSafeInteger(rumor.created_at)) return null;
   if (status === 'updated' || status === 'pending') {
     if (rev === undefined || claimTag) return null;

@@ -158,7 +158,10 @@ export function applyOwnersAck(list: readonly StoredKeep[], ack: KeepAck): Store
   return next === keep ? list as StoredKeep[] : withKeep(list, next);
 }
 
-/** What to send again for a paired Keep: an update the Keep has not answered, and accepts it has not confirmed. */
+/**
+ * What to send for a paired Keep: an update the Keep has not answered; and, once no update is outstanding, the
+ * accepts it has not confirmed (never together with the update that lists the persona).
+ */
 export function ownersDue(keep: StoredKeep, now: number): { update: boolean; accepts: string[] } {
   if (keep.status !== 'paired') return { update: false, accepts: [] };
   const update = !!keep.update && !keep.update.failed && now - keep.update.sentAt > KEEP_RESEND_AFTER_S;
@@ -167,7 +170,9 @@ export function ownersDue(keep: StoredKeep, now: number): { update: boolean; acc
     for (const p of keep.personas) {
       const a = keep.links[p].accept;
       if (!a) continue;
-      if (a.pending && keep.update) continue; // the Keep has it and waits for the update to land
+      // An accept goes only once the Keep has acked the update that lists the persona (sent earlier it is
+      // only held, and may be evicted). The resend rule below covers a lost accept.
+      if (keep.update) continue;
       if (now - a.sentAt > KEEP_RESEND_AFTER_S) accepts.push(p);
     }
   }
