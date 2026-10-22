@@ -33,4 +33,39 @@ describe('PrivateVaultStatus blocking relays', () => {
     expect(screen.queryByText(/Not answering/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Turn off/ })).toBeNull();
   });
+
+  it('offers no button for a relay that holds the only checked copy of a backup', () => {
+    render(<PrivateVaultStatus importedDependants={0} onDisableRelay={vi.fn()} health={health({
+      'signet:vault:profiles': { state: 'unavailable', failedRelays: [DAMUS, DITTO], heldOn: [DAMUS] },
+    })} />);
+    expect(screen.getByText(/relay\.damus\.io holds your only checked copy of a backup\. Backups carry on once it answers\./)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Turn off relay.damus.io' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Turn off relay.ditto.pub' })).toBeDefined();
+  });
+
+  it('still offers the button when the confirmed copy is on more than one relay', () => {
+    render(<PrivateVaultStatus importedDependants={0} onDisableRelay={vi.fn()} health={health({
+      'signet:vault:profiles': { state: 'unavailable', failedRelays: [DAMUS], heldOn: [DAMUS, DITTO] },
+    })} />);
+    expect(screen.queryByText(/only checked copy/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Turn off relay.damus.io' })).toBeDefined();
+  });
+
+  it('counts a verified dataset whose only confirmed relay is the failing one', () => {
+    render(<PrivateVaultStatus importedDependants={0} onDisableRelay={vi.fn()} health={health({
+      'signet:vault:profiles': { state: 'unavailable', failedRelays: [DAMUS] },
+      'signet:vault:contacts': { state: 'verified', confirmedRelays: [DAMUS] },
+    })} />);
+    expect(screen.queryByRole('button', { name: /Turn off/ })).toBeNull();
+    expect(screen.getByText(/only checked copy/)).toBeDefined();
+  });
+
+  it('hides the button for a relay the caller says cannot be switched off', () => {
+    render(<PrivateVaultStatus importedDependants={0} onDisableRelay={vi.fn()} canDisableRelay={url => url !== DAMUS} health={health({
+      'signet:vault:profiles': { state: 'unavailable', failedRelays: [DAMUS, DITTO] },
+    })} />);
+    expect(screen.queryByRole('button', { name: 'Turn off relay.damus.io' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Turn off relay.ditto.pub' })).toBeDefined();
+    expect(screen.getByText(/Not answering: relay\.damus\.io, relay\.ditto\.pub\./)).toBeDefined();
+  });
 });

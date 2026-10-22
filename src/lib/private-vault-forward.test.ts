@@ -43,6 +43,14 @@ it('publishes only after the full prospective chain validates with real crypto',
   expect(mocks.flush).toHaveBeenCalledOnce();
   options.backend.destroy();
 });
+it('reads the destination and the source from the write relays, not the read-only list', async () => {
+  const { options } = await setup();
+  mocks.flush.mockResolvedValue({ state: 'verified' });
+  expect(await resumeVaultForwarding(options)).toBe(true);
+  expect(mocks.reader.mock.calls.length).toBeGreaterThanOrEqual(2);
+  for (const [relays] of mocks.reader.mock.calls) expect(relays).toEqual(['wss://write.example']);
+  options.backend.destroy();
+});
 it('does not publish for a missing chunk, missing later rotation, or offline source history', async () => {
   const first = await setup(); events.delete(first.copy.chunks[0].id);
   expect(await resumeVaultForwarding(first.options)).toBe(false);

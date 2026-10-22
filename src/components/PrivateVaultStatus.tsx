@@ -5,11 +5,13 @@ function relayHost(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
-export function PrivateVaultStatus({ health, importedDependants, onRotate, onDisableRelay }: {
+export function PrivateVaultStatus({ health, importedDependants, onRotate, onDisableRelay, canDisableRelay }: {
   health: PrivateVaultHealth; importedDependants: number;
   onRotate?: (purpose: string) => Promise<string>;
   /** Switch one write relay off (kept in the list, reversible in Advanced settings). */
   onDisableRelay?: (url: string) => void;
+  /** False when switching that relay off would do nothing (no other write relay, not in the list). Absent means yes. */
+  canDisableRelay?: (url: string) => boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState('');
@@ -35,6 +37,11 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
     : 'Private backup changes are waiting to upload';
   // Distinct relays that blocked an unavailable dataset, in first-seen order.
   const blocking = [...new Set(states.filter(s => s.state === 'unavailable').flatMap(s => s.failedRelays ?? []))];
+  // Turning off the only relay holding a dataset's confirmed copy would turn a
+  // transient wait into an unusable backup, so that relay gets no button.
+  const soleHolders = new Set(states.map(s => [...new Set(s.heldOn ?? s.confirmedRelays ?? [])])
+    .filter(held => held.length === 1).map(held => held[0]));
+  const offerable = blocking.filter(url => !soleHolders.has(url) && (canDisableRelay?.(url) ?? true));
   const confirmedAt = Math.max(0, ...states.map(s => s.confirmedAt ?? 0));
   return <details className="sync-backup-banner" style={{ padding: '8px 16px', fontSize: 13 }}>
     <summary>{heading}</summary>
@@ -44,7 +51,8 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
     {invalid && <p>A backup could not be validated. Signet has paused replacement of that dataset and kept the local copy.</p>}
     {blocking.length > 0 && <p data-vault-blocking-relays>
       Backups wait until every relay you save to answers. Not answering: {[...new Set(blocking.map(relayHost))].join(', ')}.
-      {onDisableRelay && blocking.map(url => <button key={url} className="btn btn-ghost" onClick={() => onDisableRelay(url)}>
+      {blocking.filter(url => soleHolders.has(url)).map(url => <span key={url}> {relayHost(url)} holds your only checked copy of a backup. Backups carry on once it answers.</span>)}
+      {onDisableRelay && offerable.map(url => <button key={url} className="btn btn-ghost" onClick={() => onDisableRelay(url)}>
         Turn off {relayHost(url)}
       </button>)}
     </p>}

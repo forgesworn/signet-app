@@ -9,8 +9,9 @@ vi.mock('./private-vault', async original => {
   return { ...real, relayVaultReader: (...a: Parameters<typeof real.relayVaultReader>) => { readerSpy(...a); return real.relayVaultReader(...a); } };
 });
 import { syncPrivateVaultDataset } from './private-vault-sync';
-import { loadVaultBackup } from './private-vault-store';
-import { localVaultBackend } from './private-vault';
+import { loadVaultBackup, queueVaultBackup, confirmVaultBackup } from './private-vault-store';
+import { localVaultBackend, prepareVaultSnapshot } from './private-vault';
+import { LocalSigningBackend } from './signing-backend';
 import { purgeAllUserData } from './db';
 import { beginVaultRotation, loadVaultRotation, advanceVaultRotation, loadSeenVaultRotation } from './private-vault-rotation-store';
 const WORDS = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -141,4 +142,24 @@ it('carries no failedRelays when the protocol names none, or when the failure is
   const thrown = await syncPrivateVaultDataset(args);
   expect(thrown.state).toBe('unavailable');
   expect(thrown).not.toHaveProperty('failedRelays');
+});
+async function confirmCopyOn(args: ReturnType<typeof setup>['args'], backend: ReturnType<typeof setup>['backend'], relays: string[]) {
+  const device = new LocalSigningBackend('06'.repeat(32));
+  const prepared = await prepareVaultSnapshot({ plaintext: '{"v":1}', dataset: 'profiles', rotation: 0, sequence: 1,
+    createdAt: 1700000000, vault: backend, device });
+  device.destroy();
+  await queueVaultBackup(backend.activePublicKeyHex, args.encryptionKey, prepared);
+  await confirmVaultBackup(backend.activePublicKeyHex, args.encryptionKey, prepared.checkpoint.id, 1700000000, relays);
+}
+it('says which relays hold the stored confirmed copy when a read is unavailable', async () => {
+  const { args, backend } = setup();
+  await confirmCopyOn(args, backend, ['wss://relay.damus.io']);
+  remote.mockImplementation(async resolve => { await resolve(0); return { state: 'unavailable', failedRelays: ['wss://relay.damus.io'] }; });
+  expect(await syncPrivateVaultDataset(args)).toMatchObject({ state: 'unavailable', failedRelays: ['wss://relay.damus.io'],
+    heldOn: ['wss://relay.damus.io'] });
+});
+it('reports no holding relays when this device has no confirmed copy', async () => {
+  const { args } = setup();
+  remote.mockImplementation(async resolve => { await resolve(0); return { state: 'unavailable', failedRelays: ['wss://relay.damus.io'] }; });
+  expect(await syncPrivateVaultDataset(args)).not.toHaveProperty('heldOn');
 });
