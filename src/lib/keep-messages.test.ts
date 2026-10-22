@@ -6,7 +6,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
 import { LocalSigningBackend } from './signing-backend';
 import {
-  claimRumor, inviteRumor, parseAckRumor, revokeRumor, unwrapKeepAck, wrapForKeep,
+  claimRumor, inviteRumor, ownerAcceptRumor, ownersUpdateRumor, parseAckRumor, revokeRumor, unwrapKeepAck, wrapForKeep,
 } from './keep-messages';
 import { giftWrap } from './relay-publish';
 
@@ -227,5 +227,78 @@ describe('reading an ack', () => {
 
   it('ignores a rumor of another kind', () => {
     expect(parseAckRumor({ kind: 27661, created_at: NOW, tags: [['keep', K], ['status', 'active'], ['grant', GRANT]] }, K)).toBeNull();
+  });
+});
+
+describe('K1e messages', () => {
+  const B = getPublicKey(hexToBytes('0'.repeat(63) + '3'));
+
+  it('a claim carries its scope, and none when it is not given', () => {
+    expect(claimRumor(owner, K, CODE, NOW, 'all').tags).toEqual([['keep', K], ['code', CODE], ['scope', 'all']]);
+    expect(claimRumor(owner, K, CODE, NOW, 'one').tags).toEqual([['keep', K], ['code', CODE], ['scope', 'one']]);
+    expect(claimRumor(owner, K, CODE, NOW).tags).toEqual([['keep', K], ['code', CODE]]);
+  });
+
+  it('an owners update lists each persona with its sections', async () => {
+    const wrap = await wrapForKeep(ownersUpdateRumor(owner, K, 1, [{ persona: O, sections: ['games'] }, { persona: B, sections: ['games'] }], NOW), K, owner);
+    const rumor = openAsKeep(wrap);
+    expect(rumor.kind).toBe(27664);
+    expect(rumor.pubkey).toBe(O);
+    expect(rumor.content).toBe('');
+    expect(rumor.created_at).toBe(NOW);
+    expect(rumor.tags).toEqual([['keep', K], ['rev', '1'], ['persona', O, 'games'], ['persona', B, 'games']]);
+  });
+
+  it('an owners update refuses no personas, more than 16, duplicates and a bad revision', () => {
+    const p = (i: number) => ({ persona: i.toString(16).padStart(64, '0'), sections: ['games'] });
+    expect(() => ownersUpdateRumor(owner, K, 1, [], NOW)).toThrow();
+    expect(() => ownersUpdateRumor(owner, K, 1, Array.from({ length: 17 }, (_, i) => p(i + 1)), NOW)).toThrow();
+    expect(ownersUpdateRumor(owner, K, 1, Array.from({ length: 16 }, (_, i) => p(i + 1)), NOW).tags).toHaveLength(18);
+    expect(() => ownersUpdateRumor(owner, K, 1, [p(1), p(1)], NOW)).toThrow();
+    expect(() => ownersUpdateRumor(owner, K, 0, [p(1)], NOW)).toThrow();
+    expect(() => ownersUpdateRumor(owner, K, 1, [{ persona: 'x', sections: [] }], NOW)).toThrow();
+  });
+
+  it('an owner accept carries the keep and the revision', async () => {
+    const b = new LocalSigningBackend('0'.repeat(63) + '3');
+    const rumor = openAsKeep(await wrapForKeep(ownerAcceptRumor(b, K, 1, NOW), K, b));
+    expect(rumor.kind).toBe(27665);
+    expect(rumor.pubkey).toBe(B);
+    expect(rumor.tags).toEqual([['keep', K], ['rev', '1']]);
+  });
+
+  it('reads updated and pending acks with their revision, addressed to the persona', async () => {
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '3']]), owner, keeps))
+      .toEqual({ keep: K, status: 'updated', claim: false, owners: true, rev: 3, at: NOW, to: O });
+    expect(await unwrapKeepAck(ackWrap([['status', 'pending'], ['rev', '2']]), owner, keeps))
+      .toMatchObject({ status: 'pending', owners: true, rev: 2 });
+  });
+
+  it('reads refused stale with the current revision, and other refusals of an update', async () => {
+    expect(await unwrapKeepAck(ackWrap([['status', 'refused'], ['reason', 'stale'], ['rev', '4']]), owner, keeps))
+      .toMatchObject({ status: 'refused', reason: 'stale', rev: 4, owners: true });
+    expect(await unwrapKeepAck(ackWrap([['status', 'refused'], ['reason', 'too_many']]), owner, keeps))
+      .toMatchObject({ reason: 'too_many', owners: true });
+    expect(await unwrapKeepAck(ackWrap([['status', 'refused'], ['reason', 'malformed']]), owner, keeps))
+      .toMatchObject({ reason: 'malformed', owners: true });
+  });
+
+  it('drops owners acks that are not well formed', async () => {
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated']]), owner, keeps)).toBeNull();
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', 'x']]), owner, keeps)).toBeNull();
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '01']]), owner, keeps)).toBeNull();
+    expect(await unwrapKeepAck(ackWrap([['status', 'refused'], ['reason', 'stale']]), owner, keeps)).toBeNull();
+    expect(await unwrapKeepAck(ackWrap([['status', 'refused']]), owner, keeps)).toBeNull();
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '1'], ['claim']]), owner, keeps)).toBeNull();
+  });
+
+  it('an update ack from someone who is not the Keep is dropped', async () => {
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '1']], { signer: ownerSk }), owner, keeps)).toBeNull();
+  });
+
+  it('parseAckRumor keeps the K1d acks as they were', () => {
+    expect(parseAckRumor({ kind: 27663, created_at: NOW, tags: [['keep', K], ['status', 'refused'], ['claim']] }, K)).toBeNull();
+    expect(parseAckRumor({ kind: 27663, created_at: NOW, tags: [['keep', K], ['status', 'active'], ['grant', GRANT]] }, K))
+      .toEqual({ keep: K, status: 'active', grant: GRANT, claim: false, at: NOW });
   });
 });

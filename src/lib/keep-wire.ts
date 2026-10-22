@@ -40,10 +40,13 @@ export const KEEP_MSG_CLAIM_KIND = 27660;
 export const KEEP_MSG_INVITE_KIND = 27661;
 export const KEEP_MSG_REVOKE_KIND = 27662;
 export const KEEP_MSG_ACK_KIND = 27663;
+/** K1e (provisional): the owner personas of a Keep. An update lists them; an accept comes from the persona being added. */
+export const KEEP_MSG_OWNERS_KIND = 27664;
+export const KEEP_MSG_ACCEPT_KIND = 27665;
 
 /** Ack `status` values, and the `reason` values that go with `refused`. */
-export const KEEP_ACK_STATUSES = ['paired', 'active', 'revoked', 'refused'] as const;
-export const KEEP_REFUSAL_REASONS = ['expired', 'expiry_too_long', 'revoked', 'full', 'conflict', 'malformed'] as const;
+export const KEEP_ACK_STATUSES = ['paired', 'active', 'revoked', 'refused', 'updated', 'pending'] as const;
+export const KEEP_REFUSAL_REASONS = ['expired', 'expiry_too_long', 'revoked', 'full', 'conflict', 'malformed', 'stale', 'too_many'] as const;
 
 /** Invite lifetimes (seconds): a personal invite 30 days, a guest pass 24 hours. */
 export const KEEP_PERSONAL_INVITE_S = 30 * 86400;
@@ -63,3 +66,22 @@ export const KEEP_ACK_FIRST_LOOKBACK_S = 3 * 86400;
 
 /** An unanswered invite or revoke is sent again, when the Keep's page opens, once its last send is older than this. */
 export const KEEP_RESEND_AFTER_S = 600;
+
+/** A claim says whether the Keep is for every persona of the account or just the one that claims. */
+export const KEEP_SCOPES = ['all', 'one'] as const;
+
+/** The only section defined so far; the Keep keeps unknown section names and ignores them. */
+export const KEEP_SECTION_GAMES = 'games';
+
+/** An owners update lists 1 to this many personas. */
+export const KEEP_MAX_OWNER_PERSONAS = 16;
+
+/**
+ * A persona's own games invite lasts this long. The contract says 365 days, and the Keep
+ * refuses an invite "more than 365 days ahead", so a phone clock a little ahead of the Keep's
+ * would trip it: one hour is taken off.
+ */
+export const KEEP_GAMES_INVITE_S = 365 * 86400 - 3600;
+
+/** A persona's games invite is renewed once less than this much of it is left. */
+export const KEEP_GAMES_RENEW_BEFORE_S = 30 * 86400;

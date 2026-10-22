@@ -1,10 +1,15 @@
 /**
- * The Keeps this account has claimed (K1d), one account-level list.
+ * The Keeps this account has claimed (K1d, K1e), one account-level list.
  *
  * A Keep is not tied to a persona's view: every record names the persona that
- * sent the claim (`claimedBy`) and the personas allowed to use it (`personas`,
- * for now always `[claimedBy]`). Invites and revokes for a Keep are signed by
- * `claimedBy`.
+ * sent the claim (`claimedBy`) and the owner personas linked to it (`personas`,
+ * with the state of each in `links`). Invites and revokes for a Keep are signed
+ * by an owner persona the Keep counts as active (see `keep-owners.ts`).
+ *
+ * K1e fields (`scope`, `rev`, `links`, `seen`, `update`) are added to the K1d
+ * record in place: a K1d record reads as scope `one`, revision 0, the claimer
+ * as its only owner persona. `personas` and every K1d field keep their shape, so
+ * an older build still reads a newer record.
  *
  * Stored as ONE encrypted `identity`-store row (see `db.ts`), so there is no
  * IndexedDB version change. The invite secrets in it are what lets someone
@@ -12,7 +17,11 @@
  * and the pure state changes; `keep-service.ts` does the sending.
  */
 import type { KeepAck, RefusalReason } from './keep-messages';
-import { KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S } from './keep-wire';
+import {
+  KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S, KEEP_SCOPES, KEEP_SECTION_GAMES,
+} from './keep-wire';
+
+export type KeepScope = typeof KEEP_SCOPES[number];
 
 export type InviteStatus = 'waiting' | 'active' | 'revoked' | 'refused';
 export type InviteKind = 'personal' | 'guest';
@@ -25,6 +34,8 @@ export interface StoredInvite {
   kind: InviteKind;
   /** The contact's persona (personal invite only). */
   persona?: string;
+  /** Set on an owner persona's own games invite (K1e): the owner persona it keeps in the game. Not a member's invite. */
+  gamesFor?: string;
   /** The contact's name, or a label for a guest pass. */
   label?: string;
   createdAt: number;
@@ -42,6 +53,39 @@ export interface StoredInvite {
   ackAt?: number;
 }
 
+/** One owner persona linked to a Keep (K1e). */
+export interface PersonaLink {
+  /** Sections switched on for this persona (`games`). Unknown names are kept. */
+  sections: string[];
+  /** The revision of the update that most recently added it; absent while that update is not made yet. */
+  addedRev?: number;
+  /** True once the Keep has said this persona accepted (the claimer always is, the claim being its acceptance). */
+  active: boolean;
+  /** Set while the persona's accept is outstanding. */
+  accept?: {
+    /** The update revision the accept answers. */
+    rev: number;
+    /** When it was last sent (0 = not yet), unix seconds. */
+    sentAt: number;
+    /** The Keep said `pending`: it has the accept but not the update that lists this persona. */
+    pending?: boolean;
+  };
+}
+
+/** An owners update on its way to the Keep (K1e), kept until the Keep acks it. */
+export interface PendingUpdate {
+  rev: number;
+  /** The owner persona that signs it. */
+  signer: string;
+  personas: Array<{ persona: string; sections: string[] }>;
+  /** When it was last sent (0 = not yet), unix seconds. */
+  sentAt: number;
+  /** True once a `refused stale` made us try again with a newer revision. */
+  retried?: boolean;
+  /** The Keep refused it for good (after the one retry on stale). */
+  failed?: 'stale' | 'too_many' | 'malformed';
+}
+
 export interface StoredKeep {
   /** The Keep's key, lowercase hex. */
   keep: string;
@@ -49,8 +93,18 @@ export interface StoredKeep {
   relays: string[];
   /** The persona that sent the claim. */
   claimedBy: string;
-  /** Personas allowed to use this Keep. Today always `[claimedBy]`. */
+  /** The owner personas linked to this Keep: the keys of `links`, claimer first. */
   personas: string[];
+  /** `all`: every persona of the account is linked, later ones too. `one`: just the claimer until linked by hand. */
+  scope: KeepScope;
+  /** The newest revision of the owners list the Keep is known to have (0 after a claim). */
+  rev: number;
+  /** State of each linked persona. */
+  links: Record<string, PersonaLink>;
+  /** For `all`: personas already linked or unlinked on purpose, so the auto-link does not link them again. */
+  seen: string[];
+  /** The owners update still unanswered, if any. */
+  update?: PendingUpdate;
   /** `pending` until the Keep's `paired` ack arrives. */
   status: 'pending' | 'paired';
   /** The one-time claim code; kept only until paired (a lost first claim can be sent again). */
@@ -84,6 +138,7 @@ function isInvite(v: unknown): v is StoredInvite {
     && typeof i.secret === 'string' && HEX64.test(i.secret)
     && (i.kind === 'personal' || i.kind === 'guest')
     && (i.persona === undefined || (typeof i.persona === 'string' && HEX64.test(i.persona)))
+    && (i.gamesFor === undefined || (typeof i.gamesFor === 'string' && HEX64.test(i.gamesFor)))
     && (i.label === undefined || typeof i.label === 'string')
     && Number.isSafeInteger(i.createdAt) && Number.isSafeInteger(i.expiration)
     && typeof i.status === 'string' && STATUSES.includes(i.status)
@@ -94,7 +149,47 @@ function isInvite(v: unknown): v is StoredInvite {
     && (i.ackAt === undefined || Number.isSafeInteger(i.ackAt));
 }
 
-function isKeep(v: unknown): v is StoredKeep {
+function isSections(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every(x => typeof x === 'string');
+}
+
+function isLink(v: unknown): v is PersonaLink {
+  if (!v || typeof v !== 'object') return false;
+  const l = v as Record<string, unknown>;
+  const a = l.accept as Record<string, unknown> | undefined;
+  return isSections(l.sections) && typeof l.active === 'boolean'
+    && (l.addedRev === undefined || Number.isSafeInteger(l.addedRev))
+    && (a === undefined || (!!a && typeof a === 'object' && Number.isSafeInteger(a.rev) && Number.isSafeInteger(a.sentAt)
+      && (a.pending === undefined || typeof a.pending === 'boolean')));
+}
+
+function isUpdate(v: unknown): v is PendingUpdate {
+  if (!v || typeof v !== 'object') return false;
+  const u = v as Record<string, unknown>;
+  return Number.isSafeInteger(u.rev) && typeof u.signer === 'string' && HEX64.test(u.signer)
+    && Array.isArray(u.personas) && u.personas.every(p => !!p && typeof p === 'object'
+      && typeof (p as Record<string, unknown>).persona === 'string' && HEX64.test((p as { persona: string }).persona)
+      && isSections((p as Record<string, unknown>).sections))
+    && Number.isSafeInteger(u.sentAt)
+    && (u.retried === undefined || typeof u.retried === 'boolean')
+    && (u.failed === undefined || u.failed === 'stale' || u.failed === 'too_many' || u.failed === 'malformed');
+}
+
+/** A record as stored, K1d or K1e: the K1d fields as before, and the K1e fields when present. */
+function isKeep(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false;
+  const k = v as Record<string, unknown>;
+  const links = k.links as Record<string, unknown> | undefined;
+  return (k.scope === undefined || (KEEP_SCOPES as readonly unknown[]).includes(k.scope))
+    && (k.rev === undefined || (Number.isSafeInteger(k.rev) && (k.rev as number) >= 0))
+    && (links === undefined || (!!links && typeof links === 'object' && !Array.isArray(links)
+      && Object.entries(links).every(([p, l]) => HEX64.test(p) && isLink(l))))
+    && (k.seen === undefined || (Array.isArray(k.seen) && k.seen.every(p => typeof p === 'string' && HEX64.test(p))))
+    && (k.update === undefined || isUpdate(k.update))
+    && isK1dKeep(v);
+}
+
+function isK1dKeep(v: unknown): boolean {
   if (!v || typeof v !== 'object') return false;
   const k = v as Record<string, unknown>;
   return typeof k.keep === 'string' && HEX64.test(k.keep)
@@ -109,23 +204,46 @@ function isKeep(v: unknown): v is StoredKeep {
     && Array.isArray(k.invites) && k.invites.every(isInvite);
 }
 
-/** The stored list, or null when it is not a well-formed list. */
+/**
+ * A stored record with the K1e fields filled in. A K1d record has none: it is a Keep for
+ * one persona (`one`), at revision 0, with the claimer as its only owner persona, active
+ * (the claim being its acceptance). Nothing else changes, so it is saved in this shape the
+ * next time the list is written.
+ */
+function migrateKeep(raw: Record<string, unknown>): StoredKeep {
+  const k = raw as unknown as StoredKeep;
+  const claimer: PersonaLink = { sections: [KEEP_SECTION_GAMES], addedRev: 0, active: true };
+  const links: Record<string, PersonaLink> = raw.links ? (raw.links as Record<string, PersonaLink>) : { [k.claimedBy]: claimer };
+  return {
+    ...k,
+    scope: (KEEP_SCOPES as readonly unknown[]).includes(raw.scope) ? raw.scope as KeepScope : 'one',
+    rev: Number.isSafeInteger(raw.rev) ? raw.rev as number : 0,
+    links,
+    personas: Object.keys(links),
+    seen: Array.isArray(raw.seen) ? raw.seen as string[] : [k.claimedBy],
+  };
+}
+
+/** The stored list (K1d records migrated in memory), or null when it is not a well-formed list. */
 export function parseStoredKeeps(raw: unknown): StoredKeep[] | null {
   if (!Array.isArray(raw)) return null;
   const seen = new Set<string>();
   for (const k of raw) {
-    if (!isKeep(k) || seen.has(k.keep)) return null;
-    seen.add(k.keep);
+    if (!isKeep(k) || seen.has((k as { keep: string }).keep)) return null;
+    seen.add((k as { keep: string }).keep);
   }
-  return raw as StoredKeep[];
+  return (raw as Array<Record<string, unknown>>).map(migrateKeep);
 }
 
 export function newPendingKeep(a: {
-  keep: string; name: string; relays: string[]; claimedBy: string; code: string; now: number;
+  keep: string; name: string; relays: string[]; claimedBy: string; code: string; now: number; scope?: KeepScope;
 }): StoredKeep {
   return {
     keep: a.keep, name: a.name, relays: [...a.relays], claimedBy: a.claimedBy,
-    personas: [a.claimedBy], status: 'pending', code: a.code, claimedAt: a.now, invites: [],
+    personas: [a.claimedBy], scope: a.scope ?? 'one', rev: 0,
+    links: { [a.claimedBy]: { sections: [KEEP_SECTION_GAMES], addedRev: 0, active: true } },
+    seen: [a.claimedBy],
+    status: 'pending', code: a.code, claimedAt: a.now, invites: [],
   };
 }
 
@@ -134,9 +252,21 @@ export function newPendingKeep(a: {
  * to `pending` with the new code, relays and name. Its invites stay; the acks
  * decide what the Keep still knows of them.
  */
-export function repairKeep(keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number }): StoredKeep {
-  const { ackCursor: _cursor, ...rest } = keep; // a new pairing reads acks afresh
-  return { ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now };
+export function repairKeep(
+  keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number; scope?: KeepScope },
+): StoredKeep {
+  const { ackCursor: _cursor, update: _update, ...rest } = keep; // a new pairing reads acks afresh
+  // A reset Keep has forgotten its owners list: back to the claimer alone at revision 0, to be linked again.
+  // The owner personas' own games invites may be gone from the box too: send them again (a repeat is harmless).
+  return {
+    ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now,
+    scope: a.scope ?? keep.scope, rev: 0,
+    personas: [keep.claimedBy],
+    links: { [keep.claimedBy]: { sections: keep.links[keep.claimedBy]?.sections ?? [KEEP_SECTION_GAMES], addedRev: 0, active: true } },
+    seen: [keep.claimedBy],
+    invites: keep.invites.map(i => (i.gamesFor && i.status !== 'revoked' && i.status !== 'refused' && !i.revokeSent
+      ? { ...i, status: 'waiting' as const, sentAt: 0 } : i)),
+  };
 }
 
 /** Where a read of the acks for these Keeps (one owner persona) starts: before the oldest cursor. */
@@ -252,6 +382,8 @@ const REASONS: Record<RefusalReason, string> = {
   full: 'the Keep is full',
   conflict: 'it clashed with an earlier invite',
   malformed: 'the Keep could not read it',
+  stale: 'the Keep already has a newer list',
+  too_many: 'there were too many personas',
 };
 
 export function refusalText(reason: RefusalReason | undefined): string {

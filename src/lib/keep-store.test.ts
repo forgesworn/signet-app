@@ -101,3 +101,53 @@ describe('labels', () => {
     expect(inviteStatusLabel(k.invites[0])).toMatch(/waiting for the Keep/i);
   });
 });
+
+describe('K1d records read as K1e', () => {
+  const k1d = () => {
+    const { scope: _s, rev: _r, links: _l, seen: _e, ...rest } = paired();
+    return JSON.parse(JSON.stringify(rest));
+  };
+
+  it('become scope one, revision 0, with the claimer as the only active owner persona', () => {
+    const [k] = parseStoredKeeps([k1d()])!;
+    expect(k).toMatchObject({ scope: 'one', rev: 0, personas: [O], seen: [O] });
+    expect(k.links).toEqual({ [O]: { sections: ['games'], addedRev: 0, active: true } });
+    expect(k.update).toBeUndefined();
+  });
+
+  it('keep every K1d field, invites included', () => {
+    const old = { ...k1d(), invites: [invite()] };
+    expect(parseStoredKeeps([old])![0]).toMatchObject({ keep: K, name: 'Home', claimedBy: O, status: 'paired', invites: [invite()] });
+  });
+
+  it('a K1e record round-trips unchanged', () => {
+    const list = [withInvite(paired(), invite({ gamesFor: O }))];
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify(list)))).toEqual(list);
+  });
+
+  it('is refused whole when a K1e field is bad (never read as empty)', () => {
+    expect(parseStoredKeeps([{ ...paired(), scope: 'some' }])).toBeNull();
+    expect(parseStoredKeeps([{ ...paired(), rev: -1 }])).toBeNull();
+    expect(parseStoredKeeps([{ ...paired(), links: { x: { sections: [], active: true } } }])).toBeNull();
+    expect(parseStoredKeeps([{ ...paired(), links: { [O]: { sections: [1], active: true } } }])).toBeNull();
+    expect(parseStoredKeeps([{ ...paired(), update: { rev: 1 } }])).toBeNull();
+    expect(parseStoredKeeps([withInvite(paired(), invite({ gamesFor: 'x' }))])).toBeNull();
+  });
+
+  it('a new pending Keep carries the scope it was claimed with', () => {
+    const k = newPendingKeep({ keep: K, name: 'H', relays: ['wss://a.example'], claimedBy: O, code: '33'.repeat(16), now: 1, scope: 'all' });
+    expect(k).toMatchObject({ scope: 'all', rev: 0, personas: [O] });
+  });
+
+  it('pairing again goes back to the claimer alone at revision 0 and sends its games invites again', () => {
+    const base = { ...paired(), scope: 'all' as const, rev: 4, update: { rev: 4, signer: O, personas: [], sentAt: 1 } };
+    const B = 'ee'.repeat(32);
+    const withB = { ...base, personas: [O, B], links: { ...base.links, [B]: { sections: ['games'], active: true } } };
+    const kept = withInvite(withB, invite({ gamesFor: O, status: 'active', ackAt: 9 }));
+    const again = repairKeep(kept, { name: 'N', relays: ['wss://z.example'], code: '44'.repeat(16), now: 99, scope: 'one' });
+    expect(again).toMatchObject({ status: 'pending', scope: 'one', rev: 0, personas: [O], seen: [O] });
+    expect(again.update).toBeUndefined();
+    expect(Object.keys(again.links)).toEqual([O]);
+    expect(again.invites[0]).toMatchObject({ gamesFor: O, status: 'waiting', sentAt: 0 });
+  });
+});

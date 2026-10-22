@@ -21,8 +21,9 @@ import { giftWrap } from './relay-publish';
 import { sanitizeDisplayName } from './text-sanitize';
 import type { DecryptingSigningBackend } from './signing-backend';
 import {
-  KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MSG_ACK_KIND, KEEP_MSG_CLAIM_KIND,
-  KEEP_MSG_INVITE_KIND, KEEP_MSG_REVOKE_KIND, KEEP_REFUSAL_REASONS, KEEP_WRAP_JITTER_S,
+  KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MAX_OWNER_PERSONAS, KEEP_MSG_ACCEPT_KIND, KEEP_MSG_ACK_KIND,
+  KEEP_MSG_CLAIM_KIND, KEEP_MSG_INVITE_KIND, KEEP_MSG_OWNERS_KIND, KEEP_MSG_REVOKE_KIND, KEEP_REFUSAL_REASONS,
+  KEEP_SCOPES, KEEP_WRAP_JITTER_S,
 } from './keep-wire';
 
 export type AckStatus = typeof KEEP_ACK_STATUSES[number];
@@ -49,8 +50,40 @@ function rumorTemplate(backend: DecryptingSigningBackend, kind: number, tags: st
   return { kind, pubkey: backend.activePublicKeyHex, created_at: now, tags, content: '' };
 }
 
-export function claimRumor(backend: DecryptingSigningBackend, keep: string, code: string, now: number): UnsignedEvent {
-  return rumorTemplate(backend, KEEP_MSG_CLAIM_KIND, [['keep', keep], ['code', code]], now);
+/** `scope` (K1e) says whether the Keep is for all of the owner's personas or one; left out, the Keep reads `one`. */
+export function claimRumor(
+  backend: DecryptingSigningBackend, keep: string, code: string, now: number, scope?: typeof KEEP_SCOPES[number],
+): UnsignedEvent {
+  return rumorTemplate(backend, KEEP_MSG_CLAIM_KIND, [['keep', keep], ['code', code], ...(scope ? [['scope', scope]] : [])], now);
+}
+
+export interface OwnerPersonaSpec {
+  persona: string;
+  /** Section names switched on for the persona (`games`). */
+  sections: readonly string[];
+}
+
+const SECTION_NAME = /^[a-z0-9_-]{1,32}$/;
+
+/** An owners update (K1e): the revision and one `persona` tag per owner persona, 1 to 16, no duplicates. */
+export function ownersUpdateRumor(
+  backend: DecryptingSigningBackend, keep: string, rev: number, personas: readonly OwnerPersonaSpec[], now: number,
+): UnsignedEvent {
+  if (!HEX64.test(keep) || !Number.isSafeInteger(rev) || rev < 1) throw new Error('Invalid update');
+  if (personas.length < 1 || personas.length > KEEP_MAX_OWNER_PERSONAS) throw new Error('Invalid update');
+  if (new Set(personas.map(p => p.persona)).size !== personas.length) throw new Error('Invalid update');
+  const tags: string[][] = [['keep', keep], ['rev', String(rev)]];
+  for (const p of personas) {
+    if (!HEX64.test(p.persona) || !p.sections.every(x => SECTION_NAME.test(x))) throw new Error('Invalid update');
+    tags.push(['persona', p.persona, ...p.sections]);
+  }
+  return rumorTemplate(backend, KEEP_MSG_OWNERS_KIND, tags, now);
+}
+
+/** "I agree to be an owner persona of this Keep, as listed in update `rev`" (K1e), signed by the persona being added. */
+export function ownerAcceptRumor(backend: DecryptingSigningBackend, keep: string, rev: number, now: number): UnsignedEvent {
+  if (!HEX64.test(keep) || !Number.isSafeInteger(rev) || rev < 1) throw new Error('Invalid accept');
+  return rumorTemplate(backend, KEEP_MSG_ACCEPT_KIND, [['keep', keep], ['rev', String(rev)]], now);
 }
 
 /** Exactly one of `persona` / `guest`; `label` loses control and bidi characters and is cut to the contract's 40. */
@@ -89,6 +122,16 @@ export interface KeepAck {
   reason?: RefusalReason;
   /** The rumor's real time. */
   at: number;
+  /**
+   * True for the ack of an owners update or an owner accept (K1e): `updated`, `pending`, or
+   * a refusal that names neither a grant nor a claim. It is sent to the persona that signed
+   * the message it answers, which is `to`.
+   */
+  owners?: boolean;
+  /** The Keep's revision (K1e): the new one on `updated`, the current one on `pending` and `refused stale`. */
+  rev?: number;
+  /** The persona the wrap was addressed to (set when opened, on owners acks). */
+  to?: string;
 }
 
 function single(tags: string[][], name: string): string[] | null {
@@ -115,6 +158,20 @@ export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_a
   const grantTag = single(tags, 'grant');
   const claimTag = single(tags, 'claim');
   const grant = grantTag?.[1];
+  // K1e: the acks of an owners update / owner accept carry a revision and no grant or claim.
+  const revText = single(tags, 'rev')?.[1];
+  const rev = revText !== undefined && /^(0|[1-9]\d{0,15})$/.test(revText) ? Number(revText) : undefined;
+  if (!Number.isSafeInteger(rumor.created_at)) return null;
+  if (status === 'updated' || status === 'pending') {
+    if (rev === undefined || claimTag) return null;
+    return { keep, status, claim: false, owners: true, rev, at: rumor.created_at };
+  }
+  if (status === 'refused' && !grantTag && !claimTag) {
+    const r = single(tags, 'reason')?.[1];
+    if (!r || !(KEEP_REFUSAL_REASONS as readonly string[]).includes(r)) return null;
+    if (r === 'stale' && rev === undefined) return null;
+    return { keep, status, claim: false, owners: true, reason: r as RefusalReason, at: rumor.created_at, ...(rev !== undefined ? { rev } : {}) };
+  }
   if (status === 'paired') {
     if (!claimTag) return null;
   } else {
@@ -127,7 +184,6 @@ export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_a
     if (!r || !(KEEP_REFUSAL_REASONS as readonly string[]).includes(r)) return null;
     reason = r as RefusalReason;
   }
-  if (!Number.isSafeInteger(rumor.created_at)) return null;
   return {
     keep, status, claim: status === 'paired', at: rumor.created_at,
     ...(status === 'paired' ? {} : { grant }),
@@ -156,7 +212,8 @@ export async function unwrapKeepAck(
     const rumor = rumorJson as unknown as NostrEvent;
     if (rumor.pubkey !== seal.pubkey) return null;
     if (typeof rumor.id === 'string' && rumor.id !== getEventHash({ ...rumor, tags: rumor.tags } as Parameters<typeof getEventHash>[0])) return null;
-    return parseAckRumor(rumor, seal.pubkey);
+    const ack = parseAckRumor(rumor, seal.pubkey);
+    return ack && ack.owners ? { ...ack, to: backend.activePublicKeyHex } : ack;
   } catch {
     return null;
   }
