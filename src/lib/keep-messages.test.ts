@@ -264,7 +264,9 @@ describe('K1e messages', () => {
     expect(ownersUpdateRumor(owner, K, top, [{ persona: O, sections: [] }], NOW).tags[1]).toEqual(['rev', String(top)]);
     expect(() => ownersUpdateRumor(owner, K, top * 2, [{ persona: O, sections: [] }], NOW)).toThrow();
     expect(() => ownerAcceptRumor(owner, K, top * 2, NOW)).toThrow();
-    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', String(top - 1)]]), owner, keeps)).toMatchObject({ rev: top - 1 });
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', String(top - 2)]]), owner, keeps)).toMatchObject({ rev: top - 2 });
+    // One more and the next revision would not be a safe integer, which the stored row requires.
+    expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', String(top - 1)]]), owner, keeps)).toBeNull();
     expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', String(top)]]), owner, keeps)).toBeNull();
     expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '9999999999999999']]), owner, keeps)).toBeNull();
   });

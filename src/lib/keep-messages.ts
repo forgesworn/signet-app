@@ -160,8 +160,9 @@ export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_a
   const grant = grantTag?.[1];
   // K1e: the acks of an owners update / owner accept carry a revision and no grant or claim.
   const revText = single(tags, 'rev')?.[1];
-  // A revision the next one cannot follow (the Keep stops at 2^53) is not believed.
-  const rev = revText !== undefined && /^(0|[1-9]\d{0,15})$/.test(revText) && Number(revText) < KEEP_MAX_REV ? Number(revText) : undefined;
+  // A revision the next one cannot follow is not believed. The Keep stops at 2^53, but this app stores a revision as a
+  // safe integer (at most 2^53 - 1), so the next one after an ack must still be one: an ack may say up to 2^53 - 2.
+  const rev = revText !== undefined && /^(0|[1-9]\d{0,15})$/.test(revText) && Number(revText) < Number.MAX_SAFE_INTEGER ? Number(revText) : undefined;
   if (!Number.isSafeInteger(rumor.created_at)) return null;
   if (status === 'updated' || status === 'pending') {
     if (rev === undefined || claimTag) return null;
