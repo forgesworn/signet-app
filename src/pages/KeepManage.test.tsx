@@ -173,11 +173,13 @@ describe('a claimed Keep', () => {
     renderKeep();
     fireEvent.click(await screen.findByTestId('stored-keep-row'));
     await screen.findByRole('heading', { name: 'Games' });
-    await waitFor(() => expect(published).toHaveLength(1));
+    // The page also asks the Keep for its return passes (27668), once.
+    await waitFor(() => expect(published).toHaveLength(2));
     await new Promise(r => setTimeout(r, 50));
-    expect(published).toHaveLength(1);
-    expect(lastRumor().kind).toBe(27661);
-    expect(lastRumor().tags).toContainEqual(['grant', '11'.repeat(16)]);
+    expect(published).toHaveLength(2);
+    const sent = published.map(w => unwrapEvent(w as never, KEEP_SK));
+    expect(sent.map(r => r.kind)).toEqual([27661, 27668]);
+    expect(sent[0].tags).toContainEqual(['grant', '11'.repeat(16)]);
   });
 
   it('puts the members\' invites under a Games heading, after Linked personas, and builds no Backups section', async () => {
@@ -436,8 +438,8 @@ describe('personas (K1e)', () => {
     expect(within(usedBy).getByRole('switch', { name: 'Anon' })).toBeChecked();
     expect(bob).toBeChecked();
     fireEvent.click(bob);
-    await waitFor(() => expect(kindsPublished()).toEqual([27664, 27662]));
-    const revoke = unwrapEvent(published[1] as never, KEEP_SK);
+    await waitFor(() => expect(kindsPublished()).toEqual([27668, 27664, 27662]));
+    const revoke = unwrapEvent(published[2] as never, KEEP_SK);
     expect(revoke.tags).toEqual([['keep', K], ['grant', '0b'.repeat(16)]]);
     await waitFor(() => expect(within(screen.getByTestId('used-by')).getByRole('switch', { name: 'Bob' })).not.toBeChecked());
   });
@@ -484,5 +486,129 @@ describe('personas (K1e)', () => {
     expect(within(section).getByRole('alert')).toHaveTextContent('did not take the change');
     fireEvent.click(within(section).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(kindsPublished()).toContain(27664));
+  });
+});
+
+describe('return passes (K1f)', () => {
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const PLAYER_A = getPublicKey(hexToBytes('0'.repeat(63) + '5'));
+  const PLAYER_B = getPublicKey(hexToBytes('0'.repeat(63) + '6'));
+  const G_FRIEND = '01'.repeat(16);
+  const G_SEAT = '02'.repeat(16);
+  const G_BARE = '03'.repeat(16);
+  const pass = (grant: string, persona: string, over: object = {}) => ({
+    grant, persona, state: 'active', expiration: nowS() + 20 * 86400, seenAt: nowS() - 2 * 86400, via: 'code', reportAt: nowS() - 86400, ...over,
+  });
+  const withPasses = (passes: object[], over: object = {}) => [pairedKeep({ passes, ...over })];
+  const kindsPublished = () => published.map(w => unwrapEvent(w as never, KEEP_SK).kind);
+  const open = async () => {
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    return screen.findByTestId('returning-players');
+  };
+
+  it('lists a returning player under Who can play: the contact\'s name, else the seat name, else a short npub; Active, expiry, last seen', async () => {
+    row = withPasses([
+      pass(G_FRIEND, FRIEND, { name: 'Seat name' }),
+      pass(G_SEAT, PLAYER_A, { name: 'Seat name', seenAt: nowS() - 5 * 86400 }),
+      pass(G_BARE, PLAYER_B, { seenAt: nowS() - 7200 }),
+    ]);
+    renderKeep();
+    const block = await open();
+    const rows = within(block).getAllByTestId('pass-row');
+    expect(rows).toHaveLength(3);
+    // Most recently seen first: PLAYER_B (2 hours ago, no name: short npub), then FRIEND (2 days: the contact Dave wins over
+    // the seat name the Keep saw), then PLAYER_A (5 days: the seat name).
+    const names = rows.map(r => r.firstElementChild!.textContent);
+    expect(names).toEqual([expect.stringMatching(/^npub1[0-9a-z]+…[0-9a-z]{6}$/), 'Dave', 'Seat name']);
+    expect(rows[0]).toHaveTextContent('Last seen 2 hours ago');
+    expect(rows[1]).toHaveTextContent('Active');
+    expect(rows[1]).toHaveTextContent(/Expires \d/);
+    expect(rows[1]).toHaveTextContent('Last seen 2 days ago');
+    expect(rows[2]).toHaveTextContent('Last seen 5 days ago');
+    // it is part of the Who can play block, below the invites
+    const who = screen.getByText('Who can play');
+    expect(who.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(block.closest('section')).toBe(who.closest('section'));
+  });
+
+  it('does not list revoked or expired passes, and says so when there is no one', async () => {
+    row = withPasses([
+      pass(G_FRIEND, FRIEND, { state: 'revoked' }),
+      pass(G_SEAT, PLAYER_A, { state: 'expired' }),
+      pass(G_BARE, PLAYER_B, { expiration: nowS() - 10 }),
+    ]);
+    renderKeep();
+    const block = await open();
+    expect(within(block).queryAllByTestId('pass-row')).toHaveLength(0);
+    expect(block).toHaveTextContent('No one has come back yet.');
+  });
+
+  it('Revoke asks first; Cancel sends nothing; Confirm sends the revoke with the pass grant and shows Revoking', async () => {
+    row = withPasses([pass(G_FRIEND, FRIEND)]);
+    renderKeep();
+    const block = await open();
+    await waitFor(() => expect(kindsPublished()).toEqual([27668])); // opening asked for the passes
+    fireEvent.click(within(block).getByRole('button', { name: 'Revoke' }));
+    expect(within(block).getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole('button', { name: 'Cancel' }));
+    expect(within(block).getByRole('button', { name: 'Revoke' })).toBeInTheDocument();
+    expect(kindsPublished()).toEqual([27668]);
+
+    fireEvent.click(within(block).getByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(block).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(kindsPublished()).toEqual([27668, 27662]));
+    expect(unwrapEvent(published[1] as never, KEEP_SK).tags).toEqual([['keep', K], ['grant', G_FRIEND]]);
+    await waitFor(() => expect(within(block).getByTestId('pass-row')).toHaveTextContent('Revoking, waiting for the Keep'));
+    expect(within(block).getByRole('button', { name: 'Send revoke again' })).toBeInTheDocument();
+    expect((row as Array<{ passes: Array<{ revokeSent?: boolean }> }>)[0].passes[0].revokeSent).toBe(true);
+  });
+
+  it('the Return passes switch is on by default with nothing under it, and the page asks the Keep for its passes', async () => {
+    row = withPasses([]);
+    renderKeep();
+    const block = await open();
+    expect(within(block).getByRole('switch', { name: 'Return passes' })).toBeChecked();
+    expect(within(block).getByTestId('return-passes')).not.toHaveTextContent('Waiting');
+    await waitFor(() => expect(kindsPublished()).toEqual([27668]));
+    expect(unwrapEvent(published[0] as never, KEEP_SK).tags).toEqual([['keep', K]]);
+  });
+
+  it('turning it off sends 27666, shows Waiting for the Keep, and says what off means', async () => {
+    row = withPasses([]);
+    renderKeep();
+    const block = await open();
+    fireEvent.click(within(block).getByRole('switch', { name: 'Return passes' }));
+    await waitFor(() => expect(kindsPublished()).toContain(27666));
+    const rumor = unwrapEvent(published.find(w => unwrapEvent(w as never, KEEP_SK).kind === 27666) as never, KEEP_SK);
+    expect(rumor.tags).toEqual([['keep', K], ['setrev', '1'], ['return_passes', 'off']]);
+    await waitFor(() => expect(within(block).getByRole('switch', { name: 'Return passes' })).not.toBeChecked());
+    expect(within(block).getByTestId('return-passes')).toHaveTextContent('Waiting for the Keep');
+  });
+
+  it('says "This Keep can’t do this yet" when the Keep has not answered after the resend window', async () => {
+    const long = nowS() - 3600;
+    row = withPasses([], { settings: { returnPasses: false, setrev: 1, composedAt: long, sentAt: nowS(), confirmed: false } });
+    renderKeep();
+    const block = await open();
+    expect(within(block).getByTestId('return-passes')).toHaveTextContent('This Keep can’t do this yet');
+    expect(within(block).getByRole('switch', { name: 'Return passes' })).not.toBeChecked();
+  });
+
+  it('shows nothing under the switch once the Keep has it', async () => {
+    row = withPasses([], { settings: { returnPasses: false, setrev: 1, composedAt: nowS() - 3600, sentAt: nowS() - 3600, confirmed: true } });
+    renderKeep();
+    const block = await open();
+    const sw = within(block).getByTestId('return-passes');
+    expect(sw).not.toHaveTextContent('Waiting');
+    expect(sw).not.toHaveTextContent('can’t do this yet');
+    expect(sw).toHaveTextContent('Existing passes keep working');
+  });
+
+  it('is not offered to a persona that is not an owner of the Keep', async () => {
+    row = withPasses([pass(G_FRIEND, FRIEND)]);
+    renderKeep(host({ activePersona: { pubkey: BOB, name: 'Bob' }, personaNames: { [O]: 'Anon', [BOB]: 'Bob' } }));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    await screen.findByTestId('not-linked');
+    expect(screen.queryByTestId('returning-players')).toBeNull();
   });
 });

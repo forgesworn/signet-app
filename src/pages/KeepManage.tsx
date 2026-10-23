@@ -12,15 +12,17 @@ import type { EffectiveContact } from '../types';
 import { parseKeepPairLink, type KeepPairLink } from '../lib/keep-link';
 import {
   NotAnOwnerError, OwnerChangeRefusedError, PersonaNotAvailableError, ackPersonas, catchUp, changeOwners, claimKeep, createInvite,
-  forgetKeep, keepShareLink, loadStoredKeeps, resendClaim, resendInvite, retryGamesInvite, revokeInvite, watchAcks,
+  forgetKeep, keepShareLink, loadStoredKeeps, openKeep, resendClaim, resendInvite, retryGamesInvite, revokeInvite, revokePass,
+  setReturnPasses, watchAcks,
   type KeepDeps, type OwnerChange,
 } from '../lib/keep-service';
 import {
-  KEEPS_UNREADABLE_TEXT, KeepsUnreadableError, inviteStatusLabel, isExpired, refusalText, type KeepScope, type StoredInvite, type StoredKeep,
+  KEEPS_UNREADABLE_TEXT, KeepsUnreadableError, inviteStatusLabel, isExpired, passStatusLabel, refusalText, returnPassesLabel,
+  returnPassesOn, returningPlayers, type KeepScope, type StoredInvite, type StoredKeep, type StoredPass,
 } from '../lib/keep-store';
 import { canUnlink, gamesOn, gamesState, isActiveOwner, isLinked, playInvite, scopeLabel, updateFailedText } from '../lib/keep-owners';
 import { KEEP_MAX_OWNER_PERSONAS } from '../lib/keep-wire';
-import { inviteCandidates } from '../lib/keep-personas';
+import { inviteCandidates, passPlayerName } from '../lib/keep-personas';
 import { shareInviteLink } from '../lib/keep-share';
 import { relayHostLabel } from '../lib/relay-url';
 
@@ -74,6 +76,15 @@ export function expiryText(expiration: number, now: number): string {
   const hours = Math.max(1, Math.round((expiration - now) / 3600));
   if (hours <= 48) return `Expires in ${hours} hour${hours === 1 ? '' : 's'}`;
   return `Expires ${new Date(expiration * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
+}
+
+/** "Last seen just now / 3 hours ago / 2 days ago / on 4 Oct", from unix seconds. */
+export function seenText(seenAt: number, now: number): string {
+  const ago = now - seenAt;
+  if (ago < 3600) return 'Last seen just now';
+  if (ago < 86400) { const h = Math.floor(ago / 3600); return `Last seen ${h} hour${h === 1 ? '' : 's'} ago`; }
+  if (ago < 14 * 86400) { const d = Math.floor(ago / 86400); return `Last seen ${d} day${d === 1 ? '' : 's'} ago`; }
+  return `Last seen ${new Date(seenAt * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`;
 }
 
 /** The stored Keeps, kept fresh: loaded on open, caught up on acks, then live while mounted. */
@@ -288,6 +299,38 @@ function InviteRow({ invite, now, busy, onShare, onRevoke, onResend }: {
   );
 }
 
+function PassRow({ pass, title, now, busy, onRevoke }: {
+  pass: StoredPass; title: string; now: number; busy: boolean; onRevoke: (p: StoredPass) => void;
+}) {
+  // Revoke asks first, in place, as the other destructive actions of the app do.
+  const [confirming, setConfirming] = useState(false);
+  const status = passStatusLabel(pass, now);
+  return (
+    <div data-testid="pass-row" style={{ padding: '12px 0', borderTop: '1px solid var(--border)' }}>
+      <div style={{ fontWeight: 600, fontSize: '0.95rem', overflowWrap: 'anywhere' }}>{title}</div>
+      <div style={{ fontSize: '0.85rem', color: status === 'Active' ? 'var(--success)' : 'var(--text-secondary)', fontWeight: 500 }}>{status}</div>
+      <div style={muted}>{expiryText(pass.expiration, now)}</div>
+      <div style={muted}>{seenText(pass.seenAt, now)}</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        {!confirming ? (
+          <button className="btn btn-ghost" disabled={busy} onClick={() => (pass.revokeSent ? onRevoke(pass) : setConfirming(true))}
+            style={{ ...smallBtn, color: 'var(--danger)' }}>
+            {pass.revokeSent ? 'Send revoke again' : 'Revoke'}
+          </button>
+        ) : (
+          <>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => { setConfirming(false); onRevoke(pass); }}
+              style={{ ...smallBtn, color: '#fff', background: 'var(--danger)' }}>
+              Confirm
+            </button>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => setConfirming(false)} style={smallBtn}>Cancel</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SwitchRow({ label, sub, checked, disabled, onChange, testId }: {
   label: string; sub?: string; checked: boolean; disabled: boolean; onChange: (on: boolean) => void; testId?: string;
 }) {
@@ -328,10 +371,10 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
     return () => clearInterval(t);
   }, []);
 
-  // Opening the Keep reads its acks again and sends again what it has not answered.
+  // Opening the Keep reads its acks again, sends again what it has not answered, and asks it for its return passes.
   useEffect(() => {
     let cancelled = false;
-    catchUp(host.deps).then(list => { if (!cancelled) setKeeps(list); }, () => undefined);
+    openKeep(host.deps, keep.keep).then(list => { if (!cancelled) setKeeps(list); }, () => undefined);
     return () => { cancelled = true; };
     // Once per Keep opened; `host.deps` is a fresh object each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,6 +429,8 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
   const candidates = picking && host.contacts && actor ? inviteCandidates(host.contacts, actor.pubkey) : [];
   // The owner personas' own games invites are managed by Used by, not listed as invites for members.
   const invites = keep.invites.filter(i => !i.gamesFor).sort((a, b) => b.createdAt - a.createdAt);
+  const players = returningPlayers(keep, now);
+  const passesLabel = returnPassesLabel(keep, now);
   const failedText = updateFailedText(keep.update);
   const linkableCount = keep.personas.length;
   const mine = actor && isLinked(keep, actor.pubkey);
@@ -565,6 +610,28 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
                   }); }}
                 />
               ))}
+
+              <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }} data-testid="returning-players">
+                <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Returning players</div>
+                <p style={{ ...muted, margin: '0 0 4px' }}>People who joined with the room code and can come back.</p>
+                <SwitchRow
+                  testId="return-passes" label="Return passes" checked={returnPassesOn(keep)} disabled={busy}
+                  sub={passesLabel ?? (returnPassesOn(keep) ? undefined : 'New players won’t get a pass. Existing passes keep working until they expire.')}
+                  onChange={on => { void run(async () => { setKeeps(await setReturnPasses(host.deps, keep.keep, actor!.pubkey, on)); }); }}
+                />
+                {players.length === 0 && <p style={{ ...muted, margin: '10px 0 0' }}>No one has come back yet.</p>}
+                {players.map(pass => (
+                  <PassRow
+                    key={pass.grant} pass={pass} now={now} busy={busy}
+                    title={passPlayerName(host.contacts, actor!.pubkey, pass.persona, pass.name)}
+                    onRevoke={p => { void run(async () => {
+                      const sent = await revokePass(host.deps, keep.keep, p.grant, actor?.pubkey);
+                      await reload();
+                      setMessage(sent ? 'Revoke sent. It applies as soon as the Keep is online.' : 'Couldn’t reach the Keep yet. It will apply when you send it again.');
+                    }); }}
+                  />
+                ))}
+              </div>
             </div>
           </section>
         </>
