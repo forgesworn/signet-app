@@ -62,6 +62,7 @@ import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
 import { useContactInviteMailboxes } from './hooks/useContactInviteMailboxes';
 import { PrivateVaultStatus } from './components/PrivateVaultStatus';
+import { relayListWithDisabled } from './lib/relay-disable';
 import { toWire as profilesChangeWire } from './lib/personas-sync';
 import { toSyncWire as dependantChangeWire } from './lib/dependants-sync';
 import { usePrivateVaults, legacyVaultWriteAllowed, type PrivateVaultHealth } from './hooks/usePrivateVaults';
@@ -10572,8 +10573,15 @@ export function App() {
   // render site below, so the user sees it regardless of which page they're
   // on when the new SW lands. Sync banners are informational, so they sit
   // below signer status.
+  // Same edit as the "Enabled" checkbox in Advanced settings: the relay stays in the list.
+  const disableVaultRelay = (url: string) => {
+    const next = relayListWithDisabled(preferences, url);
+    if (next) void setRelays(next);
+  };
   const privateVaultBanner = !isPairedChild && encryptionKey ? <PrivateVaultStatus key={privateVaultSession}
     onRotate={privateVaultSupported && !activeDependant && supportsPrivateVaultRotationLock() ? rotatePrivateBackup : undefined}
+    onDisableRelay={disableVaultRelay}
+    canDisableRelay={url => relayListWithDisabled(preferences, url) !== null}
     health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;

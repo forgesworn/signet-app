@@ -298,7 +298,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
       <div className="card section">
         <div className="section-title">Relays</div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-          The app publishes to every enabled relay with write on, and reads from every enabled relay with read on. The first enabled write relay is your primary (used for pairing codes and remote signing). A sign-in started by another app replies on the relay that app requested.
+          The app publishes to every enabled relay with write on, and reads from every enabled relay with read on. The first enabled write relay is your primary (used for pairing codes and remote signing). A sign-in started by another app replies on the relay that app requested. Private backups use only relays with write on.
         </p>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 8 }}>
           Move relays up or down to choose your preferred primary. Changes are saved automatically. App connection shows a socket currently in use; a reachability check is a separate snapshot. A reachable relay can still reject publishing.

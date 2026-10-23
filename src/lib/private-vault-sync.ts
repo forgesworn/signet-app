@@ -40,6 +40,10 @@ export type PrivateVaultSyncResult = {
   confirmedRelays?: string[];
   /** On `verified`: vaultContentHash of the local snapshot that was verified. */
   revision?: string;
+  /** On `unavailable`: the write relays that did not answer, when the protocol named them. */
+  failedRelays?: string[];
+  /** On `unavailable`: the relays holding this device's stored confirmed copy, when it has one. */
+  heldOn?: string[];
   /**
    * This cycle prepared and sent a snapshot (a first backup or a changed one),
    * rather than finding the relay copy already verified. The status line's
@@ -92,6 +96,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
   let canonical = false;
   let merged = false;
   const backends = new Map<number, DecryptingSigningBackend>();
+  let heldOn: string[] = [];
   const current = () => { if (!args.isCurrent()) throw new Error('Vault session changed'); };
   try {
     current();
@@ -109,6 +114,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
       backends.set(rotation, backend);
       let state = await loadVaultBackup(backend.activePublicKeyHex, args.encryptionKey);
       canonical ||= !!state.confirmed;
+      if (state.confirmed) heldOn = state.confirmed.relays; // a probe of an unconfirmed successor must not clear it
       const next = state.pending?.manifest.nextRotation;
       if (next !== undefined && state.pending) {
         const forwarding = { backend, dataset: args.adapter.dataset, from: rotation, to: next,
@@ -122,6 +128,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
           forwardRetries.delete(retryKey);
           state = await loadVaultBackup(backend.activePublicKeyHex, args.encryptionKey);
           canonical ||= !!state.confirmed;
+          if (state.confirmed) heldOn = state.confirmed.relays; // a probe of an unconfirmed successor must not clear it
         } else {
           if (due) noteForwardFailure(retryKey, args.now);
           // The pointer is optional once rotation `next` is complete and newest:
@@ -132,11 +139,14 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
           current();
         }
       }
-      return { author: backend.activePublicKeyHex, reader: relayVaultReader(args.relays.read, backend),
+      // Vault reads use the relays the vault writes to: a relay this device never writes backups to holds none of them, and the protocol requires every queried relay to answer.
+      return { author: backend.activePublicKeyHex, reader: relayVaultReader(args.relays.write, backend),
         sequenceFloors: { [deviceKey.publicKey]: state.confirmed?.sequence ?? 0 } };
     }, vaultPurpose(args.adapter.dataset), args.now, minRotation);
     current();
-    if (restored.state === 'unavailable' || restored.state === 'unusable') return { state: restored.state, canonical };
+    if (restored.state === 'unavailable') return { state: 'unavailable', canonical, ...(restored.failedRelays?.length ? { failedRelays: restored.failedRelays } : {}),
+      ...(heldOn.length ? { heldOn } : {}) };
+    if (restored.state === 'unusable') return { state: 'unusable', canonical };
     canonical ||= restored.state === 'ready';
     if (restored.state === 'absent' && args.allowInitialPublish === false) return { state: 'waiting-legacy', canonical };
     const rotation = restored.state === 'ready' ? Math.max(...restored.snapshots.map(s => s.checkpoint.rotation)) : 0;
