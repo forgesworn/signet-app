@@ -403,9 +403,30 @@ describe('pass revokes, and when the Keep is asked for its passes', () => {
     k = markPassRevokeSent(k, G1, NOW);
     expect(passRevokesDue(k, NOW + 500)).toEqual([]);
     expect(passRevokesDue(k, NOW + 601).map(p => p.grant)).toEqual([G1]);
+    // The pass expires at NOW + 30 days; the Keep still knows the grant until 30 days after that.
     expect(passRevokesDue(k, NOW + 40 * DAY).map(p => p.grant)).toEqual([G1]);
+    expect(passRevokesDue(k, NOW + 60 * DAY - 1).map(p => p.grant)).toEqual([G1]);
     expect(passRevokesDue({ ...k, status: 'pending' }, NOW + 601)).toEqual([]);
     expect(passRevokesDue(applyAck([k], { keep: K, status: 'revoked', grant: G1, claim: false, at: NOW + 1 })[0], NOW + 700)).toEqual([]);
+  });
+
+  it('stops sending a pass revoke once the pass expired more than 30 days ago, and shows the pass as revoked', () => {
+    let k = applyPassReport([paired()], report(), NOW)[0];
+    const expiry = NOW + 30 * DAY;
+    k = markPassRevokeSent(k, G1, NOW);
+    const pass = () => k.passes!.find(p => p.grant === G1)!;
+    // The Keep forgets the grant at exactly 30 days past the expiry, so the last second to send is the one before.
+    expect(passRevokesDue(k, expiry + 30 * DAY - 1).map(p => p.grant)).toEqual([G1]);
+    expect(passStatusLabel(pass(), expiry + 30 * DAY - 1)).toBe('Revoking, waiting for the Keep');
+    expect(returningPlayers(k, expiry + 30 * DAY - 1).map(p => p.grant)).toEqual([G1]);
+    expect(passRevokesDue(k, expiry + 30 * DAY)).toEqual([]);
+    expect(passRevokesDue(k, expiry + 365 * DAY)).toEqual([]);
+    expect(passStatusLabel(pass(), expiry + 30 * DAY)).toBe('Revoked');
+    expect(returningPlayers(k, expiry + 30 * DAY)).toEqual([]);
+    // A pass whose revoke was never sent is just expired, as before; one that is still live is untouched.
+    const unsent = applyPassReport([paired()], report(), NOW)[0].passes![0];
+    expect(passStatusLabel(unsent, expiry + 90 * DAY)).toBe('Expired');
+    expect(passRevokesDue(markPassRevokeSent(applyPassReport([paired()], report(), NOW)[0], G1, NOW), NOW + 601).map(p => p.grant)).toEqual([G1]);
   });
 
   it('opening asks unless a request went out in the last 10 minutes; a pending Keep is never asked', () => {

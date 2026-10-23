@@ -22,7 +22,7 @@
 import type { KeepAck, KeepPassReport, PassState, PassVia, RefusalReason } from './keep-messages';
 import {
   KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_MAX_PASSES, KEEP_PASSES_REQUEST_AFTER_S, KEEP_PASS_STATES, KEEP_PASS_VIAS,
-  KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S, KEEP_SCOPES, KEEP_SECTION_GAMES,
+  KEEP_PASS_REVOKE_WINDOW_S, KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S, KEEP_SCOPES, KEEP_SECTION_GAMES,
 } from './keep-wire';
 
 export type KeepScope = typeof KEEP_SCOPES[number];
@@ -601,16 +601,24 @@ export function isPassActive(pass: StoredPass, now: number): boolean {
   return pass.state === 'active' && pass.expiration > now;
 }
 
+/**
+ * A pass whose revoke was sent and never acked, and which expired `KEEP_PASS_REVOKE_WINDOW_S` ago or more: the
+ * Keep has forgotten its grant by now, so the revoke is not sent again and the pass counts as revoked.
+ */
+export function passRevokeGivenUp(pass: StoredPass, now: number): boolean {
+  return !!pass.revokeSent && pass.state !== 'revoked' && now - pass.expiration >= KEEP_PASS_REVOKE_WINDOW_S;
+}
+
 /** The passes to list as returning players: active ones, and ones being revoked until the Keep says so. Newest seen first. */
 export function returningPlayers(keep: StoredKeep, now: number): StoredPass[] {
   return (keep.passes ?? [])
-    .filter(p => p.state !== 'revoked' && (isPassActive(p, now) || p.revokeSent))
+    .filter(p => p.state !== 'revoked' && !passRevokeGivenUp(p, now) && (isPassActive(p, now) || p.revokeSent))
     .sort((a, b) => b.seenAt - a.seenAt);
 }
 
 /** The words shown for a pass's state. */
 export function passStatusLabel(pass: StoredPass, now: number): string {
-  if (pass.state === 'revoked') return 'Revoked';
+  if (pass.state === 'revoked' || passRevokeGivenUp(pass, now)) return 'Revoked';
   if (pass.revokeSent) return 'Revoking, waiting for the Keep';
   return isPassActive(pass, now) ? 'Active' : 'Expired';
 }
@@ -681,12 +689,13 @@ export function markPassRevokeSent(keep: StoredKeep, grant: string, now: number)
 
 /**
  * The pass revokes to send again for a paired Keep: sent, not yet acked `revoked` (nor reported so), and the last
- * send older than `KEEP_RESEND_AFTER_S`. An expired pass is still revoked: the Keep keeps the revoke so the
- * persona is not given a new pass, which is the point of it.
+ * send older than `KEEP_RESEND_AFTER_S`. An expired pass is still revoked: the Keep keeps the grant for 30 days past
+ * the pass's expiry and a revoke naming it blocks the persona, which is the point of it. Once the pass expired more
+ * than `KEEP_PASS_REVOKE_WINDOW_S` ago the revoke is not sent again (the Keep no longer knows the grant).
  */
 export function passRevokesDue(keep: StoredKeep, now: number): StoredPass[] {
   if (keep.status !== 'paired') return [];
-  return (keep.passes ?? []).filter(p => p.revokeSent && p.state !== 'revoked' && now - (p.revokeSentAt ?? 0) > KEEP_RESEND_AFTER_S);
+  return (keep.passes ?? []).filter(p => p.revokeSent && p.state !== 'revoked' && !passRevokeGivenUp(p, now) && now - (p.revokeSentAt ?? 0) > KEEP_RESEND_AFTER_S);
 }
 
 /** The newest time a pass report was applied for this Keep (0 when none). */

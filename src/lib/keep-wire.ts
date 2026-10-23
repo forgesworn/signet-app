@@ -71,6 +71,13 @@ export const KEEP_ACK_FIRST_LOOKBACK_S = 3 * 86400;
 /** An unanswered invite or revoke is sent again, when the Keep's page opens, once its last send is older than this. */
 export const KEEP_RESEND_AFTER_S = 600;
 
+/**
+ * A pass revoke is sent again only until the pass has been expired this long. The Keep remembers a pass's grant for
+ * this long past its expiry (so the revoke of an expired pass still blocks the player); after that it no longer
+ * knows the grant, and sending the revoke again can do nothing.
+ */
+export const KEEP_PASS_REVOKE_WINDOW_S = 30 * 86400;
+
 /** A claim says whether the Keep is for every persona of the account or just the one that claims. */
 export const KEEP_SCOPES = ['all', 'one'] as const;
 
