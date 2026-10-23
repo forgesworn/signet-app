@@ -10,12 +10,17 @@ name: My Signet
 repository: https://github.com/forgesworn/signet-app
 release_source: ./android/app/build/outputs/apk/release/app-release.apk
 release_notes: ./CHANGELOG.md
-summary: Family identity and signing for the Signet protocol — your keys never leave your device
+summary: Family identity and signing for the Signet protocol
 description: |
   My Signet is client-side identity for the Signet protocol: verify who you
   are once, then sign in to sites and services without passwords, emails or
-  accounts. Everything lives encrypted on your device — there is no backend
-  and no key ever leaves the phone.
+  accounts. Keep signing keys encrypted on your device, or use a connected
+  browser extension or remote signer. Choose the identity and permissions
+  for each request.
+
+  Sites and relays can see public keys and connection metadata. Publish a
+  public profile, share proofs, or keep encrypted backups on your configured
+  relays. What a verifier or app learns depends on the information you share.
 
   Built for families. Guardians create dependant identities for their kids,
   pair the apps they use, and approve or deny signing requests as they
@@ -27,7 +32,7 @@ description: |
   keeps serving signing requests with the screen off, and notifications when
   a request needs your decision.
 
-  No Google Play services, no Firebase, no analytics. Built GrapheneOS-first.
+  No Google Play services or Firebase. Built GrapheneOS-first.
 license: MIT
 website: https://mysignet.app
 tags: [nostr, identity, signer, nip46, family, security]

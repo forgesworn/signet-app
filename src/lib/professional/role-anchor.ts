@@ -333,7 +333,7 @@ export interface DirectoryAddInput {
  *
  * Kind 30203 — Signet Pro directory entry (parameterised replaceable).
  * `d` tag = "<identifierKind>:<identifierValue>" for deduplication.
- * Relay: wss://relay.forgesworn.dev (§12 Q8 default).
+ * Publish through the user's configured write relays.
  *
  * This variant signs the event inline (for use in test helpers and passive-discovery
  * contexts where only a hex private key is available). For the main onboarding flow,
