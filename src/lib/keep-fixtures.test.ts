@@ -8,7 +8,7 @@ import { LocalSigningBackend } from './signing-backend';
 import { unwrapKeepAck, unwrapKeepMessage } from './keep-messages';
 import { FIXTURE } from './keep-fixture-values';
 import { applyOwnersAck, composeUpdate, linkPersona } from './keep-owners';
-import { applyPassReport, newPendingKeep } from './keep-store';
+import { applyPassReport, applySettingsAck, composeSettings, newPendingKeep } from './keep-store';
 
 /*
  * Cross-check fixtures (K1d contract, last section). `fixtures/keep-m-*.json`
@@ -155,8 +155,8 @@ describe('K1f M fixtures, opened as the Keep', () => {
 });
 
 /**
- * A pass report built here from the contract's text (the Keep's own fixture will replace it, as `k-pass-report.json`).
- * Opened the way My Signet opens a report from the Keep.
+ * A pass report built here from the contract's text, opened the way My Signet opens a report from the Keep.
+ * (The Keep's own report is `k-pass-report.json`, tested below.)
  */
 describe('a pass report built per the K1f contract, opened as the owner', () => {
   const wrap = () => read('keep-m-pass-report-sample.json');
@@ -197,5 +197,93 @@ describe('a pass report built per the K1f contract, opened as the owner', () => 
       grant: FIXTURE.passGrant, persona: player, name: FIXTURE.seatName, state: 'active', expiration: FIXTURE.createdAt + 30 * 86400,
       seenAt: FIXTURE.createdAt, via: 'code', reportAt: FIXTURE.createdAt,
     }]);
+  });
+});
+
+/** The Keep's own K1f fixtures (made by the Keep's code, copied here as given), opened as the owner persona. */
+describe('K1f K fixtures, opened as the owner', () => {
+  const kRead = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')) as NostrEvent;
+  const owner = () => new LocalSigningBackend(FIXTURE.ownerSk);
+  const keeps = () => new Set([K]);
+
+  it.each(['k-pass-report.json', 'k-settings-updated.json', 'k-settings-stale.json'])('%s is a gift wrap to the owner persona, signed by a throwaway key', name => {
+    const wrap = kRead(name);
+    expect(wrap.kind).toBe(1059);
+    expect(wrap.tags).toEqual([['p', O]]);
+    expect(verifyEvent(wrap as never)).toBe(true);
+    expect(wrap.pubkey).not.toBe(K);
+  });
+
+  it('pass report: the owner key opens it, empty content, the contract tags, no secret', async () => {
+    const wrap = kRead('k-pass-report.json');
+    const rumor = unwrapEvent(wrap as never, hexToBytes(FIXTURE.ownerSk));
+    expect(rumor.kind).toBe(27667);
+    expect(rumor.pubkey).toBe(K);
+    expect(rumor.content).toBe('');
+    const at = rumor.created_at;
+    expect(rumor.tags).toEqual([
+      ['keep', K], ['grant', expect.stringMatching(/^[0-9a-f]{32}$/)], ['p', player], ['state', 'active'],
+      ['expiration', String(at + 30 * 86400)], ['seen', expect.stringMatching(/^\d+$/)], ['via', 'code'], ['name', FIXTURE.seatName],
+    ]);
+    expect(JSON.stringify(rumor)).not.toMatch(/secret/);
+    const message = await unwrapKeepMessage(wrap, owner(), keeps());
+    expect(message).toEqual({
+      kind: 'report',
+      report: {
+        keep: K, grant: expect.stringMatching(/^[0-9a-f]{32}$/), persona: player, state: 'active', expiration: at + 30 * 86400,
+        seen: expect.any(Number), via: 'code', name: FIXTURE.seatName, at,
+      },
+    });
+    expect(await unwrapKeepMessage(wrap, owner(), new Set([player]))).toBeNull(); // not from a Keep we hold
+    expect(await unwrapKeepMessage(wrap, new LocalSigningBackend(FIXTURE.friendSk), keeps())).toBeNull(); // not addressed to this persona
+  });
+
+  it('pass report: stored as a returning player', async () => {
+    const message = await unwrapKeepMessage(kRead('k-pass-report.json'), owner(), keeps());
+    if (message?.kind !== 'report') throw new Error('not a report');
+    const [keep] = applyPassReport([newPaired()], message.report, message.report.at);
+    expect(keep.passes).toEqual([{
+      grant: message.report.grant, persona: player, name: FIXTURE.seatName, state: 'active', expiration: message.report.expiration,
+      seenAt: message.report.seen, via: 'code', reportAt: message.report.at,
+    }]);
+  });
+
+  it('settings updated ack: setrev 1, setting return_passes, no rev', async () => {
+    const wrap = kRead('k-settings-updated.json');
+    const rumor = unwrapEvent(wrap as never, hexToBytes(FIXTURE.ownerSk));
+    expect(rumor.kind).toBe(27663);
+    expect(rumor.pubkey).toBe(K);
+    expect(rumor.content).toBe('');
+    expect(rumor.tags).toEqual([['keep', K], ['status', 'updated'], ['setrev', '1'], ['setting', 'return_passes']]);
+    const ack = await unwrapKeepAck(wrap, owner(), keeps());
+    expect(ack).toMatchObject({ keep: K, status: 'updated', claim: false, settings: true, setrev: 1, to: O });
+    expect(ack).not.toHaveProperty('rev');
+  });
+
+  it('settings updated ack: confirms a switch sent at setrev 1', async () => {
+    const ack = (await unwrapKeepAck(kRead('k-settings-updated.json'), owner(), keeps()))!;
+    const keep = composeSettings(newPaired(), false, ack.at);
+    expect(keep.settings).toMatchObject({ setrev: 1, confirmed: false });
+    const [next] = applySettingsAck([keep], ack, ack.at);
+    expect(next.settings?.confirmed).toBe(true);
+  });
+
+  it('settings refused ack: stale, carrying the Keep\'s current setrev', async () => {
+    const wrap = kRead('k-settings-stale.json');
+    const rumor = unwrapEvent(wrap as never, hexToBytes(FIXTURE.ownerSk));
+    expect(rumor.kind).toBe(27663);
+    expect(rumor.pubkey).toBe(K);
+    expect(rumor.content).toBe('');
+    expect(rumor.tags).toEqual([['keep', K], ['status', 'refused'], ['setrev', '1'], ['reason', 'stale']]);
+    const ack = await unwrapKeepAck(wrap, owner(), keeps());
+    expect(ack).toMatchObject({ keep: K, status: 'refused', claim: false, settings: true, reason: 'stale', setrev: 1, to: O });
+    expect(ack).not.toHaveProperty('rev');
+  });
+
+  it('settings refused ack: a switch at setrev 1 is sent again at setrev 2', async () => {
+    const ack = (await unwrapKeepAck(kRead('k-settings-stale.json'), owner(), keeps()))!;
+    const keep = composeSettings(newPaired(), false, ack.at);
+    const [next] = applySettingsAck([keep], ack, ack.at + 1);
+    expect(next.settings).toMatchObject({ setrev: 2, confirmed: false, retried: true, returnPasses: false });
   });
 });

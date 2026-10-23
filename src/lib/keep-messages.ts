@@ -193,7 +193,19 @@ function parseJson(text: string): Record<string, unknown> | null {
 
 /** A decimal revision this app can store (and add one to), or undefined. */
 function parseRev(text: string | undefined): number | undefined {
-  return text !== undefined && /^(0|[1-9]\d{0,15})$/.test(text) && Number(text) < Number.MAX_SAFE_INTEGER ? Number(text) : undefined;
+  const n = parseSafeDecimal(text);
+  return n !== undefined && n < Number.MAX_SAFE_INTEGER ? n : undefined;
+}
+
+/**
+ * A non-negative decimal that is a safe integer (at most 2^53 - 1), or undefined. Sixteen digits fit the
+ * pattern but can be past 2^53, where a number is no longer exact and storing it would make the saved list
+ * unreadable, so the value itself is checked and not only its shape.
+ */
+function parseSafeDecimal(text: string | undefined): number | undefined {
+  if (text === undefined || !DECIMAL.test(text)) return undefined;
+  const n = Number(text);
+  return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
 }
 
 /** The fields of an ack rumor that passed the Keep checks; null when it is not a well-formed ack for `keep`. */
@@ -266,7 +278,7 @@ const DECIMAL = /^(0|[1-9]\d{0,15})$/;
 /**
  * The fields of a pass report rumor (K1f, kind 27667) that passed the checks; null otherwise. Strict: each
  * tag appears once; `grant` is 32 hex, `p` and `keep` 64 hex; `state` is one of the three; `expiration` and
- * `seen` are decimal seconds. A `via` this build does not know is left out (the Keep may add ways in later); a
+ * `seen` are decimal seconds that are safe integers. A `via` this build does not know is left out (the Keep may add ways in later); a
  * `name` is cleaned like an invite label and left out when nothing is left. A report with a `secret` tag is
  * dropped whole: a pass secret is a bearer credential for the player and never belongs in this app.
  */
@@ -287,13 +299,15 @@ export function parsePassReportRumor(
   const seen = single(rumor.tags, 'seen')?.[1];
   if (!grant || !HEX32.test(grant) || !persona || !HEX64.test(persona)) return null;
   if (!state || !(KEEP_PASS_STATES as readonly string[]).includes(state)) return null;
-  if (!expiration || !DECIMAL.test(expiration) || !seen || !DECIMAL.test(seen)) return null;
+  const expirationAt = parseSafeDecimal(expiration);
+  const seenAt = parseSafeDecimal(seen);
+  if (expirationAt === undefined || seenAt === undefined) return null;
   const viaTags = rumor.tags.filter(t => t[0] === 'via');
   if (viaTags.length > 1 || rumor.tags.filter(t => t[0] === 'name').length > 1) return null;
   const via = viaTags[0]?.[1];
   const name = sanitizeDisplayName(rumor.tags.find(t => t[0] === 'name')?.[1] ?? '', KEEP_INVITE_LABEL_MAX);
   return {
-    keep, grant, persona, state: state as PassState, expiration: Number(expiration), seen: Number(seen), at: rumor.created_at,
+    keep, grant, persona, state: state as PassState, expiration: expirationAt, seen: seenAt, at: rumor.created_at,
     ...(via !== undefined && (KEEP_PASS_VIAS as readonly string[]).includes(via) ? { via: via as PassVia } : {}),
     ...(name ? { name } : {}),
   };

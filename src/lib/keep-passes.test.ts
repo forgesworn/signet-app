@@ -77,6 +77,24 @@ describe('parsing a pass report (27667)', () => {
     expect(parsePassReportRumor(rumorOf(reportTags({ via: 'carrier-pigeon' })), K)).not.toHaveProperty('via');
   });
 
+  it.each([
+    ['an expiration past 2^53', { expiration: '9999999999999999' }],
+    ['a seen time past 2^53', { seen: '9999999999999999' }],
+    ['an expiration of 2^53', { expiration: '9007199254740992' }],
+    ['an expiration of 17 digits', { expiration: '10000000000000000' }],
+    ['a negative seen time', { seen: '-1' }],
+    ['a fractional expiration', { expiration: '1.5' }],
+    ['an exponent', { seen: '1e3' }],
+  ])('refuses a report with %s', (_label, over) => {
+    expect(parsePassReportRumor(rumorOf(reportTags(over)), K)).toBeNull();
+  });
+
+  it('accepts the largest safe expiration and seen time', () => {
+    const max = String(Number.MAX_SAFE_INTEGER);
+    expect(parsePassReportRumor(rumorOf(reportTags({ expiration: max, seen: max })), K))
+      .toMatchObject({ expiration: Number.MAX_SAFE_INTEGER, seen: Number.MAX_SAFE_INTEGER });
+  });
+
   it.each(['active', 'revoked', 'expired'])('accepts state %s', state => {
     expect(parsePassReportRumor(rumorOf(reportTags({ state })), K)?.state).toBe(state);
   });
@@ -188,6 +206,10 @@ describe('settings acks (27663)', () => {
     ['a grant beside the setrev', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', '3'], ['grant', '0a'.repeat(16)]]],
     ['two setrevs', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', '3'], ['setrev', '4']]],
     ['a setrev of text', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', 'x']]],
+    ['a setrev past 2^53', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', '9999999999999999']]],
+    ['a setrev of 2^53', [['status', 'refused'], ['reason', 'stale'], ['setrev', '9007199254740992']]],
+    ['a negative setrev', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', '-1']]],
+    ['a fractional setrev', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', '1.5']]],
     ['a setrev too high to add one to', [['status', 'updated'], ['setting', 'return_passes'], ['setrev', String(Number.MAX_SAFE_INTEGER)]]],
     ['refused for another reason', [['status', 'refused'], ['reason', 'full'], ['setrev', '5']]],
     ['pending', [['status', 'pending'], ['setting', 'return_passes'], ['setrev', '5']]],
@@ -218,6 +240,18 @@ const report = (over: Partial<KeepPassReport> = {}): KeepPassReport => ({
 const passOf = (list: StoredKeep[], grant = G1): StoredPass | undefined => list[0].passes?.find(p => p.grant === grant);
 
 describe('applyPassReport', () => {
+  it('a report dated far ahead is stored at now plus the skew, so a later honest report still applies', () => {
+    const ahead = applyPassReport([paired()], report({ at: NOW + 10 * DAY }), NOW);
+    expect(passOf(ahead)?.reportAt).toBe(NOW + 600);
+    const later = applyPassReport(ahead, report({ at: NOW + 700, state: 'active', seen: NOW + 700 }), NOW + 700);
+    expect(passOf(later)?.seenAt).toBe(NOW + 700);
+  });
+
+  it('a report with a number the saved list could not read back is not stored', () => {
+    expect(applyPassReport([paired()], report({ expiration: 1e16 }), NOW)[0].passes ?? []).toEqual([]);
+    expect(applyPassReport([paired()], report({ seen: 1e16 }), NOW)[0].passes ?? []).toEqual([]);
+  });
+
   it('stores a new pass, without any secret', () => {
     const list = applyPassReport([paired()], report(), NOW);
     expect(passOf(list)).toEqual({
@@ -488,15 +522,57 @@ describe('storage', () => {
     expect(parseStoredKeeps(JSON.parse(JSON.stringify([paired()])))).toEqual([paired()]);
   });
 
+  // A bad piece of the return-pass data is dropped; the Keep, its invites and the other passes still load.
   it.each([
     ['a pass with a short grant', (k: Record<string, any>) => { k.passes[0].grant = 'ab'; }],
     ['a pass with an unknown state', (k: Record<string, any>) => { k.passes[0].state = 'frozen'; }],
     ['a pass with a fractional expiration', (k: Record<string, any>) => { k.passes[0].expiration = 1.5; }],
-    ['settings with a text setrev', (k: Record<string, any>) => { k.settings.setrev = 'x'; }],
-    ['a text request time', (k: Record<string, any>) => { k.passesRequestedAt = 'x'; }],
-  ])('refuses %s', (_label, mutate) => {
-    const raw = JSON.parse(JSON.stringify(applyPassReport([composeSettings(paired(), false, NOW)], report(), NOW)));
+    ['a pass with an expiration past 2^53', (k: Record<string, any>) => { k.passes[0].expiration = 1e16; }],
+    ['a pass with a seen time past 2^53', (k: Record<string, any>) => { k.passes[0].seenAt = 1e16; }],
+    ['a pass with a negative expiration', (k: Record<string, any>) => { k.passes[0].expiration = -1; }],
+    ['a pass that is not an object', (k: Record<string, any>) => { k.passes[0] = 7; }],
+  ])('drops only %s', (_label, mutate) => {
+    const raw = JSON.parse(JSON.stringify(applyPassReport(applyPassReport([composeSettings(paired(), false, NOW)], report(), NOW), report({ grant: G2 }), NOW)));
     mutate(raw[0]);
+    const list = parseStoredKeeps(raw);
+    expect(list).not.toBeNull();
+    expect(list![0].passes?.map(p => p.grant)).toEqual([G2]);
+    expect(list![0].settings).toEqual(raw[0].settings);
+  });
+
+  it('drops a repeated grant, keeping the first', () => {
+    const raw = JSON.parse(JSON.stringify(applyPassReport([paired()], report(), NOW)));
+    raw[0].passes.push({ ...raw[0].passes[0], expiration: raw[0].passes[0].expiration + 1 });
+    expect(parseStoredKeeps(raw)![0].passes).toEqual([raw[0].passes[0]]);
+  });
+
+  it.each([
+    ['settings with a text setrev', (k: Record<string, any>) => { k.settings.setrev = 'x'; }, 'settings'],
+    ['settings with a setrev past 2^53', (k: Record<string, any>) => { k.settings.setrev = 1e16; }, 'settings'],
+    ['a text request time', (k: Record<string, any>) => { k.passesRequestedAt = 'x'; }, 'passesRequestedAt'],
+    ['passes that are not a list', (k: Record<string, any>) => { k.passes = 'x'; }, 'passes'],
+  ])('drops %s and keeps the rest of the Keep', (_label, mutate, field) => {
+    const raw = JSON.parse(JSON.stringify(applyPassReport([composeSettings(paired({ passesRequestedAt: NOW }), false, NOW)], report(), NOW)));
+    mutate(raw[0]);
+    const list = parseStoredKeeps(raw);
+    expect(list).not.toBeNull();
+    expect(list![0]).not.toHaveProperty(field);
+    expect(list![0].keep).toBe(K);
+  });
+
+  it('one bad pass in one Keep does not stop the other Keeps loading', () => {
+    const other = '77'.repeat(32);
+    const second = { ...paired(), keep: other };
+    const raw = JSON.parse(JSON.stringify([applyPassReport([paired()], report(), NOW)[0], second]));
+    raw[0].passes[0].expiration = 1e16;
+    const list = parseStoredKeeps(raw);
+    expect(list?.map(k => k.keep)).toEqual([K, other]);
+    expect(list![0].passes).toEqual([]);
+  });
+
+  it('a bad invite or Keep field still makes the list unreadable (invites hold secrets and are never dropped)', () => {
+    const raw = JSON.parse(JSON.stringify([paired()]));
+    raw[0].claimedAt = 'x';
     expect(parseStoredKeeps(raw)).toBeNull();
   });
 

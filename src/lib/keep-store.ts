@@ -224,7 +224,8 @@ function isPass(v: unknown): v is StoredPass {
     && typeof p.persona === 'string' && HEX64.test(p.persona)
     && (p.name === undefined || typeof p.name === 'string')
     && typeof p.state === 'string' && (KEEP_PASS_STATES as readonly string[]).includes(p.state)
-    && Number.isSafeInteger(p.expiration) && Number.isSafeInteger(p.seenAt) && Number.isSafeInteger(p.reportAt)
+    && Number.isSafeInteger(p.expiration) && (p.expiration as number) >= 0
+    && Number.isSafeInteger(p.seenAt) && (p.seenAt as number) >= 0 && Number.isSafeInteger(p.reportAt)
     && (p.via === undefined || (KEEP_PASS_VIAS as readonly unknown[]).includes(p.via))
     && (p.revokeSent === undefined || typeof p.revokeSent === 'boolean')
     && (p.revokeSentAt === undefined || Number.isSafeInteger(p.revokeSentAt));
@@ -336,15 +337,53 @@ function migrateKeep(raw: Record<string, unknown>): StoredKeep {
   };
 }
 
+/**
+ * K1f: the return-pass data of a stored Keep is a mirror of what the Keep reports (a pass, the switch's last
+ * message, when passes were last asked for), so a bad piece of it is dropped and the rest of the Keep is read
+ * as usual: one bad pass must not make every Keep unreadable. A pass is dropped when it is not well formed or
+ * repeats a grant; a settings record or request time that is not well formed is left out (the switch then
+ * reads as never changed and the next passes request refills the passes). The record is copied only when
+ * something was dropped. Invites, grants and secrets are never dropped: a bad one still makes the list unreadable.
+ */
+function scrubReturnPasses(v: unknown): unknown {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+  const k = v as Record<string, unknown>;
+  const { passes, settings, passesRequestedAt, ...rest } = k;
+  let changed = false;
+  let nextPasses: unknown[] | undefined;
+  if (passes !== undefined) {
+    if (Array.isArray(passes)) {
+      const grants = new Set<string>();
+      nextPasses = passes.filter(p => {
+        if (!isPass(p) || grants.has(p.grant)) return false;
+        grants.add(p.grant);
+        return true;
+      });
+      if (nextPasses.length !== passes.length) changed = true;
+    } else changed = true;
+  }
+  const keepSettings = settings === undefined || isSettings(settings);
+  const keepRequestedAt = passesRequestedAt === undefined || Number.isSafeInteger(passesRequestedAt);
+  if (!keepSettings || !keepRequestedAt) changed = true;
+  if (!changed) return v;
+  return {
+    ...rest,
+    ...(nextPasses ? { passes: nextPasses } : {}),
+    ...(settings !== undefined && keepSettings ? { settings } : {}),
+    ...(passesRequestedAt !== undefined && keepRequestedAt ? { passesRequestedAt } : {}),
+  };
+}
+
 /** The stored list (K1d records migrated in memory), or null when it is not a well-formed list. */
 export function parseStoredKeeps(raw: unknown): StoredKeep[] | null {
   if (!Array.isArray(raw)) return null;
+  const scrubbed = raw.map(scrubReturnPasses);
   const seen = new Set<string>();
-  for (const k of raw) {
+  for (const k of scrubbed) {
     if (!isKeep(k) || seen.has((k as { keep: string }).keep)) return null;
     seen.add((k as { keep: string }).keep);
   }
-  return (raw as Array<Record<string, unknown>>).map(migrateKeep);
+  return (scrubbed as Array<Record<string, unknown>>).map(migrateKeep);
 }
 
 export function newPendingKeep(a: {
@@ -592,10 +631,14 @@ function samePass(a: StoredPass, b: StoredPass): boolean {
 export function applyPassReport(list: readonly StoredKeep[], report: KeepPassReport, now: number): StoredKeep[] {
   const keep = findKeep(list, report.keep);
   if (!keep) return list as StoredKeep[];
+  // Never store a number the saved list could not read back (the parser already refuses these).
+  if (![report.expiration, report.seen, report.at].every(Number.isSafeInteger) || report.expiration < 0 || report.seen < 0) return list as StoredKeep[];
+  // A Keep whose clock runs ahead must not pin a pass: its report time counts as at most `now` plus the usual skew.
+  const at = Math.min(report.at, now + CLAIM_ACK_SKEW_S);
   const passes = keep.passes ?? [];
   const found = passes.find(p => p.grant === report.grant);
   if (found && (found.persona !== report.persona || found.state === 'revoked')) return list as StoredKeep[];
-  if (found && report.at < found.reportAt) {
+  if (found && at < found.reportAt) {
     if (report.state !== 'revoked') return list as StoredKeep[];
     // A `revoked` report dated before the one applied still ends the pass; what it says of the player is older, so it is not taken.
     const { revokeSent: _sent, ...rest } = found;
@@ -606,7 +649,7 @@ export function applyPassReport(list: readonly StoredKeep[], report: KeepPassRep
     ...(report.name ? { name: report.name } : found?.name ? { name: found.name } : {}),
     state: report.state, expiration: report.expiration, seenAt: report.seen,
     ...(report.via ? { via: report.via } : found?.via ? { via: found.via } : {}),
-    reportAt: report.at,
+    reportAt: at,
     ...(found?.revokeSent && report.state !== 'revoked' ? { revokeSent: true, ...(found.revokeSentAt !== undefined ? { revokeSentAt: found.revokeSentAt } : {}) } : {}),
   };
   if (found && samePass(found, next)) return list as StoredKeep[];
