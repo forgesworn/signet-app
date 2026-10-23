@@ -29,3 +29,6 @@ CLAUDE.md
 AGENTS.md
 cert
 docs/claude-notes/
+
+# Local legal-review evidence is not part of the published draft pack.
+docs/legal/.local/
