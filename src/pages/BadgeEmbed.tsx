@@ -1,9 +1,6 @@
 import { useState } from 'react';
 import type { CachedBadge } from '../lib/badge-fetch';
-
-const SIGNET_BASE = 'https://signet.forgesworn.dev';
-
-type BadgeStyle = 'shield' | 'pill' | 'banner';
+import { buildBadgeEmbed, type BadgeStyle } from '../lib/badge-embed';
 
 interface BadgeConfig {
   style: BadgeStyle;
@@ -69,7 +66,7 @@ function PillPreview({ tier }: { tier: number }) {
         fontWeight="600"
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
       >
-        Signet Verified
+        {`Signet · Tier ${tier}`}
       </text>
     </svg>
   );
@@ -101,24 +98,10 @@ function BannerPreview({ tier }: { tier: number }) {
         fontWeight="600"
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
       >
-        {`Signet Verified — Tier ${tier}`}
+        {`Signet badge · Tier ${tier}`}
       </text>
     </svg>
   );
-}
-
-function buildEmbedCode(style: BadgeStyle, npub: string, _tier: number): string {
-  // Encode npub in BOTH URLs (security audit 2026-06-15). The embed string is
-  // pasted into the user's own page as HTML; bech32 npub can't break out of an
-  // attribute today, but encoding consistently forecloses any injection if this
-  // builder is ever reused with a non-bech32 value.
-  const verifyUrl = `${SIGNET_BASE}/verify/${encodeURIComponent(npub)}`;
-  // npub is in the URL so the hosted renderer can look up the live tier and
-  // render a personalised badge. Alt text stays tier-neutral on purpose —
-  // hardcoding a tier number rots as soon as the user's tier changes.
-  const badgeUrl = `${SIGNET_BASE}/badges/${style}.svg?npub=${encodeURIComponent(npub)}`;
-  const altText = 'Signet Verified';
-  return `<a href="${verifyUrl}"><img src="${badgeUrl}" alt="${altText}"></a>`;
 }
 
 export function BadgeEmbed({ npub, badge }: Props) {
@@ -127,7 +110,8 @@ export function BadgeEmbed({ npub, badge }: Props) {
   const tier = badge?.tier ?? 1;
 
   function handleCopy(style: BadgeStyle) {
-    const code = buildEmbedCode(style, npub, tier);
+    if (!badge) return;
+    const code = buildBadgeEmbed(style, npub, tier);
     navigator.clipboard.writeText(code).then(() => {
       setCopiedStyle(style);
       setTimeout(() => setCopiedStyle(null), 2000);
@@ -207,12 +191,13 @@ export function BadgeEmbed({ npub, badge }: Props) {
               marginBottom: 10,
               lineHeight: 1.5,
             }}>
-              {buildEmbedCode(style, npub, tier)}
+              {badge ? buildBadgeEmbed(style, npub, tier) : 'Load your badge before copying an embed.'}
             </div>
 
             <button
               className={`btn ${copiedStyle === style ? 'btn-secondary' : 'btn-primary'}`}
               onClick={() => handleCopy(style)}
+              disabled={!badge}
               style={{ padding: '10px 16px', fontSize: '0.9rem' }}
             >
               {copiedStyle === style ? 'Copied!' : 'Copy embed code'}
@@ -223,7 +208,8 @@ export function BadgeEmbed({ npub, badge }: Props) {
 
       {/* Explainer */}
       <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 16, textAlign: 'center' }}>
-        Paste the embed code into any website or profile to display your Signet badge.
+        Paste the embed into a website that supports inline SVG. It links to your identity in a Nostr app.
+        The badge is a snapshot; verification needs a fresh Signet proof.
       </p>
     </div>
   );

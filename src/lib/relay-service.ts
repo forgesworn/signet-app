@@ -158,6 +158,10 @@ export function getRelayUrl(): string {
   return primaryUrl;
 }
 
+export function getWriteRelayUrls(): string[] {
+  return configs.filter(r => r.enabled && r.write).map(r => r.url);
+}
+
 /** Legacy single-relay setter — collapses the set to one primary entry.
  *  Retained for back-compat (Heartwood/NIP-07 connect, tests). The relay
  *  manager UI uses `setRelays`. Throws on invalid scheme (message contains

@@ -21,7 +21,7 @@ import { buildDirectoryAddEvent } from '../lib/professional/role-anchor';
 import type { AnchorContext } from '../lib/professional/role-anchor';
 import type { SigningBackend } from '../lib/signing-backend';
 import type { UseProRoleAnchorResult } from '../hooks/useProRoleAnchor';
-import { publishEvent } from '../lib/relay-service';
+import { getWriteRelayUrls, publishEvent } from '../lib/relay-service';
 import { saveProDirectoryPreference } from '../lib/db';
 import { nip19 } from 'nostr-tools';
 
@@ -250,6 +250,11 @@ export function ProOnboarding({ leadPubkeyHex, backend, proAnchorHook, onComplet
       setError('Please enter your organisation\'s website domain.');
       return;
     }
+    const relays = getWriteRelayUrls();
+    if (relays.length === 0) {
+      setError('Enable a relay for publishing in Advanced Settings before generating signet.json.');
+      return;
+    }
     setConfirmedDomain(domain);
 
     const now = new Date().toISOString();
@@ -263,7 +268,7 @@ export function ProOnboarding({ leadPubkeyHex, backend, proAnchorHook, onComplet
       identifierKind: resolvedRecord.identifierKind,
       leadPubkeyNpubs: [leadNpub, ...coLeadNpubs],
       canonicalDomain: domain,
-      relays: ['wss://relay.forgesworn.dev'],
+      relays,
       publishedAt: now,
     });
 

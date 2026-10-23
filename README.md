@@ -1,6 +1,6 @@
 # My Signet
 
-Identity verification app for the Signet protocol. Verify your identity once, prove claims about yourself anywhere — without revealing personal data.
+Identity verification app for the Signet protocol. Verify your identity, then share proofs with sites and services while choosing which information to disclose.
 
 Built on [Nostr](https://nostr.com/) using the [Signet Protocol](https://github.com/forgesworn/signet).
 
@@ -11,7 +11,7 @@ Built on [Nostr](https://nostr.com/) using the [Signet Protocol](https://github.
 - **Add family members** via QR code or Signet ID — verified with directional spoken-token words
 - **Get verified** by a professional (GP, solicitor, teacher) — in-person credential ceremony
 - **Verify someone else** — issue two credentials (identity + anonymous persona)
-- **Prove your age** to websites via QR scan — no personal data shared, only age range and tier
+- **Prove your age** to websites via QR scan — share age range and tier without including your date of birth or document details in the age proof
 - **Sign in with Signet** — websites redirect to mysignet.app, user approves, redirected back with cryptographic proof
 - **Log in** to Nostr apps via NIP-46 remote signing
 - **Sign for Android apps** on the same phone as a NIP-55 signer: Amethyst, KithMoot and anything Amber-shaped find "My Signet" in their signer list, ask once, and can be allowed always. Settings → Connected Sites lists them under "Apps on this phone", where an allow-always is taken back. For five minutes after serving one, My Signet keeps its key while hidden behind that app, so an allowed-always app signs without a PIN each time
