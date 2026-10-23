@@ -5,10 +5,10 @@ import { unwrapEvent } from 'nostr-tools/nip59';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
 import { LocalSigningBackend } from './signing-backend';
-import { unwrapKeepAck } from './keep-messages';
+import { unwrapKeepAck, unwrapKeepMessage } from './keep-messages';
 import { FIXTURE } from './keep-fixture-values';
 import { applyOwnersAck, composeUpdate, linkPersona } from './keep-owners';
-import { newPendingKeep } from './keep-store';
+import { applyPassReport, newPendingKeep } from './keep-store';
 
 /*
  * Cross-check fixtures (K1d contract, last section). `fixtures/keep-m-*.json`
@@ -22,6 +22,7 @@ const K = getPublicKey(keepSk);
 const O = getPublicKey(hexToBytes(FIXTURE.ownerSk));
 const friend = getPublicKey(hexToBytes(FIXTURE.friendSk));
 const B = getPublicKey(hexToBytes(FIXTURE.secondOwnerSk));
+const player = getPublicKey(hexToBytes(FIXTURE.playerSk));
 
 describe('M fixtures, opened as the Keep', () => {
   it('claim wrap', () => {
@@ -123,3 +124,78 @@ function newPaired() {
   const { code: _c, ...rest } = newPendingKeep({ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, code: '33'.repeat(16), now: 1, scope: 'all' });
   return { ...rest, status: 'paired' as const };
 }
+
+describe('K1f M fixtures, opened as the Keep', () => {
+  it('settings wrap: setrev 1, return passes off', () => {
+    const wrap = read('keep-m-settings.json');
+    expect(wrap.kind).toBe(1059);
+    expect(wrap.tags).toEqual([['p', K]]);
+    expect(verifyEvent(wrap as never)).toBe(true);
+    expect(wrap.pubkey).not.toBe(O);
+    const rumor = unwrapEvent(wrap as never, keepSk);
+    expect(rumor.kind).toBe(27666);
+    expect(rumor.pubkey).toBe(O);
+    expect(rumor.content).toBe('');
+    expect(rumor.created_at).toBe(FIXTURE.createdAt);
+    expect(rumor.tags).toEqual([['keep', K], ['setrev', '1'], ['return_passes', 'off']]);
+  });
+
+  it('passes request wrap: only the keep tag', () => {
+    const wrap = read('keep-m-passes-request.json');
+    expect(wrap.kind).toBe(1059);
+    expect(wrap.tags).toEqual([['p', K]]);
+    expect(verifyEvent(wrap as never)).toBe(true);
+    const rumor = unwrapEvent(wrap as never, keepSk);
+    expect(rumor.kind).toBe(27668);
+    expect(rumor.pubkey).toBe(O);
+    expect(rumor.content).toBe('');
+    expect(rumor.created_at).toBe(FIXTURE.createdAt);
+    expect(rumor.tags).toEqual([['keep', K]]);
+  });
+});
+
+/**
+ * A pass report built here from the contract's text (the Keep's own fixture will replace it, as `k-pass-report.json`).
+ * Opened the way My Signet opens a report from the Keep.
+ */
+describe('a pass report built per the K1f contract, opened as the owner', () => {
+  const wrap = () => read('keep-m-pass-report-sample.json');
+
+  it('is a gift wrap to the owner persona with the contract tags and no secret', () => {
+    expect(wrap().kind).toBe(1059);
+    expect(wrap().tags).toEqual([['p', O]]);
+    expect(verifyEvent(wrap() as never)).toBe(true);
+    const rumor = unwrapEvent(wrap() as never, hexToBytes(FIXTURE.ownerSk));
+    expect(rumor.kind).toBe(27667);
+    expect(rumor.pubkey).toBe(K);
+    expect(rumor.content).toBe('');
+    expect(rumor.tags).toEqual([
+      ['keep', K], ['grant', FIXTURE.passGrant], ['p', player], ['state', 'active'],
+      ['expiration', String(FIXTURE.createdAt + 30 * 86400)], ['seen', String(FIXTURE.createdAt)], ['via', 'code'], ['name', FIXTURE.seatName],
+    ]);
+    expect(JSON.stringify(rumor)).not.toMatch(/secret/);
+  });
+
+  it('unwraps with every field, for the owner persona only', async () => {
+    const message = await unwrapKeepMessage(wrap(), new LocalSigningBackend(FIXTURE.ownerSk), new Set([K]));
+    expect(message).toEqual({
+      kind: 'report',
+      report: {
+        keep: K, grant: FIXTURE.passGrant, persona: player, state: 'active', expiration: FIXTURE.createdAt + 30 * 86400,
+        seen: FIXTURE.createdAt, via: 'code', name: FIXTURE.seatName, at: FIXTURE.createdAt,
+      },
+    });
+    expect(await unwrapKeepMessage(wrap(), new LocalSigningBackend(FIXTURE.ownerSk), new Set([player]))).toBeNull(); // not from a Keep we hold
+    expect(await unwrapKeepMessage(wrap(), new LocalSigningBackend(FIXTURE.friendSk), new Set([K]))).toBeNull(); // not addressed to this persona
+  });
+
+  it('is stored as a returning player', async () => {
+    const message = await unwrapKeepMessage(wrap(), new LocalSigningBackend(FIXTURE.ownerSk), new Set([K]));
+    if (message?.kind !== 'report') throw new Error('not a report');
+    const [keep] = applyPassReport([newPaired()], message.report, FIXTURE.createdAt);
+    expect(keep.passes).toEqual([{
+      grant: FIXTURE.passGrant, persona: player, name: FIXTURE.seatName, state: 'active', expiration: FIXTURE.createdAt + 30 * 86400,
+      seenAt: FIXTURE.createdAt, via: 'code', reportAt: FIXTURE.createdAt,
+    }]);
+  });
+});

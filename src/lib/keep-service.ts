@@ -15,10 +15,13 @@ import type { DecryptingSigningBackend } from './signing-backend';
 import { publishWrappedToRelays } from './relay-publish';
 import { fetchEventsWithReach, subscribeEvents } from './relay-service';
 import {
-  claimRumor, inviteRumor, ownerAcceptRumor, ownersUpdateRumor, revokeRumor, unwrapKeepAck, wrapForKeep, type InviteSpec, type KeepAck,
+  claimRumor, inviteRumor, ownerAcceptRumor, ownersUpdateRumor, passesRequestRumor, revokeRumor, settingsRumor, unwrapKeepMessage, wrapForKeep,
+  type InviteSpec, type KeepMessage,
 } from './keep-messages';
 import {
-  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, findKeep, markInviteSent, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, resendDue, withInvite, withKeep,
+  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, applyPassReport, applySettingsAck, canComposeSettings, composeSettings,
+  findKeep, markInviteSent, markPassRevokeSent, markPassesRequested, markRevokeSent, markSettingsSent, newPendingKeep, parseStoredKeeps,
+  passRevokesDue, passesRequestDue, repairKeep, resendDue, returnPassesOn, settingsDue, withInvite, withKeep,
   type KeepScope, type StoredInvite, type StoredKeep,
 } from './keep-store';
 import {
@@ -254,16 +257,52 @@ export async function revokeInvite(deps: KeepDeps, keepId: string, grant: string
 }
 
 /**
+ * Revoke a return pass (K1f): the same owner-signed revoke as for an invite, naming the pass's grant. It is
+ * marked as sent first (saved), the Keep's `revoked` ack or report makes it final, and an unanswered one is
+ * sent again by `resendOutstanding`. The Keep also stops giving that persona a new pass.
+ */
+export async function revokePass(deps: KeepDeps, keepId: string, grant: string, actor?: string): Promise<boolean> {
+  let keep: StoredKeep | undefined;
+  await updateStoredKeeps(deps.encryptionKey, list => {
+    const found = findKeep(list, keepId);
+    if (!found || !found.passes?.some(p => p.grant === grant)) return list;
+    keep = markPassRevokeSent(found, grant, nowOf(deps));
+    return withKeep(list, keep);
+  });
+  if (!keep) return false;
+  return send(deps, keep, signerFor(deps, keep, actor), (b, now) => revokeRumor(b, keepId, grant, now));
+}
+
+/**
+ * Switch return passes on or off for a Keep (K1f), as `actor`, which must be an active owner persona with its
+ * key on this device. It goes out as the next settings revision. Resolves with the new list.
+ */
+export async function setReturnPasses(deps: KeepDeps, keepId: string, actor: string, on: boolean): Promise<StoredKeep[]> {
+  if (!deps.backendFor(actor)) throw new PersonaNotAvailableError();
+  await updateStoredKeeps(deps.encryptionKey, list => {
+    const found = findKeep(list, keepId);
+    if (!found || found.status !== 'paired') throw new OwnerChangeRefusedError('This Keep is not connected yet.');
+    if (!isActiveOwner(found, actor)) throw new NotAnOwnerError();
+    if (returnPassesOn(found) === on && (!found.settings || found.settings.confirmed)) return list; // already so
+    if (!canComposeSettings(found)) throw new OwnerChangeRefusedError(REVISION_LIMIT_TEXT);
+    return withKeep(list, composeSettings(found, on, nowOf(deps)));
+  });
+  return settle(deps);
+}
+
+/**
  * Send again what the Keep has not answered: an owners update and accepts (K1e), invites still
  * waiting and revokes not yet acked `revoked`, for paired Keeps, when the last send is over 10
  * minutes old (see `ownersDue`, `resendDue`). Things just made (`sentAt` 0) are due at once.
  * Each is stamped as sent before it goes out, inside the serialised write, so two callers (the
  * list and the Keep's page opening together) send it once. A send that fails is tried again after
  * the next 10 minutes, or by the owner with Send again. An accept is signed by its own persona;
- * the rest by an owner persona the Keep counts as active. Order: update, accepts, invites, revokes.
+ * the rest by an owner persona the Keep counts as active. Order: update, accepts, invites, revokes (K1f:
+ * then the return-passes switch, pass revokes, and the passes request). `openKeep` names the Keep whose page
+ * was just opened: it is asked for its passes even though the last report is recent.
  * Returns how many were sent.
  */
-export async function resendOutstanding(deps: KeepDeps): Promise<number> {
+export async function resendOutstanding(deps: KeepDeps, opts: { openKeep?: string } = {}): Promise<number> {
   const at = nowOf(deps);
   const canSign = (p: string) => deps.backendFor(p) !== null;
   const batch: Array<{ keep: StoredKeep; signer: string; build: (b: DecryptingSigningBackend, now: number) => ReturnType<typeof claimRumor> }> = [];
@@ -291,6 +330,19 @@ export async function resendOutstanding(deps: KeepDeps): Promise<number> {
         for (const { invite, revoke } of resendDue(k, at)) {
           updated = revoke ? markRevokeSent(updated, invite.grant, at) : markInviteSent(updated, invite.grant, at);
           out.push({ keep: k, signer, build: (b, now) => (revoke ? revokeRumor(b, k.keep, invite.grant, now) : inviteRumor(b, specOf(k, invite), now)) });
+        }
+        const settings = k.settings;
+        if (settings && settingsDue(k, at)) {
+          updated = markSettingsSent(updated, at);
+          out.push({ keep: k, signer, build: (b, now) => settingsRumor(b, k.keep, settings.setrev, settings.returnPasses, now) });
+        }
+        for (const pass of passRevokesDue(k, at)) {
+          updated = markPassRevokeSent(updated, pass.grant, at);
+          out.push({ keep: k, signer, build: (b, now) => revokeRumor(b, k.keep, pass.grant, now) });
+        }
+        if (passesRequestDue(k, at, k.keep === opts.openKeep)) {
+          updated = markPassesRequested(updated, at);
+          out.push({ keep: k, signer, build: (b, now) => passesRequestRumor(b, k.keep, now) });
         }
       }
       if (out.length === 0) continue;
@@ -332,9 +384,9 @@ export function reconcileKeeps(deps: KeepDeps): Promise<StoredKeep[]> {
 }
 
 /** Reconcile, then send whatever is due. Resolves with the new list. */
-export async function settle(deps: KeepDeps): Promise<StoredKeep[]> {
+export async function settle(deps: KeepDeps, opts: { openKeep?: string } = {}): Promise<StoredKeep[]> {
   await reconcileKeeps(deps);
-  await resendOutstanding(deps);
+  await resendOutstanding(deps, opts);
   return loadStoredKeeps(deps.encryptionKey);
 }
 
@@ -389,9 +441,14 @@ export async function retryGamesInvite(deps: KeepDeps, keepId: string, actor: st
 }
 
 /** What opening the Keeps does: read the acks, bring the owner list and games invites in line, send what is due. Resolves with the new list. */
-export async function catchUp(deps: KeepDeps): Promise<StoredKeep[]> {
+export async function catchUp(deps: KeepDeps, opts: { openKeep?: string } = {}): Promise<StoredKeep[]> {
   await refreshAcks(deps);
-  return settle(deps);
+  return settle(deps, opts);
+}
+
+/** The page of a Keep was opened (K1f): `catchUp`, and ask that Keep for its return passes. */
+export function openKeep(deps: KeepDeps, keepId: string): Promise<StoredKeep[]> {
+  return catchUp(deps, { openKeep: keepId });
 }
 
 /** Forget a Keep on this device only (used for a claim that never completed). */
@@ -401,24 +458,32 @@ export async function forgetKeep(deps: KeepDeps, keepId: string): Promise<Stored
 
 // ---- receiving -------------------------------------------------------------
 
-/** Open gift wraps and apply the acks inside; wraps that are not valid acks from our Keeps are ignored. */
+/**
+ * Open gift wraps and apply what is inside: acks, and (K1f) pass reports. Wraps that are not valid ones from our
+ * Keeps are ignored. A valid report moves the persona's cursor just as an ack does.
+ */
 export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent[]): Promise<StoredKeep[]> {
   const stored = await loadStoredKeeps(deps.encryptionKey);
-  const acks: Array<{ ack: KeepAck; persona: string; wrapAt: number }> = [];
+  const read: Array<{ message: KeepMessage; persona: string; wrapAt: number }> = [];
   for (const wrap of events) {
     const persona = wrap.tags?.find(t => t[0] === 'p')?.[1];
     if (!persona) continue;
     const keeps = new Set(stored.filter(k => ackPersonas(k).includes(persona)).map(k => k.keep));
     const backend = keeps.size > 0 ? deps.backendFor(persona) : null;
     if (!backend) continue;
-    const ack = await unwrapKeepAck(wrap, backend, keeps);
-    if (ack && Number.isSafeInteger(wrap.created_at)) acks.push({ ack, persona, wrapAt: wrap.created_at });
+    const message = await unwrapKeepMessage(wrap, backend, keeps);
+    if (message && Number.isSafeInteger(wrap.created_at)) read.push({ message, persona, wrapAt: wrap.created_at });
   }
-  if (acks.length === 0) return stored;
+  if (read.length === 0) return stored;
   const now = nowOf(deps);
   return updateStoredKeeps(deps.encryptionKey, list => advanceAckCursors(
-    acks.reduce((l, a) => (a.ack.owners ? applyOwnersAck(l, a.ack, now) : applyAck(l, a.ack)), list),
-    acks.map(a => ({ keep: a.ack.keep, persona: a.persona, wrapAt: a.wrapAt })), now,
+    read.reduce((l, { message }) => {
+      if (message.kind === 'report') return applyPassReport(l, message.report, now);
+      const { ack } = message;
+      if (ack.settings) return applySettingsAck(l, ack, now);
+      return ack.owners ? applyOwnersAck(l, ack, now) : applyAck(l, ack);
+    }, list),
+    read.map(r => ({ keep: r.message.kind === 'report' ? r.message.report.keep : r.message.ack.keep, persona: r.persona, wrapAt: r.wrapAt })), now,
   ));
 }
 

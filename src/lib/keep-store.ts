@@ -6,6 +6,9 @@
  * with the state of each in `links`). Invites and revokes for a Keep are signed
  * by an owner persona the Keep counts as active (see `keep-owners.ts`).
  *
+ * K1f fields (`passes`, `settings`, `passesRequestedAt`) are optional and added the same way: a record
+ * without them reads as no passes, the default setting and no request sent yet.
+ *
  * K1e fields (`scope`, `rev`, `links`, `seen`, `update`) are added to the K1d
  * record in place: a K1d record reads as scope `one`, revision 0, the claimer
  * as its only owner persona. `personas` and every K1d field keep their shape, so
@@ -16,9 +19,10 @@
  * join the Keep, hence the encryption. This file holds the shape, validation
  * and the pure state changes; `keep-service.ts` does the sending.
  */
-import type { KeepAck, RefusalReason } from './keep-messages';
+import type { KeepAck, KeepPassReport, PassState, PassVia, RefusalReason } from './keep-messages';
 import {
-  KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S, KEEP_SCOPES, KEEP_SECTION_GAMES,
+  KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_MAX_PASSES, KEEP_PASSES_REQUEST_AFTER_S, KEEP_PASS_STATES, KEEP_PASS_VIAS,
+  KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S, KEEP_SCOPES, KEEP_SECTION_GAMES,
 } from './keep-wire';
 
 export type KeepScope = typeof KEEP_SCOPES[number];
@@ -51,6 +55,53 @@ export interface StoredInvite {
   revokeSentAt?: number;
   /** The real time of the newest ack applied (the ack rumor's `created_at`). */
   ackAt?: number;
+}
+
+/**
+ * A return pass the Keep issued to a player (K1f), as the Keep last reported it. Never holds the pass's secret:
+ * the report does not carry one, and the player is not the owner persona.
+ */
+export interface StoredPass {
+  /** 32 hex, made by the Keep when it issued the pass. Revoking is by this. */
+  grant: string;
+  /** The player persona the pass is bound to. */
+  persona: string;
+  /** The seat name the Keep saw, if any. */
+  name?: string;
+  state: PassState;
+  /** Unix seconds. */
+  expiration: number;
+  /** When the player was last seen, unix seconds. */
+  seenAt: number;
+  via?: PassVia;
+  /** The real time (the rumor's `created_at`) of the newest report applied. */
+  reportAt: number;
+  /** True once a revoke has been sent and neither its ack nor a `revoked` report has come yet. */
+  revokeSent?: boolean;
+  /** When the revoke was last sent (or tried), unix seconds. */
+  revokeSentAt?: number;
+}
+
+/**
+ * The return-passes switch (K1f) as the owner set it, with the revision the Keep counts it by (separate from the
+ * owners `rev`). Absent until the owner changes it: the Keep's default is on, and nothing is sent.
+ */
+export interface KeepSettings {
+  returnPasses: boolean;
+  /** The revision of the newest settings message made. */
+  setrev: number;
+  /** When it was made, unix seconds. An ack dated before it cannot be the answer to it. */
+  composedAt: number;
+  /** When it was last sent (0 = not yet), unix seconds. */
+  sentAt: number;
+  /** The Keep has acked this revision. */
+  confirmed: boolean;
+  /** The Keep's time of the newest `refused stale` applied: a refusal at or before it is a repeat, not an answer. */
+  refusedAt?: number;
+  /** True once a `refused stale` made us try again with a newer revision. */
+  retried?: boolean;
+  /** The Keep refused it for good (after the one retry). */
+  failed?: 'stale';
 }
 
 /** One owner persona linked to a Keep (K1e). */
@@ -128,6 +179,12 @@ export interface StoredKeep {
    */
   ackCursors?: Record<string, number>;
   invites: StoredInvite[];
+  /** K1f: the return passes the Keep has reported, at most `KEEP_MAX_PASSES`. */
+  passes?: StoredPass[];
+  /** K1f: the return-passes switch; absent while the owner has not changed it (the Keep's default is on). */
+  settings?: KeepSettings;
+  /** K1f: when a passes request was last sent, unix seconds. */
+  passesRequestedAt?: number;
 }
 
 /** The stored Keeps are there but cannot be read; nothing may be saved over them. */
@@ -158,6 +215,29 @@ function isInvite(v: unknown): v is StoredInvite {
     && (i.sentAt === undefined || Number.isSafeInteger(i.sentAt))
     && (i.revokeSentAt === undefined || Number.isSafeInteger(i.revokeSentAt))
     && (i.ackAt === undefined || Number.isSafeInteger(i.ackAt));
+}
+
+function isPass(v: unknown): v is StoredPass {
+  if (!v || typeof v !== 'object') return false;
+  const p = v as Record<string, unknown>;
+  return typeof p.grant === 'string' && HEX32.test(p.grant)
+    && typeof p.persona === 'string' && HEX64.test(p.persona)
+    && (p.name === undefined || typeof p.name === 'string')
+    && typeof p.state === 'string' && (KEEP_PASS_STATES as readonly string[]).includes(p.state)
+    && Number.isSafeInteger(p.expiration) && Number.isSafeInteger(p.seenAt) && Number.isSafeInteger(p.reportAt)
+    && (p.via === undefined || (KEEP_PASS_VIAS as readonly unknown[]).includes(p.via))
+    && (p.revokeSent === undefined || typeof p.revokeSent === 'boolean')
+    && (p.revokeSentAt === undefined || Number.isSafeInteger(p.revokeSentAt));
+}
+
+function isSettings(v: unknown): v is KeepSettings {
+  if (!v || typeof v !== 'object') return false;
+  const s = v as Record<string, unknown>;
+  return typeof s.returnPasses === 'boolean' && Number.isSafeInteger(s.setrev) && (s.setrev as number) >= 0
+    && Number.isSafeInteger(s.composedAt) && Number.isSafeInteger(s.sentAt) && typeof s.confirmed === 'boolean'
+    && (s.refusedAt === undefined || Number.isSafeInteger(s.refusedAt))
+    && (s.retried === undefined || typeof s.retried === 'boolean')
+    && (s.failed === undefined || s.failed === 'stale');
 }
 
 function isSections(v: unknown): v is string[] {
@@ -200,6 +280,9 @@ function isKeep(v: unknown): boolean {
       && Object.entries(links).every(([p, l]) => HEX64.test(p) && isLink(l))))
     && (k.seen === undefined || (Array.isArray(k.seen) && k.seen.every(p => typeof p === 'string' && HEX64.test(p))))
     && (k.update === undefined || isUpdate(k.update))
+    && (k.passes === undefined || (Array.isArray(k.passes) && k.passes.every(isPass)))
+    && (k.settings === undefined || isSettings(k.settings))
+    && (k.passesRequestedAt === undefined || Number.isSafeInteger(k.passesRequestedAt))
     && (k.ackCursors === undefined || (!!k.ackCursors && typeof k.ackCursors === 'object' && !Array.isArray(k.ackCursors)
       && Object.entries(k.ackCursors).every(([p, at]) => HEX64.test(p) && Number.isSafeInteger(at))))
     && isK1dKeep(v);
@@ -291,7 +374,7 @@ export function newPendingKeep(a: {
 export function repairKeep(
   keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number; scope?: KeepScope },
 ): StoredKeep {
-  const { ackCursors: _cursors, update, ...rest } = keep; // a new pairing reads acks afresh
+  const { ackCursors: _cursors, update, passesRequestedAt: _requested, settings, ...rest } = keep; // a new pairing reads acks afresh
   const claimer = keep.claimedBy;
   const mine = keep.links[claimer];
   const links: Record<string, PersonaLink> = {
@@ -306,6 +389,9 @@ export function repairKeep(
   return {
     ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now,
     scope: a.scope ?? keep.scope,
+    // A reset Keep has forgotten the switch (default on): send the owner's choice again, as a new message. A Keep
+    // that was not reset answers `refused stale`, which makes the next revision (see `applySettingsAck`).
+    ...(settings ? { settings: restartedSettings(settings, a.now) } : {}),
     // An update that was never answered may have been taken: number the next one above it.
     rev: Math.max(keep.rev, update?.rev ?? 0),
     personas: Object.keys(links), links,
@@ -421,7 +507,13 @@ export function applyAck(list: readonly StoredKeep[], ack: KeepAck): StoredKeep[
     return withKeep(list, { ...rest, status: 'paired' });
   }
   const invite = keep.invites.find(i => i.grant === ack.grant);
-  if (!invite || invite.status === 'revoked') return list as StoredKeep[];
+  if (!invite) {
+    // K1f: the revoke of a return pass is acked `revoked` by the pass's grant. Nothing else about a pass is acked.
+    const pass = keep.passes?.find(p => p.grant === ack.grant);
+    if (!pass || ack.status !== 'revoked' || pass.state === 'revoked') return list as StoredKeep[];
+    return withKeep(list, { ...keep, passes: keep.passes!.map(p => (p === pass ? { ...p, state: 'revoked' as const, revokeSent: false } : p)) });
+  }
+  if (invite.status === 'revoked') return list as StoredKeep[];
   if (invite.ackAt !== undefined && ack.at < invite.ackAt) return list as StoredKeep[];
   const { reason: _reason, ...base } = invite;
   const next: StoredInvite = {
@@ -459,4 +551,197 @@ export function inviteStatusLabel(invite: StoredInvite): string {
 
 export function isExpired(invite: StoredInvite, nowSeconds: number): boolean {
   return invite.expiration <= nowSeconds;
+}
+
+// ---- return passes (K1f) ---------------------------------------------------
+
+const passIsDead = (p: StoredPass, now: number) => p.state === 'expired' || (p.state === 'active' && p.expiration <= now);
+
+/** True when a pass counts as active now: reported active and not past its expiration. */
+export function isPassActive(pass: StoredPass, now: number): boolean {
+  return pass.state === 'active' && pass.expiration > now;
+}
+
+/** The passes to list as returning players: active ones, and ones being revoked until the Keep says so. Newest seen first. */
+export function returningPlayers(keep: StoredKeep, now: number): StoredPass[] {
+  return (keep.passes ?? [])
+    .filter(p => p.state !== 'revoked' && (isPassActive(p, now) || p.revokeSent))
+    .sort((a, b) => b.seenAt - a.seenAt);
+}
+
+/** The words shown for a pass's state. */
+export function passStatusLabel(pass: StoredPass, now: number): string {
+  if (pass.state === 'revoked') return 'Revoked';
+  if (pass.revokeSent) return 'Revoking, waiting for the Keep';
+  return isPassActive(pass, now) ? 'Active' : 'Expired';
+}
+
+function samePass(a: StoredPass, b: StoredPass): boolean {
+  return a.grant === b.grant && a.persona === b.persona && a.name === b.name && a.state === b.state && a.expiration === b.expiration
+    && a.seenAt === b.seenAt && a.via === b.via && a.reportAt === b.reportAt && a.revokeSent === b.revokeSent && a.revokeSentAt === b.revokeSentAt;
+}
+
+/**
+ * Apply one pass report from the Keep. A pass is one entry per `(keep, grant)`: the report with the newest real
+ * time wins, and `revoked` is final (a late `active` never undoes it, and a `revoked` report counts even when an
+ * older-dated `active` was applied first). A report naming another persona for a grant already held is not
+ * believed. At most `KEEP_MAX_PASSES` are kept: when full, expired ones go first, then the oldest-reported revoked
+ * ones; if still full the new pass is not stored (the Keep lists at most as many, so this only follows a broken
+ * Keep). Returns the same list when nothing changed.
+ */
+export function applyPassReport(list: readonly StoredKeep[], report: KeepPassReport, now: number): StoredKeep[] {
+  const keep = findKeep(list, report.keep);
+  if (!keep) return list as StoredKeep[];
+  const passes = keep.passes ?? [];
+  const found = passes.find(p => p.grant === report.grant);
+  if (found && (found.persona !== report.persona || found.state === 'revoked')) return list as StoredKeep[];
+  if (found && report.at < found.reportAt) {
+    if (report.state !== 'revoked') return list as StoredKeep[];
+    // A `revoked` report dated before the one applied still ends the pass; what it says of the player is older, so it is not taken.
+    const { revokeSent: _sent, ...rest } = found;
+    return withKeep(list, { ...keep, passes: passes.map(p => (p === found ? { ...rest, state: 'revoked' as const } : p)) });
+  }
+  const next: StoredPass = {
+    grant: report.grant, persona: report.persona,
+    ...(report.name ? { name: report.name } : found?.name ? { name: found.name } : {}),
+    state: report.state, expiration: report.expiration, seenAt: report.seen,
+    ...(report.via ? { via: report.via } : found?.via ? { via: found.via } : {}),
+    reportAt: report.at,
+    ...(found?.revokeSent && report.state !== 'revoked' ? { revokeSent: true, ...(found.revokeSentAt !== undefined ? { revokeSentAt: found.revokeSentAt } : {}) } : {}),
+  };
+  if (found && samePass(found, next)) return list as StoredKeep[];
+  let kept = passes;
+  if (found) {
+    kept = passes.map(p => (p === found ? next : p));
+  } else {
+    if (kept.length >= KEEP_MAX_PASSES) {
+      const evict = (pick: (p: StoredPass) => boolean) => {
+        const victim = kept.filter(pick).sort((a, b) => a.reportAt - b.reportAt)[0];
+        if (victim) kept = kept.filter(p => p !== victim);
+      };
+      evict(p => passIsDead(p, now));
+      if (kept.length >= KEEP_MAX_PASSES) evict(p => p.state === 'revoked');
+      if (kept.length >= KEEP_MAX_PASSES) return list as StoredKeep[];
+    }
+    kept = [...kept, next];
+  }
+  return withKeep(list, { ...keep, passes: kept });
+}
+
+/** The revoke of a pass is going out (or going out again): note it, and when, until the Keep acks `revoked`. */
+export function markPassRevokeSent(keep: StoredKeep, grant: string, now: number): StoredKeep {
+  return {
+    ...keep,
+    passes: (keep.passes ?? []).map(p => (p.grant === grant && p.state !== 'revoked' ? { ...p, revokeSent: true, revokeSentAt: now } : p)),
+  };
+}
+
+/**
+ * The pass revokes to send again for a paired Keep: sent, not yet acked `revoked` (nor reported so), and the last
+ * send older than `KEEP_RESEND_AFTER_S`. An expired pass is still revoked: the Keep keeps the revoke so the
+ * persona is not given a new pass, which is the point of it.
+ */
+export function passRevokesDue(keep: StoredKeep, now: number): StoredPass[] {
+  if (keep.status !== 'paired') return [];
+  return (keep.passes ?? []).filter(p => p.revokeSent && p.state !== 'revoked' && now - (p.revokeSentAt ?? 0) > KEEP_RESEND_AFTER_S);
+}
+
+/** The newest time a pass report was applied for this Keep (0 when none). */
+export function lastReportAt(keep: StoredKeep): number {
+  return (keep.passes ?? []).reduce((m, p) => Math.max(m, p.reportAt), 0);
+}
+
+/**
+ * Whether to ask the Keep for its passes (27668). `opening`: the Keep's page was just opened. Opening asks again
+ * once the last request is over `KEEP_RESEND_AFTER_S` old. Otherwise (a catch-up while the app is open) only a
+ * Keep that has reported before is asked, and only when both its last report and the last request are over 7
+ * days old: a Keep nobody has opened yet, or one with no passes, is not asked on every start.
+ */
+export function passesRequestDue(keep: StoredKeep, now: number, opening: boolean): boolean {
+  if (keep.status !== 'paired') return false;
+  const requested = keep.passesRequestedAt ?? 0;
+  if (opening) return now - requested > KEEP_RESEND_AFTER_S;
+  const last = lastReportAt(keep);
+  return last > 0 && now - Math.max(last, requested) > KEEP_PASSES_REQUEST_AFTER_S;
+}
+
+export function markPassesRequested(keep: StoredKeep, now: number): StoredKeep {
+  return { ...keep, passesRequestedAt: now };
+}
+
+// ---- the return-passes switch (K1f) ----------------------------------------
+
+/** The switch as the owner sees it: the Keep's default (on) until it is changed. */
+export function returnPassesOn(keep: StoredKeep): boolean {
+  return keep.settings?.returnPasses ?? true;
+}
+
+/** True when the next settings revision is one the saved Keeps can hold. */
+export function canComposeSettings(keep: StoredKeep): boolean {
+  return (keep.settings?.setrev ?? 0) < Number.MAX_SAFE_INTEGER - 1;
+}
+
+/** The switch set to `on`, as the next revision, not yet sent. */
+export function composeSettings(keep: StoredKeep, on: boolean, now: number): StoredKeep {
+  if (!canComposeSettings(keep)) throw new RangeError('The Keep has no higher settings revision left');
+  return {
+    ...keep,
+    settings: { returnPasses: on, setrev: (keep.settings?.setrev ?? 0) + 1, composedAt: now, sentAt: 0, confirmed: false },
+  };
+}
+
+/** The settings of a Keep that took a new pairing link: sent again as a new message, as the Keep may have forgotten them. */
+export function restartedSettings(settings: KeepSettings, now: number): KeepSettings {
+  return { returnPasses: settings.returnPasses, setrev: settings.setrev, composedAt: now, sentAt: 0, confirmed: false };
+}
+
+export function markSettingsSent(keep: StoredKeep, now: number): StoredKeep {
+  return keep.settings ? { ...keep, settings: { ...keep.settings, sentAt: now } } : keep;
+}
+
+/** The settings message to send (again): not acked yet, not given up, and the last send over `KEEP_RESEND_AFTER_S` old. */
+export function settingsDue(keep: StoredKeep, now: number): boolean {
+  const s = keep.settings;
+  return keep.status === 'paired' && !!s && !s.confirmed && !s.failed && now - s.sentAt > KEEP_RESEND_AFTER_S;
+}
+
+/**
+ * Apply an ack of a settings message (`ack.settings`). Relays return old acks again, so an ack counts only if it is
+ * dated after the claim and after the message it answers was made.
+ * - `updated` at our `setrev`: the Keep has the setting.
+ * - `refused stale`: the Keep is at a revision at or above ours (a resend of a message it already took gets this
+ *   too, at our own revision). Take its revision and make the message again one higher, once; the second time it
+ *   is given up. Repeats of a refusal already seen are ignored.
+ * Returns the same list when nothing changed.
+ */
+export function applySettingsAck(list: readonly StoredKeep[], ack: KeepAck, now: number): StoredKeep[] {
+  const keep = findKeep(list, ack.keep);
+  const s = keep?.settings;
+  if (!keep || !s || !ack.settings || ack.setrev === undefined) return list as StoredKeep[];
+  if (ack.at < keep.claimedAt - CLAIM_ACK_SKEW_S || ack.at < s.composedAt - CLAIM_ACK_SKEW_S) return list as StoredKeep[];
+  if (ack.status === 'updated') {
+    if (ack.setrev !== s.setrev || s.confirmed || s.failed) return list as StoredKeep[];
+    return withKeep(list, { ...keep, settings: { ...s, confirmed: true } });
+  }
+  if (ack.status !== 'refused' || ack.reason !== 'stale' || s.confirmed || s.failed) return list as StoredKeep[];
+  if (ack.setrev < s.setrev) return list as StoredKeep[]; // refused an older send of ours; the newer one stands
+  if (s.refusedAt !== undefined && ack.at <= s.refusedAt) return list as StoredKeep[];
+  const seen: KeepSettings = { ...s, refusedAt: ack.at };
+  if (s.retried || ack.setrev >= Number.MAX_SAFE_INTEGER - 1) return withKeep(list, { ...keep, settings: { ...seen, failed: 'stale' } });
+  return withKeep(list, {
+    ...keep,
+    settings: { returnPasses: s.returnPasses, setrev: ack.setrev + 1, composedAt: now, sentAt: 0, confirmed: false, refusedAt: ack.at, retried: true },
+  });
+}
+
+/**
+ * What to say under the switch: nothing when the Keep has it (or nothing was ever sent), "Waiting for the Keep"
+ * until the ack, and "This Keep can't do this yet" once the resend window has passed with no ack (a Keep that
+ * does not know the message never answers it).
+ */
+export function returnPassesLabel(keep: StoredKeep, now: number): string | undefined {
+  const s = keep.settings;
+  if (!s || s.confirmed) return undefined;
+  if (s.failed) return 'The Keep has a newer setting. Switch it again.';
+  return now - s.composedAt > KEEP_RESEND_AFTER_S ? 'This Keep can’t do this yet' : 'Waiting for the Keep';
 }

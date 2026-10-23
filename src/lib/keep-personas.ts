@@ -5,7 +5,8 @@
 import type { EffectiveContact, SignetIdentity } from '../types';
 import { contactBelongsToList } from './contacts-v2-membership';
 import { contactIdentityLists } from './contacts-v2-identity-lists';
-import { contactDisplayName } from './contacts-v2-name';
+import { contactDisplayName, isHexPrefixLabel } from './contacts-v2-name';
+import { shortNpub } from './nostr-follows';
 import { isVisibleContact } from './contacts-v2-list';
 import { LocalSigningBackend } from './signing-backend';
 import type { KeepDeps } from './keep-service';
@@ -99,6 +100,25 @@ export function inviteCandidates(contacts: readonly EffectiveContact[], owner: s
     out.push({ contactId: c.contactId, name: contactDisplayName(c), tier: c.effectiveTier, persona });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * What to call the player behind a return pass (K1f), most known first: the name of the contact on `owner`'s
+ * list that has this persona as one of its keys (any visible contact, blocked or not, since this only names them),
+ * else the seat name the Keep reported, else the persona's short npub. A contact whose name is only a slice of
+ * its key does not count as a name.
+ */
+export function passPlayerName(
+  contacts: readonly EffectiveContact[] | null, owner: string, persona: string, seatName?: string,
+): string {
+  for (const c of contacts ?? []) {
+    if (!isVisibleContact(c) || !contactBelongsToList(c, owner)) continue;
+    const keys = (c.identities ?? []).map(i => i.pubkey?.toLowerCase());
+    if (!keys.includes(persona)) continue;
+    const name = (c.displayName ?? '').trim();
+    if (name && !isHexPrefixLabel(name, keys.filter((k): k is string => !!k))) return contactDisplayName(c);
+  }
+  return seatName || shortNpub(persona);
 }
 
 export interface MyKeepUnlockInput {

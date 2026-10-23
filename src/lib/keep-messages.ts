@@ -22,8 +22,9 @@ import { sanitizeDisplayName } from './text-sanitize';
 import type { DecryptingSigningBackend } from './signing-backend';
 import {
   KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MAX_OWNER_PERSONAS, KEEP_MAX_REV, KEEP_MSG_ACCEPT_KIND, KEEP_MSG_ACK_KIND,
-  KEEP_MSG_CLAIM_KIND, KEEP_MSG_INVITE_KIND, KEEP_MSG_OWNERS_KIND, KEEP_MSG_REVOKE_KIND, KEEP_REFUSAL_REASONS,
-  KEEP_SCOPES, KEEP_WRAP_JITTER_S,
+  KEEP_MSG_CLAIM_KIND, KEEP_MSG_INVITE_KIND, KEEP_MSG_OWNERS_KIND, KEEP_MSG_PASSES_REQUEST_KIND, KEEP_MSG_PASS_REPORT_KIND,
+  KEEP_MSG_REVOKE_KIND, KEEP_MSG_SETTINGS_KIND, KEEP_PASS_STATES, KEEP_PASS_VIAS, KEEP_REFUSAL_REASONS, KEEP_SCOPES,
+  KEEP_SETTING_RETURN_PASSES, KEEP_WRAP_JITTER_S,
 } from './keep-wire';
 
 export type AckStatus = typeof KEEP_ACK_STATUSES[number];
@@ -107,6 +108,20 @@ export function revokeRumor(backend: DecryptingSigningBackend, keep: string, gra
   return rumorTemplate(backend, KEEP_MSG_REVOKE_KIND, [['keep', keep], ['grant', grant]], now);
 }
 
+/** Settings (K1f): the Keep's own revision counter for them, and the return-passes switch. */
+export function settingsRumor(backend: DecryptingSigningBackend, keep: string, setrev: number, returnPasses: boolean, now: number): UnsignedEvent {
+  if (!HEX64.test(keep) || !Number.isInteger(setrev) || setrev < 1 || setrev > KEEP_MAX_REV) throw new Error('Invalid settings');
+  return rumorTemplate(backend, KEEP_MSG_SETTINGS_KIND, [
+    ['keep', keep], ['setrev', String(setrev)], [KEEP_SETTING_RETURN_PASSES, returnPasses ? 'on' : 'off'],
+  ], now);
+}
+
+/** "Send me a report for every pass that isn't expired" (K1f). */
+export function passesRequestRumor(backend: DecryptingSigningBackend, keep: string, now: number): UnsignedEvent {
+  if (!HEX64.test(keep)) throw new Error('Invalid request');
+  return rumorTemplate(backend, KEEP_MSG_PASSES_REQUEST_KIND, [['keep', keep]], now);
+}
+
 /** Wrap one rumor to the Keep; the wrap goes to the Keep's relays. */
 export function wrapForKeep(rumor: UnsignedEvent, keep: string, backend: DecryptingSigningBackend): Promise<NostrEvent> {
   return giftWrap(rumor, keep, backend, { maxJitterS: KEEP_WRAP_JITTER_S });
@@ -130,9 +145,39 @@ export interface KeepAck {
   owners?: boolean;
   /** The Keep's revision (K1e): the new one on `updated`, the current one on `pending` and `refused stale`. */
   rev?: number;
-  /** The persona the wrap was addressed to (set when opened, on owners acks). */
+  /** The persona the wrap was addressed to (set when opened, on owners and settings acks). */
   to?: string;
+  /**
+   * True for the ack of a settings message (K1f): `updated` (naming the setting) or `refused stale`. It
+   * carries the Keep's `setrev` (the new one on `updated`, the current one on `refused stale`) and no `rev`.
+   */
+  settings?: boolean;
+  setrev?: number;
 }
+
+export type PassState = typeof KEEP_PASS_STATES[number];
+export type PassVia = typeof KEEP_PASS_VIAS[number];
+
+/** A pass report (K1f) that passed the checks. It never holds a secret: the Keep does not send one and none is read. */
+export interface KeepPassReport {
+  keep: string;
+  grant: string;
+  /** The player persona the pass is bound to. */
+  persona: string;
+  state: PassState;
+  /** Unix seconds. */
+  expiration: number;
+  /** When the player was last seen, unix seconds. */
+  seen: number;
+  via?: PassVia;
+  /** The seat name, cleaned as invite labels are; absent when empty. */
+  name?: string;
+  /** The rumor's real time. */
+  at: number;
+}
+
+/** What a gift wrap addressed to an owner persona held, once it passed the checks. */
+export type KeepMessage = { kind: 'ack'; ack: KeepAck } | { kind: 'report'; report: KeepPassReport };
 
 function single(tags: string[][], name: string): string[] | null {
   const found = tags.filter(t => Array.isArray(t) && t[0] === name);
@@ -144,6 +189,11 @@ function parseJson(text: string): Record<string, unknown> | null {
     const v: unknown = JSON.parse(text);
     return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
   } catch { return null; }
+}
+
+/** A decimal revision this app can store (and add one to), or undefined. */
+function parseRev(text: string | undefined): number | undefined {
+  return text !== undefined && /^(0|[1-9]\d{0,15})$/.test(text) && Number(text) < Number.MAX_SAFE_INTEGER ? Number(text) : undefined;
 }
 
 /** The fields of an ack rumor that passed the Keep checks; null when it is not a well-formed ack for `keep`. */
@@ -162,8 +212,23 @@ export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_a
   const revText = single(tags, 'rev')?.[1];
   // A revision the next one cannot follow is not believed. The Keep stops at 2^53, but this app stores a revision as a
   // safe integer (at most 2^53 - 1), so the next one after an ack must still be one: an ack may say up to 2^53 - 2.
-  const rev = revText !== undefined && /^(0|[1-9]\d{0,15})$/.test(revText) && Number(revText) < Number.MAX_SAFE_INTEGER ? Number(revText) : undefined;
+  const rev = parseRev(revText);
   if (!Number.isSafeInteger(rumor.created_at)) return null;
+  // K1f: the ack of a settings message carries `setrev` (and, on `updated`, `setting`), never `rev`, grant or claim.
+  const setrevTag = single(tags, 'setrev');
+  if (setrevTag || tags.some(t => t[0] === 'setrev' || t[0] === 'setting')) {
+    if (!setrevTag || revText !== undefined || grantTag || claimTag) return null;
+    const setrev = parseRev(setrevTag[1]);
+    if (setrev === undefined) return null;
+    if (status === 'updated') {
+      if (single(tags, 'setting')?.[1] !== KEEP_SETTING_RETURN_PASSES) return null;
+      return { keep, status, claim: false, settings: true, setrev, at: rumor.created_at };
+    }
+    if (status === 'refused' && single(tags, 'reason')?.[1] === 'stale') {
+      return { keep, status, claim: false, settings: true, reason: 'stale', setrev, at: rumor.created_at };
+    }
+    return null;
+  }
   if (status === 'updated' || status === 'pending') {
     if (rev === undefined || claimTag) return null;
     return { keep, status, claim: false, owners: true, rev, at: rumor.created_at };
@@ -193,15 +258,58 @@ export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_a
   };
 }
 
+/** A tag list of a pass report is short; one longer than this is not from a Keep that follows the contract. */
+const MAX_REPORT_TAGS = 16;
+
+const DECIMAL = /^(0|[1-9]\d{0,15})$/;
+
 /**
- * Open a gift wrap addressed to `backend`'s persona and return the ack inside,
- * if it is a valid one from one of `keeps`. Never throws.
+ * The fields of a pass report rumor (K1f, kind 27667) that passed the checks; null otherwise. Strict: each
+ * tag appears once; `grant` is 32 hex, `p` and `keep` 64 hex; `state` is one of the three; `expiration` and
+ * `seen` are decimal seconds. A `via` this build does not know is left out (the Keep may add ways in later); a
+ * `name` is cleaned like an invite label and left out when nothing is left. A report with a `secret` tag is
+ * dropped whole: a pass secret is a bearer credential for the player and never belongs in this app.
  */
-export async function unwrapKeepAck(
+export function parsePassReportRumor(
+  rumor: { kind: number; tags: string[][]; created_at: number; content?: string }, keep: string,
+): KeepPassReport | null {
+  if (rumor.kind !== KEEP_MSG_PASS_REPORT_KIND || !Array.isArray(rumor.tags) || rumor.tags.length > MAX_REPORT_TAGS) return null;
+  if (rumor.content !== undefined && rumor.content !== '') return null;
+  if (!rumor.tags.every(t => Array.isArray(t) && t.length >= 1 && t.every(x => typeof x === 'string'))) return null;
+  if (rumor.tags.some(t => t[0].toLowerCase() === 'secret')) return null;
+  if (!Number.isSafeInteger(rumor.created_at)) return null;
+  const keepTag = single(rumor.tags, 'keep');
+  if (!keepTag || keepTag[1] !== keep) return null;
+  const grant = single(rumor.tags, 'grant')?.[1];
+  const persona = single(rumor.tags, 'p')?.[1];
+  const state = single(rumor.tags, 'state')?.[1];
+  const expiration = single(rumor.tags, 'expiration')?.[1];
+  const seen = single(rumor.tags, 'seen')?.[1];
+  if (!grant || !HEX32.test(grant) || !persona || !HEX64.test(persona)) return null;
+  if (!state || !(KEEP_PASS_STATES as readonly string[]).includes(state)) return null;
+  if (!expiration || !DECIMAL.test(expiration) || !seen || !DECIMAL.test(seen)) return null;
+  const viaTags = rumor.tags.filter(t => t[0] === 'via');
+  if (viaTags.length > 1 || rumor.tags.filter(t => t[0] === 'name').length > 1) return null;
+  const via = viaTags[0]?.[1];
+  const name = sanitizeDisplayName(rumor.tags.find(t => t[0] === 'name')?.[1] ?? '', KEEP_INVITE_LABEL_MAX);
+  return {
+    keep, grant, persona, state: state as PassState, expiration: Number(expiration), seen: Number(seen), at: rumor.created_at,
+    ...(via !== undefined && (KEEP_PASS_VIAS as readonly string[]).includes(via) ? { via: via as PassVia } : {}),
+    ...(name ? { name } : {}),
+  };
+}
+
+/**
+ * Open a gift wrap addressed to `backend`'s persona and return what is inside, if it is a valid ack or pass
+ * report from one of `keeps`. Never throws. The checks are the contract's receiver rules: the seal verifies
+ * and is signed by a Keep key we know, the rumor's author is the seal's author, and its `keep` tag names that
+ * same Keep. Anything else (including other apps' gift wraps addressed to the same persona) is dropped.
+ */
+export async function unwrapKeepMessage(
   wrap: NostrEvent,
   backend: DecryptingSigningBackend,
   keeps: ReadonlySet<string>,
-): Promise<KeepAck | null> {
+): Promise<KeepMessage | null> {
   try {
     if (wrap.kind !== 1059 || typeof wrap.content !== 'string' || wrap.content.length > 65_535) return null;
     const sealJson = parseJson(await backend.nip44Decrypt(wrap.pubkey, wrap.content));
@@ -214,9 +322,24 @@ export async function unwrapKeepAck(
     const rumor = rumorJson as unknown as NostrEvent;
     if (rumor.pubkey !== seal.pubkey) return null;
     if (typeof rumor.id === 'string' && rumor.id !== getEventHash({ ...rumor, tags: rumor.tags } as Parameters<typeof getEventHash>[0])) return null;
+    if (rumor.kind === KEEP_MSG_PASS_REPORT_KIND) {
+      const report = parsePassReportRumor(rumor, seal.pubkey);
+      return report ? { kind: 'report', report } : null;
+    }
     const ack = parseAckRumor(rumor, seal.pubkey);
-    return ack && ack.owners ? { ...ack, to: backend.activePublicKeyHex } : ack;
+    if (!ack) return null;
+    return { kind: 'ack', ack: ack.owners || ack.settings ? { ...ack, to: backend.activePublicKeyHex } : ack };
   } catch {
     return null;
   }
+}
+
+/** The ack inside a gift wrap, if it is a valid one from one of `keeps` (a pass report is not an ack). Never throws. */
+export async function unwrapKeepAck(
+  wrap: NostrEvent,
+  backend: DecryptingSigningBackend,
+  keeps: ReadonlySet<string>,
+): Promise<KeepAck | null> {
+  const message = await unwrapKeepMessage(wrap, backend, keeps);
+  return message?.kind === 'ack' ? message.ack : null;
 }

@@ -43,6 +43,10 @@ export const KEEP_MSG_ACK_KIND = 27663;
 /** K1e (provisional): the owner personas of a Keep. An update lists them; an accept comes from the persona being added. */
 export const KEEP_MSG_OWNERS_KIND = 27664;
 export const KEEP_MSG_ACCEPT_KIND = 27665;
+/** K1f (provisional): return passes. An owner persona sets the switch and asks for reports; the Keep reports each pass. */
+export const KEEP_MSG_SETTINGS_KIND = 27666;
+export const KEEP_MSG_PASS_REPORT_KIND = 27667;
+export const KEEP_MSG_PASSES_REQUEST_KIND = 27668;
 
 /** Ack `status` values, and the `reason` values that go with `refused`. */
 export const KEEP_ACK_STATUSES = ['paired', 'active', 'revoked', 'refused', 'updated', 'pending'] as const;
@@ -88,3 +92,16 @@ export const KEEP_GAMES_INVITE_S = 365 * 86400 - 3600;
 
 /** A persona's games invite is renewed once less than this much of it is left. */
 export const KEEP_GAMES_RENEW_BEFORE_S = 30 * 86400;
+
+/** K1f: the states and the ways in a pass report may carry. */
+export const KEEP_PASS_STATES = ['active', 'revoked', 'expired'] as const;
+export const KEEP_PASS_VIAS = ['code', 'lan'] as const;
+
+/** K1f: the one setting defined so far (the `setting` tag of its ack, and the tag of the settings message). */
+export const KEEP_SETTING_RETURN_PASSES = 'return_passes';
+
+/** K1f: a Keep stores at most this many passes; a passes request is answered with at most this many reports. */
+export const KEEP_MAX_PASSES = 256;
+
+/** K1f: a Keep whose last report (or last passes request) is older than this is asked for its passes again. */
+export const KEEP_PASSES_REQUEST_AFTER_S = 7 * 86400;

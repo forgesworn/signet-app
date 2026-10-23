@@ -11,10 +11,15 @@ export const FIXTURE = {
   friendSk: '0'.repeat(63) + '3',
   /** K1e: the second owner persona is the same key as the friend above (63 zeros then 3). */
   secondOwnerSk: '0'.repeat(63) + '3',
+  /** K1f: the returning player's persona key is the public key of this secret (63 zeros then 4). */
+  playerSk: '0'.repeat(63) + '4',
   code: '00112233445566778899aabbccddeeff',
   grant: 'ffeeddccbbaa99887766554433221100',
   secret: '000102030405060708090a0b0c0d0e0f' + '101112131415161718191a1b1c1d1e1f',
   label: 'Dave',
+  /** K1f: the grant the Keep made for the player's return pass, and the seat name it saw. */
+  passGrant: '0f1e2d3c4b5a69788796a5b4c3d2e1f0',
+  seatName: 'Dave',
   /** The rumors' real time, and the base of the invite's 30-day expiration. 2026-10-22 08:26:40 UTC. */
   createdAt: 1_792_657_600,
 } as const;
