@@ -93,6 +93,12 @@ interface Props {
    */
   initialError?: string;
   /**
+   * One-hold pairing A2: this Heartwood asks once on the first use of the real
+   * name. When that card can't be answered, a real-name sign-in says "This
+   * needs your Heartwood. Try again when you're with it."
+   */
+  realNameNeedsHeartwood?: boolean;
+  /**
    * An approval for THIS request is already in flight in App (e.g. one that
    * outlived the page instance that started it across a lock). Shown as
    * "Signing…" so the user never gets a fresh Approve for a request that is
@@ -184,6 +190,7 @@ export function ApproveAuth({
   appPermissionName,
   onDeny,
   initialError,
+  realNameNeedsHeartwood = false,
   externallyApproving = false,
   userChoice,
   onUserChoice,
@@ -580,7 +587,7 @@ export function ApproveAuth({
                   else await onApprove(selection, shareHandle);
                   } catch (e) {
                     setApproving(false);
-                    setError(friendlyApprovalError(e));
+                    setError(friendlyApprovalError(e, { realNameNeedsHeartwood: realNameNeedsHeartwood && selection?.keypairType === 'natural-person' }));
                   }
                 }}
               >
@@ -877,7 +884,7 @@ export function ApproveAuth({
                   else await onApprove(selection, shareHandle);
                 } catch (e) {
                   setApproving(false);
-                  setError(friendlyApprovalError(e));
+                  setError(friendlyApprovalError(e, { realNameNeedsHeartwood: realNameNeedsHeartwood && selection?.keypairType === 'natural-person' }));
                 }
               }}
             >

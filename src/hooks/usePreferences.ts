@@ -259,6 +259,25 @@ export function usePreferences() {
     await applyFresh(p => (p.contactPictureBackup === value ? p : { ...p, contactPictureBackup: value }));
   }, [applyFresh]);
 
+  /**
+   * One-hold pairing: the signing style on file for this phone (A8, A11).
+   * `undefined` clears it (the owner turned full access off).
+   */
+  const setHeartwoodOwnerStyle = useCallback(async (style: 'everyday' | 'careful' | 'custom' | undefined, actAs?: readonly string[]) => {
+    await applyFresh(p => {
+      const sameActAs = actAs === undefined
+        || (p.heartwoodOwnerActAs?.length === actAs.length && actAs.every((x, i) => p.heartwoodOwnerActAs![i] === x));
+      if (p.heartwoodOwnerStyle === style && sameActAs) return p;
+      const next = { ...p };
+      if (style === undefined) { delete next.heartwoodOwnerStyle; delete next.heartwoodOwnerActAs; }
+      else {
+        next.heartwoodOwnerStyle = style;
+        if (actAs !== undefined) next.heartwoodOwnerActAs = [...actAs];
+      }
+      return next;
+    });
+  }, [applyFresh]);
+
   const setFallbackBunkerRelays = useCallback(async (relays: string[]) => {
     // Defence-in-depth: drop anything that doesn't pass the scheme check on
     // write. buildPairingURI will also reject, but silently filtering here
@@ -304,5 +323,5 @@ export function usePreferences() {
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, reloadPreferences };
 }

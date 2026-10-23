@@ -40,6 +40,13 @@ export type PrivateVaultSyncResult = {
   confirmedRelays?: string[];
   /** On `verified`: vaultContentHash of the local snapshot that was verified. */
   revision?: string;
+  /**
+   * This cycle prepared and sent a snapshot (a first backup or a changed one),
+   * rather than finding the relay copy already verified. The status line's
+   * "Backing up N of M" counter keys off it, so a quiet re-check never reads
+   * as a backup.
+   */
+  published?: boolean;
 };
 
 /** One bounded sync cycle. Scheduling and UI stay with the caller. */
@@ -178,7 +185,7 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
     const result = await flushVaultBackup({ backend, encryptionKey: args.encryptionKey,
       relays: args.relays.write, now: args.now, isCurrent: args.isCurrent });
     current();
-    return { state: result.state === 'verified' ? 'verified' : 'pending', canonical: canonical || result.state === 'verified', merged, rotation,
+    return { state: result.state === 'verified' ? 'verified' : 'pending', canonical: canonical || result.state === 'verified', merged, rotation, published: true,
       ...(result.state === 'verified' ? { confirmedAt: args.now, confirmedRelays: result.confirmedRelays, revision } : {}) };
   } catch {
     return { state: args.isCurrent() ? 'unavailable' : 'cancelled', canonical, merged };

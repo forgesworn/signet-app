@@ -1,5 +1,5 @@
 import { PRODUCTION_RELAY_URL } from '../lib/relay-defaults';
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { validateMnemonic, decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
 import { fetchRestoreProfile, type RestoredProfile } from '../lib/profile-restore';
 import { fetchExistingProfile, buildMatchSeed, type ExistingProfile } from '../lib/existing-profile';
@@ -9,6 +9,8 @@ import type { PublicProfileBase, PublicProfileConfig } from '../types';
 import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import { BrandMark } from '../components/BrandMark';
 import { PAIR_WITH_GUARDIAN_LABEL } from '../lib/child-device-copy';
+import { FullAccessChoice } from '../components/FullAccessChoice';
+import type { FullAccessDecision, FullAccessOffer, HeartwoodConnectUi } from '../lib/heartwood-one-hold';
 
 interface Props {
   onImport: (mnemonic: string, displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean, guardianPubkey?: string) => Promise<void>;
@@ -31,7 +33,12 @@ interface Props {
     primaryKeypair: 'natural-person' | 'persona',
     opts?: { publishProfile?: boolean; existingProfile?: Partial<PublicProfileConfig>; existingEventId?: string; existingCreatedAt?: number; existingRelay?: string; existingBase?: PublicProfileBase; existingContentHash?: string },
   ) => Promise<void>;
-  onConnectHeartwood: (bunkerUri: string, displayName: string) => Promise<void>;
+  /**
+   * `ui` lets the connect handler stop for the full-access choice (one-hold
+   * pairing, A1) once the Heartwood lists the bundle method. The bundle is
+   * sent only from the tap on that screen.
+   */
+  onConnectHeartwood: (bunkerUri: string, displayName: string, ui?: HeartwoodConnectUi) => Promise<void>;
   /** Called when the user backs out of the Heartwood screens, so a held connection can be dropped. */
   onCancelHeartwood?: () => void;
   onConnectNip07: (displayName: string) => Promise<void>;
@@ -48,7 +55,7 @@ interface Props {
 type Flow = 'welcome' | 'create' | 'signet-restore' | 'nostr-native' | 'import' | 'import-lite' | 'import-nsec' | 'heartwood' | 'nip07';
 type ImportStep = 'phrase' | 'fetching' | 'name-choice' | 'name' | 'done';
 type LiteImportStep = 'phrase' | 'name' | 'done';
-type HeartwoodStep = 'uri' | 'name' | 'connecting';
+type HeartwoodStep = 'uri' | 'name' | 'connecting' | 'full-access';
 
 export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProfile, onImportNsec, onConnectHeartwood, onCancelHeartwood, onConnectNip07, onStartChildPair, onCreate }: Props) {
   const [flow, setFlow] = useState<Flow>('welcome');
@@ -87,6 +94,9 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   const [heartwoodStep, setHeartwoodStep] = useState<HeartwoodStep>('uri');
   const [bunkerUri, setBunkerUri] = useState('');
   const [heartwoodConnecting, setHeartwoodConnecting] = useState(false);
+  // The full-access choice (A1): the offer from the connect handler and the
+  // resolver that carries the owner's decision back to it.
+  const [fullAccess, setFullAccess] = useState<{ offer: FullAccessOffer; resolve: (d: FullAccessDecision) => void } | null>(null);
   const [nip07Detected, setNip07Detected] = useState(false);
   const [nip07Connecting, setNip07Connecting] = useState(false);
   const [nsecImporting, setNsecImporting] = useState(false);
@@ -321,13 +331,46 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
     setHeartwoodStep('connecting');
     setHeartwoodConnecting(true);
     setError('');
+    const ui: HeartwoodConnectUi = {
+      chooseFullAccess: (offer) => new Promise<FullAccessDecision>((resolve) => {
+        setFullAccess({ offer, resolve });
+        setHeartwoodStep('full-access');
+      }),
+    };
     try {
-      await onConnectHeartwood(bunkerUri.trim(), displayName.trim());
+      await onConnectHeartwood(bunkerUri.trim(), displayName.trim(), ui);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
+      setFullAccess(null);
       setHeartwoodStep('name');
       setHeartwoodConnecting(false);
     }
+  };
+
+  const decideFullAccess = (d: FullAccessDecision) => {
+    const pending = fullAccess;
+    setFullAccess(null);
+    setHeartwoodStep('connecting');
+    pending?.resolve(d);
+  };
+
+  // m9: the connect handshake waits on the choice screen. Any way out other
+  // than its own buttons (an unmount, a flow reset, the cancel below) answers
+  // 'cancel', so the signer socket is closed and `heartwoodConnecting` clears
+  // instead of waiting forever. Nothing is sent: the bundle needs a tap.
+  const pendingFullAccess = useRef(fullAccess);
+  pendingFullAccess.current = fullAccess;
+  useEffect(() => () => { pendingFullAccess.current?.resolve({ mode: 'cancel' }); }, []);
+  useEffect(() => {
+    if (fullAccess && (flow !== 'heartwood' || heartwoodStep !== 'full-access')) {
+      fullAccess.resolve({ mode: 'cancel' });
+      setFullAccess(null);
+    }
+  }, [fullAccess, flow, heartwoodStep]);
+  const cancelHeartwood = () => {
+    pendingFullAccess.current?.resolve({ mode: 'cancel' });
+    setFullAccess(null);
+    onCancelHeartwood?.();
   };
 
   // --- Render: compute the current stage's body ---
@@ -903,7 +946,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleHeartwoodUri} disabled={!bunkerUri.trim()} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => { onCancelHeartwood?.(); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -939,10 +982,25 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
                 If your Heartwood asks, press its button to approve. It may ask more than once.
               </p>
             )}
-            <button className="btn btn-ghost" onClick={() => { onCancelHeartwood?.(); setHeartwoodStep('uri'); }} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setHeartwoodStep('uri'); }} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
+        );
+      }
+
+      if (heartwoodStep === 'full-access' && fullAccess) {
+        return (
+          <FullAccessChoice
+            words={fullAccess.offer.words}
+            includeRealName={false}
+            onRun={fullAccess.offer.run}
+            // The style on file is the device's answer (`reply.style`), not the tap.
+            onApproved={(reply) => decideFullAccess({ mode: 'bundle', reply, style: reply.style })}
+            onSeparately={() => decideFullAccess({ mode: 'separate' })}
+            onBack={() => decideFullAccess({ mode: 'cancel' })}
+            showSeparatelyHint
+          />
         );
       }
 

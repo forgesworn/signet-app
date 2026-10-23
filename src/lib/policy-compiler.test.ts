@@ -542,6 +542,47 @@ describe('guardian slot', () => {
     expect(new Set(p.allowedMethods).size).toBe(p.allowedMethods.length);
   });
 
+  it('one-hold: the owner mark survives a push on a non-strict slot', () => {
+    const p = compileGuardianSlotPolicy(
+      slot({
+        currentPubkey: GUARDIAN_CLIENT,
+        strictPermissions: false,
+        allowedMethods: ['sign_event', 'get_public_key', 'heartwood_owner_vault', 'heartwood_list_identities'],
+      }),
+    );
+    expect(p.allowedMethods).toContain('heartwood_owner_vault');
+    expect(p.allowedMethods).toContain('heartwood_list_identities');
+  });
+
+  it('one-hold: an Extra careful kinds list survives a push (never reset to [])', () => {
+    const careful = slot({
+      currentPubkey: GUARDIAN_CLIENT,
+      strictPermissions: false,
+      autoApprove: true,
+      allowedKinds: [30078, 22242],
+      allowedMethods: ['sign_event', 'get_public_key', 'nip44_encrypt', 'nip44_decrypt', 'heartwood_owner_vault'],
+    });
+    const p = compileGuardianSlotPolicy(careful);
+    expect(p.allowedKinds).toEqual([30078, 22242]);
+    // Nothing else differs, so a push on a settled phone changes nothing.
+    expect(policyDiffersFromSlot(p, careful)).toBe(false);
+  });
+
+  it('one-hold (m11): any non-empty kinds list is carried over as it is, not only the careful one', () => {
+    // A Sapwood "Posting"-style list: the push must not widen it to "every kind".
+    const posting = slot({ currentPubkey: GUARDIAN_CLIENT, strictPermissions: false, allowedKinds: [1, 7] });
+    expect(compileGuardianSlotPolicy(posting).allowedKinds).toEqual([1, 7]);
+    // And an empty list ("every kind") stays empty rather than gaining entries.
+    expect(compileGuardianSlotPolicy(slot({ currentPubkey: GUARDIAN_CLIENT, strictPermissions: false, allowedKinds: [] })).allowedKinds).toEqual([]);
+  });
+
+  it('one-hold: the kinds list is copied, not shared with the slot', () => {
+    const s = slot({ currentPubkey: GUARDIAN_CLIENT, strictPermissions: false, allowedKinds: [30078, 22242] });
+    const p = compileGuardianSlotPolicy(s);
+    p.allowedKinds.push(1);
+    expect(s.allowedKinds).toEqual([30078, 22242]);
+  });
+
   it('strips heartwood_derive_persona (and any non-TOFU-safe method) on a strict slot', () => {
     const p = compileGuardianSlotPolicy(
       slot({
