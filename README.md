@@ -191,9 +191,9 @@ imports it.
 
 ## Relay defaults and failover
 
-Fresh installs use `wss://relay.primal.net` (primary), `wss://nostr.oxtr.dev`,
-`wss://relay.damus.io` and `wss://relay.ditto.pub` for reads and writes.
-`wss://relay.nostr.band` is an additional read-only relay. nos.lol, which
+Fresh installs use `wss://relay.primal.net` (primary), `wss://relay.damus.io`
+and `wss://relay.ditto.pub` for reads and writes. Authentication fallback also
+uses `wss://nostr.oxtr.dev`. nos.lol, which
 stopped answering in October 2026, and an earlier default are retired from the
 defaults and migrated out of saved app relay settings.
 
@@ -253,3 +253,7 @@ Build and test tooling (`devDependencies`): Vite 8 with `@vitejs/plugin-react` a
 ## License
 
 MIT
+
+## Publisher information
+
+The [publisher information pack](docs/legal/README.md) records the software and hosting scope, privacy disclosures and remaining owner decisions. These are review drafts; they are not adopted website policies.
