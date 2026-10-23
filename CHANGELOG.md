@@ -3,6 +3,11 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.22.0
+- Set up a Heartwood with one five-second hold after comparing all five check words. Choose Everyday or Extra careful signing, review the current choice in Settings, and narrow or withdraw access there. Requires firmware v0.18.0-beta.29 or newer; older firmware keeps the separate pairing steps
+- Private backups read from the relays they are written to, so a dead read-only relay no longer stalls them. If a write relay is unreachable, the backup banner offers to turn it off when another checked copy remains safe
+- Default relays are now primal, damus and ditto
+
 ## 0.21.5
 - Remote signing works again: the signer moves from nos.lol, which stopped answering around 19 October, to relay.primal.net. Installs on the old default move automatically, and synced settings carry the new relay to your other devices
 - Apps and devices paired only over nos.lol need pairing again
