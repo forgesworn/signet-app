@@ -27,9 +27,18 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
   const verified = states.filter(s => s.state === 'verified').length;
   const invalid = states.some(s => s.state === 'unusable');
   const unavailable = states.some(s => s.state === 'unavailable');
+  // A5: the counter belongs to a first sync, when this device is actually
+  // sending backups. Every unlock re-checks all datasets from scratch, and
+  // that quiet check must not read as "Backing up 1 of 5". Datasets that have
+  // finished (verified or not) count; one that ended unavailable no longer
+  // freezes the number.
+  const sending = states.some(s => s.published);
+  const finished = states.length;
   const heading = health.phase === 'unsupported' ? 'Recovery-derived backups unavailable'
     : invalid ? 'A private backup needs attention'
     : health.phase === 'checking' ? 'Checking existing backups before migration'
+    : health.phase === 'running' && sending && health.total !== undefined && health.total > 0 && finished < health.total
+      ? `Backing up ${Math.min(finished + 1, health.total)} of ${health.total}…`
     : health.phase === 'running' ? 'Checking private backups'
     : states.some(s => s.state === 'waiting-legacy') ? 'Waiting for existing backups before migration'
     : unavailable ? 'Private backups are waiting for a connection'

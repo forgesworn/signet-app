@@ -1,4 +1,4 @@
-import { BunkerSigningBackend, BunkerRequestTimeoutError } from './signing-backend';
+import { BunkerSigningBackend, BunkerRequestTimeoutError, CARD_REQUEST_TIMEOUT_MS } from './signing-backend';
 import type { DecryptingSigningBackend, StampedSigningCalls } from './signing-backend';
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import { schnorr } from '@noble/curves/secp256k1.js';
@@ -101,7 +101,7 @@ export class RoutedBunkerSigningBackend implements DecryptingSigningBackend {
       this.connecting = backend
         // No connect handshake re-send: the client key is already bound to
         // the master slot; expectedPubkey pins the route to its identity.
-        .reconnect(this.slotBunkerUri, 30_000, this.activePublicKeyHex, false)
+        .reconnect(this.slotBunkerUri, CARD_REQUEST_TIMEOUT_MS, this.activePublicKeyHex, false)
         .then(() => {
           if (this.destroyed) {
             backend.destroy();

@@ -21,6 +21,8 @@ interface Props {
   onDone: () => void;
   /** Left without activating. */
   onCancel: () => void;
+  /** One-hold pairing A2: the Heartwood asks once on the first use of the real name. */
+  heartwoodFirstUse?: boolean;
 }
 
 type Step = 'name' | 'confirm' | 'backup';
@@ -49,8 +51,9 @@ export function ActivateRealIdentity({
   onMarkBackedUp,
   onDone,
   onCancel,
+  heartwoodFirstUse = false,
 }: Props) {
-  const copy = resolveActivationCopy(target);
+  const copy = resolveActivationCopy(target, { heartwoodFirstUse });
   const [step, setStep] = useState<Step>('name');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);

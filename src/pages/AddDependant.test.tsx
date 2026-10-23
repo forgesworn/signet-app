@@ -119,3 +119,34 @@ describe('AddDependant — backup step', () => {
     expect(merged.onMarkBackedUp).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AddDependant — Heartwood press preview (one-hold decision 11)', () => {
+  const LINE = (n: string) => `Your Heartwood will ask twice: first for ${n}'s real-name key, then for ${n}'s persona key.`;
+
+  it('says how many presses are coming and what each says, naming the child as typed', () => {
+    render(<AddDependant {...baseProps({ heartwoodDeriveCards: true, heartwoodFullAccess: true })} />);
+    expect(screen.getByRole('note').textContent).toContain('Your Heartwood will ask twice: first for their real-name key, then for their persona key.');
+    fireEvent.change(screen.getByLabelText(/Their name/i), { target: { value: 'Sam' } });
+    expect(screen.getByText(LINE('Sam'))).toBeDefined();
+  });
+
+  it('m1: without the full-access mark the line does not promise "twice"', () => {
+    render(<AddDependant {...baseProps({ heartwoodDeriveCards: true })} />);
+    const note = screen.getByRole('note').textContent ?? '';
+    expect(note).toContain('more than twice');
+    expect(note).not.toContain('ask twice');
+  });
+
+  it('is absent when the keys are made on this phone', () => {
+    render(<AddDependant {...baseProps()} />);
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(screen.queryByText(/Your Heartwood will ask twice/)).toBeNull();
+  });
+
+  it('is shown before anything is created (no request until the button)', () => {
+    const props = baseProps({ heartwoodDeriveCards: true });
+    render(<AddDependant {...props} />);
+    expect(screen.getByRole('note')).toBeDefined();
+    expect(props.onCreateDependant).not.toHaveBeenCalled();
+  });
+});

@@ -13,11 +13,31 @@ export const SIGNER_DENIED_COPY = 'Your Heartwood turned that down, so nothing w
 export const SIGNER_BUSY_COPY = 'Your Heartwood is busy with another request. Give it a moment, then try again.';
 export const SIGNER_NEEDS_DEVICE_COPY = 'This needs approving on your Heartwood first. Press its button, then try again.';
 
+/**
+ * One-hold pairing A2: the first use of the real name asks on the Heartwood
+ * once. When that card can't be answered (the device is unreachable, or the
+ * card times out), this says so in place of the generic timeout line.
+ */
+export const SIGNER_REAL_NAME_NEEDS_DEVICE_COPY = "This needs your Heartwood. Try again when you're with it.";
+
 /** The message `BunkerRequestTimeoutError` carries: `<method> timed out`. */
 const OWN_TIMEOUT = /^[a-z0-9_]+ timed out$/i;
+/** A transport failure: the Heartwood could not be reached at all. */
+const UNREACHABLE = /not connected|not reachable|unreachable|all promises were rejected|failed to publish|signer is not open/i;
 
-export function friendlySignerMessage(message: string): string {
+export interface SignerMessageOptions {
+  /**
+   * The signature is for the real identity on a Heartwood that asks once for
+   * its first use. A timeout or an unreachable device then reads A2's line.
+   */
+  realNameNeedsHeartwood?: boolean;
+}
+
+export function friendlySignerMessage(message: string, opts?: SignerMessageOptions): string {
   const m = message.trim().toLowerCase();
+  if (opts?.realNameNeedsHeartwood && (m === 'timeout' || OWN_TIMEOUT.test(m) || UNREACHABLE.test(m))) {
+    return SIGNER_REAL_NAME_NEEDS_DEVICE_COPY;
+  }
   if (m === 'timeout' || OWN_TIMEOUT.test(m)) return SIGNER_TIMEOUT_COPY;
   if (m === 'user denied') return SIGNER_DENIED_COPY;
   if (m.startsWith('signer is busy')) return SIGNER_BUSY_COPY;
@@ -26,8 +46,13 @@ export function friendlySignerMessage(message: string): string {
 }
 
 /** Message for an approval that threw: `Error.message` mapped, else the caller's fallback. */
-export function friendlyApprovalError(e: unknown): string {
-  if (e instanceof Error) return friendlySignerMessage(e.message);
+export function friendlyApprovalError(e: unknown, opts?: SignerMessageOptions): string {
+  if (e instanceof Error) return friendlySignerMessage(e.message, opts);
   if (e == null) return 'Failed to approve — please try again';
-  return friendlySignerMessage('Failed to approve: ' + String(e));
+  // A remote error reply arrives as the bare string ("timeout").
+  if (typeof e === 'string' && opts?.realNameNeedsHeartwood) {
+    const mapped = friendlySignerMessage(e, opts);
+    if (mapped !== e) return mapped;
+  }
+  return friendlySignerMessage('Failed to approve: ' + String(e), opts);
 }

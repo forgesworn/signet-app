@@ -407,6 +407,19 @@ h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
   border-color: var(--warning);
 }
 
+/* A problem line (a refusal, a failed action). Text stays text-primary: the danger
+   colour on danger-light is under 4.5:1 in both themes, so the colour is carried
+   by the border instead. */
+.status-problem {
+  padding: 8px 10px;
+  background: var(--danger-light);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 /* List item inside a flush card */
 .card-row {
   display: flex;

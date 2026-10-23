@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SignetIdentity, AppPreferences, RelayConfig } from '../types';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { defaultRelays, MAX_RELAYS } from '../lib/relay-service';
@@ -12,6 +12,9 @@ import { describePushResult, type PolicyPushResult } from '../lib/policy-push';
 import { shortDeviceLabel } from '../lib/heartwood-operator-import';
 import { useRelayHealth } from '../hooks/useRelayHealth';
 import { getRelayDeliveryStatus } from '../lib/relay-delivery-status';
+import { FullAccessChoice } from '../components/FullAccessChoice';
+import { HeartwoodFullAccessCard, type HeartwoodFullAccessCardProps, type OwnerChoiceKind } from '../components/HeartwoodFullAccessCard';
+import { FULL_ACCESS_COPY, PAIRING_PROBLEM_COPY, type BundleRunResult, type OwnerStyle, type PairWords, type StatusStyle } from '../lib/heartwood-one-hold';
 
 /** Operator-key + rules-push state bundle from App.tsx (C3, family-bunker §11.1.4/9). */
 export interface HeartwoodOperatorSettingsProps {
@@ -29,12 +32,27 @@ export interface HeartwoodOperatorSettingsProps {
     lastPushAt: number | null;
     lastResult: PolicyPushResult | null;
     pushing: boolean;
+    /** The push is held while a full-access hold waits on the Heartwood. */
+    waiting?: boolean;
     pushNow: () => void;
   };
   /** Pre-filled link text (from a QR scan routed here). */
   initialImportText?: string;
   /** Approve from my phone, per own app; absent hides the section. */
   awayApproval?: AwayApprovalListProps;
+}
+
+/** One-hold pairing state for Settings → Heartwood (absent unless the Heartwood lists the bundle method). */
+export interface HeartwoodOwnerSettingsProps extends Omit<HeartwoodFullAccessCardProps, 'onOpenChoice'> {
+  supported: boolean;
+  words: PairWords | null;
+  includeRealName: boolean;
+  /** The real name is included only because older backups still sign with it (m12). */
+  realNameForLegacyBackups?: boolean;
+  /** The style on file, for re-running the hold (A8). */
+  storedStyle: StatusStyle | undefined;
+  /** Run ONE bundle; called from the choice screen's tap only. */
+  run: (style: OwnerStyle) => Promise<BundleRunResult>;
 }
 
 interface Props {
@@ -74,9 +92,40 @@ interface Props {
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
   /** Heartwood operator key + rules push (absent on the paired-child surface). */
   heartwoodOperator?: HeartwoodOperatorSettingsProps;
+  /** One-hold pairing status and actions (absent unless the Heartwood lists the bundle method). */
+  heartwoodOwner?: HeartwoodOwnerSettingsProps;
+  /** Open the choice screen straight away (the "approve again" banner lands here). */
+  openOwnerChoice?: OwnerChoiceKind | null;
+  /** The owner left the "approve this phone again" choice without holding: backups stop waiting for it. */
+  onOwnerAgainDeclined?: () => void;
+  onOwnerChoiceHandled?: () => void;
 }
 
-export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator }: Props) {
+const OWNER_SILENT_MESSAGE = "Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off.";
+
+export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerAgainDeclined, onOwnerChoiceHandled }: Props) {
+  const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
+  useEffect(() => {
+    if (!openOwnerChoice) return;
+    // The choice screen needs the five words (m8). If they are not there yet
+    // (a reconnect), drop the request rather than leave it to open on its own later.
+    if (heartwoodOwner?.words) setOwnerChoice(openOwnerChoice);
+    onOwnerChoiceHandled?.();
+  }, [openOwnerChoice, heartwoodOwner, onOwnerChoiceHandled]);
+  // ...and close it if the words go away while it is open (a lock, or a
+  // reconnect that finished) - but never while a bundle is waiting on the
+  // Heartwood: the card is still up there, and closing the screen would hide
+  // the answer. The last props are kept so the screen can stay up through a
+  // reconnect, and it closes once the bundle settles if they have not come back.
+  const ownerWordsReady = !!heartwoodOwner?.words;
+  const [ownerRunning, setOwnerRunning] = useState(false);
+  // The last hold's outcome, shown in the full-access card once the choice screen is gone.
+  const [ownerOutcome, setOwnerOutcome] = useState<{ text: string; problem: boolean } | null>(null);
+  const lastOwnerRef = useRef<HeartwoodOwnerSettingsProps | null>(null);
+  if (heartwoodOwner?.words) lastOwnerRef.current = heartwoodOwner;
+  useEffect(() => {
+    if (!ownerWordsReady && !ownerRunning) setOwnerChoice(null);
+  }, [ownerWordsReady, ownerRunning]);
   const [confirmForgetOperator, setConfirmForgetOperator] = useState(false);
   const [forgettingOperator, setForgettingOperator] = useState(false);
   const relayList: RelayConfig[] = relays.length > 0 ? relays : defaultRelays();
@@ -156,6 +205,53 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
   function truncateBunkerUri(uri: string): string {
     if (uri.length <= 30) return uri;
     return `${uri.slice(0, 18)}...${uri.slice(-10)}`;
+  }
+
+  // One-hold pairing (A10, A8, A11): the full-screen choice replaces the page.
+  const ownerForChoice = heartwoodOwner?.words ? heartwoodOwner : (ownerRunning ? lastOwnerRef.current : null);
+  if (ownerChoice && ownerForChoice?.words) {
+    const owner = ownerForChoice;
+    const again = ownerChoice === 'again';
+    return (
+      <FullAccessChoice
+        words={owner.words!}
+        label={owner.label}
+        includeRealName={owner.includeRealName}
+        realNameForLegacyBackups={owner.realNameForLegacyBackups}
+        initialStyle={ownerChoice === 'again' && owner.storedStyle && owner.storedStyle !== 'custom' ? owner.storedStyle : 'everyday'}
+        onRun={async (style) => {
+          setOwnerRunning(true);
+          let out: BundleRunResult;
+          try { out = await owner.run(style); } finally { setOwnerRunning(false); }
+          // A8: a pairing the Heartwood now refuses has to be made again.
+          if (again && !out.ok && out.failure.code === 'strict') {
+            out = { ok: false, failure: { ...out.failure, message: `${FULL_ACCESS_COPY.pairAgain}. ${PAIRING_PROBLEM_COPY.strict}` } };
+          }
+          // The outcome is kept in the Settings card, and the overlay shows the same
+          // failure, so a no-answer line must not send the reader to Settings.
+          if (!out.ok && out.failure.code === 'no-answer') {
+            out = { ok: false, failure: { ...out.failure, message: FULL_ACCESS_COPY.noAnswerSettings } };
+          }
+          setOwnerOutcome(out.ok
+            ? { text: FULL_ACCESS_COPY.approvedOutcome, problem: false }
+            : { text: out.failure.message || OWNER_SILENT_MESSAGE, problem: true });
+          return out;
+        }}
+        onApproved={() => setOwnerChoice(null)}
+        onSeparately={() => {
+          // A8: an explicit "Not now" answers the re-approve prompt, so the waiting backups
+          // are released.
+          if (again) onOwnerAgainDeclined?.();
+          setOwnerChoice(null);
+        }}
+        // "Close" after a pairing problem is not an answer: the prompt, the style on file
+        // and the backups' wait all stay until the owner holds again or says "Not now".
+        onClose={() => setOwnerChoice(null)}
+        separatelyLabel="Not now"
+        continueLabel="Close"
+        silentMessage={OWNER_SILENT_MESSAGE}
+      />
+    );
   }
 
   return (
@@ -583,11 +679,11 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-secondary"
-                disabled={heartwoodOperator.push.pushing}
+                disabled={heartwoodOperator.push.pushing || heartwoodOperator.push.waiting === true}
                 onClick={() => heartwoodOperator.push.pushNow()}
                 style={{ flex: 1 }}
               >
-                {heartwoodOperator.push.pushing ? 'Pushing…' : 'Push rules now'}
+                {heartwoodOperator.push.pushing ? 'Pushing…' : heartwoodOperator.push.waiting ? 'Waiting for your Heartwood…' : 'Push rules now'}
               </button>
               {!confirmForgetOperator ? (
                 <button className="btn btn-ghost" onClick={() => setConfirmForgetOperator(true)} style={{ flex: 1 }}>
@@ -663,6 +759,23 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
               Connected to Heartwood signer.
             </p>
+            {heartwoodOwner?.supported && (
+              <HeartwoodFullAccessCard
+                status={heartwoodOwner.status}
+                checking={heartwoodOwner.checking}
+                everHadFullAccess={heartwoodOwner.everHadFullAccess}
+                label={heartwoodOwner.label}
+                hasOperatorKey={heartwoodOwner.hasOperatorKey}
+                canNarrow={heartwoodOwner.canNarrow}
+                narrow={heartwoodOwner.narrow}
+                turnOff={heartwoodOwner.turnOff}
+                onOpenChoice={kind => { setOwnerOutcome(null); setOwnerChoice(kind); }}
+                offerIncludesRealName={heartwoodOwner.includeRealName}
+                outcome={ownerOutcome?.text ?? null}
+                outcomeIsProblem={ownerOutcome?.problem ?? false}
+                onOutcomeClear={() => setOwnerOutcome(null)}
+              />
+            )}
             {bunkerUri && (
               <span style={{ fontSize: '0.8rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                 {truncateBunkerUri(bunkerUri)}

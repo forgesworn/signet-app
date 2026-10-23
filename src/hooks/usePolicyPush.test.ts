@@ -146,3 +146,53 @@ describe('A24: pending revokes', () => {
     expect(vi.mocked(removePendingChildRevoke)).toHaveBeenCalledWith(rec, 'k'.repeat(64));
   });
 });
+
+describe('review note 5: paused while a one-hold bundle waits', () => {
+  it('starts no push while paused, and runs one (after the debounce) when the pause ends', async () => {
+    const { rerender } = renderHook((p: { paused: boolean }) => usePolicyPush(base({ childRules: [], paused: p.paused })), { initialProps: { paused: true } });
+    await flush(POLICY_PUSH_DEBOUNCE_MS * 3);
+    expect(mList).not.toHaveBeenCalled();
+    expect(mUpdate).not.toHaveBeenCalled();
+    rerender({ paused: false });
+    await flush(POLICY_PUSH_DEBOUNCE_MS - 100);
+    expect(mList).not.toHaveBeenCalled(); // still debouncing
+    await flush(200);
+    expect(mList).toHaveBeenCalledTimes(1);
+  });
+
+  it('a push already armed when the pause starts is held, not run', async () => {
+    const { rerender } = renderHook((p: { paused: boolean }) => usePolicyPush(base({ childRules: [], paused: p.paused })), { initialProps: { paused: false } });
+    await flush(POLICY_PUSH_DEBOUNCE_MS - 500); // the debounce timer is armed but has not fired
+    rerender({ paused: true });
+    await flush(POLICY_PUSH_DEBOUNCE_MS * 2);
+    expect(mList).not.toHaveBeenCalled();
+    rerender({ paused: false });
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(mList).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushNow while paused is held too', async () => {
+    const { result, rerender } = renderHook((p: { paused: boolean }) => usePolicyPush(base({ childRules: [], paused: p.paused })), { initialProps: { paused: true } });
+    act(() => { result.current.pushNow(); });
+    await flush(10);
+    expect(mList).not.toHaveBeenCalled();
+    rerender({ paused: false });
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(mList).toHaveBeenCalledTimes(1);
+  });
+
+  it('nothing is run after the pause when nothing was asked for during it', async () => {
+    const { rerender } = renderHook((p: { paused: boolean }) => usePolicyPush(base({ childRules: [], paused: p.paused, client: null })), { initialProps: { paused: true } });
+    rerender({ paused: false });
+    await flush(POLICY_PUSH_DEBOUNCE_MS * 2);
+    expect(mList).not.toHaveBeenCalled();
+  });
+
+  it('a list_clients read that fails is recorded and no slot is written', async () => {
+    mList.mockRejectedValue(new Error('timeout waiting for device (list_clients)'));
+    const { result } = renderHook(() => usePolicyPush(base({ childRules: [] })));
+    await flush(POLICY_PUSH_DEBOUNCE_MS + 10);
+    expect(mUpdate).not.toHaveBeenCalled();
+    expect(result.current.lastResult?.errors[0]).toMatch(/could not read the device's client list/);
+  });
+});
