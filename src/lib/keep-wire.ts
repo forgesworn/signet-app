@@ -102,7 +102,7 @@ export const KEEP_GAMES_RENEW_BEFORE_S = 30 * 86400;
 
 /** K1f: the states and the ways in a pass report may carry. */
 export const KEEP_PASS_STATES = ['active', 'revoked', 'expired'] as const;
-export const KEEP_PASS_VIAS = ['code', 'lan'] as const;
+export const KEEP_PASS_VIAS = ['code', 'lan', 'link'] as const;
 
 /** K1f: the one setting defined so far (the `setting` tag of its ack, and the tag of the settings message). */
 export const KEEP_SETTING_RETURN_PASSES = 'return_passes';

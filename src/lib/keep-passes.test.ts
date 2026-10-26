@@ -69,11 +69,12 @@ describe('parsing a pass report (27667)', () => {
     });
   });
 
-  it('via and name are optional; lan is a way in; an unknown way in is left out', () => {
+  it('via and name are optional; lan and link are ways in; an unknown way in is left out', () => {
     expect(parsePassReportRumor(rumorOf(reportTags({ via: null, name: null })), K)).toEqual({
       keep: K, grant: G1, persona: P, state: 'active', expiration: NOW + 30 * DAY, seen: NOW, at: NOW,
     });
     expect(parsePassReportRumor(rumorOf(reportTags({ via: 'lan' })), K)?.via).toBe('lan');
+    expect(parsePassReportRumor(rumorOf(reportTags({ via: 'link' })), K)?.via).toBe('link');
     expect(parsePassReportRumor(rumorOf(reportTags({ via: 'carrier-pigeon' })), K)).not.toHaveProperty('via');
   });
 
