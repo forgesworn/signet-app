@@ -25,7 +25,7 @@ export async function checkVaultDestination(options: ForwardOptions): Promise<bo
         owned.set(rotation, backend);
       }
       const saved = await loadVaultBackup(backend.activePublicKeyHex, options.key);
-      return { author: backend.activePublicKeyHex, reader: relayVaultReader(options.relays.read, backend),
+      return { author: backend.activePublicKeyHex, reader: relayVaultReader(options.relays.write, backend),
         sequenceFloors: { [options.devicePubkey]: saved.confirmed?.sequence ?? 0 } };
     }, vaultPurpose(options.dataset), options.now);
     return options.isCurrent() && destination.state === 'ready'
@@ -55,7 +55,7 @@ export async function checkVaultForwarding(options: ForwardOptions, candidate: P
     // and nothing later, as the newest rotation.
     if (!await checkVaultDestination(options)) return false;
     // (b) The candidate, overlaid on the source rotation, must win its head.
-    const remote = relayVaultReader(options.relays.read, options.backend);
+    const remote = relayVaultReader(options.relays.write, options.backend);
     const reader: VaultReader = {
       ...remote,
       checkpoints: async (author, tag) => [...await remote.checkpoints(author, tag), candidate.checkpoint],

@@ -271,6 +271,13 @@ export function createLocalBackendsFromKeyMaterial(opts: {
 // approves. Bounds every BunkerSigningBackend request so a rebooting/offline
 // signer rejects instead of leaving a caller (e.g. "Publishing…") hung forever.
 export const SIGNER_REQUEST_TIMEOUT_MS = 90_000;
+/**
+ * One-hold pairing A7: any request that may raise a card on the Heartwood
+ * waits at least this long (the device's own card window is 30 s, 45 s for the
+ * enrol card). Used for a new pairing's `connect` and a persona route's first
+ * `get_public_key`, which can raise a card the first time a key is used.
+ */
+export const CARD_REQUEST_TIMEOUT_MS = 45_000;
 
 export class BunkerSigningBackend implements DecryptingSigningBackend {
   readonly type = 'bunker' as const;

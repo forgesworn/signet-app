@@ -1,0 +1,16 @@
+# Import alongside the existing static mysignet.app and Lite HTTPS routes.
+# Explicit HTTP routes prevent automatic redirects from logging proof URLs.
+http://mysignet.app, http://lite.mysignet.app, http://www.mysignet.app {
+	log {
+		output discard
+	}
+	redir https://{host}{uri} 308
+}
+
+# Canonicalise the existing proxied www record and provision its certificate.
+www.mysignet.app {
+	log {
+		output discard
+	}
+	redir https://mysignet.app{uri} 308
+}

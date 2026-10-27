@@ -4,7 +4,7 @@ import { createIdentityAndUnlock, unlockWithPin } from './fixtures';
 test('relay settings show successful reads, refused reads and failed connections', async ({ page }) => {
   test.setTimeout(120_000);
   await page.routeWebSocket(/^(?:wss:\/\/|ws:\/\/localhost:7777(?:\/|$))/, socket => {
-    if (socket.url().includes('nos.lol')) { socket.close({ code: 1008, reason: 'Test unavailable' }); return; }
+    if (socket.url().includes('relay.ditto.pub')) { socket.close({ code: 1008, reason: 'Test unavailable' }); return; }
     socket.onMessage(raw => {
       const frame = JSON.parse(String(raw));
       if (frame[0] !== 'REQ') return;

@@ -24,6 +24,7 @@ import {
   nostrconnectV2,
   revokeClient,
   revokeClientIdentity,
+  clearClientIdentities,
   CAP_NOSTRCONNECT_V2,
   resolveApproval,
   clampVerdictWindow,
@@ -980,6 +981,36 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
     await revokeClientIdentity(c, { slotIndex: 2, secretFingerprint: 'fp2' }, persona.toUpperCase());
     const sent = d.seen.find(s => s.method === 'revoke_client_identity')!;
     expect(sent.params).toEqual({ slot_index: 2, expected_secret_fingerprint: 'fp2', identity: persona });
+    c.stop();
+  });
+
+  it('clearClientIdentities without a client key sends nothing (no whole-slot form)', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'clear_client_identities' ? { result: { slot_index: 2, changed: true } } : undefined) });
+    const c = d.client();
+    c.start();
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, undefined as unknown as string)).rejects.toThrow(/client_pubkey/);
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, '')).rejects.toThrow(/client_pubkey/);
+    expect(d.seen.find(s => s.method === 'clear_client_identities')).toBeUndefined();
+    c.stop();
+  });
+
+  it('clearClientIdentities with this phone\'s client key sends client_pubkey (lowercased) and no more', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'clear_client_identities' ? { result: { slot_index: 2, changed: true } } : undefined) });
+    const c = d.client();
+    c.start();
+    await clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, 'AB'.repeat(32));
+    const sent = d.seen.find(s => s.method === 'clear_client_identities')!;
+    expect(sent.params).toEqual({ slot_index: 2, expected_secret_fingerprint: 'fp2', client_pubkey: 'ab'.repeat(32) });
+    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, 'nothex')).rejects.toThrow(/client_pubkey/);
+    c.stop();
+  });
+
+  it('clearClientIdentities refuses a reply about a different slot', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'clear_client_identities' ? { result: { slot_index: 9 } } : undefined) });
+    const c = d.client();
+    c.start();
+    await expect(clearClientIdentities(c, { slotIndex: 2, secretFingerprint: 'fp2' }, 'ab'.repeat(32))).rejects.toThrow(/different slot/);
     c.stop();
   });
 

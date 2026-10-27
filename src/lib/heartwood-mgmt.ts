@@ -657,3 +657,29 @@ export async function revokeClientIdentity(
   });
   if (r.slot_index !== slot.slotIndex) throw new Error('revoke_client_identity confirmed a different slot');
 }
+
+/**
+ * `clear_client_identities` — withdraw the recorded identity approvals on a
+ * slot. On a one-hold phone this also drops the owner mark (the Heartwood's
+ * rule: "Forget approvals" drops it), so the specific cards ask again.
+ *
+ * `clientPubkey` (this phone's NIP-46 client key) is required: the clear is
+ * always per-client, so the firmware touches only that key's approvals and a
+ * second device bound to the slot since the mark was last read keeps its own.
+ * There is deliberately no whole-slot form here.
+ */
+export async function clearClientIdentities(
+  c: HeartwoodMgmtClient,
+  slot: { slotIndex: number; secretFingerprint: string },
+  clientPubkey: string,
+): Promise<void> {
+  checkSlotRef(slot);
+  const client = (clientPubkey ?? '').trim().toLowerCase();
+  if (!HEX64.test(client)) throw new Error('client_pubkey must be 64 hex chars');
+  const r = await c.request('clear_client_identities', {
+    slot_index: slot.slotIndex,
+    expected_secret_fingerprint: slot.secretFingerprint,
+    client_pubkey: client,
+  });
+  if (r.slot_index !== slot.slotIndex) throw new Error('clear_client_identities confirmed a different slot');
+}

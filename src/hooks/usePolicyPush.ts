@@ -71,6 +71,15 @@ export interface UsePolicyPushArgs {
   getApprovedOnce?: () => Record<string, { kind: number; until: number }[]> | null;
   /** A31: a fresh read of every child rule (incl. tombstones), taken inside the operator lock. */
   loadChildRules?: () => Promise<ChildRule[]>;
+  /**
+   * No push STARTS while true (a debounce timer, a follow-up or `pushNow` that
+   * fires meanwhile is held), and one runs, after the debounce, when it turns
+   * false. Used while a one-hold bundle waits on the Heartwood: a push that
+   * listed the slots before the press and wrote its methods list after it
+   * would drop the owner mark the press just added. A run already in flight
+   * is not cancelled.
+   */
+  paused?: boolean;
 }
 
 export interface UsePolicyPushReturn {
@@ -82,7 +91,7 @@ export interface UsePolicyPushReturn {
   guardianClientPubkey: string | null;
 }
 
-export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dependants, grants, childRules, approvedOnceKinds, getApprovedOnce, loadChildRules }: UsePolicyPushArgs): UsePolicyPushReturn {
+export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dependants, grants, childRules, approvedOnceKinds, getApprovedOnce, loadChildRules, paused = false }: UsePolicyPushArgs): UsePolicyPushReturn {
   const [lastPushAt, setLastPushAt] = useState<number | null>(null);
   const [lastResult, setLastResult] = useState<PolicyPushResult | null>(null);
   const [pushing, setPushing] = useState(false);
@@ -119,6 +128,10 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
 
   const runningRef = useRef(false);
   const queuedRef = useRef(false);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+  // A push was asked for while paused; it runs when the pause ends.
+  const heldRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -133,6 +146,7 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
   }, []);
 
   const runOnce = useCallback(async () => {
+    if (pausedRef.current) { heldRef.current = true; return; }
     if (runningRef.current) { queuedRef.current = true; return; }
     const { client: c, encryptionKey: key } = inputsRef.current;
     // Rules / approved-once still loading: a child-direct ceiling compiled without them would narrow, then widen.
@@ -210,6 +224,13 @@ export function usePolicyPush({ client, enabled, encryptionKey, signingMode, dep
     }
     schedule(POLICY_PUSH_DEBOUNCE_MS);
   }, [enabled, client, dependants, grants, guardianClientPubkey, childRules, approvedOnceKinds, schedule]);
+
+  // The pause ended: run what was held, after the usual debounce.
+  useEffect(() => {
+    if (paused || !heldRef.current) return;
+    heldRef.current = false;
+    schedule(POLICY_PUSH_DEBOUNCE_MS);
+  }, [paused, schedule]);
 
   // Spec §6 / A21: an approved-once kind leaves the ceiling when its window
   // ends, and an expiring child rule narrows it — recompile just after the

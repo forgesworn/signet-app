@@ -34,7 +34,7 @@ export async function runPrivateVaultRotation(args: PrivateVaultSyncOptions,
     if (intent?.target) {
       target = await args.resolve(intent.to); current();
       const saved = await loadVaultBackup(target.activePublicKeyHex, key);
-      const known = await readVaultHeads(relayVaultReader(args.relays.read, target), {
+      const known = await readVaultHeads(relayVaultReader(args.relays.write, target), {
         author: target.activePublicKeyHex, purpose: vaultPurpose(adapter.dataset), rotation: intent.to, now: args.now,
         sequenceFloors: { [deviceKey.publicKey]: saved.confirmed?.sequence ?? 0 },
       });
@@ -64,7 +64,7 @@ export async function runPrivateVaultRotation(args: PrivateVaultSyncOptions,
       if (drained.state !== 'verified') return pending();
       savedTarget = await loadVaultBackup(target.activePublicKeyHex, key);
     }
-    const destination = await readVaultHeads(relayVaultReader(args.relays.read, target), {
+    const destination = await readVaultHeads(relayVaultReader(args.relays.write, target), {
       author: target.activePublicKeyHex, purpose: vaultPurpose(adapter.dataset), rotation: intent.to, now: args.now,
       sequenceFloors: { [deviceKey.publicKey]: savedTarget.confirmed?.sequence ?? 0 },
     });
@@ -100,7 +100,7 @@ export async function runPrivateVaultRotation(args: PrivateVaultSyncOptions,
     const uploaded = await flushVaultBackup({ backend: target, encryptionKey: key, relays: args.relays.write, now: args.now, isCurrent: args.isCurrent });
     if (uploaded.state !== 'verified') return pending();
     current();
-    const oldHeads = await readVaultHeads(relayVaultReader(args.relays.read, source), {
+    const oldHeads = await readVaultHeads(relayVaultReader(args.relays.write, source), {
       author: source.activePublicKeyHex, purpose: vaultPurpose(adapter.dataset), rotation: intent.from, now: args.now,
     });
     if (oldHeads.state !== 'ready') return pending();

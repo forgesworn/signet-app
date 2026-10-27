@@ -307,6 +307,19 @@ describe('routeQR', () => {
       }
     });
 
+    it('keeps the requested app name, which a scanned relay sign-in binds into its app tag', () => {
+      const result = routeQR(buildUrlAuthQR({ ...baseParams, name: 'v4v', relay: 'wss://relay.example.com', sessionPubkey: 'b'.repeat(64) }));
+      if (result.type !== 'login') throw new Error('expected login');
+      expect(result.request.relay).toBe('wss://relay.example.com');
+      expect(result.request.name).toBe('v4v');
+    });
+
+    it('carries no app name when nothing of it survives cleaning', () => {
+      const result = routeQR(buildUrlAuthQR({ ...baseParams, name: '\u202E\u0007' }));
+      if (result.type !== 'login') throw new Error('expected login');
+      expect('name' in result.request).toBe(false);
+    });
+
     it('a redirect-mode URL has no relays', () => {
       const result = routeQR(buildUrlAuthQR(baseParams));
       if (result.type !== 'login') throw new Error('expected login');

@@ -125,6 +125,18 @@ it('stops before the forward pointer when the session locks after uploading the 
   mocks.flush.mockImplementation(publish); unlocked = true;
   expect(await rotatePrivateVaultDataset(args)).toMatchObject({ state: 'complete', rotation: 1 });
 });
+it('every vault read in a rotation, including the repair and destination checks, queries the write relays and never a read-only one', async () => {
+  const args = { ...setup(), relays: { read: ['wss://read-only.example'], write: ['wss://write.example'] } };
+  fail = 'forward';
+  expect(await rotatePrivateVaultDataset(args)).toEqual({ state: 'pending', rotation: 1 });
+  const intent = (await loadVaultRotation(args.ownerPubkey, 'profiles', args.encryptionKey))!;
+  for (const event of [intent.target!.checkpoint, ...intent.target!.chunks]) events.delete(event.id);
+  fail = undefined;
+  expect(await rotatePrivateVaultDataset(args)).toEqual({ state: 'complete', rotation: 1 });
+  // Known-heads replay, destination check and old-head read all ran as readers.
+  expect(mocks.reader.mock.calls.length).toBeGreaterThanOrEqual(5);
+  for (const [relays] of mocks.reader.mock.calls) expect(relays).toEqual(['wss://write.example']);
+});
 it('refuses manual rotation without a cross-tab lock', async () => {
   vi.stubGlobal('navigator', {});
   await expect(rotatePrivateVaultDataset(setup())).rejects.toThrow('coordinate');

@@ -79,9 +79,9 @@ release with three assets: `signet-app-vX.Y.Z.apk`, the stable
 `signet-app.apk`, and `signet-app.json`. `DRY_RUN=1` stops before the commit;
 `SKIP_TESTS=1` skips the gates.
 
-The repo is private, so release assets are not publicly downloadable — the
-deploy workflow (which also runs on release publish) downloads them with its
-repo token and serves them from `https://mysignet.app/get/`, which is where
+The public GitHub release assets are also copied by the deploy workflow
+(which runs on release publish) using its repo token and served from
+`https://mysignet.app/get/`, which is where
 the in-app promo, the Settings entry, and Obtainium (HTML source pointed at
 that page) all resolve. The manifest at
 `https://mysignet.app/get/signet-app.json` is what the installed app compares

@@ -10,6 +10,9 @@ import type { ActivationTarget } from '../types/routing';
  */
 export type ActivationExplanationLine = string | { text: string; emphasis: string };
 
+/** One-hold pairing A2 (same words as `FULL_ACCESS_COPY.realNameFirstUse`). */
+const REAL_NAME_FIRST_USE_LINE = 'The first time you use your real name, your Heartwood will ask you to confirm it once.';
+
 export interface ActivationCopy {
   explanationTitle: string;
   explanationBody: ActivationExplanationLine[];
@@ -30,7 +33,7 @@ export interface ActivationCopy {
  * true for the owner, but for a guardian acting on a child's behalf the
  * reassurance is the point.
  */
-export function resolveActivationCopy(target: ActivationTarget): ActivationCopy {
+export function resolveActivationCopy(target: ActivationTarget, opts?: { heartwoodFirstUse?: boolean }): ActivationCopy {
   if (target.kind === 'owner') {
     return {
       explanationTitle: 'What your real identity is',
@@ -41,6 +44,8 @@ export function resolveActivationCopy(target: ActivationTarget): ActivationCopy 
           emphasis: 'not',
         },
         'It is a separate key from your personas. Sites you have signed into with a persona cannot link the two.',
+        // One-hold pairing A2: on a Heartwood that asks once for its first use.
+        ...(opts?.heartwoodFirstUse ? [REAL_NAME_FIRST_USE_LINE] : []),
       ],
       nameLabel: 'Your legal name',
       namePlaceholder: 'Your legal name',

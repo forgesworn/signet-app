@@ -9,6 +9,8 @@ import { isVaultApprovalError } from '../lib/vault-approval';
 export interface PrivateVaultHealth {
   phase: 'checking' | 'unsupported' | 'running' | 'idle';
   datasets: Record<string, PrivateVaultSyncResult>;
+  /** How many datasets a cycle visits (A5: "Backing up 3 of 5…"). Absent until the first cycle has listed its jobs. */
+  total?: number;
   /**
    * The signer refused a vault request (denied, card timed out, busy). No
    * automatic retry runs for the rest of this unlock — each would put the
@@ -169,6 +171,7 @@ export function usePrivateVaults(options: {
         if (Object.keys(latest.datasets).some(purpose => !purposes.has(purpose))) {
           emit({ ...latest, datasets: Object.fromEntries(Object.entries(latest.datasets).filter(([purpose]) => purposes.has(purpose))) });
         }
+        if (latest.total !== purposes.size) emit({ ...latest, total: purposes.size });
         for (const [index, job] of jobs.entries()) {
           if (!valid()) return;
           // One refusal is enough: every further dataset would only queue
@@ -197,7 +200,7 @@ export function usePrivateVaults(options: {
           else verifiedRevisions.delete(purpose);
           // Once canonical, an offline retry must never re-enable legacy writes.
           const canonical = result.canonical || latest.datasets[purpose]?.canonical;
-          emit({ phase: 'running', datasets: { ...latest.datasets, [purpose]: { ...result, canonical } } });
+          emit({ ...latest, phase: 'running', datasets: { ...latest.datasets, [purpose]: { ...result, canonical } } });
         }
         if (valid() && merged) opts.current.onMerged();
         const unfinished = (purpose: string) => latest.datasets[purpose]?.state !== 'verified'

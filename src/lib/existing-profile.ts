@@ -35,7 +35,7 @@ import { parseKindZeroContent, toPublicProfileBase } from './public-profile-publ
 export const PROFILE_LOOKUP_RELAYS: readonly string[] = [
   'wss://purplepag.es',
   'wss://relay.damus.io',
-  'wss://nos.lol',
+  'wss://relay.primal.net',
 ];
 
 const DEFAULT_TIMEOUT_MS = 4000;

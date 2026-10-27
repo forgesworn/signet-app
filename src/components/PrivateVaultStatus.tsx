@@ -1,9 +1,17 @@
 import { useRef, useState } from 'react';
 import type { PrivateVaultHealth } from '../hooks/usePrivateVaults';
 
-export function PrivateVaultStatus({ health, importedDependants, onRotate }: {
+function relayHost(url: string): string {
+  try { return new URL(url).hostname; } catch { return url; }
+}
+
+export function PrivateVaultStatus({ health, importedDependants, onRotate, onDisableRelay, canDisableRelay }: {
   health: PrivateVaultHealth; importedDependants: number;
   onRotate?: (purpose: string) => Promise<string>;
+  /** Switch one write relay off (kept in the list, reversible in Advanced settings). */
+  onDisableRelay?: (url: string) => void;
+  /** False when switching that relay off would do nothing (no other write relay, not in the list). Absent means yes. */
+  canDisableRelay?: (url: string) => boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState('');
@@ -19,14 +27,30 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate }: {
   const verified = states.filter(s => s.state === 'verified').length;
   const invalid = states.some(s => s.state === 'unusable');
   const unavailable = states.some(s => s.state === 'unavailable');
+  // A5: the counter belongs to a first sync, when this device is actually
+  // sending backups. Every unlock re-checks all datasets from scratch, and
+  // that quiet check must not read as "Backing up 1 of 5". Datasets that have
+  // finished (verified or not) count; one that ended unavailable no longer
+  // freezes the number.
+  const sending = states.some(s => s.published);
+  const finished = states.length;
   const heading = health.phase === 'unsupported' ? 'Recovery-derived backups unavailable'
     : invalid ? 'A private backup needs attention'
     : health.phase === 'checking' ? 'Checking existing backups before migration'
+    : health.phase === 'running' && sending && health.total !== undefined && health.total > 0 && finished < health.total
+      ? `Backing up ${Math.min(finished + 1, health.total)} of ${health.total}…`
     : health.phase === 'running' ? 'Checking private backups'
     : states.some(s => s.state === 'waiting-legacy') ? 'Waiting for existing backups before migration'
     : unavailable ? 'Private backups are waiting for a connection'
     : verified === states.length && verified > 0 ? `${verified} private datasets verified`
     : 'Private backup changes are waiting to upload';
+  // Distinct relays that blocked an unavailable dataset, in first-seen order.
+  const blocking = [...new Set(states.filter(s => s.state === 'unavailable').flatMap(s => s.failedRelays ?? []))];
+  // Turning off the only relay holding a dataset's confirmed copy would turn a
+  // transient wait into an unusable backup, so that relay gets no button.
+  const soleHolders = new Set(states.map(s => [...new Set(s.heldOn ?? s.confirmedRelays ?? [])])
+    .filter(held => held.length === 1).map(held => held[0]));
+  const offerable = blocking.filter(url => !soleHolders.has(url) && (canDisableRelay?.(url) ?? true));
   const confirmedAt = Math.max(0, ...states.map(s => s.confirmedAt ?? 0));
   return <details className="sync-backup-banner" style={{ padding: '8px 16px', fontSize: 13 }}>
     <summary>{heading}</summary>
@@ -34,6 +58,13 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate }: {
       ? <p>This identity needs its original Signet recovery tree or a compatible Heartwood connection for private vaults. Existing backup formats remain available.</p>
       : <p>Profiles, contacts, credentials and portable settings migrate separately after a complete encrypted copy is read back. Queued changes retry automatically while Signet is open.</p>}
     {invalid && <p>A backup could not be validated. Signet has paused replacement of that dataset and kept the local copy.</p>}
+    {blocking.length > 0 && <p data-vault-blocking-relays>
+      Backups wait until every relay you save to answers. Not answering: {[...new Set(blocking.map(relayHost))].join(', ')}.
+      {blocking.filter(url => soleHolders.has(url)).map(url => <span key={url}> {relayHost(url)} holds your only checked copy of a backup. Backups carry on once it answers.</span>)}
+      {onDisableRelay && offerable.map(url => <button key={url} className="btn btn-ghost" onClick={() => onDisableRelay(url)}>
+        Turn off {relayHost(url)}
+      </button>)}
+    </p>}
     {confirmedAt > 0 && <p>Last verified copy: {new Date(confirmedAt * 1000).toLocaleString()}.</p>}
     {states.length > 0 && <ul>{Object.entries(health.datasets).map(([purpose, status]) =>
       <li key={purpose} data-vault-purpose={purpose}>{purpose.replace('signet:vault:', '')}: {status.state === 'verified'

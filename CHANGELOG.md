@@ -3,6 +3,23 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.22.1
+- Professional setup uses your enabled publishing relays in signet.json, and asks you to enable one if none is available
+- Badge embeds work without a hosted image service: copy an inline SVG snapshot linked to your Nostr identity, with a reminder to request a fresh proof for verification
+- App descriptions distinguish local and connected signers, public metadata and optional encrypted backups
+
+## 0.22.0
+- Set up a Heartwood with one five-second hold after comparing all five check words. Choose Everyday or Extra careful signing, review the current choice in Settings, and narrow or withdraw access there. Requires firmware v0.18.0-beta.29 or newer; older firmware keeps the separate pairing steps
+- Private backups read from the relays they are written to, so a dead read-only relay no longer stalls them. If a write relay is unreachable, the backup banner offers to turn it off when another checked copy remains safe
+- Default relays are now primal, damus and ditto
+
+## 0.21.5
+- Remote signing works again: the signer moves from nos.lol, which stopped answering around 19 October, to relay.primal.net. Installs on the old default move automatically, and synced settings carry the new relay to your other devices
+- Apps and devices paired only over nos.lol need pairing again
+
+## 0.21.4
+- Signing in to a site by scanning its QR code with My Signet's own scanner now works for sites that ask for their app name, instead of the site refusing it with an app mismatch
+
 ## 0.21.3
 - Signing up from a sign-in link or a pairing request now starts with a persona, keeping your real identity dormant, the same as Create my Signet
 - Connecting a Heartwood during sign-up asks the device for your identity keys and saves nothing if the button press is missed, denied or the device is unreachable; Try again reuses the same connection
