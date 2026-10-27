@@ -161,7 +161,7 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           </span>
         </button>
 
-        {preferences.signingMode !== 'paired-child' && <button className="row-button" onClick={() => onNavigate('my-keep')}>
+        {preferences.signingMode !== 'paired-child' && preferences.showMyKeep === true && <button className="row-button" onClick={() => onNavigate('my-keep')}>
           <span className="row-main">
             <span className="row-label" style={{ fontWeight: 600 }}>My Keep</span>
             <span className="row-sub">The Keep you have set up at home</span>

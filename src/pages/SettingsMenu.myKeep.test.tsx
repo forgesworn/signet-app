@@ -13,12 +13,12 @@ const identity = {
   primaryKeypair: 'persona',
 } as unknown as SignetIdentity;
 
-function renderMenu(signingMode: string | undefined) {
+function renderMenu(signingMode: string | undefined, extra: { showMyKeep?: boolean } = { showMyKeep: true }) {
   const onNavigate = vi.fn();
   render(
     <SettingsMenu
       identity={identity}
-      preferences={{ signingMode } as unknown as AppPreferences}
+      preferences={{ signingMode, ...extra } as unknown as AppPreferences}
       onSetTheme={() => {}}
       onDeleteIdentity={() => {}}
       onRequestDeleteAuth={async () => false}
@@ -39,6 +39,17 @@ describe('SettingsMenu: My Keep row', () => {
   });
   it('is hidden on a paired child install', () => {
     renderMenu('paired-child');
+    expect(screen.queryByRole('button', { name: /My Keep/ })).toBeNull();
+  });
+  it('is hidden until My Keep is switched on', () => {
+    renderMenu(undefined, {});
+    expect(screen.queryByRole('button', { name: /My Keep/ })).toBeNull();
+    cleanup();
+    renderMenu(undefined, { showMyKeep: false });
+    expect(screen.queryByRole('button', { name: /My Keep/ })).toBeNull();
+  });
+  it('is hidden on a paired child install even when the preference says on', () => {
+    renderMenu('paired-child', { showMyKeep: true });
     expect(screen.queryByRole('button', { name: /My Keep/ })).toBeNull();
   });
 });

@@ -445,3 +445,34 @@ it('retires the saved Trotters default on load and on post-unlock reload', async
   expect(result.current.preferences.relays!.length).toBeGreaterThan(1);
   expect((await db.getPreferences()).relayUrl).not.toBe(retired);
 });
+
+describe('usePreferences — showMyKeep', () => {
+  it('is off until switched on, and the switch persists', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.preferences.showMyKeep).toBeUndefined();
+    await act(async () => { await result.current.setShowMyKeep(true); });
+    expect(result.current.preferences.showMyKeep).toBe(true);
+    expect((await db.getPreferences()).showMyKeep).toBe(true);
+    await act(async () => { await result.current.setShowMyKeep(false); });
+    expect((await db.getPreferences()).showMyKeep).toBe(false);
+  });
+
+  it('turning it on twice, or alongside another setter, loses neither field', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await Promise.all([result.current.setShowMyKeep(true), result.current.setShowMyKeep(true), result.current.setBackgroundBunkerEnabled(true)]); });
+    const stored = await db.getPreferences();
+    expect(stored.showMyKeep).toBe(true);
+    expect(stored.backgroundBunkerEnabled).toBe(true);
+  });
+
+  it('is refused on a paired-child install', async () => {
+    await db.savePreferences({ id: 'current', theme: 'system', signingMode: 'paired-child' });
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.setShowMyKeep(true); });
+    expect(result.current.preferences.showMyKeep).toBeUndefined();
+    expect((await db.getPreferences()).showMyKeep).toBeUndefined();
+  });
+});

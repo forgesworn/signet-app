@@ -689,7 +689,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setShowMyKeep, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -10793,6 +10793,7 @@ export function App() {
         bunkerUri: preferences.bunkerUri,
         liveSignerPubkey: bunkerBackend?.activePublicKeyHex,
       })}
+      onKeepsFound={() => { void setShowMyKeep(true); }}
     />);
   }
 
@@ -11211,6 +11212,7 @@ export function App() {
         onNavigateRoster={() => navigateTo('roster')}
         onNavigateDeveloper={() => navigateTo('settings-developer')}
         onOpenMigration={() => navigateTo('migrate-heartwood')}
+        onSetShowMyKeep={preferences.signingMode !== 'paired-child' ? (show => { void setShowMyKeep(show); }) : undefined}
         heartwoodOperator={preferences.signingMode !== 'paired-child' ? {
           credential: heartwoodOperator.credential
             ? { deviceHex: heartwoodOperator.credential.deviceHex, relays: heartwoodOperator.credential.relays, importedAt: heartwoodOperator.credential.importedAt }

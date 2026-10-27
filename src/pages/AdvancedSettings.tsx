@@ -72,11 +72,13 @@ interface Props {
    * server. Required (alongside a URL) before any upload proceeds.
    */
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
+  /** Show or hide My Keep in Settings. Absent where My Keep is not offered (a paired-child install). */
+  onSetShowMyKeep?: (show: boolean) => void;
   /** Heartwood operator key + rules push (absent on the paired-child surface). */
   heartwoodOperator?: HeartwoodOperatorSettingsProps;
 }
 
-export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, heartwoodOperator }: Props) {
+export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, onSetShowMyKeep, heartwoodOperator }: Props) {
   const [confirmForgetOperator, setConfirmForgetOperator] = useState(false);
   const [forgettingOperator, setForgettingOperator] = useState(false);
   const relayList: RelayConfig[] = relays.length > 0 ? relays : defaultRelays();
@@ -307,6 +309,34 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           Restore defaults
         </button>
       </div>
+
+      {onSetShowMyKeep && (
+        <div className="card section">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+            <div className="section-title" style={{ marginBottom: 0 }}>Show My Keep</div>
+            <button
+              role="switch"
+              aria-checked={preferences.showMyKeep === true}
+              aria-label="Show My Keep"
+              onClick={() => onSetShowMyKeep(preferences.showMyKeep !== true)}
+              style={{
+                width: 48, height: 28, borderRadius: 14, border: 'none', cursor: 'pointer', position: 'relative', flexShrink: 0,
+                background: preferences.showMyKeep === true ? 'var(--accent)' : 'var(--border)', transition: 'background 0.2s',
+              }}
+            >
+              <span
+                style={{
+                  position: 'absolute', top: 3, left: preferences.showMyKeep === true ? 23 : 3, width: 22, height: 22,
+                  borderRadius: '50%', background: 'var(--bg-card)', transition: 'left 0.2s', display: 'block',
+                }}
+              />
+            </button>
+          </div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 0 }}>
+            Adds My Keep to Settings, to see and manage the Keep you have set up at home.
+          </p>
+        </div>
+      )}
 
       {/* Image hosting (Blossom). Persona profile picture/banner uploads
           and venue-entry photo uploads both go through the configured
