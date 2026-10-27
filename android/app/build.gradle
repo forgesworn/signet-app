@@ -56,6 +56,13 @@ android {
         }
     }
     buildTypes {
+        // The debug build installs beside the real app: its own id
+        // (app.mysignet.debug) and launcher label (src/debug/res/values/strings.xml).
+        // Android App Links will not verify for this id (assetlinks.json lists
+        // app.mysignet only), and signet-grant: links get a chooser between the two apps.
+        debug {
+            applicationIdSuffix ".debug"
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

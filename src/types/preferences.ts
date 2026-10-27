@@ -69,6 +69,11 @@ export interface AppPreferences {
   relays?: RelayConfig[];
   /** Power mode toggle state — reveals advanced settings */
   powerMode?: boolean;
+  /**
+   * Show the My Keep row in Settings. Device-local; absent = hidden. Switched on by the "Show My Keep" switch
+   * in Advanced, and by itself when a Keep is saved or a lookup finds one. Never set on a paired-child install.
+   */
+  showMyKeep?: boolean;
   /** User acknowledged Blossom photo upload terms */
   blossomConsent?: boolean;
   /** Preferred Blossom server URL */

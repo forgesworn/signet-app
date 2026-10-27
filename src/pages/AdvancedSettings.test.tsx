@@ -72,3 +72,32 @@ describe('relay settings', () => {
     expect(within(screen.getByRole('group', { name: `Relay ${second}` })).getByText('PREFERRED PRIMARY')).toBeDefined();
   });
 });
+
+describe('Show My Keep switch', () => {
+  function Switch({ withSetter = true }: { withSetter?: boolean }) {
+    const { preferences, loading, setRelays, setShowMyKeep } = usePreferences();
+    if (loading) return <p>Loading settings</p>;
+    return <AdvancedSettings identity={{ backedUp: true } as SignetIdentity} preferences={preferences}
+      relays={preferences.relays ?? []} onSetRelays={setRelays} onNavigateBridge={() => {}}
+      onSetDefaultBlossomUrl={async () => {}} onSetBlossomConsent={async () => {}}
+      onSetShowMyKeep={withSetter ? (show => { void setShowMyKeep(show); }) : undefined} />;
+  }
+
+  it('starts off, and turning it on persists the preference that shows the Settings row', async () => {
+    render(<Switch />);
+    const toggle = await screen.findByRole('switch', { name: 'Show My Keep' });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Show My Keep' }).getAttribute('aria-checked')).toBe('true'));
+    await waitFor(async () => expect((await db.getPreferences()).showMyKeep).toBe(true));
+    fireEvent.click(screen.getByRole('switch', { name: 'Show My Keep' }));
+    await waitFor(async () => expect((await db.getPreferences()).showMyKeep).toBe(false));
+  });
+
+  it('is not offered where My Keep is not (no setter)', async () => {
+    render(<Switch withSetter={false} />);
+    await screen.findByText(/Image hosting/);
+    expect(screen.queryByRole('switch', { name: 'Show My Keep' })).toBeNull();
+  });
+});
+

@@ -3,6 +3,7 @@ import { isValidRelayUrl } from './relay-url';
 import { defaultRelays, primaryRelayUrl } from './relay-defaults';
 import { anyRelayAccepted } from './relay-operations';
 import type { RelayConfig } from '../types';
+import { FETCH_EVENT_CAP } from './relay-limits';
 
 export { DEFAULT_RELAY_URL, defaultRelays, primaryRelayUrl } from './relay-defaults';
 
@@ -286,6 +287,77 @@ export async function fetchEvents(
     }
   }
   return [...byId.values()];
+}
+
+export { FETCH_EVENT_CAP };
+
+/** One relay's answer: its events and whether it said EOSE (end of stored
+ *  events) before the timeout. Without EOSE the relay did not really answer
+ *  (timed out, or refused the request); `RelayClient.fetch` resolves the same
+ *  way in both cases, so this subscribes directly. */
+function fetchUntilEose(
+  c: RelayClient, filters: NostrFilter[], timeoutMs: number,
+): Promise<{ events: NostrEvent[]; eose: boolean }> {
+  return new Promise(resolve => {
+    const events: NostrEvent[] = [];
+    let finished = false;
+    let subId = '';
+    const finish = (eose: boolean) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try { c.closeSubscription(subId); } catch { /* socket already gone */ }
+      resolve({ events, eose });
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    try {
+      subId = c.subscribe(filters, ev => {
+        if (finished) return;
+        events.push(ev);
+        // Past the cap the relay is answering with more than was asked for: stop reading it.
+        if (events.length >= FETCH_EVENT_CAP) finish(true);
+      }, () => finish(true));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+/** `fetchEvents`, plus how many relays were asked and how many answered.
+ *  A relay is "reached" only if it sent EOSE within the timeout; a failed
+ *  connect, a timeout or a refused request is unreached. `fetchEvents` hides
+ *  a total outage behind an empty list; a caller that must tell "nothing
+ *  there" from "couldn't reach anyone" reads `reached` (0 of a non-zero
+ *  `attempted` is an outage). Same relay selection, merge and dedupe as
+ *  `fetchEvents`.
+ */
+export async function fetchEventsWithReach(
+  filters: NostrFilter[],
+  opts?: { timeoutMs?: number; relays?: string[] },
+): Promise<{ events: NostrEvent[]; attempted: number; reached: number }> {
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const targetUrls = opts?.relays && opts.relays.length > 0
+    ? opts.relays.filter(u => isValidRelayUrl(u))
+    : configs.filter(r => r.enabled && r.read).map(r => r.url);
+  if (targetUrls.length === 0) return { events: [], attempted: 0, reached: 0 };
+  const settled = await Promise.allSettled([...new Set(targetUrls)].map(async url => {
+    const c = clientFor(url);
+    await ensureConnected(c, timeoutMs);
+    return fetchUntilEose(c, filters, timeoutMs);
+  }));
+  const byId = new Map<string, NostrEvent>();
+  let reached = 0;
+  for (const s of settled) {
+    if (s.status !== 'fulfilled') continue;
+    for (const ev of s.value.events) {
+      if (ev && typeof ev.id === 'string' && !byId.has(ev.id)) byId.set(ev.id, ev);
+    }
+    if (s.value.eose) reached++;
+  }
+  let merged = [...byId.values()];
+  // Several relays can each fill the cap: keep the newest FETCH_EVENT_CAP of the union.
+  if (merged.length > FETCH_EVENT_CAP) merged = merged.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)).slice(0, FETCH_EVENT_CAP);
+  return { events: merged, attempted: settled.length, reached };
 }
 
 /** Open a live subscription on every relay in `relays` (an empty list falls

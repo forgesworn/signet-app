@@ -1,0 +1,620 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure';
+import * as nip44 from 'nostr-tools/nip44';
+import { unwrapEvent, wrapEvent } from 'nostr-tools/nip59';
+import { hexToBytes } from '@noble/hashes/utils.js';
+import type { NostrEvent } from 'signet-protocol';
+
+// The stored row, held in memory (the real row is covered in db.test.ts).
+let row: unknown = null;
+let dbThrows = false;
+let lookupsRow: unknown = null;
+let lookupsThrow = false;
+vi.mock('./db', () => ({
+  loadKeepLookupsRow: async () => {
+    if (lookupsThrow) throw new Error('decrypt failed');
+    return lookupsRow === null ? null : JSON.parse(JSON.stringify(lookupsRow));
+  },
+  saveKeepLookupsRow: async (value: unknown) => { lookupsRow = JSON.parse(JSON.stringify(value)); },
+  loadKeepsRow: async () => {
+    if (dbThrows) throw new Error('decrypt failed');
+    return row === null ? null : JSON.parse(JSON.stringify(row));
+  },
+  saveKeepsRow: async (value: unknown) => { row = JSON.parse(JSON.stringify(value)); },
+}));
+const fetchMock = vi.fn();
+const subscribeMock = vi.fn();
+vi.mock('./relay-service', () => ({
+  fetchEventsWithReach: (...a: unknown[]) => fetchMock(...a),
+  subscribeEvents: (...a: unknown[]) => subscribeMock(...a),
+}));
+
+import { LocalSigningBackend } from './signing-backend';
+import {
+  KEEP_REPLY_LIMIT, applyAckEvents, catchUp, hasSavedKeeps, loadKeepLookups, rememberKeepLookup, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
+  resendClaim, revokeInvite, updateStoredKeeps, watchAcks, PersonaNotAvailableError, type KeepDeps,
+} from './keep-service';
+import { parseKeepPairLink } from './keep-link';
+import { KeepsUnreadableError } from './keep-store';
+import { FETCH_EVENT_CAP } from './relay-limits';
+
+const KEEP_SK = hexToBytes('0'.repeat(63) + '1');
+const K = getPublicKey(KEEP_SK);
+const OWNER_HEX = '0'.repeat(63) + '2';
+const OWNER_SK = hexToBytes(OWNER_HEX);
+const O = getPublicKey(OWNER_SK);
+const NOW = 1_800_000_000;
+const CODE = '33'.repeat(16);
+const link = parseKeepPairLink(`signet-keep:pair?k=${K}&c=${CODE}&n=Home&r=wss://a.example&r=wss://b.example`)!;
+
+const published: Array<{ wrap: NostrEvent; relays: readonly string[] }> = [];
+let publishOk = true;
+const deps = (over: Partial<KeepDeps> = {}): KeepDeps => ({
+  encryptionKey: 'key',
+  backendFor: p => (p === O ? new LocalSigningBackend(OWNER_HEX) : null),
+  publish: async (wrap, relays) => { published.push({ wrap, relays }); return relays.map(() => publishOk); },
+  now: () => NOW,
+  ...over,
+});
+const lastRumor = () => unwrapEvent(published[published.length - 1].wrap as never, KEEP_SK);
+const ackFromKeep = (tags: string[][]) =>
+  wrapEvent({ kind: 27663, content: '', created_at: NOW + 1, tags: [['keep', K], ...tags] }, KEEP_SK, O) as unknown as NostrEvent;
+
+beforeEach(() => { row = null; dbThrows = false; published.length = 0; publishOk = true; fetchMock.mockReset(); subscribeMock.mockReset(); });
+
+describe('claiming', () => {
+  it('saves a pending Keep (owner = the persona, personas = [owner]) and sends the claim to its relays', async () => {
+    const result = await claimKeep(deps(), link, O);
+    expect(result).toMatchObject({ kind: 'claimed', sent: true });
+    const [stored] = await loadStoredKeeps('key');
+    expect(stored).toMatchObject({ keep: K, name: 'Home', relays: ['wss://a.example', 'wss://b.example'], claimedBy: O, personas: [O], status: 'pending', code: CODE });
+    expect(published).toHaveLength(1);
+    expect(published[0].relays).toEqual(['wss://a.example', 'wss://b.example']);
+    const rumor = lastRumor();
+    expect(rumor).toMatchObject({ kind: 27660, pubkey: O });
+    expect(rumor.tags).toEqual([['keep', K], ['code', CODE], ['scope', 'one']]);
+  });
+
+  it('keeps the Keep when no relay took the claim, so it can be sent again', async () => {
+    publishOk = false;
+    expect(await claimKeep(deps(), link, O)).toMatchObject({ kind: 'claimed', sent: false });
+    expect(await loadStoredKeeps('key')).toHaveLength(1);
+    publishOk = true;
+    const [keep] = await loadStoredKeeps('key');
+    expect(await resendClaim(deps(), keep)).toBe(true);
+    expect(lastRumor().kind).toBe(27660);
+  });
+
+  it('refuses a persona whose key this device does not hold, and sends nothing', async () => {
+    await expect(claimKeep(deps(), link, 'ee'.repeat(32))).rejects.toBeInstanceOf(PersonaNotAvailableError);
+    expect(published).toHaveLength(0);
+    expect(await loadStoredKeeps('key')).toEqual([]);
+  });
+
+  it('does not claim the same Keep twice', async () => {
+    await claimKeep(deps(), link, O);
+    expect(await claimKeep(deps(), link, O)).toMatchObject({ kind: 'exists' });
+    expect(published).toHaveLength(1);
+  });
+
+  describe('adding a Keep that is already stored, with a new pairing link', () => {
+    const CODE2 = '44'.repeat(16);
+    const link2 = parseKeepPairLink(`signet-keep:pair?k=${K}&c=${CODE2}&n=Home%20Two&r=wss://c.example`)!;
+    const invite = { grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: 1, expiration: NOW + 99, status: 'active', ackAt: 5 };
+    const stored = (over: object = {}) => ({
+      keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'pending', code: CODE, claimedAt: 1, invites: [invite], ...over,
+    });
+
+    it('re-pairs a pending Keep: new code, relays and name, same invites, a new claim sent', async () => {
+      row = [stored()];
+      const result = await claimKeep(deps(), link2, O);
+      expect(result).toMatchObject({ kind: 'claimed', sent: true, repaired: true });
+      const [keep] = await loadStoredKeeps('key');
+      expect(keep).toMatchObject({ status: 'pending', code: CODE2, name: 'Home Two', relays: ['wss://c.example'], claimedAt: NOW });
+      expect(keep.invites).toEqual([invite]);
+      expect(published).toHaveLength(1);
+      expect(published[0].relays).toEqual(['wss://c.example']);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2], ['scope', 'one']]);
+    });
+
+    it('re-pairs a paired Keep that was reset: back to waiting, invites kept', async () => {
+      row = [stored({ status: 'paired', code: undefined })];
+      expect(await claimKeep(deps(), link2, O)).toMatchObject({ kind: 'claimed', repaired: true });
+      const [keep] = await loadStoredKeeps('key');
+      expect(keep).toMatchObject({ status: 'pending', code: CODE2 });
+      expect(keep.invites).toHaveLength(1);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2], ['scope', 'one']]);
+      // ... and the new paired ack finishes it.
+      await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim']])]);
+      expect((await loadStoredKeeps('key'))[0]).toMatchObject({ status: 'paired' });
+    });
+
+    it('keeps the new record when the new claim could not be sent, so Send again works', async () => {
+      row = [stored()];
+      publishOk = false;
+      expect(await claimKeep(deps(), link2, O)).toMatchObject({ kind: 'claimed', sent: false, repaired: true });
+      publishOk = true;
+      const [keep] = await loadStoredKeeps('key');
+      expect(await resendClaim(deps(), keep)).toBe(true);
+      expect(lastRumor().tags).toEqual([['keep', K], ['code', CODE2], ['scope', 'one']]);
+    });
+
+    it('the same code again is still "already added" and sends nothing', async () => {
+      row = [stored()];
+      expect(await claimKeep(deps(), link, O)).toMatchObject({ kind: 'exists' });
+      expect(published).toHaveLength(0);
+    });
+
+    it('does not move a Keep to another owner persona', async () => {
+      const other = '0'.repeat(63) + '3';
+      row = [stored()];
+      const result = await claimKeep(deps({ backendFor: p => (p === getPublicKey(hexToBytes(other)) ? new LocalSigningBackend(other) : null) }), link2, getPublicKey(hexToBytes(other)));
+      expect(result).toMatchObject({ kind: 'other-owner' });
+      expect((await loadStoredKeeps('key'))[0]).toMatchObject({ code: CODE, claimedBy: O });
+      expect(published).toHaveLength(0);
+    });
+
+    it('an old paired ack from before the reset does not pair the new claim', async () => {
+      row = [stored({ status: 'paired', code: undefined })];
+      await claimKeep(deps(), link2, O);
+      const stale = wrapEvent({ kind: 27663, content: '', created_at: NOW - 86400, tags: [['keep', K], ['status', 'paired'], ['claim']] }, KEEP_SK, O) as unknown as NostrEvent;
+      await applyAckEvents(deps(), [stale]);
+      expect((await loadStoredKeeps('key'))[0].status).toBe('pending');
+    });
+  });
+
+  it('the paired ack from the Keep makes it paired and forgets the code', async () => {
+    await claimKeep(deps(), link, O);
+    await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim']])]);
+    const [keep] = await loadStoredKeeps('key');
+    expect(keep.status).toBe('paired');
+    expect(keep.code).toBeUndefined();
+  });
+});
+
+describe('inviting and revoking', () => {
+  beforeEach(async () => {
+    await claimKeep(deps(), link, O);
+    await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim']])]);
+    published.length = 0;
+  });
+
+  it('a personal invite: CSPRNG grant and secret, 30 days, saved as waiting, sent', async () => {
+    const friend = 'ee'.repeat(32);
+    const { invite, sent } = await createInvite(deps(), K, { kind: 'personal', persona: friend, label: 'Dave' });
+    expect(sent).toBe(true);
+    expect(invite.grant).toMatch(/^[0-9a-f]{32}$/);
+    expect(invite.secret).toMatch(/^[0-9a-f]{64}$/);
+    expect(invite.expiration).toBe(NOW + 30 * 86400);
+    expect(invite.status).toBe('waiting');
+    const rumor = lastRumor();
+    expect(rumor.kind).toBe(27661);
+    expect(rumor.pubkey).toBe(O);
+    expect(rumor.tags).toEqual([
+      ['keep', K], ['grant', invite.grant], ['secret', invite.secret], ['expiration', String(NOW + 30 * 86400)], ['p', friend], ['name', 'Dave'],
+    ]);
+    expect((await loadStoredKeeps('key'))[0].invites).toHaveLength(1);
+  });
+
+  it('a guest pass lasts 24 hours and carries ["guest"]', async () => {
+    const { invite } = await createInvite(deps(), K, { kind: 'guest' });
+    expect(invite.expiration).toBe(NOW + 86400);
+    expect(lastRumor().tags).toContainEqual(['guest']);
+    expect(lastRumor().tags.some(t => t[0] === 'p')).toBe(false);
+    expect(lastRumor().tags.some(t => t[0] === 'name')).toBe(false);
+  });
+
+  it('tells the caller the invite is saved before it is sent', async () => {
+    const order: string[] = [];
+    await createInvite(deps({ publish: async (_w, relays) => { order.push('sent'); return relays.map(() => true); } }), K, { kind: 'guest' },
+      () => { order.push('saved'); });
+    expect(order).toEqual(['saved', 'sent']);
+  });
+
+  it('every invite gets its own grant and secret', async () => {
+    const a = await createInvite(deps(), K, { kind: 'guest' });
+    const b = await createInvite(deps(), K, { kind: 'guest' });
+    expect(a.invite.grant).not.toBe(b.invite.grant);
+    expect(a.invite.secret).not.toBe(b.invite.secret);
+  });
+
+  it('keeps the invite as waiting when no relay took it', async () => {
+    publishOk = false;
+    const { sent } = await createInvite(deps(), K, { kind: 'guest' });
+    expect(sent).toBe(false);
+    expect((await loadStoredKeeps('key'))[0].invites[0].status).toBe('waiting');
+  });
+
+  it('the share link is the Keep\'s own format', async () => {
+    const { invite } = await createInvite(deps(), K, { kind: 'guest' });
+    expect(keepShareLink(K, invite.secret)).toBe(`stampede://keep/${K}/${invite.secret}`);
+  });
+
+  it('acks move an invite to Active, then Revoked', async () => {
+    const { invite } = await createInvite(deps(), K, { kind: 'guest' });
+    await applyAckEvents(deps(), [ackFromKeep([['status', 'active'], ['grant', invite.grant]])]);
+    expect((await loadStoredKeeps('key'))[0].invites[0].status).toBe('active');
+    expect(await revokeInvite(deps(), K, invite.grant)).toBe(true);
+    const rumor = lastRumor();
+    expect(rumor.kind).toBe(27662);
+    expect(rumor.tags).toEqual([['keep', K], ['grant', invite.grant]]);
+    expect((await loadStoredKeeps('key'))[0].invites[0].revokeSent).toBe(true);
+    await applyAckEvents(deps(), [ackFromKeep([['status', 'revoked'], ['grant', invite.grant]])]);
+    expect((await loadStoredKeeps('key'))[0].invites[0]).toMatchObject({ status: 'revoked', revokeSent: false });
+  });
+
+  it('a refused ack records the plain reason', async () => {
+    const { invite } = await createInvite(deps(), K, { kind: 'guest' });
+    await applyAckEvents(deps(), [ackFromKeep([['status', 'refused'], ['grant', invite.grant], ['reason', 'full']])]);
+    expect((await loadStoredKeeps('key'))[0].invites[0]).toMatchObject({ status: 'refused', reason: 'full' });
+  });
+
+  it('ignores an ack signed by anyone but the Keep', async () => {
+    const { invite } = await createInvite(deps(), K, { kind: 'guest' });
+    const forged = wrapEvent(
+      { kind: 27663, content: '', created_at: NOW, tags: [['keep', K], ['status', 'active'], ['grant', invite.grant]] },
+      hexToBytes('0'.repeat(63) + '9'), O,
+    ) as unknown as NostrEvent;
+    await applyAckEvents(deps(), [forged]);
+    expect((await loadStoredKeeps('key'))[0].invites[0].status).toBe('waiting');
+  });
+
+  it('refuses to invite from a persona that cannot sign any more', async () => {
+    const onSaved = vi.fn();
+    await expect(createInvite(deps({ backendFor: () => null }), K, { kind: 'guest' }, onSaved)).rejects.toBeInstanceOf(PersonaNotAvailableError);
+    // Nothing was saved, shared or sent.
+    expect(onSaved).not.toHaveBeenCalled();
+    expect((await loadStoredKeeps('key'))[0].invites).toEqual([]);
+    expect(published).toHaveLength(0);
+  });
+
+  it('two writes at once both land', async () => {
+    const [a, b] = await Promise.all([createInvite(deps(), K, { kind: 'guest' }), createInvite(deps(), K, { kind: 'guest' })]);
+    const grants = (await loadStoredKeeps('key'))[0].invites.map(i => i.grant).sort();
+    expect(grants).toEqual([a.invite.grant, b.invite.grant].sort());
+  });
+
+  it('forgetting a Keep removes it from this device only', async () => {
+    await forgetKeep(deps(), K);
+    expect(await loadStoredKeeps('key')).toEqual([]);
+  });
+});
+
+/** An ack from the Keep with an exact wrap `created_at`, built the way NIP-59 does it (the helper above jitters). */
+function ackWrapAt(wrapAt: number, tags: string[][], sealer: Uint8Array = KEEP_SK): NostrEvent {
+  const sealerPk = getPublicKey(sealer);
+  const rumorBase = { kind: 27663, content: '', created_at: NOW, tags: [['keep', K], ...tags], pubkey: sealerPk };
+  const rumor = { ...rumorBase, id: getEventHash(rumorBase) };
+  const seal = finalizeEvent({
+    kind: 13, content: nip44.v2.encrypt(JSON.stringify(rumor), nip44.v2.utils.getConversationKey(sealer, O)), created_at: wrapAt, tags: [],
+  }, sealer);
+  const eph = generateSecretKey();
+  return finalizeEvent({
+    kind: 1059, content: nip44.v2.encrypt(JSON.stringify(seal), nip44.v2.utils.getConversationKey(eph, O)), created_at: wrapAt, tags: [['p', O]],
+  }, eph) as unknown as NostrEvent;
+}
+
+describe('sending again what the Keep has not answered', () => {
+  const G1 = '11'.repeat(16);
+  const G2 = '55'.repeat(16);
+  let t = NOW;
+  const at = () => deps({ now: () => t });
+  const inv = (grant: string, over: object = {}) => ({
+    grant, secret: grant.repeat(2), kind: 'guest', createdAt: NOW, expiration: NOW + 86400, status: 'waiting', sentAt: NOW, ...over,
+  });
+  const pairedWith = (invites: object[], over: object = {}) => [{
+    keep: K, name: 'Home', relays: ['wss://a.example', 'wss://b.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, invites, ...over,
+    // These K1d scenarios are about invites; the owner's own games invite has its own tests below.
+    links: { [O]: { sections: [], addedRev: 0, active: true } },
+  }];
+  const none = { events: [] as NostrEvent[], attempted: 2, reached: 2 };
+  const kinds = () => published.map(p => unwrapEvent(p.wrap as never, KEEP_SK).kind);
+  beforeEach(() => { t = NOW; fetchMock.mockResolvedValue(none); });
+
+  it('waits ten minutes: nothing is sent at five, the invite goes again after ten', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 300;
+    await catchUp(at());
+    expect(published).toHaveLength(0);
+    t = NOW + 601;
+    await catchUp(at());
+    expect(kinds()).toEqual([27661]);
+    const rumor = lastRumor();
+    expect(rumor.tags).toContainEqual(['grant', G1]);
+    expect(rumor.tags).toContainEqual(['secret', G1.repeat(2)]);
+    expect(published[0].relays).toEqual(['wss://a.example', 'wss://b.example']);
+  });
+
+  it('sends it once per ten minutes, however many times the page opens', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 700;
+    await Promise.all([catchUp(at()), catchUp(at())]);
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    expect((await loadStoredKeeps('key'))[0].invites[0].sentAt).toBe(NOW + 700);
+    t = NOW + 700 + 601;
+    await catchUp(at());
+    expect(published).toHaveLength(2);
+  });
+
+  it('sends a revoke the Keep has not acked, and stops once it acks revoked', async () => {
+    row = pairedWith([inv(G1, { status: 'active', revokeSent: true, revokeSentAt: NOW })]);
+    t = NOW + 601;
+    await catchUp(at());
+    expect(kinds()).toEqual([27662]);
+    expect(lastRumor().tags).toEqual([['keep', K], ['grant', G1]]);
+    t = NOW + 601 + 601;
+    fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(NOW + 1000, [['status', 'revoked'], ['grant', G1]])] });
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    expect((await loadStoredKeeps('key'))[0].invites[0]).toMatchObject({ status: 'revoked', revokeSent: false });
+  });
+
+  it('reads the acks first: an invite the Keep has acked meanwhile is not sent again', async () => {
+    row = pairedWith([inv(G1), inv(G2)]);
+    t = NOW + 601;
+    fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(NOW + 500, [['status', 'active'], ['grant', G1]])] });
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    expect(lastRumor().tags).toContainEqual(['grant', G2]);
+  });
+
+  it('reads the acks from every relay in the pairing link', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    await catchUp(at());
+    expect(fetchMock).toHaveBeenCalledWith(expect.anything(), { relays: ['wss://a.example', 'wss://b.example'] });
+  });
+
+  it('leaves alone an expired, refused or revoked invite, an active one, and a Keep still pending', async () => {
+    t = NOW + 90_000;
+    row = pairedWith([inv(G1), inv(G2, { status: 'refused', reason: 'full' }), inv('66'.repeat(16), { status: 'active' }), inv('77'.repeat(16), { status: 'revoked' })]);
+    await catchUp(at());
+    expect(published).toHaveLength(0); // G1 expired (NOW + 86400)
+    row = pairedWith([inv(G1, { expiration: NOW + 10 ** 6 })], { status: 'pending', code: CODE });
+    await catchUp(at());
+    expect(published).toHaveLength(0);
+  });
+
+  it('skips a persona that cannot sign any more, without an error or a stamp', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    await catchUp(deps({ now: () => t, backendFor: () => null }));
+    expect(published).toHaveLength(0);
+    expect((await loadStoredKeeps('key'))[0].invites[0].sentAt).toBe(NOW);
+  });
+
+  it('a failed send is not an error and is tried again after ten more minutes', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    publishOk = false;
+    await expect(catchUp(at())).resolves.toBeDefined();
+    publishOk = true;
+    t = NOW + 700;
+    await catchUp(at());
+    expect(published).toHaveLength(1);
+    t = NOW + 601 + 601;
+    await catchUp(at());
+    expect(published).toHaveLength(2);
+  });
+
+  it('a revoke or invite the owner sends by hand is stamped, so it is not sent again at once', async () => {
+    row = pairedWith([inv(G1)]);
+    t = NOW + 601;
+    expect(await revokeInvite(at(), K, G1)).toBe(true);
+    await catchUp(at());
+    expect(kinds()).toEqual([27662]);
+  });
+});
+
+describe('the ack cursor', () => {
+  const TWO_DAYS = 2 * 86400;
+  const sinceOf = (call: number) => (fetchMock.mock.calls[call][0] as Array<{ since: number }>)[0].since;
+  const none = { events: [] as NostrEvent[], attempted: 2, reached: 2 };
+
+  it('asks each relay for at most KEEP_REPLY_LIMIT replies', async () => {
+    await claimKeep(deps(), link, O);
+    fetchMock.mockResolvedValueOnce(none);
+    await refreshAcks(deps());
+    expect((fetchMock.mock.calls[0][0] as Array<{ limit?: number }>)[0].limit).toBe(KEEP_REPLY_LIMIT);
+  });
+
+  it('the first read goes three days back; after an ack, the next starts two days before that ack\'s wrap', async () => {
+    await claimKeep(deps(), link, O);
+    const W = NOW - 5000;
+    fetchMock.mockResolvedValueOnce({ ...none, events: [ackWrapAt(W, [['status', 'paired'], ['claim']])] });
+    await refreshAcks(deps());
+    expect(sinceOf(0)).toBe(NOW - 3 * 86400);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(W);
+    fetchMock.mockResolvedValueOnce(none);
+    await refreshAcks(deps());
+    expect(sinceOf(1)).toBe(W - TWO_DAYS);
+  });
+
+  it('still catches an ack the Keep backdated by the full two days, days after the last one', async () => {
+    // Paired long ago (cursor W), an invite goes out, the Keep acks it much later with a wrap backdated 2 days.
+    const W = NOW - 10 * 86400;
+    row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: W,
+      invites: [{ grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: NOW - 9 * 86400, expiration: NOW + 86400, status: 'waiting', revokeSent: true }] }];
+    // Revoke acked at NOW - 8 days, wrap backdated to NOW - 10 days (= cursor - 0): still >= cursor - 2 days.
+    const ack = ackWrapAt(W - TWO_DAYS + 60, [['status', 'revoked'], ['grant', '11'.repeat(16)]]);
+    fetchMock.mockImplementation(async (filters: Array<{ since: number }>) => ({
+      events: [ack].filter(e => e.created_at >= filters[0].since), attempted: 2, reached: 2,
+    }));
+    const list = await refreshAcks(deps());
+    expect(sinceOf(0)).toBe(W - TWO_DAYS);
+    expect(list[0].invites[0]).toMatchObject({ status: 'revoked', revokeSent: false });
+  });
+
+  it('a wrap dated in the future cannot push the cursor past now', async () => {
+    await claimKeep(deps(), link, O);
+    await applyAckEvents(deps(), [ackWrapAt(NOW + 5 * 86400, [['status', 'paired'], ['claim']])]);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(NOW);
+  });
+
+  it('a wrap that is not a valid ack from this Keep does not move the cursor', async () => {
+    await claimKeep(deps(), link, O);
+    const stranger = ackWrapAt(NOW - 10, [['status', 'paired'], ['claim']], hexToBytes('0'.repeat(63) + '9'));
+    await applyAckEvents(deps(), [stranger]);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBeUndefined();
+  });
+
+  it('a repeated ack moves the cursor only forward', async () => {
+    await claimKeep(deps(), link, O);
+    await applyAckEvents(deps(), [ackWrapAt(NOW - 100, [['status', 'paired'], ['claim']])]);
+    await applyAckEvents(deps(), [ackWrapAt(NOW - 9000, [['status', 'paired'], ['claim']])]);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(NOW - 100);
+    await applyAckEvents(deps(), [ackWrapAt(NOW - 50, [['status', 'paired'], ['claim']])]);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBe(NOW - 50);
+  });
+
+  it('the live subscription starts from the same place', async () => {
+    row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: NOW - 1000, invites: [] }];
+    subscribeMock.mockReturnValue(vi.fn());
+    watchAcks(deps(), await loadStoredKeeps('key'), vi.fn());
+    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 1000 - TWO_DAYS, limit: KEEP_REPLY_LIMIT }]);
+  });
+
+  it('a persona with several Keeps reads from before the oldest cursor, on every relay of every link', async () => {
+    const K2 = getPublicKey(hexToBytes('0'.repeat(63) + '5'));
+    const mk = (keep: string, relays: string[], ackCursor?: number) => ({ keep, name: 'H', relays, claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, invites: [], ...(ackCursor ? { ackCursor } : {}) });
+    row = [mk(K, ['wss://a.example', 'wss://b.example'], NOW - 500), mk(K2, ['wss://c.example'], NOW - 90000)];
+    fetchMock.mockResolvedValue(none);
+    await refreshAcks(deps());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      [{ kinds: [1059], '#p': [O], since: NOW - 90000 - TWO_DAYS, limit: KEEP_REPLY_LIMIT }],
+      { relays: ['wss://a.example', 'wss://b.example', 'wss://c.example'] },
+    );
+  });
+
+  it('re-pairing starts the reads afresh', async () => {
+    row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: NOW - 100, invites: [] }];
+    await claimKeep(deps(), parseKeepPairLink(`signet-keep:pair?k=${K}&c=${'44'.repeat(16)}&n=Home&r=wss://a.example`)!, O);
+    expect((await loadStoredKeeps('key'))[0].ackCursors?.[O]).toBeUndefined();
+  });
+});
+
+describe('listening for acks', () => {
+  it('asks for kind 1059 addressed to the owner persona on the Keep\'s relays, three days back', async () => {
+    await claimKeep(deps(), link, O);
+    fetchMock.mockResolvedValue({ events: [ackFromKeep([['status', 'paired'], ['claim']])], attempted: 2, reached: 2 });
+    const list = await refreshAcks(deps());
+    expect(fetchMock).toHaveBeenCalledWith(
+      [{ kinds: [1059], '#p': [O], since: NOW - 3 * 86400, limit: KEEP_REPLY_LIMIT }],
+      { relays: ['wss://a.example', 'wss://b.example'] },
+    );
+    expect(list[0].status).toBe('paired');
+  });
+
+  it('subscribes live once per owner persona', async () => {
+    await claimKeep(deps(), link, O);
+    const stop = vi.fn();
+    subscribeMock.mockReturnValue(stop);
+    const keeps = await loadStoredKeeps('key');
+    const onChange = vi.fn();
+    const off = watchAcks(deps(), keeps, onChange);
+    expect(subscribeMock).toHaveBeenCalledTimes(1);
+    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 3 * 86400, limit: KEEP_REPLY_LIMIT }]);
+    const handler = subscribeMock.mock.calls[0][2] as (e: NostrEvent) => void;
+    const ack = ackFromKeep([['status', 'paired'], ['claim']]);
+    handler(ack); handler(ack);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    off();
+    expect(stop).toHaveBeenCalled();
+  });
+
+  it('reads no more than FETCH_EVENT_CAP wraps from one subscription', async () => {
+    await claimKeep(deps(), link, O);
+    subscribeMock.mockReturnValue(vi.fn());
+    const onChange = vi.fn();
+    watchAcks(deps(), await loadStoredKeeps('key'), onChange);
+    const handler = subscribeMock.mock.calls[0][2] as (e: NostrEvent) => void;
+    for (let i = 0; i < FETCH_EVENT_CAP + 50; i++) {
+      handler({ id: i.toString(16).padStart(64, '0'), tags: [['p', O]], kind: 1059, content: '', created_at: NOW, pubkey: 'ee'.repeat(32), sig: '' } as NostrEvent);
+    }
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(FETCH_EVENT_CAP));
+    await new Promise(r => setTimeout(r, 50));
+    expect(onChange).toHaveBeenCalledTimes(FETCH_EVENT_CAP);
+  });
+
+  it('does nothing for wraps to a persona it holds no Keep for', async () => {
+    await claimKeep(deps(), link, O);
+    const stranger = wrapEvent({ kind: 27663, content: '', created_at: NOW, tags: [['keep', K], ['status', 'paired'], ['claim']] }, KEEP_SK, 'ee'.repeat(32)) as unknown as NostrEvent;
+    await applyAckEvents(deps(), [stranger]);
+    expect((await loadStoredKeeps('key'))[0].status).toBe('pending');
+  });
+});
+
+describe('an unreadable stored list (never overwritten)', () => {
+  const good = () => ({
+    keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1,
+    invites: [{ grant: '11'.repeat(16), secret: '22'.repeat(32), kind: 'guest', createdAt: 1, expiration: 2, status: 'waiting' }],
+  });
+
+  it('a row with one record this build cannot read is left untouched by a claim, with a clear error', async () => {
+    row = [good(), { ...good(), keep: 'ab'.repeat(32), status: 'a-newer-status' }];
+    const before = JSON.stringify(row);
+    await expect(claimKeep(deps(), link, O)).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(JSON.stringify(row)).toBe(before);
+    expect(published).toHaveLength(0);
+  });
+
+  it('a row that is not a list at all is also left alone by every write', async () => {
+    row = { surprise: true };
+    const before = JSON.stringify(row);
+    await expect(updateStoredKeeps('key', l => [...l])).rejects.toBeInstanceOf(KeepsUnreadableError);
+    await expect(createInvite(deps(), K, { kind: 'guest' })).rejects.toBeInstanceOf(KeepsUnreadableError);
+    await expect(forgetKeep(deps(), K)).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(JSON.stringify(row)).toBe(before);
+  });
+
+  it('a row that cannot be decrypted (the db layer throws) is treated the same way', async () => {
+    dbThrows = true;
+    await expect(loadStoredKeeps('key')).rejects.toBeInstanceOf(KeepsUnreadableError);
+    await expect(claimKeep(deps(), link, O)).rejects.toBeInstanceOf(KeepsUnreadableError);
+    expect(row).toBeNull();
+  });
+
+  it('nothing stored is an empty list, not an error', async () => {
+    expect(await loadStoredKeeps('key')).toEqual([]);
+  });
+});
+
+describe('updateStoredKeeps', () => {
+  it('does not write when the change returns the same list', async () => {
+    await updateStoredKeeps('key', l => l);
+    expect(row).toBeNull();
+  });
+});
+
+describe('remembered lookup keys', () => {
+  const A = 'aa'.repeat(32);
+  const B = 'bb'.repeat(32);
+  beforeEach(() => { lookupsRow = null; lookupsThrow = false; });
+
+  it('reads none when nothing is stored, and none (not an error) when the row cannot be read', async () => {
+    expect(await loadKeepLookups('key')).toEqual([]);
+    lookupsRow = { keys: [A] };
+    lookupsThrow = true;
+    expect(await loadKeepLookups('key')).toEqual([]);
+  });
+
+  it('remembers each key once, in the encrypted row, several at a time without losing one', async () => {
+    await Promise.all([rememberKeepLookup('key', A), rememberKeepLookup('key', B), rememberKeepLookup('key', A)]);
+    expect(lookupsRow).toEqual({ keys: [A, B] });
+    expect(await loadKeepLookups('key')).toEqual([A, B]);
+  });
+});
+
+describe('hasSavedKeeps', () => {
+  it('is true only when a Keep is stored, and false (not an error) when the row cannot be read', async () => {
+    row = null; dbThrows = false;
+    expect(await hasSavedKeeps('key')).toBe(false);
+    await claimKeep(deps(), link, O);
+    expect(await hasSavedKeeps('key')).toBe(true);
+    dbThrows = true;
+    expect(await hasSavedKeeps('key')).toBe(false);
+    dbThrows = false;
+  });
+});

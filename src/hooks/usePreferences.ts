@@ -172,6 +172,11 @@ export function usePreferences() {
     return run;
   }, []);
 
+  /** Show or hide the My Keep row in Settings. Refused on a paired-child install. */
+  const setShowMyKeep = useCallback(async (show: boolean) => {
+    await applyFresh(p => (p.signingMode === 'paired-child' || (p.showMyKeep ?? false) === show ? p : { ...p, showMyKeep: show }));
+  }, [applyFresh]);
+
   const setBackgroundBunkerEnabled = useCallback(async (enabled: boolean) => {
     await applyFresh(p => (p.backgroundBunkerEnabled === enabled ? p : { ...p, backgroundBunkerEnabled: enabled }));
   }, [applyFresh]);
@@ -323,5 +328,5 @@ export function usePreferences() {
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, setShowMyKeep, reloadPreferences };
 }

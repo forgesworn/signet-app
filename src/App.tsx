@@ -232,6 +232,10 @@ import { ApproveVerification } from './pages/ApproveVerification';
 import { ApproveConnect } from './pages/ApproveConnect';
 import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
+import { MyKeep } from './pages/MyKeep';
+import { heartwoodLookupKey } from './lib/keep-owner';
+import { accountPersonas, holdsKeyFor, keepDepsFor, personaNameMap, shouldPromptUnlockForMyKeep } from './lib/keep-personas';
+import { catchUp as catchUpKeeps, hasSavedKeeps } from './lib/keep-service';
 import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
 import type { AuthSelection } from './pages/ApproveAuth';
@@ -698,7 +702,7 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, setShowMyKeep, reloadPreferences } = usePreferences();
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -2480,6 +2484,19 @@ export function App() {
     inviteNotifications.current = notifier;
     return () => { inviteNotifications.current = null; void notifier.stop(); };
   }, [encryptionKey, identity?.naturalPerson.publicKey, preferences.signingMode]);
+  // Keeps this account has claimed (K1e): when the app runs, and when a persona is made, read their acks, link
+  // the new persona on an All-my-personas Keep, keep each owner persona's games invite renewed, and send what is due.
+  const keepPersonaKey = identity ? accountPersonas(identity).map(p => `${p.pubkey}${p.canSign ? '+' : '-'}`).join(',') : '';
+  useEffect(() => {
+    if (!encryptionKey || !identity || identity.encrypted || activeDependant || childDirect || isPairedChild || !keepPersonaKey) return;
+    // A device that already holds a Keep shows the My Keep row (a local read, no network).
+    let cancelled = false;
+    void hasSavedKeeps(encryptionKey).then(has => { if (has && !cancelled) void setShowMyKeep(true); });
+    const timer = setTimeout(() => { void catchUpKeeps(keepDepsFor(identity, encryptionKey)).catch(() => undefined); }, 4000);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // The identity object changes with every edit; the persona keys and the lock are what matter here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey, keepPersonaKey, activeDependant?.id, childDirect, isPairedChild]);
   const inviteScopes = useMemo(() => identity && !isPairedChild
     ? [{ directoryId: 'owner', identities: contactIdentityLists(identity, null).map(i => i.ownerIdentityPubkey) },
       ...dependants.map(dep => ({ directoryId: `dependant:${dep.id}`, identities: contactIdentityLists(identity, dep).map(i => i.ownerIdentityPubkey) }))] : [],
@@ -5530,6 +5547,22 @@ export function App() {
     alwaysOnUnlockPromptRef.current = true;
     void requestAuth({ purpose: 'unlock-app' });
   }, [identityLoading, prefsLoading, identity, encryptionKey, pendingEncryptionKey, showAuthPrompt, preferences.backgroundBunkerEnabled, preferences.signingMode, requestAuth]);
+
+  // My Keep reads the encrypted Keeps and signs with a persona's key, so it needs the
+  // unlocked app like every other page that does. Opening it locked asks for the PIN
+  // once; a cancel is left alone (the page then offers Unlock), and the ask comes
+  // again the next time the page is opened or after the app locks while it is open.
+  const myKeepUnlockPromptRef = useRef(false);
+  useEffect(() => {
+    if (page !== 'my-keep' || encryptionKey) { myKeepUnlockPromptRef.current = false; return; }
+    if (!shouldPromptUnlockForMyKeep({
+      onMyKeep: true, loading: identityLoading || prefsLoading, hasIdentity: !!identity, pairedChild: isPairedChild,
+      authSetUp: isAuthSetUp(), unlocked: !!pendingEncryptionKey, promptOpen: showAuthPrompt,
+      alreadyAsked: myKeepUnlockPromptRef.current,
+    })) return;
+    myKeepUnlockPromptRef.current = true;
+    void requestAuth({ purpose: 'unlock-app' });
+  }, [page, identityLoading, prefsLoading, identity, isPairedChild, encryptionKey, pendingEncryptionKey, showAuthPrompt, requestAuth]);
 
   // Native: liveness heartbeat to the foreground service while serving.
   // A stale heartbeat (>90s) flips the service into fallback-poll mode and
@@ -10878,6 +10911,40 @@ export function App() {
     ));
   }
 
+  if (page === 'my-keep' && !isPairedChild) {
+    return renderSettingsPage('my-keep', 'My Keep', <MyKeep
+      scope={identity.id}
+      onBack={() => navigateBack()}
+      lock={activeDependant || childDirect ? undefined
+        : !encryptionKey ? { state: 'locked', onUnlock: () => { void requestAuth({ purpose: 'unlock-app' }); } }
+        : identity.encrypted ? { state: 'unlocking' } : undefined}
+      keepHost={encryptionKey && !activeDependant && !childDirect ? {
+        deps: keepDepsFor(identity, encryptionKey),
+        canSign: persona => holdsKeyFor(identity, persona),
+        personas: accountPersonas(identity),
+        // Play here hands stampede://keep/<K>/<secret> to Android through the WebView: Capacitor's
+        // bridge sends a link to another host to ACTION_VIEW (Bridge.launchIntent). Same call as the other
+        // external links in this app. Not offered on the web.
+        openApp: isNativeApp() ? (link: string) => { window.open(link, '_blank', 'noopener'); } : undefined,
+        activePersona: carousel.activeIdentity.publicKey
+          ? { pubkey: carousel.activeIdentity.publicKey.toLowerCase(), name: personaNameMap(identity)[carousel.activeIdentity.publicKey.toLowerCase()] || 'this persona' }
+          : null,
+        personaNames: personaNameMap(identity),
+        contacts: contactsScope.directoryId === 'owner' && !contactsV2.loading ? contactsV2.effective : null,
+        confirmClaim: async (keepName, personaName) =>
+          (await requestFreshAuth({ purpose: 'manage-keep', keepName, personaName })) !== null,
+        confirmOwnerChange: async (keepName, personaName, linking) =>
+          (await requestFreshAuth({ purpose: 'manage-keep', keepName, personaName, action: linking ? 'link' : 'unlink' })) !== null,
+      } : undefined}
+      heartwoodKey={heartwoodLookupKey({
+        signingMode: preferences.signingMode,
+        bunkerUri: preferences.bunkerUri,
+        liveSignerPubkey: bunkerBackend?.activePublicKeyHex,
+      })}
+      onKeepsFound={() => { void setShowMyKeep(true); }}
+    />);
+  }
+
   if (page === 'roster') {
     if (!npBackend) {
       return (
@@ -11293,6 +11360,7 @@ export function App() {
         onNavigateRoster={() => navigateTo('roster')}
         onNavigateDeveloper={() => navigateTo('settings-developer')}
         onOpenMigration={() => navigateTo('migrate-heartwood')}
+        onSetShowMyKeep={preferences.signingMode !== 'paired-child' ? (show => { void setShowMyKeep(show); }) : undefined}
         heartwoodOwner={heartwoodOwner.supported ? {
           supported: true,
           status: heartwoodOwner.status,

@@ -1,5 +1,6 @@
 import { ensureContactsDeviceId } from './contacts-v2-ids';
 import { clearQrCardPrefs } from './qr-card-prefs';
+import { clearKeepNicknames } from './keep-nicknames';
 // IndexedDB storage for MySignet family app
 
 import { openDB, unwrap, type IDBPDatabase } from 'idb';
@@ -371,6 +372,8 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== HEARTWOOD_OPERATOR_KEY &&
     r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
+    r.id !== KEEPS_KEY &&
+    r.id !== KEEP_LOOKUPS_KEY &&
     !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
     !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
     !r.id.startsWith(DEPENDANT_PREFIX),
@@ -581,6 +584,8 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
     if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
+    if (identity.id === KEEPS_KEY) continue;
+    if (identity.id === KEEP_LOOKUPS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_DIRECT_ROW_PREFIX)) continue;
@@ -2495,6 +2500,52 @@ export async function deleteHeartwoodOperator(): Promise<void> {
   await db.delete('identity', HEARTWOOD_OPERATOR_KEY);
 }
 
+// --- Claimed Keeps (encrypted) ---
+// One `identity`-store row keyed 'keeps': the whole account-level list of Keeps
+// this account has claimed (K1d), JSON encrypted with the unlock key, same
+// pattern as `heartwoodOperator`. It holds invite secrets, so it is encrypted.
+// No IndexedDB version change. Shape and rules live in `keep-store.ts`.
+
+const KEEPS_KEY = 'keeps';
+
+export async function saveKeepsRow(value: unknown, encryptionKey: string): Promise<void> {
+  const encrypted = await encryptSecret(JSON.stringify(value), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: KEEPS_KEY, secret: encrypted });
+}
+
+/**
+ * The stored value, or null when nothing is stored. A row that is there but
+ * cannot be read (wrong key, not JSON) throws, so a caller never mistakes it for
+ * an empty list and saves over it.
+ */
+export async function loadKeepsRow(encryptionKey: string): Promise<unknown> {
+  const db = await getDB();
+  const record = await db.get('identity', KEEPS_KEY);
+  if (!record || !record.secret) return null;
+  return JSON.parse(await decryptSecret(record.secret, encryptionKey));
+}
+
+// One `identity`-store row keyed 'keepLookups': the keys a "Look for my Keep" lookup found a Keep under, so
+// the next open re-asks for just that key. Encrypted like the Keeps row (it links a persona to a Keep), never
+// in AppPreferences. Cleared by `purgeAllUserData` with the rest of the `identity` store.
+
+const KEEP_LOOKUPS_KEY = 'keepLookups';
+
+export async function saveKeepLookupsRow(value: unknown, encryptionKey: string): Promise<void> {
+  const encrypted = await encryptSecret(JSON.stringify(value), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: KEEP_LOOKUPS_KEY, secret: encrypted });
+}
+
+/** The stored value, or null when nothing is stored. Throws when the row cannot be read. */
+export async function loadKeepLookupsRow(encryptionKey: string): Promise<unknown> {
+  const db = await getDB();
+  const record = await db.get('identity', KEEP_LOOKUPS_KEY);
+  if (!record || !record.secret) return null;
+  return JSON.parse(await decryptSecret(record.secret, encryptionKey));
+}
+
 // --- Heartwood vault pubkeys (encrypted) ---
 // One `identity`-store row keyed 'heartwoodVaultPubkeys': the vault pubkeys a
 // paired Heartwood resolved for `get_public_key` + a `signet:vault:*` context,
@@ -2600,6 +2651,7 @@ export async function purgeAllUserData(): Promise<void> {
   forgetDerivedKeys();
   forgetSyncCacheKeys();
   clearQrCardPrefs();
+  clearKeepNicknames();
   const db = await getDB();
   await db.clear('identity');
   await db.clear('contacts');

@@ -3291,3 +3291,51 @@ describe('contactPictures store (v27)', () => {
     expect(await (await db.getDb()).count('contactPictures')).toBe(0);
   }, TIMEOUT);
 });
+
+describe('claimed Keeps row (K1d)', () => {
+  const keeps = [{ keep: 'ab'.repeat(32), secretish: 'visible-only-when-decrypted' }];
+
+  it('round-trips, encrypted, in one identity-store row with no version change', async () => {
+    const db = await freshDb();
+    await db.saveKeepsRow(keeps, PASSPHRASE);
+    expect(await db.loadKeepsRow(PASSPHRASE)).toEqual(keeps);
+    const raw = await rawOpen();
+    const row = await raw.get('identity', 'keeps') as Record<string, unknown>;
+    raw.close();
+    expect(JSON.stringify(row)).not.toContain('visible-only-when-decrypted');
+    expect(JSON.stringify(row)).not.toContain('ab'.repeat(32));
+  }, TIMEOUT);
+
+  it('returns null when nothing is stored, and throws (never null) for a row it cannot read', async () => {
+    const db = await freshDb();
+    expect(await db.loadKeepsRow(PASSPHRASE)).toBeNull();
+    await db.saveKeepsRow(keeps, PASSPHRASE);
+    await expect(db.loadKeepsRow('wrong-passphrase-here')).rejects.toThrow();
+  }, TIMEOUT);
+
+  it('is not mistaken for an identity, is not cleaned up, and is purged with the rest', async () => {
+    const db = await freshDb();
+    await db.saveKeepsRow(keeps, PASSPHRASE);
+    expect(await db.getAllIdentities()).toEqual([]);
+    await db.cleanupUnencryptedIdentities();
+    expect(await db.loadKeepsRow(PASSPHRASE)).toEqual(keeps);
+    await db.purgeAllUserData();
+    expect(await db.loadKeepsRow(PASSPHRASE)).toBeNull();
+  }, TIMEOUT);
+
+  it('keeps the remembered lookup keys encrypted in their own identity-store row, purged with the rest', async () => {
+    const db = await freshDb();
+    const key = 'cd'.repeat(32);
+    expect(await db.loadKeepLookupsRow(PASSPHRASE)).toBeNull();
+    await db.saveKeepLookupsRow({ keys: [key] }, PASSPHRASE);
+    expect(await db.loadKeepLookupsRow(PASSPHRASE)).toEqual({ keys: [key] });
+    const raw = await rawOpen();
+    const stored = await raw.get('identity', 'keepLookups') as Record<string, unknown>;
+    raw.close();
+    expect(JSON.stringify(stored)).not.toContain(key);
+    await expect(db.loadKeepLookupsRow('wrong-passphrase-here')).rejects.toThrow();
+    expect(await db.getAllIdentities()).toEqual([]);
+    await db.purgeAllUserData();
+    expect(await db.loadKeepLookupsRow(PASSPHRASE)).toBeNull();
+  }, TIMEOUT);
+});
