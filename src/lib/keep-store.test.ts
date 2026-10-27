@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CLAIM_ACK_SKEW_S, applyAck, clampAckTime, inviteStatusLabel, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
+  CLAIM_ACK_SKEW_S, KEEP_LOOKUP_CAP, applyAck, clampAckTime, inviteStatusLabel, markRevokeSent, newPendingKeep, parseKeepLookups, parseStoredKeeps,
+  repairKeep, withInvite, withKeep, withLookupKey,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 
@@ -213,5 +214,26 @@ describe('applyAck: ack times are capped at now plus the skew', () => {
     const stuck = [withInvite(paired(), invite({ status: 'active', ackAt: 4_000_000_000 }))];
     const next = applyAck(stuck, ack({ status: 'refused', reason: 'full', at: NOW + CLAIM_ACK_SKEW_S }), NOW);
     expect(next[0].invites[0]).toMatchObject({ status: 'refused', ackAt: NOW + CLAIM_ACK_SKEW_S });
+  });
+});
+
+describe('remembered lookup keys', () => {
+  const A = 'aa'.repeat(32);
+  const B = 'bb'.repeat(32);
+
+  it('parses only lowercase hex keys, once each, up to the cap; anything else is none', () => {
+    expect(parseKeepLookups({ keys: [A, A, 'nope', 5, B.toUpperCase(), B] })).toEqual([A, B]);
+    expect(parseKeepLookups(null)).toEqual([]);
+    expect(parseKeepLookups([A])).toEqual([]);
+    const many = Array.from({ length: KEEP_LOOKUP_CAP + 3 }, (_, i) => i.toString(16).padStart(2, '0').repeat(32));
+    expect(parseKeepLookups({ keys: many })).toHaveLength(KEEP_LOOKUP_CAP);
+  });
+
+  it('adds a key once, and returns the same list when it is already there or is not a key', () => {
+    const list = withLookupKey([], A);
+    expect(list).toEqual([A]);
+    expect(withLookupKey(list, A)).toBe(list);
+    expect(withLookupKey(list, 'nope')).toBe(list);
+    expect(withLookupKey(list, B.toUpperCase())).toEqual([A, B]);
   });
 });

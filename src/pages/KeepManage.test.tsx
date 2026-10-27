@@ -9,9 +9,12 @@ import type { NostrEvent } from 'signet-protocol';
 import type { EffectiveContact } from '../types';
 
 let row: unknown = null;
+let lookupsRow: unknown = null;
 vi.mock('../lib/db', () => ({
   loadKeepsRow: async () => (row === null ? null : JSON.parse(JSON.stringify(row))),
   saveKeepsRow: async (value: unknown) => { row = JSON.parse(JSON.stringify(value)); },
+  loadKeepLookupsRow: async () => (lookupsRow === null ? null : JSON.parse(JSON.stringify(lookupsRow))),
+  saveKeepLookupsRow: async (value: unknown) => { lookupsRow = JSON.parse(JSON.stringify(value)); },
 }));
 vi.mock('../lib/relay-service', () => ({
   fetchEventsWithReach: vi.fn(async () => ({ events: [], attempted: 1, reached: 1 })),
@@ -72,14 +75,14 @@ const pairedKeep = (over: object = {}) => ({
 
 const share = vi.fn();
 beforeEach(() => {
-  row = null; published.length = 0; share.mockReset(); share.mockResolvedValue(undefined);
+  row = null; lookupsRow = null; published.length = 0; share.mockReset(); share.mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'share', { value: share, configurable: true });
   window.scrollTo = vi.fn() as never;
   localStorage.clear();
 });
 afterEach(cleanup);
 
-const renderKeep = (h: KeepHost | undefined = host()) => render(<MyKeep ownedPubkeys={[O]} scope="id1" onBack={vi.fn()} keepHost={h} />);
+const renderKeep = (h: KeepHost | undefined = host()) => render(<MyKeep scope="id1" onBack={vi.fn()} keepHost={h} />);
 const lastRumor = () => unwrapEvent(published[published.length - 1] as never, KEEP_SK);
 
 describe('Add a Keep', () => {
@@ -496,6 +499,8 @@ describe('return passes (K1f)', () => {
   const G_FRIEND = '01'.repeat(16);
   const G_SEAT = '02'.repeat(16);
   const G_BARE = '03'.repeat(16);
+  // The expiry text uses the device locale, so the expected text is made with the same formatter.
+  const FRIEND_EXPIRY = nowS() + 20 * 86400;
   const pass = (grant: string, persona: string, over: object = {}) => ({
     grant, persona, state: 'active', expiration: nowS() + 20 * 86400, seenAt: nowS() - 2 * 86400, via: 'code', reportAt: nowS() - 86400, ...over,
   });
@@ -508,7 +513,7 @@ describe('return passes (K1f)', () => {
 
   it('lists a returning player under Who can play: the contact\'s name, else the seat name, else a short npub; Active, expiry, last seen', async () => {
     row = withPasses([
-      pass(G_FRIEND, FRIEND, { name: 'Seat name' }),
+      pass(G_FRIEND, FRIEND, { name: 'Seat name', expiration: FRIEND_EXPIRY }),
       pass(G_SEAT, PLAYER_A, { name: 'Seat name', seenAt: nowS() - 5 * 86400 }),
       pass(G_BARE, PLAYER_B, { seenAt: nowS() - 7200 }),
     ]);
@@ -522,7 +527,7 @@ describe('return passes (K1f)', () => {
     expect(names).toEqual([expect.stringMatching(/^npub1[0-9a-z]+…[0-9a-z]{6}$/), 'Dave', 'Seat name']);
     expect(rows[0]).toHaveTextContent('Last seen 2 hours ago');
     expect(rows[1]).toHaveTextContent('Active');
-    expect(rows[1]).toHaveTextContent(/Expires \d/);
+    expect(rows[1]).toHaveTextContent(expiryText(FRIEND_EXPIRY, nowS()));
     expect(rows[1]).toHaveTextContent('Last seen 2 days ago');
     expect(rows[2]).toHaveTextContent('Last seen 5 days ago');
     // it is part of the Who can play block, below the invites

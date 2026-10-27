@@ -386,6 +386,23 @@ export function parseStoredKeeps(raw: unknown): StoredKeep[] | null {
   return (scrubbed as Array<Record<string, unknown>>).map(migrateKeep);
 }
 
+/** The most lookup keys remembered (one request each on every open). */
+export const KEEP_LOOKUP_CAP = 8;
+
+/** The remembered lookup keys: lowercase hex, no repeats, at most `KEEP_LOOKUP_CAP`. Anything else reads as none. */
+export function parseKeepLookups(raw: unknown): string[] {
+  const keys = (raw as { keys?: unknown } | null)?.keys;
+  if (!Array.isArray(keys)) return [];
+  return [...new Set(keys.filter((k): k is string => typeof k === 'string' && HEX64.test(k)))].slice(0, KEEP_LOOKUP_CAP);
+}
+
+/** `key` added to the remembered lookup keys (the newest last; the oldest drops at the cap). The same list when it is already there. */
+export function withLookupKey(list: readonly string[], key: string): string[] {
+  const k = key.toLowerCase();
+  if (!HEX64.test(k) || list.includes(k)) return list as string[];
+  return [...list, k].slice(-KEEP_LOOKUP_CAP);
+}
+
 export function newPendingKeep(a: {
   keep: string; name: string; relays: string[]; claimedBy: string; code: string; now: number; scope?: KeepScope;
 }): StoredKeep {

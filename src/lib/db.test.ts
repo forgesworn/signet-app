@@ -3322,4 +3322,20 @@ describe('claimed Keeps row (K1d)', () => {
     await db.purgeAllUserData();
     expect(await db.loadKeepsRow(PASSPHRASE)).toBeNull();
   }, TIMEOUT);
+
+  it('keeps the remembered lookup keys encrypted in their own identity-store row, purged with the rest', async () => {
+    const db = await freshDb();
+    const key = 'cd'.repeat(32);
+    expect(await db.loadKeepLookupsRow(PASSPHRASE)).toBeNull();
+    await db.saveKeepLookupsRow({ keys: [key] }, PASSPHRASE);
+    expect(await db.loadKeepLookupsRow(PASSPHRASE)).toEqual({ keys: [key] });
+    const raw = await rawOpen();
+    const stored = await raw.get('identity', 'keepLookups') as Record<string, unknown>;
+    raw.close();
+    expect(JSON.stringify(stored)).not.toContain(key);
+    await expect(db.loadKeepLookupsRow('wrong-passphrase-here')).rejects.toThrow();
+    expect(await db.getAllIdentities()).toEqual([]);
+    await db.purgeAllUserData();
+    expect(await db.loadKeepLookupsRow(PASSPHRASE)).toBeNull();
+  }, TIMEOUT);
 });

@@ -10,7 +10,7 @@
  */
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { NostrEvent, NostrFilter } from 'signet-protocol';
-import { loadKeepsRow, saveKeepsRow } from './db';
+import { loadKeepLookupsRow, loadKeepsRow, saveKeepLookupsRow, saveKeepsRow } from './db';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { publishWrappedToRelays } from './relay-publish';
 import { fetchEventsWithReach, subscribeEvents } from './relay-service';
@@ -21,7 +21,7 @@ import {
 import {
   KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, applyPassReport, applySettingsAck, canComposeSettings, composeSettings,
   findKeep, markInviteSent, markPassRevokeSent, markPassesRequested, markRevokeSent, markSettingsSent, newPendingKeep, parseStoredKeeps,
-  passRevokesDue, passesRequestDue, repairKeep, resendDue, returnPassesOn, settingsDue, withInvite, withKeep,
+  parseKeepLookups, passRevokesDue, passesRequestDue, repairKeep, resendDue, returnPassesOn, settingsDue, withInvite, withKeep, withLookupKey,
   type KeepScope, type StoredInvite, type StoredKeep,
 } from './keep-store';
 import {
@@ -97,6 +97,30 @@ export function updateStoredKeeps(
     return next;
   });
   queue = run.catch(() => undefined);
+  return run;
+}
+
+// ---- remembered lookups -----------------------------------------------------
+
+/**
+ * The keys a "Look for my Keep" lookup found a Keep under (encrypted at rest). Never throws: a row that
+ * cannot be read is a convenience lost, not Keeps lost, so it reads as none.
+ */
+export async function loadKeepLookups(encryptionKey: string): Promise<string[]> {
+  try { return parseKeepLookups(await loadKeepLookupsRow(encryptionKey)); } catch { return []; }
+}
+
+let lookupQueue: Promise<unknown> = Promise.resolve();
+
+/** Remember that a lookup of `key` found a Keep. Resolves with the remembered keys. */
+export function rememberKeepLookup(encryptionKey: string, key: string): Promise<string[]> {
+  const run = lookupQueue.then(async () => {
+    const current = await loadKeepLookups(encryptionKey);
+    const next = withLookupKey(current, key);
+    if (next !== current) await saveKeepLookupsRow({ keys: next }, encryptionKey);
+    return next;
+  });
+  lookupQueue = run.catch(() => undefined);
   return run;
 }
 

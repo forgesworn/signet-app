@@ -373,6 +373,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     r.id !== KEEPS_KEY &&
+    r.id !== KEEP_LOOKUPS_KEY &&
     !r.id.startsWith(CHILD_RULES_CACHE_PREFIX) &&
     !r.id.startsWith(CHILD_DIRECT_ROW_PREFIX) &&
     !r.id.startsWith(DEPENDANT_PREFIX),
@@ -584,6 +585,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (identity.id === KEEPS_KEY) continue;
+    if (identity.id === KEEP_LOOKUPS_KEY) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(DEPENDANT_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_RULES_CACHE_PREFIX)) continue;
     if (typeof identity.id === 'string' && identity.id.startsWith(CHILD_DIRECT_ROW_PREFIX)) continue;
@@ -2520,6 +2522,26 @@ export async function saveKeepsRow(value: unknown, encryptionKey: string): Promi
 export async function loadKeepsRow(encryptionKey: string): Promise<unknown> {
   const db = await getDB();
   const record = await db.get('identity', KEEPS_KEY);
+  if (!record || !record.secret) return null;
+  return JSON.parse(await decryptSecret(record.secret, encryptionKey));
+}
+
+// One `identity`-store row keyed 'keepLookups': the keys a "Look for my Keep" lookup found a Keep under, so
+// the next open re-asks for just that key. Encrypted like the Keeps row (it links a persona to a Keep), never
+// in AppPreferences. Cleared by `purgeAllUserData` with the rest of the `identity` store.
+
+const KEEP_LOOKUPS_KEY = 'keepLookups';
+
+export async function saveKeepLookupsRow(value: unknown, encryptionKey: string): Promise<void> {
+  const encrypted = await encryptSecret(JSON.stringify(value), encryptionKey);
+  const db = await getDB();
+  await db.put('identity', { id: KEEP_LOOKUPS_KEY, secret: encrypted });
+}
+
+/** The stored value, or null when nothing is stored. Throws when the row cannot be read. */
+export async function loadKeepLookupsRow(encryptionKey: string): Promise<unknown> {
+  const db = await getDB();
+  const record = await db.get('identity', KEEP_LOOKUPS_KEY);
   if (!record || !record.secret) return null;
   return JSON.parse(await decryptSecret(record.secret, encryptionKey));
 }

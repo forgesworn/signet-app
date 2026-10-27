@@ -8,7 +8,14 @@ import type { NostrEvent } from 'signet-protocol';
 // The stored row, held in memory (the real row is covered in db.test.ts).
 let row: unknown = null;
 let dbThrows = false;
+let lookupsRow: unknown = null;
+let lookupsThrow = false;
 vi.mock('./db', () => ({
+  loadKeepLookupsRow: async () => {
+    if (lookupsThrow) throw new Error('decrypt failed');
+    return lookupsRow === null ? null : JSON.parse(JSON.stringify(lookupsRow));
+  },
+  saveKeepLookupsRow: async (value: unknown) => { lookupsRow = JSON.parse(JSON.stringify(value)); },
   loadKeepsRow: async () => {
     if (dbThrows) throw new Error('decrypt failed');
     return row === null ? null : JSON.parse(JSON.stringify(row));
@@ -24,7 +31,7 @@ vi.mock('./relay-service', () => ({
 
 import { LocalSigningBackend } from './signing-backend';
 import {
-  KEEP_REPLY_LIMIT, applyAckEvents, catchUp, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
+  KEEP_REPLY_LIMIT, applyAckEvents, catchUp, loadKeepLookups, rememberKeepLookup, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
   resendClaim, revokeInvite, updateStoredKeeps, watchAcks, PersonaNotAvailableError, type KeepDeps,
 } from './keep-service';
 import { parseKeepPairLink } from './keep-link';
@@ -563,5 +570,24 @@ describe('updateStoredKeeps', () => {
   it('does not write when the change returns the same list', async () => {
     await updateStoredKeeps('key', l => l);
     expect(row).toBeNull();
+  });
+});
+
+describe('remembered lookup keys', () => {
+  const A = 'aa'.repeat(32);
+  const B = 'bb'.repeat(32);
+  beforeEach(() => { lookupsRow = null; lookupsThrow = false; });
+
+  it('reads none when nothing is stored, and none (not an error) when the row cannot be read', async () => {
+    expect(await loadKeepLookups('key')).toEqual([]);
+    lookupsRow = { keys: [A] };
+    lookupsThrow = true;
+    expect(await loadKeepLookups('key')).toEqual([]);
+  });
+
+  it('remembers each key once, in the encrypted row, several at a time without losing one', async () => {
+    await Promise.all([rememberKeepLookup('key', A), rememberKeepLookup('key', B), rememberKeepLookup('key', A)]);
+    expect(lookupsRow).toEqual({ keys: [A, B] });
+    expect(await loadKeepLookups('key')).toEqual([A, B]);
   });
 });

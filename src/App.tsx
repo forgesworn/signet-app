@@ -232,7 +232,7 @@ import { ApproveConnect } from './pages/ApproveConnect';
 import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
-import { keepAuthorPubkeys } from './lib/keep-owner';
+import { heartwoodLookupKey } from './lib/keep-owner';
 import { accountPersonas, holdsKeyFor, keepDepsFor, personaNameMap, shouldPromptUnlockForMyKeep } from './lib/keep-personas';
 import { catchUp as catchUpKeeps } from './lib/keep-service';
 import { Connections, type PhoneApp } from './pages/Connections';
@@ -10788,8 +10788,7 @@ export function App() {
         confirmOwnerChange: async (keepName, personaName, linking) =>
           (await requestFreshAuth({ purpose: 'manage-keep', keepName, personaName, action: linking ? 'link' : 'unlink' })) !== null,
       } : undefined}
-      ownedPubkeys={keepAuthorPubkeys({
-        slotPubkeys: ownerSlotPubkeys(identity),
+      heartwoodKey={heartwoodLookupKey({
         signingMode: preferences.signingMode,
         bunkerUri: preferences.bunkerUri,
         liveSignerPubkey: bunkerBackend?.activePublicKeyHex,

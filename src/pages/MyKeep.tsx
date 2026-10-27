@@ -1,13 +1,18 @@
 /**
- * My Keep: a read-only list of the Keep(s) this identity has claimed, and
- * whether each is online. Plain relay reads, so it works on web too.
+ * My Keep: the Keep(s) this identity has claimed, and whether each is online. Plain relay reads, so it
+ * works on web too.
  *
- * Nothing here writes to the network. A nickname is stored on this device
- * only (`keep-nicknames.ts`) and never published. Managing a Keep (revoke,
- * pair, rename on the network) is not built yet; the footnote says so.
+ * Privacy: opening this page asks the relays nothing unless a Keep is already saved on this device, and
+ * then only about that Keep's own keys, one request per Keep. With nothing saved, the person picks ONE
+ * key to look under ("Look for my Keep"); a lookup that finds a Keep is remembered, encrypted, and later
+ * opens ask about just that key. No request ever carries more than one owner's key set, never the
+ * dormant real-name key, and the Heartwood master only when picked.
+ *
+ * A nickname is stored on this device only (`keep-nicknames.ts`) and never published.
  */
-import { useCallback, useEffect, useState } from 'react';
-import { loadStoredKeeps } from '../lib/keep-service';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { loadKeepLookups, loadStoredKeeps, rememberKeepLookup } from '../lib/keep-service';
+import { keepLookupGroups } from '../lib/keep-owner';
 import { KEEPS_UNREADABLE_TEXT } from '../lib/keep-store';
 import { Icon } from '../components/Icon';
 import { loadMyKeeps, type KeepLoadResult } from '../lib/keep-load';
@@ -19,8 +24,13 @@ import { KEEP_PREVIEW_BANNER, keepPreviewEnabled, keepPreviewKeeps } from '../li
 import { AddKeep, KeepDetail, StoredKeepRows, useStoredKeeps, type KeepHost } from './KeepManage';
 
 interface Props {
-  /** Every public key a claim of this user's may be signed by (see `keepAuthorPubkeys`), hex. */
-  ownedPubkeys: string[];
+  /**
+   * The Heartwood's own master key, hex, only on a bunker install (see `heartwoodLookupKey`). Queried alone, and
+   * only when the person picks "My Heartwood" (or it was remembered from that pick).
+   */
+  heartwoodKey?: string | null;
+  /** A Keep was saved here or a lookup found one: the app turns the My Keep row on in Settings. */
+  onKeepsFound?: () => void;
   /** Identity id; nicknames are saved per identity. */
   scope: string;
   onBack: () => void;
@@ -36,11 +46,24 @@ interface Props {
 
 type State = { phase: 'loading' } | { phase: 'error' } | { phase: 'ready'; keeps: Keep[]; now: number };
 
+/** The "Look for my Keep" flow: choosing a key, asking, and what came back. */
+type Lookup =
+  | { t: 'pick' }
+  | { t: 'searching'; label: string }
+  | { t: 'none'; label: string }
+  | { t: 'error' };
+
+interface LookupOption { key: string; label: string; sub?: string }
+
+const HEARTWOOD_LABEL = 'My Heartwood';
+const HEARTWOOD_SUB = 'If the Keep was set up with your Heartwood';
+const PICK_NOTE = 'Only the one you pick is sent to the network.';
+
 /** Dev builds only: `?keep-preview` shows sample Keeps. Every use below is also behind `import.meta.env.DEV`, so a production build drops the preview code. */
 const previewOn = () => import.meta.env.DEV && keepPreviewEnabled(import.meta.env.DEV, window.location.search);
 
 const FOOTNOTE = 'Managing a Keep from here is coming later.';
-const FOOTNOTE_WITH_HOST = 'Keeps set up with the Bothy app can\u2019t be managed from here yet.';
+const FOOTNOTE_WITH_HOST = 'Keeps set up outside My Signet can\u2019t be managed from here yet.';
 
 type View = { t: 'list' } | { t: 'add' } | { t: 'detail'; keep: string; note?: string };
 
@@ -122,38 +145,147 @@ function KeepRow({ keep, now, nickname, last, onNickname }: {
   );
 }
 
-export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
+/** The remembered lookup keys, read once the app is unlocked. Cleared when it locks. */
+function useRememberedLookups(host: KeepHost | undefined) {
+  const key = host?.deps.encryptionKey ?? '';
+  const [keys, setKeys] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!key) { setKeys([]); setLoaded(false); return; }
+    let cancelled = false;
+    loadKeepLookups(key).then(list => { if (!cancelled) { setKeys(list); setLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [key]);
+  const remember = useCallback((lookupKey: string) => {
+    if (key) void rememberKeepLookup(key, lookupKey).catch(() => undefined);
+  }, [key]);
+  return { keys, loaded, remember };
+}
+
+/** Keeps from several lookups as one list, one row per Keep (later lists win). */
+function mergeKeeps(...lists: Keep[][]): Keep[] {
+  const byNode = new Map<string, Keep>();
+  for (const list of lists) for (const keep of list) byNode.set(keep.claim.node, keep);
+  return [...byNode.values()].sort((a, b) => b.claim.createdAt - a.claim.createdAt || (a.claim.node < b.claim.node ? -1 : 1));
+}
+
+function LookupPicker({ options, onPick, onCancel }: { options: LookupOption[]; onPick: (o: LookupOption) => void; onCancel: () => void }) {
+  return (
+    <div className="card card-flush" data-testid="keep-lookup-picker" role="group" aria-label="Look for my Keep under">
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', padding: '14px 16px 4px', margin: 0 }}>
+        Which of you set up the Keep? {PICK_NOTE}
+      </p>
+      {options.map(o => (
+        <button
+          key={o.key}
+          className="row-button"
+          onClick={() => onPick(o)}
+          style={{ width: '100%', textAlign: 'left', padding: '12px 16px', borderTop: '1px solid var(--border)' }}
+        >
+          <span style={{ fontWeight: 600, fontSize: '0.95rem', display: 'block', overflowWrap: 'anywhere' }}>{o.label}</span>
+          {o.sub && <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block' }}>{o.sub}</span>}
+        </button>
+      ))}
+      <div style={{ padding: 12, textAlign: 'center', borderTop: '1px solid var(--border)' }}>
+        <button className="btn btn-ghost" onClick={onCancel} style={{ width: 'auto' }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lock }: Props) {
   const [state, setState] = useState<State>({ phase: 'loading' });
   const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames(scope));
   const [attempt, setAttempt] = useState(0);
-  const ownedKey = ownedPubkeys.join(',');
   const [preview] = useState(previewOn);
   const [view, setView] = useState<View>({ t: 'list' });
-  const { keeps: stored, setKeeps: setStored, unreadable } = useStoredKeeps(keepHost);
+  const [lookup, setLookup] = useState<Lookup | null>(null);
+  const [found, setFound] = useState<{ keeps: Keep[]; now: number }>({ keeps: [], now: 0 });
+  const { keeps: stored, setKeeps: setStored, loaded: storedLoaded, unreadable } = useStoredKeeps(keepHost);
+  const remembered = useRememberedLookups(keepHost);
+  const locked = !!lock;
+  // Bumped on lock so a lookup that was in flight cannot land after it.
+  const epochRef = useRef(0);
+  const notifiedRef = useRef(false);
+
+  // What the relays are asked about: each saved Keep's own keys, each remembered key alone. Nothing else.
+  const groups = useMemo(() => keepLookupGroups(stored, remembered.keys), [stored, remembered.keys]);
+  const groupsKey = JSON.stringify(groups);
+  const ready = !keepHost || (storedLoaded && remembered.loaded);
 
   // Settings keeps its window scroll when this page opens; start at the top.
   useEffect(() => { try { window.scrollTo?.(0, 0); } catch { /* no scrolling here */ } }, []);
 
+  // Locked: nothing decrypted stays on screen or in memory (the stored Keeps are cleared by their hook).
+  useEffect(() => {
+    if (!locked) return;
+    epochRef.current += 1;
+    setView({ t: 'list' });
+    setLookup(null);
+    setFound({ keeps: [], now: 0 });
+    setState({ phase: 'loading' });
+  }, [locked]);
+
   useEffect(() => {
     let cancelled = false;
+    const nowS = () => Math.floor(Date.now() / 1000);
     if (import.meta.env.DEV && preview) {
       // Sample data (dev only): no relay is read, the rows render as real ones do.
-      const now = Math.floor(Date.now() / 1000);
-      setState({ phase: 'ready', keeps: keepPreviewKeeps(ownedKey.split(',')[0] || '0'.repeat(64), now), now });
+      setState({ phase: 'ready', keeps: keepPreviewKeeps('0'.repeat(64), nowS()), now: nowS() });
+      return;
+    }
+    if (locked || !ready) return;
+    const asks = JSON.parse(groupsKey) as string[][];
+    if (asks.length === 0) {
+      // Nothing saved here and nothing remembered: the relays are not asked anything.
+      setState({ phase: 'ready', keeps: [], now: nowS() });
       return;
     }
     setState({ phase: 'loading' });
-    loadMyKeeps(ownedKey ? ownedKey.split(',') : []).then(
-      (r: KeepLoadResult) => {
-        if (cancelled) return;
-        setState(r.ok ? { phase: 'ready', keeps: r.keeps, now: r.now } : { phase: 'error' });
-      },
-      () => { if (!cancelled) setState({ phase: 'error' }); },
-    );
+    // One separate request per saved Keep / remembered key, so no request ties one key set to another.
+    Promise.all(asks.map(authors => loadMyKeeps(authors).catch((): KeepLoadResult => ({ ok: false })))).then(results => {
+      if (cancelled) return;
+      const good = results.filter((r): r is Extract<KeepLoadResult, { ok: true }> => r.ok);
+      if (good.length === 0) { setState({ phase: 'error' }); return; }
+      setState({ phase: 'ready', keeps: mergeKeeps(...good.map(r => r.keeps)), now: Math.max(...good.map(r => r.now)) });
+    });
     return () => { cancelled = true; };
-  }, [ownedKey, attempt, preview]);
+  }, [groupsKey, ready, locked, attempt, preview]);
 
   const retry = useCallback(() => setAttempt(n => n + 1), []);
+
+  const options = useMemo<LookupOption[]>(() => {
+    const list: LookupOption[] = (keepHost?.personas ?? []).map(p => ({ key: p.pubkey.toLowerCase(), label: p.name }));
+    if (heartwoodKey) list.push({ key: heartwoodKey.toLowerCase(), label: HEARTWOOD_LABEL, sub: HEARTWOOD_SUB });
+    return list;
+  }, [keepHost, heartwoodKey]);
+
+  const runLookup = async (option: LookupOption) => {
+    const epoch = epochRef.current;
+    setLookup({ t: 'searching', label: option.label });
+    let result: KeepLoadResult;
+    try { result = await loadMyKeeps([option.key]); } catch { result = { ok: false }; }
+    if (epoch !== epochRef.current) return;
+    if (!result.ok) { setLookup({ t: 'error' }); return; }
+    if (result.keeps.length === 0) { setLookup({ t: 'none', label: option.label }); return; }
+    setFound(f => ({ keeps: mergeKeeps(f.keeps, result.keeps), now: result.now }));
+    setLookup(null);
+    remembered.remember(option.key);
+  };
+
+  const keeps = useMemo(
+    () => (state.phase === 'ready' ? mergeKeeps(found.keeps, state.keeps) : mergeKeeps(found.keeps)),
+    [state, found],
+  );
+  const listNow = state.phase === 'ready' ? Math.max(state.now, found.now) : found.now;
+
+  // A saved Keep or a found one: the app turns the Settings row on (once per visit).
+  const hasKeep = !preview && (stored.length > 0 || keeps.length > 0);
+  useEffect(() => {
+    if (!hasKeep || notifiedRef.current) return;
+    notifiedRef.current = true;
+    onKeepsFound?.();
+  }, [hasKeep, onKeepsFound]);
 
   if (lock) {
     return (
@@ -218,7 +350,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
       </div>
     ) : null;
 
-  if (state.phase === 'loading') {
+  if (state.phase === 'loading' && keeps.length === 0) {
     return (
       <div className="fade-in" role="main">
         <Intro />
@@ -230,7 +362,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
     );
   }
 
-  if (state.phase === 'error') {
+  if (state.phase === 'error' && keeps.length === 0) {
     return (
       <div className="fade-in" role="main">
         <Intro />
@@ -244,7 +376,7 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
     );
   }
 
-  if (state.keeps.length === 0) {
+  if (keeps.length === 0) {
     if (storedBlock) {
       return (
         <div className="fade-in" role="main">
@@ -257,15 +389,27 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
         </div>
       );
     }
+    const canLook = !!keepHost && !unreadable && options.length > 0;
     return (
       <div className="fade-in" role="main">
         <div className="empty-state">
           <div className="empty-state-icon"><Icon name="home" size={36} /></div>
           <h3 className="empty-state-title">No Keep yet.</h3>
           <p className="empty-state-text">
-            A Keep is a small device at home that looks after your things. You can set one up with the Bothy app.
+            A Keep is a small device at home that looks after your things.
           </p>
-          {keepHost && <button className="btn btn-primary" onClick={() => setView({ t: 'add' })}>Add a Keep</button>}
+          {lookup?.t === 'pick' || lookup?.t === 'none' || lookup?.t === 'error' ? (
+            <>
+              {lookup.t === 'none' && <p role="status" className="empty-state-text">No Keep found under {lookup.label}. Try another.</p>}
+              {lookup.t === 'error' && <p role="alert" className="empty-state-text">Couldn&apos;t reach the network. Try again.</p>}
+              <LookupPicker options={options} onPick={o => { void runLookup(o); }} onCancel={() => setLookup(null)} />
+            </>
+          ) : lookup?.t === 'searching' ? (
+            <p role="status" className="empty-state-text">Looking under {lookup.label}&hellip;</p>
+          ) : (
+            canLook && <button className="btn btn-primary" onClick={() => setLookup({ t: 'pick' })}>Look for my Keep</button>
+          )}
+          {keepHost && !unreadable && <button className="btn btn-secondary" onClick={() => setView({ t: 'add' })}>Add a Keep</button>}
           <button className="btn btn-secondary" onClick={onBack}>Back to Settings</button>
           {!keepHost && <Footnote />}
         </div>
@@ -279,13 +423,13 @@ export function MyKeep({ ownedPubkeys, scope, onBack, keepHost, lock }: Props) {
       <Intro />
       {storedBlock}
       <div className="card card-flush">
-        {state.keeps.map((keep, i) => (
+        {keeps.map((keep, i) => (
           <KeepRow
             key={keep.claim.node}
             keep={keep}
-            now={state.now}
+            now={listNow}
             nickname={nicknames[keep.claim.node]}
-            last={i === state.keeps.length - 1}
+            last={i === keeps.length - 1}
             onNickname={(node, value) => setNicknames(setNickname(scope, node, value))}
           />
         ))}

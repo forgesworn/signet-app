@@ -99,7 +99,13 @@ export function useStoredKeeps(host: KeepHost | undefined) {
 
   useEffect(() => {
     const deps = depsRef.current;
-    if (!deps) return;
+    if (!deps) {
+      // Locked (no key): the decrypted Keeps, invite secrets included, must not stay in memory.
+      setKeeps([]);
+      setLoaded(false);
+      setUnreadable(false);
+      return;
+    }
     let cancelled = false;
     loadStoredKeeps(deps.encryptionKey).then(async list => {
       if (cancelled) return;

@@ -1,39 +1,48 @@
 import { extractEndpointPubkey } from './dependant-status-sync';
+import type { StoredKeep } from './keep-store';
+
+const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
- * The keys a Keep claim may be authored by, for the `authors` filter.
+ * The one key a Keep set up with a Heartwood is claimed under: the Heartwood's own master key, which is
+ * deliberately NOT one of the persona keys (onboarding refuses a slot equal to it). Only for a bunker install.
+ * The live `get_public_key` answer when connected, else the pubkey in the stored bunker:// address (available
+ * before reconnect). One key, never both: a lookup sends exactly one key.
  *
- * Bothy's claim is signed by the keeper's master (claim rule 4: the master
- * `p` tag equals the event signer).
- *
- * - Local (mnemonic) install: the app is its own NIP-46 signer, and each
- *   route signs as one slot key (Natural Person, Persona, Professional,
- *   extras), so a claim is authored by one of the slot keys. The app holds
- *   no separate master, so the slot keys are the whole answer.
- * - Bunker (Heartwood) install: the master lives on the device and is
- *   deliberately NOT one of the slot keys (onboarding refuses a slot equal
- *   to it), so the slot keys alone never match. Add the signer's key as the
- *   app knows it: the live `get_public_key` answer when connected, and the
- *   pubkey in the stored bunker:// address (available before reconnect).
- *   Both are kept; an extra author can only match a claim that key signed.
- *
- * Never reads a private key.
+ * Never reads a private key. Sent to a relay only when the person picks "My Heartwood" (or it is a remembered
+ * key from that pick); it is never part of any other query.
  */
-export function keepAuthorPubkeys(args: {
-  slotPubkeys: readonly string[];
+export function heartwoodLookupKey(args: {
   signingMode?: string;
   bunkerUri?: string;
   liveSignerPubkey?: string;
-}): string[] {
-  const out = new Set<string>();
-  const add = (k: string | null | undefined) => {
-    const key = (k ?? '').toLowerCase();
-    if (/^[0-9a-f]{64}$/.test(key)) out.add(key);
-  };
-  args.slotPubkeys.forEach(add);
-  if (args.signingMode === 'bunker') {
-    add(args.bunkerUri ? extractEndpointPubkey(args.bunkerUri) : null);
-    add(args.liveSignerPubkey);
+}): string | null {
+  if (args.signingMode !== 'bunker') return null;
+  for (const candidate of [args.liveSignerPubkey, args.bunkerUri ? extractEndpointPubkey(args.bunkerUri) : null]) {
+    const key = (candidate ?? '').toLowerCase();
+    if (HEX64.test(key)) return key;
   }
-  return [...out];
+  return null;
+}
+
+/**
+ * What to ask the relays about, as separate requests (each an array for one `authors` filter, never merged):
+ * - each saved Keep asks about its own keys only, the claimer and the personas linked to it;
+ * - each remembered lookup key asks about that key alone, unless a saved Keep's own keys already cover it.
+ * Identical key sets are asked once.
+ */
+export function keepLookupGroups(stored: readonly StoredKeep[], remembered: readonly string[]): string[][] {
+  const groups: string[][] = [];
+  const seen = new Set<string>();
+  const add = (keys: readonly string[]) => {
+    const clean = [...new Set(keys.map(k => k.toLowerCase()).filter(k => HEX64.test(k)))].sort();
+    const id = clean.join(',');
+    if (clean.length === 0 || seen.has(id)) return;
+    seen.add(id);
+    groups.push(clean);
+  };
+  for (const keep of stored) add([keep.claimedBy, ...keep.personas]);
+  const covered = new Set(groups.flat());
+  for (const key of remembered) if (!covered.has(key.toLowerCase())) add([key]);
+  return groups;
 }
