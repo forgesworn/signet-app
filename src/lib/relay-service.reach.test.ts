@@ -70,3 +70,27 @@ describe('fetchEventsWithReach', () => {
     expect(r).toEqual({ events: [], attempted: 0, reached: 0 });
   });
 });
+
+describe('fetchEventsWithReach: the event cap', () => {
+  const many = (n: number, offset = 0) => Array.from({ length: n }, (_, i): NostrEvent => ({
+    ...ev((i + offset + 1).toString(16).padStart(64, '0')), created_at: i + offset,
+  }));
+
+  it('stops reading a relay past FETCH_EVENT_CAP and still counts it as answered', async () => {
+    behaviours.set(A, 'answers');
+    const rs = await fresh();
+    stored.push(...many(rs.FETCH_EVENT_CAP + 200));
+    const r = await rs.fetchEventsWithReach([{ kinds: [1] }], { relays: [A], timeoutMs: 200 });
+    expect(r.events).toHaveLength(rs.FETCH_EVENT_CAP);
+    expect(r.reached).toBe(1);
+  });
+
+  it('keeps at most the cap in total when several relays each fill it, newest first', async () => {
+    behaviours.set(A, 'answers'); behaviours.set(B, 'answers');
+    const rs = await fresh();
+    stored.push(...many(rs.FETCH_EVENT_CAP + 50));
+    const r = await rs.fetchEventsWithReach([{ kinds: [1] }], { relays: [A, B], timeoutMs: 200 });
+    expect(r.events.length).toBeLessThanOrEqual(rs.FETCH_EVENT_CAP);
+  });
+});
+

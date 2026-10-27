@@ -284,6 +284,13 @@ export async function fetchEvents(
   return [...byId.values()];
 }
 
+/**
+ * The most events one `fetchEventsWithReach` call collects, from one relay and in total. A relay (or a
+ * hostile one) can answer a filter with far more than its `limit`; nothing past this is kept, so nothing
+ * past it is ever decrypted or parsed by the caller.
+ */
+export const FETCH_EVENT_CAP = 500;
+
 /** One relay's answer: its events and whether it said EOSE (end of stored
  *  events) before the timeout. Without EOSE the relay did not really answer
  *  (timed out, or refused the request); `RelayClient.fetch` resolves the same
@@ -304,7 +311,12 @@ function fetchUntilEose(
     };
     const timer = setTimeout(() => finish(false), timeoutMs);
     try {
-      subId = c.subscribe(filters, ev => { events.push(ev); }, () => finish(true));
+      subId = c.subscribe(filters, ev => {
+        if (finished) return;
+        events.push(ev);
+        // Past the cap the relay is answering with more than was asked for: stop reading it.
+        if (events.length >= FETCH_EVENT_CAP) finish(true);
+      }, () => finish(true));
     } catch {
       finish(false);
     }
@@ -342,7 +354,10 @@ export async function fetchEventsWithReach(
     }
     if (s.value.eose) reached++;
   }
-  return { events: [...byId.values()], attempted: settled.length, reached };
+  let merged = [...byId.values()];
+  // Several relays can each fill the cap: keep the newest FETCH_EVENT_CAP of the union.
+  if (merged.length > FETCH_EVENT_CAP) merged = merged.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)).slice(0, FETCH_EVENT_CAP);
+  return { events: merged, attempted: settled.length, reached };
 }
 
 /** Open a live subscription on every relay in `relays` (an empty list falls

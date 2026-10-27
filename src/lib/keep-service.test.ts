@@ -24,7 +24,7 @@ vi.mock('./relay-service', () => ({
 
 import { LocalSigningBackend } from './signing-backend';
 import {
-  applyAckEvents, catchUp, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
+  KEEP_REPLY_LIMIT, applyAckEvents, catchUp, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
   resendClaim, revokeInvite, updateStoredKeeps, watchAcks, PersonaNotAvailableError, type KeepDeps,
 } from './keep-service';
 import { parseKeepPairLink } from './keep-link';
@@ -404,6 +404,13 @@ describe('the ack cursor', () => {
   const sinceOf = (call: number) => (fetchMock.mock.calls[call][0] as Array<{ since: number }>)[0].since;
   const none = { events: [] as NostrEvent[], attempted: 2, reached: 2 };
 
+  it('asks each relay for at most KEEP_REPLY_LIMIT replies', async () => {
+    await claimKeep(deps(), link, O);
+    fetchMock.mockResolvedValueOnce(none);
+    await refreshAcks(deps());
+    expect((fetchMock.mock.calls[0][0] as Array<{ limit?: number }>)[0].limit).toBe(KEEP_REPLY_LIMIT);
+  });
+
   it('the first read goes three days back; after an ack, the next starts two days before that ack\'s wrap', async () => {
     await claimKeep(deps(), link, O);
     const W = NOW - 5000;
@@ -468,7 +475,7 @@ describe('the ack cursor', () => {
     await refreshAcks(deps());
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
-      [{ kinds: [1059], '#p': [O], since: NOW - 90000 - TWO_DAYS }],
+      [{ kinds: [1059], '#p': [O], since: NOW - 90000 - TWO_DAYS, limit: KEEP_REPLY_LIMIT }],
       { relays: ['wss://a.example', 'wss://b.example', 'wss://c.example'] },
     );
   });
@@ -486,7 +493,7 @@ describe('listening for acks', () => {
     fetchMock.mockResolvedValue({ events: [ackFromKeep([['status', 'paired'], ['claim']])], attempted: 2, reached: 2 });
     const list = await refreshAcks(deps());
     expect(fetchMock).toHaveBeenCalledWith(
-      [{ kinds: [1059], '#p': [O], since: NOW - 3 * 86400 }],
+      [{ kinds: [1059], '#p': [O], since: NOW - 3 * 86400, limit: KEEP_REPLY_LIMIT }],
       { relays: ['wss://a.example', 'wss://b.example'] },
     );
     expect(list[0].status).toBe('paired');

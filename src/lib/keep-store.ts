@@ -530,18 +530,28 @@ export function resendDue(keep: StoredKeep, now: number): Array<{ invite: Stored
 export const CLAIM_ACK_SKEW_S = 600;
 
 /**
- * Apply one ack from the Keep. A revoke is final (a late `active` never undoes
- * it); otherwise the newest ack by its real time wins. Returns the same object
- * when nothing changed.
+ * An ack's or report's own time, counted as at most `now` plus the usual skew. A Keep whose clock runs ahead (or a
+ * forged ack) must not pin a stored time in the future, which would make every later, genuine ack look stale.
  */
-export function applyAck(list: readonly StoredKeep[], ack: KeepAck): StoredKeep[] {
+export function clampAckTime(at: number, now: number): number {
+  return Math.min(at, now + CLAIM_ACK_SKEW_S);
+}
+
+/**
+ * Apply one ack from the Keep. A revoke is final (a late `active` never undoes
+ * it, and a revoke is never held back as stale); otherwise the newest ack by its
+ * real time wins. Times are capped at `now` plus the skew, both the ack's and a
+ * stored one read back. Returns the same object when nothing changed.
+ */
+export function applyAck(list: readonly StoredKeep[], ack: KeepAck, now: number = Math.floor(Date.now() / 1000)): StoredKeep[] {
   const keep = findKeep(list, ack.keep);
   if (!keep) return list as StoredKeep[];
+  const at = clampAckTime(ack.at, now);
   if (ack.claim) {
     if (keep.status === 'paired') return list as StoredKeep[];
     // A claim ack carries no code, so an ack from an earlier pairing (before a reset) must not
     // pair a claim made after it: only acks dated near or after this claim count.
-    if (ack.at < keep.claimedAt - CLAIM_ACK_SKEW_S) return list as StoredKeep[];
+    if (at < keep.claimedAt - CLAIM_ACK_SKEW_S) return list as StoredKeep[];
     const { code: _code, ...rest } = keep;
     return withKeep(list, { ...rest, status: 'paired' });
   }
@@ -553,10 +563,10 @@ export function applyAck(list: readonly StoredKeep[], ack: KeepAck): StoredKeep[
     return withKeep(list, { ...keep, passes: keep.passes!.map(p => (p === pass ? { ...p, state: 'revoked' as const, revokeSent: false } : p)) });
   }
   if (invite.status === 'revoked') return list as StoredKeep[];
-  if (invite.ackAt !== undefined && ack.at < invite.ackAt) return list as StoredKeep[];
+  if (ack.status !== 'revoked' && invite.ackAt !== undefined && at < clampAckTime(invite.ackAt, now)) return list as StoredKeep[];
   const { reason: _reason, ...base } = invite;
   const next: StoredInvite = {
-    ...base, ackAt: ack.at,
+    ...base, ackAt: at,
     status: ack.status === 'paired' ? invite.status : ack.status as InviteStatus,
     ...(ack.status === 'refused' && ack.reason ? { reason: ack.reason } : {}),
     // A refusal or an active ack ends any pending revoke only if the Keep says so by acking revoked.
@@ -642,7 +652,7 @@ export function applyPassReport(list: readonly StoredKeep[], report: KeepPassRep
   // Never store a number the saved list could not read back (the parser already refuses these).
   if (![report.expiration, report.seen, report.at].every(Number.isSafeInteger) || report.expiration < 0 || report.seen < 0) return list as StoredKeep[];
   // A Keep whose clock runs ahead must not pin a pass: its report time counts as at most `now` plus the usual skew.
-  const at = Math.min(report.at, now + CLAIM_ACK_SKEW_S);
+  const at = clampAckTime(report.at, now);
   const passes = keep.passes ?? [];
   const found = passes.find(p => p.grant === report.grant);
   if (found && (found.persona !== report.persona || found.state === 'revoked')) return list as StoredKeep[];

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyAck, inviteStatusLabel, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
+  CLAIM_ACK_SKEW_S, applyAck, clampAckTime, inviteStatusLabel, markRevokeSent, newPendingKeep, parseStoredKeeps, repairKeep, withInvite, withKeep,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
 
@@ -181,5 +181,37 @@ describe('K1d records read as K1e', () => {
     expect(again.personas).toEqual([O, B]);
     expect(again.links[O].active).toBe(true);
     expect(again.links[B].active).toBe(false);
+  });
+});
+
+describe('applyAck: ack times are capped at now plus the skew', () => {
+  const ack = (o: object) => ({ keep: K, claim: false, status: 'active' as const, grant: G, at: 1000, ...o });
+  const NOW = 10_000;
+
+  it('clampAckTime caps a future time and leaves the rest', () => {
+    expect(clampAckTime(NOW + 99_999, NOW)).toBe(NOW + CLAIM_ACK_SKEW_S);
+    expect(clampAckTime(NOW - 5, NOW)).toBe(NOW - 5);
+  });
+
+  it('stores a future-dated ack at now plus the skew, not at its own time', () => {
+    const next = applyAck([withInvite(paired(), invite())], ack({ at: 4_000_000_000 }), NOW);
+    expect(next[0].invites[0]).toMatchObject({ status: 'active', ackAt: NOW + CLAIM_ACK_SKEW_S });
+  });
+
+  it('a future-dated active ack cannot make a later genuine revoked ack look stale', () => {
+    const active = applyAck([withInvite(paired(), invite())], ack({ at: 4_000_000_000 }), NOW);
+    const revoked = applyAck(active, ack({ status: 'revoked', at: NOW + 5 }), NOW + 5);
+    expect(revoked[0].invites[0]).toMatchObject({ status: 'revoked', revokeSent: false });
+  });
+
+  it('a revoke is applied even when it is dated before the ack it follows', () => {
+    const active = applyAck([withInvite(paired(), invite())], ack({ at: 5_000 }), NOW);
+    expect(applyAck(active, ack({ status: 'revoked', at: 4_000 }), NOW)[0].invites[0].status).toBe('revoked');
+  });
+
+  it('a future-dated value stored earlier is read back capped, so a genuine later ack applies', () => {
+    const stuck = [withInvite(paired(), invite({ status: 'active', ackAt: 4_000_000_000 }))];
+    const next = applyAck(stuck, ack({ status: 'refused', reason: 'full', at: NOW + CLAIM_ACK_SKEW_S }), NOW);
+    expect(next[0].invites[0]).toMatchObject({ status: 'refused', ackAt: NOW + CLAIM_ACK_SKEW_S });
   });
 });

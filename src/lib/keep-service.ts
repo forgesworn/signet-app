@@ -61,6 +61,9 @@ export class OwnerChangeRefusedError extends Error {
   constructor(message: string) { super(message); }
 }
 
+/** The most replies one catch-up read asks a relay for, per persona. */
+export const KEEP_REPLY_LIMIT = 200;
+
 const nowOf = (deps: KeepDeps) => (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
 
 // ---- storage ---------------------------------------------------------------
@@ -481,7 +484,7 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
       if (message.kind === 'report') return applyPassReport(l, message.report, now);
       const { ack } = message;
       if (ack.settings) return applySettingsAck(l, ack, now);
-      return ack.owners ? applyOwnersAck(l, ack, now) : applyAck(l, ack);
+      return ack.owners ? applyOwnersAck(l, ack, now) : applyAck(l, ack, now);
     }, list),
     read.map(r => ({ keep: r.message.kind === 'report' ? r.message.report.keep : r.message.ack.keep, persona: r.persona, wrapAt: r.wrapAt })), now,
   ));
@@ -508,7 +511,7 @@ function ackScopes(keeps: readonly StoredKeep[], now: number): Array<{ persona: 
 export async function refreshAcks(deps: KeepDeps): Promise<StoredKeep[]> {
   const keeps = await loadStoredKeeps(deps.encryptionKey);
   for (const { persona, relays, since } of ackScopes(keeps, nowOf(deps))) {
-    const filter = { kinds: [1059], '#p': [persona], since } as unknown as NostrFilter;
+    const filter = { kinds: [1059], '#p': [persona], since, limit: KEEP_REPLY_LIMIT } as unknown as NostrFilter;
     const res = await fetchEventsWithReach([filter], { relays }).catch(() => null);
     if (res && res.events.length > 0) await applyAckEvents(deps, res.events);
   }
