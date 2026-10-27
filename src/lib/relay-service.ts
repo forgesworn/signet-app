@@ -3,6 +3,7 @@ import { isValidRelayUrl } from './relay-url';
 import { defaultRelays, primaryRelayUrl } from './relay-defaults';
 import { anyRelayAccepted } from './relay-operations';
 import type { RelayConfig } from '../types';
+import { FETCH_EVENT_CAP } from './relay-limits';
 
 export { DEFAULT_RELAY_URL, defaultRelays, primaryRelayUrl } from './relay-defaults';
 
@@ -288,12 +289,7 @@ export async function fetchEvents(
   return [...byId.values()];
 }
 
-/**
- * The most events one `fetchEventsWithReach` call collects, from one relay and in total. A relay (or a
- * hostile one) can answer a filter with far more than its `limit`; nothing past this is kept, so nothing
- * past it is ever decrypted or parsed by the caller.
- */
-export const FETCH_EVENT_CAP = 500;
+export { FETCH_EVENT_CAP };
 
 /** One relay's answer: its events and whether it said EOSE (end of stored
  *  events) before the timeout. Without EOSE the relay did not really answer

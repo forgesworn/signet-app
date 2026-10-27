@@ -235,7 +235,7 @@ import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
 import { heartwoodLookupKey } from './lib/keep-owner';
 import { accountPersonas, holdsKeyFor, keepDepsFor, personaNameMap, shouldPromptUnlockForMyKeep } from './lib/keep-personas';
-import { catchUp as catchUpKeeps } from './lib/keep-service';
+import { catchUp as catchUpKeeps, hasSavedKeeps } from './lib/keep-service';
 import { Connections, type PhoneApp } from './pages/Connections';
 import { ApproveAuth, approveAuthTitle } from './pages/ApproveAuth';
 import type { AuthSelection } from './pages/ApproveAuth';
@@ -2489,8 +2489,11 @@ export function App() {
   const keepPersonaKey = identity ? accountPersonas(identity).map(p => `${p.pubkey}${p.canSign ? '+' : '-'}`).join(',') : '';
   useEffect(() => {
     if (!encryptionKey || !identity || identity.encrypted || activeDependant || childDirect || isPairedChild || !keepPersonaKey) return;
+    // A device that already holds a Keep shows the My Keep row (a local read, no network).
+    let cancelled = false;
+    void hasSavedKeeps(encryptionKey).then(has => { if (has && !cancelled) void setShowMyKeep(true); });
     const timer = setTimeout(() => { void catchUpKeeps(keepDepsFor(identity, encryptionKey)).catch(() => undefined); }, 4000);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
     // The identity object changes with every edit; the persona keys and the lock are what matter here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey, keepPersonaKey, activeDependant?.id, childDirect, isPairedChild]);

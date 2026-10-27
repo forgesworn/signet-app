@@ -125,7 +125,11 @@ export function useStoredKeeps(host: KeepHost | undefined) {
   useEffect(() => {
     const deps = depsRef.current;
     if (!deps || keeps.length === 0) return;
-    return watchAcks(deps, keeps, list => setKeeps(list));
+    // Ignore an ack that finishes processing after this effect ended (the app locked): its list must not
+    // put the decrypted Keeps back into state.
+    let live = true;
+    const stop = watchAcks(deps, keeps, list => { if (live) setKeeps(list); });
+    return () => { live = false; stop(); };
     // Re-subscribe only when the set of (persona, relays) to listen on changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchKey, key]);

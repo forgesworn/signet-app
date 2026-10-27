@@ -25,20 +25,36 @@ describe('heartwoodLookupKey', () => {
 const saved = (claimedBy: string, personas: string[]) => ({ claimedBy, personas } as unknown as StoredKeep);
 
 describe('keepLookupGroups', () => {
+  const ALL = [P1, P2, P3, MASTER, LIVE];
+
   it('is empty with nothing saved and nothing remembered', () => {
-    expect(keepLookupGroups([], [])).toEqual([]);
+    expect(keepLookupGroups([], [], ALL)).toEqual([]);
   });
 
   it('one group per saved Keep with only its own keys, never a union', () => {
-    expect(keepLookupGroups([saved(P1, [P1, P2]), saved(P3, [P3])], [])).toEqual([[P1, P2].sort(), [P3]]);
+    expect(keepLookupGroups([saved(P1, [P1, P2]), saved(P3, [P3])], [], ALL)).toEqual([[P1, P2].sort(), [P3]]);
   });
 
   it('asks once for identical key sets', () => {
-    expect(keepLookupGroups([saved(P1, [P1]), saved(P1, [P1])], [])).toEqual([[P1]]);
+    expect(keepLookupGroups([saved(P1, [P1]), saved(P1, [P1])], [], ALL)).toEqual([[P1]]);
   });
 
   it('a remembered key is asked alone, and not again when a saved Keep already covers it', () => {
-    expect(keepLookupGroups([saved(P1, [P1])], [MASTER, P1])).toEqual([[P1], [MASTER]]);
-    expect(keepLookupGroups([], [MASTER, LIVE])).toEqual([[MASTER], [LIVE]]);
+    expect(keepLookupGroups([saved(P1, [P1])], [MASTER, P1], ALL)).toEqual([[P1], [MASTER]]);
+    expect(keepLookupGroups([], [MASTER, LIVE], ALL)).toEqual([[MASTER], [LIVE]]);
+  });
+
+  it('drops remembered keys the current account does not own (a deleted persona, a Heartwood no longer offered)', () => {
+    expect(keepLookupGroups([], [MASTER, P2, P3], [P2, P3])).toEqual([[P2], [P3]]);
+    expect(keepLookupGroups([], [MASTER], [P2])).toEqual([]);
+  });
+
+  it('drops a saved Keep\'s keys the account does not own, and skips the group when none is left', () => {
+    expect(keepLookupGroups([saved(P1, [P1, P2]), saved(P3, [P3])], [], [P2])).toEqual([[P2]]);
+    expect(keepLookupGroups([saved(P3, [P3])], [], [P1])).toEqual([]);
+  });
+
+  it('ignores case when matching owned keys', () => {
+    expect(keepLookupGroups([], [P1.toUpperCase()], [P1])).toEqual([[P1]]);
   });
 });

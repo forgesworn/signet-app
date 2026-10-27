@@ -14,6 +14,7 @@ import { loadKeepLookupsRow, loadKeepsRow, saveKeepLookupsRow, saveKeepsRow } fr
 import type { DecryptingSigningBackend } from './signing-backend';
 import { publishWrappedToRelays } from './relay-publish';
 import { fetchEventsWithReach, subscribeEvents } from './relay-service';
+import { FETCH_EVENT_CAP } from './relay-limits';
 import {
   claimRumor, inviteRumor, ownerAcceptRumor, ownersUpdateRumor, passesRequestRumor, revokeRumor, settingsRumor, unwrapKeepMessage, wrapForKeep,
   type InviteSpec, type KeepMessage,
@@ -549,13 +550,23 @@ export async function refreshAcks(deps: KeepDeps): Promise<StoredKeep[]> {
 export function watchAcks(deps: KeepDeps, keeps: readonly StoredKeep[], onChange: (list: StoredKeep[]) => void): () => void {
   const seen = new Set<string>();
   const stops = ackScopes(keeps, nowOf(deps)).map(({ persona, relays, since }) => {
-    const filter = { kinds: [1059], '#p': [persona], since } as unknown as NostrFilter;
+    // `limit` bounds the stored backlog a relay sends; the counter bounds the whole subscription, backlog and live.
+    const filter = { kinds: [1059], '#p': [persona], since, limit: KEEP_REPLY_LIMIT } as unknown as NostrFilter;
+    let count = 0;
     return subscribeEvents([filter], relays, event => {
       if (seen.has(event.id)) return;
+      // Past the cap nothing more is read or decrypted for this persona.
+      if (count >= FETCH_EVENT_CAP) return;
+      count += 1;
       seen.add(event.id);
       // An ack can make something due (an update after `paired`, an accept after `updated`): send it now.
       void applyAckEvents(deps, [event]).then(() => settle(deps)).then(onChange, () => undefined);
     });
   });
   return () => stops.forEach(stop => stop());
+}
+
+/** Whether any Keep is saved on this device (a local read only; false when the row is unreadable). */
+export async function hasSavedKeeps(encryptionKey: string): Promise<boolean> {
+  try { return (await loadStoredKeeps(encryptionKey)).length > 0; } catch { return false; }
 }

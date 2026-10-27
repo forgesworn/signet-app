@@ -369,7 +369,7 @@ describe('MyKeep: what the relays are asked', () => {
     await waitFor(() => expect(lookupsRow).toEqual({ keys: [HEARTWOOD.pk] }));
     unmount();
     fetchMock.mockClear();
-    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} />);
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} heartwoodKey={HEARTWOOD.pk} />);
     expect(await screen.findByTestId('keep-row')).toHaveTextContent('Hall box');
     expect(claimAuthors()).toEqual([[HEARTWOOD.pk]]);
   });
@@ -400,7 +400,7 @@ describe('MyKeep: what the relays are asked', () => {
       }),
     ];
     relayHolding([claimEvent(me, node.pk, { name: 'First' }), claimEvent(other, node2.pk, { name: 'Second' })]);
-    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} />);
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} heartwoodKey={HEARTWOOD.pk} />);
     await waitFor(() => expect(screen.getAllByTestId('keep-row')).toHaveLength(2));
     const asks = claimAuthors();
     expect(asks).toHaveLength(2);
@@ -413,7 +413,7 @@ describe('MyKeep: what the relays are asked', () => {
   it('remembered keys: one request per key, never combined, and no lookup button shown for them', async () => {
     lookupsRow = { keys: [me.pk, HEARTWOOD.pk] };
     relayHolding([]);
-    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} />);
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} heartwoodKey={HEARTWOOD.pk} />);
     await screen.findByText('No Keep yet.');
     const asks = claimAuthors();
     expect(asks).toHaveLength(2);
@@ -445,5 +445,50 @@ describe('MyKeep: what the relays are asked', () => {
     expect(screen.queryByTestId('stored-keeps')).toBeNull();
     expect(document.body.textContent).not.toContain('Secret kitchen');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('drops remembered keys the account no longer owns: a deleted persona, a Heartwood no longer connected', async () => {
+    lookupsRow = { keys: [me.pk, other.pk, HEARTWOOD.pk, DORMANT.pk] };
+    relayHolding([]);
+    // Only `me` is a current persona; no Heartwood is offered; `other` was deleted.
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host({ personas: [{ pubkey: me.pk, name: 'Anon', canSign: false }] })} />);
+    await screen.findByText('No Keep yet.');
+    expect(claimAuthors()).toEqual([[me.pk]]);
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(HEARTWOOD.pk);
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(other.pk);
+    expect(lookupsRow).toEqual({ keys: [me.pk, other.pk, HEARTWOOD.pk, DORMANT.pk] });
+  });
+
+  it('asks about a remembered Heartwood key only while the Heartwood is offered', async () => {
+    lookupsRow = { keys: [HEARTWOOD.pk] };
+    relayHolding([]);
+    const { unmount } = render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} />);
+    await screen.findByText('No Keep yet.');
+    expect(fetchMock).not.toHaveBeenCalled();
+    unmount();
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} heartwoodKey={HEARTWOOD.pk} />);
+    await screen.findByText('No Keep yet.');
+    expect(claimAuthors()).toEqual([[HEARTWOOD.pk]]);
+  });
+
+  it('a saved Keep keeps only the keys the account owns, and is skipped when none is left', async () => {
+    keepsRow = [
+      savedKeep(node.pk, me.pk, {
+        personas: [me.pk, DORMANT.pk],
+        links: { [me.pk]: { sections: [], addedRev: 0, active: true }, [DORMANT.pk]: { sections: [], addedRev: 0, active: true } },
+      }),
+      savedKeep(node2.pk, other.pk),
+    ];
+    relayHolding([]);
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host({ personas: [{ pubkey: me.pk, name: 'Anon', canSign: false }] })} />);
+    await screen.findAllByTestId('stored-keep-row');
+    await waitFor(() => expect(claimAuthors()).toEqual([[me.pk]]));
+  });
+
+  it('does not offer the master twice when it is also a persona key', async () => {
+    relayHolding([]);
+    render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} heartwoodKey={me.pk} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Look for my Keep' }));
+    expect(screen.queryByText('My Heartwood')).toBeNull();
   });
 });

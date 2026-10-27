@@ -31,11 +31,12 @@ vi.mock('./relay-service', () => ({
 
 import { LocalSigningBackend } from './signing-backend';
 import {
-  KEEP_REPLY_LIMIT, applyAckEvents, catchUp, loadKeepLookups, rememberKeepLookup, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
+  KEEP_REPLY_LIMIT, applyAckEvents, catchUp, hasSavedKeeps, loadKeepLookups, rememberKeepLookup, claimKeep, createInvite, forgetKeep, keepShareLink, loadStoredKeeps, refreshAcks,
   resendClaim, revokeInvite, updateStoredKeeps, watchAcks, PersonaNotAvailableError, type KeepDeps,
 } from './keep-service';
 import { parseKeepPairLink } from './keep-link';
 import { KeepsUnreadableError } from './keep-store';
+import { FETCH_EVENT_CAP } from './relay-limits';
 
 const KEEP_SK = hexToBytes('0'.repeat(63) + '1');
 const K = getPublicKey(KEEP_SK);
@@ -471,7 +472,7 @@ describe('the ack cursor', () => {
     row = [{ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, personas: [O], status: 'paired', claimedAt: 1, ackCursor: NOW - 1000, invites: [] }];
     subscribeMock.mockReturnValue(vi.fn());
     watchAcks(deps(), await loadStoredKeeps('key'), vi.fn());
-    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 1000 - TWO_DAYS }]);
+    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 1000 - TWO_DAYS, limit: KEEP_REPLY_LIMIT }]);
   });
 
   it('a persona with several Keeps reads from before the oldest cursor, on every relay of every link', async () => {
@@ -514,13 +515,27 @@ describe('listening for acks', () => {
     const onChange = vi.fn();
     const off = watchAcks(deps(), keeps, onChange);
     expect(subscribeMock).toHaveBeenCalledTimes(1);
-    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 3 * 86400 }]);
+    expect(subscribeMock.mock.calls[0][0]).toEqual([{ kinds: [1059], '#p': [O], since: NOW - 3 * 86400, limit: KEEP_REPLY_LIMIT }]);
     const handler = subscribeMock.mock.calls[0][2] as (e: NostrEvent) => void;
     const ack = ackFromKeep([['status', 'paired'], ['claim']]);
     handler(ack); handler(ack);
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
     off();
     expect(stop).toHaveBeenCalled();
+  });
+
+  it('reads no more than FETCH_EVENT_CAP wraps from one subscription', async () => {
+    await claimKeep(deps(), link, O);
+    subscribeMock.mockReturnValue(vi.fn());
+    const onChange = vi.fn();
+    watchAcks(deps(), await loadStoredKeeps('key'), onChange);
+    const handler = subscribeMock.mock.calls[0][2] as (e: NostrEvent) => void;
+    for (let i = 0; i < FETCH_EVENT_CAP + 50; i++) {
+      handler({ id: i.toString(16).padStart(64, '0'), tags: [['p', O]], kind: 1059, content: '', created_at: NOW, pubkey: 'ee'.repeat(32), sig: '' } as NostrEvent);
+    }
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(FETCH_EVENT_CAP));
+    await new Promise(r => setTimeout(r, 50));
+    expect(onChange).toHaveBeenCalledTimes(FETCH_EVENT_CAP);
   });
 
   it('does nothing for wraps to a persona it holds no Keep for', async () => {
@@ -589,5 +604,17 @@ describe('remembered lookup keys', () => {
     await Promise.all([rememberKeepLookup('key', A), rememberKeepLookup('key', B), rememberKeepLookup('key', A)]);
     expect(lookupsRow).toEqual({ keys: [A, B] });
     expect(await loadKeepLookups('key')).toEqual([A, B]);
+  });
+});
+
+describe('hasSavedKeeps', () => {
+  it('is true only when a Keep is stored, and false (not an error) when the row cannot be read', async () => {
+    row = null; dbThrows = false;
+    expect(await hasSavedKeeps('key')).toBe(false);
+    await claimKeep(deps(), link, O);
+    expect(await hasSavedKeeps('key')).toBe(true);
+    dbThrows = true;
+    expect(await hasSavedKeeps('key')).toBe(false);
+    dbThrows = false;
   });
 });

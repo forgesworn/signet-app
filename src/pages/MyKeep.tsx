@@ -208,8 +208,22 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   const epochRef = useRef(0);
   const notifiedRef = useRef(false);
 
-  // What the relays are asked about: each saved Keep's own keys, each remembered key alone. Nothing else.
-  const groups = useMemo(() => keepLookupGroups(stored, remembered.keys), [stored, remembered.keys]);
+  // The keys the person can look under now: the account's active personas, and the Heartwood master only while offered.
+  const options = useMemo<LookupOption[]>(() => {
+    const list: LookupOption[] = (keepHost?.personas ?? []).map(p => ({ key: p.pubkey.toLowerCase(), label: p.name }));
+    const master = heartwoodKey?.toLowerCase();
+    // A key that is already a persona is that persona, not "My Heartwood" (a one-key bunker).
+    if (master && !list.some(o => o.key === master)) list.push({ key: master, label: HEARTWOOD_LABEL, sub: HEARTWOOD_SUB });
+    return list;
+  }, [keepHost, heartwoodKey]);
+  const ownedKey = options.map(o => o.key).join(',');
+
+  // What the relays are asked about: each saved Keep's own keys, each remembered key alone, and only keys the
+  // current account owns. Nothing else.
+  const groups = useMemo(
+    () => keepLookupGroups(stored, remembered.keys, ownedKey ? ownedKey.split(',') : []),
+    [stored, remembered.keys, ownedKey],
+  );
   const groupsKey = JSON.stringify(groups);
   const ready = !keepHost || (storedLoaded && remembered.loaded);
 
@@ -254,11 +268,6 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
 
   const retry = useCallback(() => setAttempt(n => n + 1), []);
 
-  const options = useMemo<LookupOption[]>(() => {
-    const list: LookupOption[] = (keepHost?.personas ?? []).map(p => ({ key: p.pubkey.toLowerCase(), label: p.name }));
-    if (heartwoodKey) list.push({ key: heartwoodKey.toLowerCase(), label: HEARTWOOD_LABEL, sub: HEARTWOOD_SUB });
-    return list;
-  }, [keepHost, heartwoodKey]);
 
   const runLookup = async (option: LookupOption) => {
     const epoch = epochRef.current;

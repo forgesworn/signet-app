@@ -30,12 +30,18 @@ export function heartwoodLookupKey(args: {
  * - each saved Keep asks about its own keys only, the claimer and the personas linked to it;
  * - each remembered lookup key asks about that key alone, unless a saved Keep's own keys already cover it.
  * Identical key sets are asked once.
+ *
+ * `owned` is the keys the CURRENT account can look under (its active personas, and the Heartwood master only
+ * while it is offered). Any key outside it is dropped at query time and a group left empty is skipped: the
+ * remembered row is device-wide, so a deleted persona, a disconnected Heartwood or another identity on the
+ * same device must never have its key sent. Nothing is deleted from storage here.
  */
-export function keepLookupGroups(stored: readonly StoredKeep[], remembered: readonly string[]): string[][] {
+export function keepLookupGroups(stored: readonly StoredKeep[], remembered: readonly string[], owned: readonly string[]): string[][] {
+  const mine = new Set(owned.map(k => k.toLowerCase()));
   const groups: string[][] = [];
   const seen = new Set<string>();
   const add = (keys: readonly string[]) => {
-    const clean = [...new Set(keys.map(k => k.toLowerCase()).filter(k => HEX64.test(k)))].sort();
+    const clean = [...new Set(keys.map(k => k.toLowerCase()).filter(k => HEX64.test(k) && mine.has(k)))].sort();
     const id = clean.join(',');
     if (clean.length === 0 || seen.has(id)) return;
     seen.add(id);
