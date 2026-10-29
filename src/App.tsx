@@ -151,6 +151,7 @@ import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
 import { phoneAppsKeyExpired } from './lib/phone-apps-window';
 import { usePreferences } from './hooks/usePreferences';
+import { ScannerSettingsProvider, usePublishScannerSettings } from './components/ScannerSettingsContext';
 import { useDocuments } from './hooks/useDocuments';
 import { useCredentials } from './hooks/useCredentials';
 import { useDependants } from './hooks/useDependants';
@@ -496,7 +497,16 @@ function formatNostrConnectServeStatus(
   return `phase ${status.phase}; relay ${actualRelay}; expected ${expectedRelayUrl}; ${routeState}${notice}`;
 }
 
+/** Scanner camera settings reach every QRScanner / CameraCard through context. */
 export function App() {
+  return (
+    <ScannerSettingsProvider>
+      <AppContent />
+    </ScannerSettingsProvider>
+  );
+}
+
+function AppContent() {
   // Auth state (must be declared before hooks that depend on encryptionKey)
   const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
   // Vault keys derived from this unlock key are remembered until lock (crypto-store).
@@ -702,7 +712,8 @@ export function App() {
   }, [encryptionKey]);
   const { members, addMember, reload: reloadContacts } = useContacts(activePubkey, encryptionKey);
   const { kens, addKen: addKenEntry, removeKen: removeKenEntry, reload: reloadKens } = useKens(activePubkey);
-  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, setShowMyKeep, reloadPreferences } = usePreferences();
+  const { preferences, loading: prefsLoading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, setRelays, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, scannerIdleSeconds, setScannerIdleSeconds, scannerAutoStart, setScannerAutoStart, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, setShowMyKeep, reloadPreferences } = usePreferences();
+  usePublishScannerSettings(scannerIdleSeconds * 1000, scannerAutoStart);
   // One paired-child flag for the whole component (ledger T15). The signer-
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
@@ -11226,6 +11237,10 @@ export function App() {
         onSetPreferPersonaForSignIns={setPreferPersonaForSignIns}
         preferredPersonaPubkey={preferredPersonaPubkey}
         onSetPreferredPersonaPubkey={setPreferredPersonaPubkey}
+        scannerAutoStart={scannerAutoStart}
+        onSetScannerAutoStart={setScannerAutoStart}
+        scannerIdleSeconds={scannerIdleSeconds}
+        onSetScannerIdleSeconds={setScannerIdleSeconds}
         bunkerServerEnabled={bunkerServerEnabled}
         onSetBunkerServerEnabled={setBunkerServerEnabled}
         bunkerUrl={bunkerUrl}

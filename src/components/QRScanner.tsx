@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { isNativeApp, SignetNative } from '../lib/native';
 import { createQrDecoderClient, type QrDecoderClient } from '../lib/qr-decoder-client';
 import { pickNearestCentre, qrBoxRegion, qrDecodeSize } from '../lib/qr-scan-geometry';
+import { DEFAULT_SCANNER_IDLE_SECONDS } from '../lib/scanner-settings';
+import { useScannerSettings } from './ScannerSettingsContext';
 
 export { pickNearestCentre, qrBoxRegion, qrDecodeSize } from '../lib/qr-scan-geometry';
 
@@ -13,12 +15,14 @@ interface Props {
   fill?: boolean;
   /** Extra space (px) kept clear under the overlay controls, for a host that overlays its own. */
   bottomInset?: number;
+  /** Idle switch-off delay in ms. Overrides the user's Camera setting; mostly for tests. */
+  idleMs?: number;
 }
 
 /** Minimum gap between the end of one decode and the start of the next. */
 export const QR_SCAN_MIN_GAP_MS = 80;
-/** With no code found and no touch for this long, the camera switches off to save battery. */
-export const QR_SCANNER_IDLE_MS = 60_000;
+/** Default: with no code found and no touch for this long, the camera switches off to save battery. */
+export const QR_SCANNER_IDLE_MS = DEFAULT_SCANNER_IDLE_SECONDS * 1000;
 
 export const QR_SCANNER_PREFERRED_ZOOM = 1.6;
 export const QR_SCANNER_ZOOM_BUTTON_STEP = 0.2;
@@ -60,7 +64,9 @@ export function qrNextZoom(
  * a `zoom` capability, shows a zoom slider so a user can pull a QR on a far-off
  * screen closer without moving the phone.
  */
-export function QRScanner({ onScan, active, compact = false, fill = false, bottomInset = 0 }: Props) {
+export function QRScanner({ onScan, active, compact = false, fill = false, bottomInset = 0, idleMs }: Props) {
+  const settings = useScannerSettings();
+  const idleDelayMs = idleMs ?? settings.idleMs;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -178,14 +184,15 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
   }, [active]);
 
   // A camera left running with nothing to read is wasted battery and a lit
-  // camera indicator: switch it off after a quiet minute, tap to wake.
+  // camera indicator: switch it off after a quiet spell (the user's Camera
+  // setting, 20 s by default), tap anywhere to wake.
   useEffect(() => {
     if (!active || hidden || idle) return;
     const timer = setTimeout(() => {
       if (!scannedRef.current) setIdle(true);
-    }, QR_SCANNER_IDLE_MS);
+    }, idleDelayMs);
     return () => clearTimeout(timer);
-  }, [active, hidden, idle, touchedAt]);
+  }, [active, hidden, idle, touchedAt, idleDelayMs]);
 
   const wake = useCallback(() => {
     pausedRef.current = false;
@@ -388,28 +395,34 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
         muted
       />
       {active && !error && idle && (
-        <div
+        <button
+          type="button"
           data-testid="qr-scanner-idle"
+          onClick={wake}
+          aria-label="Turn the camera back on"
           style={{
             position: 'absolute',
             inset: 0,
+            width: '100%',
+            height: '100%',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             gap: 12,
             padding: 24,
+            border: 0,
+            background: 'transparent',
             textAlign: 'center',
             color: '#fff',
+            cursor: 'pointer',
           }}
         >
-          <span role="status" style={{ fontSize: 14, lineHeight: 1.35, opacity: 0.85 }}>
-            Camera off to save battery
+          <span style={{ fontSize: 14, lineHeight: 1.35, opacity: 0.85 }}>
+            Camera off to save battery &mdash; tap to scan
           </span>
-          <button type="button" className="btn btn-primary" onClick={wake} aria-label="Turn the camera back on">
-            Scan
-          </button>
-        </div>
+          <span className="btn btn-primary" aria-hidden="true">Scan</span>
+        </button>
       )}
       {showOverlay && (
         <div

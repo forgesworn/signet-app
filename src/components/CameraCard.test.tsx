@@ -14,6 +14,7 @@ vi.mock('./QRScanner', () => ({
 vi.mock('./MiniIdBadge', () => ({ MiniIdBadge: () => null }));
 
 import { CameraCard, CAMERA_AUTOSTART_DELAY_MS } from './CameraCard';
+import { ScannerSettingsContext } from './ScannerSettingsContext';
 
 const resolved = { displayName: 'Sam', displayNameIsSet: true, publicKey: 'a'.repeat(64), type: 'Persona', isDependant: false } as ResolvedIdentity;
 
@@ -136,5 +137,29 @@ describe('CameraCard auto-start', () => {
     fireEvent.click(screen.getByText('Cancel'));
     expect(screen.queryByTestId('camera-card-paste-input')).toBeNull();
     expect(screen.getByTestId('qr-scanner')).toBeInTheDocument();
+  });
+});
+
+describe('CameraCard with auto-start off', () => {
+  const noAutoStart = { idleMs: 20_000, autoStart: false };
+
+  it('does not start the camera when it becomes live, and a tap on the viewfinder does', () => {
+    vi.useFakeTimers();
+    const { rerender } = render(
+      <ScannerSettingsContext.Provider value={noAutoStart}>
+        <CameraCard resolved={resolved} onQRScanned={vi.fn()} live={false} />
+      </ScannerSettingsContext.Provider>,
+    );
+    rerender(
+      <ScannerSettingsContext.Provider value={noAutoStart}>
+        <CameraCard resolved={resolved} onQRScanned={vi.fn()} live />
+      </ScannerSettingsContext.Provider>,
+    );
+    act(() => { vi.advanceTimersByTime(CAMERA_AUTOSTART_DELAY_MS * 10); });
+    expect(screen.queryByTestId('qr-scanner')).toBeNull();
+    expect(screen.getByText('Scan QR Code')).toBeInTheDocument();
+
+    fireEvent.click(document.querySelector('.viewfinder')!);
+    expect(screen.getByTestId('qr-scanner')).toHaveAttribute('data-active', 'true');
   });
 });

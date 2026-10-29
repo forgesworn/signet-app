@@ -16,6 +16,7 @@ vi.mock('../lib/native', () => ({
 }));
 
 import { QRScanner, QR_SCAN_MIN_GAP_MS, QR_SCANNER_IDLE_MS } from './QRScanner';
+import { ScannerSettingsContext } from './ScannerSettingsContext';
 
 function mockStream() {
   const stop = vi.fn();
@@ -175,7 +176,7 @@ describe('QRScanner pause and scanning line', () => {
 });
 
 describe('QRScanner idle switch-off', () => {
-  it('turns the camera off after a quiet minute and back on when tapped', async () => {
+  it('turns the camera off after the default quiet spell and back on when tapped', async () => {
     render(<QRScanner onScan={vi.fn()} active />);
     await flush(0);
     await flush(QR_SCANNER_IDLE_MS - 1000);
@@ -189,11 +190,60 @@ describe('QRScanner idle switch-off', () => {
     await flush(5000);
     expect(decode).toHaveBeenCalledTimes(submitted);
 
+    expect(screen.getByTestId('qr-scanner-idle')).toHaveTextContent('tap to scan');
     fireEvent.click(screen.getByRole('button', { name: 'Turn the camera back on' }));
     await flush(0);
     expect(getUserMedia).toHaveBeenCalledTimes(2);
     expect(screen.queryByTestId('qr-scanner-idle')).toBeNull();
     expect(decode.mock.calls.length).toBeGreaterThan(submitted);
+  });
+
+  it('default idle time is 20 seconds', () => {
+    expect(QR_SCANNER_IDLE_MS).toBe(20_000);
+  });
+
+  it('honours the idle time from the scanner settings context', async () => {
+    render(
+      <ScannerSettingsContext.Provider value={{ idleMs: 30_000, autoStart: true }}>
+        <QRScanner onScan={vi.fn()} active />
+      </ScannerSettingsContext.Provider>,
+    );
+    await flush(0);
+    await flush(29_000);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    await flush(1000);
+    expect(tracks[0].stop).toHaveBeenCalled();
+    expect(screen.getByTestId('qr-scanner-idle')).toBeInTheDocument();
+  });
+
+  it('stops at 20 s and not before when the context says 20 s; tapping the idle area restarts the camera', async () => {
+    render(
+      <ScannerSettingsContext.Provider value={{ idleMs: 20_000, autoStart: true }}>
+        <QRScanner onScan={vi.fn()} active />
+      </ScannerSettingsContext.Provider>,
+    );
+    await flush(0);
+    await flush(19_999);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    await flush(1);
+    expect(tracks[0].stop).toHaveBeenCalled();
+    // The whole idle area is one control: a tap anywhere on it wakes the camera.
+    expect(screen.getAllByRole('button', { name: 'Turn the camera back on' })).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('qr-scanner-idle'));
+    await flush(0);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('qr-scanner-idle')).toBeNull();
+  });
+
+  it('an explicit idleMs prop overrides the context', async () => {
+    render(
+      <ScannerSettingsContext.Provider value={{ idleMs: 60_000, autoStart: true }}>
+        <QRScanner onScan={vi.fn()} active idleMs={10_000} />
+      </ScannerSettingsContext.Provider>,
+    );
+    await flush(0);
+    await flush(10_000);
+    expect(tracks[0].stop).toHaveBeenCalled();
   });
 
   it('starts the countdown again when the user touches a control', async () => {

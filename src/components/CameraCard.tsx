@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { MiniIdBadge } from './MiniIdBadge';
 import { QRScanner } from './QRScanner';
+import { useScannerSettings } from './ScannerSettingsContext';
 
 /** How long the card must stay live before the camera starts. */
 export const CAMERA_AUTOSTART_DELAY_MS = 200;
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export function CameraCard({ resolved, onQRScanned, live = false }: Props) {
+  const { autoStart } = useScannerSettings();
   const [scannerActive, setScannerActive] = useState(false);
   // Set after a successful scan so a still-live card does not restart itself.
   const [scanDone, setScanDone] = useState(false);
@@ -29,7 +31,8 @@ export function CameraCard({ resolved, onQRScanned, live = false }: Props) {
 
   // Auto-start ~200 ms after the card becomes live (debounced: a card that
   // stops being live first never starts). Not live: camera off at once, and
-  // the next time the card goes live it re-arms.
+  // the next time the card goes live it re-arms. With auto-start off (Settings
+  // → Security → Camera) the card never opens the camera itself: it waits for a tap.
   useEffect(() => {
     if (!live) {
       setScannerActive(false);
@@ -37,13 +40,13 @@ export function CameraCard({ resolved, onQRScanned, live = false }: Props) {
       setPasteOpen(false);
       return;
     }
-    if (scanDone) return;
+    if (scanDone || !autoStart) return;
     const timer = setTimeout(() => {
       setScanError(null);
       setScannerActive(true);
     }, CAMERA_AUTOSTART_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [live, scanDone]);
+  }, [live, scanDone, autoStart]);
 
   const handleStartScan = useCallback(() => {
     setScanError(null);

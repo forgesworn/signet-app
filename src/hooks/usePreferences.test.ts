@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { usePreferences, resolvePreferPersonaForSignIns } from './usePreferences';
+import { usePreferences, resolvePreferPersonaForSignIns, resolveScannerIdleSeconds, resolveScannerAutoStart } from './usePreferences';
 import * as db from '../lib/db';
 
 // Reset the in-memory fake-indexeddb state between tests so each test
@@ -318,6 +318,53 @@ describe('preferPersonaForSignIns default', () => {
 
   it('honours an explicit true', () => {
     expect(resolvePreferPersonaForSignIns({ id: 'current', theme: 'system', preferPersonaForSignIns: true } as never)).toBe(true);
+  });
+});
+
+describe('scanner camera preferences', () => {
+  const base = { id: 'current', theme: 'system' } as const;
+
+  it('idle time defaults to 20 seconds', () => {
+    expect(resolveScannerIdleSeconds(base as never)).toBe(20);
+  });
+
+  it('keeps the four offered values', () => {
+    for (const seconds of [10, 20, 30, 60]) {
+      expect(resolveScannerIdleSeconds({ ...base, scannerIdleSeconds: seconds } as never)).toBe(seconds);
+    }
+  });
+
+  it('falls back to 20 for anything else', () => {
+    for (const bad of [0, 15, 45, 120, -10, Number.NaN, '30', null]) {
+      expect(resolveScannerIdleSeconds({ ...base, scannerIdleSeconds: bad } as never)).toBe(20);
+    }
+  });
+
+  it('auto-start defaults ON and only an explicit false turns it off', () => {
+    expect(resolveScannerAutoStart(base as never)).toBe(true);
+    expect(resolveScannerAutoStart({ ...base, scannerAutoStart: true } as never)).toBe(true);
+    expect(resolveScannerAutoStart({ ...base, scannerAutoStart: false } as never)).toBe(false);
+  });
+
+  it('setters persist and the hook returns the resolved values', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.scannerIdleSeconds).toBe(20);
+    expect(result.current.scannerAutoStart).toBe(true);
+    await act(async () => { await result.current.setScannerIdleSeconds(30); });
+    await act(async () => { await result.current.setScannerAutoStart(false); });
+    expect(result.current.scannerIdleSeconds).toBe(30);
+    expect(result.current.scannerAutoStart).toBe(false);
+    const stored = await db.getPreferences();
+    expect(stored.scannerIdleSeconds).toBe(30);
+    expect(stored.scannerAutoStart).toBe(false);
+  });
+
+  it('refuses to store an unoffered idle time', async () => {
+    const { result } = renderHook(() => usePreferences());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => { await result.current.setScannerIdleSeconds(45); });
+    expect(result.current.scannerIdleSeconds).toBe(20);
   });
 });
 
