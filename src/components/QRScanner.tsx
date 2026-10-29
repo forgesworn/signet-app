@@ -334,7 +334,7 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
       // Paused while this decode was running: drop it; resume restarts the loop.
       if (scannedRef.current || pausedRef.current) return;
 
-      const hit = out ? pickNearestCentre(out.results, size.width, size.height) : null;
+      const hit = out ? pickNearestCentre(out.results.filter(h => h.text), size.width, size.height) : null;
       if (hit && hit.text) {
         scannedRef.current = true;
         stopCamera();

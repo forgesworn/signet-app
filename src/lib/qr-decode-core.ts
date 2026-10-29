@@ -10,11 +10,20 @@ export interface QrFrame {
   data: Uint8ClampedArray;
 }
 
-/** One decoded code: its text and the centre of the symbol in frame pixels. */
+/** One decoded code: its text, the centre of the symbol and its bounding-box size, in frame pixels. */
 export interface QrHit {
   text: string;
   cx: number;
   cy: number;
+  w: number;
+  h: number;
+}
+
+/** Bounding-box centre and size of a symbol from its four corners. */
+export function qrHitBox(corners: readonly Point[]): Pick<QrHit, 'cx' | 'cy' | 'w' | 'h'> {
+  const xs = corners.map(p => p.x), ys = corners.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  return { cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, w: maxX - minX, h: maxY - minY };
 }
 
 export type QrDecoderKind = 'zxing' | 'jsqr';
@@ -106,6 +115,6 @@ export class QrDecoder {
     const hit = this.jsqr(frame.data, frame.width, frame.height, { inversionAttempts });
     if (!hit || !hit.data) return [];
     const { topLeftCorner: a, topRightCorner: b, bottomRightCorner: c, bottomLeftCorner: d } = hit.location;
-    return [{ text: hit.data, cx: (a.x + b.x + c.x + d.x) / 4, cy: (a.y + b.y + c.y + d.y) / 4 }];
+    return [{ text: hit.data, ...qrHitBox([a, b, c, d]) }];
   }
 }

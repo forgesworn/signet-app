@@ -3,6 +3,8 @@ import jsQR from 'jsqr';
 import { isNativeApp, SignetNative } from '../lib/native';
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
 import { createHandshakeFrameReader } from '../lib/handshake-optical';
+import { createQrDecoderClient, type QrDecoderClient } from '../lib/qr-decoder-client';
+import type { QrDecodeOutput, QrHit } from '../lib/qr-decode-core';
 
 /** Match the square object-fit: cover preview, retaining the full image for
  * the separate ambiguity check. Never accept a code outside the visible view. */
@@ -16,9 +18,26 @@ export function nearbyQR(location: { topLeftCorner: { x: number; y: number }; to
   const corners = Object.values(location);
   const minX = Math.min(...corners.map(p => p.x)), maxX = Math.max(...corners.map(p => p.x));
   const minY = Math.min(...corners.map(p => p.y)), maxY = Math.max(...corners.map(p => p.y));
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  return (maxX - minX) * (maxY - minY) >= width * height * .12
+  return nearbyBox((minX + maxX) / 2, (minY + maxY) / 2, maxX - minX, maxY - minY, width, height);
+}
+function nearbyBox(cx: number, cy: number, w: number, h: number, width: number, height: number) {
+  return w * h >= width * height * .12
     && Math.abs(cx - width / 2) <= width * .25 && Math.abs(cy - height / 2) <= height * .25;
+}
+/** Longest side of the frame handed to the decoder. */
+export const HANDSHAKE_DECODE_SIDE = 1280;
+/** Least gap between decodes; the next one waits for the last to finish. */
+export const HANDSHAKE_SCAN_GAP_MS = 80;
+/** The one code a full camera frame may be read for, or null. The decoder
+ * reads every code in the frame, so any second code, even outside the square
+ * preview, makes the frame ambiguous and it is refused. */
+export function handshakeHit(hits: readonly QrHit[], width: number, height: number): QrHit | null {
+  if (hits.length !== 1 || !hits[0].text) return null;
+  const [hit] = hits, crop = handshakeCameraCrop(width, height);
+  const x = hit.cx - crop.x, y = hit.cy - crop.y;
+  // Never accept a code that runs outside the visible square.
+  const visible = x - hit.w / 2 >= 0 && y - hit.h / 2 >= 0 && x + hit.w / 2 <= crop.size && y + hit.h / 2 <= crop.size;
+  return visible && nearbyBox(x, y, hit.w, hit.h, crop.size, crop.size) ? hit : null;
 }
 /** Mean brightness of an RGBA frame below which the lens is taken as covered. */
 export const COVERED_LUMA = 18;
@@ -42,9 +61,9 @@ export function HandshakeCamera({ facing, active, reading = true, onScan }: { fa
     let startedAt = 0, darkSince: number | null = null;
     setFailed(false);
     const canvas = document.createElement('canvas');
-    const fullCanvas = document.createElement('canvas');
     const probe = document.createElement('canvas'); probe.width = probe.height = 24;
     const readFrame = createHandshakeFrameReader();
+    let client: QrDecoderClient | undefined;
     const covered = (v: HTMLVideoElement) => {
       const now = performance.now();
       if (now - startedAt < COVERED_WARMUP_MS) return false;
@@ -55,7 +74,15 @@ export function HandshakeCamera({ facing, active, reading = true, onScan }: { fa
       darkSince ??= now;
       return now - darkSince >= COVERED_AFTER_MS;
     };
-    const frame = () => {
+    // jsQR returns one code at most, so without zxing a found code is masked
+    // and the frame read again, as before. Ambiguous frames are never accepted.
+    const secondCode = (ctx: CanvasRenderingContext2D, hit: QrHit) => {
+      ctx.fillStyle = '#888';
+      ctx.fillRect(hit.cx - hit.w / 2 - 5, hit.cy - hit.h / 2 - 5, hit.w + 10, hit.h + 10);
+      const masked = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      return !!jsQR(masked.data, masked.width, masked.height, { inversionAttempts: 'attemptBoth' });
+    };
+    const frame = async () => {
       if (cancelled) return;
       const v = video.current;
       if (v && v.readyState >= 2 && v.videoWidth && covered(v)) {
@@ -65,40 +92,25 @@ export function HandshakeCamera({ facing, active, reading = true, onScan }: { fa
       }
       // Keep the live preview after pinning a peer, without repeatedly decoding
       // the same QR while the signed exchange is being verified.
-      if (shouldRead.current && v && v.readyState >= 2 && v.videoWidth) {
-        const crop = handshakeCameraCrop(v.videoWidth, v.videoHeight);
-        const scale = Math.min(1, 1280 / crop.size);
-        canvas.width = Math.round(crop.size * scale); canvas.height = canvas.width;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (ctx) {
-          ctx.drawImage(v, crop.x, crop.y, crop.size, crop.size, 0, 0, canvas.width, canvas.height);
-          const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const qr = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
-          if (qr && nearbyQR(qr.location, data.width, data.height)) {
-            // Mask this code and decode again. Ambiguous frames are never accepted.
-            const points = [qr.location.topLeftCorner, qr.location.topRightCorner, qr.location.bottomRightCorner, qr.location.bottomLeftCorner];
-            const x = Math.min(...points.map(p => p.x)), y = Math.min(...points.map(p => p.y));
-            // Look for any second QR in the full camera image, including the
-            // area cropped out of the square preview. Keep the size gate.
-            const fullScale = Math.min(1, 1280 / v.videoWidth);
-            fullCanvas.width = Math.round(v.videoWidth * fullScale); fullCanvas.height = Math.round(v.videoHeight * fullScale);
-            const full = fullCanvas.getContext('2d', { willReadFrequently: true });
-            if (full) {
-              full.drawImage(v, 0, 0, fullCanvas.width, fullCanvas.height);
-              full.fillStyle = '#888';
-              full.fillRect((crop.x + x / scale) * fullScale - 5, (crop.y + y / scale) * fullScale - 5,
-                (Math.max(...points.map(p => p.x)) - x) / scale * fullScale + 10,
-                (Math.max(...points.map(p => p.y)) - y) / scale * fullScale + 10);
-              const masked = full.getImageData(0, 0, fullCanvas.width, fullCanvas.height);
-              if (!jsQR(masked.data, masked.width, masked.height, { inversionAttempts: 'attemptBoth' })) {
-                const raw = readFrame(qr.data, performance.now());
-                if (raw !== null) latest.current(raw);
-              }
-            }
-          }
-        }
+      if (!shouldRead.current || !v || v.readyState < 2 || !v.videoWidth) { timer = setTimeout(frame, 150); return; }
+      const scale = Math.min(1, HANDSHAKE_DECODE_SIDE / Math.max(v.videoWidth, v.videoHeight));
+      const width = Math.round(v.videoWidth * scale), height = Math.round(v.videoHeight * scale);
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) { timer = setTimeout(frame, 150); return; }
+      ctx.drawImage(v, 0, 0, width, height);
+      const started = performance.now();
+      client ??= createQrDecoderClient();
+      let out: QrDecodeOutput = { results: [], decoder: 'jsqr' };
+      try { out = await client.decode({ width, height, buffer: ctx.getImageData(0, 0, width, height).data.buffer }); } catch { /* treated as no code */ }
+      if (cancelled) return;
+      const hit = handshakeHit(out.results, width, height);
+      if (hit && (out.decoder === 'zxing' || !secondCode(ctx, hit))) {
+        const raw = readFrame(hit.text, performance.now());
+        if (raw !== null) latest.current(raw);
       }
-      timer = setTimeout(frame, 150);
+      // jsQR runs on the main thread once the worker is gone: keep the old pace.
+      timer = setTimeout(frame, out.decoder === 'zxing' ? Math.max(0, HANDSHAKE_SCAN_GAP_MS - (performance.now() - started)) : 150);
     };
     const start = async () => {
       try {
@@ -108,11 +120,11 @@ export function HandshakeCamera({ facing, active, reading = true, onScan }: { fa
         if (cancelled) { next.getTracks().forEach(t => t.stop()); return; }
         stream = next; startedAt = performance.now(); darkSince = null;
         if (video.current) { video.current.srcObject = stream; await video.current.play(); }
-        frame();
+        void frame();
       } catch { if (!cancelled) setFailed(true); }
     };
     void start();
-    return () => { cancelled = true; clearTimeout(timer); stream?.getTracks().forEach(t => t.stop()); };
+    return () => { cancelled = true; clearTimeout(timer); stream?.getTracks().forEach(t => t.stop()); client?.destroy(); };
   }, [facing, active]);
   return <div className="handshake-camera">
     <video ref={video} autoPlay playsInline muted />

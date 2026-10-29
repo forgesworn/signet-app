@@ -82,8 +82,8 @@ describe('QRScanner scan loop', () => {
     decode.mockResolvedValueOnce({
       decoder: 'zxing',
       results: [
-        { text: 'edge', cx: 0, cy: 0 },
-        { text: 'centre', cx: 640, cy: 360 },
+        { text: 'edge', cx: 0, cy: 0, w: 10, h: 10 },
+        { text: 'centre', cx: 640, cy: 360, w: 10, h: 10 },
       ],
     });
     render(<QRScanner onScan={onScan} active />);
@@ -168,7 +168,7 @@ describe('QRScanner pause and scanning line', () => {
     render(<QRScanner onScan={onScan} active />);
     await flush(0);
     fireEvent.click(screen.getByRole('button', { name: 'Pause scanning' }));
-    await act(async () => { resolve({ decoder: 'zxing', results: [{ text: 'late', cx: 1, cy: 1 }] }); });
+    await act(async () => { resolve({ decoder: 'zxing', results: [{ text: 'late', cx: 1, cy: 1, w: 10, h: 10 }] }); });
     await flush(1000);
     expect(onScan).not.toHaveBeenCalled();
     expect(decode).toHaveBeenCalledTimes(1);
@@ -290,7 +290,7 @@ describe('QRScanner page visibility', () => {
   });
 
   it('does not restart after a successful scan', async () => {
-    decode.mockResolvedValueOnce({ decoder: 'zxing', results: [{ text: 'done', cx: 1, cy: 1 }] });
+    decode.mockResolvedValueOnce({ decoder: 'zxing', results: [{ text: 'done', cx: 1, cy: 1, w: 10, h: 10 }] });
     render(<QRScanner onScan={vi.fn()} active />);
     await flush(0);
     await act(async () => { setVisibility('hidden'); });

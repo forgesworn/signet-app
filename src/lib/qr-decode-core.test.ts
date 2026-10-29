@@ -17,10 +17,10 @@ describe('jsqrInversionForFrame', () => {
 
 describe('QrDecoder', () => {
   it('uses zxing when it initialises, and does not touch jsQR', async () => {
-    const read: ZxingRead = vi.fn().mockResolvedValue([{ text: 'a', cx: 1, cy: 1 }]);
+    const read: ZxingRead = vi.fn().mockResolvedValue([{ text: 'a', cx: 1, cy: 1, w: 1, h: 1 }]);
     const jsqr = vi.fn();
     const decoder = new QrDecoder({ loadZxing: () => Promise.resolve(read), jsqr });
-    expect(await decoder.decode(frame)).toEqual({ results: [{ text: 'a', cx: 1, cy: 1 }], decoder: 'zxing' });
+    expect(await decoder.decode(frame)).toEqual({ results: [{ text: 'a', cx: 1, cy: 1, w: 1, h: 1 }], decoder: 'zxing' });
     expect(decoder.kind).toBe('zxing');
     expect(jsqr).not.toHaveBeenCalled();
   });
@@ -43,7 +43,7 @@ describe('QrDecoder', () => {
   it('uses jsQR only when no zxing loader is supplied (main-thread fallback)', async () => {
     const jsqr = vi.fn().mockReturnValue({ data: 'hello', location: corners(10, 20) });
     const out = await new QrDecoder({ jsqr }).decode(frame);
-    expect(out).toEqual({ results: [{ text: 'hello', cx: 10, cy: 20 }], decoder: 'jsqr' });
+    expect(out).toEqual({ results: [{ text: 'hello', cx: 10, cy: 20, w: 2, h: 2 }], decoder: 'jsqr' });
   });
 
   it('abandons zxing for good once a read throws', async () => {
