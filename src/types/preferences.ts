@@ -132,6 +132,17 @@ export interface AppPreferences {
    */
   preferPersonaForSignIns?: boolean;
   /**
+   * Seconds the QR scanner camera stays on with no code found and no touch
+   * before it switches itself off. One of 10 / 20 / 30 / 60; anything else (or
+   * undefined) resolves to 20. Device-local, never synced.
+   */
+  scannerIdleSeconds?: number;
+  /**
+   * Whether swiping to the carousel scan card starts the camera by itself.
+   * Undefined → true. When false the card waits for a tap. Device-local.
+   */
+  scannerAutoStart?: boolean;
+  /**
    * Hex pubkey of the persona (built-in `persona` or an `extra-persona`)
    * the user chose as their preferred sign-in default. Only meaningful when
    * `preferPersonaForSignIns` is true. Undefined → fall back to the built-in

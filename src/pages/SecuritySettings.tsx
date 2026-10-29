@@ -8,6 +8,7 @@ import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
 import { toRecoveryWords } from '../lib/recovery-words';
 import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
 import { Icon } from '../components/Icon';
+import { SCANNER_IDLE_SECONDS_OPTIONS, DEFAULT_SCANNER_IDLE_SECONDS, DEFAULT_SCANNER_AUTO_START, scannerIdleLabel } from '../lib/scanner-settings';
 
 const TIER_INFO: Record<SecurityTier, { label: string; description: string }> = {
   basic: { label: 'Basic', description: '1 word each — quick check' },
@@ -37,6 +38,12 @@ interface Props {
    */
   preferredPersonaPubkey?: string;
   onSetPreferredPersonaPubkey: (pubkey: string | undefined) => void;
+  /** Camera card: start the camera when the user swipes to Scan. Default on. */
+  scannerAutoStart?: boolean;
+  onSetScannerAutoStart?: (enabled: boolean) => void;
+  /** Camera card: seconds before an idle scanner camera switches off (10/20/30/60). */
+  scannerIdleSeconds?: number;
+  onSetScannerIdleSeconds?: (seconds: number) => void;
   /**
    * Whether the NIP-46 bunker server is running. When enabled, paired
    * companion apps (MatchPass, other NIP-46 clients, etc.) can ask this Signet to
@@ -181,7 +188,9 @@ function SignInToggle({ enabled, onToggle, onLabel, offLabel }: {
   );
 }
 
-export function SecuritySettings({ identity, securityTier, onSetSecurityTier, onRequestAuth, onRequestFreshAuth, blurIdentityNames, onSetBlurIdentityNames, requireNpConfirmation, onSetRequireNpConfirmation, preferPersonaForSignIns, onSetPreferPersonaForSignIns, preferredPersonaPubkey, onSetPreferredPersonaPubkey, bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, onNavigateShamir, mnemonicOnSigner = false, focusSection, onConsumeFocus }: Props) {
+const noop = () => {};
+
+export function SecuritySettings({ identity, securityTier, onSetSecurityTier, onRequestAuth, onRequestFreshAuth, blurIdentityNames, onSetBlurIdentityNames, requireNpConfirmation, onSetRequireNpConfirmation, preferPersonaForSignIns, onSetPreferPersonaForSignIns, preferredPersonaPubkey, onSetPreferredPersonaPubkey, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, onNavigateShamir, mnemonicOnSigner = false, focusSection, onConsumeFocus }: Props) {
   const [showBackup, setShowBackup] = useState(false);
   const [copied, setCopied] = useState(false);
   const [bunkerCopied, setBunkerCopied] = useState(false);
@@ -504,6 +513,64 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
             )}
           </div>
         )}
+      </div>
+
+      {/* Camera */}
+      <div className="card section">
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+          <div>
+            <div className="section-title" style={{ marginBottom: 0 }}>Start the camera when I swipe to Scan</div>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 0 }}>
+              Off: the camera only opens when you tap. Nothing is recorded or sent either way.
+            </p>
+          </div>
+          <SignInToggle
+            enabled={scannerAutoStart}
+            onToggle={onSetScannerAutoStart}
+            onLabel="Turn off camera auto-start"
+            offLabel="Turn on camera auto-start"
+          />
+        </div>
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+          <div className="section-title" style={{ marginBottom: 0 }}>Turn the camera off after</div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 10 }}>
+            &hellip;when no code is found and you haven&rsquo;t touched it.
+          </p>
+          <div role="radiogroup" aria-label="Turn the camera off after" style={{ display: 'flex', gap: 6 }}>
+            {SCANNER_IDLE_SECONDS_OPTIONS.map(seconds => {
+              const checked = seconds === scannerIdleSeconds;
+              return (
+                <label
+                  key={seconds}
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '8px 6px',
+                    borderRadius: 8,
+                    border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                    background: checked ? 'var(--accent-light)' : 'transparent',
+                    cursor: 'pointer',
+                    fontSize: '0.9rem',
+                    position: 'relative',
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="scanner-idle-seconds"
+                    value={seconds}
+                    checked={checked}
+                    onChange={() => onSetScannerIdleSeconds(seconds)}
+                    aria-label={scannerIdleLabel(seconds)}
+                    style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+                  />
+                  <span aria-hidden="true">{scannerIdleLabel(seconds)}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Backup Words */}

@@ -6,6 +6,7 @@ import { TIER_WORD_COUNT } from '../types';
 import * as db from '../lib/db';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { validSeamGapMm } from '../lib/handshake-seam-gap';
+import { normaliseScannerIdleSeconds, type ScannerIdleSeconds } from '../lib/scanner-settings';
 
 /**
  * Default-ON (spec §6, §11): the anonymous persona is the sign-in default
@@ -15,6 +16,16 @@ import { validSeamGapMm } from '../lib/handshake-seam-gap';
  */
 export function resolvePreferPersonaForSignIns(prefs: AppPreferences): boolean {
   return prefs.preferPersonaForSignIns !== false;
+}
+
+/** Seconds the scanner camera stays on with nothing found: 10/20/30/60, default 20. */
+export function resolveScannerIdleSeconds(prefs: AppPreferences): ScannerIdleSeconds {
+  return normaliseScannerIdleSeconds(prefs.scannerIdleSeconds);
+}
+
+/** Default ON: only an explicit `false` makes the scan card wait for a tap. */
+export function resolveScannerAutoStart(prefs: AppPreferences): boolean {
+  return prefs.scannerAutoStart !== false;
 }
 
 export function usePreferences() {
@@ -219,6 +230,17 @@ export function usePreferences() {
     await db.savePreferences(updated);
   }, [preferences]);
 
+  const setScannerIdleSeconds = useCallback(async (seconds: number) => {
+    await applyFresh(p => {
+      const next = normaliseScannerIdleSeconds(seconds);
+      return p.scannerIdleSeconds === next ? p : { ...p, scannerIdleSeconds: next };
+    });
+  }, [applyFresh]);
+
+  const setScannerAutoStart = useCallback(async (enabled: boolean) => {
+    await applyFresh(p => (p.scannerAutoStart === enabled ? p : { ...p, scannerAutoStart: enabled }));
+  }, [applyFresh]);
+
   const setPreferredPersonaPubkey = useCallback(async (pubkey: string | undefined) => {
     const updated = { ...preferences, preferredPersonaPubkey: pubkey };
     setPreferences(updated);
@@ -325,8 +347,10 @@ export function usePreferences() {
   // Default-on: treat undefined as true. Users can turn it off, but new installs start protected.
   const requireNpConfirmation = preferences.requireNpConfirmation ?? true;
   const preferPersonaForSignIns = resolvePreferPersonaForSignIns(preferences);
+  const scannerIdleSeconds = resolveScannerIdleSeconds(preferences);
+  const scannerAutoStart = resolveScannerAutoStart(preferences);
   const preferredPersonaPubkey = preferences.preferredPersonaPubkey;
   const bunkerServerEnabled = preferences.bunkerServerEnabled ?? false;
 
-  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, setShowMyKeep, reloadPreferences };
+  return { preferences, loading, setTheme, securityTier, wordCount, setSecurityTier, setRelayUrl, resetRelayUrl, setPowerMode, powerMode, blossomConsent, setBlossomConsent, setDefaultBlossomUrl, resetDefaultBlossomUrl, blurIdentityNames, setBlurIdentityNames, setHandshakeSeamGapMm, requireNpConfirmation, setRequireNpConfirmation, preferPersonaForSignIns, setPreferPersonaForSignIns, scannerIdleSeconds, setScannerIdleSeconds, scannerAutoStart, setScannerAutoStart, preferredPersonaPubkey, setPreferredPersonaPubkey, bunkerServerEnabled, setBunkerServerEnabled, setBackgroundBunkerEnabled, setStayAwakeEndsAt, setFallbackBunkerRelays, setRelays, snoozeBackupNudge, noteDependantAdded, setContactPictureBackup, setHeartwoodOwnerStyle, setShowMyKeep, reloadPreferences };
 }

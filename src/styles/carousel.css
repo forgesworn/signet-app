@@ -517,6 +517,62 @@
   border-color: rgba(255, 255, 255, 0.3);
 }
 .cam-paste.input::placeholder { color: rgba(255, 255, 255, 0.5); }
+/* Live scanner: the camera fills the card edge to edge, with the identity
+   badge, the paste link and the paste panel overlaid on it. */
+.camera-view.camera-view--live {
+  padding: 0;
+  overflow: hidden;
+  display: block;
+}
+.camera-view--live .cam-live-scanner { position: absolute; inset: 0; }
+.camera-view--live .cam-live-badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  padding-top: 10px;
+  pointer-events: none;
+}
+.camera-view--live .cam-live-badge .mini-id {
+  padding: 4px 12px 4px 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.camera-view--live .cam-live-badge .mini-id-photo { width: 32px; height: 32px; border-radius: 16px; font-size: 0.9rem; }
+.camera-view--live .cam-live-badge .mini-id-name { font-size: 0.95rem; color: #fff; }
+.camera-view--live .cam-live-controls {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+}
+.cam-paste-toggle {
+  min-height: 40px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.camera-view--live .cam-paste-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  padding: 12px;
+  background: rgba(10, 10, 10, 0.88);
+  box-sizing: border-box;
+}
+.cam-scan-again { align-self: center; min-width: 160px; }
 .cam-error {
   margin: 14px 16px 0;
   padding: 10px 14px;

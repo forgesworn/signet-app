@@ -46,7 +46,8 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "signet-protocol": "^1.11.3",
-    "spoken-token": "^2.1.1"
+    "spoken-token": "^2.1.1",
+    "zxing-wasm": "^3.1.6"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",

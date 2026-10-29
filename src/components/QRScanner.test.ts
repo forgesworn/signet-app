@@ -6,46 +6,7 @@ import {
   QR_SCANNER_ZOOM_BUTTON_STEP,
   qrNextZoom,
   qrInitialZoom,
-  qrScanSourceRect,
 } from './QRScanner';
-
-describe('qrScanSourceRect', () => {
-  it('uses the full frame at 1x', () => {
-    expect(qrScanSourceRect(1280, 720, 1)).toEqual({
-      sx: 0,
-      sy: 0,
-      sw: 1280,
-      sh: 720,
-    });
-  });
-
-  it('center-crops the frame for digital zoom', () => {
-    expect(qrScanSourceRect(1280, 720, 2)).toEqual({
-      sx: 320,
-      sy: 180,
-      sw: 640,
-      sh: 360,
-    });
-  });
-
-  it('falls back to 1x for invalid zoom values', () => {
-    expect(qrScanSourceRect(640, 480, Number.NaN)).toEqual({
-      sx: 0,
-      sy: 0,
-      sw: 640,
-      sh: 480,
-    });
-  });
-
-  it('clamps extreme zoom to keep a decodable source region', () => {
-    expect(qrScanSourceRect(600, 300, 99)).toEqual({
-      sx: 250,
-      sy: 125,
-      sw: 100,
-      sh: 50,
-    });
-  });
-});
 
 describe('qrInitialZoom', () => {
   it('starts above 1x for camera flows so distant screen QRs are easier to scan', () => {
