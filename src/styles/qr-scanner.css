@@ -1,0 +1,33 @@
+/* ─── QR scanner scanning line ─── */
+/* A red line sweeping top to bottom inside the framing box, one pass per
+   1.5 s. Transform-only animation; never intercepts touches. */
+.qr-scan-sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: qr-scan-sweep 1.5s linear infinite;
+  will-change: transform, opacity;
+}
+.qr-scan-line {
+  height: 2px;
+  background: #ef4444;
+  box-shadow: 0 0 8px 1px rgba(239, 68, 68, 0.8);
+}
+@keyframes qr-scan-sweep {
+  0%   { transform: translateY(0);    opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+/* Reduced motion: no sweep. A static line across the middle of the box with a
+   gentle opacity pulse instead. */
+@media (prefers-reduced-motion: reduce) {
+  .qr-scan-sweep {
+    animation: qr-scan-pulse 2s ease-in-out infinite;
+    transform: translateY(calc(50% - 1px));
+  }
+}
+@keyframes qr-scan-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
