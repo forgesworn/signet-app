@@ -238,6 +238,8 @@ function renderCard(
   col: CarouselColumn,
   resolved: ResolvedIdentity,
   props: CarouselProps,
+  /** The card the user is looking at and not mid-transition. The incoming neighbour is never live. */
+  live: boolean,
 ): ReactNode {
   // Persistent "+ Add" prompt at the bottom of the ring. Non-columnar —
   // all columns render the same card. Variants:
@@ -353,6 +355,7 @@ function renderCard(
         <CameraCard
           resolved={resolved}
           onQRScanned={props.onQRScanned}
+          live={live}
         />
       );
   }
@@ -720,7 +723,7 @@ export function Carousel(props: CarouselProps) {
         className={`carousel-screen${longPressEngaged ? ' carousel-screen-engaged' : ''}`}
         ref={currentScreenRef}
       >
-        {rows[row] && renderCard(rows[row], col, props.activeIdentity, props)}
+        {rows[row] && renderCard(rows[row], col, props.activeIdentity, props, !animating)}
       </div>
 
       {incomingCard && rows[incomingCard.row] && (
@@ -741,6 +744,7 @@ export function Carousel(props: CarouselProps) {
             incomingCard.col,
             resolveActiveIdentity(rows[incomingCard.row]),
             props,
+            false,
           )}
         </div>
       )}
