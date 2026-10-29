@@ -4,7 +4,7 @@ import { prepareZXingModule, readBarcodes, type ZXingModuleOverrides } from 'zxi
 // Vite emits the wasm as a hashed asset on our own origin and gives its URL.
 // zxing-wasm's default loader points at jsDelivr; locateFile below replaces it.
 import wasmUrl from 'zxing-wasm/reader/zxing_reader.wasm?url';
-import type { QrHit, ZxingRead } from './qr-decode-core';
+import { qrHitBox, type QrHit, type ZxingRead } from './qr-decode-core';
 
 const MAX_SYMBOLS = 4;
 
@@ -36,13 +36,10 @@ export async function loadZxingReader(
     });
     const hits: QrHit[] = [];
     for (const r of found) {
-      if (!r.isValid || !r.text) continue;
+      // An empty code is kept: the Handshake counts every code in view.
+      if (!r.isValid) continue;
       const p = r.position;
-      hits.push({
-        text: r.text,
-        cx: (p.topLeft.x + p.topRight.x + p.bottomRight.x + p.bottomLeft.x) / 4,
-        cy: (p.topLeft.y + p.topRight.y + p.bottomRight.y + p.bottomLeft.y) / 4,
-      });
+      hits.push({ text: r.text, ...qrHitBox([p.topLeft, p.topRight, p.bottomRight, p.bottomLeft]) });
     }
     return hits;
   };

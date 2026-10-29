@@ -76,9 +76,9 @@ describe('qrDecodeSize', () => {
 describe('pickNearestCentre', () => {
   it('picks the code whose centre is nearest the middle of the crop', () => {
     const hits = [
-      { text: 'far', cx: 10, cy: 10 },
-      { text: 'near', cx: 205, cy: 195 },
-      { text: 'mid', cx: 300, cy: 100 },
+      { text: 'far', cx: 10, cy: 10, w: 10, h: 10 },
+      { text: 'near', cx: 205, cy: 195, w: 10, h: 10 },
+      { text: 'mid', cx: 300, cy: 100, w: 10, h: 10 },
     ];
     expect(pickNearestCentre(hits, 400, 400)?.text).toBe('near');
   });

@@ -21,7 +21,7 @@ describe('createQrDecoderClient', () => {
       onmessageerror: (() => void) | null = null;
       postMessage(msg: { id: number }, transfer: unknown[]) {
         posted.push([msg, transfer]);
-        queueMicrotask(() => this.onmessage?.({ data: { id: msg.id, results: [{ text: 'x', cx: 1, cy: 2 }], decoder: 'zxing' } } as MessageEvent));
+        queueMicrotask(() => this.onmessage?.({ data: { id: msg.id, results: [{ text: 'x', cx: 1, cy: 2, w: 1, h: 1 }], decoder: 'zxing' } } as MessageEvent));
       }
       terminate() {}
     }
@@ -29,7 +29,7 @@ describe('createQrDecoderClient', () => {
     const client = createQrDecoderClient();
     const buffer = new ArrayBuffer(16);
     const out = await client.decode({ width: 2, height: 2, buffer });
-    expect(out).toEqual({ results: [{ text: 'x', cx: 1, cy: 2 }], decoder: 'zxing' });
+    expect(out).toEqual({ results: [{ text: 'x', cx: 1, cy: 2, w: 1, h: 1 }], decoder: 'zxing' });
     expect((posted[0] as [unknown, unknown[]])[1]).toEqual([buffer]);
     client.destroy();
   });
