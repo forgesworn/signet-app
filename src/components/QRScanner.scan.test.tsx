@@ -15,7 +15,7 @@ vi.mock('../lib/native', () => ({
   SignetNative: { requestCameraPermission: () => requestCameraPermission() },
 }));
 
-import { QRScanner, QR_SCAN_MIN_GAP_MS } from './QRScanner';
+import { QRScanner, QR_SCAN_MIN_GAP_MS, QR_SCANNER_IDLE_MS } from './QRScanner';
 
 function mockStream() {
   const stop = vi.fn();
@@ -171,6 +171,51 @@ describe('QRScanner pause and scanning line', () => {
     await flush(1000);
     expect(onScan).not.toHaveBeenCalled();
     expect(decode).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('QRScanner idle switch-off', () => {
+  it('turns the camera off after a quiet minute and back on when tapped', async () => {
+    render(<QRScanner onScan={vi.fn()} active />);
+    await flush(0);
+    await flush(QR_SCANNER_IDLE_MS - 1000);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+
+    await flush(1000);
+    expect(tracks[0].stop).toHaveBeenCalled();
+    expect(screen.getByTestId('qr-scanner-idle')).toHaveTextContent('Camera off to save battery');
+    expect(screen.queryByTestId('qr-scan-line')).toBeNull();
+    const submitted = decode.mock.calls.length;
+    await flush(5000);
+    expect(decode).toHaveBeenCalledTimes(submitted);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Turn the camera back on' }));
+    await flush(0);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('qr-scanner-idle')).toBeNull();
+    expect(decode.mock.calls.length).toBeGreaterThan(submitted);
+  });
+
+  it('starts the countdown again when the user touches a control', async () => {
+    render(<QRScanner onScan={vi.fn()} active />);
+    await flush(0);
+    await flush(QR_SCANNER_IDLE_MS - 5000);
+    fireEvent.click(screen.getByRole('button', { name: 'Pause scanning' }));
+    await flush(10_000);
+    expect(tracks[0].stop).not.toHaveBeenCalled();
+    await flush(QR_SCANNER_IDLE_MS);
+    expect(tracks[0].stop).toHaveBeenCalled();
+  });
+
+  it('waking from idle clears a user pause', async () => {
+    render(<QRScanner onScan={vi.fn()} active />);
+    await flush(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Pause scanning' }));
+    await flush(QR_SCANNER_IDLE_MS);
+    fireEvent.click(screen.getByRole('button', { name: 'Turn the camera back on' }));
+    await flush(0);
+    expect(screen.getByRole('button', { name: 'Pause scanning' })).toBeInTheDocument();
+    expect(screen.getByTestId('qr-scan-line')).toBeInTheDocument();
   });
 });
 

@@ -17,6 +17,8 @@ interface Props {
 
 /** Minimum gap between the end of one decode and the start of the next. */
 export const QR_SCAN_MIN_GAP_MS = 80;
+/** With no code found and no touch for this long, the camera switches off to save battery. */
+export const QR_SCANNER_IDLE_MS = 60_000;
 
 export const QR_SCANNER_PREFERRED_ZOOM = 1.6;
 export const QR_SCANNER_ZOOM_BUTTON_STEP = 0.2;
@@ -72,6 +74,9 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
   const onScanRef = useRef(onScan);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  const [idle, setIdle] = useState(false);
+  // Bumped by any touch on the controls, so the idle countdown starts again.
+  const [touchedAt, setTouchedAt] = useState(0);
   const [hidden, setHidden] = useState(() => typeof document !== 'undefined' && document.visibilityState === 'hidden');
   // Zoom is progressive enhancement: only cameras whose track reports a `zoom`
   // capability use optical zoom. Everyone else gets a digital center-crop zoom.
@@ -117,10 +122,12 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
 
   const stepZoom = useCallback((direction: -1 | 1) => {
     if (!zoomRange) return;
+    setTouchedAt(Date.now());
     applyZoom(qrNextZoom(zoomRef.current, zoomRange, direction));
   }, [applyZoom, zoomRange]);
 
   const nudgeFocus = useCallback(() => {
+    setTouchedAt(Date.now());
     const track = trackRef.current as (MediaStreamTrack & { applyConstraints?: (c: unknown) => Promise<void> }) | null;
     if (!track?.applyConstraints) return;
     void track.applyConstraints({
@@ -132,6 +139,7 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
   }, []);
 
   const togglePause = useCallback(() => {
+    setTouchedAt(Date.now());
     const next = !pausedRef.current;
     pausedRef.current = next;
     setPaused(next);
@@ -160,6 +168,7 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
     scannedRef.current = false;
     pausedRef.current = false;
     setPaused(false);
+    setIdle(false);
     setError(null);
     setZoomRange(null);
     setZoom(1);
@@ -168,8 +177,25 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
     hardwareZoomSupportedRef.current = false;
   }, [active]);
 
+  // A camera left running with nothing to read is wasted battery and a lit
+  // camera indicator: switch it off after a quiet minute, tap to wake.
   useEffect(() => {
-    if (!active || hidden || scannedRef.current) {
+    if (!active || hidden || idle) return;
+    const timer = setTimeout(() => {
+      if (!scannedRef.current) setIdle(true);
+    }, QR_SCANNER_IDLE_MS);
+    return () => clearTimeout(timer);
+  }, [active, hidden, idle, touchedAt]);
+
+  const wake = useCallback(() => {
+    pausedRef.current = false;
+    setPaused(false);
+    setTouchedAt(Date.now());
+    setIdle(false);
+  }, []);
+
+  useEffect(() => {
+    if (!active || hidden || idle || scannedRef.current) {
       stopCamera();
       return;
     }
@@ -318,12 +344,12 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
       client?.destroy();
       stopCamera();
     };
-  }, [active, hidden, stopCamera]);
+  }, [active, hidden, idle, stopCamera]);
 
   const digitalPreviewZoom = hardwareZoomSupported ? 1 : zoom;
   const scannerHeight = fill ? '100%' : compact ? 'min(52vh, 390px)' : 'min(70vh, 540px)';
   const scannerMinHeight = fill ? 0 : compact ? 300 : 380;
-  const showOverlay = active && !error;
+  const showOverlay = active && !error && !idle;
 
   return (
     <div
@@ -361,6 +387,30 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
         playsInline
         muted
       />
+      {active && !error && idle && (
+        <div
+          data-testid="qr-scanner-idle"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            padding: 24,
+            textAlign: 'center',
+            color: '#fff',
+          }}
+        >
+          <span role="status" style={{ fontSize: 14, lineHeight: 1.35, opacity: 0.85 }}>
+            Camera off to save battery
+          </span>
+          <button type="button" className="btn btn-primary" onClick={wake} aria-label="Turn the camera back on">
+            Scan
+          </button>
+        </div>
+      )}
       {showOverlay && (
         <div
           ref={boxRef}
@@ -473,7 +523,7 @@ export function QRScanner({ onScan, active, compact = false, fill = false, botto
                 max={zoomRange.max}
                 step={zoomRange.step}
                 value={zoom}
-                onChange={e => applyZoom(Number(e.target.value))}
+                onChange={e => { setTouchedAt(Date.now()); applyZoom(Number(e.target.value)); }}
                 style={{ flex: 1, accentColor: 'var(--accent)', minWidth: 0 }}
                 aria-label="Camera zoom"
               />
