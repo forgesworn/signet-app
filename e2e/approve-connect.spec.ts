@@ -40,7 +40,7 @@ for (const wrapped of [false, true]) {
     const uri = `nostrconnect://${CONNECT_REQUEST.clientPubkey}?${params}`;
     const link = wrapped ? `https://mysignet.app/?nostrconnect=${encodeURIComponent(uri)}` : uri;
     await page.getByRole('button', { name: 'Scan a QR code', exact: true }).click();
-    await page.locator('.viewfinder').click();
+    await page.getByRole('button', { name: 'Paste a link', exact: true }).click();
     await page.getByLabel('Paste QR link').fill(link);
     await page.getByRole('button', { name: 'Submit', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Connection Request' })).toBeVisible({ timeout: 5_000 });
