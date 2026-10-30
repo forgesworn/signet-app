@@ -95,6 +95,9 @@ export default defineConfig({
       'spoken-token',
       'spoken-token/wordlist',
       'spoken-token/encoding',
+      // Imported only by the QR decode worker, so the startup scan never sees it
+      // and the first scanner to open would reload every page.
+      'zxing-wasm/reader',
     ],
   },
   server: {
