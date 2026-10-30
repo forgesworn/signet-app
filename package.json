@@ -37,7 +37,6 @@
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.2.0",
-    "html5-qrcode": "^2.3.8",
     "idb": "^8.0.4",
     "jsqr": "^1.4.0",
     "nostr-tools": "^2.24.1",

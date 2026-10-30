@@ -4,6 +4,7 @@ import { QRScanner } from '../components/QRScanner';
 import { useCamera } from '../hooks/useCamera';
 import type { VerifyRequest } from '../lib/presentation';
 import { routeQR } from '../lib/qr-router';
+import { decodeQrFromImage } from '../lib/qr-image-decode';
 import { CONTACTS_GRANT_WRONG_SCANNER_COPY } from '../lib/contacts-v2-copy';
 import type { AuthRequest, LoginRequest } from '../lib/qr-router';
 
@@ -14,13 +15,6 @@ interface Props {
   onNostrConnect: (uri: string) => boolean;
   onBack: () => void;
   onContactInvite?: (invite: ContactInvite) => void;
-}
-
-async function decodeQRFromImage(file: File): Promise<string> {
-  const { Html5Qrcode } = await import('html5-qrcode');
-  const html5QrCode = new Html5Qrcode('qr-reader-hidden');
-  const result = await html5QrCode.scanFileV2(file, false);
-  return result.decodedText;
 }
 
 export function WebVerify({ onVerifyRequest, onAuthRequest, onLoginRequest, onNostrConnect, onBack, onContactInvite }: Props) {
@@ -101,7 +95,8 @@ export function WebVerify({ onVerifyRequest, onAuthRequest, onLoginRequest, onNo
     setError(null);
     setDecoding(true);
     try {
-      const data = await decodeQRFromImage(file);
+      const data = await decodeQrFromImage(file);
+      if (data === null) throw new Error('no QR code');
       handleQRData(data);
     } catch {
       setError("Couldn't read a QR code from that image. Try a clearer photo.");
@@ -175,9 +170,6 @@ export function WebVerify({ onVerifyRequest, onAuthRequest, onLoginRequest, onNo
 
   return (
     <div className="fade-in" role="main">
-      {/* Hidden div required by html5-qrcode for file scanning */}
-      <div id="qr-reader-hidden" style={{ display: 'none' }} />
-
       {/* Hidden file input */}
       <input
         ref={fileInputRef}
