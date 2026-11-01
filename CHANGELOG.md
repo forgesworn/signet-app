@@ -3,6 +3,13 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.23.0
+- Faster, more reliable QR scanning: codes are decoded off the main thread, only inside the framing box, and the code nearest the centre wins when several are in view
+- The scan card on the home screen fills with the camera and starts on its own once the card settles, with Pause, a scanning line and "Paste a link" on top
+- The camera switches off after a quiet spell with nothing found; tap anywhere on it to wake it. Turn auto-start off or choose the idle time in Settings, Security, Camera
+- Handshake and "Choose from photos" use the same decoder, so photos of small codes read more reliably
+- My Keep: claim a Keep, invite guests with passes, choose which personas own it and let returning players back in. Switch it on in Advanced settings
+
 ## 0.22.1
 - Professional setup uses your enabled publishing relays in signet.json, and asks you to enable one if none is available
 - Badge embeds work without a hosted image service: copy an inline SVG snapshot linked to your Nostr identity, with a reminder to request a fresh proof for verification
