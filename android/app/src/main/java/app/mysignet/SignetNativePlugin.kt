@@ -226,7 +226,18 @@ class SignetNativePlugin : Plugin() {
                 // Auth-per-use, Class-3 (strong) biometrics, and the device
                 // credential as well where BiometricPolicy allows it.
                 .setUserAuthenticationRequired(true)
-                .setUserAuthenticationParameters(0, BiometricPolicy.keyAuthenticators(deviceCredential))
+                .apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        setUserAuthenticationParameters(0, BiometricPolicy.keyAuthenticators(deviceCredential))
+                    } else {
+                        // Before API 30 (where setUserAuthenticationParameters does
+                        // not exist): -1 is auth-per-use, which only a biometric
+                        // CryptoObject can satisfy. deviceCredential is always
+                        // false here (BiometricPolicy), so this is the same key.
+                        @Suppress("DEPRECATION")
+                        setUserAuthenticationValidityDurationSeconds(-1)
+                    }
+                }
                 .setInvalidatedByBiometricEnrollment(!deviceCredential)
                 .build()
         )
