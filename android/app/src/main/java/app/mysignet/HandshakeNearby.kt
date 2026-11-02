@@ -89,7 +89,12 @@ class HandshakeNearby(
         return !a.isEnabled || a.isMultipleAdvertisementSupported
     }
 
-    fun enabled(): Boolean = adapter?.isEnabled == true
+    /** Below Android 12, reading the radio state needs the legacy BLUETOOTH
+     * permission, which this app does not hold (the handshake is 12+ only):
+     * asking threw a SecurityException, which crashed the app from the
+     * radio-state receiver whenever Bluetooth or NFC was switched. */
+    fun enabled(): Boolean = platformSupported() &&
+        try { adapter?.isEnabled == true } catch (_: SecurityException) { false }
 
     private inner class Link(val id: String, private val socket: BluetoothSocket, val outgoing: Boolean, val address: String?) {
         @Volatile var trusted = false
