@@ -320,3 +320,48 @@ it('Handshake remains outside the blur layer and works on a dormant child card',
   fireEvent.click(button); expect(onHandshake).toHaveBeenCalledWith(false);
   expect(blur).toHaveStyle({ filter: 'blur(6px)' });
 });
+
+describe('IdentityCard — quick-open launcher and contacts pill', () => {
+  const ownerRow = {
+    type: 'owner',
+    identity: { displayName: 'Alice', publicKey: 'aa'.repeat(32), keypairType: 'persona' },
+  } as never;
+  const ownerResolved = {
+    displayName: 'Alice',
+    displayNameIsSet: true,
+    publicKey: 'aa'.repeat(32),
+    type: 'Persona',
+    isDependant: false,
+  };
+
+  it('renders a chip per site and opens its origin on tap', () => {
+    const onOpenSite = vi.fn();
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
+      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]}
+      onOpenSite={onOpenSite} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open Primal' }));
+    expect(onOpenSite).toHaveBeenCalledWith('https://primal.net');
+  });
+
+  it('prompts to scan when the identity has no sign-ins yet', () => {
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
+    expect(screen.getByText(/Scan a sign-in code/)).toBeDefined();
+  });
+
+  it('shows the contacts count, or an add-first prompt at zero', () => {
+    const { rerender } = render(
+      <IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} contactsCount={3} />);
+    expect(screen.getByRole('button', { name: "Open this identity's contacts" }).textContent)
+      .toContain('3 contacts');
+    rerender(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} contactsCount={0} />);
+    expect(screen.getByText('Add your first contact')).toBeDefined();
+  });
+
+  it('hides the launcher, contacts pill and Scan on a dependant card', () => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
+      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]} contactsCount={3} />);
+    expect(screen.queryByRole('button', { name: 'Open Primal' })).toBeNull();
+    expect(screen.queryByRole('button', { name: "Open this identity's contacts" })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Scan' })).toBeNull();
+  });
+});

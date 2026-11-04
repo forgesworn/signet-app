@@ -7,7 +7,7 @@ import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
 import { shouldShowPairingStatus } from '../lib/carousel-routing';
 import { NavDots } from './NavDots';
-import { IdentityCard } from './IdentityCard';
+import { IdentityCard, type LauncherSite } from './IdentityCard';
 import type { IdentityCardProps } from './IdentityCard';
 import { QRCard, type QRCardSlots } from './QRCard';
 import { SettingsCard, type AvatarResult } from './SettingsCard';
@@ -21,6 +21,11 @@ interface CarouselProps {
   onHandshake?: (resolved: ResolvedIdentity, choose: boolean) => void;
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
   renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, renderPublicCard: (slots?: QRCardSlots) => ReactNode) => ReactNode;
+  /** Quick-open launcher rows for an owner identity's card (col 0). */
+  launcherSitesFor?: (resolved: ResolvedIdentity) => LauncherSite[];
+  onOpenSite?: (origin: string) => void;
+  /** Active contacts count for an owner identity, or null to hide the pill. */
+  contactsCountFor?: (resolved: ResolvedIdentity) => number | null;
   renderContactsCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
   row: number;
   col: CarouselColumn;
@@ -291,6 +296,9 @@ function renderCard(
           photoUrl={null}
           proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
           onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
+          launcherSites={props.launcherSitesFor?.(resolved)}
+          onOpenSite={props.onOpenSite}
+          contactsCount={props.contactsCountFor?.(resolved) ?? null}
           recentSignInLabel={recentSignInLabel}
           blurIdentityNames={props.blurIdentityNames}
           onRenameActive={renameTarget && props.onRenameActive
@@ -706,10 +714,14 @@ export function Carousel(props: CarouselProps) {
       right: () => handleSwipe('h', -1, 60, 0),  // next card  (ArrowRight)
       up: () => handleSwipe('v', 1, 0, -60),     // prev identity (ArrowUp)
       down: () => handleSwipe('v', -1, 0, 60),   // next identity (ArrowDown)
+      jump: (toCol: CarouselColumn) => {
+        if (animating || toCol === col) return;
+        onCommit(row, toCol);
+      },
       ...computeArrowState(row, rows.length),
     });
     return () => registerArrows(null);
-  }, [registerArrows, handleSwipe, row, rows.length]);
+  }, [registerArrows, handleSwipe, row, rows.length, col, animating, onCommit]);
 
   return (
     <div className="carousel-viewport" data-theme="dark" data-carousel-cell={`${row}:${col}`} aria-busy={animating} ref={viewportRef}>

@@ -14056,6 +14056,31 @@ function AppContent() {
             });
             setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1);
           }} />}
+        launcherSitesFor={resolved => {
+          if (resolved.isDependant) return [];
+          const pinned = new Set(originPolicies.filter(p => p.pinned).map(p => p.origin));
+          const originOf = (raw: string) => { try { return new URL(raw).origin; } catch { return raw; } };
+          const domainOf = (raw: string) => { try { return new URL(raw).hostname; } catch { return raw; } };
+          return authorizedSites
+            .filter(site => site.pubkeyShared === resolved.publicKey)
+            .sort((a, b) =>
+              Number(pinned.has(originOf(b.origin))) - Number(pinned.has(originOf(a.origin)))
+              || b.lastUsedAt - a.lastUsedAt)
+            .slice(0, 4)
+            .map(site => ({
+              id: site.id,
+              origin: site.origin,
+              label: (site.name || domainOf(site.origin)).slice(0, 24),
+              pinned: pinned.has(originOf(site.origin)),
+            }));
+        }}
+        onOpenSite={origin => { window.open(origin, '_blank', 'noopener'); }}
+        contactsCountFor={resolved => {
+          if (resolved.isDependant || !(contactsScope.directoryId === 'owner' || isPairedChild) || contactsV2.loading) return null;
+          return contactsV2.effective.filter(contact =>
+            !contact.blocked && !contact.archived && contact.lifecycle === 'active'
+            && contactBelongsToList(contact, resolved.publicKey)).length;
+        }}
         renderContactsCard={(_row, resolved) => <ContactsCard key={(resolved.dependantId ?? 'owner') + ':' + resolved.publicKey}
           name={resolved.displayName} available={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild) && !contactsV2.loading}
           contacts={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild)

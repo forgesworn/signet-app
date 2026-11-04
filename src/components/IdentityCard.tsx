@@ -11,6 +11,17 @@ import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
 
+/** One site this identity has signed in to, for the quick-open launcher. */
+export interface LauncherSite {
+  id: string;
+  /** Site origin, e.g. "https://example.com" — what onOpenSite receives. */
+  origin: string;
+  /** Short display label: the site's name, falling back to its domain. */
+  label: string;
+  /** Pinned via the Connections page — listed first. */
+  pinned?: boolean;
+}
+
 export interface IdentityCardProps {
   onHandshake?: (choose: boolean) => void;
   row: CarouselRow;
@@ -47,6 +58,14 @@ export interface IdentityCardProps {
   proAnchorActive?: boolean;
   /** Called when the Pro pill is tapped. Navigates to `professional` page. */
   onProPillTap?: () => void;
+  /** Sites this identity has signed in to, pinned first then most recent.
+   *  Empty shows a "scan to sign in" prompt; undefined hides the launcher. */
+  launcherSites?: LauncherSite[];
+  /** Opens a launcher site (e.g. window.open). Required for chips to render as buttons. */
+  onOpenSite?: (origin: string) => void;
+  /** Active contacts on this identity's private list. null/undefined hides the pill
+   *  (dependant rows, locked directory, still loading). */
+  contactsCount?: number | null;
   /**
    * Transient "Signed in as <persona>" caption shown after the user
    * approves a sign-in using one of this dep's personas/extras. The
@@ -70,7 +89,7 @@ export interface IdentityCardProps {
   onRenameActive?: (name: string) => void | Promise<void>;
 }
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -321,6 +340,55 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           )}
         </div>
 
+        {/* ── Quick-open: this identity's sign-ins and contacts.
+            Dependant rows keep their pairing/dormant surfaces instead. ── */}
+        {!isDependant && !isChildCard && !childDormant && (launcherSites || typeof contactsCount === 'number') && (
+          <div className="card-quick">
+            {launcherSites && (
+              <div className="card-launcher" aria-label="Sites this identity is signed in to">
+                {launcherSites.map(site => (
+                  <button
+                    key={site.id}
+                    type="button"
+                    className="card-launcher-chip"
+                    onClick={e => { e.stopPropagation(); onOpenSite?.(site.origin); }}
+                    aria-label={`Open ${site.label}`}
+                  >
+                    <span className="card-launcher-tile" aria-hidden="true">
+                      {site.label.charAt(0).toUpperCase()}
+                    </span>
+                    {site.label}
+                  </button>
+                ))}
+                {launcherSites.length === 0 && (
+                  <button
+                    type="button"
+                    className="card-launcher-chip card-launcher-empty"
+                    onClick={e => { e.stopPropagation(); arrows?.left(); }}
+                  >
+                    <Icon name="qrScan" size={16} className="icon-inline" />
+                    Scan a sign-in code to connect your first site
+                  </button>
+                )}
+              </div>
+            )}
+            {typeof contactsCount === 'number' && (
+              <button
+                type="button"
+                className="card-contacts-pill"
+                onClick={e => { e.stopPropagation(); arrows?.jump(2); }}
+                aria-label="Open this identity's contacts"
+              >
+                <Icon name="users" size={16} className="icon-inline" />
+                {contactsCount === 0
+                  ? 'Add your first contact'
+                  : `${contactsCount} ${contactsCount === 1 ? 'contact' : 'contacts'}`}
+                <span className="card-pill-chevron" aria-hidden="true">&rsaquo;</span>
+              </button>
+            )}
+          </div>
+        )}
+
         {pairingStatus && (
           <div
             style={{
@@ -373,7 +441,22 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </div>
         )}
 
-        {onHandshake && <HandshakeButton onStart={onHandshake} />}
+        {(onHandshake || (!isChildCard && !childDormant)) && (
+          <div className="card-actions">
+            {!isChildCard && !childDormant && (
+              <button
+                type="button"
+                className="btn btn-primary card-scan-btn"
+                onClick={e => { e.stopPropagation(); arrows?.left(); }}
+                onTouchEnd={e => e.stopPropagation()}
+              >
+                <Icon name="qrScan" size={20} />
+                Scan
+              </button>
+            )}
+            {onHandshake && <HandshakeButton onStart={onHandshake} />}
+          </div>
+        )}
 
         <div className="card-footer">
           <div className={isChildCard ? 'card-hint-child' : 'card-hint'}>
@@ -398,13 +481,13 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
               <button type="button" className="card-swipe-hint" aria-label="Scan a QR code"
                 onClick={e => { e.stopPropagation(); arrows?.left(); }}>
                 <span className="card-swipe-arrow" aria-hidden="true">&lsaquo;</span>
-                <Icon name="qrScan" size={30} />
-                <span className="card-swipe-label">Scan</span>
+                <Icon name="qrScan" size={20} />
+                <span className="card-swipe-label">Scanner</span>
               </button>
               <button type="button" className="card-swipe-hint" aria-label="Show my QR code"
                 onClick={e => { e.stopPropagation(); arrows?.right(); }}>
                 <span className="card-swipe-label">My QR</span>
-                <Icon name="qr" size={30} />
+                <Icon name="qr" size={20} />
                 <span className="card-swipe-arrow" aria-hidden="true">&rsaquo;</span>
               </button>
             </div>

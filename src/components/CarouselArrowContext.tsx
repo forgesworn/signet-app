@@ -1,12 +1,16 @@
 // src/components/CarouselArrowContext.tsx
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import type { CarouselArrowState } from '../lib/carousel-arrows';
+import type { CarouselColumn } from '../types';
 
 export interface CarouselArrowApi extends CarouselArrowState {
   left: () => void;
   right: () => void;
   up: () => void;
   down: () => void;
+  /** Jump straight to a column on the current row without the slide
+   *  animation — the same instant commit reduced-motion swipes use. */
+  jump: (col: CarouselColumn) => void;
 }
 
 interface CarouselArrowContextValue {

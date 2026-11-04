@@ -208,6 +208,93 @@
   line-height: 1.4;
 }
 
+/* ── Quick-open: sign-in launcher + contacts pill ── */
+.card-quick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.card-launcher {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.card-launcher-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 8px;
+  border-radius: 100px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.card-launcher-chip:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(201, 169, 98, 0.45); }
+.card-launcher-chip:active { background: rgba(255, 255, 255, 0.12); }
+.card-launcher-tile {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--brand-gold-light);
+  color: var(--brand-gold-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+.card-launcher-empty {
+  padding: 8px 14px;
+  border-style: dashed;
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.3;
+}
+.card-contacts-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 100px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.card-contacts-pill:hover { color: var(--text-primary); }
+.card-pill-chevron { font-size: 1.1rem; line-height: 1; margin-left: -2px; }
+
+.card-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+.card-actions > * { flex: 1; min-width: 0; }
+.card-scan-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .card-npub {
   font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
   font-size: 0.82rem;
@@ -241,7 +328,7 @@
   cursor: pointer;
 }
 .card-swipe-hint:active { color: var(--text-primary); }
-.card-swipe-label { font-size: 0.95rem; font-weight: 600; }
+.card-swipe-label { font-size: 0.82rem; font-weight: 600; }
 .card-swipe-arrow { font-size: 1.6rem; line-height: 1; }
 .card-hint-child {
   font-size: 0.82rem;
@@ -1159,6 +1246,8 @@
    scroll area; keep every detail and action visible on shorter phones. */
 @container identity-card (max-height: 780px) {
   .card-inner { padding: 14px 20px 12px; gap: 8px; justify-content: space-between; }
+  .card-launcher-chip { font-size: .78rem; padding: 5px 11px 5px 6px; }
+  .card-launcher-tile { width: 21px; height: 21px; }
   .card-brand { margin-top: 0; gap: 14px; }
   .card-brand img:first-child { height: 44px; }
   .card-brand img:last-child { height: 34px; }
@@ -1167,6 +1256,8 @@
 }
 @container identity-card (max-height: 540px) {
   .card-inner { padding: 10px 16px; gap: 4px; }
+  .card-quick { gap: 5px; }
+  .card-contacts-pill { padding: 2px 10px; }
   .card-brand img:first-child { height: 32px; }
   .card-brand img:last-child { height: 26px; }
   .card-photo { width: 72px; height: 72px; border-radius: 18px; }
