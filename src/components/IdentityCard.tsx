@@ -205,17 +205,9 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   const initial = initialFromName(resolved.displayName);
 
   return (
-    <div className={`id-card${backdrop.url ? ' has-backdrop' : ''}`}>
-      {backdrop.url && (
-        <>
-          <div
-            className="card-backdrop"
-            style={{ backgroundImage: `url(${backdrop.url})` }}
-            aria-hidden="true"
-          />
-          <div className="card-backdrop-scrim" aria-hidden="true" />
-        </>
-      )}
+    <div className="id-card">
+      {/* The backdrop itself is painted by CardStage behind every card of
+          this identity; this card only hosts the customise control. */}
       <div className="card-band" />
       {canEditBackdrop && (
         <div className="card-backdrop-edit">

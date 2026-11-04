@@ -50,13 +50,34 @@
 }
 
 /* A steady frame across every card: swiping changes content, not its size. */
-.id-card, .qr-view, .contacts-card, .camera-view, .settings-view, .add-view {
+.id-card, .qr-view, .contacts-card, .camera-view, .settings-view, .add-view,
+.card-stage {
   width: 100%;
   max-width: 420px;
   height: 100%;
   max-height: 820px;
   min-height: 0;
 }
+/* The stage carries this identity's backdrop behind whichever card shows.
+   It owns the rounded clip and shadow; the card inside fills it and turns
+   translucent so the image reads through, under the shared scrim. */
+.card-stage {
+  position: relative;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+/* Descendant selectors: the QR column nests its panes inside a
+   display:contents/none tab wrapper, so direct-child matching misses them. */
+.card-stage > *,
+.card-stage .qr-view { position: relative; z-index: 1; }
+.card-stage > .card-backdrop,
+.card-stage > .card-backdrop-scrim { position: absolute; z-index: 0; }
+.card-stage .id-card { background: rgba(13, 28, 47, 0.30); box-shadow: none; max-width: none; }
+.card-stage .qr-view { background: rgba(13, 28, 47, 0.52); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+.card-stage .contacts-card { background: rgba(13, 28, 47, 0.62); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+.card-stage .settings-view { background: rgba(13, 28, 47, 0.62); border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+.card-stage .camera-view { background: rgba(10, 10, 10, 0.55); max-width: none; }
 
 /* ─── Identity Card ─── */
 .id-card {
