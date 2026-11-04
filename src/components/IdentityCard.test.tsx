@@ -343,9 +343,10 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
     expect(onOpenSite).toHaveBeenCalledWith('https://primal.net');
   });
 
-  it('prompts to scan when the identity has no sign-ins yet', () => {
-    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
-    expect(screen.getByText(/Scan a sign-in code/)).toBeDefined();
+  it('shows no launcher when the identity has no sign-ins yet — the Scan tile is the invitation', () => {
+    const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
+    expect(container.querySelector('.card-launcher')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
   });
 
   it('shows the contacts count, or an add-first prompt at zero', () => {

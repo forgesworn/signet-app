@@ -59,67 +59,59 @@
   min-height: 0;
 }
 /* The stage carries this identity's backdrop behind whichever card shows.
-   It owns the rounded clip and shadow; the card inside fills it and turns
-   translucent so the image reads through, under the shared scrim. */
+   It is always present (a card re-parented into it later would remount),
+   and only `.has-backdrop` changes how the card inside is drawn: it owns
+   the rounded clip and shadow, and the card turns translucent so the image
+   reads through under the scrim. */
 .card-stage {
   position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.card-stage > * { flex: 1; min-height: 0; }
+.card-stage.has-backdrop {
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow-lg);
 }
 /* Descendant selectors: the QR column nests its panes inside a
    display:contents/none tab wrapper, so direct-child matching misses them. */
-.card-stage > *,
-.card-stage .qr-view { position: relative; z-index: 1; }
-.card-stage > .card-backdrop,
-.card-stage > .card-backdrop-scrim { position: absolute; z-index: 0; }
-.card-stage .id-card { background: rgba(13, 28, 47, 0.30); box-shadow: none; max-width: none; }
-.card-stage .qr-view { background: rgba(13, 28, 47, 0.52); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
-.card-stage .contacts-card { background: rgba(13, 25, 42, 0.88); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
-.card-stage .settings-view { background: rgba(13, 25, 42, 0.88); border-color: rgba(255, 255, 255, 0.08); max-width: none; }
-.card-stage .camera-view { background: rgba(10, 10, 10, 0.55); max-width: none; }
+.card-stage.has-backdrop > *,
+.card-stage.has-backdrop .qr-view { position: relative; z-index: 1; }
+.card-stage.has-backdrop > .card-backdrop,
+.card-stage.has-backdrop > .card-backdrop-scrim { position: absolute; z-index: 0; flex: none; }
+.card-stage.has-backdrop .id-card { background: rgba(13, 28, 47, 0.22); box-shadow: none; max-width: none; }
+.card-stage.has-backdrop .qr-view { background: rgba(13, 28, 47, 0.46); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+/* Dense tool cards stay near-opaque: the wallpaper reads as a tint, and
+   none of their text needs its own plate. */
+.card-stage.has-backdrop .contacts-card,
+.card-stage.has-backdrop .settings-view { background: rgba(13, 25, 42, 0.93); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
 
-/* ── Readability plates ──
-   Every text cluster sits on a solid-ish glass panel when a backdrop is
-   active, so any wallpaper stays behind the words, never through them. */
-.card-stage .card-name,
-.card-stage .card-name-input,
-.card-stage .card-type,
-.card-stage .card-npub,
-.card-stage .card-contacts-pill,
-.card-stage .qr-caption,
-.card-stage .mini-id {
-  background: rgba(8, 18, 32, 0.68);
+/* ── Readability ──
+   One plate behind the identity cluster (photo, name, role, npub) and one
+   under the QR card's caption and controls. Everything else relies on the
+   scrim, so the card reads as two surfaces rather than a stack of pills. */
+.card-stage.has-backdrop .card-identity,
+.card-stage.has-backdrop .qr-panel,
+.card-stage.has-backdrop .mini-id {
+  background: rgba(8, 18, 32, 0.66);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.card-stage.has-backdrop .card-identity { border-radius: 28px; padding: 16px 20px 14px; }
+.card-stage.has-backdrop .qr-panel { border-radius: 16px; padding: 12px 14px; }
+.card-stage.has-backdrop .mini-id { border-radius: 16px; padding: 6px 16px; width: fit-content; margin-inline: auto; }
+.card-stage.has-backdrop .card-launcher-chip,
+.card-stage.has-backdrop .card-contacts-pill {
+  background: rgba(8, 18, 32, 0.58);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border-radius: 14px;
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
 }
-.card-stage .card-name { display: inline-block; padding: 3px 16px 5px; }
-.card-stage .card-name-input { padding: 3px 16px 5px; }
-.card-stage .card-identity { align-items: center; }
-.card-stage .card-type { width: fit-content; margin-inline: auto; padding: 5px 14px; }
-.card-stage .card-npub { width: fit-content; margin-inline: auto; padding: 6px 14px; }
-.card-stage .card-contacts-pill { padding: 7px 14px; color: var(--text-primary); }
-.card-stage .card-launcher-chip {
-  background: rgba(8, 18, 32, 0.68);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-color: rgba(255, 255, 255, 0.18);
-}
-.card-stage .card-launcher-empty { color: var(--text-secondary); }
-/* QR card: the caption, controls and footer carry their own panels. */
-.card-stage .qr-caption { padding: 7px 14px; width: fit-content; margin-inline: auto; }
-.card-stage .mini-id { padding: 6px 16px; width: fit-content; margin-inline: auto; }
-.card-stage .qr-controls,
-.card-stage .qr-footer {
-  background: rgba(8, 18, 32, 0.68);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-radius: 16px;
-  padding: 10px 14px;
-}
-.card-stage .qr-footer { margin-top: auto; }
-/* Dense tool cards are near-opaque above: the wallpaper reads as a tint. */
+.card-stage.has-backdrop .card-contacts-pill { padding: 7px 14px; border: 1px solid rgba(255, 255, 255, 0.16); }
+.card-stage.has-backdrop .card-npub { color: rgba(255, 255, 255, 0.55); }
 
 /* ─── Identity Card ─── */
 .id-card {
@@ -156,16 +148,31 @@
   z-index: 0;
 }
 /* Scrim keeps the card legible over any image: heavier at top and bottom
-   where the name, npub and actions sit. */
+   where the brand and the action tiles sit. */
 .card-backdrop-scrim {
   position: absolute;
   inset: 0;
   z-index: 0;
   background: linear-gradient(180deg,
-    rgba(10, 22, 38, 0.74) 0%,
-    rgba(10, 22, 38, 0.44) 35%,
-    rgba(10, 22, 38, 0.52) 65%,
-    rgba(10, 22, 38, 0.84) 100%);
+    rgba(10, 22, 38, 0.78) 0%,
+    rgba(10, 22, 38, 0.48) 30%,
+    rgba(10, 22, 38, 0.56) 65%,
+    rgba(10, 22, 38, 0.90) 100%);
+}
+.card-backdrop-note {
+  position: absolute;
+  top: 54px;
+  right: 14px;
+  z-index: 3;
+  max-width: 240px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  line-height: 1.35;
 }
 .card-backdrop-edit {
   position: absolute;
@@ -185,12 +192,8 @@
   color: rgba(255, 255, 255, 0.55);
   cursor: pointer;
 }
-.card-backdrop-btn:hover { color: var(--text-primary); border-color: rgba(201, 169, 98, 0.5); }
-.card-backdrop-menu-away {
-  position: fixed;
-  inset: 0;
-  z-index: 3;
-}
+.card-backdrop-btn:hover,
+.card-backdrop-btn[aria-expanded="true"] { color: var(--text-primary); border-color: rgba(201, 169, 98, 0.5); }
 .card-backdrop-menu {
   z-index: 4;
   position: absolute;
@@ -259,16 +262,18 @@
   to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
+/* Top-anchored content; the action tiles sit on the floor of the card and
+   whatever room is left opens up between the identity and the tiles. */
 .card-inner {
-  padding: 20px 28px 16px;
+  padding: 20px 28px 20px;
   display: flex;
   flex-direction: column;
   flex: 1;
   position: relative;
   z-index: 2;
-  justify-content: space-around;
+  justify-content: flex-start;
   min-height: 0;
-  gap: 12px;
+  gap: 14px;
 }
 .card-inner > * { flex-shrink: 0; }
 .card-inner .handshake-button { margin-top: 0; }
@@ -308,7 +313,8 @@
 }
 
 .card-name-block { text-align: center; }
-.card-identity { display: flex; flex-direction: column; gap: 8px; }
+/* Centred in whatever room the brand and the tiles leave; both auto margins split the slack. */
+.card-identity { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: auto; }
 /* Inline name editor — sits in the .card-name slot, so it inherits the
    card's type scale (the component passes font-size/weight: inherit). */
 .card-name-input {
@@ -331,6 +337,22 @@
   letter-spacing: 0.12em;
   font-weight: 600;
 }
+/* The role label doubles as the way into the identity switcher. */
+.card-type-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 14px;
+  border-radius: 100px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.card-type-switch:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(201, 169, 98, 0.45); color: var(--text-primary); }
+.card-type-count { font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-muted); }
+.card-type-chevron { font-size: 1rem; line-height: 0.6; margin-left: -2px; transform: translateY(-3px); }
 
 .card-tier-row {
   display: flex;
@@ -394,15 +416,7 @@
   font-size: 0.78rem;
   font-weight: 800;
 }
-.card-launcher-empty {
-  padding: 8px 14px;
-  border-style: dashed;
-  color: var(--text-muted);
-  font-weight: 500;
-  white-space: normal;
-  text-align: left;
-  line-height: 1.3;
-}
+.card-launcher-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .card-contacts-pill {
   display: inline-flex;
   align-items: center;
@@ -424,6 +438,7 @@
   display: flex;
   justify-content: center;
   gap: 10px;
+  margin-top: auto;
 }
 .card-actions > * { flex: 1; min-width: 0; }
 /* Large tappable tiles: icon above label, equal thirds. The HandshakeButton
@@ -445,11 +460,12 @@
 .card-actions .handshake-radios svg { width: 13px; height: 13px; }
 
 .card-npub {
-  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
-  font-size: 0.82rem;
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', 'Courier New', monospace);
+  font-size: 0.78rem;
   color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   text-align: center;
+  margin-top: 2px;
 }
 
 .card-footer { text-align: center; }
@@ -458,27 +474,6 @@
   color: var(--text-muted);
   letter-spacing: 0.02em;
 }
-.card-hint:empty { display: none; }
-.card-swipe-hints {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.card-swipe-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 4px 2px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font: inherit;
-  cursor: pointer;
-}
-.card-swipe-hint:active { color: var(--text-primary); }
-.card-swipe-label { font-size: 0.82rem; font-weight: 600; }
-.card-swipe-arrow { font-size: 1.6rem; line-height: 1; }
 .card-hint-child {
   font-size: 0.82rem;
   color: var(--warning);
@@ -888,6 +883,79 @@
 .nav-dot.child-dot.active { background: var(--warning); }
 
 /* ─── Child Banner ─── */
+/* ─── Identity switcher (sheet listing every row of the ring) ─── */
+.identity-switcher-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.identity-switcher {
+  width: 100%;
+  max-width: 420px;
+  max-height: 70%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-radius: 18px 18px 0 0;
+  box-shadow: var(--shadow-lg);
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  animation: identity-switcher-rise 220ms var(--ease);
+}
+@keyframes identity-switcher-rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.identity-switcher-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 10px;
+}
+.identity-switcher-head h2 { font-size: 1rem; margin: 0; }
+.identity-switcher-head button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px;
+  display: inline-flex;
+}
+.identity-switcher-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.identity-switcher-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px;
+  border-radius: 12px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.identity-switcher-row:hover { background: rgba(255, 255, 255, 0.05); }
+.identity-switcher-row.is-current { background: var(--accent-light); border-color: rgba(201, 169, 98, 0.4); }
+.identity-switcher-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
+}
+.identity-switcher-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.identity-switcher-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity-switcher-kind { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
+.identity-switcher-tick { color: var(--accent); font-weight: 700; }
+
 .child-banner {
   position: fixed;
   top: 0;
@@ -1394,7 +1462,9 @@
 /* Fit the identity into its actual card height. It is a swipe surface, not a
    scroll area; keep every detail and action visible on shorter phones. */
 @container identity-card (max-height: 780px) {
-  .card-inner { padding: 14px 20px 12px; gap: 8px; justify-content: space-between; }
+  .card-inner { padding: 14px 20px 14px; gap: 8px; }
+  .card-identity { gap: 4px; }
+  .card-stage.has-backdrop .card-identity { padding: 10px 16px 10px; }
   .card-launcher-chip { font-size: .78rem; padding: 5px 11px 5px 6px; }
   .card-launcher-tile { width: 21px; height: 21px; }
   .card-brand { margin-top: 0; gap: 14px; }
@@ -1413,13 +1483,26 @@
   .card-photo { width: 72px; height: 72px; border-radius: 18px; }
   .card-name { font-size: 1.45rem; }
   .card-type { font-size: .72rem; }
+  .card-type-switch { padding: 3px 10px 3px 12px; }
   .card-npub { font-size: .7rem; }
+  .card-action-tile, .card-actions .handshake-button { min-height: 56px; padding: 8px 6px 7px; gap: 3px; font-size: .8rem; }
   .card-dormant-notice { margin-top: 0 !important; padding: 6px 8px !important; font-size: .72rem !important; }
 }
 /* Other cards contain lists and forms that retain their native scrolling. */
-.qr-view { overflow-y: auto; overscroll-behavior: contain; gap: 16px; }
+.qr-view { overflow-y: auto; overscroll-behavior: contain; gap: 16px; container: qr-card / size; }
 .qr-view > * { flex-shrink: 0; }
-.qr-box { width: min(260px, 100%); height: auto; aspect-ratio: 1; }
+/* The code shrinks with the card on short phones so the caption and
+   controls stay in view: never wider than the card, never taller than
+   about half of it. */
+.qr-box { width: min(260px, 100%, 40cqh); height: auto; aspect-ratio: 1; }
+.qr-panel { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; flex: 1 0 auto; min-height: 0; }
+.qr-panel > * { width: 100%; }
+@container qr-card (max-height: 560px) {
+  .qr-view { gap: 10px; padding: 16px 16px; }
+  .mini-id-photo { width: 44px; height: 44px; font-size: 1.1rem; }
+  .mini-id-name { font-size: 1.05rem; }
+  .qr-caption { min-height: 0; }
+}
 .qr-box canvas { max-width: 100%; height: auto !important; }
 .settings-view { overscroll-behavior: contain; }
 .camera-view { padding: 20px; overflow-y: auto; overscroll-behavior: contain; }

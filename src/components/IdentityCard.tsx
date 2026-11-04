@@ -60,7 +60,7 @@ export interface IdentityCardProps {
   /** Called when the Pro pill is tapped. Navigates to `professional` page. */
   onProPillTap?: () => void;
   /** Sites this identity has signed in to, pinned first then most recent.
-   *  Empty shows a "scan to sign in" prompt; undefined hides the launcher. */
+   *  Empty or undefined hides the launcher: the Scan tile already invites the first sign-in. */
   launcherSites?: LauncherSite[];
   /** Opens a launcher site (e.g. window.open). Required for chips to render as buttons. */
   onOpenSite?: (origin: string) => void;
@@ -90,6 +90,15 @@ export interface IdentityCardProps {
   onRenameActive?: (name: string) => void | Promise<void>;
 }
 
+const BACKDROP_NOTE_MS = 4000;
+
+/** A stable tint per site, so the launcher tiles tell sites apart the way avatars do. */
+function colourFromLabel(text: string): string {
+  let h = 7;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  return colourFromPubkey(h.toString(16).padStart(8, '0'));
+}
+
 export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
@@ -98,8 +107,30 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   // ── Card backdrop — this identity's wallpaper (device-local) ──
   const backdrop = useCardBackdrop(resolved.publicKey || undefined);
   const backdropInputRef = useRef<HTMLInputElement | null>(null);
+  const backdropEditRef = useRef<HTMLDivElement | null>(null);
   const [backdropMenuOpen, setBackdropMenuOpen] = useState(false);
+  const [backdropNote, setBackdropNote] = useState<string | null>(null);
+  const backdropNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canEditBackdrop = !isDependant && !childDormant;
+
+  // Any press outside the control closes its menu — including on the tab
+  // bar, which a scrim inside the (transformed) card could never cover.
+  useEffect(() => {
+    if (!backdropMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (backdropEditRef.current && e.target instanceof Node && backdropEditRef.current.contains(e.target)) return;
+      setBackdropMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [backdropMenuOpen]);
+
+  const showBackdropNote = useCallback((note: string) => {
+    setBackdropNote(note);
+    if (backdropNoteTimer.current) clearTimeout(backdropNoteTimer.current);
+    backdropNoteTimer.current = setTimeout(() => { setBackdropNote(null); backdropNoteTimer.current = null; }, BACKDROP_NOTE_MS);
+  }, []);
+  useEffect(() => () => { if (backdropNoteTimer.current) clearTimeout(backdropNoteTimer.current); }, []);
 
   // Guardian name for the dormant notice — falls back to the generic form
   // when the guardian's status-publish carried no name (see `cachedGuardianName`).
@@ -203,6 +234,25 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   }
 
   const initial = initialFromName(resolved.displayName);
+  const ownerCard = !isChildCard && !childDormant;
+  // The role label doubles as the way into the identity switcher once the
+  // ring has more than one row; on its own it stays a plain label.
+  const canSwitch = !!arrows && arrows.rowCount > 1;
+  const typeLabel = isDependant
+    ? (
+      <>
+        Dependant
+        {age ? (
+          <>
+            {' · '}
+            <span style={blurActive ? { filter: 'blur(5px)', userSelect: 'none' } : undefined}>
+              Age {age}
+            </span>
+          </>
+        ) : null}
+      </>
+    )
+    : resolved.type;
 
   return (
     <div className="id-card">
@@ -210,7 +260,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           this identity; this card only hosts the customise control. */}
       <div className="card-band" />
       {canEditBackdrop && (
-        <div className="card-backdrop-edit">
+        <div className="card-backdrop-edit" ref={backdropEditRef}>
           <input
             ref={backdropInputRef}
             type="file"
@@ -220,13 +270,15 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
               const file = e.target.files?.[0];
               e.target.value = '';
               setBackdropMenuOpen(false);
-              if (file) void backdrop.set(file);
+              if (!file) return;
+              void backdrop.set(file).then(result => { if (!result.ok) showBackdropNote(result.reason); });
             }}
           />
           <button
             type="button"
             className="card-backdrop-btn"
             aria-label="Customise card backdrop"
+            aria-expanded={backdrop.url ? backdropMenuOpen : undefined}
             onClick={e => {
               e.stopPropagation();
               if (backdrop.url) setBackdropMenuOpen(open => !open);
@@ -237,24 +289,19 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             <Icon name="image" size={16} />
           </button>
           {backdropMenuOpen && backdrop.url && (
-            <>
-              <div
-                className="card-backdrop-menu-away"
-                onClick={e => { e.stopPropagation(); setBackdropMenuOpen(false); }}
-                onTouchEnd={e => { e.stopPropagation(); setBackdropMenuOpen(false); }}
-                aria-hidden="true"
-              />
-              <div className="card-backdrop-menu" onClick={e => e.stopPropagation()}>
-              <button type="button" onClick={() => { setBackdropMenuOpen(false); backdropInputRef.current?.click(); }}>
+            <div className="card-backdrop-menu" role="menu" onClick={e => e.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); backdropInputRef.current?.click(); }}>
                 Change image
               </button>
-              <button type="button" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
+              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
                 Remove
               </button>
-              </div>
-            </>
+            </div>
           )}
         </div>
+      )}
+      {backdropNote && (
+        <div className="card-backdrop-note" role="status">{backdropNote}</div>
       )}
       {recentSignInLabel && (
         <div className="signin-ack-chip" role="status" aria-live="polite">
@@ -268,9 +315,10 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           <BrandMark variant="wordmark" tone="on-dark" size={46} />
         </div>
 
-        {/* Avatar, name, role label and Pro pill read as one group. */}
+        {/* Avatar, name, role label, Pro pill and npub read as one group — and
+            share one readability plate when a backdrop is set. */}
         <div className="card-identity">
-          {/* \u2500\u2500 Blurred identity area (avatar + name) \u2500\u2500 */}
+          {/* ── Blurred identity area (avatar + name) ── */}
           {/* The role/type label sits outside this wrapper and stays sharp. */}
           <div
             onClick={blurActive ? handleRevealTap : undefined}
@@ -348,25 +396,23 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             </div>
           </div>
 
-          {/* \u2500\u2500 Role/type label \u2014 the role word stays sharp; a dependant's age
-              is identifying, so it blurs with the rest of the identity \u2500\u2500 */}
-          <div className="card-type">
-            {isDependant
-              ? (
-                <>
-                  Dependant
-                  {age ? (
-                    <>
-                      {' \u00B7 '}
-                      <span style={blurActive ? { filter: 'blur(5px)', userSelect: 'none' } : undefined}>
-                        Age {age}
-                      </span>
-                    </>
-                  ) : null}
-                </>
-              )
-              : resolved.type}
-          </div>
+          {/* ── Role/type label — the role word stays sharp; a dependant's age
+              is identifying, so it blurs with the rest of the identity ── */}
+          {canSwitch ? (
+            <button
+              type="button"
+              className="card-type card-type-switch"
+              aria-label={`${isDependant ? 'Dependant' : resolved.type}, identity ${arrows!.rowIndex + 1} of ${arrows!.rowCount}. Switch identity`}
+              onClick={e => { e.stopPropagation(); arrows!.openSwitcher(); }}
+              onTouchEnd={e => e.stopPropagation()}
+            >
+              {typeLabel}
+              <span className="card-type-count" aria-hidden="true">{arrows!.rowIndex + 1}/{arrows!.rowCount}</span>
+              <span className="card-type-chevron" aria-hidden="true">&#8964;</span>
+            </button>
+          ) : (
+            <div className="card-type">{typeLabel}</div>
+          )}
 
           {proAnchorActive && (
             <div className="card-tier-row">
@@ -394,13 +440,17 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
               </button>
             </div>
           )}
+
+          {npubDisplay && (
+            <div className="card-npub">{npubDisplay}</div>
+          )}
         </div>
 
         {/* ── Quick-open: this identity's sign-ins and contacts.
             Dependant rows keep their pairing/dormant surfaces instead. ── */}
-        {!isDependant && !isChildCard && !childDormant && (launcherSites || typeof contactsCount === 'number') && (
+        {!isDependant && ownerCard && ((launcherSites && launcherSites.length > 0) || typeof contactsCount === 'number') && (
           <div className="card-quick">
-            {launcherSites && (
+            {launcherSites && launcherSites.length > 0 && (
               <div className="card-launcher" aria-label="Sites this identity is signed in to">
                 {launcherSites.map(site => (
                   <button
@@ -410,22 +460,12 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                     onClick={e => { e.stopPropagation(); onOpenSite?.(site.origin); }}
                     aria-label={`Open ${site.label}`}
                   >
-                    <span className="card-launcher-tile" aria-hidden="true">
+                    <span className="card-launcher-tile" aria-hidden="true" style={{ background: colourFromLabel(site.origin) }}>
                       {site.label.charAt(0).toUpperCase()}
                     </span>
-                    {site.label}
+                    <span className="card-launcher-label">{site.label}</span>
                   </button>
                 ))}
-                {launcherSites.length === 0 && (
-                  <button
-                    type="button"
-                    className="card-launcher-chip card-launcher-empty"
-                    onClick={e => { e.stopPropagation(); arrows?.left(); }}
-                  >
-                    <Icon name="qrScan" size={16} className="icon-inline" />
-                    Scan a sign-in code to connect your first site
-                  </button>
-                )}
               </div>
             )}
             {typeof contactsCount === 'number' && (
@@ -450,7 +490,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             style={{
               fontSize: '0.75rem',
               color: 'var(--text-muted)',
-              marginTop: 6,
+              textAlign: 'center',
             }}
           >
             <Icon name="smartphone" size={12} className="icon-inline" />
@@ -460,15 +500,10 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </div>
         )}
 
-        {npubDisplay && (
-          <div className="card-npub">{npubDisplay}</div>
-        )}
-
         {childDormant && (
           <div
             className="card-dormant-notice"
             style={{
-              marginTop: 16,
               padding: '12px 14px',
               borderRadius: 'var(--radius)',
               background: 'var(--bg-card-alt)',
@@ -497,14 +532,14 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </div>
         )}
 
-        {(onHandshake || (!isChildCard && !childDormant)) && (
+        {(onHandshake || ownerCard) && (
           <div className="card-actions">
-            {!isChildCard && !childDormant && (
+            {ownerCard && (
               <button
                 type="button"
                 className="btn btn-primary card-action-tile card-scan-btn"
                 aria-label="Scan a QR code"
-                onClick={e => { e.stopPropagation(); arrows?.left(); }}
+                onClick={e => { e.stopPropagation(); arrows?.jump(4); }}
                 onTouchEnd={e => e.stopPropagation()}
               >
                 <Icon name="qrScan" size={24} />
@@ -512,12 +547,12 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
               </button>
             )}
             {onHandshake && <HandshakeButton onStart={onHandshake} />}
-            {!isChildCard && !childDormant && (
+            {ownerCard && (
               <button
                 type="button"
                 className="btn btn-secondary card-action-tile"
                 aria-label="Show my QR code"
-                onClick={e => { e.stopPropagation(); arrows?.right(); }}
+                onClick={e => { e.stopPropagation(); arrows?.jump(1); }}
                 onTouchEnd={e => e.stopPropagation()}
               >
                 <Icon name="qr" size={24} />
@@ -527,23 +562,23 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </div>
         )}
 
-        <div className="card-footer">
-          <div className={isChildCard ? 'card-hint-child' : 'card-hint'}>
-            {isChildCard
-              ? (
-                <>
-                  Tap to enter{' '}
-                  <span style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>
-                    {resolved.displayName}
-                  </span>
-                  's account
-                </>
-              )
-              : childDormant
-                ? 'Ask your guardian'
-                : null}
+        {(isChildCard || childDormant) && (
+          <div className="card-footer">
+            <div className={isChildCard ? 'card-hint-child' : 'card-hint'}>
+              {isChildCard
+                ? (
+                  <>
+                    Tap to enter{' '}
+                    <span style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>
+                      {resolved.displayName}
+                    </span>
+                    's account
+                  </>
+                )
+                : 'Ask your guardian'}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { resolveDependantIdFromRowAlways } from '../lib/carousel-routing';
 import { MiniIdBadge } from './MiniIdBadge';
 import { SlotProfileFields, type SlotKind } from './SlotProfileFields';
 import { Icon } from './Icon';
+import { CardBackdropRow } from './CardBackdropRow';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
 import type { DeleteOutcome } from '../lib/blob-deletion';
@@ -34,6 +35,8 @@ interface Props {
     focusPersona?: string;
     dependantId?: string;
     slotTarget?: 'natural-person' | 'persona' | 'professional-persona' | string;
+    /** Section anchor on the destination page (Security & Backup: 'lock' | 'backup'). */
+    section?: string;
   }) => void;
   dependantsCount: number;
 
@@ -416,8 +419,8 @@ export function InlineAvatarRow({
   return (
     <div className="row">
       <div className="row-main">
-        <span className="row-label">In-app picture</span>
-        <span className="row-sub">Private — only on this device</span>
+        <span className="row-label">Picture shown to you</span>
+        <span className="row-sub">Private to this device. Nobody else sees it.</span>
         {error && <span className="slot-row-error">{error}</span>}
         {note && <span className="row-sub" role="status">{note}</span>}
       </div>
@@ -829,6 +832,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
+            {slot && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -855,21 +859,22 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
+            {slot && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
           <button className="settings-row" onClick={() => onNavigateDeepPage('photo-capture')}>
-            <span className="sr-label">Photo</span>
+            <span className="sr-label">Verification photo</span>
             <span className="sr-value">Update</span>
             <span className="sr-chevron">&rsaquo;</span>
           </button>
 
           <div className="settings-label">Security</div>
-          <button className="settings-row" onClick={() => onNavigateDeepPage('settings-security')}>
+          <button className="settings-row" onClick={() => onNavigateDeepPage('settings-security', { section: 'lock' })}>
             <span className="sr-label">PIN / Biometric</span>
             <span className="sr-chevron">&rsaquo;</span>
           </button>
-          <button className="settings-row" onClick={() => onNavigateDeepPage('settings-security')}>
+          <button className="settings-row" onClick={() => onNavigateDeepPage('settings-security', { section: 'backup' })}>
             <span className="sr-label">Backup Words</span>
             <span className="sr-chevron">&rsaquo;</span>
           </button>

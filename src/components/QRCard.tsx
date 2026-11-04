@@ -28,9 +28,10 @@ export function QRCard({ resolved, tabs, footer }: Props) {
         <QRCode data={npub} size={230} />
       </div>
 
-      <div className="qr-caption">Works in any Nostr app.</div>
-
-      {footer && <div className="qr-footer">{footer}</div>}
+      <div className="qr-panel">
+        <div className="qr-caption">Works in any Nostr app.</div>
+        {footer && <div className="qr-footer">{footer}</div>}
+      </div>
     </div>
   );
 }
