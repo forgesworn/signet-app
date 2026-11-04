@@ -104,7 +104,7 @@ test('01a onboarding: create-door name step', async ({ page }) => {
   await clearDatabase(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Create my Signet' }).click();
-  await expect(page.getByPlaceholder('A name or handle — not your real name')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByPlaceholder('Name or handle')).toBeVisible({ timeout: 10_000 });
   await shot(page, '01a-onboarding-create-name-step');
 });
 

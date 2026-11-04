@@ -4,22 +4,22 @@ import { settingsVaultAdapter } from './private-vault-settings';
 const KEY = 'settings unlock';
 beforeEach(async () => { await purgeAllUserData(); });
 it('backs up portable settings without pairing secrets or device state', async () => {
-  await savePreferences({ id: 'current', theme: 'dark', signingMode: 'bunker', contactsDeviceId: 'a'.repeat(32),
+  await savePreferences({ id: 'current', theme: 'light', signingMode: 'bunker', contactsDeviceId: 'a'.repeat(32),
     bunkerUri: `bunker://${'b'.repeat(64)}?secret=do-not-share`, activeAccountId: 'local-account' }, KEY);
   const adapter = settingsVaultAdapter(KEY, () => true);
   const value = JSON.parse(await adapter.snapshot());
-  expect(value.values).toEqual({ theme: 'dark' });
+  expect(value.values).toEqual({ theme: 'light' });
   expect(value.updatedAt).toBeGreaterThan(0);
   await adapter.merge(JSON.stringify({ v: 1, updatedAt: value.updatedAt + 1,
-    values: { theme: 'light', signingMode: 'local', bunkerUri: 'injected', contactsDeviceId: 'injected' } }), 0);
+    values: { theme: 'dark', signingMode: 'local', bunkerUri: 'injected', contactsDeviceId: 'injected' } }), 0);
   const restored = await getPreferences(KEY);
-  expect(restored.theme).toBe('light');
+  expect(restored.theme).toBe('dark');
   expect(restored.signingMode).toBe('bunker');
   expect(restored.bunkerUri).toContain('do-not-share');
   expect(restored.contactsDeviceId).toBe('a'.repeat(32));
 });
 it('does not let device-only preference changes advance the portable timestamp', async () => {
-  await savePreferences({ id: 'current', theme: 'dark' });
+  await savePreferences({ id: 'current', theme: 'light' });
   const first = await getPreferences();
   await savePreferences({ ...first, contactsDeviceId: 'b'.repeat(32) });
   expect((await getPreferences()).portableSettingsUpdatedAt).toBe(first.portableSettingsUpdatedAt);
@@ -29,12 +29,12 @@ it('restores owned grants independently of preference timestamps and refuses for
   const db = await import('./db');
   const owner = 'a'.repeat(64);
   const adapter = settingsVaultAdapter(KEY, () => true, async () => [owner]);
-  await savePreferences({ id: 'current', theme: 'dark' }, KEY);
+  await savePreferences({ id: 'current', theme: 'light' }, KEY);
   const grant = { dependantId: owner, scope: 'sign_event:1', origin: 'https://example.com', decision: 'allow', decidedAt: 1 };
-  await adapter.merge(JSON.stringify({ v: 1, updatedAt: 0, values: { theme: 'light' }, grants: [grant] }), 0);
-  expect((await getPreferences(KEY)).theme).toBe('dark');
+  await adapter.merge(JSON.stringify({ v: 1, updatedAt: 0, values: { theme: 'dark' }, grants: [grant] }), 0);
+  expect((await getPreferences(KEY)).theme).toBe('light');
   expect(await db.listAllGrantsIncludingTombstones()).toMatchObject([grant]);
-  await expect(adapter.merge(JSON.stringify({ v: 1, updatedAt: 0, values: { theme: 'light' },
+  await expect(adapter.merge(JSON.stringify({ v: 1, updatedAt: 0, values: { theme: 'dark' },
     grants: [{ ...grant, dependantId: 'b'.repeat(64) }] }), 0)).rejects.toThrow('another owner');
 });
 

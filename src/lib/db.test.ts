@@ -555,7 +555,7 @@ describe('Preferences', () => {
     const db = await freshDb();
     const prefs = await db.getPreferences();
     expect(prefs.id).toBe('current');
-    expect(prefs.theme).toBe('system');
+    expect(prefs.theme).toBe('dark');
   }, TIMEOUT);
 
   it('saves and loads preferences', async () => {
@@ -979,7 +979,7 @@ describe('purgeAllUserData', () => {
 
     const prefs = await db.getPreferences();
     // getPreferences returns the default when the store is empty
-    expect(prefs.theme).toBe('system');
+    expect(prefs.theme).toBe('dark');
 
     const grants = await db.listAllGrants();
     expect(grants).toEqual([]);

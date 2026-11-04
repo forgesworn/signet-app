@@ -11,10 +11,10 @@ beforeEach(async () => {
 });
 
 describe('usePreferences — defaults', () => {
-  it('returns system theme when nothing is saved', async () => {
+  it('returns the dark default theme when nothing is saved', async () => {
     const { result } = renderHook(() => usePreferences());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.preferences.theme).toBe('system');
+    expect(result.current.preferences.theme).toBe('dark');
   });
 
   it('defaults security tier to basic', async () => {
@@ -303,7 +303,7 @@ describe('usePreferences — initial load failure', () => {
 
     // Falls back to the useState default rather than throwing an
     // unhandled rejection that leaves `loading` stuck true.
-    expect(result.current.preferences).toEqual({ id: 'current', theme: 'system' });
+    expect(result.current.preferences).toEqual({ id: 'current', theme: 'dark' });
   });
 });
 

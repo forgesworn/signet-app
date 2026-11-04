@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { AppPreferences, SecurityTier, RelayConfig } from '../types';
 import { primaryRelayUrl } from '../lib/relay-service';
 import { migrateRelayPreferences } from '../lib/relay-defaults';
-import { TIER_WORD_COUNT } from '../types';
+import { TIER_WORD_COUNT, DEFAULT_THEME } from '../types';
 import * as db from '../lib/db';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { validSeamGapMm } from '../lib/handshake-seam-gap';
@@ -29,7 +29,7 @@ export function resolveScannerAutoStart(prefs: AppPreferences): boolean {
 }
 
 export function usePreferences() {
-  const [preferences, setPreferences] = useState<AppPreferences>({ id: 'current', theme: 'system' });
+  const [preferences, setPreferences] = useState<AppPreferences>({ id: 'current', theme: DEFAULT_THEME });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -56,7 +56,7 @@ export function usePreferences() {
       if (p !== stored) await db.savePreferences(p);
     }).catch(() => {
       // IDB read failed, or the migration write above rejected mid-chain.
-      // Fall back to the useState default ({ id: 'current', theme: 'system' })
+      // Fall back to the useState default ({ id: 'current', theme: DEFAULT_THEME })
       // already in state, and stop showing "loading" rather than hanging
       // forever — an unhandled rejection here previously left `loading`
       // stuck true.

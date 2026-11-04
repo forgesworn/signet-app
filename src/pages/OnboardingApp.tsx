@@ -452,7 +452,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
 
     if (flow === 'create') {
       return (
-        <div className="page fade-in" role="main">
+        <div className="page fade-in" role="main" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '80vh' }}>
           <h1 style={{ marginBottom: 8 }}>Create my Signet</h1>
           <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>
             This is your anonymous persona. You can add your real identity later, when
@@ -470,7 +470,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             id="persona-name"
             className="input"
             type="text"
-            placeholder="A name or handle — not your real name"
+            placeholder="Name or handle"
             value={displayName}
             onChange={e => setDisplayName(e.target.value.slice(0, 100))}
             maxLength={100}
@@ -992,7 +992,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             )}
             <input
               className="input"
-              placeholder="A name or handle — not your real name"
+              placeholder="Name or handle"
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleHeartwoodComplete()}
