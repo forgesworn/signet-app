@@ -6,7 +6,7 @@ vi.mock('./native', () => mocks);
 
 import {
   ANDROID_APP_URL, isAndroidWeb, snoozeApkPromo, isApkPromoSnoozed,
-  clearApkPromoSnooze, shouldPromoteAndroidApp,
+  clearApkPromoSnooze, shouldPromoteAndroidApp, isWebBuild,
 } from './android-promo';
 
 function setUA(ua: string) {
@@ -27,6 +27,11 @@ describe('android-promo', () => {
     it('false inside the APK even on Android', () => { setUA('Mozilla/5.0 (Linux; Android 14)'); mocks.isNativeApp.mockReturnValue(true); expect(isAndroidWeb()).toBe(false); });
     it('false on an iOS UA', () => { setUA('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'); expect(isAndroidWeb()).toBe(false); });
     it('false on a desktop UA', () => { setUA('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)'); expect(isAndroidWeb()).toBe(false); });
+  });
+
+  describe('isWebBuild', () => {
+    it('true on any web build', () => { setUA('Mozilla/5.0 (iPhone)'); expect(isWebBuild()).toBe(true); });
+    it('false inside the APK', () => { mocks.isNativeApp.mockReturnValue(true); expect(isWebBuild()).toBe(false); });
   });
 
   describe('snooze round-trip', () => {

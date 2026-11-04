@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 import type { SignetIdentity, AppPreferences, Page } from '../types';
-import { ANDROID_APP_URL, isAndroidWeb } from '../lib/android-promo';
+import { ANDROID_APP_URL, isAndroidWeb, isWebBuild } from '../lib/android-promo';
 import { UpdateStatusLine } from '../components/UpdateStatusLine';
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
 import { SEAM_GAP_DEFAULT_MM, SEAM_GAP_MAX_MM, validSeamGapMm } from '../lib/handshake-seam-gap';
@@ -228,8 +228,10 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
         </p>
       </div>
 
-      {/* Get the Android app — always visible on Android web, snooze-independent */}
-      {isAndroidWeb() && (
+      {/* Get the Android app — always visible on any web build (snooze-independent),
+          so nobody has to remember mysignet.app/get. Off-Android the subtitle says
+          it is for Android; the get page itself tells iPhone users to stay on the web. */}
+      {isWebBuild() && (
         <div className="card section">
           <button
             className="btn btn-secondary"
@@ -238,7 +240,9 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           >
             <div>
               <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Get the Android app</div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 400, opacity: 0.8 }}>Fingerprint unlock + always-on approvals</div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 400, opacity: 0.8 }}>
+                {isAndroidWeb() ? 'Fingerprint unlock + always-on approvals' : 'For Android phones · fingerprint unlock + always-on approvals'}
+              </div>
             </div>
             <span style={{ fontSize: '0.85rem', opacity: 0.5 }}>&rsaquo;</span>
           </button>

@@ -5,6 +5,7 @@ import { fetchRestoreProfile, type RestoredProfile } from '../lib/profile-restor
 import { fetchExistingProfile, buildMatchSeed, type ExistingProfile } from '../lib/existing-profile';
 import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/ExistingProfilePanel';
 import { isNativeApp } from '../lib/native';
+import { ANDROID_APP_URL, ANDROID_APP_PITCH, isAndroidWeb } from '../lib/android-promo';
 import type { PublicProfileBase, PublicProfileConfig } from '../types';
 import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import { BrandMark } from '../components/BrandMark';
@@ -396,6 +397,22 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <h1 style={{ marginBottom: 8, fontSize: '1.4rem' }}>Verified. Not identified.</h1>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Android web: the app is the preferred route, and installing it
+                before creating saves restoring the Signet into it later. */}
+            {isAndroidWeb() && (
+              <div className="card" style={{ borderLeft: '3px solid var(--accent)', padding: '14px 16px', marginBottom: 8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Best on Android: get the app</div>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
+                  {ANDROID_APP_PITCH}
+                </p>
+                <a className="btn btn-primary" href={ANDROID_APP_URL} target="_blank" rel="noopener" style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}>
+                  Get the app
+                </a>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '8px 0 0', textAlign: 'center' }}>
+                  or carry on in the browser below
+                </p>
+              </div>
+            )}
             <button
               className="btn btn-primary"
               style={{ fontSize: '1.05rem', padding: '14px 20px' }}
@@ -420,6 +437,14 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
                 Signet Lite →
               </a>
             </p>
+            {!isNativeApp() && !isAndroidWeb() && (
+              <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', margin: 0 }}>
+                On Android?{' '}
+                <a href={ANDROID_APP_URL} target="_blank" rel="noopener" style={{ color: 'var(--accent)' }}>
+                  Get the app →
+                </a>
+              </p>
+            )}
           </div>
         </div>
       );
