@@ -8,9 +8,13 @@ export interface CarouselArrowApi extends CarouselArrowState {
   right: () => void;
   up: () => void;
   down: () => void;
-  /** Jump straight to a column on the current row without the slide
-   *  animation — the same instant commit reduced-motion swipes use. */
+  /** Slide straight to a column on the current row (the shorter way round the loop). */
   jump: (col: CarouselColumn) => void;
+  /** Open the identity switcher sheet listing every row of the ring. */
+  openSwitcher: () => void;
+  /** Position in the ring, for "2 of 4" style affordances. */
+  rowIndex: number;
+  rowCount: number;
 }
 
 interface CarouselArrowContextValue {

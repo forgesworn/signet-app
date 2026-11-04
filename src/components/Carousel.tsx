@@ -9,6 +9,7 @@ import { shouldShowPairingStatus } from '../lib/carousel-routing';
 import { NavDots } from './NavDots';
 import { IdentityCard, type LauncherSite } from './IdentityCard';
 import { CardStage } from './CardStage';
+import { IdentitySwitcher } from './IdentitySwitcher';
 import type { IdentityCardProps } from './IdentityCard';
 import { QRCard, type QRCardSlots } from './QRCard';
 import { SettingsCard, type AvatarResult } from './SettingsCard';
@@ -40,6 +41,8 @@ interface CarouselProps {
     focusPersona?: string;
     dependantId?: string;
     slotTarget?: 'natural-person' | 'persona' | 'professional-persona' | string;
+    /** Section anchor on the destination page (Security & Backup: 'lock' | 'backup'). */
+    section?: string;
   }) => void;
   onQRScanned: (data: string) => string | void | Promise<string | void>;
   onEnterChildMode: (dependantId: string) => void;
@@ -367,6 +370,8 @@ function renderCard(
         );
     }
   })();
+  // The camera feed covers the whole card, so the backdrop has nothing to show there.
+  if (col === 4) return node;
   return <CardStage pubkey={resolved.publicKey || undefined}>{node}</CardStage>;
 }
 
@@ -569,14 +574,14 @@ export function Carousel(props: CarouselProps) {
     }, 250);
   }, [clearSnapBackTimeout, setIncoming]);
 
-  const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
+  /**
+   * Slide to an explicit `target` along `axis` in `direction`. Shared by the
+   * neighbour swipe (`handleSwipe`) and the direct jumps (a tile on the card
+   * opening a column, the identity switcher picking a row), so every move
+   * through the ring animates the same way.
+   */
+  const slideTo = useCallback((axis: 'h' | 'v', direction: -1 | 1, target: { row: number; col: CarouselColumn }, dx: number, dy: number) => {
     if (animating || transitionInFlight.current) return;
-
-    const target = resolveTarget(axis, direction);
-    if (!target) {
-      handleSnapBack();
-      return;
-    }
     const { row: newRow, col: newCol } = target;
 
     transitionInFlight.current = true;
@@ -669,7 +674,34 @@ export function Carousel(props: CarouselProps) {
     animationFrames.current = [requestAnimationFrame(() => {
       animationFrames.current = [requestAnimationFrame(runAnimation)];
     })];
-  }, [animating, resolveTarget, onCommit, onAnimatingChange, handleSnapBack, setIncoming, clearSnapBackTimeout]);
+  }, [animating, onCommit, onAnimatingChange, setIncoming, clearSnapBackTimeout]);
+
+  const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
+    if (animating || transitionInFlight.current) return;
+    const target = resolveTarget(axis, direction);
+    if (!target) {
+      handleSnapBack();
+      return;
+    }
+    slideTo(axis, direction, target, dx, dy);
+  }, [animating, resolveTarget, handleSnapBack, slideTo]);
+
+  /** Slide straight to a column on the current row, in the shorter direction round the loop. */
+  const jumpToCol = useCallback((toCol: CarouselColumn) => {
+    if (toCol === col) return;
+    const forward = (toCol - col + CAROUSEL_COLUMNS.length) % CAROUSEL_COLUMNS.length;
+    const direction: -1 | 1 = forward <= CAROUSEL_COLUMNS.length / 2 ? -1 : 1;
+    slideTo('h', direction, { row, col: toCol }, 0, 0);
+  }, [col, row, slideTo]);
+
+  /** Slide vertically to another identity row, keeping the column. */
+  const jumpToRow = useCallback((toRow: number) => {
+    if (toRow === row || toRow < 0 || toRow >= rows.length) return;
+    slideTo('v', toRow > row ? -1 : 1, { row: toRow, col }, 0, 0);
+  }, [row, col, rows.length, slideTo]);
+
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  useEffect(() => { setSwitcherOpen(false); }, [row]);
 
   const handleTap = useCallback(() => {
     // A gesture that locked an axis (mounting a neighbour) but ended under the
@@ -719,14 +751,14 @@ export function Carousel(props: CarouselProps) {
       right: () => handleSwipe('h', -1, 60, 0),  // next card  (ArrowRight)
       up: () => handleSwipe('v', 1, 0, -60),     // prev identity (ArrowUp)
       down: () => handleSwipe('v', -1, 0, 60),   // next identity (ArrowDown)
-      jump: (toCol: CarouselColumn) => {
-        if (animating || toCol === col) return;
-        onCommit(row, toCol);
-      },
+      jump: jumpToCol,
+      openSwitcher: () => setSwitcherOpen(true),
+      rowIndex: row,
+      rowCount: rows.length,
       ...computeArrowState(row, rows.length),
     });
     return () => registerArrows(null);
-  }, [registerArrows, handleSwipe, row, rows.length, col, animating, onCommit]);
+  }, [registerArrows, handleSwipe, jumpToCol, row, rows.length]);
 
   return (
     <div className="carousel-viewport" data-theme="dark" data-carousel-cell={`${row}:${col}`} aria-busy={animating} ref={viewportRef}>
@@ -763,6 +795,15 @@ export function Carousel(props: CarouselProps) {
       )}
 
       <NavDots col={col} row={row} rows={rows} />
+
+      {switcherOpen && (
+        <IdentitySwitcher
+          rows={rows}
+          current={row}
+          onPick={toRow => { setSwitcherOpen(false); jumpToRow(toRow); }}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
 
       {props.childMode && props.childDependant && (
         <div className="child-banner">
