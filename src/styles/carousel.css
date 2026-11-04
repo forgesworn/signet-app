@@ -283,7 +283,8 @@
 /* Emblem and wordmark are the official vectors (wordmark lifted verbatim
    from the horizontal lockup), set apart and centred as the card's header. */
 
-.card-photo-wrap { display: flex; justify-content: center; }
+/* The photo sits a touch higher than the name: breathing room below it. */
+.card-photo-wrap { display: flex; justify-content: center; margin-bottom: 14px; }
 .card-photo {
   width: 190px;
   height: 190px;
@@ -1404,6 +1405,7 @@
 }
 @container identity-card (max-height: 540px) {
   .card-inner { padding: 10px 16px; gap: 4px; }
+  .card-photo-wrap { margin-bottom: 6px; }
   .card-quick { gap: 5px; }
   .card-contacts-pill { padding: 2px 10px; }
   .card-brand img:first-child { height: 32px; }
