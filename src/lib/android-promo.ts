@@ -10,6 +10,14 @@ const SNOOZE_KEY = 'signet-apk-promo-snooze-until'; // localStorage; ms-epoch st
 const DAY_MS = 86_400_000;
 const DEFAULT_SNOOZE_DAYS = 30;
 
+/** One-line pitch reused by every "get the app" surface. */
+export const ANDROID_APP_PITCH = 'Fingerprint unlock and always-on approvals, even with the screen off — no Google needed.';
+
+/** True on any web build (browser or PWA), false inside the APK. */
+export function isWebBuild(): boolean {
+  return !isNativeApp();
+}
+
 /** True on an Android *web* build only (never in the APK), non-iOS. */
 export function isAndroidWeb(): boolean {
   if (isNativeApp()) return false;
