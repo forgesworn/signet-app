@@ -84,9 +84,83 @@
   z-index: 1;
 }
 
+/* ── Card backdrop: the identity's own wallpaper ── */
+.card-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  z-index: 0;
+}
+/* Scrim keeps the card legible over any image: heavier at top and bottom
+   where the name, npub and actions sit. */
+.card-backdrop-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg,
+    rgba(10, 22, 38, 0.74) 0%,
+    rgba(10, 22, 38, 0.44) 35%,
+    rgba(10, 22, 38, 0.52) 65%,
+    rgba(10, 22, 38, 0.84) 100%);
+}
+.card-backdrop-edit {
+  position: absolute;
+  top: 16px;
+  right: 14px;
+  z-index: 3;
+}
+.card-backdrop-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 22, 38, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+}
+.card-backdrop-btn:hover { color: var(--text-primary); border-color: rgba(201, 169, 98, 0.5); }
+.card-backdrop-menu-away {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+}
+.card-backdrop-menu {
+  z-index: 4;
+  position: absolute;
+  top: 38px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+.card-backdrop-menu button {
+  padding: 11px 16px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.card-backdrop-menu button:hover { background: var(--bg-card-alt); }
+.card-backdrop-menu button + button { border-top: 1px solid var(--border); }
+
 .card-band {
   height: 6px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%);
 }
 
@@ -148,8 +222,8 @@
 
 .card-photo-wrap { display: flex; justify-content: center; }
 .card-photo {
-  width: 160px;
-  height: 160px;
+  width: 190px;
+  height: 190px;
   border-radius: 28px;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.05);
@@ -288,12 +362,23 @@
   gap: 10px;
 }
 .card-actions > * { flex: 1; min-width: 0; }
-.card-scan-btn {
+/* Large tappable tiles: icon above label, equal thirds. The HandshakeButton
+   keeps its own markup (jigsaw + radios) but adopts the same shape here. */
+.card-action-tile,
+.card-actions .handshake-button {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 13px 6px 11px;
+  font-size: 0.88rem;
+  min-height: 72px;
 }
+.card-actions .handshake-button svg:first-child { width: 24px; height: 24px; }
+.card-actions .handshake-radios { position: absolute; top: 6px; right: 8px; display: inline-flex; gap: 3px; }
+.card-actions .handshake-button { position: relative; }
+.card-actions .handshake-radios svg { width: 13px; height: 13px; }
 
 .card-npub {
   font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
@@ -1251,7 +1336,7 @@
   .card-brand { margin-top: 0; gap: 14px; }
   .card-brand img:first-child { height: 44px; }
   .card-brand img:last-child { height: 34px; }
-  .card-photo { width: clamp(64px, 19cqh, 120px); height: clamp(64px, 19cqh, 120px); border-radius: 22px; }
+  .card-photo { width: clamp(72px, 23cqh, 150px); height: clamp(72px, 23cqh, 150px); border-radius: 22px; }
   .card-name { font-size: 1.8rem; overflow-wrap: anywhere; }
 }
 @container identity-card (max-height: 540px) {

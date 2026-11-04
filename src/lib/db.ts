@@ -1793,6 +1793,28 @@ export async function updateCredential(credential: StoredCredential, encryptionK
   return saveCredential(credential, encryptionKey);
 }
 
+// --- Card backdrops ---
+// Per-identity card backdrop images — device-local, like a phone wallpaper.
+// Stored as `backdrop:<pubkey>` rows beside `current` in the preferences
+// store (readers fetch by id, never getAll), so no schema version bump is
+// needed and `clear('preferences')` wipes them with the rest.
+
+export async function getCardBackdrop(pubkey: string): Promise<Blob | null> {
+  const db = await getDB();
+  const row = await db.get('preferences', `backdrop:${pubkey}`) as { blob?: unknown } | undefined;
+  return row && row.blob instanceof Blob ? row.blob : null;
+}
+
+export async function setCardBackdrop(pubkey: string, blob: Blob): Promise<void> {
+  const db = await getDB();
+  await db.put('preferences', { id: `backdrop:${pubkey}`, blob });
+}
+
+export async function deleteCardBackdrop(pubkey: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('preferences', `backdrop:${pubkey}`);
+}
+
 // --- Authorized Sites ---
 
 export async function getAuthorizedSites(): Promise<AuthorizedSite[]> {

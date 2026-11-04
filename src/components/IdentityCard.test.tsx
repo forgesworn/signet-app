@@ -365,3 +365,35 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
     expect(screen.queryByRole('button', { name: 'Scan' })).toBeNull();
   });
 });
+
+describe('IdentityCard — backdrop control', () => {
+  const ownerRow = {
+    type: 'owner',
+    identity: { displayName: 'Alice', publicKey: 'aa'.repeat(32), keypairType: 'persona' },
+  } as never;
+  const ownerResolved = {
+    displayName: 'Alice', displayNameIsSet: true, publicKey: 'aa'.repeat(32),
+    type: 'Persona', isDependant: false,
+  };
+
+  it('offers the customise-backdrop control on an owner card', () => {
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+  });
+
+  it('hides the backdrop control on dependant and dormant cards', () => {
+    const { rerender } = render(
+      <IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} />);
+    expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
+    rerender(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant />);
+    expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
+  });
+
+  it('shows all three action tiles on an owner card', () => {
+    const onHandshake = vi.fn();
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} onHandshake={onHandshake} />);
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Handshake' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Show my QR code' })).toBeDefined();
+  });
+});

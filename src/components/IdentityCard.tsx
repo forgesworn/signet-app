@@ -6,6 +6,7 @@ import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
 import { initialFromName, colourFromPubkey } from '../lib/avatar';
 import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
+import { useCardBackdrop } from '../hooks/useCardBackdrop';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
@@ -93,6 +94,12 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
+
+  // ── Card backdrop — this identity's wallpaper (device-local) ──
+  const backdrop = useCardBackdrop(resolved.publicKey || undefined);
+  const backdropInputRef = useRef<HTMLInputElement | null>(null);
+  const [backdropMenuOpen, setBackdropMenuOpen] = useState(false);
+  const canEditBackdrop = !isDependant && !childDormant;
 
   // Guardian name for the dormant notice — falls back to the generic form
   // when the guardian's status-publish carried no name (see `cachedGuardianName`).
@@ -198,8 +205,65 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   const initial = initialFromName(resolved.displayName);
 
   return (
-    <div className="id-card">
+    <div className={`id-card${backdrop.url ? ' has-backdrop' : ''}`}>
+      {backdrop.url && (
+        <>
+          <div
+            className="card-backdrop"
+            style={{ backgroundImage: `url(${backdrop.url})` }}
+            aria-hidden="true"
+          />
+          <div className="card-backdrop-scrim" aria-hidden="true" />
+        </>
+      )}
       <div className="card-band" />
+      {canEditBackdrop && (
+        <div className="card-backdrop-edit">
+          <input
+            ref={backdropInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={e => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              setBackdropMenuOpen(false);
+              if (file) void backdrop.set(file);
+            }}
+          />
+          <button
+            type="button"
+            className="card-backdrop-btn"
+            aria-label="Customise card backdrop"
+            onClick={e => {
+              e.stopPropagation();
+              if (backdrop.url) setBackdropMenuOpen(open => !open);
+              else backdropInputRef.current?.click();
+            }}
+            onTouchEnd={e => e.stopPropagation()}
+          >
+            <Icon name="image" size={16} />
+          </button>
+          {backdropMenuOpen && backdrop.url && (
+            <>
+              <div
+                className="card-backdrop-menu-away"
+                onClick={e => { e.stopPropagation(); setBackdropMenuOpen(false); }}
+                onTouchEnd={e => { e.stopPropagation(); setBackdropMenuOpen(false); }}
+                aria-hidden="true"
+              />
+              <div className="card-backdrop-menu" onClick={e => e.stopPropagation()}>
+              <button type="button" onClick={() => { setBackdropMenuOpen(false); backdropInputRef.current?.click(); }}>
+                Change image
+              </button>
+              <button type="button" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
+                Remove
+              </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {recentSignInLabel && (
         <div className="signin-ack-chip" role="status" aria-live="polite">
           <span className="signin-ack-tick">&#10003;</span>
@@ -446,15 +510,28 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             {!isChildCard && !childDormant && (
               <button
                 type="button"
-                className="btn btn-primary card-scan-btn"
+                className="btn btn-primary card-action-tile card-scan-btn"
+                aria-label="Scan a QR code"
                 onClick={e => { e.stopPropagation(); arrows?.left(); }}
                 onTouchEnd={e => e.stopPropagation()}
               >
-                <Icon name="qrScan" size={20} />
+                <Icon name="qrScan" size={24} />
                 Scan
               </button>
             )}
             {onHandshake && <HandshakeButton onStart={onHandshake} />}
+            {!isChildCard && !childDormant && (
+              <button
+                type="button"
+                className="btn btn-secondary card-action-tile"
+                aria-label="Show my QR code"
+                onClick={e => { e.stopPropagation(); arrows?.right(); }}
+                onTouchEnd={e => e.stopPropagation()}
+              >
+                <Icon name="qr" size={24} />
+                My QR
+              </button>
+            )}
           </div>
         )}
 
@@ -474,24 +551,6 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 ? 'Ask your guardian'
                 : null}
           </div>
-          {!isChildCard && !childDormant && (
-            <div className="card-swipe-hints">
-              {/* The scanner is the card to the left, the QR the card to the right
-                  (the horizontal ring wraps), so each icon sits on the side its card is. */}
-              <button type="button" className="card-swipe-hint" aria-label="Scan a QR code"
-                onClick={e => { e.stopPropagation(); arrows?.left(); }}>
-                <span className="card-swipe-arrow" aria-hidden="true">&lsaquo;</span>
-                <Icon name="qrScan" size={20} />
-                <span className="card-swipe-label">Scanner</span>
-              </button>
-              <button type="button" className="card-swipe-hint" aria-label="Show my QR code"
-                onClick={e => { e.stopPropagation(); arrows?.right(); }}>
-                <span className="card-swipe-label">My QR</span>
-                <Icon name="qr" size={20} />
-                <span className="card-swipe-arrow" aria-hidden="true">&rsaquo;</span>
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </div>
