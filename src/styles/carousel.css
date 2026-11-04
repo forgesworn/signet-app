@@ -75,9 +75,51 @@
 .card-stage > .card-backdrop-scrim { position: absolute; z-index: 0; }
 .card-stage .id-card { background: rgba(13, 28, 47, 0.30); box-shadow: none; max-width: none; }
 .card-stage .qr-view { background: rgba(13, 28, 47, 0.52); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
-.card-stage .contacts-card { background: rgba(13, 28, 47, 0.62); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
-.card-stage .settings-view { background: rgba(13, 28, 47, 0.62); border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+.card-stage .contacts-card { background: rgba(13, 25, 42, 0.88); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+.card-stage .settings-view { background: rgba(13, 25, 42, 0.88); border-color: rgba(255, 255, 255, 0.08); max-width: none; }
 .card-stage .camera-view { background: rgba(10, 10, 10, 0.55); max-width: none; }
+
+/* ── Readability plates ──
+   Every text cluster sits on a solid-ish glass panel when a backdrop is
+   active, so any wallpaper stays behind the words, never through them. */
+.card-stage .card-name,
+.card-stage .card-name-input,
+.card-stage .card-type,
+.card-stage .card-npub,
+.card-stage .card-contacts-pill,
+.card-stage .qr-caption,
+.card-stage .mini-id {
+  background: rgba(8, 18, 32, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 14px;
+}
+.card-stage .card-name { display: inline-block; padding: 3px 16px 5px; }
+.card-stage .card-name-input { padding: 3px 16px 5px; }
+.card-stage .card-identity { align-items: center; }
+.card-stage .card-type { width: fit-content; margin-inline: auto; padding: 5px 14px; }
+.card-stage .card-npub { width: fit-content; margin-inline: auto; padding: 6px 14px; }
+.card-stage .card-contacts-pill { padding: 7px 14px; color: var(--text-primary); }
+.card-stage .card-launcher-chip {
+  background: rgba(8, 18, 32, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.card-stage .card-launcher-empty { color: var(--text-secondary); }
+/* QR card: the caption, controls and footer carry their own panels. */
+.card-stage .qr-caption { padding: 7px 14px; width: fit-content; margin-inline: auto; }
+.card-stage .mini-id { padding: 6px 16px; width: fit-content; margin-inline: auto; }
+.card-stage .qr-controls,
+.card-stage .qr-footer {
+  background: rgba(8, 18, 32, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 16px;
+  padding: 10px 14px;
+}
+.card-stage .qr-footer { margin-top: auto; }
+/* Dense tool cards are near-opaque above: the wallpaper reads as a tint. */
 
 /* ─── Identity Card ─── */
 .id-card {
