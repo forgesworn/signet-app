@@ -15,7 +15,6 @@ import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
-import type { IQBreakdownItem } from '../lib/badge-fetch';
 import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
@@ -31,7 +30,6 @@ interface CarouselProps {
   onCommit: (row: number, col: CarouselColumn) => void;
   onAnimatingChange: (v: boolean) => void;
   swipeLocked?: boolean;
-  badge: { tier: number; score: number; vouchCount: number; iqBreakdown?: IQBreakdownItem[] } | null;
   onNavigateDeepPage: (page: string, opts?: {
     focusPersona?: string;
     dependantId?: string;
@@ -284,7 +282,6 @@ function renderCard(
           row={row}
           onHandshake={props.onHandshake ? choose => props.onHandshake!(resolved, choose) : undefined}
           resolved={resolved}
-          badge={props.badge}
           childMode={props.childMode}
           childDormant={props.childDormant}
           childSignerKind={props.childSignerKind}
@@ -312,7 +309,6 @@ function renderCard(
           // next persona's QR. Keying on the row forces a fresh slot each swipe.
           key={identityCardKey(row)}
           resolved={resolved}
-          badge={props.badge}
           tabs={slots?.tabs}
           footer={slots?.footer}
         />

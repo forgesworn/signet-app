@@ -89,10 +89,6 @@
   flex-shrink: 0;
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%);
 }
-.card-band.tier-1-band { background: linear-gradient(90deg, #4B5563 0%, #6B7280 50%, #4B5563 100%); }
-.card-band.tier-2-band { background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%); }
-.card-band.tier-3-band { background: linear-gradient(90deg, var(--success) 0%, #34D399 50%, var(--success) 100%); }
-.card-band.tier-4-band { background: linear-gradient(90deg, var(--warning) 0%, #FBBF24 50%, var(--warning) 100%); }
 
 .signin-ack-chip {
   position: absolute;
@@ -174,6 +170,7 @@
 }
 
 .card-name-block { text-align: center; }
+.card-identity { display: flex; flex-direction: column; gap: 8px; }
 /* Inline name editor — sits in the .card-name slot, so it inherits the
    card's type scale (the component passes font-size/weight: inherit). */
 .card-name-input {
@@ -189,6 +186,7 @@
   color: var(--text-primary);
 }
 .card-type {
+  text-align: center;
   font-size: 0.85rem;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -201,67 +199,6 @@
   align-items: center;
   justify-content: center;
   gap: 14px;
-}
-.carousel-tier-badge {
-  padding: 8px 22px;
-  border-radius: 10px;
-  font-size: 0.9rem;
-  font-weight: 800;
-  white-space: nowrap;
-  letter-spacing: 0.04em;
-}
-.carousel-tier-1 { background: rgba(167, 176, 184, 0.2); color: var(--brand-mist); border: 1px solid rgba(167, 176, 184, 0.4); }
-.carousel-tier-2 { background: var(--brand-gold-light); color: var(--brand-gold-text); border: 1px solid rgba(201, 169, 98, 0.4); }
-.carousel-tier-3 { background: rgba(16, 185, 129, 0.18); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.35); }
-.carousel-tier-4 { background: rgba(245, 158, 11, 0.18); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.35); }
-
-.status-chip {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.9rem;
-  color: var(--text-primary);
-  font-weight: 700;
-}
-.status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--text-muted);
-}
-.status-dot.verified {
-  background: var(--success);
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
-}
-
-.card-stats {
-  display: flex;
-  gap: 0;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 14px;
-  overflow: hidden;
-}
-.card-stat {
-  flex: 1;
-  text-align: center;
-  padding: 18px 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-}
-.card-stat:last-child { border-right: none; }
-.card-stat-value {
-  font-size: 2.2rem;
-  font-weight: 800;
-  line-height: 1;
-  margin-bottom: 5px;
-  color: var(--text-primary);
-}
-.card-stat-label {
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-weight: 700;
 }
 
 /* Paired-child dormant/Heartwood notice at the foot of the card. */
@@ -378,11 +315,6 @@
   align-items: center;
   justify-content: center;
   padding: 8px;
-}
-.qr-tier-line {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-align: center;
 }
 
 /* QR include pills — front-page pill bar (what the QR carries).
@@ -1232,8 +1164,6 @@
   .card-brand img:last-child { height: 34px; }
   .card-photo { width: clamp(64px, 19cqh, 120px); height: clamp(64px, 19cqh, 120px); border-radius: 22px; }
   .card-name { font-size: 1.8rem; overflow-wrap: anywhere; }
-  .card-stat { padding: 10px 0; }
-  .card-stat-value { font-size: 1.8rem; }
 }
 @container identity-card (max-height: 540px) {
   .card-inner { padding: 10px 16px; gap: 4px; }
@@ -1242,11 +1172,6 @@
   .card-photo { width: 72px; height: 72px; border-radius: 18px; }
   .card-name { font-size: 1.45rem; }
   .card-type { font-size: .72rem; }
-  .carousel-tier-badge { padding: 6px 16px; font-size: .8rem; }
-  .status-chip { font-size: .8rem; }
-  .card-stat { padding: 6px 0; }
-  .card-stat-value { font-size: 1.5rem; margin-bottom: 3px; }
-  .card-stat-label { font-size: .6rem; }
   .card-npub { font-size: .7rem; }
   .card-dormant-notice { margin-top: 0 !important; padding: 6px 8px !important; font-size: .72rem !important; }
 }

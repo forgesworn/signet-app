@@ -2,7 +2,6 @@ import { HandshakeButton } from './HandshakeButton';
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type { CarouselRow } from '../types';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
-import type { IQBreakdownItem } from '../lib/badge-fetch';
 import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
 import { initialFromName, colourFromPubkey } from '../lib/avatar';
@@ -16,7 +15,6 @@ export interface IdentityCardProps {
   onHandshake?: (choose: boolean) => void;
   row: CarouselRow;
   resolved: ResolvedIdentity;
-  badge: { tier: number; score: number; vouchCount: number; iqBreakdown?: IQBreakdownItem[] } | null;
   childMode: boolean;
   /**
    * On a paired-child install when the guardian has set
@@ -45,7 +43,7 @@ export interface IdentityCardProps {
    *  want full control. When omitted, this component resolves the avatar
    *  itself from `resolved.avatarHash/Url/Key` via `useResolvedAvatar`. */
   photoUrl?: string | null;
-  /** When set, renders a Pro pill alongside the tier badge. Tap navigates to Professional Dashboard. */
+  /** When set, renders a Pro pill under the identity type. Tap navigates to Professional Dashboard. */
   proAnchorActive?: boolean;
   /** Called when the Pro pill is tapped. Navigates to `professional` page. */
   onProPillTap?: () => void;
@@ -72,11 +70,7 @@ export interface IdentityCardProps {
   onRenameActive?: (name: string) => void | Promise<void>;
 }
 
-export function IdentityCard({ onHandshake, row, resolved, badge, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
-  const tier = badge?.tier ?? 1;
-  const iq = badge?.score ?? 0;
-  const vouches = badge?.vouchCount ?? 0;
-  const verified = tier >= 2;
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -186,7 +180,7 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
 
   return (
     <div className="id-card">
-      <div className={`card-band tier-${tier}-band`} />
+      <div className="card-band" />
       {recentSignInLabel && (
         <div className="signin-ack-chip" role="status" aria-live="polite">
           <span className="signin-ack-tick">&#10003;</span>
@@ -199,136 +193,132 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
           <BrandMark variant="wordmark" tone="on-dark" size={46} />
         </div>
 
-        {/* \u2500\u2500 Blurred identity area (avatar + name) \u2500\u2500 */}
-        {/* The role/type label sits outside this wrapper and stays sharp. */}
-        <div
-          onClick={blurActive ? handleRevealTap : undefined}
-          onTouchEnd={blurActive ? handleRevealTap : undefined}
-          style={blurActive ? {
-            filter: 'blur(6px)',
-            userSelect: 'none',
-            cursor: 'pointer',
-            WebkitUserSelect: 'none',
-          } : undefined}
-          aria-label={blurActive ? 'Tap to reveal identity' : undefined}
-        >
-          <div className="card-photo-wrap">
-            <div
-              className="card-photo"
-              style={{
-                background: effectivePhotoUrl ? '#0000' : colourFromPubkey(resolved.publicKey),
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#fff',
-                fontWeight: 600,
-                fontSize: '1.3rem',
-                overflow: 'hidden',
-              }}
-            >
-              {effectivePhotoUrl ? (
-                <img
-                  src={effectivePhotoUrl}
-                  alt={`${resolved.displayName ?? 'Identity'}'s image`}
-                  {...(showingPublicPicture ? {
-                    referrerPolicy: 'no-referrer' as const,
-                    onError: () => setFailedPictureHref(publicPictureUrl),
-                  } : {})}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        {/* Avatar, name, role label and Pro pill read as one group. */}
+        <div className="card-identity">
+          {/* \u2500\u2500 Blurred identity area (avatar + name) \u2500\u2500 */}
+          {/* The role/type label sits outside this wrapper and stays sharp. */}
+          <div
+            onClick={blurActive ? handleRevealTap : undefined}
+            onTouchEnd={blurActive ? handleRevealTap : undefined}
+            style={blurActive ? {
+              filter: 'blur(6px)',
+              userSelect: 'none',
+              cursor: 'pointer',
+              WebkitUserSelect: 'none',
+            } : undefined}
+            aria-label={blurActive ? 'Tap to reveal identity' : undefined}
+          >
+            <div className="card-photo-wrap">
+              <div
+                className="card-photo"
+                style={{
+                  background: effectivePhotoUrl ? '#0000' : colourFromPubkey(resolved.publicKey),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                  fontWeight: 600,
+                  fontSize: '1.3rem',
+                  overflow: 'hidden',
+                }}
+              >
+                {effectivePhotoUrl ? (
+                  <img
+                    src={effectivePhotoUrl}
+                    alt={`${resolved.displayName ?? 'Identity'}'s image`}
+                    {...(showingPublicPicture ? {
+                      referrerPolicy: 'no-referrer' as const,
+                      onError: () => setFailedPictureHref(publicPictureUrl),
+                    } : {})}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  initial
+                )}
+              </div>
+            </div>
+
+            <div className="card-name-block">
+              {showNameEditor ? (
+                // No name set yet — render an inline editable placeholder.
+                // MiniIdBadge keeps receiving resolved.displayName (its fallback).
+                <input
+                  ref={nameInputRef}
+                  className="card-name-input"
+                  type="text"
+                  value={nameInput}
+                  onChange={e => setNameInput(e.target.value)}
+                  onBlur={() => { void commitName(); }}
+                  onKeyDown={handleNameKeyDown}
+                  placeholder="Add your name / handle"
+                  maxLength={100}
+                  aria-label="Add your name or handle"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: '1px dashed var(--border)',
+                    color: 'var(--text-muted)',
+                    fontSize: 'inherit',
+                    fontFamily: 'inherit',
+                    fontWeight: 'inherit',
+                    width: '100%',
+                    outline: 'none',
+                    padding: '2px 0',
+                    cursor: 'text',
+                  }}
                 />
               ) : (
-                initial
+                <div className="card-name">{resolved.displayName}</div>
               )}
             </div>
           </div>
 
-          <div className="card-name-block">
-            {showNameEditor ? (
-              // No name set yet — render an inline editable placeholder.
-              // MiniIdBadge keeps receiving resolved.displayName (its fallback).
-              <input
-                ref={nameInputRef}
-                className="card-name-input"
-                type="text"
-                value={nameInput}
-                onChange={e => setNameInput(e.target.value)}
-                onBlur={() => { void commitName(); }}
-                onKeyDown={handleNameKeyDown}
-                placeholder="Add your name / handle"
-                maxLength={100}
-                aria-label="Add your name or handle"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: '1px dashed var(--border)',
-                  color: 'var(--text-muted)',
-                  fontSize: 'inherit',
-                  fontFamily: 'inherit',
-                  fontWeight: 'inherit',
-                  width: '100%',
-                  outline: 'none',
-                  padding: '2px 0',
-                  cursor: 'text',
-                }}
-              />
-            ) : (
-              <div className="card-name">{resolved.displayName}</div>
-            )}
+          {/* \u2500\u2500 Role/type label \u2014 the role word stays sharp; a dependant's age
+              is identifying, so it blurs with the rest of the identity \u2500\u2500 */}
+          <div className="card-type">
+            {isDependant
+              ? (
+                <>
+                  Dependant
+                  {age ? (
+                    <>
+                      {' \u00B7 '}
+                      <span style={blurActive ? { filter: 'blur(5px)', userSelect: 'none' } : undefined}>
+                        Age {age}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              )
+              : resolved.type}
           </div>
-        </div>
 
-        {/* \u2500\u2500 Role/type label \u2014 the role word stays sharp; a dependant's age
-            is identifying, so it blurs with the rest of the identity \u2500\u2500 */}
-        <div className="card-type">
-          {isDependant
-            ? (
-              <>
-                Dependant
-                {age ? (
-                  <>
-                    {' \u00B7 '}
-                    <span style={blurActive ? { filter: 'blur(5px)', userSelect: 'none' } : undefined}>
-                      Age {age}
-                    </span>
-                  </>
-                ) : null}
-              </>
-            )
-            : resolved.type}
-        </div>
-
-        <div className="card-tier-row">
-          <div className={`carousel-tier-badge carousel-tier-${tier}`}>
-            Tier {tier}
-          </div>
           {proAnchorActive && (
-            <button
-              onClick={e => {
-                e.stopPropagation();
-                onProPillTap?.();
-              }}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                padding: '2px 10px',
-                borderRadius: 10,
-                background: 'var(--accent)',
-                color: 'var(--on-accent)',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                border: 'none',
-                cursor: 'pointer',
-                letterSpacing: '0.03em',
-              }}
-              aria-label="Pro — tap to open Professional Dashboard"
-            >
-              Pro
-            </button>
+            <div className="card-tier-row">
+              <button
+                onClick={e => {
+                  e.stopPropagation();
+                  onProPillTap?.();
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '2px 10px',
+                  borderRadius: 10,
+                  background: 'var(--accent)',
+                  color: 'var(--on-accent)',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  border: 'none',
+                  cursor: 'pointer',
+                  letterSpacing: '0.03em',
+                }}
+                aria-label="Pro — tap to open Professional Dashboard"
+              >
+                Pro
+              </button>
+            </div>
           )}
-          <div className="status-chip">
-            <span className={`status-dot${verified ? ' verified' : ''}`} />
-            {verified ? 'Verified' : 'Unverified'}
-          </div>
         </div>
 
         {pairingStatus && (
@@ -345,21 +335,6 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
               : 'No phone paired — swipe › to settings'}
           </div>
         )}
-
-        <div className="card-stats">
-          <div className="card-stat">
-            <div className="card-stat-value">{iq}</div>
-            <div className="card-stat-label">Signet IQ</div>
-          </div>
-          <div className="card-stat">
-            <div className="card-stat-value">{tier}</div>
-            <div className="card-stat-label">Tier</div>
-          </div>
-          <div className="card-stat">
-            <div className="card-stat-value">{vouches}</div>
-            <div className="card-stat-label">Vouches</div>
-          </div>
-        </div>
 
         {npubDisplay && (
           <div className="card-npub">{npubDisplay}</div>

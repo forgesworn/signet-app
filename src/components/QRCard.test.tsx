@@ -12,7 +12,7 @@ const resolved: ResolvedIdentity = {
 };
 describe('QRCard (pure npub)', () => {
   it('always shows the bare npub with no options, even with a name and a private avatar', () => {
-    render(<QRCard resolved={resolved} badge={null} tabs={<div>tabs</div>} footer={<div>foot</div>} />);
+    render(<QRCard resolved={resolved} tabs={<div>tabs</div>} footer={<div>foot</div>} />);
     expect(screen.getByTestId('qr').textContent).toBe(encodeNpub(hexToBytes(KEY)));
     expect(screen.getByText('Works in any Nostr app.')).toBeTruthy();
     expect(screen.getByText('tabs')).toBeTruthy();

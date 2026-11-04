@@ -14079,12 +14079,6 @@ function AppContent() {
         onCommit={carousel.commitPosition}
         onAnimatingChange={carousel.setAnimating}
         swipeLocked={!!pendingAuthRequest}
-        badge={ownBadge ? {
-          tier: ownBadge.tier,
-          score: ownBadge.score ?? 0,
-          vouchCount: ownBadge.vouchCount ?? 0,
-          iqBreakdown: ownBadge.iqBreakdown,
-        } : null}
         onNavigateDeepPage={(p, opts) => {
           if (opts?.focusPersona) setPendingPersonaFocus(opts.focusPersona);
           // Must precede navigateTo — destination routes (e.g. 'settings',

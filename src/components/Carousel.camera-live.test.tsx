@@ -38,7 +38,7 @@ function renderAtCamera(animating: boolean) {
       animating={animating}
       onCommit={vi.fn()}
       onAnimatingChange={vi.fn()}
-      badge={null}
+     
       onNavigateDeepPage={vi.fn()}
       onQRScanned={vi.fn()}
       onEnterChildMode={vi.fn()}

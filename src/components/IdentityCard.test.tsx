@@ -54,7 +54,7 @@ function resolvedLily() {
 
 describe('IdentityCard — image / avatar', () => {
   it('renders the initial when no photoHash is set', () => {
-    render(<IdentityCard row={dependantRow({ displayName: 'Lily' })} resolved={resolvedLily()} badge={null} childMode={false} />);
+    render(<IdentityCard row={dependantRow({ displayName: 'Lily' })} resolved={resolvedLily()} childMode={false} />);
     expect(screen.getByText(initialFromName('Lily'))).toBeDefined();
   });
 
@@ -63,7 +63,7 @@ describe('IdentityCard — image / avatar', () => {
       <IdentityCard
         row={dependantRow({ displayName: 'Lily' })}
         resolved={resolvedLily()}
-        badge={null}
+       
         childMode={false}
         photoUrl="https://example.com/lily.jpg"
       />
@@ -90,7 +90,6 @@ const baseResolved = {
   type: 'Owner',
   isDependant: false,
 };
-const baseBadge = { tier: 3, score: 120, vouchCount: 5 };
 
 describe('IdentityCard — Pro pill', () => {
   it('renders Pro pill when proAnchorActive is true', () => {
@@ -98,7 +97,7 @@ describe('IdentityCard — Pro pill', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={baseBadge}
+       
         childMode={false}
         proAnchorActive={true}
         onProPillTap={vi.fn()}
@@ -112,7 +111,7 @@ describe('IdentityCard — Pro pill', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={baseBadge}
+       
         childMode={false}
         proAnchorActive={false}
       />
@@ -126,7 +125,7 @@ describe('IdentityCard — Pro pill', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={baseBadge}
+       
         childMode={false}
         proAnchorActive={true}
         onProPillTap={onProPillTap}
@@ -139,17 +138,17 @@ describe('IdentityCard — Pro pill', () => {
 
 describe('IdentityCard — dependant pairing status', () => {
   it('shows "No phone paired — swipe › to settings" when unpaired', () => {
-    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null} childMode={false} pairingStatus={{ paired: false }} />);
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} pairingStatus={{ paired: false }} />);
     expect(screen.getByText(/No phone paired — swipe . to settings/)).toBeDefined();
   });
 
   it('shows "Paired" when paired (no timestamp)', () => {
-    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null} childMode={false} pairingStatus={{ paired: true }} />);
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} pairingStatus={{ paired: true }} />);
     expect(screen.getByText(/Paired/)).toBeDefined();
   });
 
   it('shows nothing pairing-related when pairingStatus is null/undefined', () => {
-    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null} childMode={false} />);
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} />);
     expect(screen.queryByText(/Paired/)).toBeNull();
     expect(screen.queryByText(/No phone paired/)).toBeNull();
   });
@@ -161,7 +160,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={vi.fn()}
       />,
@@ -178,7 +177,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={onRenameActive}
       />,
@@ -195,7 +194,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={onRenameActive}
       />,
@@ -212,7 +211,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={onRenameActive}
       />,
@@ -227,7 +226,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={vi.fn()}
       />,
@@ -242,7 +241,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
       />,
     );
@@ -260,7 +259,7 @@ describe('IdentityCard — public kind-0 picture', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={pubResolved(pictureUrl)}
-        badge={null}
+       
         childMode={false}
         {...extra}
       />,
@@ -293,7 +292,7 @@ describe('IdentityCard — public kind-0 picture', () => {
     const { rerender } = renderCard('https://example.com/a.jpg');
     fireEvent.error(screen.getByAltText("Alice's image"));
     rerender(
-      <IdentityCard row={baseOwnerRow} resolved={pubResolved('https://example.com/b.jpg')} badge={null} childMode={false} />,
+      <IdentityCard row={baseOwnerRow} resolved={pubResolved('https://example.com/b.jpg')} childMode={false} />,
     );
     expect((screen.getByAltText("Alice's image") as HTMLImageElement).src).toBe('https://example.com/b.jpg');
   });
@@ -313,7 +312,7 @@ describe('IdentityCard — public kind-0 picture', () => {
 
 it('Handshake remains outside the blur layer and works on a dormant child card', () => {
   const onHandshake = vi.fn();
-  const { container } = render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null}
+  const { container } = render(<IdentityCard row={dependantRow()} resolved={resolvedLily()}
     childMode childDormant blurIdentityNames onHandshake={onHandshake} />);
   const button = within(container).getByRole('button', { name: 'Handshake' });
   const blur = within(container).getByLabelText('Tap to reveal identity');
