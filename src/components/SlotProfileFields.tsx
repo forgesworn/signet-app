@@ -637,7 +637,7 @@ export function SlotProfileFields({
           </div>
         )}
 
-        <Field label="Picture" hint="Used as your profile picture across Nostr clients.">
+        <Field label="Picture shown on Nostr" hint="Public. Used as your profile picture across Nostr clients.">
           <ImageRow
             url={pictureUrl}
             isSignetHosted={isPictureSignetHosted}

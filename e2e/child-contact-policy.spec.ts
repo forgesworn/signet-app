@@ -33,7 +33,7 @@ test('delivers current contact policy to a genuinely paired child without identi
   });
   await page.evaluate(async id => await (window as any).__TEST__.setDependantStage(id, 'request-approve'), depId);
   await navigateViaHarness(page, 'pair-dependant-device');
-  await page.getByRole('button', { name: 'Open Security settings' }).click();
+  await page.getByRole('button', { name: 'Open Bunker settings' }).click();
   await page.getByRole('button', { name: 'Turn the Bunker on', exact: true }).click();
   await navigateViaHarness(page, 'pair-dependant-device');
   await expect(page.locator('canvas')).toBeVisible({ timeout: 30000 });

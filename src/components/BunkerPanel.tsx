@@ -22,6 +22,7 @@ import {
   type VerdictAvailability,
 } from '../lib/policy-push';
 import { Icon } from './Icon';
+import { PillToggle } from './PillToggle';
 import type { PendingChildAsk } from '../hooks/useChildAsks';
 import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
 
@@ -38,8 +39,10 @@ interface Props {
   onClose: () => void;
   /** Master allow (the Security opt-in). When false, serving can't be armed here. */
   bunkerAllowed: boolean;
-  /** Navigate to Security settings (to flip the master). Closes the panel. */
+  /** Navigate to the Bunker settings page. Closes the panel. */
   onGoToSecurity: () => void;
+  /** Flip the master allow from the sheet itself, so the tab is never a dead end. */
+  onSetBunkerAllowed?: (on: boolean) => void;
   /** Stay-awake window deadline (epoch ms) or null when inactive. */
   stayAwakeUntil: number | null;
   onArmStayAwake: (minutes: number) => void;
@@ -97,7 +100,7 @@ interface Props {
 }
 
 export function BunkerPanel({
-  onClose, bunkerAllowed, onGoToSecurity,
+  onClose, bunkerAllowed, onGoToSecurity, onSetBunkerAllowed,
   stayAwakeUntil, onArmStayAwake, onCloseStayAwake, wakeLockSupported,
   pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
   hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
@@ -303,13 +306,30 @@ export function BunkerPanel({
         <div style={sectionTitle}>Serve signing requests</div>
         {!bunkerAllowed ? (
           <div>
-            <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 12px' }}>
-              Bunker serving is turned off. Turn it on in Settings → Security to serve signing requests.
-            </p>
-            <button type="button" className="btn btn-secondary"
-              onClick={onGoToSecurity} style={{ fontSize: 14, padding: '8px 16px' }}>
-              Open Security settings
-            </button>
+            {onSetBunkerAllowed ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                  <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                    The Bunker is off. Turn it on to pair other devices and apps and serve their signing requests. Every request still asks you first.
+                  </p>
+                  <PillToggle enabled={false} onToggle={() => onSetBunkerAllowed(true)} onLabel="Turn the Bunker off" offLabel="Turn the Bunker on" />
+                </div>
+                <button type="button" className="btn btn-ghost" onClick={onGoToSecurity}
+                  style={{ fontSize: 13, padding: '6px 0', marginTop: 8, width: 'auto' }}>
+                  Bunker settings ›
+                </button>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 12px' }}>
+                  Bunker serving is turned off. Turn it on in Settings → Bunker &amp; Scanning to serve signing requests.
+                </p>
+                <button type="button" className="btn btn-secondary"
+                  onClick={onGoToSecurity} style={{ fontSize: 14, padding: '8px 16px' }}>
+                  Open Bunker settings
+                </button>
+              </>
+            )}
           </div>
         ) : (stayAwakeUntil !== null || backgroundServing) ? (
           <div>

@@ -421,7 +421,7 @@ export function GuardianSettings({
 
         {/* Photo row */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <span style={{ fontSize: '0.9rem' }}>Photo</span>
+          <span style={{ fontSize: '0.9rem' }}>Verification photo</span>
           <button
             className="btn btn-ghost btn-sm"
             onClick={onUpdatePhoto}

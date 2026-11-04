@@ -43,7 +43,7 @@ test('delivers a scoped read-only directory to a paired child, withdraws blocked
   await page.getByRole('button', { name: 'Done', exact: true }).click();
 
   await navigateViaHarness(page, 'pair-dependant-device');
-  await page.getByRole('button', { name: 'Open Security settings' }).click();
+  await page.getByRole('button', { name: 'Open Bunker settings' }).click();
   await page.getByRole('button', { name: 'Turn the Bunker on', exact: true }).click();
   await navigateViaHarness(page, 'pair-dependant-device');
   await expect(page.locator('canvas')).toBeVisible({ timeout: 30000 });

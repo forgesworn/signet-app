@@ -256,11 +256,11 @@ export function PairDependantApp({
         <h2 style={{ marginBottom: 8 }}>The Bunker is off</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.5, marginBottom: 20 }}>
           To pair an app as {dependant.displayName}, your phone needs to be acting as their Bunker.
-          Turn the Bunker on in Security settings first, then come back here.
+          Turn the Bunker on in Bunker &amp; Scanning settings first, then come back here.
         </p>
         {onOpenSecuritySettings && (
           <button className="btn btn-primary" onClick={onOpenSecuritySettings} style={{ width: '100%', marginBottom: 8 }}>
-            Open Security settings
+            Open Bunker settings
           </button>
         )}
         <button className="btn" onClick={onBack} style={{ width: '100%' }}>Back</button>

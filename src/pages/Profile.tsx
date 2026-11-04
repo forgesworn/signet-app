@@ -76,7 +76,7 @@ export function Profile({
         </div>
 
         <div className="row">
-          <span>Photo</span>
+          <span>Verification photo</span>
           <button className="btn btn-ghost btn-sm" onClick={onUpdatePhoto}>
             {identity.photoHash ? 'Change ›' : 'Set ›'}
           </button>
