@@ -11251,8 +11251,10 @@ function AppContent() {
   }
 
   if (page === 'settings-signing') {
-    return renderSettingsPage('settings-signing', 'Bunker & Scanning', (
+    const servesBunker = preferences.signingMode !== 'paired-child';
+    return renderSettingsPage('settings-signing', servesBunker ? 'Bunker & Scanning' : 'Scanning', (
       <SigningSettings
+        showBunker={servesBunker}
         scannerAutoStart={scannerAutoStart}
         onSetScannerAutoStart={setScannerAutoStart}
         scannerIdleSeconds={scannerIdleSeconds}
