@@ -699,7 +699,10 @@ describe('the pairing QR carries the key the owner route listens on', () => {
       expect(routes[0].pubkey).toBe(NP);
     });
 
-    it('natural person primary, dormant (legacy record with a blank name): follows the route the server has', () => {
+    // Reachable: a legacy record with a blank name, or "Switch primary to Natural
+    // Person" on the persona's Advanced page, which has no activation gate. The
+    // server does listen on this key, so the URL matches it.
+    it('natural person primary, dormant: follows the route the server has', () => {
       const { url, routes } = scenario('natural-person', false, backends());
       expect(routes[0].pubkey).toBe(NP);
       expect(url).toBe(urlFor(NP));
