@@ -5521,6 +5521,7 @@ function AppContent() {
   // with no pubkeys stores an empty set for the boot receiver and the
   // fallback poll. Re-evaluated whenever any of those change.
   useEffect(() => {
+    if (childDirect) return;
     if (!shouldRearmAlwaysOn({
       native: isNativeApp(),
       unlocked: !!encryptionKey,
@@ -5531,7 +5532,15 @@ function AppContent() {
       servePubkeyCount: bunkerRoutes.length,
     })) return;
     void handleSetBackgroundServing(true);
-  }, [encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+  }, [childDirect, encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+
+  // A direct child's Bunker tab has no always-on or time controls, so a window
+  // armed before that must not keep auto-lock suspended with no way to stop it.
+  useEffect(() => {
+    if (!childDirect) return;
+    if (backgroundServing || preferences.backgroundBunkerEnabled) void handleSetBackgroundServing(false);
+    if (stayAwakeUntil !== null) closeStayAwake();
+  }, [childDirect, backgroundServing, preferences.backgroundBunkerEnabled, stayAwakeUntil, handleSetBackgroundServing, closeStayAwake]);
 
   useEffect(() => {
     if (!encryptionKey || !pendingAlwaysOnArm) return;
@@ -14461,7 +14470,8 @@ function AppContent() {
           onClose={() => setBunkerPanelOpen(false)}
           bunkerAllowed={bunkerServerEnabled}
           onGoToSecurity={() => { setBunkerPanelOpen(false); setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
-          onSetBunkerAllowed={on => { void setBunkerServerEnabled(on); }}
+          onSetBunkerAllowed={isPairedChild ? undefined : on => { void setBunkerServerEnabled(on); }}
+          childDirect={childDirect}
           stayAwakeUntil={stayAwakeUntil}
           onArmStayAwake={armStayAwake}
           onCloseStayAwake={closeStayAwake}
