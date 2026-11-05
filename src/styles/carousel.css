@@ -50,13 +50,68 @@
 }
 
 /* A steady frame across every card: swiping changes content, not its size. */
-.id-card, .qr-view, .contacts-card, .camera-view, .settings-view, .add-view {
+.id-card, .qr-view, .contacts-card, .camera-view, .settings-view, .add-view,
+.card-stage {
   width: 100%;
   max-width: 420px;
   height: 100%;
   max-height: 820px;
   min-height: 0;
 }
+/* The stage carries this identity's backdrop behind whichever card shows.
+   It is always present (a card re-parented into it later would remount),
+   and only `.has-backdrop` changes how the card inside is drawn: it owns
+   the rounded clip and shadow, and the card turns translucent so the image
+   reads through under the scrim. */
+.card-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.card-stage > * { flex: 1; min-height: 0; }
+.card-stage.has-backdrop {
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+/* Descendant selectors: the QR column nests its panes inside a
+   display:contents/none tab wrapper, so direct-child matching misses them. */
+.card-stage.has-backdrop > *,
+.card-stage.has-backdrop .qr-view { position: relative; z-index: 1; }
+.card-stage.has-backdrop > .card-backdrop,
+.card-stage.has-backdrop > .card-backdrop-scrim { position: absolute; z-index: 0; flex: none; }
+.card-stage.has-backdrop .id-card { background: rgba(13, 28, 47, 0.22); box-shadow: none; max-width: none; }
+.card-stage.has-backdrop .qr-view { background: rgba(13, 28, 47, 0.46); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+/* Dense tool cards stay near-opaque: the wallpaper reads as a tint, and
+   none of their text needs its own plate. */
+.card-stage.has-backdrop .contacts-card,
+.card-stage.has-backdrop .settings-view { background: rgba(13, 25, 42, 0.93); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
+
+/* ── Readability ──
+   One plate behind the identity cluster (photo, name, role, npub) and one
+   under the QR card's caption and controls. Everything else relies on the
+   scrim, so the card reads as two surfaces rather than a stack of pills. */
+.card-stage.has-backdrop .card-identity,
+.card-stage.has-backdrop .qr-panel,
+.card-stage.has-backdrop .mini-id {
+  background: rgba(8, 18, 32, 0.66);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.card-stage.has-backdrop .card-identity { border-radius: 28px; padding: 16px 20px 14px; }
+.card-stage.has-backdrop .qr-panel { border-radius: 16px; padding: 12px 14px; }
+.card-stage.has-backdrop .mini-id { border-radius: 16px; padding: 6px 16px; width: fit-content; margin-inline: auto; }
+.card-stage.has-backdrop .card-launcher-chip,
+.card-stage.has-backdrop .card-contacts-pill {
+  background: rgba(8, 18, 32, 0.58);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
+}
+.card-stage.has-backdrop .card-contacts-pill { padding: 7px 14px; border: 1px solid rgba(255, 255, 255, 0.16); }
+.card-stage.has-backdrop .card-npub { color: rgba(255, 255, 255, 0.55); }
 
 /* ─── Identity Card ─── */
 .id-card {
@@ -84,15 +139,96 @@
   z-index: 1;
 }
 
+/* ── Card backdrop: the identity's own wallpaper ── */
+.card-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  z-index: 0;
+}
+/* Scrim keeps the card legible over any image: heavier at top and bottom
+   where the brand and the action tiles sit. */
+.card-backdrop-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(180deg,
+    rgba(10, 22, 38, 0.78) 0%,
+    rgba(10, 22, 38, 0.48) 30%,
+    rgba(10, 22, 38, 0.56) 65%,
+    rgba(10, 22, 38, 0.90) 100%);
+}
+.card-backdrop-note {
+  position: absolute;
+  top: 54px;
+  right: 14px;
+  z-index: 3;
+  max-width: 240px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.card-backdrop-edit {
+  position: absolute;
+  top: 16px;
+  right: 14px;
+  z-index: 3;
+}
+.card-backdrop-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 22, 38, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+}
+.card-backdrop-btn:hover,
+.card-backdrop-btn[aria-expanded="true"] { color: var(--text-primary); border-color: rgba(201, 169, 98, 0.5); }
+.card-backdrop-menu {
+  z-index: 4;
+  position: absolute;
+  top: 38px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+.card-backdrop-menu button {
+  padding: 11px 16px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.card-backdrop-menu button:hover { background: var(--bg-card-alt); }
+.card-backdrop-menu button + button { border-top: 1px solid var(--border); }
+
 .card-band {
   height: 6px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%);
 }
-.card-band.tier-1-band { background: linear-gradient(90deg, #4B5563 0%, #6B7280 50%, #4B5563 100%); }
-.card-band.tier-2-band { background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%); }
-.card-band.tier-3-band { background: linear-gradient(90deg, var(--success) 0%, #34D399 50%, var(--success) 100%); }
-.card-band.tier-4-band { background: linear-gradient(90deg, var(--warning) 0%, #FBBF24 50%, var(--warning) 100%); }
 
 .signin-ack-chip {
   position: absolute;
@@ -126,16 +262,18 @@
   to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
+/* Top-anchored content; the action tiles sit on the floor of the card and
+   whatever room is left opens up between the identity and the tiles. */
 .card-inner {
-  padding: 20px 28px 16px;
+  padding: 20px 28px 20px;
   display: flex;
   flex-direction: column;
   flex: 1;
   position: relative;
   z-index: 2;
-  justify-content: space-around;
+  justify-content: flex-start;
   min-height: 0;
-  gap: 12px;
+  gap: 14px;
 }
 .card-inner > * { flex-shrink: 0; }
 .card-inner .handshake-button { margin-top: 0; }
@@ -150,10 +288,11 @@
 /* Emblem and wordmark are the official vectors (wordmark lifted verbatim
    from the horizontal lockup), set apart and centred as the card's header. */
 
-.card-photo-wrap { display: flex; justify-content: center; }
+/* The photo sits a touch higher than the name: breathing room below it. */
+.card-photo-wrap { display: flex; justify-content: center; margin-bottom: 14px; }
 .card-photo {
-  width: 160px;
-  height: 160px;
+  width: 190px;
+  height: 190px;
   border-radius: 28px;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.05);
@@ -174,6 +313,8 @@
 }
 
 .card-name-block { text-align: center; }
+/* Centred in whatever room the brand and the tiles leave; both auto margins split the slack. */
+.card-identity { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: auto; }
 /* Inline name editor — sits in the .card-name slot, so it inherits the
    card's type scale (the component passes font-size/weight: inherit). */
 .card-name-input {
@@ -189,79 +330,35 @@
   color: var(--text-primary);
 }
 .card-type {
+  text-align: center;
   font-size: 0.85rem;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-weight: 600;
 }
+/* The role label doubles as the way into the identity switcher. */
+.card-type-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 14px;
+  border-radius: 100px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.card-type-switch:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(201, 169, 98, 0.45); color: var(--text-primary); }
+.card-type-count { font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-muted); }
+.card-type-chevron { font-size: 1rem; line-height: 0.6; margin-left: -2px; transform: translateY(-3px); }
 
 .card-tier-row {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 14px;
-}
-.carousel-tier-badge {
-  padding: 8px 22px;
-  border-radius: 10px;
-  font-size: 0.9rem;
-  font-weight: 800;
-  white-space: nowrap;
-  letter-spacing: 0.04em;
-}
-.carousel-tier-1 { background: rgba(167, 176, 184, 0.2); color: var(--brand-mist); border: 1px solid rgba(167, 176, 184, 0.4); }
-.carousel-tier-2 { background: var(--brand-gold-light); color: var(--brand-gold-text); border: 1px solid rgba(201, 169, 98, 0.4); }
-.carousel-tier-3 { background: rgba(16, 185, 129, 0.18); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.35); }
-.carousel-tier-4 { background: rgba(245, 158, 11, 0.18); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.35); }
-
-.status-chip {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.9rem;
-  color: var(--text-primary);
-  font-weight: 700;
-}
-.status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--text-muted);
-}
-.status-dot.verified {
-  background: var(--success);
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
-}
-
-.card-stats {
-  display: flex;
-  gap: 0;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 14px;
-  overflow: hidden;
-}
-.card-stat {
-  flex: 1;
-  text-align: center;
-  padding: 18px 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-}
-.card-stat:last-child { border-right: none; }
-.card-stat-value {
-  font-size: 2.2rem;
-  font-weight: 800;
-  line-height: 1;
-  margin-bottom: 5px;
-  color: var(--text-primary);
-}
-.card-stat-label {
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-weight: 700;
 }
 
 /* Paired-child dormant/Heartwood notice at the foot of the card. */
@@ -271,12 +368,104 @@
   line-height: 1.4;
 }
 
-.card-npub {
-  font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+/* ── Quick-open: sign-in launcher + contacts pill ── */
+.card-quick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.card-launcher {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.card-launcher-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 8px;
+  border-radius: 100px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
   font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.card-launcher-chip:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(201, 169, 98, 0.45); }
+.card-launcher-chip:active { background: rgba(255, 255, 255, 0.12); }
+.card-launcher-tile {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--brand-gold-light);
+  color: var(--brand-gold-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+.card-launcher-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.card-contacts-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 100px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.card-contacts-pill:hover { color: var(--text-primary); }
+.card-pill-chevron { font-size: 1.1rem; line-height: 1; margin-left: -2px; }
+
+.card-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: auto;
+}
+.card-actions > * { flex: 1; min-width: 0; }
+/* Large tappable tiles: icon above label, equal thirds. The HandshakeButton
+   keeps its own markup (jigsaw + radios) but adopts the same shape here. */
+.card-action-tile,
+.card-actions .handshake-button {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 13px 6px 11px;
+  font-size: 0.88rem;
+  min-height: 72px;
+}
+.card-actions .handshake-button svg:first-child { width: 24px; height: 24px; }
+.card-actions .handshake-radios { position: absolute; top: 6px; right: 8px; display: inline-flex; gap: 3px; }
+.card-actions .handshake-button { position: relative; }
+.card-actions .handshake-radios svg { width: 13px; height: 13px; }
+
+.card-npub {
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', 'Courier New', monospace);
+  font-size: 0.78rem;
   color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   text-align: center;
+  margin-top: 2px;
 }
 
 .card-footer { text-align: center; }
@@ -285,27 +474,6 @@
   color: var(--text-muted);
   letter-spacing: 0.02em;
 }
-.card-hint:empty { display: none; }
-.card-swipe-hints {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.card-swipe-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 4px 2px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font: inherit;
-  cursor: pointer;
-}
-.card-swipe-hint:active { color: var(--text-primary); }
-.card-swipe-label { font-size: 0.95rem; font-weight: 600; }
-.card-swipe-arrow { font-size: 1.6rem; line-height: 1; }
 .card-hint-child {
   font-size: 0.82rem;
   color: var(--warning);
@@ -378,11 +546,6 @@
   align-items: center;
   justify-content: center;
   padding: 8px;
-}
-.qr-tier-line {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-align: center;
 }
 
 /* QR include pills — front-page pill bar (what the QR carries).
@@ -720,6 +883,79 @@
 .nav-dot.child-dot.active { background: var(--warning); }
 
 /* ─── Child Banner ─── */
+/* ─── Identity switcher (sheet listing every row of the ring) ─── */
+.identity-switcher-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.identity-switcher {
+  width: 100%;
+  max-width: 420px;
+  max-height: 70%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-radius: 18px 18px 0 0;
+  box-shadow: var(--shadow-lg);
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  animation: identity-switcher-rise 220ms var(--ease);
+}
+@keyframes identity-switcher-rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.identity-switcher-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 10px;
+}
+.identity-switcher-head h2 { font-size: 1rem; margin: 0; }
+.identity-switcher-head button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px;
+  display: inline-flex;
+}
+.identity-switcher-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.identity-switcher-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px;
+  border-radius: 12px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.identity-switcher-row:hover { background: rgba(255, 255, 255, 0.05); }
+.identity-switcher-row.is-current { background: var(--accent-light); border-color: rgba(201, 169, 98, 0.4); }
+.identity-switcher-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
+}
+.identity-switcher-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.identity-switcher-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity-switcher-kind { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
+.identity-switcher-tick { color: var(--accent); font-weight: 700; }
+
 .child-banner {
   position: fixed;
   top: 0;
@@ -1226,34 +1462,47 @@
 /* Fit the identity into its actual card height. It is a swipe surface, not a
    scroll area; keep every detail and action visible on shorter phones. */
 @container identity-card (max-height: 780px) {
-  .card-inner { padding: 14px 20px 12px; gap: 8px; justify-content: space-between; }
+  .card-inner { padding: 14px 20px 14px; gap: 8px; }
+  .card-identity { gap: 4px; }
+  .card-stage.has-backdrop .card-identity { padding: 10px 16px 10px; }
+  .card-launcher-chip { font-size: .78rem; padding: 5px 11px 5px 6px; }
+  .card-launcher-tile { width: 21px; height: 21px; }
   .card-brand { margin-top: 0; gap: 14px; }
   .card-brand img:first-child { height: 44px; }
   .card-brand img:last-child { height: 34px; }
-  .card-photo { width: clamp(64px, 19cqh, 120px); height: clamp(64px, 19cqh, 120px); border-radius: 22px; }
+  .card-photo { width: clamp(72px, 23cqh, 150px); height: clamp(72px, 23cqh, 150px); border-radius: 22px; }
   .card-name { font-size: 1.8rem; overflow-wrap: anywhere; }
-  .card-stat { padding: 10px 0; }
-  .card-stat-value { font-size: 1.8rem; }
 }
 @container identity-card (max-height: 540px) {
   .card-inner { padding: 10px 16px; gap: 4px; }
+  .card-photo-wrap { margin-bottom: 6px; }
+  .card-quick { gap: 5px; }
+  .card-contacts-pill { padding: 2px 10px; }
   .card-brand img:first-child { height: 32px; }
   .card-brand img:last-child { height: 26px; }
   .card-photo { width: 72px; height: 72px; border-radius: 18px; }
   .card-name { font-size: 1.45rem; }
   .card-type { font-size: .72rem; }
-  .carousel-tier-badge { padding: 6px 16px; font-size: .8rem; }
-  .status-chip { font-size: .8rem; }
-  .card-stat { padding: 6px 0; }
-  .card-stat-value { font-size: 1.5rem; margin-bottom: 3px; }
-  .card-stat-label { font-size: .6rem; }
+  .card-type-switch { padding: 3px 10px 3px 12px; }
   .card-npub { font-size: .7rem; }
+  .card-action-tile, .card-actions .handshake-button { min-height: 56px; padding: 8px 6px 7px; gap: 3px; font-size: .8rem; }
   .card-dormant-notice { margin-top: 0 !important; padding: 6px 8px !important; font-size: .72rem !important; }
 }
 /* Other cards contain lists and forms that retain their native scrolling. */
-.qr-view { overflow-y: auto; overscroll-behavior: contain; gap: 16px; }
+.qr-view { overflow-y: auto; overscroll-behavior: contain; gap: 16px; container: qr-card / size; }
 .qr-view > * { flex-shrink: 0; }
-.qr-box { width: min(260px, 100%); height: auto; aspect-ratio: 1; }
+/* The code shrinks with the card on short phones so the caption and
+   controls stay in view: never wider than the card, never taller than
+   about half of it. */
+.qr-box { width: min(260px, 100%, 40cqh); height: auto; aspect-ratio: 1; }
+.qr-panel { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; flex: 1 0 auto; min-height: 0; }
+.qr-panel > * { width: 100%; }
+@container qr-card (max-height: 560px) {
+  .qr-view { gap: 10px; padding: 16px 16px; }
+  .mini-id-photo { width: 44px; height: 44px; font-size: 1.1rem; }
+  .mini-id-name { font-size: 1.05rem; }
+  .qr-caption { min-height: 0; }
+}
 .qr-box canvas { max-width: 100%; height: auto !important; }
 .settings-view { overscroll-behavior: contain; }
 .camera-view { padding: 20px; overflow-y: auto; overscroll-behavior: contain; }

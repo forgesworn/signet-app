@@ -223,6 +223,8 @@ export const ROLE_HINT =
   'A role describes the relationship. It never changes the tier or grants access.';
 export const TIER_HINT =
   'Kin is your close circle, Kith an acquaintance, Ken someone you recognise one way.';
+/** The contacts page's overflow button, holding its occasional actions. */
+export const MORE_ACTIONS_LABEL = 'More contact actions';
 export const NO_ROLES_YET = 'No roles yet.';
 
 /**

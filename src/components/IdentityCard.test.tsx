@@ -54,7 +54,7 @@ function resolvedLily() {
 
 describe('IdentityCard — image / avatar', () => {
   it('renders the initial when no photoHash is set', () => {
-    render(<IdentityCard row={dependantRow({ displayName: 'Lily' })} resolved={resolvedLily()} badge={null} childMode={false} />);
+    render(<IdentityCard row={dependantRow({ displayName: 'Lily' })} resolved={resolvedLily()} childMode={false} />);
     expect(screen.getByText(initialFromName('Lily'))).toBeDefined();
   });
 
@@ -63,7 +63,7 @@ describe('IdentityCard — image / avatar', () => {
       <IdentityCard
         row={dependantRow({ displayName: 'Lily' })}
         resolved={resolvedLily()}
-        badge={null}
+       
         childMode={false}
         photoUrl="https://example.com/lily.jpg"
       />
@@ -90,7 +90,6 @@ const baseResolved = {
   type: 'Owner',
   isDependant: false,
 };
-const baseBadge = { tier: 3, score: 120, vouchCount: 5 };
 
 describe('IdentityCard — Pro pill', () => {
   it('renders Pro pill when proAnchorActive is true', () => {
@@ -98,7 +97,7 @@ describe('IdentityCard — Pro pill', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={baseBadge}
+       
         childMode={false}
         proAnchorActive={true}
         onProPillTap={vi.fn()}
@@ -112,7 +111,7 @@ describe('IdentityCard — Pro pill', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={baseBadge}
+       
         childMode={false}
         proAnchorActive={false}
       />
@@ -126,7 +125,7 @@ describe('IdentityCard — Pro pill', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={baseBadge}
+       
         childMode={false}
         proAnchorActive={true}
         onProPillTap={onProPillTap}
@@ -139,17 +138,17 @@ describe('IdentityCard — Pro pill', () => {
 
 describe('IdentityCard — dependant pairing status', () => {
   it('shows "No phone paired — swipe › to settings" when unpaired', () => {
-    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null} childMode={false} pairingStatus={{ paired: false }} />);
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} pairingStatus={{ paired: false }} />);
     expect(screen.getByText(/No phone paired — swipe . to settings/)).toBeDefined();
   });
 
   it('shows "Paired" when paired (no timestamp)', () => {
-    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null} childMode={false} pairingStatus={{ paired: true }} />);
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} pairingStatus={{ paired: true }} />);
     expect(screen.getByText(/Paired/)).toBeDefined();
   });
 
   it('shows nothing pairing-related when pairingStatus is null/undefined', () => {
-    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null} childMode={false} />);
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} />);
     expect(screen.queryByText(/Paired/)).toBeNull();
     expect(screen.queryByText(/No phone paired/)).toBeNull();
   });
@@ -161,7 +160,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={vi.fn()}
       />,
@@ -178,7 +177,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={onRenameActive}
       />,
@@ -195,7 +194,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={onRenameActive}
       />,
@@ -212,7 +211,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={onRenameActive}
       />,
@@ -227,7 +226,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={baseResolved}
-        badge={null}
+       
         childMode={false}
         onRenameActive={vi.fn()}
       />,
@@ -242,7 +241,7 @@ describe('IdentityCard — inline name editor', () => {
       <IdentityCard
         row={unnamedOwnerRow}
         resolved={unnamedResolved}
-        badge={null}
+       
         childMode={false}
       />,
     );
@@ -260,7 +259,7 @@ describe('IdentityCard — public kind-0 picture', () => {
       <IdentityCard
         row={baseOwnerRow}
         resolved={pubResolved(pictureUrl)}
-        badge={null}
+       
         childMode={false}
         {...extra}
       />,
@@ -293,7 +292,7 @@ describe('IdentityCard — public kind-0 picture', () => {
     const { rerender } = renderCard('https://example.com/a.jpg');
     fireEvent.error(screen.getByAltText("Alice's image"));
     rerender(
-      <IdentityCard row={baseOwnerRow} resolved={pubResolved('https://example.com/b.jpg')} badge={null} childMode={false} />,
+      <IdentityCard row={baseOwnerRow} resolved={pubResolved('https://example.com/b.jpg')} childMode={false} />,
     );
     expect((screen.getByAltText("Alice's image") as HTMLImageElement).src).toBe('https://example.com/b.jpg');
   });
@@ -313,11 +312,89 @@ describe('IdentityCard — public kind-0 picture', () => {
 
 it('Handshake remains outside the blur layer and works on a dormant child card', () => {
   const onHandshake = vi.fn();
-  const { container } = render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} badge={null}
+  const { container } = render(<IdentityCard row={dependantRow()} resolved={resolvedLily()}
     childMode childDormant blurIdentityNames onHandshake={onHandshake} />);
   const button = within(container).getByRole('button', { name: 'Handshake' });
   const blur = within(container).getByLabelText('Tap to reveal identity');
   expect(blur).not.toContainElement(button);
   fireEvent.click(button); expect(onHandshake).toHaveBeenCalledWith(false);
   expect(blur).toHaveStyle({ filter: 'blur(6px)' });
+});
+
+describe('IdentityCard — quick-open launcher and contacts pill', () => {
+  const ownerRow = {
+    type: 'owner',
+    identity: { displayName: 'Alice', publicKey: 'aa'.repeat(32), keypairType: 'persona' },
+  } as never;
+  const ownerResolved = {
+    displayName: 'Alice',
+    displayNameIsSet: true,
+    publicKey: 'aa'.repeat(32),
+    type: 'Persona',
+    isDependant: false,
+  };
+
+  it('renders a chip per site and opens its origin on tap', () => {
+    const onOpenSite = vi.fn();
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
+      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]}
+      onOpenSite={onOpenSite} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open Primal' }));
+    expect(onOpenSite).toHaveBeenCalledWith('https://primal.net');
+  });
+
+  it('shows no launcher when the identity has no sign-ins yet — the Scan tile is the invitation', () => {
+    const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
+    expect(container.querySelector('.card-launcher')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+  });
+
+  it('shows the contacts count, or an add-first prompt at zero', () => {
+    const { rerender } = render(
+      <IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} contactsCount={3} />);
+    expect(screen.getByRole('button', { name: "Open this identity's contacts" }).textContent)
+      .toContain('3 contacts');
+    rerender(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} contactsCount={0} />);
+    expect(screen.getByText('Add your first contact')).toBeDefined();
+  });
+
+  it('hides the launcher, contacts pill and Scan on a dependant card', () => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
+      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]} contactsCount={3} />);
+    expect(screen.queryByRole('button', { name: 'Open Primal' })).toBeNull();
+    expect(screen.queryByRole('button', { name: "Open this identity's contacts" })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Scan' })).toBeNull();
+  });
+});
+
+describe('IdentityCard — backdrop control', () => {
+  const ownerRow = {
+    type: 'owner',
+    identity: { displayName: 'Alice', publicKey: 'aa'.repeat(32), keypairType: 'persona' },
+  } as never;
+  const ownerResolved = {
+    displayName: 'Alice', displayNameIsSet: true, publicKey: 'aa'.repeat(32),
+    type: 'Persona', isDependant: false,
+  };
+
+  it('offers the customise-backdrop control on an owner card', () => {
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+  });
+
+  it('hides the backdrop control on dependant and dormant cards', () => {
+    const { rerender } = render(
+      <IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} />);
+    expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
+    rerender(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant />);
+    expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
+  });
+
+  it('shows all three action tiles on an owner card', () => {
+    const onHandshake = vi.fn();
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} onHandshake={onHandshake} />);
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Handshake' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Show my QR code' })).toBeDefined();
+  });
 });

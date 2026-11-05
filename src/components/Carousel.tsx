@@ -7,7 +7,9 @@ import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
 import { shouldShowPairingStatus } from '../lib/carousel-routing';
 import { NavDots } from './NavDots';
-import { IdentityCard } from './IdentityCard';
+import { IdentityCard, type LauncherSite } from './IdentityCard';
+import { CardStage } from './CardStage';
+import { IdentitySwitcher } from './IdentitySwitcher';
 import type { IdentityCardProps } from './IdentityCard';
 import { QRCard, type QRCardSlots } from './QRCard';
 import { SettingsCard, type AvatarResult } from './SettingsCard';
@@ -15,13 +17,17 @@ import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
-import type { IQBreakdownItem } from '../lib/badge-fetch';
 import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
   onHandshake?: (resolved: ResolvedIdentity, choose: boolean) => void;
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
   renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, renderPublicCard: (slots?: QRCardSlots) => ReactNode) => ReactNode;
+  /** Quick-open launcher rows for an owner identity's card (col 0). */
+  launcherSitesFor?: (resolved: ResolvedIdentity) => LauncherSite[];
+  onOpenSite?: (origin: string) => void;
+  /** Active contacts count for an owner identity, or null to hide the pill. */
+  contactsCountFor?: (resolved: ResolvedIdentity) => number | null;
   renderContactsCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
   row: number;
   col: CarouselColumn;
@@ -31,11 +37,12 @@ interface CarouselProps {
   onCommit: (row: number, col: CarouselColumn) => void;
   onAnimatingChange: (v: boolean) => void;
   swipeLocked?: boolean;
-  badge: { tier: number; score: number; vouchCount: number; iqBreakdown?: IQBreakdownItem[] } | null;
   onNavigateDeepPage: (page: string, opts?: {
     focusPersona?: string;
     dependantId?: string;
     slotTarget?: 'natural-person' | 'persona' | 'professional-persona' | string;
+    /** Section anchor on the destination page (Security & Backup: 'lock' | 'backup'). */
+    section?: string;
   }) => void;
   onQRScanned: (data: string) => string | void | Promise<string | void>;
   onEnterChildMode: (dependantId: string) => void;
@@ -268,97 +275,104 @@ function renderCard(
   // identity's rename handler, so the inline editor is not offered there.
   const renameTarget = resolveRenameTarget(row);
 
-  switch (col) {
-    case 0: {
-      const pairingStatus = shouldShowPairingStatus(row.type, props.childMode, props.signingMode) && row.type === 'dependant'
-        ? (props.dependantById?.[row.dependant.id]?.bunkerEndpoint?.authorizedClientPubkey
-            ? { paired: true as const }
-            : { paired: false as const })
-        : null;
-      const recentSignInLabel = (row.type === 'dependant' && props.recentSignInAck?.dependantId === row.dependant.id)
-        ? props.recentSignInAck.label
-        : undefined;
-      return (
-        <IdentityCard
-          key={identityCardKey(row)}
-          row={row}
-          onHandshake={props.onHandshake ? choose => props.onHandshake!(resolved, choose) : undefined}
-          resolved={resolved}
-          badge={props.badge}
-          childMode={props.childMode}
-          childDormant={props.childDormant}
-          childSignerKind={props.childSignerKind}
-          cachedGuardianName={props.cachedGuardianName}
-          pairingStatus={pairingStatus}
-          // TODO: resolve photoHash → URL via local cache or Blossom server. Tracked as follow-up.
-          photoUrl={null}
-          proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
-          onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
-          recentSignInLabel={recentSignInLabel}
-          blurIdentityNames={props.blurIdentityNames}
-          onRenameActive={renameTarget && props.onRenameActive
-            ? (name: string) => props.onRenameActive!(renameTarget, name)
-            : undefined}
-        />
-      );
+  // The identity's backdrop travels with it across every card of the ring.
+  const node = (() => {
+    switch (col) {
+      case 0: {
+        const pairingStatus = shouldShowPairingStatus(row.type, props.childMode, props.signingMode) && row.type === 'dependant'
+          ? (props.dependantById?.[row.dependant.id]?.bunkerEndpoint?.authorizedClientPubkey
+              ? { paired: true as const }
+              : { paired: false as const })
+          : null;
+        const recentSignInLabel = (row.type === 'dependant' && props.recentSignInAck?.dependantId === row.dependant.id)
+          ? props.recentSignInAck.label
+          : undefined;
+        return (
+          <IdentityCard
+            key={identityCardKey(row)}
+            row={row}
+            onHandshake={props.onHandshake ? choose => props.onHandshake!(resolved, choose) : undefined}
+            resolved={resolved}
+            childMode={props.childMode}
+            childDormant={props.childDormant}
+            childSignerKind={props.childSignerKind}
+            cachedGuardianName={props.cachedGuardianName}
+            pairingStatus={pairingStatus}
+            // TODO: resolve photoHash → URL via local cache or Blossom server. Tracked as follow-up.
+            photoUrl={null}
+            proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
+            onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
+            launcherSites={props.launcherSitesFor?.(resolved)}
+            onOpenSite={props.onOpenSite}
+            contactsCount={props.contactsCountFor?.(resolved) ?? null}
+            recentSignInLabel={recentSignInLabel}
+            blurIdentityNames={props.blurIdentityNames}
+            onRenameActive={renameTarget && props.onRenameActive
+              ? (name: string) => props.onRenameActive!(renameTarget, name)
+              : undefined}
+          />
+        );
+      }
+      case 1: {
+        const renderPublicCard = (slots?: QRCardSlots) => (
+          <QRCard
+            // Per-row remount (same pattern as IdentityCard at case 0): the
+            // carousel reuses this positional instance across vertical swipes, so
+            // without a row-keyed remount QRCard's local state (contactKey,
+            // customFields) would carry one persona's contact-share key onto the
+            // next persona's QR. Keying on the row forces a fresh slot each swipe.
+            key={identityCardKey(row)}
+            resolved={resolved}
+            tabs={slots?.tabs}
+            footer={slots?.footer}
+          />
+        );
+        return props.renderInviteCard?.(row, resolved, renderPublicCard) ?? renderPublicCard();
+      }
+      case 2:
+        return props.renderContactsCard?.(row, resolved) ?? null;
+      case 3:
+        return (
+          <SettingsCard
+            resolved={resolved}
+            row={row}
+            childMode={props.childMode}
+            isPairedChild={props.isPairedChild ?? false}
+            onNavigateDeepPage={props.onNavigateDeepPage}
+            dependantsCount={props.dependantsCount ?? 0}
+            defaultBlossomUrl={props.defaultBlossomUrl}
+            blossomConsent={props.blossomConsent}
+            onSavePersonaConfig={props.onSavePersonaConfig}
+            onRepublishProfile={props.onRepublishProfile}
+            onUploadPersonaPicture={props.onUploadPersonaPicture}
+            onDeletePublicBlob={props.onDeletePublicBlob}
+            onUpdateOwnPersonaName={props.onUpdateOwnPersonaName}
+            onSetPersonaAvatar={props.onSetPersonaAvatar}
+            onClearPersonaAvatar={props.onClearPersonaAvatar}
+            onNip05Checked={props.onNip05Checked}
+            onSaveDepPersonaConfig={props.onSaveDepPersonaConfig}
+            onRepublishDepProfile={props.onRepublishDepProfile}
+            onUploadDepPersonaPicture={props.onUploadDepPersonaPicture}
+            onUpdateDepName={props.onUpdateDepName}
+            onUpdateDepPersonaName={props.onUpdateDepPersonaName}
+            onSetDepPersonaAvatar={props.onSetDepPersonaAvatar}
+            onClearDepPersonaAvatar={props.onClearDepPersonaAvatar}
+            onDepNip05Checked={props.onDepNip05Checked}
+          />
+        );
+      case 4:
+        return (
+          <CameraCard
+            resolved={resolved}
+            onQRScanned={props.onQRScanned}
+            live={live}
+          />
+        );
     }
-    case 1: {
-      const renderPublicCard = (slots?: QRCardSlots) => (
-        <QRCard
-          // Per-row remount (same pattern as IdentityCard at case 0): the
-          // carousel reuses this positional instance across vertical swipes, so
-          // without a row-keyed remount QRCard's local state (contactKey,
-          // customFields) would carry one persona's contact-share key onto the
-          // next persona's QR. Keying on the row forces a fresh slot each swipe.
-          key={identityCardKey(row)}
-          resolved={resolved}
-          badge={props.badge}
-          tabs={slots?.tabs}
-          footer={slots?.footer}
-        />
-      );
-      return props.renderInviteCard?.(row, resolved, renderPublicCard) ?? renderPublicCard();
-    }
-    case 2:
-      return props.renderContactsCard?.(row, resolved) ?? null;
-    case 3:
-      return (
-        <SettingsCard
-          resolved={resolved}
-          row={row}
-          childMode={props.childMode}
-          isPairedChild={props.isPairedChild ?? false}
-          onNavigateDeepPage={props.onNavigateDeepPage}
-          dependantsCount={props.dependantsCount ?? 0}
-          defaultBlossomUrl={props.defaultBlossomUrl}
-          blossomConsent={props.blossomConsent}
-          onSavePersonaConfig={props.onSavePersonaConfig}
-          onRepublishProfile={props.onRepublishProfile}
-          onUploadPersonaPicture={props.onUploadPersonaPicture}
-          onDeletePublicBlob={props.onDeletePublicBlob}
-          onUpdateOwnPersonaName={props.onUpdateOwnPersonaName}
-          onSetPersonaAvatar={props.onSetPersonaAvatar}
-          onClearPersonaAvatar={props.onClearPersonaAvatar}
-          onNip05Checked={props.onNip05Checked}
-          onSaveDepPersonaConfig={props.onSaveDepPersonaConfig}
-          onRepublishDepProfile={props.onRepublishDepProfile}
-          onUploadDepPersonaPicture={props.onUploadDepPersonaPicture}
-          onUpdateDepName={props.onUpdateDepName}
-          onUpdateDepPersonaName={props.onUpdateDepPersonaName}
-          onSetDepPersonaAvatar={props.onSetDepPersonaAvatar}
-          onClearDepPersonaAvatar={props.onClearDepPersonaAvatar}
-          onDepNip05Checked={props.onDepNip05Checked}
-        />
-      );
-    case 4:
-      return (
-        <CameraCard
-          resolved={resolved}
-          onQRScanned={props.onQRScanned}
-          live={live}
-        />
-      );
-  }
+  })();
+  // The camera feed covers the whole card, so the backdrop has nothing to show there.
+  if (col === 4) return node;
+  return <CardStage pubkey={resolved.publicKey || undefined}>{node}</CardStage>;
 }
 
 /**
@@ -560,14 +574,14 @@ export function Carousel(props: CarouselProps) {
     }, 250);
   }, [clearSnapBackTimeout, setIncoming]);
 
-  const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
+  /**
+   * Slide to an explicit `target` along `axis` in `direction`. Shared by the
+   * neighbour swipe (`handleSwipe`) and the direct jumps (a tile on the card
+   * opening a column, the identity switcher picking a row), so every move
+   * through the ring animates the same way.
+   */
+  const slideTo = useCallback((axis: 'h' | 'v', direction: -1 | 1, target: { row: number; col: CarouselColumn }, dx: number, dy: number) => {
     if (animating || transitionInFlight.current) return;
-
-    const target = resolveTarget(axis, direction);
-    if (!target) {
-      handleSnapBack();
-      return;
-    }
     const { row: newRow, col: newCol } = target;
 
     transitionInFlight.current = true;
@@ -660,7 +674,34 @@ export function Carousel(props: CarouselProps) {
     animationFrames.current = [requestAnimationFrame(() => {
       animationFrames.current = [requestAnimationFrame(runAnimation)];
     })];
-  }, [animating, resolveTarget, onCommit, onAnimatingChange, handleSnapBack, setIncoming, clearSnapBackTimeout]);
+  }, [animating, onCommit, onAnimatingChange, setIncoming, clearSnapBackTimeout]);
+
+  const handleSwipe = useCallback((axis: 'h' | 'v', direction: -1 | 1, dx: number, dy: number) => {
+    if (animating || transitionInFlight.current) return;
+    const target = resolveTarget(axis, direction);
+    if (!target) {
+      handleSnapBack();
+      return;
+    }
+    slideTo(axis, direction, target, dx, dy);
+  }, [animating, resolveTarget, handleSnapBack, slideTo]);
+
+  /** Slide straight to a column on the current row, in the shorter direction round the loop. */
+  const jumpToCol = useCallback((toCol: CarouselColumn) => {
+    if (toCol === col) return;
+    const forward = (toCol - col + CAROUSEL_COLUMNS.length) % CAROUSEL_COLUMNS.length;
+    const direction: -1 | 1 = forward <= CAROUSEL_COLUMNS.length / 2 ? -1 : 1;
+    slideTo('h', direction, { row, col: toCol }, 0, 0);
+  }, [col, row, slideTo]);
+
+  /** Slide vertically to another identity row, keeping the column. */
+  const jumpToRow = useCallback((toRow: number) => {
+    if (toRow === row || toRow < 0 || toRow >= rows.length) return;
+    slideTo('v', toRow > row ? -1 : 1, { row: toRow, col }, 0, 0);
+  }, [row, col, rows.length, slideTo]);
+
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  useEffect(() => { setSwitcherOpen(false); }, [row]);
 
   const handleTap = useCallback(() => {
     // A gesture that locked an axis (mounting a neighbour) but ended under the
@@ -710,10 +751,14 @@ export function Carousel(props: CarouselProps) {
       right: () => handleSwipe('h', -1, 60, 0),  // next card  (ArrowRight)
       up: () => handleSwipe('v', 1, 0, -60),     // prev identity (ArrowUp)
       down: () => handleSwipe('v', -1, 0, 60),   // next identity (ArrowDown)
+      jump: jumpToCol,
+      openSwitcher: () => setSwitcherOpen(true),
+      rowIndex: row,
+      rowCount: rows.length,
       ...computeArrowState(row, rows.length),
     });
     return () => registerArrows(null);
-  }, [registerArrows, handleSwipe, row, rows.length]);
+  }, [registerArrows, handleSwipe, jumpToCol, row, rows.length]);
 
   return (
     <div className="carousel-viewport" data-theme="dark" data-carousel-cell={`${row}:${col}`} aria-busy={animating} ref={viewportRef}>
@@ -750,6 +795,15 @@ export function Carousel(props: CarouselProps) {
       )}
 
       <NavDots col={col} row={row} rows={rows} />
+
+      {switcherOpen && (
+        <IdentitySwitcher
+          rows={rows}
+          current={row}
+          onPick={toRow => { setSwitcherOpen(false); jumpToRow(toRow); }}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
 
       {props.childMode && props.childDependant && (
         <div className="child-banner">

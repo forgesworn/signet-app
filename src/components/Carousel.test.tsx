@@ -40,7 +40,7 @@ function renderCarousel(overrides: Record<string, unknown> = {}) {
       animating={false}
       onCommit={onCommit}
       onAnimatingChange={onAnimatingChange}
-      badge={null}
+     
       onNavigateDeepPage={vi.fn()}
       onQRScanned={vi.fn()}
       onEnterChildMode={vi.fn()}
@@ -188,7 +188,7 @@ describe('Carousel inline rename target', () => {
         animating={false}
         onCommit={vi.fn()}
         onAnimatingChange={vi.fn()}
-        badge={null}
+       
         onNavigateDeepPage={vi.fn()}
         onQRScanned={vi.fn()}
         onEnterChildMode={vi.fn()}
@@ -270,7 +270,7 @@ describe('Carousel transition continuity', () => {
       const [animating, setAnimating] = useState(false);
       return <Carousel row={0} col={col} rows={identityRows} activeIdentity={resolvedAdd} animating={animating}
         onCommit={(_r, c) => { setCol(c); setAnimating(false); }} onAnimatingChange={setAnimating}
-        badge={null} onNavigateDeepPage={vi.fn()} onQRScanned={vi.fn()} onEnterChildMode={vi.fn()}
+        onNavigateDeepPage={vi.fn()} onQRScanned={vi.fn()} onEnterChildMode={vi.fn()}
         onExitChildMode={vi.fn()} childMode={false} childDependant={null} onAddPersona={vi.fn()}
         renderInviteCard={() => <div>Invite</div>} renderContactsCard={() => <Preview />} />;
     }

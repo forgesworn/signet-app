@@ -2,21 +2,31 @@ import { HandshakeButton } from './HandshakeButton';
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type { CarouselRow } from '../types';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
-import type { IQBreakdownItem } from '../lib/badge-fetch';
 import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
 import { initialFromName, colourFromPubkey } from '../lib/avatar';
 import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
+import { BACKDROP_PRIVACY_COPY, useCardBackdrop } from '../hooks/useCardBackdrop';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
 
+/** One site this identity has signed in to, for the quick-open launcher. */
+export interface LauncherSite {
+  id: string;
+  /** Site origin, e.g. "https://example.com" — what onOpenSite receives. */
+  origin: string;
+  /** Short display label: the site's name, falling back to its domain. */
+  label: string;
+  /** Pinned via the Connections page — listed first. */
+  pinned?: boolean;
+}
+
 export interface IdentityCardProps {
   onHandshake?: (choose: boolean) => void;
   row: CarouselRow;
   resolved: ResolvedIdentity;
-  badge: { tier: number; score: number; vouchCount: number; iqBreakdown?: IQBreakdownItem[] } | null;
   childMode: boolean;
   /**
    * On a paired-child install when the guardian has set
@@ -45,10 +55,18 @@ export interface IdentityCardProps {
    *  want full control. When omitted, this component resolves the avatar
    *  itself from `resolved.avatarHash/Url/Key` via `useResolvedAvatar`. */
   photoUrl?: string | null;
-  /** When set, renders a Pro pill alongside the tier badge. Tap navigates to Professional Dashboard. */
+  /** When set, renders a Pro pill under the identity type. Tap navigates to Professional Dashboard. */
   proAnchorActive?: boolean;
   /** Called when the Pro pill is tapped. Navigates to `professional` page. */
   onProPillTap?: () => void;
+  /** Sites this identity has signed in to, pinned first then most recent.
+   *  Empty or undefined hides the launcher: the Scan tile already invites the first sign-in. */
+  launcherSites?: LauncherSite[];
+  /** Opens a launcher site (e.g. window.open). Required for chips to render as buttons. */
+  onOpenSite?: (origin: string) => void;
+  /** Active contacts on this identity's private list. null/undefined hides the pill
+   *  (dependant rows, locked directory, still loading). */
+  contactsCount?: number | null;
   /**
    * Transient "Signed in as <persona>" caption shown after the user
    * approves a sign-in using one of this dep's personas/extras. The
@@ -72,14 +90,47 @@ export interface IdentityCardProps {
   onRenameActive?: (name: string) => void | Promise<void>;
 }
 
-export function IdentityCard({ onHandshake, row, resolved, badge, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
-  const tier = badge?.tier ?? 1;
-  const iq = badge?.score ?? 0;
-  const vouches = badge?.vouchCount ?? 0;
-  const verified = tier >= 2;
+const BACKDROP_NOTE_MS = 4000;
+
+/** A stable tint per site, so the launcher tiles tell sites apart the way avatars do. */
+function colourFromLabel(text: string): string {
+  let h = 7;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  return colourFromPubkey(h.toString(16).padStart(8, '0'));
+}
+
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
+
+  // ── Card backdrop — this identity's wallpaper (device-local) ──
+  const backdrop = useCardBackdrop(resolved.publicKey || undefined);
+  const backdropInputRef = useRef<HTMLInputElement | null>(null);
+  const backdropEditRef = useRef<HTMLDivElement | null>(null);
+  const [backdropMenuOpen, setBackdropMenuOpen] = useState(false);
+  const [backdropNote, setBackdropNote] = useState<string | null>(null);
+  const backdropNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canEditBackdrop = !isDependant && !childDormant;
+
+  // Any press outside the control closes its menu — including on the tab
+  // bar, which a scrim inside the (transformed) card could never cover.
+  useEffect(() => {
+    if (!backdropMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (backdropEditRef.current && e.target instanceof Node && backdropEditRef.current.contains(e.target)) return;
+      setBackdropMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [backdropMenuOpen]);
+
+  const showBackdropNote = useCallback((note: string) => {
+    setBackdropNote(note);
+    if (backdropNoteTimer.current) clearTimeout(backdropNoteTimer.current);
+    backdropNoteTimer.current = setTimeout(() => { setBackdropNote(null); backdropNoteTimer.current = null; }, BACKDROP_NOTE_MS);
+  }, []);
+  useEffect(() => () => { if (backdropNoteTimer.current) clearTimeout(backdropNoteTimer.current); }, []);
 
   // Guardian name for the dormant notice — falls back to the generic form
   // when the guardian's status-publish carried no name (see `cachedGuardianName`).
@@ -183,10 +234,75 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
   }
 
   const initial = initialFromName(resolved.displayName);
+  const ownerCard = !isChildCard && !childDormant;
+  // The role label doubles as the way into the identity switcher once the
+  // ring has more than one row; on its own it stays a plain label.
+  const canSwitch = !!arrows && arrows.rowCount > 1;
+  const typeLabel = isDependant
+    ? (
+      <>
+        Dependant
+        {age ? (
+          <>
+            {' · '}
+            <span style={blurActive ? { filter: 'blur(5px)', userSelect: 'none' } : undefined}>
+              Age {age}
+            </span>
+          </>
+        ) : null}
+      </>
+    )
+    : resolved.type;
 
   return (
     <div className="id-card">
-      <div className={`card-band tier-${tier}-band`} />
+      {/* The backdrop itself is painted by CardStage behind every card of
+          this identity; this card only hosts the customise control. */}
+      <div className="card-band" />
+      {canEditBackdrop && (
+        <div className="card-backdrop-edit" ref={backdropEditRef}>
+          <input
+            ref={backdropInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={e => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              setBackdropMenuOpen(false);
+              if (!file) return;
+              void backdrop.set(file).then(result => { showBackdropNote(result.ok ? BACKDROP_PRIVACY_COPY : result.reason); });
+            }}
+          />
+          <button
+            type="button"
+            className="card-backdrop-btn"
+            aria-label="Customise card backdrop"
+            aria-expanded={backdrop.url ? backdropMenuOpen : undefined}
+            onClick={e => {
+              e.stopPropagation();
+              if (backdrop.url) setBackdropMenuOpen(open => !open);
+              else backdropInputRef.current?.click();
+            }}
+            onTouchEnd={e => e.stopPropagation()}
+          >
+            <Icon name="image" size={16} />
+          </button>
+          {backdropMenuOpen && backdrop.url && (
+            <div className="card-backdrop-menu" role="menu" onClick={e => e.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); backdropInputRef.current?.click(); }}>
+                Change image
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
+                Remove
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {backdropNote && (
+        <div className="card-backdrop-note" role="status">{backdropNote}</div>
+      )}
       {recentSignInLabel && (
         <div className="signin-ack-chip" role="status" aria-live="polite">
           <span className="signin-ack-tick">&#10003;</span>
@@ -199,144 +315,182 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
           <BrandMark variant="wordmark" tone="on-dark" size={46} />
         </div>
 
-        {/* \u2500\u2500 Blurred identity area (avatar + name) \u2500\u2500 */}
-        {/* The role/type label sits outside this wrapper and stays sharp. */}
-        <div
-          onClick={blurActive ? handleRevealTap : undefined}
-          onTouchEnd={blurActive ? handleRevealTap : undefined}
-          style={blurActive ? {
-            filter: 'blur(6px)',
-            userSelect: 'none',
-            cursor: 'pointer',
-            WebkitUserSelect: 'none',
-          } : undefined}
-          aria-label={blurActive ? 'Tap to reveal identity' : undefined}
-        >
-          <div className="card-photo-wrap">
-            <div
-              className="card-photo"
-              style={{
-                background: effectivePhotoUrl ? '#0000' : colourFromPubkey(resolved.publicKey),
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#fff',
-                fontWeight: 600,
-                fontSize: '1.3rem',
-                overflow: 'hidden',
-              }}
-            >
-              {effectivePhotoUrl ? (
-                <img
-                  src={effectivePhotoUrl}
-                  alt={`${resolved.displayName ?? 'Identity'}'s image`}
-                  {...(showingPublicPicture ? {
-                    referrerPolicy: 'no-referrer' as const,
-                    onError: () => setFailedPictureHref(publicPictureUrl),
-                  } : {})}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        {/* Avatar, name, role label, Pro pill and npub read as one group — and
+            share one readability plate when a backdrop is set. */}
+        <div className="card-identity">
+          {/* ── Blurred identity area (avatar + name) ── */}
+          {/* The role/type label sits outside this wrapper and stays sharp. */}
+          <div
+            onClick={blurActive ? handleRevealTap : undefined}
+            onTouchEnd={blurActive ? handleRevealTap : undefined}
+            style={blurActive ? {
+              filter: 'blur(6px)',
+              userSelect: 'none',
+              cursor: 'pointer',
+              WebkitUserSelect: 'none',
+            } : undefined}
+            aria-label={blurActive ? 'Tap to reveal identity' : undefined}
+          >
+            <div className="card-photo-wrap">
+              <div
+                className="card-photo"
+                style={{
+                  background: effectivePhotoUrl ? '#0000' : colourFromPubkey(resolved.publicKey),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                  fontWeight: 600,
+                  fontSize: '1.3rem',
+                  overflow: 'hidden',
+                }}
+              >
+                {effectivePhotoUrl ? (
+                  <img
+                    src={effectivePhotoUrl}
+                    alt={`${resolved.displayName ?? 'Identity'}'s image`}
+                    {...(showingPublicPicture ? {
+                      referrerPolicy: 'no-referrer' as const,
+                      onError: () => setFailedPictureHref(publicPictureUrl),
+                    } : {})}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  initial
+                )}
+              </div>
+            </div>
+
+            <div className="card-name-block">
+              {showNameEditor ? (
+                // No name set yet — render an inline editable placeholder.
+                // MiniIdBadge keeps receiving resolved.displayName (its fallback).
+                <input
+                  ref={nameInputRef}
+                  className="card-name-input"
+                  type="text"
+                  value={nameInput}
+                  onChange={e => setNameInput(e.target.value)}
+                  onBlur={() => { void commitName(); }}
+                  onKeyDown={handleNameKeyDown}
+                  placeholder="Add your name / handle"
+                  maxLength={100}
+                  aria-label="Add your name or handle"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: '1px dashed var(--border)',
+                    color: 'var(--text-muted)',
+                    fontSize: 'inherit',
+                    fontFamily: 'inherit',
+                    fontWeight: 'inherit',
+                    width: '100%',
+                    outline: 'none',
+                    padding: '2px 0',
+                    cursor: 'text',
+                  }}
                 />
               ) : (
-                initial
+                <div className="card-name">{resolved.displayName}</div>
               )}
             </div>
           </div>
 
-          <div className="card-name-block">
-            {showNameEditor ? (
-              // No name set yet — render an inline editable placeholder.
-              // MiniIdBadge keeps receiving resolved.displayName (its fallback).
-              <input
-                ref={nameInputRef}
-                className="card-name-input"
-                type="text"
-                value={nameInput}
-                onChange={e => setNameInput(e.target.value)}
-                onBlur={() => { void commitName(); }}
-                onKeyDown={handleNameKeyDown}
-                placeholder="Add your name / handle"
-                maxLength={100}
-                aria-label="Add your name or handle"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: '1px dashed var(--border)',
-                  color: 'var(--text-muted)',
-                  fontSize: 'inherit',
-                  fontFamily: 'inherit',
-                  fontWeight: 'inherit',
-                  width: '100%',
-                  outline: 'none',
-                  padding: '2px 0',
-                  cursor: 'text',
+          {/* ── Role/type label — the role word stays sharp; a dependant's age
+              is identifying, so it blurs with the rest of the identity ── */}
+          {canSwitch ? (
+            <button
+              type="button"
+              className="card-type card-type-switch"
+              aria-label={`${isDependant ? 'Dependant' : resolved.type}, identity ${arrows!.rowIndex + 1} of ${arrows!.rowCount}. Switch identity`}
+              onClick={e => { e.stopPropagation(); arrows!.openSwitcher(); }}
+              onTouchEnd={e => e.stopPropagation()}
+            >
+              {typeLabel}
+              <span className="card-type-count" aria-hidden="true">{arrows!.rowIndex + 1}/{arrows!.rowCount}</span>
+              <span className="card-type-chevron" aria-hidden="true">&#8964;</span>
+            </button>
+          ) : (
+            <div className="card-type">{typeLabel}</div>
+          )}
+
+          {proAnchorActive && (
+            <div className="card-tier-row">
+              <button
+                onClick={e => {
+                  e.stopPropagation();
+                  onProPillTap?.();
                 }}
-              />
-            ) : (
-              <div className="card-name">{resolved.displayName}</div>
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '2px 10px',
+                  borderRadius: 10,
+                  background: 'var(--accent)',
+                  color: 'var(--on-accent)',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  border: 'none',
+                  cursor: 'pointer',
+                  letterSpacing: '0.03em',
+                }}
+                aria-label="Pro — tap to open Professional Dashboard"
+              >
+                Pro
+              </button>
+            </div>
+          )}
+
+          {npubDisplay && (
+            <div className="card-npub">{npubDisplay}</div>
+          )}
+        </div>
+
+        {/* ── Quick-open: this identity's sign-ins and contacts.
+            Dependant rows keep their pairing/dormant surfaces instead. ── */}
+        {!isDependant && ownerCard && ((launcherSites && launcherSites.length > 0) || typeof contactsCount === 'number') && (
+          <div className="card-quick">
+            {launcherSites && launcherSites.length > 0 && (
+              <div className="card-launcher" aria-label="Sites this identity is signed in to">
+                {launcherSites.map(site => (
+                  <button
+                    key={site.id}
+                    type="button"
+                    className="card-launcher-chip"
+                    onClick={e => { e.stopPropagation(); onOpenSite?.(site.origin); }}
+                    aria-label={`Open ${site.label}`}
+                  >
+                    <span className="card-launcher-tile" aria-hidden="true" style={{ background: colourFromLabel(site.origin) }}>
+                      {site.label.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="card-launcher-label">{site.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {typeof contactsCount === 'number' && (
+              <button
+                type="button"
+                className="card-contacts-pill"
+                onClick={e => { e.stopPropagation(); arrows?.jump(2); }}
+                aria-label="Open this identity's contacts"
+              >
+                <Icon name="users" size={16} className="icon-inline" />
+                {contactsCount === 0
+                  ? 'Add your first contact'
+                  : `${contactsCount} ${contactsCount === 1 ? 'contact' : 'contacts'}`}
+                <span className="card-pill-chevron" aria-hidden="true">&rsaquo;</span>
+              </button>
             )}
           </div>
-        </div>
-
-        {/* \u2500\u2500 Role/type label \u2014 the role word stays sharp; a dependant's age
-            is identifying, so it blurs with the rest of the identity \u2500\u2500 */}
-        <div className="card-type">
-          {isDependant
-            ? (
-              <>
-                Dependant
-                {age ? (
-                  <>
-                    {' \u00B7 '}
-                    <span style={blurActive ? { filter: 'blur(5px)', userSelect: 'none' } : undefined}>
-                      Age {age}
-                    </span>
-                  </>
-                ) : null}
-              </>
-            )
-            : resolved.type}
-        </div>
-
-        <div className="card-tier-row">
-          <div className={`carousel-tier-badge carousel-tier-${tier}`}>
-            Tier {tier}
-          </div>
-          {proAnchorActive && (
-            <button
-              onClick={e => {
-                e.stopPropagation();
-                onProPillTap?.();
-              }}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                padding: '2px 10px',
-                borderRadius: 10,
-                background: 'var(--accent)',
-                color: 'var(--on-accent)',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                border: 'none',
-                cursor: 'pointer',
-                letterSpacing: '0.03em',
-              }}
-              aria-label="Pro — tap to open Professional Dashboard"
-            >
-              Pro
-            </button>
-          )}
-          <div className="status-chip">
-            <span className={`status-dot${verified ? ' verified' : ''}`} />
-            {verified ? 'Verified' : 'Unverified'}
-          </div>
-        </div>
+        )}
 
         {pairingStatus && (
           <div
             style={{
               fontSize: '0.75rem',
               color: 'var(--text-muted)',
-              marginTop: 6,
+              textAlign: 'center',
             }}
           >
             <Icon name="smartphone" size={12} className="icon-inline" />
@@ -346,30 +500,10 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
           </div>
         )}
 
-        <div className="card-stats">
-          <div className="card-stat">
-            <div className="card-stat-value">{iq}</div>
-            <div className="card-stat-label">Signet IQ</div>
-          </div>
-          <div className="card-stat">
-            <div className="card-stat-value">{tier}</div>
-            <div className="card-stat-label">Tier</div>
-          </div>
-          <div className="card-stat">
-            <div className="card-stat-value">{vouches}</div>
-            <div className="card-stat-label">Vouches</div>
-          </div>
-        </div>
-
-        {npubDisplay && (
-          <div className="card-npub">{npubDisplay}</div>
-        )}
-
         {childDormant && (
           <div
             className="card-dormant-notice"
             style={{
-              marginTop: 16,
               padding: '12px 14px',
               borderRadius: 'var(--radius)',
               background: 'var(--bg-card-alt)',
@@ -398,43 +532,53 @@ export function IdentityCard({ onHandshake, row, resolved, badge, childMode, chi
           </div>
         )}
 
-        {onHandshake && <HandshakeButton onStart={onHandshake} />}
-
-        <div className="card-footer">
-          <div className={isChildCard ? 'card-hint-child' : 'card-hint'}>
-            {isChildCard
-              ? (
-                <>
-                  Tap to enter{' '}
-                  <span style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>
-                    {resolved.displayName}
-                  </span>
-                  's account
-                </>
-              )
-              : childDormant
-                ? 'Ask your guardian'
-                : null}
+        {(onHandshake || ownerCard) && (
+          <div className="card-actions">
+            {ownerCard && (
+              <button
+                type="button"
+                className="btn btn-primary card-action-tile card-scan-btn"
+                aria-label="Scan a QR code"
+                onClick={e => { e.stopPropagation(); arrows?.jump(4); }}
+                onTouchEnd={e => e.stopPropagation()}
+              >
+                <Icon name="qrScan" size={24} />
+                Scan
+              </button>
+            )}
+            {onHandshake && <HandshakeButton onStart={onHandshake} />}
+            {ownerCard && (
+              <button
+                type="button"
+                className="btn btn-secondary card-action-tile"
+                aria-label="Show my QR code"
+                onClick={e => { e.stopPropagation(); arrows?.jump(1); }}
+                onTouchEnd={e => e.stopPropagation()}
+              >
+                <Icon name="qr" size={24} />
+                My QR
+              </button>
+            )}
           </div>
-          {!isChildCard && !childDormant && (
-            <div className="card-swipe-hints">
-              {/* The scanner is the card to the left, the QR the card to the right
-                  (the horizontal ring wraps), so each icon sits on the side its card is. */}
-              <button type="button" className="card-swipe-hint" aria-label="Scan a QR code"
-                onClick={e => { e.stopPropagation(); arrows?.left(); }}>
-                <span className="card-swipe-arrow" aria-hidden="true">&lsaquo;</span>
-                <Icon name="qrScan" size={30} />
-                <span className="card-swipe-label">Scan</span>
-              </button>
-              <button type="button" className="card-swipe-hint" aria-label="Show my QR code"
-                onClick={e => { e.stopPropagation(); arrows?.right(); }}>
-                <span className="card-swipe-label">My QR</span>
-                <Icon name="qr" size={30} />
-                <span className="card-swipe-arrow" aria-hidden="true">&rsaquo;</span>
-              </button>
+        )}
+
+        {(isChildCard || childDormant) && (
+          <div className="card-footer">
+            <div className={isChildCard ? 'card-hint-child' : 'card-hint'}>
+              {isChildCard
+                ? (
+                  <>
+                    Tap to enter{' '}
+                    <span style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>
+                      {resolved.displayName}
+                    </span>
+                    's account
+                  </>
+                )
+                : 'Ask your guardian'}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -216,3 +216,6 @@ export interface AppPreferences {
    */
   dependantRoleConfirmedAt?: number;
 }
+
+/** Fresh installs start dark: the home ring and the nav bar are always dark, so a light default flipped the screen on every page change. */
+export const DEFAULT_THEME: AppPreferences['theme'] = 'dark';

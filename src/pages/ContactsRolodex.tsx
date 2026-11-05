@@ -16,7 +16,7 @@ import { fetchContactAvatarPointers } from '../lib/contact-avatar';
 import {
   CONFIRMED_MARK_LABEL, IMPORT_FOLLOWING_LABEL, PICTURES_REFRESH_FAILED_COPY, PICTURES_RELAYS_UNREACHABLE_COPY, REFRESH_PICTURES_LABEL, REFRESHING_PICTURES_LABEL, picturesResultCopy, KEYLESS_MARKER, MANAGE_FAMILY_CONTACTS_LABEL, NEW_CONTACT_LABEL, RECOGNISE_PUBLIC_KEY_LABEL,
   ROLODEX_EMPTY_TEXT, ROLODEX_EMPTY_TITLE, ROLODEX_LOADING_COPY, ROLODEX_NO_MATCHES_TITLE,
-  SEARCH_CONTACTS_LABEL, rolodexHeadingCopy,
+  SEARCH_CONTACTS_LABEL, TIER_HINT, MORE_ACTIONS_LABEL, rolodexHeadingCopy,
 } from '../lib/contacts-v2-copy';
 import {
   arrangeContactsV2, CONTACT_FILTERS, filterLabel, isKeyless, primaryIdentityPubkey,
@@ -147,6 +147,11 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
   }
   const [followsOpen, setFollowsOpen] = useState(initialFollowsOpen);
   const showFollows = !!((onImportFollows && onUnlinkFollows) || followsDisabledReason);
+  // The occasional actions (import, picture refresh, recognise a key, family
+  // table) sit behind one "More" button so the page ends with a single
+  // primary action. Arriving with the follows panel requested opens it.
+  const hasMore = showFollows || !!onRefreshPictures || !!onAddKen || !!onManageFamily;
+  const [moreOpen, setMoreOpen] = useState(initialFollowsOpen);
   const [filter, setFilter] = useState<ContactsFilter>('all');
   const [query, setQuery] = useState(initialSearch);
   const [inviteFilter, setInviteFilter] = useState('');
@@ -216,6 +221,7 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
             </button>
           ))}
         </div>
+        <p className="field-hint" style={{ margin: '0 0 8px' }}>{TIER_HINT}</p>
         {onInvites && <button className="btn btn-secondary" onClick={onInvites}>Invites and requests</button>}
         <input
           type="search"
@@ -242,9 +248,6 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
             {!query && filter === 'all' && (
               <p className="empty-state-text">{ROLODEX_EMPTY_TEXT}</p>
             )}
-            {!query && (
-              <button className="btn btn-primary" onClick={onNewContact}>{NEW_CONTACT_LABEL}</button>
-            )}
           </div>
         ) : (
           <div style={{ paddingBottom: compact ? 0 : 8 }}>
@@ -263,8 +266,16 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
       </div>
 
       <div style={{ flexShrink: 0, padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button className="btn btn-secondary" onClick={onNewContact}>{NEW_CONTACT_LABEL}</button>
-        {showFollows && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" onClick={onNewContact}>{NEW_CONTACT_LABEL}</button>
+          {hasMore && (
+            <button className="btn btn-secondary" aria-expanded={moreOpen} aria-label={MORE_ACTIONS_LABEL}
+              onClick={() => setMoreOpen(o => !o)} style={{ width: 'auto', flexShrink: 0, padding: '12px 16px' }}>
+              {moreOpen ? 'Less' : 'More'}
+            </button>
+          )}
+        </div>
+        {hasMore && moreOpen && showFollows && (
           <button className="btn btn-secondary" aria-expanded={followsOpen} onClick={() => setFollowsOpen(o => !o)}>
             {IMPORT_FOLLOWING_LABEL}
           </button>
@@ -280,7 +291,7 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
             picturesAvailable={followsPicturesAvailable}
           />
         )}
-        {onRefreshPictures && !picturesAsking && (
+        {onRefreshPictures && (moreOpen || picturesBusy) && !picturesAsking && (
           <button className="btn btn-secondary" disabled={picturesBusy} onClick={() => { setPicturesNote(''); setPicturesAsking(true); }}>
             {picturesBusy ? REFRESHING_PICTURES_LABEL : REFRESH_PICTURES_LABEL}
           </button>
@@ -289,10 +300,10 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
           <ContactPicturesConsent onAccept={() => { void refreshPictures(); }} onDecline={() => setPicturesAsking(false)} />
         )}
         {picturesNote && <p role="status" className="field-hint" style={{ margin: 0 }}>{picturesNote}</p>}
-        {onAddKen && (
+        {onAddKen && moreOpen && (
           <button className="btn btn-ghost" onClick={onAddKen}>{RECOGNISE_PUBLIC_KEY_LABEL}</button>
         )}
-        {onManageFamily && (
+        {onManageFamily && moreOpen && (
           <button className="btn btn-ghost" onClick={onManageFamily}>
             {MANAGE_FAMILY_CONTACTS_LABEL}
           </button>

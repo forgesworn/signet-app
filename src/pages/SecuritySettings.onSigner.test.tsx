@@ -33,9 +33,6 @@ function renderPage(mnemonicOnSigner: boolean) {
       onSetPreferPersonaForSignIns={vi.fn()}
       preferredPersonaPubkey={undefined}
       onSetPreferredPersonaPubkey={vi.fn()}
-      bunkerServerEnabled={false}
-      onSetBunkerServerEnabled={vi.fn()}
-      bunkerUrl={null}
       onNavigateShamir={vi.fn()}
       mnemonicOnSigner={mnemonicOnSigner}
     />

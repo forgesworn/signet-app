@@ -69,7 +69,7 @@ export async function createIdentityAndUnlock(
   // one persona name, then SetupAuth. Fixtures that need a specific derived
   // pubkey use `restoreIdentityAndUnlock` below instead.
   await page.getByRole('button', { name: 'Create my Signet' }).click();
-  await page.getByPlaceholder('A name or handle — not your real name').fill(name);
+  await page.getByPlaceholder('Name or handle').fill(name);
   await page.getByRole('button', { name: 'Continue' }).click();
 
   await completeSetupAuth(page, pin);

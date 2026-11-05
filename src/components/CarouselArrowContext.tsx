@@ -1,12 +1,20 @@
 // src/components/CarouselArrowContext.tsx
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import type { CarouselArrowState } from '../lib/carousel-arrows';
+import type { CarouselColumn } from '../types';
 
 export interface CarouselArrowApi extends CarouselArrowState {
   left: () => void;
   right: () => void;
   up: () => void;
   down: () => void;
+  /** Slide straight to a column on the current row (the shorter way round the loop). */
+  jump: (col: CarouselColumn) => void;
+  /** Open the identity switcher sheet listing every row of the ring. */
+  openSwitcher: () => void;
+  /** Position in the ring, for "2 of 4" style affordances. */
+  rowIndex: number;
+  rowCount: number;
 }
 
 interface CarouselArrowContextValue {

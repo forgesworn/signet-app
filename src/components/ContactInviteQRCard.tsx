@@ -144,6 +144,7 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
       <div className="qr-box">
         {invite && <QRCode data={contactInviteLink(invite.invite, contactInviteOrigin())} size={230} />}
       </div>
+      <div className="qr-panel">
       <div className="qr-caption">{`Scan with MySignet. You'll both be added once you accept.`}</div>
       <div className="qr-controls">
         <div className="qr-sees">
@@ -164,6 +165,7 @@ export function ContactInviteQRCard({ service, identityPubkey, resolved, relays,
         </label>}
       </div>
       <div className="qr-footer">{footer}</div>
+      </div>
     </div>}
   </>;
 }

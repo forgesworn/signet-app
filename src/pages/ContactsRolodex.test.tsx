@@ -103,14 +103,15 @@ describe('ContactsRolodex', () => {
 
     it('is absent without props', () => {
       renderRolodex([contact({ contactId: 'a' })]);
+      expect(screen.queryByRole('button', { name: 'More contact actions' })).toBeNull();
       expect(screen.queryByRole('button', { name: 'Import following' })).toBeNull();
     });
 
-    it('sits directly below the add-contact button and toggles the panel', () => {
+    it('sits behind the More button and toggles the panel', () => {
       renderRolodex([contact({ contactId: 'a' })], { ...handlers, followsPersonaName: 'Alex' });
-      const add = screen.getByRole('button', { name: 'New contact' });
+      expect(screen.queryByRole('button', { name: 'Import following' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'More contact actions' }));
       const btn = screen.getByRole('button', { name: 'Import following' });
-      expect(add.nextElementSibling).toBe(btn);
       expect(screen.queryByText('Nostr follows')).toBeNull();
       fireEvent.click(btn);
       expect(screen.getByText('Nostr follows')).toBeDefined();
@@ -121,6 +122,7 @@ describe('ContactsRolodex', () => {
 
     it('shows the disabled reason with Import disabled', () => {
       renderRolodex([contact({ contactId: 'a' })], { followsDisabledReason: 'Loading your contacts…' });
+      fireEvent.click(screen.getByRole('button', { name: 'More contact actions' }));
       fireEvent.click(screen.getByRole('button', { name: 'Import following' }));
       expect(screen.getByText('Loading your contacts…')).toBeDefined();
       expect((screen.getByRole('button', { name: 'Import who this account follows' }) as HTMLButtonElement).disabled).toBe(true);
@@ -145,6 +147,7 @@ describe('ContactsRolodex — Refresh pictures', () => {
   it('asks before downloading anything; "Not now" downloads nothing', () => {
     const onRefreshPictures = vi.fn(async () => ({ downloaded: 1, failed: 0, removed: 0, unchanged: 0 }));
     renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'More contact actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
     expect(screen.getByText('Download their profile pictures?')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
@@ -155,6 +158,7 @@ describe('ContactsRolodex — Refresh pictures', () => {
   it('downloads after consent and reports the result', async () => {
     const onRefreshPictures = vi.fn(async () => ({ downloaded: 4, failed: 2, removed: 1, unchanged: 3 }));
     renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'More contact actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
     fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
     expect(await screen.findByText("Downloaded 4 pictures, 2 couldn't be downloaded.")).toBeTruthy();
@@ -164,6 +168,7 @@ describe('ContactsRolodex — Refresh pictures', () => {
   it('says no relay could be reached instead of "Downloaded 0 pictures."', async () => {
     const onRefreshPictures = vi.fn(async () => ({ downloaded: 0, failed: 0, removed: 0, unchanged: 0, unreachable: true as const }));
     renderRolodex([contact({ contactId: 'a' })], { onRefreshPictures });
+    fireEvent.click(screen.getByRole('button', { name: 'More contact actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh pictures' }));
     fireEvent.click(screen.getByRole('button', { name: 'Download pictures' }));
     expect(await screen.findByText("Couldn't reach Nostr relays, so no pictures were checked. Try again in a moment.")).toBeTruthy();

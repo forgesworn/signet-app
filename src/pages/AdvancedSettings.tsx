@@ -6,6 +6,7 @@ import { isValidRelayUrl } from '../lib/relay-url';
 import { HeartwoodOperatorImport } from '../components/HeartwoodOperatorImport';
 import { AwayApprovalList, type AwayApprovalListProps } from '../components/AwayApprovalList';
 import { Icon } from '../components/Icon';
+import { HandshakeSeamGapCard } from '../components/HandshakeSeamGapCard';
 import type { OperatorImportOutcome } from '../hooks/useHeartwoodOperator';
 import type { DeviceStatus } from '../lib/heartwood-mgmt-types';
 import { describePushResult, type PolicyPushResult } from '../lib/policy-push';
@@ -92,6 +93,10 @@ interface Props {
   onSetBlossomConsent: (consent: boolean) => Promise<void>;
   /** Show or hide My Keep in Settings. Absent where My Keep is not offered (a paired-child install). */
   onSetShowMyKeep?: (show: boolean) => void;
+  /** This phone's Handshake Jigsaw edge distance in mm (calibration). */
+  handshakeSeamGapMm?: number;
+  /** Set (or, with `undefined`, clear) it. Absent: no Handshake card (paired child). */
+  onSetHandshakeSeamGapMm?: (mm: number | undefined) => void;
   /** Heartwood operator key + rules push (absent on the paired-child surface). */
   heartwoodOperator?: HeartwoodOperatorSettingsProps;
   /** One-hold pairing status and actions (absent unless the Heartwood lists the bundle method). */
@@ -105,7 +110,7 @@ interface Props {
 
 const OWNER_SILENT_MESSAGE = "Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off.";
 
-export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, onSetShowMyKeep, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerAgainDeclined, onOwnerChoiceHandled }: Props) {
+export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, onSetShowMyKeep, handshakeSeamGapMm, onSetHandshakeSeamGapMm, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerAgainDeclined, onOwnerChoiceHandled }: Props) {
   const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   useEffect(() => {
     if (!openOwnerChoice) return;
@@ -268,6 +273,9 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           Open Identity Bridge
         </button>
       </div>
+
+      {/* Handshake calibration — a per-handset measurement, so it lives with the other advanced knobs. */}
+      {onSetHandshakeSeamGapMm && <HandshakeSeamGapCard mm={handshakeSeamGapMm} onSet={onSetHandshakeSeamGapMm} />}
 
       {/* Developer diagnostics */}
       {onNavigateDeveloper && (

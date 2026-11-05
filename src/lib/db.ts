@@ -4,6 +4,7 @@ import { clearKeepNicknames } from './keep-nicknames';
 // IndexedDB storage for MySignet family app
 
 import { openDB, unwrap, type IDBPDatabase } from 'idb';
+import { DEFAULT_THEME } from '../types';
 import type { SignetIdentity, Contact, ChildSettings, AppPreferences, IdentityDocument, StoredCredential, AuthorizedSite, OriginPolicy, ConnectedClient, RememberedGrant, PairedChildRecord, DependantStatusRecord, TrustedAppEndpoint, TrustedAppPairing, ContactOperation, ContactRecord } from '../types';
 import { TRUSTED_APP_PAIRING_CAP, COMPANION_GRANT_CAP } from '../types';
 import type { CompanionGrant } from '../types';
@@ -1566,7 +1567,7 @@ export async function getOrCreateContactsDeviceId(): Promise<string> {
   const previous = await tx.store.get('current');
   const contactsDeviceId = ensureContactsDeviceId(previous?.contactsDeviceId);
   if (contactsDeviceId !== previous?.contactsDeviceId) {
-    await tx.store.put({ id: 'current', theme: 'system', ...previous, contactsDeviceId });
+    await tx.store.put({ id: 'current', theme: DEFAULT_THEME, ...previous, contactsDeviceId });
   }
   await tx.done;
   return contactsDeviceId;
@@ -1575,7 +1576,7 @@ export async function getOrCreateContactsDeviceId(): Promise<string> {
 export async function getPreferences(encryptionKey?: string): Promise<AppPreferences> {
   const db = await getDB();
   const prefs = await db.get('preferences', 'current');
-  const out: AppPreferences = prefs || { id: 'current', theme: 'system' };
+  const out: AppPreferences = prefs || { id: 'current', theme: DEFAULT_THEME };
   if (encryptionKey && typeof out.bunkerUri === 'string' && !out.bunkerUri.startsWith('bunker://')) {
     try {
       out.bunkerUri = await decryptSecret(out.bunkerUri, encryptionKey);
@@ -1616,7 +1617,7 @@ export async function savePreferences(prefs: AppPreferences, encryptionKey?: str
   if (previous?.contactsDeviceId && /^[0-9a-f]{32}$/.test(previous.contactsDeviceId)) {
     toStore = { ...toStore, contactsDeviceId: previous.contactsDeviceId };
   }
-  const changed = JSON.stringify(portableSettingsValues(previous ?? { id: 'current', theme: 'system' }))
+  const changed = JSON.stringify(portableSettingsValues(previous ?? { id: 'current', theme: DEFAULT_THEME }))
     !== JSON.stringify(portableSettingsValues(prefs));
   const stamp = portableTimestamp ?? (changed ? Math.max(Date.now(), (previous?.portableSettingsUpdatedAt ?? 0) + 1) : previous?.portableSettingsUpdatedAt);
   if (stamp !== undefined) toStore = { ...toStore, portableSettingsUpdatedAt: stamp };
@@ -1791,6 +1792,28 @@ export async function deleteCredential(id: string): Promise<void> {
  */
 export async function updateCredential(credential: StoredCredential, encryptionKey?: string): Promise<void> {
   return saveCredential(credential, encryptionKey);
+}
+
+// --- Card backdrops ---
+// Per-identity card backdrop images — device-local, like a phone wallpaper.
+// Stored as `backdrop:<pubkey>` rows beside `current` in the preferences
+// store (readers fetch by id, never getAll), so no schema version bump is
+// needed and `clear('preferences')` wipes them with the rest.
+
+export async function getCardBackdrop(pubkey: string): Promise<Blob | null> {
+  const db = await getDB();
+  const row = await db.get('preferences', `backdrop:${pubkey}`) as { blob?: unknown } | undefined;
+  return row && row.blob instanceof Blob ? row.blob : null;
+}
+
+export async function setCardBackdrop(pubkey: string, blob: Blob): Promise<void> {
+  const db = await getDB();
+  await db.put('preferences', { id: `backdrop:${pubkey}`, blob });
+}
+
+export async function deleteCardBackdrop(pubkey: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('preferences', `backdrop:${pubkey}`);
 }
 
 // --- Authorized Sites ---

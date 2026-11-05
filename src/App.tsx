@@ -197,6 +197,7 @@ import { SecuritySettings } from './pages/SecuritySettings';
 import { Profile } from './pages/Profile';
 import { Personas } from './pages/Personas';
 import { AdvancedSettings } from './pages/AdvancedSettings';
+import { SigningSettings } from './pages/SigningSettings';
 import { ManageCarousel } from './pages/ManageCarousel';
 import { EditPublicProfile } from './pages/EditPublicProfile';
 import { PersonaAdvanced } from './pages/PersonaAdvanced';
@@ -322,7 +323,7 @@ import {
   deleteContactGrantV2, listContactOperationsV2, saveContactOperationsV2, isGrantCapError,
 } from './lib/db';
 import { identityKeypairs } from './lib/contacts-sync';
-import { deleteIdentityRecord } from './lib/db';
+import { deleteIdentityRecord, deleteCardBackdrop } from './lib/db';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
 import { isAppInForeground, subscribeAppForeground } from './lib/app-foreground';
@@ -10646,11 +10647,11 @@ function AppContent() {
       ) : null}
     </>
   ) : null;
-  const topBanners = (privateVaultBanner || updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
+  const topBanners = (updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
     || contactsBackupTooLargeBanner
     || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
-    <div className="app-notices">{updateBanner}{signerBanner}{privateVaultBanner}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
+    <div className="app-notices">{updateBanner}{signerBanner}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
       {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
@@ -11120,7 +11121,6 @@ function AppContent() {
         companionGrantCount={companionGrantCount}
         webUpdateReady={needRefresh}
         onApplyWebUpdate={() => updateServiceWorker(true)}
-        onSetHandshakeSeamGapMm={isPairedChild ? undefined : mm => { void setHandshakeSeamGapMm(mm); }}
       />
     ), topBanners);
   }
@@ -11215,13 +11215,13 @@ function AppContent() {
       }} />, topBanners);
   }
 
+  // Bunker URL for "Pair my phone" — only on the user's NP route (skip when
+  // a dependant is active; dependant pairing has its own dedicated flow via
+  // PairDependantDevice).
+  const bunkerUrl = !activeDependant
+    ? buildPhoneBunkerUrl(identity?.naturalPerson?.publicKey, preferences.relayUrl ?? DEFAULT_RELAY_URL)
+    : null;
   if (page === 'settings-security') {
-    // Bunker URL for "Pair my phone" — only on the user's NP route
-    // (skip when a dependant is active; dependant pairing has its own
-    // dedicated flow via PairDependantDevice).
-    const bunkerUrl = !activeDependant
-      ? buildPhoneBunkerUrl(identity?.naturalPerson?.publicKey, preferences.relayUrl ?? DEFAULT_RELAY_URL)
-      : null;
     return renderSettingsPage('settings-security', 'Security & Backup', (
       <SecuritySettings
         identity={identity}
@@ -11237,6 +11237,21 @@ function AppContent() {
         onSetPreferPersonaForSignIns={setPreferPersonaForSignIns}
         preferredPersonaPubkey={preferredPersonaPubkey}
         onSetPreferredPersonaPubkey={setPreferredPersonaPubkey}
+        onNavigateShamir={() => navigateTo('shamir')}
+        // §11.1.7 — after the Heartwood migration this device holds no
+        // mnemonic, so both the reveal and the Shamir split have nothing
+        // to work with. signingMode is the persistent fact (identity.mnemonic
+        // is stale for the rest of the migrating session).
+        mnemonicOnSigner={preferences.signingMode === 'bunker'}
+        focusSection={pendingSecurityFocus}
+        onConsumeFocus={() => setPendingSecurityFocus(null)}
+      />
+    ), privateVaultBanner);
+  }
+
+  if (page === 'settings-signing') {
+    return renderSettingsPage('settings-signing', 'Bunker & Scanning', (
+      <SigningSettings
         scannerAutoStart={scannerAutoStart}
         onSetScannerAutoStart={setScannerAutoStart}
         scannerIdleSeconds={scannerIdleSeconds}
@@ -11244,12 +11259,6 @@ function AppContent() {
         bunkerServerEnabled={bunkerServerEnabled}
         onSetBunkerServerEnabled={setBunkerServerEnabled}
         bunkerUrl={bunkerUrl}
-        onNavigateShamir={() => navigateTo('shamir')}
-        // §11.1.7 — after the Heartwood migration this device holds no
-        // mnemonic, so both the reveal and the Shamir split have nothing
-        // to work with. signingMode is the persistent fact (identity.mnemonic
-        // is stale for the rest of the migrating session).
-        mnemonicOnSigner={preferences.signingMode === 'bunker'}
         focusSection={pendingSecurityFocus}
         onConsumeFocus={() => setPendingSecurityFocus(null)}
       />
@@ -11376,6 +11385,8 @@ function AppContent() {
         onNavigateDeveloper={() => navigateTo('settings-developer')}
         onOpenMigration={() => navigateTo('migrate-heartwood')}
         onSetShowMyKeep={preferences.signingMode !== 'paired-child' ? (show => { void setShowMyKeep(show); }) : undefined}
+        handshakeSeamGapMm={preferences.handshakeSeamGapMm}
+        onSetHandshakeSeamGapMm={isPairedChild ? undefined : mm => { void setHandshakeSeamGapMm(mm); }}
         heartwoodOwner={heartwoodOwner.supported ? {
           supported: true,
           status: heartwoodOwner.status,
@@ -11906,6 +11917,8 @@ function AppContent() {
           } else {
             await removeExtraPersona(pubkey);
           }
+          // Its device-local card backdrop goes with it.
+          await deleteCardBackdrop(pubkey).catch(() => undefined);
           // Routing target is gone — pop back to the carousel.
           setPendingPersonaAdvancedTarget(null);
           navigateBack();
@@ -13243,7 +13256,7 @@ function AppContent() {
           }}
           onSwitchToDependant={(depId) => { setActiveDependantId(depId); navigateReplace('home'); }}
           onPairDevice={(depId) => { setActiveDependantId(depId); navigateTo('pair-dependant-device'); }}
-          onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-security'); }}
+          onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           onBack={() => navigateBack()}
           showRoleConfirm={!preferences.dependantRoleConfirmedAt}
@@ -13633,7 +13646,7 @@ function AppContent() {
             if (!key) throw new Error('Authentication required');
             return saveDependantPairingSecret(pubkey, secret, key);
           }}
-          onOpenSecuritySettings={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-security'); }}
+          onOpenSecuritySettings={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
           signingMode={preferences.signingMode}
@@ -13781,7 +13794,7 @@ function AppContent() {
             await dbRemoveAppBunkerPairing(pubkey, clientPubkey, key);
             await reloadDependants();
           }}
-          onOpenSecuritySettings={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-security'); }}
+          onOpenSecuritySettings={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
         />
@@ -14056,6 +14069,33 @@ function AppContent() {
             });
             setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1);
           }} />}
+        launcherSitesFor={resolved => {
+          // Sign-in sites link a persona to where it is used, and authorizedSites
+          // loads without the key, so a locked card must not list them.
+          if (!encryptionKey || resolved.isDependant) return [];
+          const pinned = new Set(originPolicies.filter(p => p.pinned).map(p => p.origin));
+          const originOf = (raw: string) => { try { return new URL(raw).origin; } catch { return raw; } };
+          const domainOf = (raw: string) => { try { return new URL(raw).hostname; } catch { return raw; } };
+          return authorizedSites
+            .filter(site => site.pubkeyShared === resolved.publicKey)
+            .sort((a, b) =>
+              Number(pinned.has(originOf(b.origin))) - Number(pinned.has(originOf(a.origin)))
+              || b.lastUsedAt - a.lastUsedAt)
+            .slice(0, 4)
+            .map(site => ({
+              id: site.id,
+              origin: site.origin,
+              label: (site.name || domainOf(site.origin)).slice(0, 24),
+              pinned: pinned.has(originOf(site.origin)),
+            }));
+        }}
+        onOpenSite={origin => { window.open(origin, '_blank', 'noopener'); }}
+        contactsCountFor={resolved => {
+          if (resolved.isDependant || !(contactsScope.directoryId === 'owner' || isPairedChild) || contactsV2.loading) return null;
+          return contactsV2.effective.filter(contact =>
+            !contact.blocked && !contact.archived && contact.lifecycle === 'active'
+            && contactBelongsToList(contact, resolved.publicKey)).length;
+        }}
         renderContactsCard={(_row, resolved) => <ContactsCard key={(resolved.dependantId ?? 'owner') + ':' + resolved.publicKey}
           name={resolved.displayName} available={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild) && !contactsV2.loading}
           contacts={!resolved.isDependant && (contactsScope.directoryId === 'owner' || isPairedChild)
@@ -14079,14 +14119,9 @@ function AppContent() {
         onCommit={carousel.commitPosition}
         onAnimatingChange={carousel.setAnimating}
         swipeLocked={!!pendingAuthRequest}
-        badge={ownBadge ? {
-          tier: ownBadge.tier,
-          score: ownBadge.score ?? 0,
-          vouchCount: ownBadge.vouchCount ?? 0,
-          iqBreakdown: ownBadge.iqBreakdown,
-        } : null}
         onNavigateDeepPage={(p, opts) => {
           if (opts?.focusPersona) setPendingPersonaFocus(opts.focusPersona);
+          if (opts?.section) setPendingSecurityFocus(opts.section);
           // Must precede navigateTo — destination routes (e.g. 'settings',
           // 'transition-ceremony') read activeDependant synchronously on
           // render; React batches both state updates into the same flush.
@@ -14407,7 +14442,8 @@ function AppContent() {
         <BunkerPanel
           onClose={() => setBunkerPanelOpen(false)}
           bunkerAllowed={bunkerServerEnabled}
-          onGoToSecurity={() => { setBunkerPanelOpen(false); navigateTo('settings-security'); }}
+          onGoToSecurity={() => { setBunkerPanelOpen(false); setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
+          onSetBunkerAllowed={on => { void setBunkerServerEnabled(on); }}
           stayAwakeUntil={stayAwakeUntil}
           onArmStayAwake={armStayAwake}
           onCloseStayAwake={closeStayAwake}

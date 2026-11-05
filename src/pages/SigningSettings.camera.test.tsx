@@ -1,36 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { SecuritySettings } from './SecuritySettings';
-import type { SignetIdentity } from '../types';
-
-const identity = {
-  id: 'a'.repeat(64),
-  mnemonic: '',
-  encrypted: false,
-  naturalPerson: { publicKey: 'a'.repeat(64), privateKey: '', displayName: 'Owner' },
-  persona: { publicKey: 'b'.repeat(64), privateKey: '', displayName: 'Persona' },
-  createdAt: Date.now(),
-} as unknown as SignetIdentity;
+import { SigningSettings } from './SigningSettings';
 
 function renderPage(over: { scannerAutoStart?: boolean; scannerIdleSeconds?: number } = {}) {
   const onSetScannerAutoStart = vi.fn();
   const onSetScannerIdleSeconds = vi.fn();
   render(
-    <SecuritySettings
-      identity={identity}
-      securityTier="standard"
-      onSetSecurityTier={vi.fn()}
-      onRequestAuth={vi.fn()}
-      onRequestFreshAuth={vi.fn()}
-      blurIdentityNames={false}
-      onSetBlurIdentityNames={vi.fn()}
-      requireNpConfirmation={true}
-      onSetRequireNpConfirmation={vi.fn()}
-      preferPersonaForSignIns={false}
-      onSetPreferPersonaForSignIns={vi.fn()}
-      preferredPersonaPubkey={undefined}
-      onSetPreferredPersonaPubkey={vi.fn()}
+    <SigningSettings
       scannerAutoStart={over.scannerAutoStart ?? true}
       onSetScannerAutoStart={onSetScannerAutoStart}
       scannerIdleSeconds={over.scannerIdleSeconds ?? 20}
@@ -38,13 +15,12 @@ function renderPage(over: { scannerAutoStart?: boolean; scannerIdleSeconds?: num
       bunkerServerEnabled={false}
       onSetBunkerServerEnabled={vi.fn()}
       bunkerUrl={null}
-      onNavigateShamir={vi.fn()}
     />,
   );
   return { onSetScannerAutoStart, onSetScannerIdleSeconds };
 }
 
-describe('SecuritySettings — Camera card', () => {
+describe('SigningSettings — Camera card', () => {
   it('explains the auto-start switch', () => {
     renderPage();
     expect(screen.getByText('Start the camera when I swipe to Scan')).toBeInTheDocument();

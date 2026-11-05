@@ -46,7 +46,7 @@ test('child asks to connect; the guardian approves one and denies another', asyn
   await expect(page.getByRole('button', { name: 'Open', exact: true })).toHaveClass(/btn-tile-selected/);
 
   await navigateViaHarness(page, 'pair-dependant-device');
-  await page.getByRole('button', { name: 'Open Security settings' }).click();
+  await page.getByRole('button', { name: 'Open Bunker settings' }).click();
   await page.getByRole('button', { name: 'Turn the Bunker on', exact: true }).click();
   await navigateViaHarness(page, 'pair-dependant-device');
   await expect(page.locator('canvas')).toBeVisible({ timeout: 30000 });

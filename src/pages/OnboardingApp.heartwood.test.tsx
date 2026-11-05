@@ -14,7 +14,7 @@ function openNameStep(onConnectHeartwood: (u: string, n: string) => Promise<void
   fireEvent.click(screen.getByRole('button', { name: 'Connect a remote signer' }));
   fireEvent.change(screen.getByPlaceholderText('bunker://...'), { target: { value: URI } });
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-  fireEvent.change(screen.getByPlaceholderText(/not your real name/), { target: { value: 'Moss' } });
+  fireEvent.change(screen.getByPlaceholderText('Name or handle'), { target: { value: 'Moss' } });
 }
 
 describe('OnboardingApp Heartwood connect', () => {

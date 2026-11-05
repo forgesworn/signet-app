@@ -3,8 +3,6 @@ import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 import type { SignetIdentity, AppPreferences, Page } from '../types';
 import { ANDROID_APP_URL, isAndroidWeb, isWebBuild } from '../lib/android-promo';
 import { UpdateStatusLine } from '../components/UpdateStatusLine';
-import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
-import { SEAM_GAP_DEFAULT_MM, SEAM_GAP_MAX_MM, validSeamGapMm } from '../lib/handshake-seam-gap';
 
 interface Props {
   identity: SignetIdentity;
@@ -49,35 +47,9 @@ interface Props {
   webUpdateReady?: boolean;
   /** Web only: apply the waiting build (skipWaiting + reload). */
   onApplyWebUpdate?: () => void;
-  /** Set (or, with `undefined`, clear) this phone's Handshake Jigsaw edge distance in mm. Absent: no Handshake card (paired child). */
-  onSetHandshakeSeamGapMm?: (mm: number | undefined) => void;
 }
 
-/** The Jigsaw edge distance for this handset. Only a valid number (0 to 30 mm) is saved; "Use default" clears it. */
-function HandshakeCard({ mm, onSet }: { mm?: number; onSet: (mm: number | undefined) => void }) {
-  const [text, setText] = useState(mm === undefined ? '' : String(mm));
-  return <div className="card section">
-    <div className="section-title">{HANDSHAKE_COPY.settingsTitle}</div>
-    <label className="field-label" htmlFor="handshake-seam-gap">{HANDSHAKE_COPY.seamGap}</label>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <input id="handshake-seam-gap" className="input" type="number" inputMode="decimal" min={0} max={SEAM_GAP_MAX_MM} step={0.5}
-        placeholder={SEAM_GAP_DEFAULT_MM.toFixed(1)} value={text} style={{ maxWidth: 120 }}
-        onChange={e => {
-          setText(e.target.value);
-          const n = e.target.value.trim() === '' ? NaN : Number(e.target.value);
-          if (validSeamGapMm(n)) onSet(n);
-        }}
-        // A value that was not saved is not left on screen as if it had been.
-        onBlur={() => setText(mm === undefined ? '' : String(mm))} />
-      <span>{HANDSHAKE_COPY.seamGapUnit}</span>
-      <button type="button" className="btn btn-secondary btn-sm" disabled={mm === undefined && text === ''}
-        onClick={() => { setText(''); onSet(undefined); }}>{HANDSHAKE_COPY.useDefault}</button>
-    </div>
-    <p className="field-hint">{HANDSHAKE_COPY.seamGapHint}</p>
-  </div>;
-}
-
-export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, connectedSiteCount = 0, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate, onSetHandshakeSeamGapMm }: Props) {
+export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, connectedSiteCount = 0, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [versionTaps, setVersionTaps] = useState(0);
 
@@ -134,10 +106,18 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
         <button className="row-button" onClick={() => onNavigate('settings-security')}>
           <span className="row-main">
             <span className="row-label" style={{ fontWeight: 600 }}>Security &amp; Backup</span>
-            <span className="row-sub">PIN, biometrics, backup words, verification tier</span>
+            <span className="row-sub">PIN, biometrics, backup words, sign-in privacy</span>
           </span>
           <span className="row-chevron">&rsaquo;</span>
         </button>
+
+        {preferences.signingMode !== 'paired-child' && <button className="row-button" onClick={() => onNavigate('settings-signing')}>
+          <span className="row-main">
+            <span className="row-label" style={{ fontWeight: 600 }}>Bunker &amp; Scanning</span>
+            <span className="row-sub">Serve signing requests, camera behaviour</span>
+          </span>
+          <span className="row-chevron">&rsaquo;</span>
+        </button>}
 
         <button className="row-button" onClick={() => onNavigate('connections')}>
           <span className="row-main">
@@ -187,8 +167,6 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
         </div>
       </div>
 
-      {onSetHandshakeSeamGapMm && <HandshakeCard mm={preferences.handshakeSeamGapMm} onSet={onSetHandshakeSeamGapMm} />}
-
       {/* Power Mode toggle + sections grouped together */}
       <div className="card section">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -224,7 +202,7 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           </button>
         </div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 0 }}>
-          Show advanced features like Signet IQ breakdown, identity bridge, and relay settings.
+          Show advanced features: the identity bridge, relay settings, and deleting this Signet.
         </p>
       </div>
 
