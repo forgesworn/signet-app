@@ -14092,7 +14092,8 @@ function AppContent() {
         }}
         onOpenSite={origin => { window.open(origin, '_blank', 'noopener'); }}
         contactsCountFor={resolved => {
-          if (resolved.isDependant || !(contactsScope.directoryId === 'owner' || isPairedChild) || contactsV2.loading) return null;
+          // Locked, the log is unreadable and reads as empty: hide the pill rather than invite a first contact.
+          if (!encryptionKey || resolved.isDependant || !(contactsScope.directoryId === 'owner' || isPairedChild) || contactsV2.loading) return null;
           return contactsV2.effective.filter(contact =>
             !contact.blocked && !contact.archived && contact.lifecycle === 'active'
             && contactBelongsToList(contact, resolved.publicKey)).length;
