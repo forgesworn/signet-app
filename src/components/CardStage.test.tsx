@@ -57,4 +57,18 @@ describe('CardStage', () => {
     expect(second.container.querySelector('.card-backdrop')).not.toBeNull();
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
+
+  it('blurs the backdrop under the blur-names preference, since it may be a photo of the same person', async () => {
+    mockGet.mockResolvedValue(new Blob(['img'], { type: 'image/png' }));
+    const { container } = render(<CardStage pubkey={'ab'.repeat(32)} blur><div>card</div></CardStage>);
+    await waitFor(() => expect(container.querySelector('.card-backdrop')).not.toBeNull());
+    expect((container.querySelector('.card-backdrop') as HTMLElement).style.filter).toContain('blur');
+  });
+
+  it('leaves the backdrop sharp when the preference is off', async () => {
+    mockGet.mockResolvedValue(new Blob(['img'], { type: 'image/png' }));
+    const { container } = render(<CardStage pubkey={'ac'.repeat(32)}><div>card</div></CardStage>);
+    await waitFor(() => expect(container.querySelector('.card-backdrop')).not.toBeNull());
+    expect((container.querySelector('.card-backdrop') as HTMLElement).style.filter).toBe('');
+  });
 });

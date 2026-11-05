@@ -70,6 +70,12 @@ describe('useCardBackdrop.set', () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it('decodes with the EXIF orientation applied, like the avatar and thumbnail paths', async () => {
+    const { result } = renderHook(() => useCardBackdrop(PK));
+    await act(async () => { await result.current.set(imageFile()); });
+    expect(createImageBitmap).toHaveBeenCalledWith(expect.any(Blob), { imageOrientation: 'from-image' });
+  });
+
   it('stores the downscaled image, caches a URL and notifies the mounted hook', async () => {
     const { result } = renderHook(() => useCardBackdrop(PK));
     await waitFor(() => expect(result.current.url).toBeNull());

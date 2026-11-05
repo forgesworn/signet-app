@@ -381,6 +381,12 @@
   justify-content: center;
   gap: 8px;
   max-width: 100%;
+  /* At most two rows of chips (40px each plus the gap). A long list of long
+     names would otherwise push the Scan, Handshake and My QR tiles off the
+     bottom of a short phone; the sites past the second row are still on the
+     Connections page. */
+  max-height: 88px;
+  overflow: hidden;
 }
 .card-launcher-chip {
   display: inline-flex;
@@ -1477,6 +1483,7 @@
   .card-inner { padding: 10px 16px; gap: 4px; }
   .card-photo-wrap { margin-bottom: 6px; }
   .card-quick { gap: 5px; }
+  .card-launcher { max-height: 40px; }
   .card-contacts-pill { padding: 2px 10px; }
   .card-brand img:first-child { height: 32px; }
   .card-brand img:last-child { height: 26px; }

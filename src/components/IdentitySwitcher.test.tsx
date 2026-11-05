@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
+import { useState } from 'react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, fireEvent } from '@testing-library/react';
-import { IdentitySwitcher } from './IdentitySwitcher';
+import { IdentitySwitcher, switcherRowLabel } from './IdentitySwitcher';
 import type { CarouselRow } from '../types';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
 
@@ -64,6 +65,93 @@ describe('IdentitySwitcher', () => {
       const addRows = [{ type: 'add' }] as unknown as CarouselRow[];
       const { container } = render(<IdentitySwitcher rows={addRows} current={0} onPick={() => {}} onClose={() => {}} blurIdentityNames />);
       expect((container.querySelector('.identity-switcher-name') as HTMLElement).style.filter).toBe('');
+    });
+  });
+
+  describe('focus', () => {
+    const personaRow = (name: string, key: string) => ({
+      type: 'persona',
+      identity: { naturalPerson: { publicKey: 'a'.repeat(64), displayName: '' }, persona: { publicKey: key.repeat(64), displayName: name }, primaryKeypair: 'persona' },
+    });
+    const rows = [personaRow('One', 'b'), personaRow('Two', 'c'), { type: 'add' }] as unknown as CarouselRow[];
+
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>opener</button>
+          {open && <IdentitySwitcher rows={rows} current={1} onPick={() => {}} onClose={() => setOpen(false)} />}
+        </>
+      );
+    }
+
+    it('moves focus to the current row on open', () => {
+      const { getByText, container } = render(<Host />);
+      const opener = getByText('opener');
+      opener.focus();
+      fireEvent.click(opener);
+      const current = container.ownerDocument.querySelector('.identity-switcher-row.is-current');
+      expect(current).not.toBeNull();
+      expect(document.activeElement).toBe(current);
+    });
+
+    it('keeps Tab inside the sheet in both directions', () => {
+      const { getByText } = render(<Host />);
+      const opener = getByText('opener');
+      opener.focus();
+      fireEvent.click(opener);
+      const close = document.querySelector('.identity-switcher-head button') as HTMLElement;
+      const rowButtons = Array.from(document.querySelectorAll<HTMLElement>('.identity-switcher-row'));
+      const last = rowButtons[rowButtons.length - 1];
+
+      last.focus();
+      fireEvent.keyDown(last, { key: 'Tab' });
+      expect(document.activeElement).toBe(close);
+
+      close.focus();
+      fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+      expect(document.activeElement).toBe(last);
+
+      opener.focus();
+      fireEvent.keyDown(document.querySelector('.identity-switcher-scrim')!, { key: 'Tab' });
+      expect(document.activeElement).toBe(close);
+    });
+
+    it('gives focus back to the opener on close', () => {
+      const { getByText } = render(<Host />);
+      const opener = getByText('opener');
+      opener.focus();
+      fireEvent.click(opener);
+      expect(document.activeElement).not.toBe(opener);
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      expect(document.querySelector('.identity-switcher')).toBeNull();
+      expect(document.activeElement).toBe(opener);
+    });
+  });
+
+  describe('Add row label', () => {
+    const add = { type: 'add' } as unknown as CarouselRow;
+
+    it('offers a persona or a dependant on the top-level ring', () => {
+      expect(switcherRowLabel(add).name).toBe('Add persona or dependant');
+      expect(switcherRowLabel(add, 'guardian').name).toBe('Add persona or dependant');
+    });
+
+    it('offers only a persona inside a dependant\'s child mode', () => {
+      expect(switcherRowLabel(add, 'child').name).toBe('Add persona');
+    });
+
+    it('does not promise an add on a paired-child install, where the card is informational', () => {
+      const label = switcherRowLabel(add, 'paired-child');
+      expect(label.name).toBe('Personas are managed for you');
+      expect(label.name).not.toMatch(/^Add/);
+    });
+
+    it('renders the label for the surface it is given', () => {
+      const { container } = render(<IdentitySwitcher rows={[add]} current={0} onPick={() => {}} onClose={() => {}} surface="child" />);
+      expect(container.querySelector('.identity-switcher-name')!.textContent).toBe('Add persona');
     });
   });
 });

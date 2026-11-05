@@ -20,6 +20,7 @@
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
+import { armPickerGrace } from '../lib/picker-grace';
 import { Icon } from './Icon';
 
 export interface ImageRowProps {
@@ -88,7 +89,7 @@ export function ImageRow({
           {onPick && (
             <label className="btn btn-ghost btn-sm" style={{ cursor: disabled || uploading ? 'not-allowed' : 'pointer' }}>
               {uploading ? 'Uploading…' : url ? 'Change…' : 'Upload…'}
-              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={picker.onInputChange} disabled={disabled || uploading} />
+              <input type="file" accept="image/*" style={{ display: 'none' }} onClick={() => armPickerGrace()} onChange={picker.onInputChange} disabled={disabled || uploading} />
             </label>
           )}
           {url && (

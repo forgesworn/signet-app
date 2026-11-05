@@ -47,6 +47,7 @@ import {
   NOTE_MAX, ROLE_MAX, addRole, normaliseBlockReason, normaliseNote, removeRole,
   validateMethodDraft, type DetailSection, type LegacyMatch,
 } from '../lib/contacts-v2-detail';
+import { armPickerGrace } from '../lib/picker-grace';
 
 /** What the host knows about backing up the user's own pictures (the page only renders it). */
 export interface PictureBackupHost {
@@ -337,7 +338,7 @@ export function ContactDetail(props: Props) {
               }}
             />
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => pictureInput.current?.click()}>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { armPickerGrace(); pictureInput.current?.click(); }}>
                 {picture.hasOwn ? CHANGE_OWN_PICTURE_LABEL : ADD_OWN_PICTURE_LABEL}
               </button>
               {picture.hasOwn && props.onRemoveOwnPicture && (

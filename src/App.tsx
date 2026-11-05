@@ -438,6 +438,7 @@ import type { AuthRequest, LoginRequest } from './lib/qr-router';
 import { Z } from './lib/z-index';
 import { hasPendingPublishes, flushPendingPublishes } from './lib/pending-publish';
 import { createLockRequester } from './lib/lock-after-flush';
+import { clearPickerGrace, hideGetsGrace } from './lib/picker-grace';
 
 const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 const NOSTRCONNECT_SERVE_MINUTES = 2;
@@ -5416,8 +5417,10 @@ function AppContent() {
         // A contacts grant in flight gets the same 30s: on a same-phone
         // grant the user MUST switch to the app to read its 6-digit code,
         // and an instant lock there stranded the check (found on device).
-        if (pendingVerifyRequest || pendingAuthRequest || page === 'venue-entry'
-          || page === 'contacts-grant-approve' || page === 'contacts-grant-code') {
+        // A file picker opened just before (armPickerGrace) hides the page too:
+        // locking then would unmount the input the pick is about to land on.
+        if (hideGetsGrace(!!(pendingVerifyRequest || pendingAuthRequest || page === 'venue-entry'
+          || page === 'contacts-grant-approve' || page === 'contacts-grant-code'))) {
           if (graceTimer) clearTimeout(graceTimer);
           const graceLeft = Math.max(0, hiddenAtRef.current + 30000 - Date.now());
           graceTimer = setTimeout(() => { graceTimer = null; requestHideLock(); }, graceLeft);
@@ -5435,6 +5438,7 @@ function AppContent() {
         // request handled before the lock renders sees the same verdict.
         if (phoneAppsKeyExpiredNow()) { lockExpiredPhoneAppsKey(); return; }
         hiddenAtRef.current = null;
+        clearPickerGrace();
         if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
       }
     };

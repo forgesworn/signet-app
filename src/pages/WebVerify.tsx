@@ -7,6 +7,7 @@ import { routeQR } from '../lib/qr-router';
 import { decodeQrFromImage } from '../lib/qr-image-decode';
 import { CONTACTS_GRANT_WRONG_SCANNER_COPY } from '../lib/contacts-v2-copy';
 import type { AuthRequest, LoginRequest } from '../lib/qr-router';
+import { armPickerGrace } from '../lib/picker-grace';
 
 interface Props {
   onVerifyRequest: (request: VerifyRequest) => void;
@@ -108,6 +109,7 @@ export function WebVerify({ onVerifyRequest, onAuthRequest, onLoginRequest, onNo
   const handleChoosePhoto = useCallback(() => {
     setError(null);
     setScannerActive(false);
+    armPickerGrace();
     fileInputRef.current?.click();
   }, []);
 

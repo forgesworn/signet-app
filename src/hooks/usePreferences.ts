@@ -6,6 +6,7 @@ import { TIER_WORD_COUNT, DEFAULT_THEME } from '../types';
 import * as db from '../lib/db';
 import { DEFAULT_BLOSSOM_URL } from '../lib/blossom';
 import { validSeamGapMm } from '../lib/handshake-seam-gap';
+import { applyTheme } from '../lib/theme-apply';
 import { normaliseScannerIdleSeconds, type ScannerIdleSeconds } from '../lib/scanner-settings';
 
 /**
@@ -65,12 +66,12 @@ export function usePreferences() {
   }, []);
 
   useEffect(() => {
-    if (preferences.theme === 'system') {
-      document.documentElement.removeAttribute('data-theme');
-    } else {
-      document.documentElement.setAttribute('data-theme', preferences.theme);
-    }
-  }, [preferences.theme]);
+    // Until IndexedDB answers, `preferences.theme` is only the default. Applying
+    // it would paint dark for a user who saved Light (or System on a light
+    // phone), then flip once the real value arrives.
+    if (loading) return;
+    applyTheme(preferences.theme);
+  }, [preferences.theme, loading]);
 
   const setTheme = useCallback(async (theme: 'system' | 'light' | 'dark') => {
     const updated = { ...preferences, theme };
