@@ -37,4 +37,4 @@ license: MIT
 website: https://mysignet.app
 tags: [nostr, identity, signer, nip46, family, security]
 icon: ./assets/icon-only.png
-supported_nips: ["44", "46"]
+supported_nips: ["44", "46", "55"]

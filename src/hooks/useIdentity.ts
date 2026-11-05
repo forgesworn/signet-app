@@ -1,3 +1,4 @@
+import { isNaturalPersonActive, REAL_IDENTITY_DORMANT_PRIMARY_COPY } from '../lib/identity-display';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { SignetIdentity, ExtraPersona, ExtraPersonaTombstone, RemotePersonasPatch } from '../types';
 import * as db from '../lib/db';
@@ -362,6 +363,11 @@ export function useIdentity(encryptionKey?: string | null) {
     // ciphertext-in-ciphertext via saveIdentityEncrypted's nested encrypt.
     const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, key);
     if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
+    // A dormant real identity is never the pairing transport or the default
+    // key: the primary keypair decides both, and activation is what lifts it.
+    if (keypair === 'natural-person' && !isNaturalPersonActive(decrypted)) {
+      throw new Error(REAL_IDENTITY_DORMANT_PRIMARY_COPY);
+    }
     const oldId = activeIdentity.id;
     const updated = {
       ...decrypted,

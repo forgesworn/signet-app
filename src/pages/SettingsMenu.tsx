@@ -52,6 +52,8 @@ interface Props {
 export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, connectedSiteCount = 0, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [versionTaps, setVersionTaps] = useState(0);
+  // Advanced settings holds the calibration card only on an owner install.
+  const offersHandshakeCalibration = preferences.signingMode !== 'paired-child';
 
   function handleVersionTap() {
     const next = versionTaps + 1;
@@ -203,7 +205,7 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           </button>
         </div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 0 }}>
-          Show advanced features: the identity bridge, relay settings, and deleting this Signet.
+          Show advanced features: the identity bridge, relay settings, {offersHandshakeCalibration && 'Handshake calibration, '}and deleting this Signet.
         </p>
       </div>
 
@@ -238,7 +240,7 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
             >
               <div>
                 <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Advanced</div>
-                <div style={{ fontSize: '0.8rem', fontWeight: 400, opacity: 0.8 }}>Bridge, roster, relay, remote signer</div>
+                <div style={{ fontSize: '0.8rem', fontWeight: 400, opacity: 0.8 }}>Bridge, roster, relay, remote signer{offersHandshakeCalibration && ', Handshake calibration'}</div>
               </div>
               <span style={{ fontSize: '0.85rem', opacity: 0.5 }}>&rsaquo;</span>
             </button>

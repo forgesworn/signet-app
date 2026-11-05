@@ -11,12 +11,36 @@ function relayHost(url: string): string {
  * or an upload counts only once a check has settled, because mid-check the
  * status still reads "Checking private backups". Healthy and in-progress
  * states stay on Security & Backup.
+ *
+ * A signer that refused comes first: its refused or timed-out decrypts read as
+ * `unusable` or `unavailable`, which would falsely say a backup failed
+ * validation right next to the banner asking for the approval.
  */
 export function privateVaultNeedsAttention(health: PrivateVaultHealth): boolean {
+  if (health.needsApproval) return false;
+  if (health.stopped) return true;
   const states = Object.values(health.datasets);
   if (states.some(s => s.state === 'unusable')) return true;
   return health.phase === 'idle' && states.some(s => s.state === 'unavailable' || s.state === 'pending');
 }
+
+/**
+ * Should the Settings warning be on screen? Once shown it stays through a
+ * re-check, so an open details element keeps its place and a key change's result
+ * message survives; the decision is taken again when the check settles.
+ */
+export function privateVaultWarningVisible(health: PrivateVaultHealth, wasVisible: boolean): boolean {
+  if (health.needsApproval) return false;
+  if (privateVaultNeedsAttention(health)) return true;
+  // Not `checking`: a signer that drops holds that phase, and the heading would
+  // then claim a migration check for as long as it stays away.
+  return wasVisible && health.phase === 'running';
+}
+
+const STOPPED_COPY: Record<NonNullable<PrivateVaultHealth['stopped']>, string> = {
+  listing: 'Signet could not list what to back up on this phone. It tries again by itself while it is open, and locking and unlocking also tries again.',
+  'contacts-import': 'Signet could not prepare your contacts for backup, and backups wait for that step. Lock and unlock Signet to try again.',
+};
 
 export function PrivateVaultStatus({ health, importedDependants, onRotate, onDisableRelay, canDisableRelay }: {
   health: PrivateVaultHealth; importedDependants: number;
@@ -38,7 +62,9 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
   };
   const states = Object.values(health.datasets);
   const verified = states.filter(s => s.state === 'verified').length;
-  const invalid = states.some(s => s.state === 'unusable');
+  // A refused signer request reads as unusable too. The approval banner covers
+  // that, and it says nothing about the backup itself.
+  const invalid = !health.needsApproval && states.some(s => s.state === 'unusable');
   const unavailable = states.some(s => s.state === 'unavailable');
   // A5: the counter belongs to a first sync, when this device is actually
   // sending backups. Every unlock re-checks all datasets from scratch, and
@@ -48,6 +74,7 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
   const sending = states.some(s => s.published);
   const finished = states.length;
   const heading = health.phase === 'unsupported' ? 'Recovery-derived backups unavailable'
+    : health.stopped ? 'Private backups have stopped'
     : invalid ? 'A private backup needs attention'
     : health.phase === 'checking' ? 'Checking existing backups before migration'
     : health.phase === 'running' && sending && health.total !== undefined && health.total > 0 && finished < health.total
@@ -69,6 +96,7 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
     <summary>{heading}</summary>
     {health.phase === 'unsupported'
       ? <p>This identity needs its original Signet recovery tree or a compatible Heartwood connection for private vaults. Existing backup formats remain available.</p>
+      : health.stopped ? <p>{STOPPED_COPY[health.stopped]}</p>
       : <p>Profiles, contacts, credentials and portable settings migrate separately after a complete encrypted copy is read back. Queued changes retry automatically while Signet is open.</p>}
     {invalid && <p>A backup could not be validated. Signet has paused replacement of that dataset and kept the local copy.</p>}
     {blocking.length > 0 && <p data-vault-blocking-relays>

@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo } from 'react';
 import type { SignetIdentity, SecurityTier } from '../types';
 import { getAuthMethod, changePIN, enableBiometric, disableBiometric, isBiometricAvailable, hasPinFallback, biometricAcceptsDevicePin } from '../lib/auth';
 import { securityMethodLabel } from '../lib/security-method-label';
-import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
+import { BACKUP_WORDS_ON_SIGNER, NO_BACKUP_WORDS_CHILD, NO_BACKUP_WORDS_IMPORTED } from '../lib/local-key-only-copy';
 import { toRecoveryWords } from '../lib/recovery-words';
 import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
 import { Icon } from '../components/Icon';
@@ -141,6 +141,9 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
       return '';
     }
   }, [showBackup, identity.mnemonic]);
+  // Decrypted and still empty: an nsec import or a paired child. Revealing would
+  // sit on "Unlocking..." for the whole 90 s under copy promising 19 words.
+  const noRecoveryWords = !identity.encrypted && !identity.mnemonic;
 
   useEffect(() => {
     if (!showBackup) return;
@@ -465,6 +468,10 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
             {BACKUP_WORDS_ON_SIGNER}
           </p>
+        ) : noRecoveryWords ? (
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+            {identity.isChild ? NO_BACKUP_WORDS_CHILD : NO_BACKUP_WORDS_IMPORTED}
+          </p>
         ) : (
         <>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
@@ -514,7 +521,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
 
       {/* Shamir Backup — splits the mnemonic (ShamirBackup reads
           identity.mnemonic), so it's hidden under the same on-signer gate. */}
-      {!mnemonicOnSigner && (
+      {!mnemonicOnSigner && !noRecoveryWords && (
         <div className="card section">
           <div className="section-title">Shamir Backup</div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>

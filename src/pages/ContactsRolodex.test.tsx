@@ -120,6 +120,19 @@ describe('ContactsRolodex', () => {
       expect(screen.queryByText('Nostr follows')).toBeNull();
     });
 
+    it('closes the follows panel with the rest of the More panel on Less', () => {
+      renderRolodex([contact({ contactId: 'a' })], { ...handlers, followsPersonaName: 'Alex' });
+      const more = screen.getByRole('button', { name: 'More contact actions' });
+      fireEvent.click(more);
+      fireEvent.click(screen.getByRole('button', { name: 'Import following' }));
+      expect(screen.getByText('Nostr follows')).toBeDefined();
+
+      fireEvent.click(more); // Less
+
+      expect(screen.queryByRole('button', { name: 'Import following' })).toBeNull();
+      expect(screen.queryByText('Nostr follows')).toBeNull();
+    });
+
     it('shows the disabled reason with Import disabled', () => {
       renderRolodex([contact({ contactId: 'a' })], { followsDisabledReason: 'Loading your contacts…' });
       fireEvent.click(screen.getByRole('button', { name: 'More contact actions' }));

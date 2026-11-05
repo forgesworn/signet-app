@@ -30,6 +30,31 @@ export function buildPhoneBunkerUrl(pubkeyHex: string | null | undefined, relayU
 }
 
 /**
+ * The pairing URL this install hands out for its own NIP-46 server: the key the
+ * generic owner route actually listens on, which is the pubkey of the server
+ * transport (`resolveServerTransportBackend`, `buildOwnerPersonaRoutes`). Taking
+ * a slot's pubkey here instead would hand out a key nothing listens on, and on a
+ * persona-first install that key is the dormant real-name one.
+ *
+ * Null while locked (a NIP-07 backend outlives a lock), when no transport can
+ * serve yet (a Heartwood route still connecting), and outside an owner context:
+ * a dependant pairs through its own flow, and a paired child serves nothing here.
+ */
+export function buildServerPairingUrl(input: {
+  transport: { activePublicKeyHex: string } | null;
+  unlocked: boolean;
+  ownerContext: boolean;
+  relayUrl: string | null | undefined;
+  /** The real-identity pubkey while it is dormant. An older record can still be
+   * primary on it, and a dormant real-name key is never handed out to pair with. */
+  dormantRealPubkey?: string | null;
+}): string | null {
+  if (!input.unlocked || !input.ownerContext) return null;
+  if (input.dormantRealPubkey && input.transport?.activePublicKeyHex === input.dormantRealPubkey) return null;
+  return buildPhoneBunkerUrl(input.transport?.activePublicKeyHex, input.relayUrl);
+}
+
+/**
  * Build a NIP-46 `bunker://` URI carrying a one-time pairing secret. Used by
  * the redirect-flow auto-pair (#redirect-bunker) so a consumer that just
  * completed "Sign in with Signet" gets a URI it can hand to its NIP-46

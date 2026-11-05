@@ -26,6 +26,9 @@ export function isNaturalPersonActive(identity: SignetIdentity): boolean {
   return identity.naturalPersonActive ?? identity.naturalPerson.displayName.trim() !== '';
 }
 
+/** Why the primary keypair can't move to a real identity that is still dormant. */
+export const REAL_IDENTITY_DORMANT_PRIMARY_COPY = "Your real identity isn't set up yet, so it can't be your primary keypair. Set it up first.";
+
 /**
  * Is a DEPENDANT's real-name slot activated? Same contract and same fallback
  * rule as `isNaturalPersonActive` for the owner (spec §3.2): a record written

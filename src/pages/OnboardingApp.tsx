@@ -383,7 +383,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   function renderMobile(): ReactNode {
     if (flow === 'welcome') {
       return (
-        <div className="page fade-in" role="main" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '80vh' }}>
+        <div className="page fade-in" role="main" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: 'calc(var(--app-vh, 100dvh) * 0.8)' }}>
           <div style={{ textAlign: 'center', marginBottom: 48 }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 36 }}>
               <BrandMark variant="stacked" size={136} />
@@ -452,7 +452,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
 
     if (flow === 'create') {
       return (
-        <div className="page fade-in" role="main" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '80vh' }}>
+        <div className="page fade-in" role="main" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: 'calc(var(--app-vh, 100dvh) * 0.8)' }}>
           <h1 style={{ marginBottom: 8 }}>Create my Signet</h1>
           <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>
             This is your anonymous persona. You can add your real identity later, when

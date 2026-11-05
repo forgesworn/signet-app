@@ -381,6 +381,12 @@
   justify-content: center;
   gap: 8px;
   max-width: 100%;
+  /* At most two rows of chips (40px each plus the gap). A long list of long
+     names would otherwise push the Scan, Handshake and My QR tiles off the
+     bottom of a short phone; the sites past the second row are still on the
+     Connections page. */
+  max-height: 88px;
+  overflow: hidden;
 }
 .card-launcher-chip {
   display: inline-flex;
@@ -1462,6 +1468,7 @@
 /* Fit the identity into its actual card height. It is a swipe surface, not a
    scroll area; keep every detail and action visible on shorter phones. */
 @container identity-card (max-height: 780px) {
+  .card-launcher { max-height: 74px; } /* two rows of the smaller chips below, no sliver of a third */
   .card-inner { padding: 14px 20px 14px; gap: 8px; }
   .card-identity { gap: 4px; }
   .card-stage.has-backdrop .card-identity { padding: 10px 16px 10px; }
@@ -1477,6 +1484,7 @@
   .card-inner { padding: 10px 16px; gap: 4px; }
   .card-photo-wrap { margin-bottom: 6px; }
   .card-quick { gap: 5px; }
+  .card-launcher { max-height: 40px; }
   .card-contacts-pill { padding: 2px 10px; }
   .card-brand img:first-child { height: 32px; }
   .card-brand img:last-child { height: 26px; }

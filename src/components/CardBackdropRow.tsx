@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { armPickerGrace } from '../lib/picker-grace';
 import { BACKDROP_PRIVACY_COPY, useCardBackdrop } from '../hooks/useCardBackdrop';
 
 /**
@@ -22,7 +23,7 @@ export function CardBackdropRow({ pubkey }: { pubkey: string }) {
         {error && <span className="slot-row-error" role="alert">{error}</span>}
       </div>
       <div className="slot-row-actions">
-        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setError(''); inputRef.current?.click(); }}>
+        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setError(''); armPickerGrace(); inputRef.current?.click(); }}>
           {busy ? 'Saving…' : backdrop.url ? 'Change' : 'Set'}
         </button>
         {backdrop.url && (

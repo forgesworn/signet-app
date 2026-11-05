@@ -24,6 +24,11 @@ describe('auth native branches', () => {
     expect(mocks.SignetNative.isBiometricAvailable).toHaveBeenCalled();
   });
 
+  it('isBiometricAvailable is false when the plugin says so (Android 10 and older), so PIN is the only option', async () => {
+    mocks.SignetNative.isBiometricAvailable.mockResolvedValueOnce({ available: false });
+    expect(await isBiometricAvailable()).toBe(false);
+  });
+
   it('setupBiometric enrolls via plugin, sets method key, reports prfSupported', async () => {
     const key = 'a'.repeat(64);
     const res = await setupBiometric(key);

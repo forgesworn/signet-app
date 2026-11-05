@@ -3,15 +3,25 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.24.0
 - Identity cards: a larger photo, three action tiles (Scan, Handshake, My QR) and quick links to your sites and contacts replace the tier, Signet IQ and vouch counts
 - Card backdrops: give each persona its own wallpaper from the image button on its card or the Card backdrop row in its settings column. Photos are resized before they are stored, and the card keeps one readable plate behind the name. A backdrop stays on this device, is not encrypted, and shows while the app is locked
 - Tap the role label on a card (PERSONA 1/3) to switch between your identities from a list
-- The app now starts in the dark theme, so Home and the other pages no longer flip colour; System and Light are still in Settings, Appearance
+- New installs start in the dark theme, so Home and the other pages no longer flip colour. Existing installs keep their current theme, and System, Light and Dark are all in Settings, Appearance
 - Settings: Security & Backup now opens on your lock and backup, and the Bunker and camera settings have their own Bunker & Scanning page. The Bunker tab's sheet turns the Bunker on directly
 - Pictures are named by who sees them: "Picture shown to you", "Picture shown on Nostr" and "Verification photo"
 - Contacts: one New contact button, with the import, picture refresh and recognise-a-key actions behind More, and a line explaining Kin, Kith and Ken
 - The QR card fits short phones without cutting off its footer
+- Android 11 and older: the app no longer closes when the home screen loads or when Bluetooth or NFC is switched
+- Android 7: turning on the always-on Bunker no longer closes the app
+- Private backup problems also show at the top of Settings, so a backup that has stopped working is not missed
+- Paired children keep their camera settings, on a Scanning row in Settings
+- Handshake calibration has moved to Advanced settings
+- The public QR card no longer shows the tier line
+- The blur names setting also covers the identity switcher, the site links and the card backdrop
+- Sign-in sites and the contact count show on a card only while the app is unlocked
+- Removing a persona or dependant also removes its card backdrop
+- On the web, the welcome screen and Settings now point to the Android app
 
 ## 0.23.0
 - Faster, more reliable QR scanning: codes are decoded off the main thread, only inside the framing box, and the code nearest the centre wins when several are in view

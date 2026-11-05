@@ -7,8 +7,14 @@ interface Props {
   /** Bunker master switch (serve signing requests). */
   bunkerServerEnabled: boolean;
   onSetBunkerServerEnabled: (enabled: boolean) => void;
-  /** Pairing URL for other devices; null when no relay is set or a dependant is active. */
+  /** Pairing URL for other devices; null when there is no key to serve or no valid relay. */
   bunkerUrl?: string | null;
+  /** False in a dependant's context, which pairs through its own flow, so the URL block is hidden. Default true. */
+  showPairingUrl?: boolean;
+  /** False when this phone has no key the Bunker can serve right now, which is why `bunkerUrl` is null. Default true. */
+  pairingKeyAvailable?: boolean;
+  /** The key the Bunker serves is a real identity that isn't set up, so it is not handed out. */
+  pairingKeyDormant?: boolean;
   /** Camera card: start the scanner when the user swipes to it. Default on. */
   scannerAutoStart?: boolean;
   onSetScannerAutoStart?: (enabled: boolean) => void;
@@ -29,7 +35,7 @@ const noop = () => {};
  * how its camera behaves. Split out of Security & Backup so the lock and
  * recovery controls stay a short page.
  */
-export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, showBunker = true, focusSection, onConsumeFocus }: Props) {
+export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, showPairingUrl = true, pairingKeyAvailable = true, pairingKeyDormant = false, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, showBunker = true, focusSection, onConsumeFocus }: Props) {
   const [bunkerCopied, setBunkerCopied] = useState(false);
   const [highlighted, setHighlighted] = useState<string | null>(null);
 
@@ -118,7 +124,7 @@ export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled,
             offLabel="Turn the Bunker on"
           />
         </div>
-        {bunkerServerEnabled && (
+        {bunkerServerEnabled && showPairingUrl && (
           <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
             <div className="section-title" style={{ marginBottom: 4 }}>Bunker URL for pairing devices</div>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 6, marginBottom: 12 }}>
@@ -153,7 +159,11 @@ export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled,
               </>
             ) : (
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
-                Set a relay in Settings → Advanced first.
+                {pairingKeyDormant
+                  ? "No pairing URL right now: your primary key is your real identity, which isn't set up yet. Set it up, or switch your primary to your persona on its Advanced page."
+                  : pairingKeyAvailable
+                  ? 'Set a relay in Settings → Advanced first.'
+                  : 'No pairing URL right now: this phone has no key the Bunker can serve. If you use a signer, check it is connected.'}
               </p>
             )}
           </div>

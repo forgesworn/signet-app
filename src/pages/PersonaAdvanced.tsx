@@ -25,7 +25,7 @@ import { TypedNameConfirm } from '../components/TypedNameConfirm';
 import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
 import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
 import { resolveAuditVisibility } from '../lib/audit-visibility';
-import { isDependantNaturalPersonActive } from '../lib/identity-display';
+import { isDependantNaturalPersonActive, isNaturalPersonActive, REAL_IDENTITY_DORMANT_PRIMARY_COPY } from '../lib/identity-display';
 import { resolveDependantCardSlot } from '../lib/carousel-utils';
 import type { DependantContactsChoice } from '../lib/contacts-v2-removal';
 import {
@@ -747,6 +747,7 @@ function PrimaryKeypairBlock({
   // promotes it. Both directions use the same write path.
   const switchTo = slotKind === 'natural-person' ? 'persona' : 'natural-person';
   const switchToLabel = switchTo === 'persona' ? 'default Persona' : 'Natural Person';
+  const targetDormant = switchTo === 'natural-person' && !isNaturalPersonActive(identity);
 
   async function handleSwitch() {
     setBusy(true);
@@ -771,9 +772,13 @@ function PrimaryKeypairBlock({
           : ' Switching changes which keypair Signet uses by default for new actions.'}
       </p>
       {error && <div role="alert" style={alertStyle('danger')}>{error}</div>}
-      <button className="btn btn-secondary" onClick={() => { void handleSwitch(); }} disabled={busy}>
-        {busy ? 'Switching…' : `Switch primary to ${switchToLabel}`}
-      </button>
+      {targetDormant ? (
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>{REAL_IDENTITY_DORMANT_PRIMARY_COPY}</p>
+      ) : (
+        <button className="btn btn-secondary" onClick={() => { void handleSwitch(); }} disabled={busy}>
+          {busy ? 'Switching…' : `Switch primary to ${switchToLabel}`}
+        </button>
+      )}
     </div>
   );
 }

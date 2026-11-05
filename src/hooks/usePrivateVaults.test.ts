@@ -431,3 +431,28 @@ it('A5: the cycle reports how many datasets it visits, kept through every update
   expect(seen.filter(t => t !== undefined).every(t => t === 3)).toBe(true);
   unmount();
 });
+
+it('C4: a job list that rejects reports stopped, keeps retrying and clears once a list arrives', async () => {
+  vi.useFakeTimers();
+  const jobs = vi.fn(async () => [job]);
+  jobs.mockRejectedValueOnce(new Error('db read failed'));
+  sync.mockResolvedValue({ state: 'verified', canonical: true });
+  const { result, unmount } = renderHook(() => usePrivateVaults({ ...opts(), jobs }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(result.current).toMatchObject({ phase: 'idle', stopped: 'listing', datasets: {} });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(jobs).toHaveBeenCalledTimes(2);
+  expect(result.current.stopped).toBeUndefined();
+  expect(result.current.datasets['signet:vault:profiles'].state).toBe('verified');
+  unmount();
+});
+
+it('C4: a signer refusal while listing is an approval, not a stop', async () => {
+  vi.useFakeTimers();
+  const { result, unmount } = renderHook(() => usePrivateVaults({ ...opts(),
+    jobs: async () => { throw new VaultApprovalError('denied'); } }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(result.current.needsApproval).toBe(true);
+  expect(result.current.stopped).toBeUndefined();
+  unmount();
+});

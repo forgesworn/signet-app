@@ -22,6 +22,13 @@ class BiometricPolicyTest {
         assertFalse(BiometricPolicy.deviceCredentialForStoredKey(29, madeWithIt = true))
     }
 
+    @Test fun `biometric unlock is offered only from Android 11`() {
+        assertFalse(BiometricPolicy.biometricSupported(24))
+        assertFalse(BiometricPolicy.biometricSupported(29))
+        assertTrue(BiometricPolicy.biometricSupported(30))
+        assertTrue(BiometricPolicy.biometricSupported(36))
+    }
+
     @Test fun `the key and the prompt name the same factors`() {
         assertEquals(KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL, BiometricPolicy.keyAuthenticators(true))
         assertEquals(KeyProperties.AUTH_BIOMETRIC_STRONG, BiometricPolicy.keyAuthenticators(false))

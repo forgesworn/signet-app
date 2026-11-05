@@ -11,6 +11,7 @@ import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
+import { armPickerGrace } from '../lib/picker-grace';
 
 /** One site this identity has signed in to, for the quick-open launcher. */
 export interface LauncherSite {
@@ -82,6 +83,12 @@ export interface IdentityCardProps {
    */
   blurIdentityNames?: boolean;
   /**
+   * This card's own position in the ring. The arrow context only knows the
+   * row the carousel has settled on, so during a vertical slide the incoming
+   * card would show the outgoing card's position until the slide ended.
+   */
+  rowIndex?: number;
+  /**
    * Called when an unnamed persona commits a name (blur or Enter). The parent
    * should persist it via `updateDisplayName(...)`. Only fires while the
    * inline editor is shown (`!resolved.displayNameIsSet`).
@@ -99,7 +106,7 @@ function colourFromLabel(text: string): string {
   return colourFromPubkey(h.toString(16).padStart(8, '0'));
 }
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -112,6 +119,9 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   const [backdropNote, setBackdropNote] = useState<string | null>(null);
   const backdropNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canEditBackdrop = !isDependant && !childDormant;
+  // The system picker hides the page; without the grace that hide locks the
+  // app and unmounts this input before the pick lands.
+  const openBackdropPicker = () => { armPickerGrace(); backdropInputRef.current?.click(); };
 
   // Any press outside the control closes its menu — including on the tab
   // bar, which a scrim inside the (transformed) card could never cover.
@@ -282,15 +292,14 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             onClick={e => {
               e.stopPropagation();
               if (backdrop.url) setBackdropMenuOpen(open => !open);
-              else backdropInputRef.current?.click();
+              else openBackdropPicker();
             }}
-            onTouchEnd={e => e.stopPropagation()}
           >
             <Icon name="image" size={16} />
           </button>
           {backdropMenuOpen && backdrop.url && (
             <div className="card-backdrop-menu" role="menu" onClick={e => e.stopPropagation()}>
-              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); backdropInputRef.current?.click(); }}>
+              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); openBackdropPicker(); }}>
                 Change image
               </button>
               <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
@@ -306,7 +315,8 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
       {recentSignInLabel && (
         <div className="signin-ack-chip" role="status" aria-live="polite">
           <span className="signin-ack-tick">&#10003;</span>
-          Signed in as {recentSignInLabel}
+          Signed in as{' '}
+          <span style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{recentSignInLabel}</span>
         </div>
       )}
       <div className="card-inner">
@@ -402,12 +412,11 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             <button
               type="button"
               className="card-type card-type-switch"
-              aria-label={`${isDependant ? 'Dependant' : resolved.type}, identity ${arrows!.rowIndex + 1} of ${arrows!.rowCount}. Switch identity`}
+              aria-label={`${isDependant ? 'Dependant' : resolved.type}, identity ${(rowIndex ?? arrows!.rowIndex) + 1} of ${arrows!.rowCount}. Switch identity`}
               onClick={e => { e.stopPropagation(); arrows!.openSwitcher(); }}
-              onTouchEnd={e => e.stopPropagation()}
             >
               {typeLabel}
-              <span className="card-type-count" aria-hidden="true">{arrows!.rowIndex + 1}/{arrows!.rowCount}</span>
+              <span className="card-type-count" aria-hidden="true">{(rowIndex ?? arrows!.rowIndex) + 1}/{arrows!.rowCount}</span>
               <span className="card-type-chevron" aria-hidden="true">&#8964;</span>
             </button>
           ) : (
@@ -540,7 +549,6 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 className="btn btn-primary card-action-tile card-scan-btn"
                 aria-label="Scan a QR code"
                 onClick={e => { e.stopPropagation(); arrows?.jump(4); }}
-                onTouchEnd={e => e.stopPropagation()}
               >
                 <Icon name="qrScan" size={24} />
                 Scan
@@ -553,7 +561,6 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 className="btn btn-secondary card-action-tile"
                 aria-label="Show my QR code"
                 onClick={e => { e.stopPropagation(); arrows?.jump(1); }}
-                onTouchEnd={e => e.stopPropagation()}
               >
                 <Icon name="qr" size={24} />
                 My QR

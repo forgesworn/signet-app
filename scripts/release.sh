@@ -8,7 +8,9 @@
 # What it does, in order (each step fails loud):
 #   1. preflight: clean tree, on main, in sync with origin, gh authed,
 #      CHANGELOG.md has a "## X.Y.Z" section (Zapstore's release notes),
-#      keystore.properties present, aapt2 + apksigner found, java + gradlew found
+#      keystore.properties present, aapt2 + apksigner found, java + gradlew found,
+#      then npm ci (the Android build compiles Capacitor from node_modules, so a
+#      stale install would ship old native code)
 #   2. npm version X.Y.Z (package.json is THE version source; Gradle derives
 #      versionName/versionCode from it — see android/app/build.gradle)
 #   3. typecheck + unit tests (SKIP_TESTS=1 to skip)
@@ -64,6 +66,9 @@ command -v curl >/dev/null || die "curl missing"
 command -v java >/dev/null || die "java missing (needed by gradle)"
 [[ -x android/gradlew ]] || die "android/gradlew missing or not executable"
 echo "build-tools: $BT"
+# After the clean-tree and sync checks, so a refused run does not touch node_modules.
+say "npm ci"
+npm ci || die "npm ci failed"
 
 # ---------- 2. bump ----------
 # A PR may already have bumped package.json (the version is part of the change

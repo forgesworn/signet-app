@@ -280,7 +280,7 @@ export function ContactsRolodex({ initialSearch = '', pendingLinks = 0, lists, s
             {IMPORT_FOLLOWING_LABEL}
           </button>
         )}
-        {showFollows && followsOpen && (
+        {moreOpen && showFollows && followsOpen && (
           <FollowsImportPanel
             variant="block"
             personaName={followsPersonaName || 'this persona'}
