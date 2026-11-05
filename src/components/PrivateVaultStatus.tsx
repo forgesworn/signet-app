@@ -5,6 +5,19 @@ function relayHost(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
+/**
+ * True when a backup has a problem worth raising above Settings, not just on
+ * the backup page. A failed validation counts at any time. Waiting on a relay
+ * or an upload counts only once a check has settled, because mid-check the
+ * status still reads "Checking private backups". Healthy and in-progress
+ * states stay on Security & Backup.
+ */
+export function privateVaultNeedsAttention(health: PrivateVaultHealth): boolean {
+  const states = Object.values(health.datasets);
+  if (states.some(s => s.state === 'unusable')) return true;
+  return health.phase === 'idle' && states.some(s => s.state === 'unavailable' || s.state === 'pending');
+}
+
 export function PrivateVaultStatus({ health, importedDependants, onRotate, onDisableRelay, canDisableRelay }: {
   health: PrivateVaultHealth; importedDependants: number;
   onRotate?: (purpose: string) => Promise<string>;

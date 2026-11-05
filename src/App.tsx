@@ -61,7 +61,7 @@ import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/si
 import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
 import { useContactInviteMailboxes } from './hooks/useContactInviteMailboxes';
-import { PrivateVaultStatus } from './components/PrivateVaultStatus';
+import { PrivateVaultStatus, privateVaultNeedsAttention } from './components/PrivateVaultStatus';
 import { relayListWithDisabled } from './lib/relay-disable';
 import { toWire as profilesChangeWire } from './lib/personas-sync';
 import { toSyncWire as dependantChangeWire } from './lib/dependants-sync';
@@ -10631,6 +10631,10 @@ function AppContent() {
     health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
+  // A backup that has quietly stopped working must not depend on someone
+  // opening Security & Backup, so problems also show at the top of Settings.
+  const settingsBackupWarning = privateVaultBanner && privateVaultSupported && privateVaultNeedsAttention(privateVaultHealth)
+    ? <div className="app-notices">{privateVaultBanner}</div> : null;
   // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
   const childApprovalsBanner = (childDeviceLink.unpaired || childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
     <>
@@ -10990,6 +10994,7 @@ function AppContent() {
           {authOverlay}{nip55Overlay}
           {bunkerApprovalOverlay}
           {handoffPickerOverlay}
+          {settingsBackupWarning}
           {topBanners}
           <GuardianSettings
             activeDependant={activeDependant}
@@ -11123,7 +11128,7 @@ function AppContent() {
         webUpdateReady={needRefresh}
         onApplyWebUpdate={() => updateServiceWorker(true)}
       />
-    ), topBanners);
+    ), <>{settingsBackupWarning}{topBanners}</>);
   }
 
   if (page === 'bots' && !isPairedChild && !activeDependant && encryptionKey) {
