@@ -149,4 +149,26 @@ describe('Carousel', () => {
       expect((getByText('Lily') as HTMLElement).style.filter).toBe('');
     });
   });
+
+  describe('identity switcher Add row', () => {
+    const addLabel = () => document.querySelectorAll('.identity-switcher-name')[1]?.textContent;
+
+    it('says persona or dependant at the top level', () => {
+      setup();
+      act(() => { arrowApi!.openSwitcher(); });
+      expect(addLabel()).toBe('Add persona or dependant');
+    });
+
+    it('says only persona in child mode', () => {
+      setup({ childMode: true, childDependant: { id: 'dep-1', displayName: 'Lily' } });
+      act(() => { arrowApi!.openSwitcher(); });
+      expect(addLabel()).toBe('Add persona');
+    });
+
+    it('does not say Add on a paired-child install', () => {
+      setup({ signingMode: 'paired-child' });
+      act(() => { arrowApi!.openSwitcher(); });
+      expect(addLabel()).toBe('Personas are managed for you');
+    });
+  });
 });

@@ -820,6 +820,7 @@ export function Carousel(props: CarouselProps) {
           rows={rows}
           current={row}
           blurIdentityNames={props.blurIdentityNames}
+          surface={props.signingMode === 'paired-child' ? 'paired-child' : props.childMode ? 'child' : 'guardian'}
           onPick={toRow => { setSwitcherOpen(false); jumpToRow(toRow); }}
           onClose={() => setSwitcherOpen(false)}
         />
