@@ -10,6 +10,7 @@ import { Icon } from './Icon';
 import { CardBackdropRow } from './CardBackdropRow';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
+import { armPickerGrace } from '../lib/picker-grace';
 import type { DeleteOutcome } from '../lib/blob-deletion';
 
 /**
@@ -377,6 +378,7 @@ export function InlineAvatarRow({
   function trigger() {
     if (busy || disabled) return;
     setError('');
+    armPickerGrace();
     fileInputRef.current?.click();
   }
 

@@ -11,6 +11,7 @@ import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
+import { armPickerGrace } from '../lib/picker-grace';
 
 /** One site this identity has signed in to, for the quick-open launcher. */
 export interface LauncherSite {
@@ -112,6 +113,9 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   const [backdropNote, setBackdropNote] = useState<string | null>(null);
   const backdropNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canEditBackdrop = !isDependant && !childDormant;
+  // The system picker hides the page; without the grace that hide locks the
+  // app and unmounts this input before the pick lands.
+  const openBackdropPicker = () => { armPickerGrace(); backdropInputRef.current?.click(); };
 
   // Any press outside the control closes its menu — including on the tab
   // bar, which a scrim inside the (transformed) card could never cover.
@@ -282,7 +286,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             onClick={e => {
               e.stopPropagation();
               if (backdrop.url) setBackdropMenuOpen(open => !open);
-              else backdropInputRef.current?.click();
+              else openBackdropPicker();
             }}
             onTouchEnd={e => e.stopPropagation()}
           >
@@ -290,7 +294,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </button>
           {backdropMenuOpen && backdrop.url && (
             <div className="card-backdrop-menu" role="menu" onClick={e => e.stopPropagation()}>
-              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); backdropInputRef.current?.click(); }}>
+              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); openBackdropPicker(); }}>
                 Change image
               </button>
               <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
