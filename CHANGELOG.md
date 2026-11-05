@@ -3,7 +3,7 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.24.0
 - Identity cards: a larger photo, three action tiles (Scan, Handshake, My QR) and quick links to your sites and contacts replace the tier, Signet IQ and vouch counts
 - Card backdrops: give each persona its own wallpaper from the image button on its card or the Card backdrop row in its settings column. Photos are resized before they are stored, and the card keeps one readable plate behind the name. A backdrop stays on this device, is not encrypted, and shows while the app is locked
 - Tap the role label on a card (PERSONA 1/3) to switch between your identities from a list
