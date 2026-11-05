@@ -245,6 +245,8 @@ function renderCard(
   col: CarouselColumn,
   resolved: ResolvedIdentity,
   props: CarouselProps,
+  /** Position of `row` in the ring, for the card's own "2/4" pill. */
+  rowIndex: number,
   /** The card the user is looking at and not mid-transition. The incoming neighbour is never live. */
   live: boolean,
 ): ReactNode {
@@ -307,6 +309,7 @@ function renderCard(
             contactsCount={props.contactsCountFor?.(resolved) ?? null}
             recentSignInLabel={recentSignInLabel}
             blurIdentityNames={props.blurIdentityNames}
+            rowIndex={rowIndex}
             onRenameActive={renameTarget && props.onRenameActive
               ? (name: string) => props.onRenameActive!(renameTarget, name)
               : undefined}
@@ -372,7 +375,7 @@ function renderCard(
   })();
   // The camera feed covers the whole card, so the backdrop has nothing to show there.
   if (col === 4) return node;
-  return <CardStage pubkey={resolved.publicKey || undefined}>{node}</CardStage>;
+  return <CardStage pubkey={resolved.publicKey || undefined} blur={props.blurIdentityNames}>{node}</CardStage>;
 }
 
 /**
@@ -477,11 +480,21 @@ export function Carousel(props: CarouselProps) {
     currentScreenRef.current.style.transform = 'translate(0, 0)';
   }, [row, col]);
 
+  // `animating` lives in useCarousel and outlives this component. A Carousel
+  // that unmounts mid-slide (a lock) cancels the slide below, so it must also
+  // clear the flag: nothing else will, and home stays inert until the app is
+  // killed. The ref keeps the cleanup on the latest callback.
+  const onAnimatingChangeRef = useRef(onAnimatingChange);
+  onAnimatingChangeRef.current = onAnimatingChange;
   useEffect(() => () => {
     if (swipeTimeoutRef.current) clearTimeout(swipeTimeoutRef.current);
     if (snapBackTimeoutRef.current) clearTimeout(snapBackTimeoutRef.current);
     animationFrames.current.forEach(cancelAnimationFrame);
     stopTransitionListener.current?.();
+    if (transitionInFlight.current) {
+      transitionInFlight.current = false;
+      onAnimatingChangeRef.current(false);
+    }
   }, []);
 
   /**
@@ -731,18 +744,23 @@ export function Carousel(props: CarouselProps) {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // The switcher sheet owns the keyboard while it is open.
+      if (switcherOpen) return;
       if (animating || swipeLocked) return;
       if (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.closest('input, textarea, select'))) return;
+      // Enter on a focused control activates that control; it must not also
+      // run the card's tap (which enters child mode on a dependant).
+      const onControl = e.target instanceof Element && !!e.target.closest('button, a, [role="button"], [role="menuitem"], [role="link"]');
       if (e.key === 'ArrowLeft') handleSwipe('h', 1, -60, 0);
       if (e.key === 'ArrowRight') handleSwipe('h', -1, 60, 0);
       if (e.key === 'ArrowUp') { e.preventDefault(); handleSwipe('v', 1, 0, -60); }
       if (e.key === 'ArrowDown') { e.preventDefault(); handleSwipe('v', -1, 0, 60); }
-      if (e.key === 'Enter') handleTap();
+      if (e.key === 'Enter' && !onControl) handleTap();
       if (e.key === 'Escape' && props.childMode) props.onExitChildMode();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [animating, swipeLocked, handleSwipe, handleTap, props]);
+  }, [animating, swipeLocked, switcherOpen, handleSwipe, handleTap, props]);
 
   const registerArrows = useRegisterCarouselArrows();
   useEffect(() => {
@@ -768,7 +786,7 @@ export function Carousel(props: CarouselProps) {
         className={`carousel-screen${longPressEngaged ? ' carousel-screen-engaged' : ''}`}
         ref={currentScreenRef}
       >
-        {rows[row] && renderCard(rows[row], col, props.activeIdentity, props, !animating)}
+        {rows[row] && renderCard(rows[row], col, props.activeIdentity, props, row, !animating)}
       </div>
 
       {incomingCard && rows[incomingCard.row] && (
@@ -789,6 +807,7 @@ export function Carousel(props: CarouselProps) {
             incomingCard.col,
             resolveActiveIdentity(rows[incomingCard.row]),
             props,
+            incomingCard.row,
             false,
           )}
         </div>
@@ -808,7 +827,9 @@ export function Carousel(props: CarouselProps) {
 
       {props.childMode && props.childDependant && (
         <div className="child-banner">
-          <span>Viewing as: {props.childDependant.displayName}</span>
+          <span>Viewing as:{' '}
+            <span style={props.blurIdentityNames ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{props.childDependant.displayName}</span>
+          </span>
           <button className="child-banner-exit" onClick={props.onExitChildMode}>
             Exit (PIN)
           </button>

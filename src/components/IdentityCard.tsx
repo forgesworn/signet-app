@@ -83,6 +83,12 @@ export interface IdentityCardProps {
    */
   blurIdentityNames?: boolean;
   /**
+   * This card's own position in the ring. The arrow context only knows the
+   * row the carousel has settled on, so during a vertical slide the incoming
+   * card would show the outgoing card's position until the slide ended.
+   */
+  rowIndex?: number;
+  /**
    * Called when an unnamed persona commits a name (blur or Enter). The parent
    * should persist it via `updateDisplayName(...)`. Only fires while the
    * inline editor is shown (`!resolved.displayNameIsSet`).
@@ -100,7 +106,7 @@ function colourFromLabel(text: string): string {
   return colourFromPubkey(h.toString(16).padStart(8, '0'));
 }
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -288,7 +294,6 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
               if (backdrop.url) setBackdropMenuOpen(open => !open);
               else openBackdropPicker();
             }}
-            onTouchEnd={e => e.stopPropagation()}
           >
             <Icon name="image" size={16} />
           </button>
@@ -310,7 +315,8 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
       {recentSignInLabel && (
         <div className="signin-ack-chip" role="status" aria-live="polite">
           <span className="signin-ack-tick">&#10003;</span>
-          Signed in as {recentSignInLabel}
+          Signed in as{' '}
+          <span style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{recentSignInLabel}</span>
         </div>
       )}
       <div className="card-inner">
@@ -406,12 +412,11 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             <button
               type="button"
               className="card-type card-type-switch"
-              aria-label={`${isDependant ? 'Dependant' : resolved.type}, identity ${arrows!.rowIndex + 1} of ${arrows!.rowCount}. Switch identity`}
+              aria-label={`${isDependant ? 'Dependant' : resolved.type}, identity ${(rowIndex ?? arrows!.rowIndex) + 1} of ${arrows!.rowCount}. Switch identity`}
               onClick={e => { e.stopPropagation(); arrows!.openSwitcher(); }}
-              onTouchEnd={e => e.stopPropagation()}
             >
               {typeLabel}
-              <span className="card-type-count" aria-hidden="true">{arrows!.rowIndex + 1}/{arrows!.rowCount}</span>
+              <span className="card-type-count" aria-hidden="true">{(rowIndex ?? arrows!.rowIndex) + 1}/{arrows!.rowCount}</span>
               <span className="card-type-chevron" aria-hidden="true">&#8964;</span>
             </button>
           ) : (
@@ -544,7 +549,6 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 className="btn btn-primary card-action-tile card-scan-btn"
                 aria-label="Scan a QR code"
                 onClick={e => { e.stopPropagation(); arrows?.jump(4); }}
-                onTouchEnd={e => e.stopPropagation()}
               >
                 <Icon name="qrScan" size={24} />
                 Scan
@@ -557,7 +561,6 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 className="btn btn-secondary card-action-tile"
                 aria-label="Show my QR code"
                 onClick={e => { e.stopPropagation(); arrows?.jump(1); }}
-                onTouchEnd={e => e.stopPropagation()}
               >
                 <Icon name="qr" size={24} />
                 My QR
