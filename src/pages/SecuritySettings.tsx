@@ -521,7 +521,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
 
       {/* Shamir Backup — splits the mnemonic (ShamirBackup reads
           identity.mnemonic), so it's hidden under the same on-signer gate. */}
-      {!mnemonicOnSigner && (
+      {!mnemonicOnSigner && !noRecoveryWords && (
         <div className="card section">
           <div className="section-title">Shamir Backup</div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>

@@ -11250,6 +11250,10 @@ function AppContent() {
     unlocked: !!encryptionKey,
     ownerContext: !activeDependant && !isPairedChild,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+    // Not when the empty real-name slot aliases the persona key (an nsec persona
+    // import): that key is the persona, and the only one this install can serve.
+    dormantRealPubkey: identity && !isNaturalPersonActive(identity) && identity.naturalPerson.publicKey !== identity.persona.publicKey
+      ? identity.naturalPerson.publicKey : null,
   });
   if (page === 'settings-security') {
     return renderSettingsPage('settings-security', 'Security & Backup', (

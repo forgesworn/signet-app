@@ -674,7 +674,7 @@ describe('the pairing QR carries the key the owner route listens on', () => {
       unlocked: true,
       personaBackend: backends.localPersona,
     }, () => { throw new Error('no extras here'); });
-    return { transport, routes, url: buildServerPairingUrl({ transport, unlocked: true, ownerContext: true, relayUrl: RELAY }) };
+    return { transport, routes, url: buildServerPairingUrl({ transport, unlocked: true, ownerContext: true, relayUrl: RELAY, dormantRealPubkey: npActive ? null : NP }) };
   };
 
   describe.each(signers)('with %s', (_name, backends) => {
@@ -699,13 +699,13 @@ describe('the pairing QR carries the key the owner route listens on', () => {
       expect(routes[0].pubkey).toBe(NP);
     });
 
-    // Reachable: a legacy record with a blank name, or "Switch primary to Natural
-    // Person" on the persona's Advanced page, which has no activation gate. The
-    // server does listen on this key, so the URL matches it.
-    it('natural person primary, dormant: follows the route the server has', () => {
+    // Only an older record can be here: switchPrimary now refuses a dormant real
+    // identity. The server still listens for its existing pairings, but the real-name
+    // key is not handed out for new ones.
+    it('natural person primary, dormant: no URL, though the route still serves', () => {
       const { url, routes } = scenario('natural-person', false, backends());
       expect(routes[0].pubkey).toBe(NP);
-      expect(url).toBe(urlFor(NP));
+      expect(url).toBeNull();
     });
   });
 
@@ -714,6 +714,7 @@ describe('the pairing QR carries the key the owner route listens on', () => {
       for (const primary of ['natural-person', 'persona'] as const) {
         for (const active of [true, false]) {
           const { url, routes } = scenario(primary, active, backends());
+          if (primary === 'natural-person' && !active) continue;
           expect(routes.map(r => urlFor(r.pubkey))).toContain(url);
         }
       }

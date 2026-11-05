@@ -45,8 +45,12 @@ export function buildServerPairingUrl(input: {
   unlocked: boolean;
   ownerContext: boolean;
   relayUrl: string | null | undefined;
+  /** The real-identity pubkey while it is dormant. An older record can still be
+   * primary on it, and a dormant real-name key is never handed out to pair with. */
+  dormantRealPubkey?: string | null;
 }): string | null {
   if (!input.unlocked || !input.ownerContext) return null;
+  if (input.dormantRealPubkey && input.transport?.activePublicKeyHex === input.dormantRealPubkey) return null;
   return buildPhoneBunkerUrl(input.transport?.activePublicKeyHex, input.relayUrl);
 }
 

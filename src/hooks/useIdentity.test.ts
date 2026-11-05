@@ -344,6 +344,29 @@ describe('useIdentity — switchPrimary', () => {
     expect(result.current.identity?.primaryKeypair).toBe('persona');
     expect(result.current.identity?.id).toBe(PERSONA_PUBKEY);
   }, 20_000);
+
+  it('refuses to make a dormant real identity primary, and saves nothing', async () => {
+    const dormant = makeFakeIdentity();
+    mockCreate.mockReturnValue({
+      ...dormant,
+      id: PERSONA_PUBKEY,
+      primaryKeypair: 'persona',
+      naturalPersonActive: false,
+      naturalPerson: { ...dormant.naturalPerson, displayName: '' },
+    });
+    const { result } = renderHook(() => useIdentity('test-key'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.create('Test User', 'persona', false);
+    });
+    expect(result.current.identity?.primaryKeypair).toBe('persona');
+
+    await act(async () => {
+      await expect(result.current.switchPrimary('natural-person')).rejects.toThrow(/isn't set up yet/);
+    });
+    expect(result.current.identity?.primaryKeypair).toBe('persona');
+    expect(result.current.identity?.id).toBe(PERSONA_PUBKEY);
+  }, 20_000);
 });
 
 describe('useIdentity — setSlotNip05Check / setPersonaPublicProfile clear-on-change', () => {

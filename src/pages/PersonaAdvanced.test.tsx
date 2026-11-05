@@ -134,3 +134,23 @@ describe('PersonaAdvanced stop sharing picture', () => {
     expect((await screen.findByRole('status')).textContent).toBe('Shared picture deleted from nostr.download.');
   });
 });
+
+describe('PersonaAdvanced primary keypair switch', () => {
+  const owner = (over: Partial<SignetIdentity>): SignetIdentity => ({ ...identity, primaryKeypair: 'persona', id: 'b'.repeat(64), ...over });
+  const page = (who: SignetIdentity) => render(
+    <PersonaAdvanced slotTarget="persona" identity={who} dependants={[]}
+      onPublishProfile={vi.fn(async () => ({ ok: true }))} onDisablePublicProfile={vi.fn(async () => {})}
+      onSwitchPrimary={vi.fn(async () => {})} contactsLoading={false} onBack={() => {}} />,
+  );
+
+  it('does not offer a dormant real identity as primary', () => {
+    page(owner({ naturalPersonActive: false }));
+    expect(screen.queryByRole('button', { name: /Switch primary to Natural Person/ })).toBeNull();
+    expect(screen.getByText(/isn't set up yet/)).toBeDefined();
+  });
+
+  it('offers an activated real identity', () => {
+    page(owner({ naturalPersonActive: true }));
+    expect(screen.getByRole('button', { name: /Switch primary to Natural Person/ })).toBeDefined();
+  });
+});
