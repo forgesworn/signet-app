@@ -14070,7 +14070,9 @@ function AppContent() {
             setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1);
           }} />}
         launcherSitesFor={resolved => {
-          if (resolved.isDependant) return [];
+          // Sign-in sites link a persona to where it is used, and authorizedSites
+          // loads without the key, so a locked card must not list them.
+          if (!encryptionKey || resolved.isDependant) return [];
           const pinned = new Set(originPolicies.filter(p => p.pinned).map(p => p.origin));
           const originOf = (raw: string) => { try { return new URL(raw).origin; } catch { return raw; } };
           const domainOf = (raw: string) => { try { return new URL(raw).hostname; } catch { return raw; } };

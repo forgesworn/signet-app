@@ -6,7 +6,7 @@ import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
 import { initialFromName, colourFromPubkey } from '../lib/avatar';
 import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
-import { useCardBackdrop } from '../hooks/useCardBackdrop';
+import { BACKDROP_PRIVACY_COPY, useCardBackdrop } from '../hooks/useCardBackdrop';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { Icon } from './Icon';
@@ -271,7 +271,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
               e.target.value = '';
               setBackdropMenuOpen(false);
               if (!file) return;
-              void backdrop.set(file).then(result => { if (!result.ok) showBackdropNote(result.reason); });
+              void backdrop.set(file).then(result => { showBackdropNote(result.ok ? BACKDROP_PRIVACY_COPY : result.reason); });
             }}
           />
           <button

@@ -6,6 +6,8 @@ export const MAX_BACKDROP_SOURCE_BYTES = 40 * 1024 * 1024;
 /** Longest edge of the stored backdrop. Enough for a 3x phone card, small to decode on every mount. */
 export const BACKDROP_MAX_EDGE_PX = 1280;
 const BACKDROP_JPEG_QUALITY = 0.85;
+/** Backdrops are stored in clear and painted on the locked card, so say so where one is picked. */
+export const BACKDROP_PRIVACY_COPY = 'Only on this device. Not encrypted, and it shows while the app is locked.';
 
 export type BackdropSetResult = { ok: true } | { ok: false; reason: string };
 

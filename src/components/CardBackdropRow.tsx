@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useCardBackdrop } from '../hooks/useCardBackdrop';
+import { BACKDROP_PRIVACY_COPY, useCardBackdrop } from '../hooks/useCardBackdrop';
 
 /**
  * Settings-column row for an identity's card backdrop: the same device-local
@@ -18,7 +18,7 @@ export function CardBackdropRow({ pubkey }: { pubkey: string }) {
     <div className="row">
       <div className="row-main">
         <span className="row-label">Card backdrop</span>
-        <span className="row-sub">Only on this device</span>
+        <span className="row-sub">{BACKDROP_PRIVACY_COPY}</span>
         {error && <span className="slot-row-error" role="alert">{error}</span>}
       </div>
       <div className="slot-row-actions">

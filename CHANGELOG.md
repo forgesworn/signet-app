@@ -5,7 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 - Identity cards: a larger photo, three action tiles (Scan, Handshake, My QR) and quick links to your sites and contacts replace the tier, Signet IQ and vouch counts
-- Card backdrops: give each persona its own wallpaper from the image button on its card or the Card backdrop row in its settings column. Photos are resized before they are stored, and the card keeps one readable plate behind the name
+- Card backdrops: give each persona its own wallpaper from the image button on its card or the Card backdrop row in its settings column. Photos are resized before they are stored, and the card keeps one readable plate behind the name. A backdrop stays on this device, is not encrypted, and shows while the app is locked
 - Tap the role label on a card (PERSONA 1/3) to switch between your identities from a list
 - The app now starts in the dark theme, so Home and the other pages no longer flip colour; System and Light are still in Settings, Appearance
 - Settings: Security & Backup now opens on your lock and backup, and the Bunker and camera settings have their own Bunker & Scanning page. The Bunker tab's sheet turns the Bunker on directly

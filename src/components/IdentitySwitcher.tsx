@@ -33,10 +33,15 @@ export function IdentitySwitcher({ rows, current, onPick, onClose }: {
     <div
       className="identity-switcher-scrim"
       style={{ zIndex: Z.carouselOverlay }}
+      // aria-modal sits on the scrim, not the sheet: the carousel's swipe hook
+      // ignores presses inside a modal, and a press on the scrim that reached
+      // it would tap the card behind (on a dependant's card, entering child mode).
+      role="dialog"
+      aria-modal="true"
+      aria-label="Switch identity"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-      onTouchEnd={e => e.stopPropagation()}
     >
-      <div className="identity-switcher" role="dialog" aria-modal="true" aria-label="Switch identity">
+      <div className="identity-switcher">
         <div className="identity-switcher-head">
           <h2>Your identities</h2>
           <button type="button" aria-label="Close" onClick={onClose}><Icon name="x" size={18} /></button>
