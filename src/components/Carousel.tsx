@@ -800,6 +800,7 @@ export function Carousel(props: CarouselProps) {
         <IdentitySwitcher
           rows={rows}
           current={row}
+          blurIdentityNames={props.blurIdentityNames}
           onPick={toRow => { setSwitcherOpen(false); jumpToRow(toRow); }}
           onClose={() => setSwitcherOpen(false)}
         />

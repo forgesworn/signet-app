@@ -8,6 +8,7 @@ import { deriveDependantIdentity, importFromMnemonic, deriveExtraPersona } from 
 import { liftDependantPublicProfileConfig } from '../lib/lift-public-profile-config';
 import { liftDependantNaturalPersonActive } from '../lib/lift-natural-person-active';
 import { isDependantNaturalPersonActive } from '../lib/identity-display';
+import { forgetCardBackdrop } from './useCardBackdrop';
 import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import { nextDependantIndex } from '../lib/heartwood-dependant-create';
 import type { DerivedKeypair, ExtraPersonaDeviceDerive } from '../lib/heartwood-dependant-create';
@@ -229,6 +230,17 @@ export function useDependants(
     }
     await deleteGrantsForDependant(pubkey);
     await deleteDependant(pubkey);
+    // Device-local card backdrops for every key the dependant could show a
+    // card for (the dependant row's own key, its default persona, its extras).
+    if (dep) {
+      const keys = new Set<string>([
+        dep.id,
+        dep.naturalPerson.publicKey,
+        dep.persona.publicKey,
+        ...(dep.extraPersonas ?? []).map(ep => ep.publicKey),
+      ]);
+      for (const key of keys) await forgetCardBackdrop(key);
+    }
     await loadDependants();
   }, [dependants, loadDependants]);
 

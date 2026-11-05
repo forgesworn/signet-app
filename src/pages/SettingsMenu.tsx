@@ -111,13 +111,14 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           <span className="row-chevron">&rsaquo;</span>
         </button>
 
-        {preferences.signingMode !== 'paired-child' && <button className="row-button" onClick={() => onNavigate('settings-signing')}>
+        {/* A paired child serves nothing, so its page keeps only the camera card. */}
+        <button className="row-button" onClick={() => onNavigate('settings-signing')}>
           <span className="row-main">
-            <span className="row-label" style={{ fontWeight: 600 }}>Bunker &amp; Scanning</span>
-            <span className="row-sub">Serve signing requests, camera behaviour</span>
+            <span className="row-label" style={{ fontWeight: 600 }}>{preferences.signingMode === 'paired-child' ? 'Scanning' : 'Bunker & Scanning'}</span>
+            <span className="row-sub">{preferences.signingMode === 'paired-child' ? 'Camera behaviour' : 'Serve signing requests, camera behaviour'}</span>
           </span>
           <span className="row-chevron">&rsaquo;</span>
-        </button>}
+        </button>
 
         <button className="row-button" onClick={() => onNavigate('connections')}>
           <span className="row-main">

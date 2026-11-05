@@ -15,6 +15,8 @@ interface Props {
   /** Camera card: switch the scanner off after this many idle seconds. */
   scannerIdleSeconds?: number;
   onSetScannerIdleSeconds?: (seconds: number) => void;
+  /** Show the Bunker master switch and pairing URL. False on a paired-child install, which serves nothing and keeps only the camera card. Default true. */
+  showBunker?: boolean;
   /** Scroll to and pulse a section on arrival ('bunker'). */
   focusSection?: string | null;
   onConsumeFocus?: () => void;
@@ -27,7 +29,7 @@ const noop = () => {};
  * how its camera behaves. Split out of Security & Backup so the lock and
  * recovery controls stay a short page.
  */
-export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, focusSection, onConsumeFocus }: Props) {
+export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, showBunker = true, focusSection, onConsumeFocus }: Props) {
   const [bunkerCopied, setBunkerCopied] = useState(false);
   const [highlighted, setHighlighted] = useState<string | null>(null);
 
@@ -59,6 +61,7 @@ export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled,
 
   return (
     <div className="fade-in" role="main">
+      {showBunker && (
       <div className="card section">
         <div
           id="security-section-bunker"
@@ -156,6 +159,7 @@ export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled,
           </div>
         )}
       </div>
+      )}
 
       {/* Camera */}
       <div className="card section">

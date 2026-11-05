@@ -460,10 +460,10 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                     onClick={e => { e.stopPropagation(); onOpenSite?.(site.origin); }}
                     aria-label={`Open ${site.label}`}
                   >
-                    <span className="card-launcher-tile" aria-hidden="true" style={{ background: colourFromLabel(site.origin) }}>
+                    <span className="card-launcher-tile" aria-hidden="true" style={{ background: colourFromLabel(site.origin), ...(blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : {}) }}>
                       {site.label.charAt(0).toUpperCase()}
                     </span>
-                    <span className="card-launcher-label">{site.label}</span>
+                    <span className="card-launcher-label" style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{site.label}</span>
                   </button>
                 ))}
               </div>

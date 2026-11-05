@@ -2,7 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useDependants } from './useDependants';
-import { saveIdentityEncrypted, saveDependant, getDependants, purgeAllUserData } from '../lib/db';
+import { openDB } from 'idb';
+import { saveIdentityEncrypted, saveDependant, getDependants, purgeAllUserData, setCardBackdrop } from '../lib/db';
 import { createNewIdentity } from '../lib/signet';
 import type { SignetIdentity, DependantIdentity } from '../types';
 
@@ -241,5 +242,35 @@ describe('dependant persona allocation after deletion', () => {
     expect(stored.extraPersonaTombstones).toHaveLength(3);
     // Six derivations and a dozen encrypted writes: about six seconds on an
     // idle machine, past the 15 s default when the full suite shares the CPU.
+  }, 60_000);
+});
+
+describe('useDependants.removeDependant', () => {
+  beforeEach(async () => { await purgeAllUserData(); });
+
+  it('forgets the card backdrop of every key the dependant could show a card for, and no one else\'s', async () => {
+    const g = await seedGuardian(true);
+    const hook = renderHook(() => useDependants(g.naturalPerson.publicKey, g.id, KEY));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    let dep!: DependantIdentity;
+    await act(async () => { dep = await hook.result.current.addDependant('Robin'); });
+    await act(async () => { await hook.result.current.addDependantPersona(dep.id, 'Extra'); });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    const keys = [stored.id, stored.naturalPerson.publicKey, stored.persona.publicKey, stored.extraPersonas![0].publicKey];
+    const bystander = 'f'.repeat(64);
+    const seeded = [...keys, bystander];
+    const rawBefore = await openDB('my-signet');
+    for (const key of seeded) await setCardBackdrop(key, new Blob(['x'], { type: 'image/jpeg' }));
+    for (const key of seeded) expect(await rawBefore.get('preferences', `backdrop:${key}`)).toBeDefined();
+    rawBefore.close();
+
+    await act(async () => { await hook.result.current.removeDependant(dep.id); });
+
+    // Read the raw rows: under jsdom the stored Blob does not satisfy getCardBackdrop's instanceof check.
+    const raw = await openDB('my-signet');
+    try {
+      for (const key of keys) expect(await raw.get('preferences', `backdrop:${key}`)).toBeUndefined();
+      expect(await raw.get('preferences', `backdrop:${bystander}`)).toBeDefined();
+    } finally { raw.close(); }
   }, 60_000);
 });

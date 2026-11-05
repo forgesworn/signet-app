@@ -17,12 +17,15 @@ export function switcherRowLabel(row: CarouselRow): { name: string; kind: string
  * swiping stays, but the 4px dots on the edge are the only other hint that
  * personas and dependants live above and below the card.
  */
-export function IdentitySwitcher({ rows, current, onPick, onClose }: {
+export function IdentitySwitcher({ rows, current, onPick, onClose, blurIdentityNames }: {
   rows: CarouselRow[];
   current: number;
+  /** Same preference the cards honour: names (and the initial that spells them) render blurred. */
+  blurIdentityNames?: boolean;
   onPick: (row: number) => void;
   onClose: () => void;
 }) {
+  const blurStyle = blurIdentityNames ? { filter: 'blur(6px)', userSelect: 'none' as const } : undefined;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
     document.addEventListener('keydown', onKey, true);
@@ -60,11 +63,11 @@ export function IdentitySwitcher({ rows, current, onPick, onClose }: {
                   onClick={() => onPick(i)}
                 >
                   <span className="identity-switcher-avatar" aria-hidden="true"
-                    style={isAdd ? undefined : { background: colourFromPubkey(pubkey) }}>
+                    style={isAdd ? undefined : { background: colourFromPubkey(pubkey), ...blurStyle }}>
                     {isAdd ? '+' : initialFromName(name)}
                   </span>
                   <span className="identity-switcher-text">
-                    <span className="identity-switcher-name">{name}</span>
+                    <span className="identity-switcher-name" style={isAdd ? undefined : blurStyle}>{name}</span>
                     <span className="identity-switcher-kind">{kind}</span>
                   </span>
                   {i === current && <span className="identity-switcher-tick" aria-hidden="true">&#10003;</span>}
