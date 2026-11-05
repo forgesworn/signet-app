@@ -43,6 +43,18 @@ describe('usePreferences — defaults', () => {
 });
 
 describe('usePreferences — theme', () => {
+  it('does not paint the default theme while the saved one is still loading', async () => {
+    await db.savePreferences({ id: 'current', theme: 'light' });
+    document.documentElement.removeAttribute('data-theme');
+
+    const { result } = renderHook(() => usePreferences());
+
+    expect(result.current.loading).toBe(true);
+    expect(document.documentElement.getAttribute('data-theme')).toBeNull();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+
   it('persists light theme and reads it back', async () => {
     const { result } = renderHook(() => usePreferences());
     await waitFor(() => expect(result.current.loading).toBe(false));
