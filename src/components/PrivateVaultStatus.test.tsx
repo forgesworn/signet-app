@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { PrivateVaultStatus, privateVaultNeedsAttention } from './PrivateVaultStatus';
+import { PrivateVaultStatus, privateVaultNeedsAttention, privateVaultWarningVisible } from './PrivateVaultStatus';
 import type { PrivateVaultHealth } from '../hooks/usePrivateVaults';
 
 afterEach(cleanup);
@@ -136,5 +136,61 @@ describe('privateVaultNeedsAttention', () => {
     expect(privateVaultNeedsAttention({ phase: 'unsupported', datasets: {} })).toBe(false);
     expect(privateVaultNeedsAttention(idleWith({ a: { state: 'waiting-legacy', ...canonical } }))).toBe(false);
     expect(privateVaultNeedsAttention(idleWith({}))).toBe(false);
+  });
+  it('stays quiet while the signer is waiting on an approval, whatever the datasets report', () => {
+    expect(privateVaultNeedsAttention({ phase: 'idle', needsApproval: true, datasets: {
+      a: { state: 'unusable', ...canonical }, b: { state: 'unavailable', ...canonical } } })).toBe(false);
+  });
+  it('is true when backups have stopped and no dataset can say so', () => {
+    expect(privateVaultNeedsAttention({ phase: 'idle', datasets: {}, stopped: 'listing' })).toBe(true);
+    expect(privateVaultNeedsAttention({ phase: 'checking', datasets: {}, stopped: 'contacts-import' })).toBe(true);
+  });
+});
+
+describe('privateVaultWarningVisible', () => {
+  const failing = { a: { state: 'unavailable' as const } };
+  it('shows when attention is needed, whatever came before', () => {
+    expect(privateVaultWarningVisible(idleWith(failing), false)).toBe(true);
+  });
+  it.each(['running', 'checking'] as const)('stays up through a %s re-check once shown', (phase) => {
+    expect(privateVaultWarningVisible({ phase, datasets: failing }, true)).toBe(true);
+    expect(privateVaultWarningVisible({ phase, datasets: {} }, true)).toBe(true);
+  });
+  it.each(['running', 'checking'] as const)('does not appear during a %s check if it was not showing', (phase) => {
+    expect(privateVaultWarningVisible({ phase, datasets: failing }, false)).toBe(false);
+  });
+  it('re-evaluates when the check settles', () => {
+    expect(privateVaultWarningVisible(idleWith({ a: verified }), true)).toBe(false);
+    expect(privateVaultWarningVisible(idleWith(failing), true)).toBe(true);
+  });
+  it('gives way to the approval banner even mid-check', () => {
+    expect(privateVaultWarningVisible({ phase: 'running', datasets: failing, needsApproval: true }, true)).toBe(false);
+  });
+  it('keeps an open details element and a rotation message across the re-check', () => {
+    const onRotate = vi.fn(async () => 'Backup key changed.');
+    const shown = (h: PrivateVaultHealth) => (
+      <div>{privateVaultWarningVisible(h, true) && <PrivateVaultStatus importedDependants={0} health={h} onRotate={onRotate} />}</div>
+    );
+    const { container, rerender } = render(shown(idleWith({ a: verified, b: { state: 'pending' } })));
+    const details = container.querySelector('details')!;
+    details.open = true;
+    rerender(shown({ phase: 'running', datasets: { a: verified, b: { state: 'pending' } } }));
+    expect(container.querySelector('details')).toBe(details);
+    expect(details.open).toBe(true);
+  });
+});
+
+describe('PrivateVaultStatus stopped', () => {
+  it('says plainly that a failed job list has stopped backups, and that it retries', () => {
+    render(<PrivateVaultStatus importedDependants={0} health={{ phase: 'idle', datasets: {}, stopped: 'listing' }} />);
+    expect(screen.getByText('Private backups have stopped')).toBeDefined();
+    expect(screen.getByText(/tries again by itself/)).toBeDefined();
+    expect(screen.queryByText(/retry automatically/)).toBeNull();
+  });
+  it('replaces "Checking existing backups" after a failed contacts import, and names the remedy', () => {
+    render(<PrivateVaultStatus importedDependants={0} health={{ phase: 'checking', datasets: {}, stopped: 'contacts-import' }} />);
+    expect(screen.getByText('Private backups have stopped')).toBeDefined();
+    expect(screen.queryByText('Checking existing backups before migration')).toBeNull();
+    expect(screen.getByText(/Lock and unlock Signet to try again/)).toBeDefined();
   });
 });

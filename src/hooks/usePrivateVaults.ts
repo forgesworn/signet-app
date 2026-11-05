@@ -17,6 +17,14 @@ export interface PrivateVaultHealth {
    * same card back up — until `approveToken` changes.
    */
   needsApproval?: boolean;
+  /**
+   * Backups are not running and no dataset can say so. `listing`: the job list
+   * could not be built, so a cycle visited nothing (retried on the backoff,
+   * cleared once a list arrives). `contacts-import`: the contacts import failed
+   * this unlock, so `ready` stays false and no cycle starts (set by the caller,
+   * which owns the import).
+   */
+  stopped?: 'listing' | 'contacts-import';
 }
 export interface PrivateVaultJob { adapter: PrivateVaultDatasetAdapter; resolve(rotation: number): Promise<DecryptingSigningBackend> }
 
@@ -162,10 +170,13 @@ export function usePrivateVaults(options: {
       if (kind === 'full') lastFullAt = Date.now();
       running = true; dirty = false; held = false; wanted = null;
       emit({ ...latest, phase: 'running' });
+      let listed = false;
       try {
         let merged = false;
         const jobs = (await opts.current.jobs(valid)).map(job => observeRefusals(job, noteRefusal));
+        listed = true;
         if (!valid()) return;
+        if (latest.stopped) emit({ ...latest, stopped: undefined });
         // A dataset no longer in the jobs (a removed dependant) must not hold a stale entry.
         const purposes = new Set(jobs.map(job => vaultPurpose(job.adapter.dataset)));
         if (Object.keys(latest.datasets).some(purpose => !purposes.has(purpose))) {
@@ -214,7 +225,7 @@ export function usePrivateVaults(options: {
           stoppedSession.current = session;
           emit({ ...latest, phase: 'idle', needsApproval: true });
         } else {
-          emit({ ...latest, phase: 'idle' });
+          emit({ ...latest, phase: 'idle', ...(listed ? {} : { stopped: 'listing' as const }) });
           // Held part-way: no timer — the un-pause kicks the next cycle. All
           // verified: a slow full poll for other devices' edits (capped, so a clock
           // stepped backwards cannot stretch it).
