@@ -207,8 +207,10 @@ class SignetNativePlugin : Plugin() {
     // ── Biometric availability ────────────────────────────────────────────
     @PluginMethod
     fun isBiometricAvailable(call: PluginCall) {
-        val ok = BiometricManager.from(context)
-            .canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+        // Below Android 11 no usable key can be made (see BiometricPolicy): PIN only.
+        val ok = BiometricPolicy.biometricSupported(Build.VERSION.SDK_INT) &&
+            BiometricManager.from(context)
+                .canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
         call.resolve(JSObject().put("available", ok))
     }
 
@@ -226,18 +228,7 @@ class SignetNativePlugin : Plugin() {
                 // Auth-per-use, Class-3 (strong) biometrics, and the device
                 // credential as well where BiometricPolicy allows it.
                 .setUserAuthenticationRequired(true)
-                .apply {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        setUserAuthenticationParameters(0, BiometricPolicy.keyAuthenticators(deviceCredential))
-                    } else {
-                        // Before API 30 (where setUserAuthenticationParameters does
-                        // not exist): -1 is auth-per-use, which only a biometric
-                        // CryptoObject can satisfy. deviceCredential is always
-                        // false here (BiometricPolicy), so this is the same key.
-                        @Suppress("DEPRECATION")
-                        setUserAuthenticationValidityDurationSeconds(-1)
-                    }
-                }
+                .setUserAuthenticationParameters(0, BiometricPolicy.keyAuthenticators(deviceCredential))
                 .setInvalidatedByBiometricEnrollment(!deviceCredential)
                 .build()
         )
@@ -341,6 +332,7 @@ class SignetNativePlugin : Plugin() {
     fun biometricEnroll(call: PluginCall) {
         val secret = call.getString("secret")
         if (secret.isNullOrEmpty() || secret.length != 64) { call.reject("bad secret"); return }
+        if (!BiometricPolicy.biometricSupported(Build.VERSION.SDK_INT)) { call.reject("biometric-unsupported"); return }
         try {
             keystore().deleteEntry(KEY_ALIAS) // fresh key per enrollment
             val deviceCredential = BiometricPolicy.deviceCredentialForNewKey(Build.VERSION.SDK_INT)
@@ -462,8 +454,12 @@ class SignetNativePlugin : Plugin() {
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
             .setData(Uri.parse("package:${context.packageName}"))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
-        call.resolve()
+        try {
+            context.startActivity(intent)
+            call.resolve()
+        } catch (_: ActivityNotFoundException) {
+            call.reject("battery settings unavailable")
+        }
     }
 
     // ── Contact pictures: capped image download ───────────────────────────
