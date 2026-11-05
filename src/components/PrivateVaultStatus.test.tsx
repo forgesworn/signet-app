@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { PrivateVaultStatus } from './PrivateVaultStatus';
+import { PrivateVaultStatus, privateVaultNeedsAttention } from './PrivateVaultStatus';
 import type { PrivateVaultHealth } from '../hooks/usePrivateVaults';
 
 afterEach(cleanup);
@@ -116,5 +116,25 @@ describe('PrivateVaultStatus heading (A5)', () => {
   it('without a total it is unchanged', () => {
     render(<PrivateVaultStatus importedDependants={0} health={health({})} />);
     expect(screen.getByText('Checking private backups')).toBeTruthy();
+  });
+});
+
+describe('privateVaultNeedsAttention', () => {
+  const canonical = { canonical: true };
+  it('is true for a backup that failed validation, even mid-check', () => {
+    expect(privateVaultNeedsAttention(health({ datasets: { a: { state: 'unusable', ...canonical } } }))).toBe(true);
+  });
+  it('is true once settled with a relay not answering or an upload waiting', () => {
+    expect(privateVaultNeedsAttention(idleWith({ a: { state: 'unavailable', ...canonical } }))).toBe(true);
+    expect(privateVaultNeedsAttention(idleWith({ a: { state: 'pending', ...canonical } }))).toBe(true);
+  });
+  it('stays quiet while a check is still running', () => {
+    expect(privateVaultNeedsAttention(health({ datasets: { a: { state: 'unavailable', ...canonical }, b: { state: 'pending', ...canonical } } }))).toBe(false);
+  });
+  it('stays quiet when healthy, unsupported, waiting on migration or empty', () => {
+    expect(privateVaultNeedsAttention(idleWith({ a: verified }))).toBe(false);
+    expect(privateVaultNeedsAttention({ phase: 'unsupported', datasets: {} })).toBe(false);
+    expect(privateVaultNeedsAttention(idleWith({ a: { state: 'waiting-legacy', ...canonical } }))).toBe(false);
+    expect(privateVaultNeedsAttention(idleWith({}))).toBe(false);
   });
 });
