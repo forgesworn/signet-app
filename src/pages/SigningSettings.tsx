@@ -13,6 +13,8 @@ interface Props {
   showPairingUrl?: boolean;
   /** False when this phone has no key the Bunker can serve right now, which is why `bunkerUrl` is null. Default true. */
   pairingKeyAvailable?: boolean;
+  /** The key the Bunker serves is a real identity that isn't set up, so it is not handed out. */
+  pairingKeyDormant?: boolean;
   /** Camera card: start the scanner when the user swipes to it. Default on. */
   scannerAutoStart?: boolean;
   onSetScannerAutoStart?: (enabled: boolean) => void;
@@ -33,7 +35,7 @@ const noop = () => {};
  * how its camera behaves. Split out of Security & Backup so the lock and
  * recovery controls stay a short page.
  */
-export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, showPairingUrl = true, pairingKeyAvailable = true, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, showBunker = true, focusSection, onConsumeFocus }: Props) {
+export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled, bunkerUrl, showPairingUrl = true, pairingKeyAvailable = true, pairingKeyDormant = false, scannerAutoStart = DEFAULT_SCANNER_AUTO_START, onSetScannerAutoStart = noop, scannerIdleSeconds = DEFAULT_SCANNER_IDLE_SECONDS, onSetScannerIdleSeconds = noop, showBunker = true, focusSection, onConsumeFocus }: Props) {
   const [bunkerCopied, setBunkerCopied] = useState(false);
   const [highlighted, setHighlighted] = useState<string | null>(null);
 
@@ -157,7 +159,9 @@ export function SigningSettings({ bunkerServerEnabled, onSetBunkerServerEnabled,
               </>
             ) : (
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
-                {pairingKeyAvailable
+                {pairingKeyDormant
+                  ? "No pairing URL right now: your primary key is your real identity, which isn't set up yet. Set it up, or switch your primary to your persona on its Advanced page."
+                  : pairingKeyAvailable
                   ? 'Set a relay in Settings → Advanced first.'
                   : 'No pairing URL right now: this phone has no key the Bunker can serve. If you use a signer, check it is connected.'}
               </p>

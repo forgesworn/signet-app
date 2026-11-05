@@ -5362,7 +5362,9 @@ function AppContent() {
 
   // Attach activity listeners when authenticated
   useEffect(() => {
-    if (!encryptionKey) return;
+    // The listener below is gone while locked, so the visible branch can't clear a
+    // grace that ran out: without this the next hide after unlocking would get it.
+    if (!encryptionKey) { clearPickerGrace(); return; }
 
     const events = ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll'] as const;
     const handler = () => resetInactivityTimer();
@@ -5543,8 +5545,10 @@ function AppContent() {
   useEffect(() => {
     if (!childDirect) return;
     if (backgroundServing || preferences.backgroundBunkerEnabled) void handleSetBackgroundServing(false);
-    if (stayAwakeUntil !== null) closeStayAwake();
-  }, [childDirect, backgroundServing, preferences.backgroundBunkerEnabled, stayAwakeUntil, handleSetBackgroundServing, closeStayAwake]);
+    // A nostrconnect pairing's own short window stays: it keeps the connection up
+    // while the phone hands back to the app that asked.
+    if (stayAwakeUntil !== null && nostrConnectServeRelayUrl === null) closeStayAwake();
+  }, [childDirect, backgroundServing, preferences.backgroundBunkerEnabled, stayAwakeUntil, nostrConnectServeRelayUrl, handleSetBackgroundServing, closeStayAwake]);
 
   useEffect(() => {
     if (!encryptionKey || !pendingAlwaysOnArm) return;
@@ -11245,15 +11249,16 @@ function AppContent() {
 
   // Bunker URL for "Pair my phone": the key the owner route listens on. A
   // dependant pairs through PairDependantDevice instead.
+  // Not when the empty real-name slot aliases the persona key (an nsec persona
+  // import): that key is the persona, and the only one this install can serve.
+  const dormantRealPubkey = identity && !isNaturalPersonActive(identity) && identity.naturalPerson.publicKey !== identity.persona.publicKey
+    ? identity.naturalPerson.publicKey : null;
   const bunkerUrl = buildServerPairingUrl({
     transport: bunkerBackendForServer,
     unlocked: !!encryptionKey,
     ownerContext: !activeDependant && !isPairedChild,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
-    // Not when the empty real-name slot aliases the persona key (an nsec persona
-    // import): that key is the persona, and the only one this install can serve.
-    dormantRealPubkey: identity && !isNaturalPersonActive(identity) && identity.naturalPerson.publicKey !== identity.persona.publicKey
-      ? identity.naturalPerson.publicKey : null,
+    dormantRealPubkey,
   });
   if (page === 'settings-security') {
     return renderSettingsPage('settings-security', 'Security & Backup', (
@@ -11297,6 +11302,7 @@ function AppContent() {
         bunkerUrl={bunkerUrl}
         showPairingUrl={!activeDependant}
         pairingKeyAvailable={!!encryptionKey && !!bunkerBackendForServer?.activePublicKeyHex}
+        pairingKeyDormant={!!dormantRealPubkey && bunkerBackendForServer?.activePublicKeyHex === dormantRealPubkey}
         focusSection={pendingSecurityFocus}
         onConsumeFocus={() => setPendingSecurityFocus(null)}
       />

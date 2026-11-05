@@ -32,7 +32,9 @@ export function privateVaultNeedsAttention(health: PrivateVaultHealth): boolean 
 export function privateVaultWarningVisible(health: PrivateVaultHealth, wasVisible: boolean): boolean {
   if (health.needsApproval) return false;
   if (privateVaultNeedsAttention(health)) return true;
-  return wasVisible && (health.phase === 'running' || health.phase === 'checking');
+  // Not `checking`: a signer that drops holds that phase, and the heading would
+  // then claim a migration check for as long as it stays away.
+  return wasVisible && health.phase === 'running';
 }
 
 const STOPPED_COPY: Record<NonNullable<PrivateVaultHealth['stopped']>, string> = {
@@ -60,7 +62,9 @@ export function PrivateVaultStatus({ health, importedDependants, onRotate, onDis
   };
   const states = Object.values(health.datasets);
   const verified = states.filter(s => s.state === 'verified').length;
-  const invalid = states.some(s => s.state === 'unusable');
+  // A refused signer request reads as unusable too. The approval banner covers
+  // that, and it says nothing about the backup itself.
+  const invalid = !health.needsApproval && states.some(s => s.state === 'unusable');
   const unavailable = states.some(s => s.state === 'unavailable');
   // A5: the counter belongs to a first sync, when this device is actually
   // sending backups. Every unlock re-checks all datasets from scratch, and

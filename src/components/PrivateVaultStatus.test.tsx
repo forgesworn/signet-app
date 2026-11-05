@@ -152,9 +152,17 @@ describe('privateVaultWarningVisible', () => {
   it('shows when attention is needed, whatever came before', () => {
     expect(privateVaultWarningVisible(idleWith(failing), false)).toBe(true);
   });
-  it.each(['running', 'checking'] as const)('stays up through a %s re-check once shown', (phase) => {
-    expect(privateVaultWarningVisible({ phase, datasets: failing }, true)).toBe(true);
-    expect(privateVaultWarningVisible({ phase, datasets: {} }, true)).toBe(true);
+  it('stays up through a running re-check once shown', () => {
+    expect(privateVaultWarningVisible({ phase: 'running', datasets: failing }, true)).toBe(true);
+    expect(privateVaultWarningVisible({ phase: 'running', datasets: {} }, true)).toBe(true);
+  });
+  it('drops when a lost signer holds the phase at checking', () => {
+    expect(privateVaultWarningVisible({ phase: 'checking', datasets: {} }, true)).toBe(false);
+  });
+  it('does not call a backup invalid while a signer approval is what is missing', () => {
+    render(<PrivateVaultStatus importedDependants={0} health={{ phase: 'idle', needsApproval: true, datasets: { a: { state: 'unusable', canonical: true } } }} />);
+    expect(screen.queryByText(/could not be validated/)).toBeNull();
+    expect(screen.queryByText('A private backup needs attention')).toBeNull();
   });
   it.each(['running', 'checking'] as const)('does not appear during a %s check if it was not showing', (phase) => {
     expect(privateVaultWarningVisible({ phase, datasets: failing }, false)).toBe(false);

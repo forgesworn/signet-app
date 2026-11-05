@@ -1468,6 +1468,7 @@
 /* Fit the identity into its actual card height. It is a swipe surface, not a
    scroll area; keep every detail and action visible on shorter phones. */
 @container identity-card (max-height: 780px) {
+  .card-launcher { max-height: 74px; } /* two rows of the smaller chips below, no sliver of a third */
   .card-inner { padding: 14px 20px 14px; gap: 8px; }
   .card-identity { gap: 4px; }
   .card-stage.has-backdrop .card-identity { padding: 10px 16px 10px; }

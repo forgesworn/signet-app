@@ -33,6 +33,12 @@ describe('Bunker URL block', () => {
     expect(screen.getByText('Set a relay in Settings → Advanced first.')).toBeDefined();
   });
 
+  it('explains a real identity that is not set up, rather than asking for a relay', () => {
+    page({ bunkerUrl: null, pairingKeyAvailable: true, pairingKeyDormant: true });
+    expect(screen.getByText(/isn't set up yet/)).toBeDefined();
+    expect(screen.queryByText(/Set a relay/)).toBeNull();
+  });
+
   it('says there is no key to serve when that is why there is no URL', () => {
     page({ bunkerUrl: null, pairingKeyAvailable: false });
     expect(screen.getByText(/no key the Bunker can serve/)).toBeDefined();
