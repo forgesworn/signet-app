@@ -430,7 +430,7 @@ import { buildConnectedClientFromNostrConnect, parseNostrConnectURI, sendConnect
 import { parseCallback, buildCallbackRedirect } from './lib/nostrconnect-callback';
 import { checkAutonomy } from './lib/autonomy-gate';
 import { setRelays as setRelayServiceRelays, getRelayUrl as getRelayServiceUrl, connectRelay, DEFAULT_RELAY_URL, defaultRelays, fetchEvents, publishEvent, subscribeEvents } from './lib/relay-service';
-import { buildPhoneBunkerUrl, buildAuthFlowBunkerUrl } from './lib/bunker-url';
+import { buildServerPairingUrl, buildAuthFlowBunkerUrl } from './lib/bunker-url';
 import { runtimeBunkerUriForBackend, storedBunkerUriForGuardianNaturalPerson } from './lib/bunker-handoff';
 import { buildPairingURI, generatePairingSecret } from './lib/pairing-uri';
 import type { NostrConnectRequest } from './lib/nip46';
@@ -11239,12 +11239,14 @@ function AppContent() {
       }} />, topBanners);
   }
 
-  // Bunker URL for "Pair my phone" — only on the user's NP route (skip when
-  // a dependant is active; dependant pairing has its own dedicated flow via
-  // PairDependantDevice).
-  const bunkerUrl = !activeDependant
-    ? buildPhoneBunkerUrl(identity?.naturalPerson?.publicKey, preferences.relayUrl ?? DEFAULT_RELAY_URL)
-    : null;
+  // Bunker URL for "Pair my phone": the key the owner route listens on. A
+  // dependant pairs through PairDependantDevice instead.
+  const bunkerUrl = buildServerPairingUrl({
+    transport: bunkerBackendForServer,
+    unlocked: !!encryptionKey,
+    ownerContext: !activeDependant && !isPairedChild,
+    relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+  });
   if (page === 'settings-security') {
     return renderSettingsPage('settings-security', 'Security & Backup', (
       <SecuritySettings
@@ -11285,6 +11287,8 @@ function AppContent() {
         bunkerServerEnabled={bunkerServerEnabled}
         onSetBunkerServerEnabled={setBunkerServerEnabled}
         bunkerUrl={bunkerUrl}
+        showPairingUrl={!activeDependant}
+        pairingKeyAvailable={!!encryptionKey && !!bunkerBackendForServer?.activePublicKeyHex}
         focusSection={pendingSecurityFocus}
         onConsumeFocus={() => setPendingSecurityFocus(null)}
       />
