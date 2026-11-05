@@ -80,6 +80,21 @@ export async function downscaleBackdrop(file: Blob): Promise<Blob> {
   }
 }
 
+/**
+ * Drop an identity's backdrop for good: delete the stored row and release the
+ * cached object URL so every mounted card repaints without it. Best-effort and
+ * never throws, so it can sit inside a persona or dependant delete path
+ * without being able to block it. A null cache entry means "no backdrop".
+ */
+export async function forgetCardBackdrop(pubkey: string): Promise<void> {
+  try {
+    await deleteCardBackdrop(pubkey);
+  } catch {
+    // Best-effort: an orphan row is harmless and invisible.
+  }
+  remember(pubkey, null);
+}
+
 /** Test seam: forget every cached URL. */
 export function resetCardBackdropCacheForTests(): void {
   urls.clear();

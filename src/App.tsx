@@ -323,7 +323,8 @@ import {
   deleteContactGrantV2, listContactOperationsV2, saveContactOperationsV2, isGrantCapError,
 } from './lib/db';
 import { identityKeypairs } from './lib/contacts-sync';
-import { deleteIdentityRecord, deleteCardBackdrop } from './lib/db';
+import { deleteIdentityRecord } from './lib/db';
+import { forgetCardBackdrop } from './hooks/useCardBackdrop';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
 import { isAppInForeground, subscribeAppForeground } from './lib/app-foreground';
@@ -11918,7 +11919,7 @@ function AppContent() {
             await removeExtraPersona(pubkey);
           }
           // Its device-local card backdrop goes with it.
-          await deleteCardBackdrop(pubkey).catch(() => undefined);
+          await forgetCardBackdrop(pubkey);
           // Routing target is gone — pop back to the carousel.
           setPendingPersonaAdvancedTarget(null);
           navigateBack();

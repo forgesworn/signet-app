@@ -3339,3 +3339,47 @@ describe('claimed Keeps row (K1d)', () => {
     expect(await db.loadKeepLookupsRow(PASSPHRASE)).toBeNull();
   }, TIMEOUT);
 });
+
+describe('card backdrops', () => {
+  const PK = 'ab'.repeat(32);
+  const OTHER = 'cd'.repeat(32);
+  const blob = (text: string) => new Blob([text], { type: 'image/jpeg' });
+
+  it('round-trips a stored backdrop and returns null for an unknown key', async () => {
+    const db = await freshDb();
+    expect(await db.getCardBackdrop(PK)).toBeNull();
+    await db.setCardBackdrop(PK, blob('hello'));
+    const got = await db.getCardBackdrop(PK);
+    expect(got).toBeInstanceOf(Blob);
+    expect(got!.type).toBe('image/jpeg');
+    expect(got!.size).toBe(5);
+    expect(await db.getCardBackdrop(OTHER)).toBeNull();
+  });
+
+  it('deletes one backdrop and leaves the others', async () => {
+    const db = await freshDb();
+    await db.setCardBackdrop(PK, blob('a'));
+    await db.setCardBackdrop(OTHER, blob('b'));
+    await db.deleteCardBackdrop(PK);
+    expect(await db.getCardBackdrop(PK)).toBeNull();
+    expect(await db.getCardBackdrop(OTHER)).not.toBeNull();
+  });
+
+  it('purgeAllUserData wipes the backdrop rows', async () => {
+    const db = await freshDb();
+    await db.setCardBackdrop(PK, blob('a'));
+    await db.setCardBackdrop(OTHER, blob('b'));
+    await db.purgeAllUserData();
+    expect(await db.getCardBackdrop(PK)).toBeNull();
+    expect(await db.getCardBackdrop(OTHER)).toBeNull();
+  });
+
+  it('getPreferences still returns the current row with a backdrop row beside it', async () => {
+    const db = await freshDb();
+    await db.savePreferences({ id: 'current', theme: 'light' });
+    await db.setCardBackdrop(PK, blob('a'));
+    const prefs = await db.getPreferences();
+    expect(prefs.id).toBe('current');
+    expect(prefs.theme).toBe('light');
+  });
+});
