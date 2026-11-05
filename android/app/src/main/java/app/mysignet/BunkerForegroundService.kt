@@ -11,7 +11,10 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.Build
 import android.os.SystemClock
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -71,7 +74,7 @@ class BunkerForegroundService : Service() {
                 .putString("relayUrl", relay)
                 .apply()
             val intent = Intent(context, BunkerForegroundService::class.java)
-            context.startForegroundService(intent)
+            ContextCompat.startForegroundService(context, intent)
         }
 
         fun startTemporary(context: Context, pubkeys: String, relay: String, durationMs: Long) {
@@ -81,7 +84,7 @@ class BunkerForegroundService : Service() {
             relayUrl = relay
             lastHeartbeatMs = System.currentTimeMillis()
             temporaryUntilMs = SystemClock.elapsedRealtime() + durationMs.coerceIn(1L, 30 * 60_000L)
-            context.startForegroundService(Intent(context, BunkerForegroundService::class.java))
+            ContextCompat.startForegroundService(context, Intent(context, BunkerForegroundService::class.java))
         }
 
         fun stopTemporary(context: Context) {
@@ -157,14 +160,31 @@ class BunkerForegroundService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        private fun fgsNotification(context: Context, serving: Boolean): Notification {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        /** Notification channels exist from Android 8 (API 26); minSdk is 24, where only the channel id is ignored. */
+        private fun ensureChannel(
+            nm: NotificationManager, id: String, name: String, importance: Int, description: String,
+            privateOnLockscreen: Boolean,
+        ) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_FGS, "Bunker serving", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Keeps the Signet bunker reachable while the screen is off"
+                NotificationChannel(id, name, importance).apply {
+                    this.description = description
+                    if (privateOnLockscreen) lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                 }
             )
-            val builder = Notification.Builder(context, CHANNEL_FGS)
+        }
+
+        private fun ensureAlertsChannel(nm: NotificationManager) = ensureChannel(
+            nm, CHANNEL_ALERTS, "Signing requests", NotificationManager.IMPORTANCE_HIGH,
+            "A child or connected app is waiting for your approval", privateOnLockscreen = true,
+        )
+
+        private fun fgsNotification(context: Context, serving: Boolean): Notification {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            ensureChannel(nm, CHANNEL_FGS, "Bunker serving", NotificationManager.IMPORTANCE_LOW,
+                "Keeps the Signet bunker reachable while the screen is off", privateOnLockscreen = false)
+            val builder = NotificationCompat.Builder(context, CHANNEL_FGS)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setSmallIcon(R.drawable.ic_stat_signet)
                 .setContentIntent(launchIntent(context))
                 .setOngoing(true)
@@ -184,15 +204,11 @@ class BunkerForegroundService : Service() {
             text: String = "Tap to open and unlock Signet so it can sign for your family again",
         ) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ALERTS, "Signing requests", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "A child or connected app is waiting for your approval"
-                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-                }
-            )
+            ensureAlertsChannel(nm)
             nm.notify(
                 NOTIF_UNLOCK_ID,
-                Notification.Builder(context, CHANNEL_ALERTS)
+                NotificationCompat.Builder(context, CHANNEL_ALERTS)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setContentTitle(title)
                     .setContentText(text)
                     .setSmallIcon(R.drawable.ic_stat_signet)
@@ -322,12 +338,7 @@ class BunkerForegroundService : Service() {
 
     private fun postRequestNotification() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ALERTS, "Signing requests", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "A child or connected app is waiting for your approval"
-                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-            }
-        )
+        ensureAlertsChannel(nm)
         val tap = PendingIntent.getActivity(
             this, 0,
             packageManager.getLaunchIntentForPackage(packageName),
@@ -335,7 +346,8 @@ class BunkerForegroundService : Service() {
         )
         nm.notify(
             NOTIF_REQUEST_ID,
-            Notification.Builder(this, CHANNEL_ALERTS)
+            NotificationCompat.Builder(this, CHANNEL_ALERTS)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentTitle("Signing request waiting")
                 .setContentText("Open Signet to review")
                 .setSmallIcon(R.drawable.ic_stat_signet)
