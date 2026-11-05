@@ -349,5 +349,6 @@ describe('approvals whose exchange never completes (review findings 1 and 2)', (
     expect((await loadChildContactReplyOutbox(scope, key, current)).every(e => e.reply?.status === 'expired')).toBe(true);
     await review();
     expect((await loadChildContactInbox(scope, key, later, current)).find(r => r.id === 'e'.repeat(32))?.status).toBe('denied');
-  }, 240000);
+  // Takes about 125 s when the machine is quiet; 240 s was hit under heavy load, which could fail scripts/release.sh.
+  }, 480000);
 });
