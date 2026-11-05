@@ -51,6 +51,12 @@ describe('AddDependant — success screen', () => {
     expect(screen.getByText(/Turn the Bunker on first/)).toBeDefined();
   });
 
+  it('names the page the bunker-off CTA actually opens', async () => {
+    await arriveAtSuccess({ bunkerServerEnabled: false });
+    expect(screen.getByText(/off in Bunker & Scanning settings/)).toBeDefined();
+    expect(screen.queryByText(/Security settings/)).toBeNull();
+  });
+
   it('calls onPairDevice with the new dependant id when Pair is tapped', async () => {
     const onPairDevice = vi.fn();
     await arriveAtSuccess({ onPairDevice });

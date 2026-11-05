@@ -14,6 +14,8 @@ import {
   classifyProbeError,
 } from './bunker-router';
 import type { RouterProbeState } from './bunker-router';
+import { buildServerPairingUrl } from './bunker-url';
+import { buildOwnerPersonaRoutes } from './persona-bunker-routes';
 import type { BunkerSigningBackend } from './signing-backend';
 import { BunkerRequestTimeoutError } from './signing-backend';
 
@@ -644,5 +646,107 @@ describe('classifyProbeError', () => {
     expect(classifyProbeError(new Error('unknown method'))).toEqual({ kind: 'transient', reason: 'transport' });
     expect(classifyProbeError(new AggregateError([], 'x'))).toEqual({ kind: 'transient', reason: 'transport' });
     expect(classifyProbeError(new BunkerRequestTimeoutError('m'))).toEqual({ kind: 'transient', reason: 'timeout' });
+  });
+});
+
+describe('the pairing QR carries the key the owner route listens on', () => {
+  const NP = PK_A;
+  const PERSONA = PK_B;
+  const slot = (pubkey: string) => fakeInner({ activePublicKeyHex: pubkey });
+  const RELAY = 'wss://relay.example.com';
+  const urlFor = (pubkey: string) => `bunker://${pubkey}?relay=wss%3A%2F%2Frelay.example.com`;
+
+  type Primary = 'natural-person' | 'persona';
+  type Backends = Omit<Parameters<typeof resolveServerTransportBackend>[0], 'primaryKeypair'>;
+  const none: Backends = { npBunkerBackend: null, personaBunkerBackend: null, nip07Backend: null, localNaturalPerson: null, localPersona: null };
+
+  const signers: Array<[string, () => Backends]> = [
+    ['local keys', () => ({ ...none, localNaturalPerson: slot(NP), localPersona: slot(PERSONA) })],
+    ['a connected Heartwood', () => ({ ...none, npBunkerBackend: slot(NP), personaBunkerBackend: slot(PERSONA) })],
+  ];
+  // Built the way App.tsx builds them, so the QR is checked against real routes.
+  const scenario = (primaryKeypair: Primary, npActive: boolean, backends: Backends) => {
+    const transport = resolveServerTransportBackend({ primaryKeypair, ...backends });
+    const serving = backends.npBunkerBackend ?? backends.nip07Backend ?? backends.localNaturalPerson;
+    const routes = buildOwnerPersonaRoutes({
+      primaryBackend: transport,
+      naturalPersonBackend: npActive ? serving : null,
+      unlocked: true,
+      personaBackend: backends.localPersona,
+    }, () => { throw new Error('no extras here'); });
+    return { transport, routes, url: buildServerPairingUrl({ transport, unlocked: true, ownerContext: true, relayUrl: RELAY }) };
+  };
+
+  describe.each(signers)('with %s', (_name, backends) => {
+    it('persona primary, real identity dormant: the persona, and the real-name key appears nowhere', () => {
+      const { url, routes } = scenario('persona', false, backends());
+      expect(url).toBe(urlFor(PERSONA));
+      expect(url).not.toContain(NP);
+      expect(routes.map(r => r.pubkey)).toContain(PERSONA);
+      expect(routes.map(r => r.pubkey)).not.toContain(NP);
+    });
+
+    it('persona primary, real identity active: still the persona, the generic pairing target', () => {
+      const { url, routes } = scenario('persona', true, backends());
+      expect(url).toBe(urlFor(PERSONA));
+      // A client that paired to the real-name key earlier keeps its own route.
+      expect(routes.map(r => r.pubkey)).toEqual(expect.arrayContaining([PERSONA, NP]));
+    });
+
+    it('natural person primary, active: the natural person, unchanged', () => {
+      const { url, routes } = scenario('natural-person', true, backends());
+      expect(url).toBe(urlFor(NP));
+      expect(routes[0].pubkey).toBe(NP);
+    });
+
+    // Reachable: a legacy record with a blank name, or "Switch primary to Natural
+    // Person" on the persona's Advanced page, which has no activation gate. The
+    // server does listen on this key, so the URL matches it.
+    it('natural person primary, dormant: follows the route the server has', () => {
+      const { url, routes } = scenario('natural-person', false, backends());
+      expect(routes[0].pubkey).toBe(NP);
+      expect(url).toBe(urlFor(NP));
+    });
+  });
+
+  it('every generated URL names a key a route actually listens on', () => {
+    for (const [, backends] of signers) {
+      for (const primary of ['natural-person', 'persona'] as const) {
+        for (const active of [true, false]) {
+          const { url, routes } = scenario(primary, active, backends());
+          expect(routes.map(r => urlFor(r.pubkey))).toContain(url);
+        }
+      }
+    }
+  });
+
+  it('an nsec persona import: the empty real-name slot aliases the persona key, and the URL is that key', () => {
+    const { url } = scenario('persona', false, { ...none, localNaturalPerson: slot(PERSONA), localPersona: slot(PERSONA) });
+    expect(url).toBe(urlFor(PERSONA));
+  });
+
+  it('a NIP-07 install: the one key the extension holds', () => {
+    const { url } = scenario('natural-person', true, { ...none, nip07Backend: slot(NP) });
+    expect(url).toBe(urlFor(NP));
+  });
+
+  it('a persona primary with no persona backend yet: no URL, never a fall back to the real-name key', () => {
+    const { url } = scenario('persona', false, { ...none, npBunkerBackend: slot(NP), localNaturalPerson: slot(NP) });
+    expect(url).toBeNull();
+  });
+
+  it.each([
+    ['locked', { unlocked: false, ownerContext: true }],
+    ['in a dependant context or on a paired child', { unlocked: true, ownerContext: false }],
+  ])('hides the URL when %s, even with a live backend', (_name, state) => {
+    expect(buildServerPairingUrl({ transport: slot(NP), relayUrl: RELAY, ...state })).toBeNull();
+    expect(buildServerPairingUrl({ transport: slot(PERSONA), relayUrl: RELAY, ...state })).toBeNull();
+  });
+
+  it('hides the URL for a transport with no key yet, or an invalid relay', () => {
+    const on = { unlocked: true, ownerContext: true };
+    expect(buildServerPairingUrl({ transport: null, relayUrl: RELAY, ...on })).toBeNull();
+    expect(buildServerPairingUrl({ transport: slot(''), relayUrl: RELAY, ...on })).toBeNull();
+    expect(buildServerPairingUrl({ transport: slot(PERSONA), relayUrl: 'https://nope', ...on })).toBeNull();
   });
 });

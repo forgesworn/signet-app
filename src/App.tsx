@@ -61,7 +61,7 @@ import { ContactIdentityDecryptBudget, type ContactInvite } from '@forgesworn/si
 import { ContactInviteService } from './lib/contact-invite-service';
 import { contactInviteSigner } from './lib/contact-invite-signer';
 import { useContactInviteMailboxes } from './hooks/useContactInviteMailboxes';
-import { PrivateVaultStatus, privateVaultNeedsAttention } from './components/PrivateVaultStatus';
+import { PrivateVaultStatus, privateVaultWarningVisible } from './components/PrivateVaultStatus';
 import { relayListWithDisabled } from './lib/relay-disable';
 import { toWire as profilesChangeWire } from './lib/personas-sync';
 import { toSyncWire as dependantChangeWire } from './lib/dependants-sync';
@@ -430,7 +430,7 @@ import { buildConnectedClientFromNostrConnect, parseNostrConnectURI, sendConnect
 import { parseCallback, buildCallbackRedirect } from './lib/nostrconnect-callback';
 import { checkAutonomy } from './lib/autonomy-gate';
 import { setRelays as setRelayServiceRelays, getRelayUrl as getRelayServiceUrl, connectRelay, DEFAULT_RELAY_URL, defaultRelays, fetchEvents, publishEvent, subscribeEvents } from './lib/relay-service';
-import { buildPhoneBunkerUrl, buildAuthFlowBunkerUrl } from './lib/bunker-url';
+import { buildServerPairingUrl, buildAuthFlowBunkerUrl } from './lib/bunker-url';
 import { runtimeBunkerUriForBackend, storedBunkerUriForGuardianNaturalPerson } from './lib/bunker-handoff';
 import { buildPairingURI, generatePairingSecret } from './lib/pairing-uri';
 import type { NostrConnectRequest } from './lib/nip46';
@@ -5525,6 +5525,7 @@ function AppContent() {
   // with no pubkeys stores an empty set for the boot receiver and the
   // fallback poll. Re-evaluated whenever any of those change.
   useEffect(() => {
+    if (childDirect) return;
     if (!shouldRearmAlwaysOn({
       native: isNativeApp(),
       unlocked: !!encryptionKey,
@@ -5535,7 +5536,15 @@ function AppContent() {
       servePubkeyCount: bunkerRoutes.length,
     })) return;
     void handleSetBackgroundServing(true);
-  }, [encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+  }, [childDirect, encryptionKey, prefsLoading, preferences.backgroundBunkerEnabled, backgroundServing, bunkerRoutes.length, handleSetBackgroundServing]);
+
+  // A direct child's Bunker tab has no always-on or time controls, so a window
+  // armed before that must not keep auto-lock suspended with no way to stop it.
+  useEffect(() => {
+    if (!childDirect) return;
+    if (backgroundServing || preferences.backgroundBunkerEnabled) void handleSetBackgroundServing(false);
+    if (stayAwakeUntil !== null) closeStayAwake();
+  }, [childDirect, backgroundServing, preferences.backgroundBunkerEnabled, stayAwakeUntil, handleSetBackgroundServing, closeStayAwake]);
 
   useEffect(() => {
     if (!encryptionKey || !pendingAlwaysOnArm) return;
@@ -6737,6 +6746,15 @@ function AppContent() {
     onMerged: refreshPrivateVaultData,
     onHealth: health => setPrivateVaultStatus({ session: privateVaultSession, health }),
   });
+  // A failed contacts import keeps `ready` false, so no cycle starts and the
+  // hook can only ever say "checking". Only the backup status reads this.
+  const privateVaultStatusHealth: PrivateVaultHealth = contactsImport.status === 'error'
+    ? { ...privateVaultHealth, stopped: 'contacts-import' } : privateVaultHealth;
+  // Which session's warning is on screen, so a re-check can't unmount it.
+  const privateVaultWarningSession = useRef<string | null>(null);
+  const privateVaultWarning = !!encryptionKey && privateVaultSupported
+    && privateVaultWarningVisible(privateVaultStatusHealth, privateVaultWarningSession.current === privateVaultSession);
+  privateVaultWarningSession.current = privateVaultWarning ? privateVaultSession : null;
   // "N imported personas could not be added here" banner is dismissable
   // but reappears next unlock if still relevant — reset alongside lock.
   const [personasSkippedDismissed, setPersonasSkippedDismissed] = useState(false);
@@ -10632,12 +10650,12 @@ function AppContent() {
     onRotate={privateVaultSupported && !activeDependant && supportsPrivateVaultRotationLock() ? rotatePrivateBackup : undefined}
     onDisableRelay={disableVaultRelay}
     canDisableRelay={url => relayListWithDisabled(preferences, url) !== null}
-    health={privateVaultSupported ? privateVaultHealth : { phase: 'unsupported', datasets: {} }}
+    health={privateVaultSupported ? privateVaultStatusHealth : { phase: 'unsupported', datasets: {} }}
     importedDependants={dependants.filter(d => !/^dependant-(0|[1-9][0-9]*)$/.test(d.derivationPath)).length}
   /> : null;
   // A backup that has quietly stopped working must not depend on someone
   // opening Security & Backup, so problems also show at the top of Settings.
-  const settingsBackupWarning = privateVaultBanner && privateVaultSupported && privateVaultNeedsAttention(privateVaultHealth)
+  const settingsBackupWarning = privateVaultBanner && privateVaultWarning
     ? <div className="app-notices">{privateVaultBanner}</div> : null;
   // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
   const childApprovalsBanner = (childDeviceLink.unpaired || childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
@@ -11225,12 +11243,14 @@ function AppContent() {
       }} />, topBanners);
   }
 
-  // Bunker URL for "Pair my phone" — only on the user's NP route (skip when
-  // a dependant is active; dependant pairing has its own dedicated flow via
-  // PairDependantDevice).
-  const bunkerUrl = !activeDependant
-    ? buildPhoneBunkerUrl(identity?.naturalPerson?.publicKey, preferences.relayUrl ?? DEFAULT_RELAY_URL)
-    : null;
+  // Bunker URL for "Pair my phone": the key the owner route listens on. A
+  // dependant pairs through PairDependantDevice instead.
+  const bunkerUrl = buildServerPairingUrl({
+    transport: bunkerBackendForServer,
+    unlocked: !!encryptionKey,
+    ownerContext: !activeDependant && !isPairedChild,
+    relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+  });
   if (page === 'settings-security') {
     return renderSettingsPage('settings-security', 'Security & Backup', (
       <SecuritySettings
@@ -11271,6 +11291,8 @@ function AppContent() {
         bunkerServerEnabled={bunkerServerEnabled}
         onSetBunkerServerEnabled={setBunkerServerEnabled}
         bunkerUrl={bunkerUrl}
+        showPairingUrl={!activeDependant}
+        pairingKeyAvailable={!!encryptionKey && !!bunkerBackendForServer?.activePublicKeyHex}
         focusSection={pendingSecurityFocus}
         onConsumeFocus={() => setPendingSecurityFocus(null)}
       />
@@ -14456,7 +14478,8 @@ function AppContent() {
           onClose={() => setBunkerPanelOpen(false)}
           bunkerAllowed={bunkerServerEnabled}
           onGoToSecurity={() => { setBunkerPanelOpen(false); setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
-          onSetBunkerAllowed={on => { void setBunkerServerEnabled(on); }}
+          onSetBunkerAllowed={isPairedChild ? undefined : on => { void setBunkerServerEnabled(on); }}
+          childDirect={childDirect}
           stayAwakeUntil={stayAwakeUntil}
           onArmStayAwake={armStayAwake}
           onCloseStayAwake={closeStayAwake}

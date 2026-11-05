@@ -49,3 +49,9 @@ export function localKeyOnlyCopy(
  * silently doing nothing.
  */
 export const BACKUP_WORDS_ON_SIGNER = 'Backup words live with your Heartwood signer.';
+
+/** Same replacement when this Signet never had words: its key came from elsewhere. */
+export const NO_BACKUP_WORDS_IMPORTED = 'This Signet has no recovery words, because its key came from outside Signet. Keep your own backup of that key.';
+
+/** And on a child's phone, whose keys are not held here at all. */
+export const NO_BACKUP_WORDS_CHILD = 'Your guardian looks after the backup for this phone, so there are no recovery words to show here.';

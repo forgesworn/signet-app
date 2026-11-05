@@ -369,7 +369,7 @@ export function AddDependant({
             >
               <Icon name="settings" size={15} className="icon-inline" />Turn the Bunker on first
               <div style={{ fontWeight: 400, fontSize: '0.8rem', opacity: 0.85, marginTop: 2 }}>
-                The Bunker is off in Security settings. Turn it on, then come back here.
+                The Bunker is off in Bunker &amp; Scanning settings. Turn it on, then come back here.
               </div>
             </button>
           )}

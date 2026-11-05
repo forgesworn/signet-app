@@ -9,6 +9,7 @@ import type { VaultDataset, VaultReader, VaultCheckpoint } from 'signet-protocol
 import { LocalSigningBackend } from './signing-backend';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { sealVaultPayload, openVaultPayload } from './vault-envelope';
+import { relayTimeout } from './relay-operations';
 
 export function localVaultBackend(mnemonic: string, dataset: VaultDataset, rotation = 0): LocalSigningBackend {
   const child = vaultIdentityFromMnemonic(mnemonic, dataset, rotation);
@@ -70,9 +71,21 @@ export async function prepareVaultSnapshot(args: {
   return { checkpoint, chunks, manifest };
 }
 
+/**
+ * Upper bound on one relay read. A socket that closes without an error during
+ * connect never settles in the protocol reader, and the caller is holding the
+ * dataset's lock, so every read needs an end. Must exceed connect (5 s) plus
+ * query (10 s) so a slow relay that would have answered still can.
+ */
+export const VAULT_RELAY_READ_TIMEOUT_MS = 20_000;
+
+/** `open` stays unbounded: it can wait on a device approval for up to 60 s. */
 export function relayVaultReader(relays: readonly string[], backend: DecryptingSigningBackend): VaultReader {
-  return createVaultRelayReader(relays, (content, author) =>
+  const reader = createVaultRelayReader(relays, (content, author) =>
     openVaultPayload(content, backend, author, { legacyFallback: false }));
+  return { ...reader,
+    checkpoints: (author, dTag) => relayTimeout(reader.checkpoints(author, dTag), VAULT_RELAY_READ_TIMEOUT_MS),
+    chunk: eventId => relayTimeout(reader.chunk(eventId), VAULT_RELAY_READ_TIMEOUT_MS) };
 }
 export { fetchVaultEvents } from 'signet-protocol/experimental';
 

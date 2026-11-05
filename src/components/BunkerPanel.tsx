@@ -97,6 +97,13 @@ interface Props {
   childAskAlwaysAvailable?: (dependantId: string) => boolean;
   childAskStandingAvailable?: (dependantId: string) => boolean;
   onChildAskDecide?: ChildAskDecide;
+  /**
+   * A child's phone paired straight to the Heartwood. Its bunker is on whenever
+   * it is unlocked and paired, with nothing to turn on, so the serve section
+   * becomes a statement. No always-on or time controls: arming one would suspend
+   * auto-lock on the child's phone.
+   */
+  childDirect?: boolean;
 }
 
 export function BunkerPanel({
@@ -108,6 +115,7 @@ export function BunkerPanel({
   escalationNotices, onDismissEscalation, resolveEscalationOwner,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
   childAsks, childAskAlwaysAvailable, childAskStandingAvailable, onChildAskDecide,
+  childDirect = false,
 }: Props) {
   const [reviewHandle, setReviewHandle] = useState<number | null>(null);
   const reviewed = pendingApprovals.find(a => a.handle === reviewHandle);
@@ -303,8 +311,12 @@ export function BunkerPanel({
         </div>
 
         {/* Serve signing requests — unified session section */}
-        <div style={sectionTitle}>Serve signing requests</div>
-        {!bunkerAllowed ? (
+        <div style={sectionTitle}>{childDirect ? 'On this phone' : 'Serve signing requests'}</div>
+        {childDirect ? (
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+            Apps and games you connect send their signing requests here. This phone passes them to your family Heartwood, inside the rules your guardian set. It runs while Signet is unlocked, so there is nothing to switch on.
+          </p>
+        ) : !bunkerAllowed ? (
           <div>
             {onSetBunkerAllowed ? (
               <>
