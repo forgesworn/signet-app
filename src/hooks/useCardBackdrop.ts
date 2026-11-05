@@ -61,7 +61,7 @@ export function peekCardBackdropUrl(pubkey: string): string | null | undefined {
  * would stall the slide.
  */
 export async function downscaleBackdrop(file: Blob): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   try {
     const scale = Math.min(1, BACKDROP_MAX_EDGE_PX / Math.max(bitmap.width, bitmap.height));
     const width = Math.max(1, Math.round(bitmap.width * scale));
