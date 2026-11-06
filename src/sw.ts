@@ -12,11 +12,11 @@ cleanupOutdatedCaches();
 // SPA navigation fallback -- navigation requests serve cached index.html.
 // Needed for direct hits (mysignet.app), offline refresh, and
 // Sign in with Signet redirects (mysignet.app/?auth=1&challenge=...).
-// Denylist: real static pages (/get, /about) and APK downloads must reach the
+// Denylist: real static pages (/get, /about, /guide) and APK downloads must reach the
 // network, or users with a registered SW get the app shell instead (mirrors
 // the Caddy SPA-fallback exclusions server-side).
 registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html'), {
-  denylist: [/^\/get(\/|\?|$)/, /^\/about(\/|\?|$)/, /\.apk(\?|$)/],
+  denylist: [/^\/get(\/|\?|$)/, /^\/about(\/|\?|$)/, /^\/guide(\/|\?|$)/, /\.apk(\?|$)/],
 }));
 
 // Update flow -- app sends SKIP_WAITING when safe to reload.
