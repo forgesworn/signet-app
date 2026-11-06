@@ -435,6 +435,12 @@ describe('MyKeep: what the relays are asked', () => {
     relayHolding([]);
     const { rerender } = render(<MyKeep scope="id1" onBack={onBack} keepHost={host()} />);
     expect(await screen.findByTestId('stored-keep-row')).toHaveTextContent('Secret kitchen');
+    // The stored row shows as soon as the row is read, but the relay lookup it triggers is a passive effect that
+    // can still be pending: React flushes it at the next render, which here would be the lock, and the fetch would
+    // then count against the locked app. Let the mount's lookup run and settle first (its result replaces the
+    // "Looking for your Keep" line), so the assertion below is about the lock alone.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/Looking for your Keep/)).toBeNull());
     fetchMock.mockClear();
     // The app locks: no key, so no host and the lock screen.
     rerender(<MyKeep scope="id1" onBack={onBack} lock={{ state: 'locked', onUnlock: vi.fn() }} />);
