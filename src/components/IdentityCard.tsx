@@ -269,6 +269,13 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
       {/* The backdrop itself is painted by CardStage behind every card of
           this identity; this card only hosts the customise control. */}
       <div className="card-band" />
+      <div className="card-motto">
+        <span>MY IDENTITY</span>
+        <span> – </span>
+        <span>MY SOVEREIGNTY</span>
+        <span> – </span>
+        <span>MY COMMUNITY</span>
+      </div>
       {canEditBackdrop && (
         <div className="card-backdrop-edit" ref={backdropEditRef}>
           <input
@@ -322,7 +329,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
       <div className="card-inner">
         <div className="card-brand">
           <BrandMark variant="emblem" tone="on-dark" size={60} decorative />
-          <BrandMark variant="wordmark" tone="on-dark" size={46} />
+          <BrandMark variant="wordmark" tone="on-dark" size={38} />
         </div>
 
         {/* Avatar, name, role label, Pro pill and npub read as one group — and
