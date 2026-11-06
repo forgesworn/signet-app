@@ -51,3 +51,14 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Android service tests and debug build
+        run: |
+          npx cap sync android
+          cd android
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process

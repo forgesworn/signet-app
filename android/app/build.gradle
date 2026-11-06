@@ -72,6 +72,7 @@ android {
         }
     }
     testOptions {
+        unitTests.includeAndroidResources = true
         // android.util.Log in the NIP-55 hand-off; the JVM tests do not need it to do anything.
         unitTests.returnDefaultValues = true
     }
@@ -93,6 +94,7 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.robolectric:robolectric:4.17'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

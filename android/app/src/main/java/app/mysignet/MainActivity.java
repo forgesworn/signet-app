@@ -17,7 +17,7 @@ public class MainActivity extends BridgeActivity {
      * Chromium freezes a hidden page 60 s after it is hidden (page lifecycle
      * "freeze": timers, WebSocket events, everything), which stopped the
      * NIP-46 server about a minute after the screen went off or the app went
-     * to the background. While always-on serving is set, keep telling the
+     * to the background. While always-on serving has a live heartbeat, keep telling the
      * WebView its window is visible so the page is never frozen. Checked on
      * device (GrapheneOS, Vanadium WebView): frozen at 60 s without this,
      * alive past 6 min with it.
@@ -47,7 +47,7 @@ public class MainActivity extends BridgeActivity {
     private final Runnable keepVisible = new Runnable() {
         @Override
         public void run() {
-            if (bridge != null && BunkerForegroundService.isAlwaysOn(MainActivity.this)) {
+            if (bridge != null && BunkerForegroundService.isServingPersistently(MainActivity.this)) {
                 bridge.getWebView().dispatchWindowVisibilityChanged(View.VISIBLE);
                 keepVisibleHandler.postDelayed(hideAgain, PULSE_MS);
             }
@@ -128,9 +128,9 @@ public class MainActivity extends BridgeActivity {
     public void onDestroy() {
         keepVisibleHandler.removeCallbacks(keepVisible);
         keepVisibleHandler.removeCallbacks(hideAgain);
-        // Swiped away (or otherwise finished) while serving: signing stops
-        // with the page, so say so now rather than after the heartbeat lapses.
-        if (!isChangingConfigurations() && BunkerForegroundService.isServingPersistently(this)) {
+        // Signing stops with the page: release its lease immediately, including
+        // temporary windows and pages whose heartbeat has already lapsed.
+        if (!isChangingConfigurations()) {
             BunkerForegroundService.pageClosed(getApplicationContext());
         }
         super.onDestroy();
