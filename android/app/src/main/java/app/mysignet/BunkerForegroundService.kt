@@ -8,22 +8,13 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import org.json.JSONArray
-import org.json.JSONObject
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -37,8 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *     not open — JS heartbeat stale), say so: the ongoing notification changes and a one-off
  *     "tap to unlock" alert is posted. Nothing signs before an unlock; no
  *     key is held at rest without the PIN or biometric.
- *  3. Fallback: in that state, poll the relay directly and post a blind
- *     "request waiting" notification (Charter warden pattern).
+ *  3. Fallback: in that state, let JobScheduler check for waiting requests
+ *     with network access and a system-managed wake lock only during a check.
  */
 class BunkerForegroundService : Service() {
 
@@ -48,16 +39,20 @@ class BunkerForegroundService : Service() {
         private const val NOTIF_FGS_ID = 1001
         private const val NOTIF_REQUEST_ID = 2001
         private const val NOTIF_UNLOCK_ID = 2002
-        private const val SLOW_TICK_MS = 60_000L
         private const val HEARTBEAT_STALE_MS = 90_000L
-        private const val POLL_LOOKBACK_S = 48 * 3600L
-        private const val PREFS = "signet_bunker_service"
+        internal const val PREFS = "signet_bunker_service"
 
         @Volatile private var temporaryUntilMs: Long = 0
-        @Volatile private var lastHeartbeatMs: Long = 0
-        @Volatile private var pubkeysCsv: String = ""
-        @Volatile private var relayUrl: String = ""
+        @Volatile private var lastHeartbeatMs: Long = -1
         private val unlockAlerted = AtomicBoolean(false)
+        @Volatile private var liveService: BunkerForegroundService? = null
+
+        private fun refreshLiveService() {
+            val service = liveService ?: return
+            service.mainHandler.post {
+                if (liveService === service) service.refreshPowerState()
+            }
+        }
 
         /**
          * `fromBoot`: nothing has unlocked yet, so the service starts in the
@@ -65,9 +60,7 @@ class BunkerForegroundService : Service() {
          */
         fun start(context: Context, pubkeys: String, relay: String, fromBoot: Boolean = false) {
             temporaryUntilMs = 0
-            pubkeysCsv = pubkeys
-            relayUrl = relay
-            lastHeartbeatMs = if (fromBoot) 0 else System.currentTimeMillis()
+            lastHeartbeatMs = if (fromBoot) -1 else SystemClock.elapsedRealtime()
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putBoolean("enabled", true)
                 .putString("pubkeysCsv", pubkeys)
@@ -77,12 +70,10 @@ class BunkerForegroundService : Service() {
             ContextCompat.startForegroundService(context, intent)
         }
 
-        fun startTemporary(context: Context, pubkeys: String, relay: String, durationMs: Long) {
+        fun startTemporary(context: Context, durationMs: Long) {
             // An explicit always-on setting takes precedence over a short handoff.
             if (context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)) return
-            pubkeysCsv = pubkeys
-            relayUrl = relay
-            lastHeartbeatMs = System.currentTimeMillis()
+            lastHeartbeatMs = SystemClock.elapsedRealtime()
             temporaryUntilMs = SystemClock.elapsedRealtime() + durationMs.coerceIn(1L, 30 * 60_000L)
             ContextCompat.startForegroundService(context, Intent(context, BunkerForegroundService::class.java))
         }
@@ -96,17 +87,17 @@ class BunkerForegroundService : Service() {
 
         fun stop(context: Context) {
             temporaryUntilMs = 0
+            lastHeartbeatMs = -1
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putBoolean("enabled", false).apply()
+            BunkerFallbackJobService.cancel(context)
             unlockAlerted.set(false)
             (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_UNLOCK_ID)
             context.stopService(Intent(context, BunkerForegroundService::class.java))
         }
 
         fun heartbeat(context: Context, pubkeys: String, relay: String) {
-            lastHeartbeatMs = System.currentTimeMillis()
-            if (pubkeys.isNotEmpty()) pubkeysCsv = pubkeys
-            if (relay.isNotEmpty()) relayUrl = relay
+            lastHeartbeatMs = SystemClock.elapsedRealtime()
             // Keep the boot receiver's copy current: the set the service was
             // started with can predate the serve routes, and after a reboot
             // the fallback poll has only what is stored here.
@@ -118,18 +109,20 @@ class BunkerForegroundService : Service() {
                 if (relay.isNotEmpty() && prefs.getString("relayUrl", "") != relay) { edit.putString("relayUrl", relay); changed = true }
                 if (changed) edit.apply()
             }
-            if (isPersistent(context) && unlockAlerted.compareAndSet(true, false)) {
-                showServingState(context.applicationContext, serving = true)
-            }
+            refreshLiveService()
         }
 
         private fun isPersistent(context: Context): Boolean =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
 
-        private fun heartbeatFresh(): Boolean =
-            System.currentTimeMillis() - lastHeartbeatMs <= HEARTBEAT_STALE_MS
+        private fun heartbeatRemainingMs(): Long {
+            val at = lastHeartbeatMs
+            if (at < 0) return 0
+            return (HEARTBEAT_STALE_MS - (SystemClock.elapsedRealtime() - at)).coerceIn(0, HEARTBEAT_STALE_MS)
+        }
 
-        /** Always-on is set and an unlocked page is serving right now. */
+        private fun heartbeatFresh(): Boolean = heartbeatRemainingMs() > 0
+
         /** The persistent always-on setting is on. */
         @JvmStatic fun isAlwaysOn(context: Context): Boolean = isPersistent(context)
 
@@ -138,11 +131,15 @@ class BunkerForegroundService : Service() {
          * the app is opened and unlocked again; say so straight away.
          */
         @JvmStatic fun pageClosed(context: Context) {
-            lastHeartbeatMs = 0
-            unlockAlerted.set(true)
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIF_FGS_ID, fgsNotification(context, serving = false))
-            postUnlockAlert(context, "Signet stopped signing for your family", "Tap to turn it back on")
+            lastHeartbeatMs = -1
+            temporaryUntilMs = 0
+            if (isPersistent(context)) {
+                unlockAlerted.set(true)
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                nm.notify(NOTIF_FGS_ID, fgsNotification(context, serving = false))
+                postUnlockAlert(context, "Signet stopped signing for your family", "Tap to turn it back on")
+            }
+            refreshLiveService()
         }
 
         @JvmStatic fun isServingPersistently(context: Context): Boolean = isPersistent(context) && heartbeatFresh()
@@ -217,143 +214,82 @@ class BunkerForegroundService : Service() {
                     .build()
             )
         }
+
+        internal fun postRequestNotification(context: Context) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            ensureAlertsChannel(nm)
+            val tap = PendingIntent.getActivity(
+                context, 0,
+                context.packageManager.getLaunchIntentForPackage(context.packageName),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            nm.notify(
+                NOTIF_REQUEST_ID,
+                NotificationCompat.Builder(context, CHANNEL_ALERTS)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setContentTitle("Signing request waiting")
+                    .setContentText("Open Signet to review")
+                    .setSmallIcon(R.drawable.ic_stat_signet)
+                    .setContentIntent(tap)
+                    .setAutoCancel(true)
+                    .build()
+            )
+        }
     }
 
-    private lateinit var worker: HandlerThread
-    private lateinit var handler: Handler
-    @Volatile private var running = false
-    private var wakeLock: PowerManager.WakeLock? = null
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .build()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var wakeLock: PowerManager.WakeLock
+    private val leaseExpired = Runnable { refreshPowerState() }
 
-    private val slowTick = object : Runnable {
-        override fun run() {
-            if (!running) return
-            try {
-                val enabled = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
-                if (!enabled && temporaryUntilMs <= SystemClock.elapsedRealtime()) {
-                    // Belt-and-braces: an orphaned service (e.g. after account
-                    // deletion) winds itself down instead of ticking forever.
-                    stopSelf()
-                    return
-                }
-                val stale = !heartbeatFresh()
-                if (enabled) {
-                    if (stale && unlockAlerted.compareAndSet(false, true)) {
-                        showServingState(this@BunkerForegroundService, serving = false)
-                    } else if (!stale && unlockAlerted.compareAndSet(true, false)) {
-                        showServingState(this@BunkerForegroundService, serving = true)
-                    }
-                }
-                if (stale && pubkeysCsv.isNotEmpty() && relayUrl.startsWith("wss://")) {
-                    pollOnce()
-                }
-            } catch (_: Throwable) {
-                // never let a poll failure kill the loop
+    /** Main-thread only: every acquisition has a deadline, renewed by JS liveness. */
+    private fun refreshPowerState() {
+        mainHandler.removeCallbacks(leaseExpired)
+        val persistent = isPersistent(this)
+        val remaining = if (persistent) heartbeatRemainingMs()
+            else (temporaryUntilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+        if (remaining > 0) {
+            wakeLock.acquire(remaining)
+            mainHandler.postDelayed(leaseExpired, remaining)
+            BunkerFallbackJobService.cancel(this)
+            if (persistent && unlockAlerted.compareAndSet(true, false)) {
+                showServingState(this, serving = true)
             }
-            handler.postDelayed(this, SLOW_TICK_MS)
+        } else {
+            if (wakeLock.isHeld) wakeLock.release()
+            if (persistent) {
+                if (unlockAlerted.compareAndSet(false, true)) showServingState(this, serving = false)
+                BunkerFallbackJobService.schedule(this)
+            } else {
+                BunkerFallbackJobService.cancel(this)
+                stopSelf()
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        val serving = heartbeatFresh()
-        startForeground(NOTIF_FGS_ID, fgsNotification(this, serving))
-        if (!serving && isPersistent(this) && unlockAlerted.compareAndSet(false, true)) {
-            postUnlockAlert(this)
-        }
+        startForeground(NOTIF_FGS_ID, fgsNotification(this, heartbeatFresh()))
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "signet:bunker").apply { acquire() }
-        // Config survives process death via prefs (boot / restart path).
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (pubkeysCsv.isEmpty()) pubkeysCsv = prefs.getString("pubkeysCsv", "") ?: ""
-        if (relayUrl.isEmpty()) relayUrl = prefs.getString("relayUrl", "") ?: ""
-        worker = HandlerThread("signet-bunker-worker").apply { start() }
-        handler = Handler(worker.looper)
-        running = true
-        handler.postDelayed(slowTick, SLOW_TICK_MS)
-    }
-
-    private val expireTemporary = Runnable {
-        if (temporaryUntilMs > 0 && temporaryUntilMs <= SystemClock.elapsedRealtime()) stopTemporary(this)
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "signet:bunker").apply {
+            // Heartbeats extend one lease; they must not accumulate acquisitions.
+            setReferenceCounted(false)
+        }
+        liveService = this
+        refreshPowerState()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        handler.removeCallbacks(expireTemporary)
-        if (temporaryUntilMs > 0) {
-            handler.postDelayed(expireTemporary, (temporaryUntilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0))
-            return START_NOT_STICKY
-        }
-        return START_STICKY
+        // Also handles re-arming an existing, sleeping service after unlock.
+        refreshPowerState()
+        return if (isPersistent(this)) START_STICKY else START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        running = false
-        try { wakeLock?.release() } catch (_: Throwable) {}
-        worker.quitSafely()
+        if (liveService === this) liveService = null
+        mainHandler.removeCallbacksAndMessages(null)
+        if (wakeLock.isHeld) wakeLock.release()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    /** Connection-per-poll (Charter pattern): REQ, drain to EOSE or 8s, close. */
-    private fun pollOnce() {
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val now = System.currentTimeMillis() / 1000
-        val cursor = prefs.getLong("cursor", 0).coerceAtLeast(now - POLL_LOOKBACK_S)
-        val filter = JSONObject()
-            .put("kinds", JSONArray().put(24133))
-            .put("#p", JSONArray().apply { pubkeysCsv.split(',').filter { it.isNotEmpty() }.forEach { put(it) } })
-            .put("since", cursor)
-        val req = JSONArray().put("REQ").put("fb").put(filter).toString()
-
-        var sawEvent = false
-        val done = CountDownLatch(1)
-        val ws = http.newWebSocket(
-            Request.Builder().url(relayUrl).build(),
-            object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) { webSocket.send(req) }
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    try {
-                        val arr = JSONArray(text)
-                        when (arr.optString(0)) {
-                            "EVENT" -> { sawEvent = true }
-                            "EOSE" -> { done.countDown() }
-                        }
-                    } catch (_: Throwable) {}
-                }
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { done.countDown() }
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { done.countDown() }
-            }
-        )
-        done.await(8, TimeUnit.SECONDS)
-        ws.close(1000, null)
-        if (sawEvent) {
-            prefs.edit().putLong("cursor", now).apply()
-            postRequestNotification()
-        }
-    }
-
-    private fun postRequestNotification() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        ensureAlertsChannel(nm)
-        val tap = PendingIntent.getActivity(
-            this, 0,
-            packageManager.getLaunchIntentForPackage(packageName),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        nm.notify(
-            NOTIF_REQUEST_ID,
-            NotificationCompat.Builder(this, CHANNEL_ALERTS)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setContentTitle("Signing request waiting")
-                .setContentText("Open Signet to review")
-                .setSmallIcon(R.drawable.ic_stat_signet)
-                .setContentIntent(tap)
-                .setAutoCancel(true)
-                .build()
-        )
-    }
 }

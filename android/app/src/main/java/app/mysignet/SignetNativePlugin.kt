@@ -408,7 +408,7 @@ class SignetNativePlugin : Plugin() {
             call.reject("invalid temporary serving window")
             return
         }
-        BunkerForegroundService.startTemporary(context, call.getString("pubkeysCsv") ?: "", relay, duration.toLong())
+        BunkerForegroundService.startTemporary(context, duration.toLong())
         call.resolve()
     }
 

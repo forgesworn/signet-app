@@ -3,6 +3,9 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+- Android: the Bunker lets the phone sleep when signing has stopped. Waiting-request alerts use periodic network checks instead of keeping the CPU awake
+
 ## 0.24.0
 - Identity cards: a larger photo, three action tiles (Scan, Handshake, My QR) and quick links to your sites and contacts replace the tier, Signet IQ and vouch counts
 - Card backdrops: give each persona its own wallpaper from the image button on its card or the Card backdrop row in its settings column. Photos are resized before they are stored, and the card keeps one readable plate behind the name. A backdrop stays on this device, is not encrypted, and shows while the app is locked
