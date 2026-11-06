@@ -22,10 +22,12 @@
 #      and refuse to continue unless the new versionCode is strictly greater
 #      (Android itself would refuse the "upgrade" otherwise)
 #   7. commit "chore(release): vX.Y.Z", push main, tag vX.Y.Z, push the tag
+#      (each push is tried up to three times)
 #   8. gh release create with the three assets + provenance notes
 #   9. publish to Zapstore with the bunker URL from the macOS Keychain
 #      (service mysignet-zapstore-bunker), then confirm the release event is on
-#      the relay; without a Keychain entry it prints the command instead
+#      the relay (asked up to six times, 15 s apart); without a Keychain
+#      entry it prints the command instead
 #
 # If it fails part-way after main/tag are pushed, see "If it fails part-way"
 # in android/RELEASE_SIGNING.md.
@@ -45,6 +47,17 @@ say() { printf '\n==> %s\n' "$*"; }
 sha256_of() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
 die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+# A push is safe to repeat: one that already landed is a no-op the second time.
+# v0.24.0's tag push died on a dropped SSH connection after main had gone up,
+# which left the release half-done for a reason a retry would have absorbed.
+push_with_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    git push "$@" && return 0
+    if [[ "$attempt" -lt 3 ]]; then echo "git push $* failed (attempt $attempt of 3), retrying in 10 s" >&2; sleep 10; fi
+  done
+  return 1
+}
 
 # ---------- 1. preflight ----------
 say "preflight"
@@ -172,9 +185,9 @@ if [[ "$BUMPED" == "1" ]]; then
   git add package.json package-lock.json
   git commit -q -m "chore(release): $TAG"
 fi
-git push origin main || die "push of the release commit to origin/main failed — the commit is still local only (no tag exists anywhere). Fix the push (network/auth) and re-run 'git push origin main' by hand, or abandon this release commit with 'git reset --hard origin/main'"
+push_with_retry origin main || die "push of the release commit to origin/main failed — the commit is still local only (no tag exists anywhere). Fix the push (network/auth) and re-run 'git push origin main' by hand, or abandon this release commit with 'git reset --hard origin/main'"
 git tag -a "$TAG" -m "My Signet $TAG (versionCode $APK_VCODE)" || die "could not create tag $TAG — main is pushed; create the tag by hand and continue with: git push origin $TAG, then gh release create (see android/RELEASE_SIGNING.md)"
-git push origin "$TAG" || die "push of tag $TAG failed — main is already pushed to origin, but the tag is not. Re-run 'git push origin $TAG' by hand, then create the release yourself: see \"If it fails part-way\" in android/RELEASE_SIGNING.md. Artifacts are in $OUT"
+push_with_retry origin "$TAG" || die "push of tag $TAG failed — main is already pushed to origin, but the tag is not. Re-run 'git push origin $TAG' by hand, then create the release yourself: see \"If it fails part-way\" in android/RELEASE_SIGNING.md. Artifacts are in $OUT"
 SRC_COMMIT="$(git rev-parse HEAD)"
 
 # ---------- 8. GitHub release ----------
@@ -211,12 +224,23 @@ if [[ -x "$ZSP" && -n "$ZAP_BUNKER" ]]; then
   # -q also skips silently when the release already exists on the relay, so
   # read the relay back rather than trusting the exit code.
   SIGN_WITH="$ZAP_BUNKER" "$ZSP" publish -q --skip-preview zapstore.yaml 2>&1 | sed -E 's#bunker://[^" ]*#bunker://[redacted]#g' || true
-  if node -e '
-    const ws = new WebSocket("wss://relay.zapstore.dev");
-    ws.onopen = () => ws.send(JSON.stringify(["REQ", "r", { kinds: [30063], "#d": ["app.mysignet@" + process.argv[1]] }]));
-    ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d[0] === "EVENT") process.exit(0); if (d[0] === "EOSE") process.exit(1); };
-    setTimeout(() => process.exit(1), 20000);
-  ' "$VERSION"; then
+  # The relay can take a while to serve an event it has just accepted (v0.24.0
+  # read as missing straight after publish, and was there a minute later), so
+  # ask a few times before calling it missing.
+  on_relay() {
+    node -e '
+      const ws = new WebSocket("wss://relay.zapstore.dev");
+      ws.onopen = () => ws.send(JSON.stringify(["REQ", "r", { kinds: [30063], "#d": ["app.mysignet@" + process.argv[1]] }]));
+      ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d[0] === "EVENT") process.exit(0); if (d[0] === "EOSE") process.exit(1); };
+      setTimeout(() => process.exit(1), 20000);
+    ' "$VERSION"
+  }
+  FOUND=0
+  for attempt in 1 2 3 4 5 6; do
+    if on_relay; then FOUND=1; break; fi
+    if [[ "$attempt" -lt 6 ]]; then echo "Zapstore: not on the relay yet (check $attempt of 6), retrying in 15 s"; sleep 15; fi
+  done
+  if [[ "$FOUND" == "1" ]]; then
     echo "Zapstore: app.mysignet@$VERSION is on wss://relay.zapstore.dev"
   else
     echo "Zapstore: app.mysignet@$VERSION NOT found on the relay — publish by hand:"
