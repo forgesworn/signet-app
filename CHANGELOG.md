@@ -4,6 +4,7 @@ Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
+- Identity cards: “MY IDENTITY – MY SOVEREIGNTY – MY COMMUNITY” now runs across the top of the card
 - Android: the Bunker lets the phone sleep when signing has stopped. Waiting-request alerts use periodic network checks instead of keeping the CPU awake
 
 ## 0.24.0

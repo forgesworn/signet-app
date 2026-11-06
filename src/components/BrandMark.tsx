@@ -10,7 +10,7 @@ import wordmarkOnDark from '../assets/brand/mysignet-wordmark-reversed.svg';
 
 export interface BrandMarkProps {
   /** Which lockup to render. Default 'emblem' (mark only, no wordmark). 'wordmark' is
-   *  the lockup's own wordmark paths alone, for layouts that set emblem and name apart. */
+   *  the name paths alone, for layouts that set emblem, name and motto apart. */
   variant?: 'emblem' | 'horizontal' | 'stacked' | 'wordmark';
   /** Rendered HEIGHT in px — width follows the SVG's native aspect ratio. Default 40. */
   size?: number;
