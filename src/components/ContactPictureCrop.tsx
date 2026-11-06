@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   CANCEL_LABEL, CROP_HINT, CROP_LOADING_COPY, CROP_TITLE, OWN_PICTURE_UNREADABLE_COPY, USE_THIS_PICTURE_LABEL, ZOOM_LABEL,
 } from '../lib/contacts-v2-copy';
@@ -93,7 +93,9 @@ export function ContactPictureCrop({ file, onUse, onCancel, title = CROP_TITLE, 
   };
 
   // React attaches `onWheel` as a passive listener, which cannot stop the page scrolling: attach it natively.
-  useEffect(() => {
+  // A layout effect, so the listener is live in the same commit that shows the photo: a passive effect
+  // runs a task later, and a scroll in that gap would move the page instead of zooming.
+  useLayoutEffect(() => {
     const stage = stageRef.current;
     if (!stage || !picture) return undefined;
     const onWheel = (e: WheelEvent) => {
