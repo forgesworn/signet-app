@@ -13,24 +13,18 @@ import './styles/global.css';
 import './styles/carousel.css';
 import './styles/qr-scanner.css';
 import './styles/desktop-frame.css';
-import { staticPageRedirect } from './lib/static-page-redirect';
 
-const staticTarget = staticPageRedirect(location.pathname, location.search, location.hash);
-if (staticTarget) {
-  location.replace(staticTarget);
-} else {
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <ErrorBoundary>
-        <PortraitLayout>
-          <CarouselArrowProvider>
-            <DesktopFrame>
-              <App />
-            </DesktopFrame>
-          </CarouselArrowProvider>
-        </PortraitLayout>
-        {import.meta.env.DEV && <VersionBadge />}
-      </ErrorBoundary>
-    </StrictMode>
-  );
-}
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ErrorBoundary>
+      <PortraitLayout>
+        <CarouselArrowProvider>
+          <DesktopFrame>
+            <App />
+          </DesktopFrame>
+        </CarouselArrowProvider>
+      </PortraitLayout>
+      {import.meta.env.DEV && <VersionBadge />}
+    </ErrorBoundary>
+  </StrictMode>
+);

@@ -1,116 +1,910 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>What is MySignet?</title>
-  <meta name="description" content="MySignet is client-side identity for the Signet protocol. Prove who you are once, then sign in anywhere without passwords, emails or accounts. Built for families." />
+  <meta name="description" content="MySignet keeps your keys, your faces and your people with you. Sign in to sites, games and apps with no password, email or account, keep a contact book of people you've confirmed, look after your family on your own keys, and take the right first step: the app, or a Heartwood hardware signer." />
   <meta name="theme-color" content="#FAF7ED" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#081B2D" media="(prefers-color-scheme: dark)" />
   <link rel="icon" href="/favicon.svg" />
+  <link rel="preload" href="/site/fonts/playfair-display-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/site/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <style>
+    /* Self-hosted OFL fonts (the same families the app ships). Licences: /site/fonts/ */
+    @font-face { font-family: 'MS Display'; src: url(/site/fonts/playfair-display-latin-wght-normal.woff2) format('woff2'); font-weight: 400 900; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'MS Display'; src: url(/site/fonts/playfair-display-latin-wght-italic.woff2) format('woff2'); font-weight: 400 900; font-style: italic; font-display: swap; }
+    @font-face { font-family: 'MS Sans'; src: url(/site/fonts/inter-latin-wght-normal.woff2) format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+
     :root {
-      --bg: #FAF7ED; --card: #FFFFFF; --text: #0E2A47; --muted: #596979;
-      --accent: #0E2A47; --accent-ink: #FAF7ED; --border: rgba(14, 42, 71, 0.14);
-      --font-display: Georgia, 'Times New Roman', serif;
-      --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --bg: #FAF7ED; --bg-2: #F3EEDD; --card: #FFFFFF; --ink: #0E2A47; --muted: #596979;
+      --line: rgba(14, 42, 71, 0.12); --line-2: rgba(14, 42, 71, 0.24);
+      --gold: #C9A962; --gold-ink: #7A5C17; --gold-soft: rgba(201, 169, 98, 0.16); --gold-mid: rgba(201, 169, 98, 0.34);
+      --accent: #0E2A47; --accent-ink: #FAF7ED;
+      --shadow: 0 1px 2px rgba(14, 42, 71, 0.05), 0 12px 32px -18px rgba(14, 42, 71, 0.28);
+      --display: 'MS Display', Georgia, 'Times New Roman', serif;
+      --sans: 'MS Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --wrap: 1120px; --gutter: 20px; --radius: 18px;
+      color-scheme: light dark;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #081B2D; --card: #102F4D; --text: #FAF7ED; --muted: #A7B0B8;
-        --accent: #C9A962; --accent-ink: #0E2A47; --border: rgba(250, 247, 237, 0.14);
+        --bg: #081B2D; --bg-2: #0B2238; --card: #102F4D; --ink: #FAF7ED; --muted: #A7B0B8;
+        --line: rgba(250, 247, 237, 0.11); --line-2: rgba(250, 247, 237, 0.22);
+        --gold-ink: #C9A962; --gold-soft: rgba(201, 169, 98, 0.13); --gold-mid: rgba(201, 169, 98, 0.30);
+        --accent: #C9A962; --accent-ink: #0E2A47;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px -20px rgba(0, 0, 0, 0.6);
       }
     }
+    @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
     * { box-sizing: border-box; }
-    body {
-      margin: 0; background: var(--bg); color: var(--text);
-      font-family: var(--font-sans);
-      line-height: 1.55; -webkit-font-smoothing: antialiased;
+    html { -webkit-text-size-adjust: 100%; }
+    body { font-variant-numeric: lining-nums; margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 1.0625rem; line-height: 1.6; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+    img, svg { max-width: 100%; }
+    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
+    a:hover { text-decoration-thickness: 2px; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+    .skip { position: absolute; left: -999px; top: 8px; background: var(--card); color: var(--ink); padding: 10px 14px; border-radius: 10px; z-index: 50; }
+    .skip:focus { left: 12px; }
+    .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 var(--gutter); }
+    strong { font-weight: 650; }
+    .ui { font-weight: 650; color: var(--ink); }
+    .doors li > div, .feat > div, .note > p, .habits li > p, .contrast .now > div { min-width: 0; }
+    .ui::before { content: '\201C'; color: var(--gold-ink); font-weight: 500; }
+    .ui::after { content: '\201D'; color: var(--gold-ink); font-weight: 500; }
+    code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.88em; background: var(--gold-soft); padding: 1px 6px; border-radius: 6px; overflow-wrap: anywhere; }
+    .ic { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+    /* ---------- Top bar ---------- */
+    .bar { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 86%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(12px); backdrop-filter: saturate(1.4) blur(12px); border-bottom: 1px solid var(--line); }
+    .bar .wrap { display: flex; align-items: center; gap: 16px; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); font-family: var(--display); font-weight: 600; font-size: 1.15rem; white-space: nowrap; }
+    .brand svg { width: 30px; height: 30px; }
+    .nav { display: none; gap: 4px; margin-left: auto; }
+    .nav a { color: var(--muted); text-decoration: none; font-size: 0.92rem; font-weight: 550; padding: 8px 10px; border-radius: 10px; }
+    .nav a:hover { color: var(--ink); background: var(--gold-soft); }
+    .bar .cta { margin-left: auto; }
+    .toc-link { display: none; font-size: 0.9rem; font-weight: 600; color: var(--muted); text-decoration: none; padding: 8px 4px; white-space: nowrap; }
+    @media (min-width: 440px) { .toc-link { display: inline; margin-left: auto; } .toc-link + .cta { margin-left: 4px; } }
+    @media (min-width: 980px) { .nav { display: flex; } .bar .cta, .toc-link + .cta { margin-left: 8px; } .toc-link { display: none; } }
+
+    /* ---------- Buttons ---------- */
+    .btn { white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; font-weight: 650; font-size: 1rem; line-height: 1.2; padding: 14px 22px; border-radius: 14px; border: 1.5px solid transparent; transition: transform .15s ease, box-shadow .15s ease, background .15s ease; }
+    .btn-gold { background: var(--gold); color: #0E2A47; box-shadow: 0 10px 24px -12px rgba(201, 169, 98, 0.8); }
+    .btn-gold:hover { background: #D6B977; }
+    .btn-ghost { color: inherit; border-color: currentColor; }
+    .btn-solid { background: var(--accent); color: var(--accent-ink); }
+    .btn-sm { padding: 9px 14px; font-size: 0.9rem; border-radius: 11px; }
+    @media (prefers-reduced-motion: no-preference) { .btn:hover { transform: translateY(-1px); } }
+
+    /* ---------- Hero ---------- */
+    .hero { position: relative; overflow: hidden; color: #FAF7ED;
+      --ink: #FAF7ED; --muted: #BAC5CF; --card: rgba(250, 247, 237, 0.06); --line: rgba(250, 247, 237, 0.14); --line-2: rgba(250, 247, 237, 0.30);
+      --gold-ink: #D9BD7C; --gold-soft: rgba(201, 169, 98, 0.16); --gold-mid: rgba(201, 169, 98, 0.34); --accent: #C9A962; --accent-ink: #0E2A47;
+      background:
+        radial-gradient(900px 480px at 85% -10%, rgba(201, 169, 98, 0.22), transparent 62%),
+        radial-gradient(700px 420px at -10% 110%, rgba(56, 110, 160, 0.30), transparent 60%),
+        linear-gradient(170deg, #0E2A47 0%, #0A2239 55%, #081B2D 100%);
+      border-bottom: 1px solid rgba(201, 169, 98, 0.35); }
+    .hero::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(rgba(250, 247, 237, 0.07) 1px, transparent 1.2px); background-size: 22px 22px; -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 85%); mask-image: linear-gradient(180deg, #000 0%, transparent 85%); pointer-events: none; }
+    .hero .rings { position: absolute; right: -220px; top: -180px; width: 640px; height: 640px; opacity: 0.16; pointer-events: none; }
+    .hero .wrap { position: relative; display: grid; gap: 40px; padding-top: 56px; padding-bottom: 64px; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink); margin: 0 0 14px; }
+    .eyebrow::before { content: ''; width: 22px; height: 1.5px; background: currentColor; }
+    .hero h1 { font-family: var(--display); font-weight: 600; font-size: clamp(2.3rem, 7.4vw, 4rem); line-height: 1.04; letter-spacing: -0.015em; margin: 0 0 20px; }
+    .hero h1 em { font-style: italic; color: var(--gold); font-weight: 500; }
+    .hero .lede { font-size: clamp(1.05rem, 2.6vw, 1.2rem); color: var(--muted); max-width: 34em; margin: 0 0 16px; }
+    .hero .lede.ink { color: var(--ink); margin-bottom: 28px; }
+    .hero .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+    .hero .fine { font-size: 0.9rem; color: var(--muted); margin: 0; }
+    .hero .fine a { color: #FAF7ED; }
+    .map-card { margin: 0; background: rgba(250, 247, 237, 0.04); border: 1px solid var(--line); border-radius: 24px; padding: 22px 18px 18px; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+    .map-card svg { display: block; width: 100%; height: auto; max-width: 420px; margin: 0 auto; }
+    .map-card figcaption { font-size: 0.85rem; color: var(--muted); text-align: center; margin-top: 12px; }
+    @media (min-width: 960px) {
+      .hero .wrap { grid-template-columns: 1.15fr 0.85fr; align-items: center; padding-top: 88px; padding-bottom: 96px; gap: 56px; }
     }
-    .wrap { max-width: 620px; margin: 0 auto; padding: 32px 20px 64px; }
-    header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
-    header img { width: 44px; height: 44px; }
-    header h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.5rem; margin: 0; letter-spacing: 0; }
-    .lede { color: var(--muted); font-size: 1.05rem; margin: 4px 0 28px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px; margin-bottom: 18px; }
-    .cta { text-align: center; }
-    .btn {
-      display: inline-block; background: var(--accent); color: var(--accent-ink);
-      font-weight: 650; font-size: 1.05rem; text-decoration: none;
-      padding: 14px 28px; border-radius: 12px; margin: 6px 6px 4px;
+
+    /* ---------- Sections ---------- */
+    section { scroll-margin-top: 72px; }
+    .sec { padding: 72px 0; }
+    .sec.alt { background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .sec-head { max-width: 46em; margin-bottom: 36px; }
+    .sec-head .eyebrow, .sec-head p.eyebrow { color: var(--gold-ink); font-size: 0.8rem; margin: 0 0 14px; }
+    h2 { font-family: var(--display); font-weight: 600; font-size: clamp(1.9rem, 5vw, 2.6rem); line-height: 1.12; letter-spacing: -0.01em; margin: 0 0 14px; }
+    h2 em { font-style: italic; font-weight: 500; color: var(--gold-ink); }
+    h3 { font-family: var(--display); font-weight: 600; font-size: 1.35rem; line-height: 1.25; margin: 0 0 8px; }
+    h4 { font-size: 1rem; font-weight: 700; margin: 0 0 6px; }
+    .sec-head p { color: var(--muted); font-size: 1.1rem; margin: 0; }
+    p { margin: 0 0 14px; }
+    .muted { color: var(--muted); }
+    .sub-head { font-family: var(--sans); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink); margin: 0 0 14px; }
+
+    /* ---------- Contents (phone) ---------- */
+    .contents { padding-top: 28px; }
+    .contents ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .contents a { display: block; padding: 10px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); text-decoration: none; color: var(--ink); font-weight: 600; font-size: 0.92rem; }
+    .contents h2 { font-family: var(--sans); font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink); margin: 0 0 12px; }
+    @media (min-width: 980px) { .contents { display: none; } }
+
+    /* ---------- Cards ---------- */
+    .grid { display: grid; gap: 16px; }
+    @media (min-width: 640px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } .grid-3 { grid-template-columns: repeat(2, 1fr); } }
+    @media (min-width: 1000px) { .grid-4 { grid-template-columns: repeat(4, 1fr); } .grid-3 { grid-template-columns: repeat(3, 1fr); } }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); }
+    .card p:last-child { margin-bottom: 0; }
+    .card p { color: var(--muted); font-size: 0.98rem; }
+    .badge-ic { flex: none; display: inline-grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: var(--gold-soft); color: var(--gold-ink); border: 1px solid var(--gold-mid); margin-bottom: 16px; }
+    .badge-ic .ic { width: 24px; height: 24px; }
+    .tag { display: inline-block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 9px; border-radius: 999px; background: var(--gold-soft); color: var(--gold-ink); border: 1px solid var(--gold-mid); white-space: nowrap; }
+    .tag.plain { background: transparent; color: var(--muted); border-color: var(--line-2); }
+
+    /* Recovery word strip */
+    .words { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; margin: 4px 0 14px; }
+    .words span { height: 22px; border-radius: 5px; display: grid; place-items: center; font-size: 0.66rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .words .h { background: var(--line); color: var(--muted); }
+    .words .k { background: var(--gold-soft); color: var(--gold-ink); box-shadow: inset 0 0 0 1px var(--gold-mid); }
+
+    /* ---------- Problem → answer ---------- */
+    .contrast { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+    @media (min-width: 860px) { .contrast { grid-template-columns: repeat(2, 1fr); } }
+    .contrast li { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; box-shadow: var(--shadow); }
+    .contrast .lab { display: block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 4px; }
+    .contrast .was { margin: 0; padding: 16px 22px 14px; color: var(--muted); font-size: 0.95rem; background: color-mix(in srgb, var(--bg-2) 70%, transparent); border-bottom: 1px dashed var(--line-2); }
+    .contrast .was .lab { color: var(--muted); opacity: 0.85; }
+    .contrast .now { flex: 1; display: flex; gap: 14px; align-items: flex-start; padding: 18px 22px 20px; }
+    .contrast .now .badge-ic { width: 40px; height: 40px; border-radius: 12px; margin: 2px 0 0; }
+    .contrast .now .badge-ic .ic { width: 20px; height: 20px; }
+    .contrast .now .lab { color: var(--gold-ink); }
+    .contrast .now h3 { font-size: 1.2rem; margin: 0 0 4px; }
+    .contrast .now p { margin: 0; color: var(--muted); font-size: 0.97rem; }
+
+    /* ---------- Three homes ---------- */
+    .homes { display: grid; gap: 16px; margin-bottom: 48px; }
+    @media (min-width: 860px) { .homes { grid-template-columns: repeat(3, 1fr); } }
+    .home { position: relative; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 24px 24px 22px; box-shadow: var(--shadow); overflow: hidden; }
+    .home::after { content: ''; position: absolute; inset: 0 0 auto; height: 3px; background: var(--line-2); }
+    .home.gold { border-color: var(--gold-mid); background: linear-gradient(180deg, var(--gold-soft), transparent 60%), var(--card); }
+    .home.gold::after { background: linear-gradient(90deg, #C9A962, #E6D3A3, #C9A962); }
+    .home .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+    .home .top .badge-ic { margin: 0; }
+    .home h3 { margin-bottom: 2px; }
+    .home .role { font-family: var(--display); font-style: italic; color: var(--gold-ink); font-size: 1.1rem; margin: 0 0 10px; }
+    .home p { color: var(--muted); font-size: 0.97rem; }
+    .home p:last-child { margin-bottom: 0; }
+
+    /* ---------- First step ---------- */
+    .decide { margin: 0; background: var(--card); border: 1px solid var(--gold-mid); border-radius: 28px; padding: 30px 22px 26px; box-shadow: var(--shadow); position: relative; }
+    .decide svg { display: block; width: 100%; height: auto; margin: 0 auto; }
+    .decide .wide { display: none; max-width: 1000px; }
+    .decide .narrow { max-width: 420px; }
+    .decide .wide .s { font-size: 14.5px; }
+    .decide figcaption { font-size: 0.9rem; color: var(--muted); text-align: center; margin-top: 16px; }
+    @media (min-width: 760px) { .decide .wide { display: block; } .decide .narrow { display: none; } .decide { padding: 36px 28px 28px; } }
+    .outcomes { display: grid; gap: 16px; margin-top: 20px; }
+    @media (min-width: 900px) { .outcomes { grid-template-columns: repeat(3, 1fr); } }
+    .outcome { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 24px 24px 22px; box-shadow: var(--shadow); }
+    .outcome.gold { border-color: var(--gold-mid); background: linear-gradient(180deg, var(--gold-soft), transparent 55%), var(--card); }
+    .outcome .head { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+    .outcome .letter { flex: none; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; font-family: var(--display); font-style: italic; font-weight: 600; font-size: 1.35rem; line-height: 1; color: var(--gold-ink); border: 1.5px solid var(--gold); background: radial-gradient(circle at 30% 25%, var(--gold-soft), transparent 70%); }
+    .outcome .ans { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold-ink); margin: 0 0 2px; }
+    .outcome h3 { margin: 0; font-size: 1.3rem; }
+    .outcome p { color: var(--muted); font-size: 0.97rem; }
+    .outcome p:last-child { margin-bottom: 0; }
+    .outcome .then { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); font-size: 0.93rem; }
+    .already { margin-top: 48px; }
+    .already h3 { font-size: 1.45rem; }
+    .already > p { color: var(--muted); max-width: 44em; }
+    .notes { display: grid; gap: 12px; margin-top: 28px; }
+    @media (min-width: 900px) { .notes { grid-template-columns: repeat(2, 1fr); } .notes .wide-note { grid-column: 1 / -1; } }
+    .notes .note { margin: 0; }
+
+    /* Callouts */
+    .note { display: flex; gap: 14px; align-items: flex-start; border-radius: 16px; padding: 16px 18px; margin: 22px 0 0; border: 1px solid var(--line-2); background: var(--card); font-size: 0.96rem; }
+    .note .ic { margin-top: 2px; color: var(--gold-ink); }
+    .note p { margin: 0; color: var(--muted); }
+    .note strong { color: var(--ink); }
+    .note.beta { border-color: var(--gold-mid); background: var(--gold-soft); }
+
+    /* Restore doors */
+    .doors { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    @media (min-width: 700px) { .doors { grid-template-columns: repeat(2, 1fr); } }
+    @media (min-width: 1000px) { .doors { grid-template-columns: repeat(4, 1fr); } }
+    .doors li { display: flex; gap: 14px; align-items: flex-start; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+    .doors .badge-ic { width: 40px; height: 40px; border-radius: 12px; margin: 0; }
+    .doors .badge-ic .ic { width: 20px; height: 20px; }
+    .doors h4 { margin-bottom: 4px; }
+    .doors p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+
+    /* ---------- What you do with it ---------- */
+    .use { display: grid; gap: 32px; align-items: start; }
+    @media (min-width: 960px) { .use { grid-template-columns: 1.1fr 0.9fr; gap: 56px; } .use.flip > .fig { order: -1; } }
+    .use h3.big { font-size: clamp(1.6rem, 4.2vw, 2.1rem); line-height: 1.15; margin-bottom: 12px; }
+    .use h3.big em { font-style: italic; font-weight: 500; color: var(--gold-ink); }
+    .use .lede { color: var(--muted); font-size: 1.05rem; margin-bottom: 24px; }
+    .use-head { max-width: 46em; margin-bottom: 28px; }
+    .use-head .lede { margin-bottom: 0; }
+    .use-head h3.big, .use h3.big { font-size: clamp(1.6rem, 4.2vw, 2.1rem); line-height: 1.15; margin-bottom: 12px; }
+    .use-head h3.big em { font-style: italic; font-weight: 500; color: var(--gold-ink); }
+    .use-head .lede { color: var(--muted); font-size: 1.05rem; }
+    .path-sep { height: 1px; background: linear-gradient(90deg, transparent, var(--gold-mid), transparent); margin: 64px 0; border: 0; }
+    .fig { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 22px 16px; box-shadow: var(--shadow); }
+    .fig svg { display: block; width: 100%; height: auto; max-width: 440px; margin: 0 auto; }
+    .fig figcaption { font-size: 0.88rem; color: var(--muted); text-align: center; margin-top: 12px; padding: 0 6px; }
+
+    .feat { display: flex; gap: 14px; align-items: flex-start; }
+    .feat .badge-ic { width: 40px; height: 40px; border-radius: 12px; margin: 0; }
+    .feat .badge-ic .ic { width: 20px; height: 20px; }
+    .feat h4 { margin: 2px 0 4px; }
+    .feat p { margin: 0; color: var(--muted); font-size: 0.96rem; }
+    .feats { display: grid; gap: 22px; }
+
+    .apps { display: grid; gap: 16px; margin-top: 40px; }
+    @media (min-width: 700px) { .apps { grid-template-columns: repeat(2, 1fr); } }
+    @media (min-width: 1000px) { .apps { grid-template-columns: repeat(3, 1fr); } }
+    .app { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; display: flex; flex-direction: column; gap: 6px; }
+    .app .top { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .app .badge-ic { width: 40px; height: 40px; border-radius: 12px; margin: 0; }
+    .app .badge-ic .ic { width: 20px; height: 20px; }
+    .app h4 { margin: 0; font-size: 1.05rem; }
+    .app p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    .app a.more { margin-top: auto; padding-top: 8px; font-weight: 650; font-size: 0.92rem; }
+
+    /* Principles */
+    .habits { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    @media (min-width: 760px) { .habits { grid-template-columns: repeat(2, 1fr); } }
+    .habits li { display: flex; gap: 14px; align-items: flex-start; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+    .habits .tick { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--gold); color: #0E2A47; }
+    .habits .tick.soft { background: var(--gold-soft); color: var(--gold-ink); border: 1px solid var(--gold-mid); }
+    .habits .tick .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+    .habits p { margin: 0; color: var(--muted); font-size: 0.97rem; }
+    .habits strong { color: var(--ink); display: block; margin-bottom: 2px; }
+    .habits + .sub-head { margin-top: 40px; }
+
+    /* Closing band + footer */
+    .closing { text-align: center; }
+    .closing h2 { margin-bottom: 10px; }
+    .closing p { color: var(--muted); max-width: 36em; margin: 0 auto 26px; }
+    .closing .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+    .closing .hw { margin: 28px auto 0; font-size: 0.95rem; }
+    footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--muted); font-size: 0.92rem; }
+    footer .wrap { display: grid; gap: 22px; }
+    @media (min-width: 760px) { footer .wrap { grid-template-columns: 1.3fr 1fr 1fr; } }
+    footer h2 { font-family: var(--sans); font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink); margin: 0 0 10px; }
+    footer ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    footer a { color: var(--ink); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    /* ---------- Diagram styling (inline SVG, theme-aware) ---------- */
+    .dg { font-family: var(--sans); font-variant-numeric: lining-nums; }
+    .dg .nd { fill: var(--card); stroke: var(--line-2); stroke-width: 1.5; }
+    .dg .ndg { fill: var(--gold-soft); stroke: var(--gold); stroke-width: 1.6; }
+    .dg .ndd { fill: var(--card); stroke: var(--line-2); stroke-width: 1.5; stroke-dasharray: 5 5; }
+    .dg .t { fill: var(--ink); font-size: 15px; font-weight: 650; }
+    .dg .td { fill: var(--ink); font-family: var(--display); font-size: 20px; font-weight: 600; }
+    .dg .s { fill: var(--muted); font-size: 13px; }
+    .dg .g { fill: var(--gold-ink); }
+    .dg .b { font-weight: 700; letter-spacing: 0.02em; }
+    .dg .ln { fill: none; stroke: var(--line-2); stroke-width: 1.6; }
+    .dg .lg { fill: none; stroke: var(--gold); stroke-width: 2; }
+    .dg .ah { fill: var(--line-2); }
+    .dg .ahg { fill: var(--gold); }
+    .dg .numc { fill: var(--bg); stroke: var(--gold); stroke-width: 1.5; }
+    .hero .dg .numc { fill: #0B2238; }
+    .hero .dg .s { font-size: 13.5px; }
+    .dg .numt { fill: var(--gold-ink); font-family: var(--display); font-style: italic; font-size: 15px; font-weight: 700; }
+    .dg .dash { fill: none; stroke: var(--line-2); stroke-width: 1.5; stroke-dasharray: 4 5; }
+    .dg .ring1 { fill: var(--gold-soft); stroke: var(--gold-mid); stroke-width: 1.5; }
+    .dg .ring2 { fill: var(--gold-mid); stroke: var(--gold); stroke-width: 1.5; }
+    .dg .ring3 { fill: #C9A962; }
+    .dg .on-gold { fill: #0E2A47; }
+    @media (max-width: 600px) {
+      .dg .s { font-size: 15px; } .dg .t { font-size: 16.5px; }
+      .fig { padding: 18px 8px; }
+      .map-card { padding: 14px 6px 12px; }
+      .decide { padding: 22px 8px 20px; border-radius: 24px; }
+      .hero .dg .s { font-size: 14.5px; }
+      .decide .narrow .t { font-size: 18px; } .decide .narrow .s { font-size: 16px; } .decide .narrow .td { font-size: 22px; }
     }
-    .btn.ghost { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
-    .btn:active { transform: translateY(1px); }
-    h2 { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; margin: 0 0 10px; }
-    p { margin: 0 0 12px; }
-    p:last-child { margin-bottom: 0; }
-    .note { color: var(--muted); font-size: 0.92rem; }
-    ul { margin: 0; padding-left: 20px; }
-    ul li { margin: 8px 0; }
-    strong.k { color: var(--text); }
-    .foot { color: var(--muted); font-size: 0.85rem; margin-top: 34px; border-top: 1px solid var(--border); padding-top: 18px; }
-    a { color: var(--accent); }
-    a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @media (prefers-reduced-motion: no-preference) {
+      .dg .flow { stroke-dasharray: 5 7; animation: dash 1.6s linear infinite; }
+      @keyframes dash { to { stroke-dashoffset: -24; } }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <img src="/favicon.svg" alt="MySignet" />
-      <h1>What is MySignet?</h1>
-    </header>
-    <p class="lede">Manage your identities and sign in to compatible apps.
-      Recognisable npubs, control over signing and clear app permissions.</p>
+  <a class="skip" href="#main">Skip to the content</a>
 
-    <div class="card">
-      <h2>Choose where your key lives</h2>
-      <p>Keep signing keys encrypted on this device, or use a connected browser extension or remote signer.
-        MySignet shows each identity's <strong class="k">public address (npub)</strong> so you can recognise
-        which account will sign.</p>
-      <p>When a site shows <strong class="k">Sign in with Signet</strong>, you approve the request and you're in.
-        Sites and relays can still see public keys and connection metadata. Separate personas help keep
-        different uses of your identity apart.</p>
+  <!-- Icon set: referenced with <use>. Decorative; every use is aria-hidden. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v4.5H8"/><path d="M12 8v4.5l3 2"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2.5V6M15 2.5V6M9 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11.2L12 3.8l9 7.4"/><path d="M5.5 9.3V20.5h13V9.3"/><path d="M10 20.5v-5.5h4v5.5"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.4-4 4.4-6 8-6s6.6 2 8 6"/></symbol>
+    <symbol id="i-id" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2.2"/><circle cx="8.5" cy="11" r="2.2"/><path d="M5.5 16c.7-1.5 1.8-2.2 3-2.2s2.3.7 3 2.2M14 10h4.5M14 13.5h3"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10.5" rx="2.2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2.5"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5.5 6.5-5.5s5.7 2.1 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.8.7 3 2.5 3.5 5.2"/></symbol>
+    <symbol id="i-tap" viewBox="0 0 24 24"><rect x="2.5" y="6.5" width="8" height="13" rx="1.8"/><rect x="13.5" y="4.5" width="8" height="13" rx="1.8"/><path d="M11.5 3.5c.6-.8 1.2-1 2-1M10 1.8c1-1 2.3-1.3 3.6-.8"/></symbol>
+    <symbol id="i-qr" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><path d="M14 14h3v3h-3zM20.5 14v.5M14 20.5h.5M17.5 20.5H21V17"/></symbol>
+    <symbol id="i-game" viewBox="0 0 24 24"><rect x="2.5" y="7" width="19" height="11" rx="5.5"/><path d="M7.5 10.5v4M5.5 12.5h4"/><circle cx="15.5" cy="11.3" r=".6"/><circle cx="17.8" cy="13.7" r=".6"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5c2.6 2.8 3.8 6 3.8 9.5s-1.2 6.7-3.8 9.5c-2.6-2.8-3.8-6-3.8-9.5S9.4 5.3 12 2.5z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.5l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10v-6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-coins" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 4h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3.5V15H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M20 9h.5a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 1-1.5 1.5h-1v2.5L16 18.5h-4"/></symbol>
+    <symbol id="i-apps" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.6M4 20v-4h4"/></symbol>
+    <symbol id="i-words" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4.5"/><path d="M11.2 11.8L20 3M16.5 6.5l2.5 2.5M14 9l2 2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+    <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 0 2-2h14a2 2 0 0 0 2 2v2.5a1.5 1.5 0 0 0 0 3V16a2 2 0 0 0-2 2H5a2 2 0 0 0-2-2v-2.5a1.5 1.5 0 0 0 0-3z"/><path d="M9 6v12" stroke-dasharray="2 2.5"/></symbol>
+    <symbol id="i-bunker" viewBox="0 0 24 24"><path d="M12 2.5l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10v-6z"/><circle cx="12" cy="11" r="2.2"/><path d="M12 13.2V16"/></symbol>
+    <symbol id="i-masks" viewBox="0 0 24 24"><circle cx="8" cy="9" r="3.2"/><path d="M2.5 19c.7-3 2.8-4.8 5.5-4.8 1.4 0 2.6.5 3.6 1.3"/><circle cx="16" cy="11" r="3.2"/><path d="M10.5 21c.7-3 2.8-4.8 5.5-4.8s4.8 1.8 5.5 4.8"/></symbol>
+  </svg>
+
+  <header class="bar">
+    <div class="wrap">
+      <a class="brand" href="#top" aria-label="MySignet, back to top">
+        <svg viewBox="229.5 232 821 821" aria-hidden="true"><circle cx="640" cy="642.5" r="403" fill="none" stroke="#C9A962" stroke-width="30"/><path d="M516 701.15A251.5 251.5 0 0 1 328.5 463.9C435.8 423.88 559.59 482.13 640 562c117.04 116.25 138.04 311.34 0 409.77C501.96 873.34 522.96 678.25 640 562c80.41-79.87 204.2-138.12 311.5-98.1A251.5 251.5 0 0 1 764 701.15" fill="none" stroke="currentColor" stroke-width="40"/><path d="M569 715.53a271 271 0 0 0 142 0" fill="none" stroke="#C9A962" stroke-width="40"/><circle cx="640" cy="389" r="72" fill="#C9A962"/></svg>
+        <span>MySignet</span>
+      </a>
+      <nav class="nav" aria-label="Page sections">
+        <a href="#why">Why</a>
+        <a href="#how">How it fits</a>
+        <a href="#paths">First step</a>
+        <a href="#use">What you do</a>
+        <a href="#principles">Principles</a>
+      </nav>
+      <a class="toc-link" href="#contents">Contents</a>
+      <a class="btn btn-solid btn-sm cta" href="/get">Get the app</a>
     </div>
+  </header>
 
-    <div class="card">
-      <h2>Built for families</h2>
-      <p>Guardians can manage a child's identity and control which requests need approval.
-        Access and activity visibility depend on the family's settings.</p>
-      <p>Change permissions as the child's needs grow. Review connected apps and signing permissions together.</p>
+  <main id="main">
+    <!-- ================= HERO ================= -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <svg class="rings" viewBox="0 0 640 640" aria-hidden="true"><g fill="none" stroke="#C9A962"><circle cx="320" cy="320" r="310" stroke-width="2"/><circle cx="320" cy="320" r="250" stroke-width="1"/><circle cx="320" cy="320" r="190" stroke-width="1"/><circle cx="320" cy="320" r="130" stroke-width="1"/></g></svg>
+      <div class="wrap">
+        <div>
+          <p class="eyebrow">What is MySignet?</p>
+          <h1 id="hero-title">Your keys, your faces, your people. <em>Kept with you.</em></h1>
+          <p class="lede">Today your logins belong to platforms, your identity is scattered across their accounts, proving you're a real adult means handing over documents, and your family's accounts are run by companies.</p>
+          <p class="lede ink">MySignet puts all of that back in your hands. One key you hold, a few faces you choose, a contact book of people you've confirmed, and sign-ins to sites, games and apps with no password, no email address and no account.</p>
+          <div class="actions">
+            <a class="btn btn-gold" href="#paths">Choose your first step <svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+            <a class="btn btn-ghost" href="/get">Get the Android app</a>
+          </div>
+          <p class="fine">On iPhone or a computer? Open <a href="https://mysignet.app">mysignet.app</a> in your browser.</p>
+        </div>
+        <figure class="map-card">
+          <svg class="dg" viewBox="-6 -6 372 318" role="img" aria-labelledby="map-t" aria-describedby="map-d">
+            <title id="map-t">How it fits together</title>
+            <desc id="map-d">Your key, held on your phone or on a Heartwood, gives you two faces: your everyday anonymous persona, and your real identity, which stays asleep until you need it. From there you reach your contacts, your sign-ins, your family and your Keep at home.</desc>
+            <!-- key -->
+            <rect class="ndg" x="30" y="0" width="300" height="64" rx="18"/>
+            <text class="td" x="180" y="29" text-anchor="middle">Your key</text>
+            <text class="s" x="180" y="51" text-anchor="middle">on your phone or a Heartwood</text>
+            <!-- to personas -->
+            <path class="lg" d="M180 64V74Q180 82 172 82H94Q86 82 86 90V102"/>
+            <path class="dash" d="M180 74Q180 82 188 82H266Q274 82 274 90V102"/>
+            <rect class="ndg" x="0" y="102" width="172" height="64" rx="16"/>
+            <text class="t" x="86" y="130" text-anchor="middle">Persona</text>
+            <text class="s" x="86" y="150" text-anchor="middle">everyday, anonymous</text>
+            <rect class="ndd" x="188" y="102" width="172" height="64" rx="16"/>
+            <text class="t" x="274" y="130" text-anchor="middle">Real identity</text>
+            <text class="s" x="274" y="150" text-anchor="middle">asleep until needed</text>
+            <!-- to uses -->
+            <path class="lg" d="M86 166V176Q86 184 94 184H172Q180 184 180 192V277"/>
+            <path class="dash" d="M274 166V176Q274 184 266 184H188"/>
+            <path class="lg" d="M172 221H188M172 277H188"/>
+            <g><rect class="nd" x="0" y="198" width="172" height="46" rx="13"/><text class="t" x="86" y="227" text-anchor="middle">Contacts</text></g>
+            <g><rect class="nd" x="188" y="198" width="172" height="46" rx="13"/><text class="t" x="274" y="227" text-anchor="middle">Sign-ins</text></g>
+            <g><rect class="nd" x="0" y="254" width="172" height="46" rx="13"/><text class="t" x="86" y="283" text-anchor="middle">Family</text></g>
+            <g><rect class="nd" x="188" y="254" width="172" height="46" rx="13"/><text class="t" x="274" y="283" text-anchor="middle">Keep at home</text></g>
+          </svg>
+          <figcaption>One key. A few faces. Everything they reach stays yours.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <nav class="contents wrap" id="contents" aria-labelledby="contents-title">
+      <h2 id="contents-title">On this page</h2>
+      <ol>
+        <li><a href="#why">The problem</a></li>
+        <li><a href="#how">How it fits</a></li>
+        <li><a href="#paths">Your first step</a></li>
+        <li><a href="#use">What you do with it</a></li>
+        <li><a href="#principles">Principles</a></li>
+        <li><a href="#start">Get started</a></li>
+      </ol>
+    </nav>
+
+    <!-- ================= WHY ================= -->
+    <section class="sec" id="why" aria-labelledby="why-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <p class="eyebrow">The problem, and the answer</p>
+          <h2 id="why-title">The internet asks you to <em>hand yourself over</em></h2>
+          <p>Accounts, passwords, uploaded documents, family settings on someone else's servers. MySignet is built on <strong>Signet</strong>, an open protocol for identity, so the answer lives with you instead.</p>
+        </div>
+        <ul class="contrast">
+          <li>
+            <p class="was"><span class="lab">Today</span>Every site wants an account, a password and your email address, and the platform owns the login.</p>
+            <div class="now"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg></span><div><span class="lab">With MySignet</span><h3>No password, no email, no account</h3><p>Where you see <strong>Sign in with Signet</strong>, you approve on your phone and you're in. The site gets a signature, never a password to lose.</p></div></div>
+          </li>
+          <li>
+            <p class="was"><span class="lab">Today</span>Your name, face and history are scattered across accounts, all tied back to the real you.</p>
+            <div class="now"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-masks"/></svg></span><div><span class="lab">With MySignet</span><h3>One key, many faces</h3><p>An everyday persona that never carries your legal name. Your real identity sleeps until a moment needs it, and a site only sees it if you pick it yourself.</p></div></div>
+          </li>
+          <li>
+            <p class="was"><span class="lab">Today</span>A lookalike profile is easy to make, and hard to tell from the real person.</p>
+            <div class="now"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span><div><span class="lab">With MySignet</span><h3>Contacts you've actually confirmed</h3><p>Meet in person or read a few words to each other, and your contact book knows it's really them.</p></div></div>
+          </li>
+          <li>
+            <p class="was"><span class="lab">Today</span>Proving you're a real person, or an adult, means uploading your documents again and again.</p>
+            <div class="now"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg></span><div><span class="lab">With MySignet</span><h3>Proof without the paperwork</h3><p>A professional checks your ID in person, and the credential lives on your phone. Age proofs can confirm an age threshold <strong>without sharing your birth date</strong>.</p></div></div>
+          </li>
+          <li>
+            <p class="was"><span class="lab">Today</span>Your children's accounts are run by companies, on their terms.</p>
+            <div class="now"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span><div><span class="lab">With MySignet</span><h3>Family on your own keys</h3><p>Children get their own keys, held by you until they're ready to take them. You decide what needs your say-so.</p></div></div>
+          </li>
+          <li>
+            <p class="was"><span class="lab">Today</span>Your things live on someone else's cloud, for as long as they choose to keep them.</p>
+            <div class="now"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg></span><div><span class="lab">With MySignet</span><h3>A Keep at home</h3><p>A small device at home that looks after your things, shared only with the people you invite.</p></div></div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= HOW IT FITS ================= -->
+    <section class="sec alt" id="how" aria-labelledby="how-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <p class="eyebrow">How it fits together</p>
+          <h2 id="how-title">Three homes for <em>three things</em></h2>
+          <p>Your phone is where you act. A Heartwood guards your keys. A Keep looks after your things. Only the phone is needed to start; the other two are there when you want them.</p>
+        </div>
+        <div class="homes">
+          <article class="home">
+            <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg></span><span class="tag plain">Everyone</span></div>
+            <h3>Your phone</h3>
+            <p class="role">where you act</p>
+            <p>MySignet holds your faces and your contacts, approves your sign-ins and looks after your family. On its own it's a complete, secure setup: your keys are encrypted on the device and open with your fingerprint, face or PIN.</p>
+          </article>
+          <article class="home gold">
+            <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-chip"/></svg></span><span class="tag">Gold standard</span></div>
+            <h3>A Heartwood</h3>
+            <p class="role">guards your keys</p>
+            <p>A small open-source hardware signer. Your master secret is made on the device and stays there. Your phone asks, the device signs, and only public keys come back. If the phone is lost, the key isn't.</p>
+          </article>
+          <article class="home">
+            <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg></span><span class="tag plain">Early, optional</span></div>
+            <h3>A Keep</h3>
+            <p class="role">looks after your things</p>
+            <p>A small device at home that looks after your things, so they live with you rather than on someone else's cloud. Your personas own it, and only people you invite can use it.</p>
+          </article>
+        </div>
+
+        <h3 class="sub-head">Four ideas to know</h3>
+        <div class="grid grid-4">
+          <article class="card">
+            <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg></span>
+            <h3>Persona</h3>
+            <p><strong>Your everyday face.</strong> The name you choose when you start. It never carries your legal name, and at most it can show an age range. It's the default for everything, sign-ins included.</p>
+          </article>
+          <article class="card">
+            <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-id"/></svg></span>
+            <h3>Real identity</h3>
+            <p><strong>Asleep until you need it.</strong> Created alongside your persona but switched off until you activate it. You only need it for verification, venue entry, documents and professional features. Family doesn't need it.</p>
+          </article>
+          <article class="card">
+            <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-words"/></svg></span>
+            <h3>Recovery words</h3>
+            <div class="words" aria-hidden="true"><span class="h">1</span><span class="h">2</span><span class="h">3</span><span class="h">4</span><span class="h">5</span><span class="h">6</span><span class="h">7</span><span class="k">8</span><span class="k">9</span><span class="k">10</span><span class="k">11</span><span class="k">12</span><span class="k">13</span><span class="k">14</span><span class="k">15</span><span class="k">16</span><span class="k">17</span><span class="k">18</span><span class="k">19</span></div>
+            <p><strong>19 words, in order, on paper.</strong> Words 1 to 7 are a format header, so they look much the same on every backup. Words 8 to 19 are your key. They bring everything back if you lose a phone.</p>
+          </article>
+          <article class="card">
+            <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg></span>
+            <h3>Keys stay with you</h3>
+            <p><strong>No server. No account.</strong> Everything is encrypted on your device. Backups to your other devices are encrypted before they leave. MySignet shows each face's public address (npub), so you can always see which one will sign.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FIRST STEP ================= -->
+    <section class="sec" id="paths" aria-labelledby="paths-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <p class="eyebrow">Choose your first step</p>
+          <h2 id="paths-title">Start where your keys <em>will live</em></h2>
+          <p>The app walks you through its own setup. The one choice worth making first is where your keys are born. If a Heartwood is part of your plans, start there rather than half-committing on the phone first.</p>
+        </div>
+
+        <figure class="decide">
+          <!-- Wide variant (tablet and desktop) -->
+          <svg class="dg wide" viewBox="0 0 1000 392" role="img" aria-labelledby="dw-t" aria-describedby="dw-d">
+            <title id="dw-t">Where to start</title>
+            <desc id="dw-d">Do you have a Heartwood, or is one on its way? A: yes, I have one, so start on your Heartwood; your keys are born on the device. B: one is ordered or planned, so wait and start there. C: no, or not sure, so start with the app, which is complete and secure, and move to a Heartwood any time. All three lead to everyday MySignet: the same you, wherever your key lives.</desc>
+            <rect class="ndg" x="290" y="0" width="420" height="80" rx="22"/>
+            <text class="td" x="500" y="35" text-anchor="middle">Do you have a Heartwood,</text>
+            <text class="td" x="500" y="62" text-anchor="middle">or is one on its way?</text>
+            <path class="lg" d="M500 80V96Q500 104 492 104H174Q166 104 166 112V130"/>
+            <path class="ln" d="M500 96Q500 104 508 104H826Q834 104 834 112V130M500 96V130"/>
+            <path class="ahg" d="M160 128l6 10 6-10z"/><path class="ah" d="M494 128l6 10 6-10z"/><path class="ah" d="M828 128l6 10 6-10z"/>
+            <!-- A -->
+            <rect class="ndg" x="20" y="142" width="292" height="112" rx="18"/>
+            <circle class="numc" cx="46" cy="168" r="14"/><text class="numt" x="46" y="173" text-anchor="middle">A</text>
+            <text class="s g b" x="166" y="173" text-anchor="middle">Yes, I have one</text>
+            <text class="td" x="166" y="205" text-anchor="middle">Start on your Heartwood</text>
+            <text class="s" x="166" y="232" text-anchor="middle">keys born on the device</text>
+            <!-- B -->
+            <rect class="nd" x="354" y="142" width="292" height="112" rx="18"/>
+            <circle class="numc" cx="380" cy="168" r="14"/><text class="numt" x="380" y="173" text-anchor="middle">B</text>
+            <text class="s g b" x="500" y="173" text-anchor="middle">Ordered, or planning to</text>
+            <text class="td" x="500" y="205" text-anchor="middle">Wait, and start there</text>
+            <text class="s" x="500" y="232" text-anchor="middle">words never live on a phone</text>
+            <!-- C -->
+            <rect class="nd" x="688" y="142" width="292" height="112" rx="18"/>
+            <circle class="numc" cx="714" cy="168" r="14"/><text class="numt" x="714" y="173" text-anchor="middle">C</text>
+            <text class="s g b" x="834" y="173" text-anchor="middle">No, or not sure</text>
+            <text class="td" x="834" y="205" text-anchor="middle">Start with the app</text>
+            <text class="s" x="834" y="232" text-anchor="middle">move to a Heartwood any time</text>
+            <!-- merge -->
+            <path class="lg" d="M166 254V272Q166 280 174 280H492Q500 280 500 288V302"/>
+            <path class="ln" d="M500 254V280M834 254V272Q834 280 826 280H508Q500 280 500 288"/>
+            <path class="ahg" d="M494 300l6 10 6-10z"/>
+            <rect class="nd" x="290" y="314" width="420" height="72" rx="20"/>
+            <text class="td" x="500" y="345" text-anchor="middle">Everyday MySignet</text>
+            <text class="s" x="500" y="369" text-anchor="middle">same you, wherever your key lives</text>
+          </svg>
+          <!-- Narrow variant (phones) -->
+          <svg class="dg narrow" viewBox="0 0 360 560" role="img" aria-labelledby="dn-t" aria-describedby="dn-d">
+            <title id="dn-t">Where to start</title>
+            <desc id="dn-d">Do you have a Heartwood, or is one on its way? A: yes, I have one, so start on your Heartwood; your keys are born on the device. B: one is ordered or planned, so wait and start there. C: no, or not sure, so start with the app, which is complete and secure, and move to a Heartwood any time. All three lead to everyday MySignet: the same you, wherever your key lives.</desc>
+            <rect class="ndg" x="0" y="0" width="360" height="82" rx="20"/>
+            <text class="td" x="180" y="35" text-anchor="middle">Do you have a Heartwood,</text>
+            <text class="td" x="180" y="62" text-anchor="middle">or is one on its way?</text>
+            <!-- trunk -->
+            <path class="lg" d="M24 82V144Q24 154 34 154H44"/>
+            <path class="ln" d="M24 144V376Q24 386 34 386H44M24 260Q24 270 34 270H44"/>
+            <path class="ahg" d="M42 148l9 6-9 6z"/><path class="ah" d="M42 264l9 6-9 6z"/><path class="ah" d="M42 380l9 6-9 6z"/>
+            <!-- A -->
+            <rect class="ndg" x="52" y="106" width="282" height="96" rx="16"/>
+            <circle class="numc" cx="78" cy="132" r="14"/><text class="numt" x="78" y="137" text-anchor="middle">A</text>
+            <text class="s g b" x="102" y="137">Yes, I have one</text>
+            <text class="t" x="70" y="166">Start on your Heartwood</text>
+            <text class="s" x="70" y="188">keys born on the device</text>
+            <!-- B -->
+            <rect class="nd" x="52" y="222" width="282" height="96" rx="16"/>
+            <circle class="numc" cx="78" cy="248" r="14"/><text class="numt" x="78" y="253" text-anchor="middle">B</text>
+            <text class="s g b" x="102" y="253">Ordered, or planning to</text>
+            <text class="t" x="70" y="282">Wait, and start there</text>
+            <text class="s" x="70" y="304">words never live on a phone</text>
+            <!-- C -->
+            <rect class="nd" x="52" y="338" width="282" height="96" rx="16"/>
+            <circle class="numc" cx="78" cy="364" r="14"/><text class="numt" x="78" y="369" text-anchor="middle">C</text>
+            <text class="s g b" x="102" y="369">No, or not sure</text>
+            <text class="t" x="70" y="398">Start with the app</text>
+            <text class="s" x="70" y="420">move to a Heartwood any time</text>
+            <!-- merge -->
+            <path class="lg" d="M334 154H340Q348 154 348 162V464"/>
+            <path class="ln" d="M334 270H348M334 386H348"/>
+            <path class="ahg" d="M342 462l6 10 6-10z"/>
+            <rect class="nd" x="0" y="476" width="360" height="78" rx="20"/>
+            <text class="td" x="170" y="510" text-anchor="middle">Everyday MySignet</text>
+            <text class="s" x="170" y="535" text-anchor="middle">same you, wherever your key lives</text>
+          </svg>
+          <figcaption>Every start lands in the same place. What changes is where your master secret is born.</figcaption>
+        </figure>
+
+        <div class="outcomes">
+          <article class="outcome gold">
+            <div class="head"><span class="letter" aria-hidden="true">A</span><div><p class="ans">Yes, I have one</p><h3>Start on your Heartwood</h3></div></div>
+            <p>Set it up first with <a href="https://sapwood.forgesworn.dev">Sapwood</a> in Chrome or Edge, over USB. The Heartwood makes your key and shows your recovery words on its own screen, so they never pass through your phone.</p>
+            <p>Then, in MySignet, choose <span class="ui">I already have a Signet</span> and connect it. New personas and dependants are made on the device from then on.</p>
+            <p class="then"><strong>Your master secret is born on the device and never touches a phone.</strong></p>
+          </article>
+          <article class="outcome">
+            <div class="head"><span class="letter" aria-hidden="true">B</span><div><p class="ans">Ordered, or planning to</p><h3>Wait, and start there</h3></div></div>
+            <p>If a Heartwood is on its way, it's worth the wait. Starting on the phone and moving later does work, but by then your recovery words will already have lived on a phone.</p>
+            <p>Already started on the phone? That's fine too: the move in C keeps you the same person.</p>
+            <p class="then"><strong>When it arrives, start on it, as in A.</strong></p>
+          </article>
+          <article class="outcome">
+            <div class="head"><span class="letter" aria-hidden="true">C</span><div><p class="ans">No, or not sure</p><h3>Start with the app</h3></div></div>
+            <p>A complete, secure setup on its own. It isn't a trial or a lesser tier. Tap <span class="ui">Create my Signet</span> and you'll be asked for a persona name and a lock. Then write your 19 words on paper.</p>
+            <p>Move to a Heartwood later without changing who you are. The move rebuilds your keys on the device from your words, and checks every one matches before it clears them from the phone. If any key doesn't match, nothing is removed.</p>
+            <p class="then">Your public identity, contacts and sign-ins carry on as before.</p>
+          </article>
+        </div>
+
+        <div class="already">
+          <h3>Already have a Signet or a Nostr key?</h3>
+          <p>Choose <span class="ui">I already have a Signet</span> on the welcome screen and bring what you hold.</p>
+          <ul class="doors">
+            <li><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-words"/></svg></span><div><h4>Recovery words</h4><p>Your 19 words, or an older 12-word backup.</p></div></li>
+            <li><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-restore"/></svg></span><div><h4>Signet Lite</h4><p>The phrase from Signet Lite.</p></div></li>
+            <li><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-key"/></svg></span><div><h4>A Nostr key</h4><p>Your nsec, or your browser extension.</p></div></li>
+            <li><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span><div><h4>A child's phone</h4><p>Joins with a guardian's pairing code.</p></div></li>
+          </ul>
+        </div>
+
+        <div class="notes">
+          <div class="note beta"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><p><strong>Heartwood is in beta.</strong> It's open-source firmware for small ESP32 boards such as the Heltec WiFi LoRa 32 (V3 or V4), and right now it suits people who are happy to flash firmware onto a board. <a href="https://github.com/forgesworn/heartwood-esp32">Source and boards</a>.</p></div>
+          <div class="note"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><p><strong>One honest trade-off.</strong> Two things need a key held on the phone, so they aren't available in hardware mode: adding a family member with a shared secret, and the in-person ceremony for verifying someone else.</p></div>
+          <div class="note wide-note"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg><p><strong>A Keep is optional.</strong> Add one any time. It doesn't change where you start.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= WHAT YOU DO ================= -->
+    <section class="sec alt" id="use" aria-labelledby="use-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <p class="eyebrow">What you do with it</p>
+          <h2 id="use-title">Everyday life, <em>on your own terms</em></h2>
+          <p>Five things MySignet is for. The app shows you how each one works when you get there.</p>
+        </div>
+
+        <!-- Contacts -->
+        <section class="use" id="contacts" aria-labelledby="contacts-title">
+          <div>
+            <p class="eyebrow">Your contact book</p>
+            <h3 class="big" id="contacts-title">A contact book that <em>knows it's them</em></h3>
+            <p class="lede">The people you know, alongside their keys, so you can tell the real person from a lookalike. Kept on your device and backed up, encrypted, to your other devices.</p>
+            <div class="feats">
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-tap"/></svg></span><div><h4>Meet in person</h4><p>Scan their QR or, in the Android app, tap the phones back to back. With Bluetooth on, it can even work without the internet.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span><div><h4>Confirm it's really them</h4><p>Read a few words to each other, or check the end of their key on a call.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg></span><div><h4>Bring who you already know</h4><p>Any Nostr profile QR adds someone straight away, and you can import the people you already follow on Nostr.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg></span><div><h4>Share what you choose</h4><p>Your name and photo go with a request only if you say so. Their pictures are only downloaded when you ask.</p></div></div>
+            </div>
+          </div>
+          <figure class="fig">
+            <svg class="dg" viewBox="0 0 300 300" role="img" aria-labelledby="ct-t" aria-describedby="ct-d" style="max-width:320px">
+              <title id="ct-t">Kin, Kith and Ken</title>
+              <desc id="ct-d">Three rings. Kin, your close circle, in the middle. Kith, an acquaintance, around it. Ken, someone you recognise one way, on the outside.</desc>
+              <circle class="ring1" cx="150" cy="150" r="146"/>
+              <circle class="ring2" cx="150" cy="150" r="100"/>
+              <circle class="ring3" cx="150" cy="150" r="56"/>
+              <text class="t" x="150" y="25" text-anchor="middle" style="font-size:16px">Ken</text>
+              <text class="s" x="150" y="42" text-anchor="middle" style="font-size:13.5px">recognised one way</text>
+              <text class="t" x="150" y="70" text-anchor="middle" style="font-size:16px">Kith</text>
+              <text class="s" x="150" y="86" text-anchor="middle" style="font-size:13.5px">acquaintance</text>
+              <text class="t on-gold" x="150" y="148" text-anchor="middle" style="font-size:18px">Kin</text>
+              <text class="s on-gold" x="150" y="167" text-anchor="middle" style="font-size:14px">close circle</text>
+            </svg>
+            <figcaption>Tiers describe the real-world relationship. Confirming someone's key never moves them on its own; you choose.</figcaption>
+          </figure>
+        </section>
+
+        <hr class="path-sep" />
+
+        <!-- Sign in -->
+        <section id="sign-in" aria-labelledby="signin-title">
+          <div class="use flip">
+            <div>
+              <p class="eyebrow">Sign in everywhere</p>
+              <h3 class="big" id="signin-title">No password. No email. <em>Just approve.</em></h3>
+              <p class="lede">Where you see <strong>Sign in with Signet</strong>, MySignet does the rest. On the same phone, the app opens; on a computer or TV, you scan a QR code with your phone. Your persona is picked for you, and you approve.</p>
+              <p class="muted">Every site you've signed in to is listed in the app. Remove one and it has to ask you again. Sites and relays can still see public keys and connection metadata, which is why separate personas help keep different parts of your life apart.</p>
+            </div>
+            <figure class="fig">
+              <svg class="dg" viewBox="0 0 360 330" role="img" aria-labelledby="si-t" aria-describedby="si-d">
+                <title id="si-t">How a sign-in works</title>
+                <desc id="si-d">A site, game or app shows Sign in with Signet. A QR code on a computer or a link on the same phone opens MySignet. You choose a persona and approve. A signed answer goes back, with no password, and you are signed in.</desc>
+                <g><rect class="nd" x="30" y="0" width="300" height="66" rx="16"/><text class="t" x="180" y="29" text-anchor="middle">Site, game or app</text><text class="s" x="180" y="49" text-anchor="middle">shows Sign in with Signet</text></g>
+                <path class="ln flow" d="M180 66V126"/><path class="ah" d="M174 118l6 10 6-10z"/>
+                <text class="s" x="194" y="92">QR on a computer,</text>
+                <text class="s" x="194" y="109">link on this phone</text>
+                <g><rect class="ndg" x="30" y="130" width="300" height="66" rx="16"/><text class="t" x="180" y="159" text-anchor="middle">MySignet on your phone</text><text class="s" x="180" y="179" text-anchor="middle">choose a persona · Approve</text></g>
+                <path class="lg flow" d="M180 196V256"/><path class="ahg" d="M174 248l6 10 6-10z"/>
+                <text class="s" x="194" y="222">a signed answer,</text>
+                <text class="s" x="194" y="239">no password</text>
+                <g><rect class="nd" x="30" y="260" width="300" height="66" rx="16"/><text class="t" x="180" y="289" text-anchor="middle">You're in</text><text class="s" x="180" y="309" text-anchor="middle">no email, no account</text></g>
+              </svg>
+              <figcaption>The site gets a signature from your persona. It never gets a password to lose.</figcaption>
+            </figure>
+          </div>
+          <div class="apps">
+            <article class="app">
+              <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-game"/></svg></span><h4>Games on the big screen</h4></div>
+              <p>Some games show a QR on the TV or computer. Approve on your phone, and your phone offers a button to open the game's own page, which can be its controller.</p>
+            </article>
+            <article class="app">
+              <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg></span><h4>KithMoot</h4></div>
+              <p>A workspace nobody owns: rooms, files and calls over Nostr, across all your devices. Sign in with Nostr, using MySignet.</p>
+              <a class="more" href="https://kithmoot.forgesworn.dev">kithmoot.forgesworn.dev</a>
+            </article>
+            <article class="app">
+              <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-coins"/></svg></span><h4>Kinterest</h4></div>
+              <p>A shared family pocket-money ledger that parent and child both see. No card, no real money. Guardians sign in with MySignet.</p>
+            </article>
+            <article class="app">
+              <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-apps"/></svg></span><h4>Nostr apps on Android</h4></div>
+              <p>Apps such as Amethyst can ask MySignet to sign for them. You approve, and you choose the key. Your real identity is never offered while it's switched off.</p>
+            </article>
+            <article class="app">
+              <div class="top"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg></span><h4>Nostr apps on your computer</h4></div>
+              <p>Turn on the Bunker and your phone signs for desktop Nostr clients you pair with it. In the Android app it can keep answering with the screen off, and tells you when something needs you.</p>
+            </article>
+          </div>
+        </section>
+
+        <hr class="path-sep" />
+
+        <!-- Family -->
+        <section class="use" id="family" aria-labelledby="family-title">
+          <div>
+            <p class="eyebrow">Family</p>
+            <h3 class="big" id="family-title">Look after the people <em>you look after</em></h3>
+            <p class="lede">Children get their own keys, held by you until they're ready to take them. You don't need to switch on your real identity for any of this.</p>
+            <div class="feats">
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span><div><h4>Their own keys, held by you</h4><p>A dependant's keys come from your own recovery words. One day they take them with them.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg></span><div><h4>Their own phone</h4><p>Pair their phone and check the words match on both. With a Heartwood, their phone pairs straight to it.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-bunker"/></svg></span><div><h4>Asks come to you</h4><p>You decide what needs your say-so. When they ask for something new, it comes to you to approve or deny. Change the rules as they grow.</p></div></div>
+            </div>
+          </div>
+          <figure class="fig">
+            <svg class="dg" viewBox="0 0 360 324" role="img" aria-labelledby="fm-t" aria-describedby="fm-d">
+              <title id="fm-t">How family fits</title>
+              <desc id="fm-d">You, the guardian, hold your child's keys, which come from your own words. Your child gets their own keys and can pair their own phone. When they ask for something new, the ask comes back to you.</desc>
+              <rect class="ndg" x="10" y="0" width="290" height="64" rx="16"/>
+              <text class="t" x="155" y="28" text-anchor="middle">You, the guardian</text>
+              <text class="s" x="155" y="48" text-anchor="middle">no real identity needed</text>
+              <path class="lg" d="M80 64V120"/><path class="ahg" d="M74 114l6 10 6-10z"/>
+              <text class="s" x="94" y="98">their keys, held by you</text>
+              <rect class="nd" x="10" y="128" width="290" height="64" rx="16"/>
+              <text class="t" x="155" y="156" text-anchor="middle">Your child</text>
+              <text class="s" x="155" y="176" text-anchor="middle">their own keys</text>
+              <path class="ln" d="M80 192V248"/><path class="ah" d="M74 242l6 10 6-10z"/>
+              <text class="s" x="94" y="226">pair their phone</text>
+              <rect class="nd" x="10" y="256" width="290" height="64" rx="16"/>
+              <text class="t" x="155" y="284" text-anchor="middle">Their phone</text>
+              <text class="s" x="155" y="304" text-anchor="middle">asks for anything new</text>
+              <path class="lg flow" d="M300 288H314Q322 288 322 280V40Q322 32 314 32H310"/>
+              <path class="ahg" d="M310 26l-9 6 9 6z"/>
+              <text class="s g b" transform="rotate(-90 345 160)" x="345" y="160" text-anchor="middle">asks come to you</text>
+            </svg>
+            <figcaption>You hold the keys until they're ready. You decide what needs your say-so.</figcaption>
+          </figure>
+        </section>
+
+        <hr class="path-sep" />
+
+        <!-- Keep -->
+        <section class="use flip" id="keep" aria-labelledby="keep-title">
+          <div>
+            <p class="eyebrow">My Keep</p>
+            <h3 class="big" id="keep-title">Your things, <em>at home with you</em></h3>
+            <p class="lede">A Keep is a small device at home that looks after your things. Your personas own it, and you choose who else gets in.</p>
+            <div class="feats">
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-masks"/></svg></span><div><h4>Owned by your personas</h4><p>Every persona of yours can use and manage it, including ones you make later, or only the one you pick. The Keep can tell that linked personas are the same person, and the relays it uses may be able to as well. Nobody else can.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-users"/></svg></span><div><h4>Share it with people you know</h4><p>Only people you invite can play on your Keep. They get a pass, and you can revoke it; the change applies as soon as the Keep is online.</p></div></div>
+              <div class="feat"><span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-globe"/></svg></span><div><h4>See it's online</h4><p>MySignet shows the Keep you've set up at home and whether it's online.</p></div></div>
+            </div>
+            <div class="note"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><p><strong>Early days.</strong> My Keep is hidden until you want it: switch on <span class="ui">Show My Keep</span> in Settings → Advanced, or it appears by itself once a Keep is saved or found. It's never shown on a child's paired phone. Managing a Keep that was set up outside MySignet is coming later.</p></div>
+          </div>
+          <figure class="fig">
+            <svg class="dg" viewBox="0 0 360 346" role="img" aria-labelledby="kp-t" aria-describedby="kp-d">
+              <title id="kp-t">Your Keep at home</title>
+              <desc id="kp-d">Your personas own and manage your Keep, a small device at home that shows whether it's online. People you invite get a pass. A pass you revoke stops working.</desc>
+              <rect class="ndg" x="30" y="0" width="300" height="60" rx="16"/>
+              <text class="t" x="180" y="26" text-anchor="middle">Your personas</text>
+              <text class="s" x="180" y="46" text-anchor="middle">own it and manage it</text>
+              <path class="lg" d="M180 60V92"/><path class="ahg" d="M174 86l6 10 6-10z"/>
+              <path class="ndg" d="M56 156L180 102L304 156V222Q304 232 294 232H66Q56 232 56 222Z" stroke-linejoin="round"/>
+              <text class="td" x="180" y="176" text-anchor="middle">Your Keep</text>
+              <text class="s" x="180" y="198" text-anchor="middle">a small device at home</text>
+              <circle class="ring3" cx="156" cy="217" r="4.5"/>
+              <text class="s g b" x="166" y="222">online</text>
+              <path class="ln" d="M180 232V258M56 280V266Q56 258 64 258H296Q304 258 304 266V280M180 258V280"/>
+              <text class="s" x="192" y="251" style="font-size:13.5px">people you invite</text>
+              <g><rect class="nd" x="0" y="284" width="112" height="58" rx="13"/><text class="t" x="56" y="309" text-anchor="middle">A friend</text><text class="s" x="56" y="329" text-anchor="middle">has a pass</text></g>
+              <g><rect class="nd" x="124" y="284" width="112" height="58" rx="13"/><text class="t" x="180" y="309" text-anchor="middle">Family</text><text class="s" x="180" y="329" text-anchor="middle">has a pass</text></g>
+              <g><rect class="ndd" x="248" y="284" width="112" height="58" rx="13"/><text class="t" x="304" y="309" text-anchor="middle" style="fill:var(--muted)">Revoked</text><text class="s" x="304" y="329" text-anchor="middle">no longer in</text></g>
+            </svg>
+            <figcaption>Your things live with you, not on someone else's cloud.</figcaption>
+          </figure>
+        </section>
+
+        <hr class="path-sep" />
+
+        <!-- Real identity -->
+        <section id="real-identity" aria-labelledby="real-title">
+          <div class="use-head">
+            <p class="eyebrow">Proving things, when you need to</p>
+            <h3 class="big" id="real-title">Wake your real identity <em>only when it matters</em></h3>
+            <p class="lede">It isn't used for ordinary sign-ins. You start self-declared, gain standing as people vouch for you, and can be verified by a professional rather than by any central authority. What a verifier or app learns depends on the proof you choose to share.</p>
+          </div>
+          <div class="grid grid-3">
+            <article class="card">
+              <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-id"/></svg></span>
+              <h3>Activate it</h3>
+              <p>Type your legal name and confirm it. From then on, that name is what verifiers, venues and your family see. A site only ever sees it if you pick it yourself.</p>
+            </article>
+            <article class="card">
+              <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg></span>
+              <h3>Get verified</h3>
+              <p>Visit a verifier: your GP, solicitor, teacher, accountant or another registered professional. They check your ID in person and you receive the credential on your phone.</p>
+            </article>
+            <article class="card">
+              <span class="badge-ic"><svg class="ic" aria-hidden="true"><use href="#i-ticket"/></svg></span>
+              <h3>Venue entry</h3>
+              <p>Your venue entry pass is a signed QR code that refreshes every 30 seconds, so an old screenshot won't get anyone in.</p>
+            </article>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ================= PRINCIPLES ================= -->
+    <section class="sec" id="principles" aria-labelledby="principles-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <p class="eyebrow">Principles</p>
+          <h2 id="principles-title">What MySignet holds to, <em>and what to expect</em></h2>
+        </div>
+        <ul class="habits">
+          <li><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span><p><strong>No server holds your keys.</strong> They're encrypted on your device, or kept on your Heartwood. Backups are encrypted before they leave.</p></li>
+          <li><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span><p><strong>No account.</strong> Nothing to sign up for, no password to leak, no email address to hand over.</p></li>
+          <li><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span><p><strong>Your words are the backup.</strong> Write all 19 on paper, in order, never on a screen. Lost your phone? You haven't lost you: restore on a new one with your words.</p></li>
+          <li><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></span><p><strong>You choose what each site sees.</strong> Your persona by default; your real identity only if you pick it. Remove a site and it has to ask again.</p></li>
+        </ul>
+        <h3 class="sub-head">Worth knowing</h3>
+        <ul class="habits">
+          <li><span class="tick soft"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg></span><p><strong>Some things are still visible.</strong> MySignet connects to relays and optional media services. Encryption doesn't hide every public event field or network connection, and sites and relays can see public keys.</p></li>
+          <li><span class="tick soft"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg></span><p><strong>Imported keys need their own backup.</strong> Your recovery words cover the keys MySignet made. Keep separate backups for any account you imported.</p></li>
+          <li><span class="tick soft"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg></span><p><strong>Android and web.</strong> Camera and biometric features depend on your device and browser. Fingerprint unlock in the Android app needs Android 11 or later; older phones use a 6-digit PIN.</p></li>
+          <li><span class="tick soft"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg></span><p><strong>Use your npub anywhere Nostr works.</strong> Your faces are Nostr identities, so they work across compatible apps, not just this one.</p></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= CLOSING ================= -->
+    <section class="sec alt closing" id="start" aria-labelledby="closing-title">
+      <div class="wrap">
+        <h2 id="closing-title">Take the <em>right</em> first step</h2>
+        <p>Have a Heartwood, or one on its way? Start there. Otherwise, start with the app today. It's complete on its own, and it grows with you.</p>
+        <div class="actions">
+          <a class="btn btn-solid" href="/get">Get the Android app</a>
+          <a class="btn btn-ghost" href="https://mysignet.app">Open the web app</a>
+        </div>
+        <p class="hw">Heartwood: <a href="https://github.com/forgesworn/heartwood-esp32">firmware on GitHub</a> · set it up with <a href="https://sapwood.forgesworn.dev">Sapwood</a></p>
+        <p class="hw" style="margin-top:6px">Also on <a href="https://zapstore.dev/apps/naddr1qqxxzurs9ekhjumfvahx2aqprpmhxue69uhhyetvv9uju7npwpehgmmjv5hxgetkqgsd5x03e56tajjyhe6d5jesdkw3mkrtvdpua72vugkyn3h4nqtwt0grqsqqqlst4uwpfh" rel="noopener">Zapstore</a>, the Nostr-native app store.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div>
+        <a class="brand" href="#top" aria-label="MySignet, back to top">
+          <svg viewBox="229.5 232 821 821" aria-hidden="true"><circle cx="640" cy="642.5" r="403" fill="none" stroke="#C9A962" stroke-width="30"/><path d="M516 701.15A251.5 251.5 0 0 1 328.5 463.9C435.8 423.88 559.59 482.13 640 562c117.04 116.25 138.04 311.34 0 409.77C501.96 873.34 522.96 678.25 640 562c80.41-79.87 204.2-138.12 311.5-98.1A251.5 251.5 0 0 1 764 701.15" fill="none" stroke="currentColor" stroke-width="40"/><path d="M569 715.53a271 271 0 0 0 142 0" fill="none" stroke="#C9A962" stroke-width="40"/><circle cx="640" cy="389" r="72" fill="#C9A962"/></svg>
+          <span>MySignet</span>
+        </a>
+        <p style="margin-top:12px">The user-facing app for the Signet protocol. Your keys stay with you.</p>
+      </div>
+      <div>
+        <h2>MySignet</h2>
+        <ul>
+          <li><a href="https://mysignet.app">Open the app</a></li>
+          <li><a href="/get">Get the Android app</a></li>
+          <li><a href="#paths">Choose your first step</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Hardware</h2>
+        <ul>
+          <li><a href="https://github.com/forgesworn/heartwood-esp32">Heartwood on GitHub</a></li>
+          <li><a href="https://sapwood.forgesworn.dev">Sapwood</a></li>
+        </ul>
+      </div>
     </div>
-
-    <div class="card">
-      <h2>Trust that adds up</h2>
-      <p>MySignet is built on <strong class="k">Signet</strong>, an open protocol for identity verification.
-        You start self-declared, gain standing as people vouch for you, and can be verified by licensed
-        professionals such as solicitors and notaries rather than by any central authority.</p>
-      <p>Age proofs can confirm an age threshold <strong class="k">without sharing your birth date</strong>.
-        Documents saved in MySignet are encrypted locally; public identifiers and some record metadata
-        remain readable. What a verifier or app learns depends on the proof and information you share.</p>
-    </div>
-
-    <div class="card">
-      <h2>What to expect</h2>
-      <ul>
-        <li><strong class="k">Configured services.</strong> Signet connects to relays and optional media services.
-          Encryption does not hide every public event field or network connection.</li>
-        <li><strong class="k">Nostr identities.</strong> Use npubs across compatible apps. Keep your recovery words
-          and separate backups for imported accounts.</li>
-        <li><strong class="k">Android and web.</strong> Camera and biometric features depend on your device
-          and browser's support.</li>
-      </ul>
-    </div>
-
-    <div class="card cta">
-      <a class="btn" href="https://mysignet.app">Open the web app</a>
-      <a class="btn ghost" href="/get">Get the Android app</a>
-      <p class="note" style="margin-top:10px">New here? <a href="/about/guide/">Read the MySignet guide</a> — choose your path, from just the app to a Heartwood.</p>
-      <p class="note">Also on <a href="https://zapstore.dev/apps/naddr1qqxxzurs9ekhjumfvahx2aqprpmhxue69uhhyetvv9uju7npwpehgmmjv5hxgetkqgsd5x03e56tajjyhe6d5jesdkw3mkrtvdpua72vugkyn3h4nqtwt0grqsqqqlst4uwpfh" rel="noopener">Zapstore</a>,
-        the Nostr-native app store.</p>
-    </div>
-
-    <p class="foot">MySignet is the user-facing app for the Signet protocol.
-      <a href="/about/guide/">Guide</a> · Questions? <a href="https://mysignet.app">mysignet.app</a></p>
-  </div>
+  </footer>
 </body>
 </html>
