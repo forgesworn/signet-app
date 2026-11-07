@@ -25,6 +25,9 @@ interface CarouselProps {
   renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, renderPublicCard: (slots?: QRCardSlots) => ReactNode) => ReactNode;
   /** Quick-open launcher rows for an owner identity's card (col 0). */
   launcherSitesFor?: (resolved: ResolvedIdentity) => LauncherSite[];
+  /** The app is locked: owner cards show one unlock chip in place of the site chips. */
+  launcherLocked?: boolean;
+  onUnlockRequest?: () => void;
   onOpenSite?: (origin: string) => void;
   /** Active contacts count for an owner identity, or null to hide the pill. */
   contactsCountFor?: (resolved: ResolvedIdentity) => number | null;
@@ -305,6 +308,8 @@ function renderCard(
             proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
             onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
             launcherSites={props.launcherSitesFor?.(resolved)}
+            launcherLocked={props.launcherLocked}
+            onUnlockRequest={props.onUnlockRequest}
             onOpenSite={props.onOpenSite}
             contactsCount={props.contactsCountFor?.(resolved) ?? null}
             recentSignInLabel={recentSignInLabel}

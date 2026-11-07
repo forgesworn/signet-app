@@ -93,8 +93,8 @@ test.describe('Sign in with Signet', () => {
     // so reach the page via the test harness.
     await navigateViaHarness(page, 'connections');
 
-    // Approved site should appear — "Revoke" button is inside the visible card
-    await expect(page.getByRole('button', { name: 'Revoke' })).toBeVisible({ timeout: 15_000 });
+    // Approved site should appear — "Forget" button is inside the visible card
+    await expect(page.getByRole('button', { name: 'Forget', exact: true })).toBeVisible({ timeout: 15_000 });
   });
 
   test('revoke connection removes site', async ({ page }) => {
@@ -133,10 +133,10 @@ test.describe('Sign in with Signet', () => {
 
     // Go to connections (via harness — locked Home has no Settings) and revoke
     await navigateViaHarness(page, 'connections');
-    await expect(page.getByRole('button', { name: 'Revoke' })).toBeVisible({ timeout: 15_000 });
-    await page.getByRole('button', { name: 'Revoke' }).click();
-    // Revoke is a two-step confirm.
-    await page.getByRole('button', { name: 'Confirm' }).click();
+    await expect(page.getByRole('button', { name: 'Forget', exact: true })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Forget', exact: true }).click();
+    // Forgetting is a two-step confirm.
+    await page.getByRole('button', { name: 'Forget', exact: true }).click();
 
     // After revoke, should show empty state
     await expect(page.getByText('No connected sites')).toBeVisible();

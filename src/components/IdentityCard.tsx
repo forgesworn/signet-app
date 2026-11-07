@@ -63,6 +63,9 @@ export interface IdentityCardProps {
   /** Sites this identity has signed in to, pinned first then most recent.
    *  Empty or undefined hides the launcher: the Scan tile already invites the first sign-in. */
   launcherSites?: LauncherSite[];
+  /** The app is locked: show one unlock chip instead of the (hidden) site chips. */
+  launcherLocked?: boolean;
+  onUnlockRequest?: () => void;
   /** Opens a launcher site (e.g. window.open). Required for chips to render as buttons. */
   onOpenSite?: (origin: string) => void;
   /** Active contacts on this identity's private list. null/undefined hides the pill
@@ -106,7 +109,7 @@ function colourFromLabel(text: string): string {
   return colourFromPubkey(h.toString(16).padStart(8, '0'));
 }
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, launcherLocked, onUnlockRequest, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -464,9 +467,21 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
 
         {/* ── Quick-open: this identity's sign-ins and contacts.
             Dependant rows keep their pairing/dormant surfaces instead. ── */}
-        {!isDependant && ownerCard && ((launcherSites && launcherSites.length > 0) || typeof contactsCount === 'number') && (
+        {!isDependant && ownerCard && (launcherLocked || (launcherSites && launcherSites.length > 0) || typeof contactsCount === 'number') && (
           <div className="card-quick">
-            {launcherSites && launcherSites.length > 0 && (
+            {launcherLocked && (
+              <div className="card-launcher">
+                <button
+                  type="button"
+                  className="card-launcher-chip card-launcher-chip--locked"
+                  onClick={e => { e.stopPropagation(); onUnlockRequest?.(); }}
+                  aria-label="Unlock to see where this identity is known"
+                >
+                  Unlock to see where this identity is known
+                </button>
+              </div>
+            )}
+            {!launcherLocked && launcherSites && launcherSites.length > 0 && (
               <div className="card-launcher" aria-label="Sites this identity is signed in to">
                 {launcherSites.map(site => (
                   <button

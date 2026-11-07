@@ -524,6 +524,7 @@ function AppContent() {
   const requestLockRef = useRef(createLockRequester({
     lock: () => setEncryptionKey(null),
     hasPending: hasPendingPublishes,
+    epoch: () => encryptionKeyRef.current,
     flush: flushPendingPublishes,
   }));
   const handshakeForegroundRef = useRef(false);
@@ -14113,6 +14114,8 @@ function AppContent() {
             });
             setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1);
           }} />}
+        launcherLocked={!encryptionKey}
+        onUnlockRequest={() => { void requestAuth({ purpose: 'unlock-app' }); }}
         launcherSitesFor={resolved => {
           // Sign-in sites link a persona to where it is used, and authorizedSites
           // loads without the key, so a locked card must not list them.
