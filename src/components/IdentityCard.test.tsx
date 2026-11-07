@@ -358,6 +358,28 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
     expect(screen.getByText('Add your first contact')).toBeDefined();
   });
 
+  it('shows one unlock chip on a locked owner card and asks to unlock on tap', () => {
+    const onUnlockRequest = vi.fn();
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
+      launcherSites={[]} launcherLocked onUnlockRequest={onUnlockRequest} />);
+    const chip = screen.getByRole('button', { name: 'Unlock to see where this identity is known' });
+    expect(chip.className).toContain('card-launcher-chip--locked');
+    fireEvent.click(chip);
+    expect(onUnlockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no unlock chip when unlocked', () => {
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
+      launcherSites={[]} launcherLocked={false} onUnlockRequest={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Unlock to see where this identity is known' })).toBeNull();
+  });
+
+  it('shows no unlock chip on a dependant row even when locked', () => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
+      launcherLocked onUnlockRequest={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Unlock to see where this identity is known' })).toBeNull();
+  });
+
   it('hides the launcher, contacts pill and Scan on a dependant card', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
       launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]} contactsCount={3} />);

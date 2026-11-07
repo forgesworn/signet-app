@@ -424,6 +424,7 @@
   text-overflow: ellipsis;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
+.card-launcher-chip--locked { padding: 7px 14px; color: var(--text-secondary); font-weight: 500; white-space: normal; }
 .card-launcher-chip:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(201, 169, 98, 0.45); }
 .card-launcher-chip:active { background: rgba(255, 255, 255, 0.12); }
 .card-launcher-tile {

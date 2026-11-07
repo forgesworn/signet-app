@@ -7,6 +7,10 @@
  * before the app hid still reaches the relay. The encryption key therefore
  * stays in memory up to the cap longer, and only when a publish is pending.
  *
+ * A lock request is bound to the key that was current when it was made: if the
+ * flush settles after a different key has been put in place, that later key is a
+ * new authorisation and is left alone.
+ *
  * Pure: no React. App passes `() => setEncryptionKey(null)` as `lock`.
  */
 
@@ -29,6 +33,8 @@ const NOOP_REQUEST: LockRequest = { cancel() {} };
 export function createLockRequester(deps: {
   lock: () => void;
   hasPending: () => boolean;
+  /** The key identity current right now; a deferred lock only fires if it is unchanged. */
+  epoch: () => unknown;
   flush: () => Promise<void>;
   capMs?: number;
 }): () => LockRequest {
@@ -58,6 +64,7 @@ export function createLockRequester(deps: {
   }
 
   return function requestLock(): LockRequest {
+    const at = deps.epoch();
     if (!inFlight && !deps.hasPending()) {
       deps.lock();
       return NOOP_REQUEST;
@@ -65,7 +72,7 @@ export function createLockRequester(deps: {
     if (!inFlight) inFlight = startFlush();
     let cancelled = false;
     void inFlight.then(() => {
-      if (!cancelled) deps.lock();
+      if (!cancelled && deps.epoch() === at) deps.lock();
     });
     return {
       cancel() {

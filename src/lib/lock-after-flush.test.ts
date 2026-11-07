@@ -14,7 +14,7 @@ describe('createLockRequester', () => {
   it('locks synchronously when nothing is pending', () => {
     const lock = vi.fn();
     const flush = vi.fn(async () => {});
-    const requestLock = createLockRequester({ lock, hasPending: () => false, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => false, flush });
     requestLock();
     expect(lock).toHaveBeenCalledTimes(1);
     expect(flush).not.toHaveBeenCalled();
@@ -24,7 +24,7 @@ describe('createLockRequester', () => {
     const lock = vi.fn();
     const d = deferred();
     const flush = vi.fn(() => d.promise);
-    const requestLock = createLockRequester({ lock, hasPending: () => true, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush });
     requestLock();
     expect(flush).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(100);
@@ -38,7 +38,7 @@ describe('createLockRequester', () => {
   it('locks at the cap even if the flush never resolves', async () => {
     const lock = vi.fn();
     const flush = vi.fn(() => new Promise<void>(() => {}));
-    const requestLock = createLockRequester({ lock, hasPending: () => true, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush });
     requestLock();
     await vi.advanceTimersByTimeAsync(FLUSH_LOCK_CAP_MS - 1);
     expect(lock).not.toHaveBeenCalled();
@@ -49,7 +49,7 @@ describe('createLockRequester', () => {
   it('honours a custom capMs', async () => {
     const lock = vi.fn();
     const requestLock = createLockRequester({
-      lock, hasPending: () => true, flush: () => new Promise<void>(() => {}), capMs: 50,
+      epoch: () => 'k', lock, hasPending: () => true, flush: () => new Promise<void>(() => {}), capMs: 50,
     });
     requestLock();
     await vi.advanceTimersByTimeAsync(50);
@@ -61,7 +61,7 @@ describe('createLockRequester', () => {
     const d = deferred();
     let flushSettled = false;
     const flush = vi.fn(() => d.promise.then(() => { flushSettled = true; }));
-    const requestLock = createLockRequester({ lock, hasPending: () => true, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush });
     const handle = requestLock();
     handle.cancel();
     d.resolve();
@@ -74,7 +74,7 @@ describe('createLockRequester', () => {
     const lock = vi.fn();
     const d = deferred();
     const flush = vi.fn(() => d.promise);
-    const requestLock = createLockRequester({ lock, hasPending: () => true, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush });
     requestLock();
     requestLock();
     expect(flush).toHaveBeenCalledTimes(1);
@@ -88,7 +88,7 @@ describe('createLockRequester', () => {
     const d = deferred();
     let pending = true;
     const flush = vi.fn(() => d.promise);
-    const requestLock = createLockRequester({ lock, hasPending: () => pending, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => pending, flush });
     requestLock();
     pending = false;
     requestLock();
@@ -103,7 +103,7 @@ describe('createLockRequester', () => {
     const d = deferred();
     let pending = true;
     const flush = vi.fn(() => { pending = false; return d.promise; });
-    const requestLock = createLockRequester({ lock, hasPending: () => pending, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => pending, flush });
     requestLock();
     d.resolve();
     await vi.advanceTimersByTimeAsync(0);
@@ -116,7 +116,7 @@ describe('createLockRequester', () => {
     const lock = vi.fn();
     let pendingRounds = 2; // each flush leaves one more re-armed publish behind, twice
     const flush = vi.fn(async () => { pendingRounds -= 1; });
-    const requestLock = createLockRequester({ lock, hasPending: () => pendingRounds > 0, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => pendingRounds > 0, flush });
     requestLock();
     await vi.advanceTimersByTimeAsync(0);
     expect(flush).toHaveBeenCalledTimes(2);
@@ -127,7 +127,7 @@ describe('createLockRequester', () => {
   it('the re-flush loop is bounded by the pass count even when a pass never yields', async () => {
     const lock = vi.fn();
     const flush = vi.fn(async () => {});
-    const requestLock = createLockRequester({ lock, hasPending: () => true, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush });
     requestLock();
     await vi.advanceTimersByTimeAsync(0);
     expect(flush).toHaveBeenCalledTimes(1 + MAX_EXTRA_FLUSH_PASSES);
@@ -138,7 +138,7 @@ describe('createLockRequester', () => {
   it('the re-flush loop is bounded by the cap', async () => {
     const lock = vi.fn();
     const flush = vi.fn(async () => { await new Promise<void>(r => setTimeout(r, 1000)); });
-    const requestLock = createLockRequester({ lock, hasPending: () => true, flush, capMs: 1500 });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush, capMs: 1500 });
     requestLock();
     await vi.advanceTimersByTimeAsync(1500);
     expect(lock).toHaveBeenCalledTimes(1);
@@ -152,10 +152,61 @@ describe('createLockRequester', () => {
     const lock = vi.fn();
     let pending = true;
     const flush = vi.fn(async () => { pending = false; });
-    const requestLock = createLockRequester({ lock, hasPending: () => pending, flush });
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => pending, flush });
     requestLock();
     await vi.advanceTimersByTimeAsync(0);
     expect(lock).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a deferred lock still fires when the key is unchanged', async () => {
+    const lock = vi.fn();
+    const d = deferred();
+    const key = { k: 1 };
+    const requestLock = createLockRequester({ epoch: () => key, lock, hasPending: () => true, flush: () => d.promise });
+    requestLock();
+    d.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a deferred lock is skipped when the key changed while the flush was settling', async () => {
+    const lock = vi.fn();
+    const d = deferred();
+    let key: string | null = 'old';
+    const requestLock = createLockRequester({ epoch: () => key, lock, hasPending: () => true, flush: () => d.promise });
+    requestLock();
+    key = 'new'; // the user unlocked again in between
+    d.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lock).not.toHaveBeenCalled();
+  });
+
+  it('a deferred lock is skipped when the cap fires after the key changed', async () => {
+    const lock = vi.fn();
+    let key: string | null = 'old';
+    const requestLock = createLockRequester({ epoch: () => key, lock, hasPending: () => true, flush: () => new Promise<void>(() => {}) });
+    requestLock();
+    key = 'new';
+    await vi.advanceTimersByTimeAsync(FLUSH_LOCK_CAP_MS);
+    expect(lock).not.toHaveBeenCalled();
+  });
+
+  it('cancel() still skips a deferred lock whose key is unchanged', async () => {
+    const lock = vi.fn();
+    const d = deferred();
+    const requestLock = createLockRequester({ epoch: () => 'k', lock, hasPending: () => true, flush: () => d.promise });
+    requestLock().cancel();
+    d.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lock).not.toHaveBeenCalled();
+  });
+
+  it('the synchronous path locks whatever the epoch does', () => {
+    const lock = vi.fn();
+    let n = 0;
+    const requestLock = createLockRequester({ epoch: () => n++, lock, hasPending: () => false, flush: async () => {} });
+    requestLock();
+    expect(lock).toHaveBeenCalledTimes(1);
   });
 });

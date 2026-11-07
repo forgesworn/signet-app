@@ -105,7 +105,7 @@ export function Connections({ sites, identity, originPolicies, connectedClients,
       {sites.length > 0 && (
       <div className="section">
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>
-          Sites you've signed in to with your Signet identity. Revoking removes local authorization — the site will need to request access again.
+          Sites you've signed in to with your Signet identity. Forgetting a site removes it from this phone only — the site still has your account, so sign out there too.
         </p>
       </div>
       )}
@@ -236,10 +236,11 @@ export function Connections({ sites, identity, originPolicies, connectedClients,
                       flexShrink: 0,
                     }}
                   >
-                    Revoke
+                    Forget
                   </button>
                 ) : (
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Forget this site?</span>
                     <button
                       className="btn btn-ghost"
                       onClick={() => { onRevoke(site.id); setConfirmingId(null); }}
@@ -250,7 +251,7 @@ export function Connections({ sites, identity, originPolicies, connectedClients,
                         padding: '6px 12px',
                       }}
                     >
-                      Confirm
+                      Forget
                     </button>
                     <button
                       className="btn btn-ghost"
