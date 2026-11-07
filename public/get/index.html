@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,103 +8,283 @@
   <meta name="theme-color" content="#FAF7ED" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#081B2D" media="(prefers-color-scheme: dark)" />
   <link rel="icon" href="/favicon.svg" />
+  <link rel="preload" href="/site/fonts/playfair-display-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/site/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <style>
+    /* Self-hosted OFL fonts (the same families the app ships). Licences: /site/fonts/ */
+    @font-face { font-family: 'MS Display'; src: url(/site/fonts/playfair-display-latin-wght-normal.woff2) format('woff2'); font-weight: 400 900; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'MS Display'; src: url(/site/fonts/playfair-display-latin-wght-italic.woff2) format('woff2'); font-weight: 400 900; font-style: italic; font-display: swap; }
+    @font-face { font-family: 'MS Sans'; src: url(/site/fonts/inter-latin-wght-normal.woff2) format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+
     :root {
-      --bg: #FAF7ED; --card: #FFFFFF; --text: #0E2A47; --muted: #596979;
-      --accent: #0E2A47; --accent-ink: #FAF7ED; --border: rgba(14, 42, 71, 0.14); --warn-bg: #fff7ed; --warn-ink: #9a3412; --warn-border: #fed7aa;
-      --font-display: Georgia, 'Times New Roman', serif;
-      --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --bg: #FAF7ED; --bg-2: #F3EEDD; --card: #FFFFFF; --ink: #0E2A47; --muted: #596979;
+      --line: rgba(14, 42, 71, 0.12); --line-2: rgba(14, 42, 71, 0.24);
+      --gold: #C9A962; --gold-ink: #7A5C17; --gold-soft: rgba(201, 169, 98, 0.16); --gold-mid: rgba(201, 169, 98, 0.34);
+      --accent: #0E2A47; --accent-ink: #FAF7ED;
+      --shadow: 0 1px 2px rgba(14, 42, 71, 0.05), 0 12px 32px -18px rgba(14, 42, 71, 0.28);
+      --display: 'MS Display', Georgia, 'Times New Roman', serif;
+      --sans: 'MS Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --wrap: 1080px; --gutter: 20px;
+      color-scheme: light dark;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #081B2D; --card: #102F4D; --text: #FAF7ED; --muted: #A7B0B8;
-        --accent: #C9A962; --accent-ink: #0E2A47; --border: rgba(250, 247, 237, 0.14); --warn-bg: #2a1e12; --warn-ink: #fbbf77; --warn-border: #4a331c;
+        --bg: #081B2D; --bg-2: #0B2238; --card: #102F4D; --ink: #FAF7ED; --muted: #A7B0B8;
+        --line: rgba(250, 247, 237, 0.11); --line-2: rgba(250, 247, 237, 0.22);
+        --gold-ink: #C9A962; --gold-soft: rgba(201, 169, 98, 0.13); --gold-mid: rgba(201, 169, 98, 0.30);
+        --accent: #C9A962; --accent-ink: #0E2A47;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 40px -20px rgba(0, 0, 0, 0.6);
       }
     }
+    @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
     * { box-sizing: border-box; }
-    body {
-      margin: 0; background: var(--bg); color: var(--text);
-      font-family: var(--font-sans);
-      line-height: 1.55; -webkit-font-smoothing: antialiased;
-    }
-    .wrap { max-width: 620px; margin: 0 auto; padding: 32px 20px 64px; }
-    header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
-    header img { width: 44px; height: 44px; }
-    header h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.5rem; margin: 0; letter-spacing: 0; }
-    .lede { color: var(--muted); font-size: 1.05rem; margin: 4px 0 28px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px; margin-bottom: 18px; }
-    .dl { text-align: center; }
-    .btn {
-      display: inline-block; background: var(--accent); color: var(--accent-ink);
-      font-weight: 650; font-size: 1.05rem; text-decoration: none;
-      padding: 14px 28px; border-radius: 12px; margin: 6px 0 10px;
-    }
-    .btn:active { transform: translateY(1px); }
-    .status { font-size: 0.85rem; color: var(--muted); margin: 0; }
-    h2 { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; margin: 26px 0 10px; }
-    ol { margin: 0; padding-left: 20px; }
-    ol li { margin: 9px 0; }
-    .note { color: var(--muted); font-size: 0.92rem; }
-    code { background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 1px 6px; border-radius: 5px; font-size: 0.9em; }
-    .foot { color: var(--muted); font-size: 0.85rem; margin-top: 34px; border-top: 1px solid var(--border); padding-top: 18px; }
-    a { color: var(--accent); }
-    strong.k { color: var(--text); }
-    a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { font-variant-numeric: lining-nums; margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 1.0625rem; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
+    a:hover { text-decoration-thickness: 2px; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+    .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 var(--gutter); }
+    strong.k { color: var(--ink); font-weight: 650; }
+    code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.88em; background: var(--gold-soft); padding: 1px 6px; border-radius: 6px; overflow-wrap: anywhere; }
+    .ic { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+    p { margin: 0 0 14px; }
+
+    /* Top bar */
+    .bar { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 86%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(12px); backdrop-filter: saturate(1.4) blur(12px); border-bottom: 1px solid var(--line); }
+    .bar .wrap { display: flex; align-items: center; gap: 12px; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); font-family: var(--display); font-weight: 600; font-size: 1.15rem; white-space: nowrap; }
+    .brand svg { width: 30px; height: 30px; }
+    .bar .links { margin-left: auto; display: flex; gap: 4px; }
+    .bar .links a { color: var(--muted); text-decoration: none; font-weight: 600; font-size: 0.92rem; padding: 8px 10px; border-radius: 10px; }
+    .bar .links a:hover { color: var(--ink); background: var(--gold-soft); }
+    .bar .links .hide-sm { display: none; }
+    @media (min-width: 560px) { .bar .links .hide-sm { display: inline; } }
+
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; font-weight: 650; font-size: 1.05rem; line-height: 1.2; padding: 16px 26px; border-radius: 16px; border: 1.5px solid transparent; transition: transform .15s ease, background .15s ease; }
+    .btn-gold { background: #C9A962; color: #0E2A47; box-shadow: 0 14px 30px -14px rgba(201, 169, 98, 0.9); }
+    .btn-gold:hover { background: #D6B977; }
+    .btn-ghost { color: inherit; border-color: currentColor; }
+    @media (prefers-reduced-motion: no-preference) { .btn:hover { transform: translateY(-1px); } .btn:active { transform: translateY(1px); } }
+
+    /* Hero */
+    .hero { position: relative; overflow: hidden; color: #FAF7ED;
+      --ink: #FAF7ED; --muted: #BAC5CF; --line: rgba(250, 247, 237, 0.14); --gold-ink: #D9BD7C; --accent: #C9A962;
+      background:
+        radial-gradient(900px 480px at 85% -10%, rgba(201, 169, 98, 0.22), transparent 62%),
+        radial-gradient(700px 420px at -10% 110%, rgba(56, 110, 160, 0.30), transparent 60%),
+        linear-gradient(170deg, #0E2A47 0%, #0A2239 55%, #081B2D 100%);
+      border-bottom: 1px solid rgba(201, 169, 98, 0.35); }
+    .hero::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(rgba(250, 247, 237, 0.07) 1px, transparent 1.2px); background-size: 22px 22px; -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 85%); mask-image: linear-gradient(180deg, #000 0%, transparent 85%); pointer-events: none; }
+    .hero .rings { position: absolute; right: -220px; top: -200px; width: 640px; height: 640px; opacity: 0.16; pointer-events: none; }
+    .hero .wrap { position: relative; display: grid; gap: 36px; padding-top: 52px; padding-bottom: 60px; }
+    @media (min-width: 900px) { .hero .wrap { grid-template-columns: 1.1fr 0.9fr; align-items: center; gap: 56px; padding-top: 80px; padding-bottom: 88px; } }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink); margin: 0 0 14px; }
+    .eyebrow::before { content: ''; width: 22px; height: 1.5px; background: currentColor; }
+    .hero h1 { font-family: var(--display); font-weight: 600; font-size: clamp(2.3rem, 7.4vw, 3.7rem); line-height: 1.05; letter-spacing: -0.015em; margin: 0 0 18px; }
+    .hero h1 em { font-style: italic; font-weight: 500; color: #C9A962; }
+    .lede { color: var(--muted); font-size: clamp(1.05rem, 2.6vw, 1.18rem); max-width: 33em; margin: 0 0 26px; }
+    .lede strong.k { color: #FAF7ED; }
+    .dl { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+    .status { font-size: 0.88rem; color: var(--muted); margin: 0; }
+    .perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    .perks li { display: flex; gap: 14px; align-items: flex-start; padding: 18px; border-radius: 18px; background: rgba(250, 247, 237, 0.05); border: 1px solid var(--line); }
+    .perks .badge { flex: none; width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; background: rgba(201, 169, 98, 0.16); color: #D9BD7C; border: 1px solid rgba(201, 169, 98, 0.35); }
+    .perks h2 { font-family: var(--sans); font-size: 1rem; font-weight: 700; margin: 2px 0 2px; }
+    .perks p { margin: 0; color: var(--muted); font-size: 0.94rem; }
+
+    /* Guide band */
+    .guide-band { margin: -28px auto 0; position: relative; z-index: 2; }
+    .guide-band a { display: flex; gap: 18px; align-items: center; text-decoration: none; color: var(--ink); background: var(--card); border: 1px solid var(--gold-mid); border-radius: 22px; padding: 20px 22px; box-shadow: var(--shadow); }
+    .guide-band .badge { flex: none; width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: #C9A962; color: #0E2A47; }
+    .guide-band .badge .ic { width: 26px; height: 26px; }
+    .guide-band strong { display: block; font-family: var(--display); font-size: 1.3rem; font-weight: 600; line-height: 1.2; margin-bottom: 2px; }
+    .guide-band span.sub { color: var(--muted); font-size: 0.95rem; }
+    .guide-band .go { margin-left: auto; color: var(--gold-ink); display: none; }
+    @media (min-width: 560px) { .guide-band .go { display: block; } }
+    @media (prefers-reduced-motion: no-preference) { .guide-band a { transition: transform .2s ease; } .guide-band a:hover { transform: translateY(-2px); } }
+
+    /* Sections */
+    .sec { padding: 64px 0 0; }
+    h2.title { font-family: var(--display); font-weight: 600; font-size: clamp(1.7rem, 4.6vw, 2.3rem); line-height: 1.15; margin: 0 0 8px; }
+    h2.title em { font-style: italic; font-weight: 500; color: var(--gold-ink); }
+    .sub-lede { color: var(--muted); margin: 0 0 28px; max-width: 40em; }
+
+    /* Steps */
+    .steps { list-style: none; counter-reset: s; margin: 0; padding: 0; max-width: 46em; }
+    .steps > li { counter-increment: s; position: relative; padding: 0 0 26px 58px; color: var(--muted); }
+    .steps > li::before { content: counter(s); position: absolute; left: 0; top: -4px; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-family: var(--display); font-weight: 600; font-size: 1.1rem; color: var(--gold-ink); background: var(--card); border: 1.5px solid var(--gold); box-shadow: 0 0 0 5px var(--bg); }
+    .steps > li::after { content: ''; position: absolute; left: 18.5px; top: 38px; bottom: 0; width: 1.5px; background: linear-gradient(var(--gold-mid), var(--line)); }
+    .steps > li:last-child { padding-bottom: 0; }
+    .steps > li:last-child::after { display: none; }
+    .steps strong.k { color: var(--ink); }
+
+    .install { display: grid; gap: 32px; }
+    @media (min-width: 900px) { .install { grid-template-columns: 1fr 340px; gap: 56px; align-items: start; } .install aside { position: sticky; top: 84px; } }
+    .then { background: var(--card); border: 1px solid var(--gold-mid); border-radius: 20px; padding: 24px; box-shadow: var(--shadow); }
+    .then h3 { font-family: var(--display); font-weight: 600; font-size: 1.3rem; margin: 0 0 14px; }
+    .then ol { list-style: none; margin: 0 0 18px; padding: 0; display: grid; gap: 12px; }
+    .then li { display: flex; gap: 12px; align-items: flex-start; color: var(--muted); font-size: 0.96rem; }
+    .then li b { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: #C9A962; color: #0E2A47; font-size: 0.8rem; }
+    .then li strong { color: var(--ink); font-weight: 650; }
+    .then a.more { font-weight: 650; display: inline-flex; align-items: center; gap: 6px; }
+
+    /* Ways cards */
+    .ways { display: grid; gap: 16px; }
+    @media (min-width: 760px) { .ways { grid-template-columns: repeat(2, 1fr); } }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 24px; box-shadow: var(--shadow); }
+    .card h3 { display: flex; align-items: center; gap: 12px; font-family: var(--display); font-weight: 600; font-size: 1.3rem; margin: 0 0 12px; }
+    .card h3 .badge { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--gold-soft); color: var(--gold-ink); border: 1px solid var(--gold-mid); }
+    .card h3 .badge .ic { width: 20px; height: 20px; }
+    .note { color: var(--muted); font-size: 0.97rem; }
+    .card .note:last-child { margin-bottom: 0; }
+    .build { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; padding: 12px 14px; border-radius: 12px; background: var(--gold-soft); border: 1px dashed var(--gold-mid); }
+    .build a { font-weight: 650; }
+
+    .elsewhere { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+    @media (min-width: 560px) { .elsewhere { flex-direction: row; gap: 16px; } }
+    .elsewhere .badge { flex: none; width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; background: var(--gold-soft); color: var(--gold-ink); border: 1px solid var(--gold-mid); }
+
+    .foot { color: var(--muted); font-size: 0.92rem; margin-top: 64px; border-top: 1px solid var(--line); padding-top: 28px; padding-bottom: 48px; }
+    .foot p { margin: 0 0 6px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <img src="/favicon.svg" alt="MySignet" />
-      <h1>MySignet for Android</h1>
-    </header>
-    <p class="lede">The native app adds what a web page can't: <strong class="k">fingerprint unlock</strong>,
-      and an <strong class="k">always-on approvals service</strong> that keeps working with the screen off — all with
-      <strong class="k">no Google services</strong>. Built for GrapheneOS.</p>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-finger" viewBox="0 0 24 24"><path d="M12 11.5v2.5a8 8 0 0 0 1.6 4.8"/><path d="M8.6 9.8A4 4 0 0 1 16 12v2"/><path d="M5.8 7.6A8 8 0 0 1 20 12v1"/><path d="M4 12.2v.8a12 12 0 0 0 1.6 6"/><path d="M16.2 17.8c.3-1 .5-2.2.5-3.6"/><path d="M8.2 13.2a14 14 0 0 0 1.4 6.3"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9.5a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4s2-1.5 2-6.5z"/><path d="M10 19.5a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.5l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10v-6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M3.5 5.5c2.8-1.3 5.6-1.3 8.5 0v14c-2.9-1.3-5.7-1.3-8.5 0z"/><path d="M20.5 5.5c-2.8-1.3-5.6-1.3-8.5 0v14c2.9-1.3 5.7-1.3 8.5 0z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v12M7 10.5l5 5 5-5M4.5 20.5h15"/></symbol>
+    <symbol id="i-bag" viewBox="0 0 24 24"><path d="M5 8h14l-1.2 12.5H6.2z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.6M4 20v-4h4"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+  </svg>
 
-    <div class="card dl">
-      <!-- The deploy workflow drops the release-SIGNED apks (stable + versioned
-           names) into dist/get/ from the latest GitHub release. Do NOT link a
-           debug-signed apk. -->
-      <a class="btn" href="/get/signet-app.apk" download>Download the APK</a>
-      <p class="status">Direct install · sideload · ~5 MB · all devices</p>
+  <header class="bar">
+    <div class="wrap">
+      <a class="brand" href="/get" aria-label="MySignet for Android">
+        <svg viewBox="229.5 232 821 821" aria-hidden="true"><circle cx="640" cy="642.5" r="403" fill="none" stroke="#C9A962" stroke-width="30"/><path d="M516 701.15A251.5 251.5 0 0 1 328.5 463.9C435.8 423.88 559.59 482.13 640 562c117.04 116.25 138.04 311.34 0 409.77C501.96 873.34 522.96 678.25 640 562c80.41-79.87 204.2-138.12 311.5-98.1A251.5 251.5 0 0 1 764 701.15" fill="none" stroke="currentColor" stroke-width="40"/><path d="M569 715.53a271 271 0 0 0 142 0" fill="none" stroke="#C9A962" stroke-width="40"/><circle cx="640" cy="389" r="72" fill="#C9A962"/></svg>
+        <span>MySignet</span>
+      </a>
+      <nav class="links" aria-label="Site">
+        <a href="/guide/">Guide</a>
+        <a class="hide-sm" href="/about">About</a>
+        <a href="https://mysignet.app">Web app</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="get-title">
+      <svg class="rings" viewBox="0 0 640 640" aria-hidden="true"><g fill="none" stroke="#C9A962"><circle cx="320" cy="320" r="310" stroke-width="2"/><circle cx="320" cy="320" r="250" stroke-width="1"/><circle cx="320" cy="320" r="190" stroke-width="1"/><circle cx="320" cy="320" r="130" stroke-width="1"/></g></svg>
+      <div class="wrap">
+        <div>
+          <p class="eyebrow">MySignet for Android</p>
+          <h1 id="get-title">Your Signet, <em>in your pocket.</em></h1>
+          <p class="lede">The native app adds what a web page can't: <strong class="k">fingerprint unlock</strong>,
+            and an <strong class="k">always-on approvals service</strong> that keeps working with the screen off — all with
+            <strong class="k">no Google services</strong>. Built for GrapheneOS.</p>
+          <div class="dl">
+            <!-- The deploy workflow drops the release-SIGNED apks (stable + versioned
+                 names) into dist/get/ from the latest GitHub release. Do NOT link a
+                 debug-signed apk. -->
+            <a class="btn btn-gold" href="/get/signet-app.apk" download><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download the APK</a>
+            <p class="status">Direct install · sideload · ~6 MB · all devices</p>
+          </div>
+        </div>
+        <ul class="perks">
+          <li><span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-finger"/></svg></span><div><h2>Fingerprint unlock</h2><p>Your key is sealed by the phone's secure hardware and opens with your fingerprint.</p></div></li>
+          <li><span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg></span><div><h2>Always-on approvals</h2><p>Keeps answering with the screen off, and tells you when something needs you.</p></div></li>
+          <li><span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg></span><div><h2>No Google services</h2><p>No Google Play services and no Firebase. It runs happily on GrapheneOS.</p></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="wrap guide-band">
+      <a href="/guide/">
+        <span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-book"/></svg></span>
+        <span><strong>New to MySignet? Read the guide.</strong><span class="sub">Choose your path, back up your words, and sign in anywhere without passwords.</span></span>
+        <svg class="ic go" aria-hidden="true"><use href="#i-arrow"/></svg>
+      </a>
     </div>
 
-    <h2>Install it (GrapheneOS / Android)</h2>
-    <ol>
-      <li>Tap <strong class="k">Download the APK</strong> above. When your browser asks, allow it to install apps this once.</li>
-      <li>Open the downloaded file and tap <strong class="k">Install</strong>.</li>
-      <li><strong class="k">GrapheneOS network permission:</strong> open the app once. If it can't reach the network, go to
-        <code>Settings → Apps → MySignet → Network</code> and turn it <strong class="k">on</strong>. (On GrapheneOS an app — especially just after an update — can start with network access off; this looks like a connection error until granted.)</li>
-      <li>When the app offers <strong class="k">always-on serving</strong>, allow the <strong class="k">battery-optimisation exemption</strong> and <strong class="k">notifications</strong> it asks for — that's what lets it alert you to a child's request while the screen is off.</li>
-      <li>Set up <strong class="k">fingerprint unlock</strong> in the app (Settings → Security). You'll need a screen lock + a fingerprint enrolled on the phone first.</li>
-    </ol>
+    <section class="sec" aria-labelledby="install-title">
+      <div class="wrap">
+        <p class="eyebrow" style="color:var(--gold-ink)">Five minutes</p>
+        <h2 class="title" id="install-title">Install it <em>(GrapheneOS / Android)</em></h2>
+        <p class="sub-lede">The same steps work on any Android phone. The GrapheneOS notes only matter if that's what you run.</p>
+        <div class="install">
+        <ol class="steps">
+          <li>Tap <strong class="k">Download the APK</strong> above. When your browser asks, allow it to install apps this once.</li>
+          <li>Open the downloaded file and tap <strong class="k">Install</strong>.</li>
+          <li><strong class="k">GrapheneOS network permission:</strong> open the app once. If it can't reach the network, go to
+            <code>Settings → Apps → MySignet → Permissions → Network</code> and turn it <strong class="k">on</strong>. (On GrapheneOS an app — especially just after an update — can start with network access off; this looks like a connection error until granted.)</li>
+          <li>When the app offers <strong class="k">always-on serving</strong>, allow the <strong class="k">battery-optimisation exemption</strong> and <strong class="k">notifications</strong> it asks for — that's what lets it alert you to a child's request while the screen is off.</li>
+          <li>Set up <strong class="k">fingerprint unlock</strong> in the app (Settings → Security &amp; Backup). You'll need a screen lock + a fingerprint enrolled on the phone first. Fingerprint unlock needs Android 11 or later; older phones use a 6-digit PIN.</li>
+        </ol>
+        <aside class="then" aria-labelledby="then-title">
+          <h3 id="then-title">Then, in the app</h3>
+          <ol>
+            <li><b>1</b><span>Tap <strong>Create my Signet</strong>, or <strong>I already have a Signet</strong> to restore.</span></li>
+            <li><b>2</b><span>Lock it with your fingerprint or a 6-digit PIN.</span></li>
+            <li><b>3</b><span>Write your 19 recovery words on paper: Settings → Security &amp; Backup → Backup Words.</span></li>
+          </ol>
+          <a class="more" href="/guide/#paths">Choose your path in the guide <svg class="ic" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        </aside>
+        </div>
+      </div>
+    </section>
 
-    <h2>On Zapstore</h2>
-    <p class="note">Prefer a store? MySignet is on
-      <a href="https://zapstore.dev/apps/naddr1qqxxzurs9ekhjumfvahx2aqprpmhxue69uhhyetvv9uju7npwpehgmmjv5hxgetkqgsd5x03e56tajjyhe6d5jesdkw3mkrtvdpua72vugkyn3h4nqtwt0grqsqqqlst4uwpfh" rel="noopener">Zapstore</a>,
-      the Nostr-native app store — same signed APK, auto-updates, and the publisher identity is verifiable end-to-end.</p>
+    <section class="sec" aria-labelledby="ways-title">
+      <div class="wrap">
+        <p class="eyebrow" style="color:var(--gold-ink)">Other ways to install</p>
+        <h2 class="title" id="ways-title">Prefer a store, or <em>hands-off updates?</em></h2>
+        <p class="sub-lede">Every route gives you the same signed APK.</p>
+        <div class="ways">
+          <article class="card">
+            <h3><span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-bag"/></svg></span>On Zapstore</h3>
+            <p class="note">Prefer a store? MySignet is on
+              <a href="https://zapstore.dev/apps/naddr1qqxxzurs9ekhjumfvahx2aqprpmhxue69uhhyetvv9uju7npwpehgmmjv5hxgetkqgsd5x03e56tajjyhe6d5jesdkw3mkrtvdpua72vugkyn3h4nqtwt0grqsqqqlst4uwpfh" rel="noopener">Zapstore</a>,
+              the Nostr-native app store — same signed APK, auto-updates, and the publisher identity is verifiable end-to-end.</p>
+          </article>
+          <article class="card">
+            <h3><span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg></span>Auto-updates with Obtainium</h3>
+            <p class="note">Optional. Add <code>https://mysignet.app/get</code> as an
+              <strong class="k">HTML</strong> source in
+              <a href="https://obtainium.imranr.dev/" rel="noopener">Obtainium</a> and it will pick up new signed builds as they're published
+              (the versioned link below is what it watches). Every update is signed with the same key, so it installs over the top cleanly.</p>
+            <!-- The deploy workflow rewrites this to the newest versioned APK in the
+                 release (see .github/workflows/deploy.yml). Keep it a real, current
+                 filename so the page is correct even without the templating step. -->
+            <!-- The deploy workflow replaces everything between the CURRENT_BUILD
+                 markers with a link to the newest release's versioned APK. With no
+                 release, the placeholder text stays. -->
+            <p class="note build">Current build: <!--CURRENT_BUILD-->not published yet<!--/CURRENT_BUILD--></p>
+            <p class="note">Machine-readable: <a href="/get/signet-app.json">signet-app.json</a> (version, SHA-256, signing-cert digest — what the app itself checks against).</p>
+          </article>
+        </div>
+      </div>
+    </section>
 
-    <h2>Auto-updates with Obtainium (optional)</h2>
-    <p class="note">Prefer hands-off updates? Add <code>https://mysignet.app/get</code> as an
-      <strong class="k">HTML</strong> source in
-      <a href="https://obtainium.imranr.dev/" rel="noopener">Obtainium</a> and it will pick up new signed builds as they're published
-      (the versioned link below is what it watches). Every update is signed with the same key, so it installs over the top cleanly.</p>
-    <!-- The deploy workflow rewrites this to the newest versioned APK in the
-         release (see .github/workflows/deploy.yml). Keep it a real, current
-         filename so the page is correct even without the templating step. -->
-    <!-- The deploy workflow replaces everything between the CURRENT_BUILD
-         markers with a link to the newest release's versioned APK. With no
-         release, the placeholder text stays. -->
-    <p class="note">Current build: <!--CURRENT_BUILD-->not published yet<!--/CURRENT_BUILD--></p>
-    <p class="note">Machine-readable: <a href="/get/signet-app.json">signet-app.json</a> (version, SHA-256, signing-cert digest — what the app itself checks against).</p>
+    <section class="sec" aria-labelledby="ios-title">
+      <div class="wrap">
+        <div class="card elsewhere">
+          <span class="badge"><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg></span>
+          <div>
+            <h2 class="title" id="ios-title" style="font-size:1.45rem">On iPhone or a computer?</h2>
+            <p class="note">There's no APK for you — just use the web app at <a href="https://mysignet.app">mysignet.app</a>.
+              It does nearly everything. Native fingerprint unlock, always-on background serving, tap-and-Bluetooth Handshake and signing for other Android apps are Android-only for now.</p>
+          </div>
+        </div>
+      </div>
+    </section>
 
-    <h2>On iPhone or a computer?</h2>
-    <p class="note">There's no APK for you — just use the web app at <a href="https://mysignet.app">mysignet.app</a>.
-      It does everything except native fingerprint unlock and always-on background serving, which are Android-only for now.</p>
-
-    <p class="foot">MySignet is client-side identity for the Signet protocol — your keys stay on your device.
-      New here? <a href="/about">What is MySignet?</a> · Questions or trouble installing? <a href="https://mysignet.app">mysignet.app</a>.</p>
-  </div>
+    <footer class="wrap foot">
+      <p>MySignet is client-side identity for the Signet protocol — your keys stay on your device.</p>
+      <p>New here? <a href="/guide/">Read the guide</a> · <a href="/about">What is MySignet?</a> · Questions or trouble installing? <a href="https://mysignet.app">mysignet.app</a>.</p>
+    </footer>
+  </main>
 </body>
 </html>
