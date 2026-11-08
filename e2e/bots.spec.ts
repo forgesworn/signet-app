@@ -73,6 +73,8 @@ test('creates persona-owned bots and gates standalone key export behind fresh au
   await expect(page.locator('.carousel-viewport')).toBeVisible();
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('.nav-dots-h .nav-dot').nth(3)).toHaveClass(/active/);
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator('.nav-dots-h .nav-dot').nth(4)).toHaveClass(/active/);
   await page.getByRole('button', { name: 'Hide bot from carousel' }).click();
   await expect(page.getByRole('heading', { name: 'Game Helper · Bot', exact: true })).toBeVisible();
   await navigateViaHarness(page, 'settings');

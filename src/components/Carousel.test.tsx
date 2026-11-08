@@ -118,7 +118,7 @@ describe('Carousel neighbour pre-mount', () => {
     const leftward = container.querySelector('[data-testid="carousel-incoming-screen"]');
     expect(leftward).not.toBeNull();
 
-    move(380, 400); // reversed → previous column (col 3)
+    move(380, 400); // reversed → previous column (col 5)
     expect(screenCount(container)).toBe(2);
     release();
     act(() => { vi.advanceTimersByTime(400); });
@@ -223,7 +223,7 @@ describe('Carousel inline rename target', () => {
   });
 });
 
-describe('five-column identity matrix', () => {
+describe('six-column identity matrix', () => {
   beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
   afterEach(() => vi.useRealTimers());
   it('preserves the selected column when moving to another identity', () => {
@@ -232,12 +232,23 @@ describe('five-column identity matrix', () => {
     act(() => { vi.advanceTimersByTime(400); });
     expect(onCommit).toHaveBeenCalledWith(1, 2);
   });
-  it('wraps backwards from identity to the fifth camera column', () => {
+  it('wraps backwards from identity to the sixth camera column', () => {
     const { onCommit, container } = renderCarousel();
-    expect(container.querySelectorAll('.nav-dots-h .nav-dot')).toHaveLength(5);
+    expect(container.querySelectorAll('.nav-dots-h .nav-dot')).toHaveLength(6);
     fireEvent.keyDown(document, { key: 'ArrowLeft' });
     act(() => { vi.advanceTimersByTime(400); });
-    expect(onCommit).toHaveBeenCalledWith(0, 4);
+    expect(onCommit).toHaveBeenCalledWith(0, 5);
+  });
+  it('renders the known-places card in column 3', () => {
+    const identity = {
+      naturalPerson: { publicKey: 'a'.repeat(64), displayName: 'Owner' },
+      persona: { publicKey: 'b'.repeat(64), displayName: 'Persona' }, extraPersonas: [],
+    };
+    const personaRows = [{ type: 'persona', identity }] as unknown as CarouselRow[];
+    const renderKnownPlacesCard = vi.fn(() => <div className="known-places-card">Places</div>);
+    const { container } = renderCarousel({ col: 3, rows: personaRows, renderKnownPlacesCard });
+    expect(container.querySelector('.known-places-card')).not.toBeNull();
+    expect(renderKnownPlacesCard).toHaveBeenCalled();
   });
   it('does not navigate while arrow keys edit a search field', () => {
     const { onCommit, container } = renderCarousel();
@@ -266,7 +277,7 @@ describe('Carousel transition continuity', () => {
     };
     const identityRows = [{ type: 'persona', identity }] as unknown as CarouselRow[];
     function Host() {
-      const [col, setCol] = useState<0 | 1 | 2 | 3 | 4>(1);
+      const [col, setCol] = useState<0 | 1 | 2 | 3 | 4 | 5>(1);
       const [animating, setAnimating] = useState(false);
       return <Carousel row={0} col={col} rows={identityRows} activeIdentity={resolvedAdd} animating={animating}
         onCommit={(_r, c) => { setCol(c); setAnimating(false); }} onAnimatingChange={setAnimating}

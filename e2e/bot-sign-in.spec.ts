@@ -20,7 +20,7 @@ test('bot camera requires consent and delivers only the selected bot proof', asy
   await expect(page.locator('.nav-dots-v .nav-dot').nth(1)).toHaveClass(/active/);
   const botKey = await page.locator('.card.section p').filter({ hasText: /^[0-9a-f]{64}$/ }).innerText();
   await page.keyboard.press('ArrowLeft');
-  await expect(page.locator('.nav-dots-h .nav-dot').nth(4)).toHaveClass(/active/);
+  await expect(page.locator('.nav-dots-h .nav-dot').nth(5)).toHaveClass(/active/);
   const recipient = new Uint8Array(32).fill(3);
   const request = { type: 'signet-auth-request', requestId: 'ab'.repeat(16), challenge: 'bot-sign-in-test-challenge',
     origin: 'https://consumer.test', relay: 'wss://relay.test', sessionPubkey: getPublicKey(recipient), timestamp: Math.floor(Date.now() / 1000) };

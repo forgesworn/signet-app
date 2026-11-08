@@ -32,7 +32,7 @@ function renderAtCamera(animating: boolean) {
   return render(
     <Carousel
       row={0}
-      col={4}
+      col={5}
       rows={rows}
       activeIdentity={resolved}
       animating={animating}

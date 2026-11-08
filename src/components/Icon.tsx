@@ -35,7 +35,10 @@ export type IconName =
   | 'image'
   | 'download'
   | 'bluetooth'
-  | 'nfc';
+  | 'nfc'
+  | 'repeat'
+  | 'devices'
+  | 'clock';
 
 const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
   image: (
@@ -215,6 +218,29 @@ const PATHS: Record<IconName, SVGProps<SVGSVGElement>['children']> = {
       <path d="M22.75 7.8A2.6 5 0 1 0 22.75 16.2" />
       <path d="M3.5 6.5A3 3 0 0 1 6.5 3.5M1 6.5A5.5 5.5 0 0 1 6.5 1" />
       <path d="M26.5 17.5A3 3 0 0 1 23.5 20.5M29 17.5A5.5 5.5 0 0 1 23.5 23" />
+    </>
+  ),
+  // Two arrows chasing each other: happens again without asking.
+  repeat: (
+    <>
+      <path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H19" />
+      <path d="m16 3 3 3-3 3" />
+      <path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H5" />
+      <path d="m8 21-3-3 3-3" />
+    </>
+  ),
+  // A phone in front of a larger screen: somewhere other than this phone.
+  devices: (
+    <>
+      <rect x="2.5" y="4.5" width="14" height="11" rx="1.8" />
+      <path d="M6 19.5h7M9.5 15.5v4" />
+      <rect x="15" y="9" width="6.5" height="11" rx="1.6" />
+    </>
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.2 2" />
     </>
   ),
 };

@@ -84,8 +84,8 @@ export type HomeTapAction = 'front' | 'top' | 'none';
 
 /**
  * What a Home tap does to the carousel. The first tap returns to the front
- * of the card you are on (from any page, or from its QR/contacts/settings/
- * camera column); a tap while already on a card's front goes to the top
+ * of the card you are on (from any page, or from its QR/contacts/places/
+ * settings/camera column); a tap while already on a card's front goes to the top
  * card of the ring. Never leaves child mode: that exit needs the guardian's
  * unlock, so in child mode "top" is the top of the dependant's ring.
  */

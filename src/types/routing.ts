@@ -81,9 +81,9 @@ export type CarouselRow =
   | { type: 'add' };
 
 /** Column indices in the carousel's horizontal ring */
-export type CarouselColumn = 0 | 1 | 2 | 3 | 4;
+export type CarouselColumn = 0 | 1 | 2 | 3 | 4 | 5;
 
-/** Identity, QR, contacts, settings and camera form a horizontal loop. */
-export const CAROUSEL_COLUMNS = ['card', 'qr', 'contacts', 'settings', 'camera'] as const;
+/** Identity, QR, contacts, known places, settings and camera form a horizontal loop. */
+export const CAROUSEL_COLUMNS = ['card', 'qr', 'contacts', 'places', 'settings', 'camera'] as const;
 export type CarouselColumnName = typeof CAROUSEL_COLUMNS[number];
 
