@@ -2017,10 +2017,14 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
   let childDevice = dependant.childDevice;
   if (childDevice === undefined && existing?.childDevice) childDevice = existing.childDevice;
   // #199: stamp the edit time when a synced scalar field changes. A caller
-  // that set a different `updatedAt` (a sync merge carrying the remote edit
-  // time) keeps its value; a first save has no edit to date.
-  const updatedAt = existing && dependant.updatedAt === existing.updatedAt && dependantScalarsDiffer(existing, dependant)
-    ? Math.max(Date.now(), (existing.updatedAt ?? 0) + 1) : dependant.updatedAt;
+  // carrying a newer time (a sync merge with the remote edit time) keeps it;
+  // one carrying none or an older one (a stale in-memory copy) is stamped,
+  // so a second quick edit cannot drop the first's time. A first save has
+  // no edit to date.
+  const callerAt = dependant.updatedAt;
+  const updatedAt = existing && dependantScalarsDiffer(existing, dependant)
+    && (callerAt === undefined || (existing.updatedAt !== undefined && callerAt <= existing.updatedAt))
+    ? Math.max(Date.now(), (existing.updatedAt ?? 0) + 1) : callerAt;
   const stored = {
     ...dependant,
     ...(updatedAt !== undefined ? { updatedAt } : {}),

@@ -274,3 +274,23 @@ describe('useDependants.removeDependant', () => {
     } finally { raw.close(); }
   }, 60_000);
 });
+
+describe('useDependants edit time (#199)', () => {
+  beforeEach(async () => { await purgeAllUserData(); });
+
+  it('a stage change reaches the hook state with its edit time, so the sync wire carries it', async () => {
+    const g = await seedGuardian(false);
+    const { result } = renderHook(() => useDependants(g.naturalPerson.publicKey, g.id, KEY));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const deviceDerive = async () => ({
+      naturalPerson: { publicKey: NP, privateKey: '' as const }, persona: { publicKey: PERSONA, privateKey: '' as const },
+    });
+    let dep!: DependantIdentity;
+    await act(async () => { dep = await result.current.addDependant('Robin', undefined, { deviceDerive }); });
+    const before = Date.now();
+    await act(async () => { await result.current.updateAutonomyStage(dep.id, 'request-approve'); });
+    const inState = result.current.dependants.find(d => d.id === dep.id)!;
+    expect(inState.autonomyStage).toBe('request-approve');
+    expect(inState.updatedAt).toBeGreaterThanOrEqual(before);
+  });
+});

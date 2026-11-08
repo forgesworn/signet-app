@@ -33,6 +33,17 @@ describe('saveDependant stamps the edit time (#199)', () => {
     expect((await load()).updatedAt).toBeGreaterThanOrEqual(before);
   });
 
+  it('a second edit from a stale copy still advances the time', async () => {
+    const db = await import('./db');
+    await db.saveDependant(viewOnly(), KEY);
+    const stale = await load();
+    await db.saveDependant({ ...stale, displayName: 'Renamed' }, KEY);
+    const first = (await load()).updatedAt!;
+    expect(first).toBeGreaterThan(0);
+    await db.saveDependant({ ...stale, displayName: 'Renamed', autonomyStage: 'request-approve' }, KEY);
+    expect((await load()).updatedAt).toBeGreaterThan(first);
+  });
+
   it('keeps a time the caller set, as a merge carrying the remote edit does', async () => {
     const db = await import('./db');
     await db.saveDependant(viewOnly(), KEY);
