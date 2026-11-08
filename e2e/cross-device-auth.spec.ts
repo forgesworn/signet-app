@@ -1,15 +1,31 @@
 import { test, expect } from '@playwright/test';
 import { confirmRealNameIfPrompted, createIdentityAndUnlock, clearDatabase } from './fixtures';
+import { LocalRelay } from './helpers/local-relay';
 import { waitForAuthResponse } from '../../signet-verify/src/signet-verify';
 import { generateSecretKey } from 'nostr-tools/pure';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
-const RELAY = process.env.E2E_RELAY_URL ?? 'wss://relay.trotters.cc';
 const ORIGIN = 'https://example.com';
 
+// The consumer (Node) and the phone (browser) meet at a relay. A public relay
+// is no longer usable for this: the ones that carry gift wraps refuse
+// kind-1059 reads without NIP-42 AUTH, which the consumer reports as
+// 'relay-refused'. So the specs run against an in-process relay; set
+// E2E_RELAY_URL to point them at a real one instead.
+let localRelay: LocalRelay | undefined;
+const relayUrl = () => process.env.E2E_RELAY_URL ?? localRelay!.url;
+
 test.describe('Sign in with Signet — cross-device relay delivery', () => {
+  test.beforeAll(async () => {
+    if (!process.env.E2E_RELAY_URL) localRelay = await LocalRelay.start();
+  });
+  test.afterAll(async () => {
+    await localRelay?.close();
+    localRelay = undefined;
+  });
+
   test.beforeEach(async ({ page }) => {
     await clearDatabase(page);
     await createIdentityAndUnlock(page);
@@ -25,7 +41,7 @@ test.describe('Sign in with Signet — cross-device relay delivery', () => {
 
     const authPromise = waitForAuthResponse({
       requestId: challenge,
-      relayUrl: RELAY,
+      relayUrl: relayUrl(),
       sessionPrivKey,
       expectedOrigin: ORIGIN,
       timeout: 30_000,
@@ -42,7 +58,7 @@ test.describe('Sign in with Signet — cross-device relay delivery', () => {
       callback: ORIGIN + '/callback',
       name: 'E2E Cross-Device',
       t: String(Math.floor(Date.now() / 1000)),
-      relay: RELAY,
+      relay: relayUrl(),
       sessionPubkey,
     }).toString();
 
@@ -88,7 +104,7 @@ test.describe('Sign in with Signet — cross-device relay delivery', () => {
 
     const authPromise = waitForAuthResponse({
       requestId: challenge,
-      relayUrl: RELAY,
+      relayUrl: relayUrl(),
       sessionPrivKey,
       expectedOrigin: ORIGIN,
       timeout: 30_000,
@@ -103,7 +119,7 @@ test.describe('Sign in with Signet — cross-device relay delivery', () => {
       callback: ORIGIN + '/callback',
       name: 'E2E Cross-Device Deny',
       t: String(Math.floor(Date.now() / 1000)),
-      relay: RELAY,
+      relay: relayUrl(),
       sessionPubkey,
     }).toString();
 
