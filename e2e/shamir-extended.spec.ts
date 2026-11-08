@@ -47,8 +47,8 @@ test.describe('ShamirBackup — extended generation behaviours', () => {
     // Share 1 header should be visible
     await expect(page.getByRole('button', { name: /Share 1 of 3/ })).toBeVisible();
 
-    // Share 1 is auto-expanded — at least one monospace word span should be visible
-    await expect(page.locator('span[style*="monospace"]').first()).toBeVisible();
+    // Share 1 is auto-expanded — at least one font-mono word span should be visible
+    await expect(page.locator('span[style*="font-mono"]').first()).toBeVisible();
   });
 
   test('collapsing an expanded share hides its words', async ({ page }) => {
@@ -59,7 +59,7 @@ test.describe('ShamirBackup — extended generation behaviours', () => {
 
     // Words grid should no longer be present
     // (WordGrid is conditionally rendered, not just hidden)
-    const wordCount = await page.locator('span[style*="monospace"]').count();
+    const wordCount = await page.locator('span[style*="font-mono"]').count();
     expect(wordCount).toBe(0);
   });
 
@@ -89,7 +89,7 @@ test.describe('ShamirBackup — extended generation behaviours', () => {
     await page.getByRole('button', { name: 'Split my backup' }).click();
 
     // Capture a word from the first split
-    const firstWord = await page.locator('span[style*="monospace"]').first().textContent();
+    const firstWord = await page.locator('span[style*="font-mono"]').first().textContent();
 
     await page.getByRole('button', { name: 'Start over' }).click();
     await page.getByRole('button', { name: 'Split my backup' }).click();
@@ -99,7 +99,7 @@ test.describe('ShamirBackup — extended generation behaviours', () => {
 
     // The word grid is rendered again (can't guarantee different words in GF(256),
     // but re-splitting with a random nonce should differ; we just verify words appear)
-    await expect(page.locator('span[style*="monospace"]').first()).toBeVisible();
+    await expect(page.locator('span[style*="font-mono"]').first()).toBeVisible();
 
     // Sanity: share label text is still present after re-split
     await expect(page.getByText('Give to Person A')).toBeVisible();
@@ -119,15 +119,15 @@ test.describe('ShamirBackup — extended generation behaviours', () => {
 
     // Expand share 2
     await page.getByRole('button', { name: /Share 2 of 3/ }).click();
-    await expect(page.locator('span[style*="monospace"]').first()).toBeVisible();
+    await expect(page.locator('span[style*="font-mono"]').first()).toBeVisible();
 
     // Collapse share 2 by clicking again
     await page.getByRole('button', { name: /Share 2 of 3/ }).click();
-    const wordCountAfterCollapse = await page.locator('span[style*="monospace"]').count();
+    const wordCountAfterCollapse = await page.locator('span[style*="font-mono"]').count();
     expect(wordCountAfterCollapse).toBe(0);
 
     // Expand share 3 — words should appear independently
     await page.getByRole('button', { name: /Share 3 of 3/ }).click();
-    await expect(page.locator('span[style*="monospace"]').first()).toBeVisible();
+    await expect(page.locator('span[style*="font-mono"]').first()).toBeVisible();
   });
 });
