@@ -63,6 +63,7 @@ import type { AuditEventParams } from '../lib/audit';
 import { connectMetadataParam, parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/persona-bunker-routes';
+import { describeCryptoRequest, runBunkerCrypto, type BunkerCryptoMethod } from '../lib/bunker-crypto-approval';
 import { childGateWireError, type ChildRouteGate } from '../lib/child-bunker';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
@@ -207,8 +208,21 @@ export interface BunkerRoute {
   childGate?: ChildRouteGate;
 }
 
-/** Shape exposed to the approval modal while a sign_event is waiting. */
-export interface PendingApproval {
+/** Shape exposed to the approval modal while a request is waiting. */
+export type PendingApproval = PendingSignApproval | PendingCryptoApproval;
+
+/**
+ * An owner-route NIP-04 / NIP-44 request from a client without "Allow
+ * always" (#189). Approving runs the operation once; "Allow always" also
+ * saves the client, so later requests from it are answered silently.
+ */
+export interface PendingCryptoApproval extends Omit<PendingSignApproval, 'method' | 'template' | 'kinterestChildName' | 'kinterestChildAvatar'> {
+  method: BunkerCryptoMethod;
+  /** The other party's pubkey (hex). Equal to the route pubkey for data encrypted to yourself. */
+  peerPubkey: string;
+}
+
+export interface PendingSignApproval {
   /** Opaque id — the hook's internal handle for resolving this request. */
   handle: number;
   /** Client identity recovered from the envelope sender pubkey. */
@@ -224,7 +238,6 @@ export interface PendingApproval {
     /** Null when the request hit the guardian's own bunker endpoint. */
     dependantId: string | null;
   };
-  /** Method — currently only 'sign_event' surfaces here. */
   method: 'sign_event';
   /** Event template the client wants signed. */
   template: UnsignedEvent;
@@ -239,6 +252,28 @@ export interface PendingApproval {
   alwaysAvailable: boolean;
   kinterestChildName?: string;
   kinterestChildAvatar?: { hash: string; blossomUrl: string; keyHex: string };
+}
+
+/** Full context for a queued sign_event, keyed by handle. */
+interface ActiveSignRequest {
+  requestId: string;
+  clientPubkey: string;
+  kinterestChildName?: string;
+  template: UnsignedEvent;
+  /** The route that received this request — determines which backend signs. */
+  route: BunkerRoute;
+  /** Cached scope/origin so resolveApproval can persist a grant without re-inference. */
+  scope: Scope | null;
+  origin: string | null;
+  crypto?: undefined;
+}
+
+/** Full context for a queued owner-route NIP-04 / NIP-44 request. Owner routes only. */
+interface ActiveCryptoRequest {
+  requestId: string;
+  clientPubkey: string;
+  route: BunkerRoute;
+  crypto: { method: BunkerCryptoMethod; peerPubkey: string; payload: string };
 }
 
 interface Options {
@@ -562,17 +597,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   // stale approve/deny clicks can't resolve a fresh request.
   const handleCounterRef = useRef<number>(0);
   // Active request metadata (full context) keyed by handle.
-  const activeRequestRef = useRef<Map<number, {
-    requestId: string;
-    clientPubkey: string;
-    kinterestChildName?: string;
-    template: UnsignedEvent;
-    /** The route that received this request — determines which backend signs. */
-    route: BunkerRoute;
-    /** Cached scope/origin so resolveApproval can persist a grant without re-inference. */
-    scope: Scope | null;
-    origin: string | null;
-  }>>(new Map());
+  const activeRequestRef = useRef<Map<number, ActiveSignRequest | ActiveCryptoRequest>>(new Map());
   // Snapshot of the queue length for the sync `handleInboundEvent` path —
   // React state updates are batched / async, so a rapid inbound burst
   // would otherwise all pass the cap check before any of them landed in
@@ -1113,7 +1138,41 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           return;
         }
         if (!ownerRouteNip44Authorised(route.dependantId, owner)) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not connected');
+          // Ask the owner rather than refusing silently (#189). A consumer
+          // that reconnects from a stored bunker URI without a saved
+          // "Allow always" (Stash unwrapping its vault key, say) used to get
+          // a bare "not connected" it could not recover from. The oracle
+          // stays closed: nothing runs until the owner approves.
+          if (queueSizeRef.current >= PENDING_APPROVALS_CAP) {
+            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'busy');
+            return;
+          }
+          const method = request.method as BunkerCryptoMethod;
+          const peerPubkey = theirPubkey.toLowerCase();
+          queueSizeRef.current += 1;
+          const handle = ++handleCounterRef.current;
+          activeRequestRef.current.set(handle, {
+            requestId: request.id,
+            clientPubkey: request.clientPubkey,
+            route,
+            crypto: { method, peerPubkey, payload },
+          });
+          const entry: PendingCryptoApproval = {
+            handle,
+            client: {
+              pubkey: request.clientPubkey,
+              appName: owner?.appName ?? 'Unknown app',
+              appUrl: owner?.appUrl,
+              existing: !!owner,
+            },
+            route: { pubkey: route.pubkey, dependantId: null },
+            method,
+            peerPubkey,
+            description: describeCryptoRequest(method, peerPubkey, (route.signingBackend ?? route.backend).activePublicKeyHex),
+            alwaysAvailable: true,
+          };
+          setPendingApprovals(prev => [...prev, entry]);
+          try { onApprovalPendingRef.current?.(entry); } catch { /* non-fatal */ }
           return;
         }
       }
@@ -1198,45 +1257,30 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           });
         }
       }
-      try {
-        // For dependant routes use signingBackend (the inner identity key),
-        // NOT the transport backend — the consumer's NIP-44 is addressed
-        // to the dependant's signing pubkey (the one returned by
-        // get_public_key for that route), not the transport pubkey.
-        const inner = route.signingBackend ?? route.backend;
-        if (request.method === 'nip04_encrypt' && !inner.nip04Encrypt) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'NIP-04 not supported');
-          return;
-        }
-        if (request.method === 'nip04_decrypt' && !inner.nip04Decrypt) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'NIP-04 not supported');
-          return;
-        }
-        const result = request.method === 'nip04_encrypt'
-          ? await inner.nip04Encrypt!(theirPubkey, payload)
-          : request.method === 'nip04_decrypt'
-            ? await inner.nip04Decrypt!(theirPubkey, payload)
-            : request.method === 'nip44_encrypt'
-              ? await inner.nip44Encrypt(theirPubkey, payload)
-              : await inner.nip44Decrypt(theirPubkey, payload);
-        await publishResponse(route.backend, request.clientPubkey, request.id, result);
-        // `connectedClients` rows only exist for guardian-route NIP-46
-        // sessions (the guardian-route server). Dependant routes (device + app)
-        // have their own lastSeenAt mechanisms and never have a
-        // ConnectedClient record, so the read+write here would be a
-        // guaranteed no-op IDB round-trip per nip44 call. Skip it for
-        // dependant routes — the binding gate above already updated
-        // lastSeenAt for app-route pairings via touchAppBunkerPairing.
-        if (!route.dependantId) {
+      // For dependant routes use signingBackend (the inner identity key),
+      // NOT the transport backend — the consumer's NIP-44 is addressed
+      // to the dependant's signing pubkey (the one returned by
+      // get_public_key for that route), not the transport pubkey.
+      const outcome = await runBunkerCrypto(route.signingBackend ?? route.backend, request.method as BunkerCryptoMethod, theirPubkey, payload);
+      if (!outcome.ok) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
+        return;
+      }
+      await publishResponse(route.backend, request.clientPubkey, request.id, outcome.result);
+      // `connectedClients` rows only exist for guardian-route NIP-46
+      // sessions (the guardian-route server). Dependant routes (device + app)
+      // have their own lastSeenAt mechanisms and never have a
+      // ConnectedClient record, so the read+write here would be a
+      // guaranteed no-op IDB round-trip per nip44 call. Skip it for
+      // dependant routes — the binding gate above already updated
+      // lastSeenAt for app-route pairings via touchAppBunkerPairing.
+      if (!route.dependantId) {
+        try {
           const existing = await db.getConnectedClient(request.clientPubkey);
           if (existing) {
             await db.saveConnectedClient({ ...existing, lastSeenAt: Math.floor(Date.now() / 1000) });
           }
-        }
-      } catch {
-        const failedEncrypt = request.method === 'nip04_encrypt' || request.method === 'nip44_encrypt';
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined,
-          failedEncrypt ? 'encryption failed' : 'decryption failed');
+        } catch { /* lastSeenAt is bookkeeping; the answer already went out */ }
       }
       return;
     }
@@ -1653,6 +1697,46 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       });
 
       const { backend } = req.route;
+
+      if (req.crypto) {
+        // Owner-route NIP-04 / NIP-44 (#189). Only owner routes queue these.
+        if (decision === 'deny') {
+          if (generation !== responseGenerationRef.current) return;
+          await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'user denied');
+          return;
+        }
+        const { method, peerPubkey, payload } = req.crypto;
+        let client: import('../types').ConnectedClient | undefined;
+        try { client = await db.getConnectedClient(req.clientPubkey); } catch { client = undefined; }
+        if (!nip46PermissionAllows(client?.permissions, method)) {
+          await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'permission not granted');
+          return;
+        }
+        const outcome = await runBunkerCrypto(req.route.signingBackend ?? backend, method, peerPubkey, payload);
+        if (generation !== responseGenerationRef.current) return;
+        if (!outcome.ok) {
+          await publishResponse(backend, req.clientPubkey, req.requestId, undefined, outcome.error);
+          return;
+        }
+        await publishResponse(backend, req.clientPubkey, req.requestId, outcome.result);
+        try {
+          const now = Math.floor(Date.now() / 1000);
+          if (decision === 'approve-always') {
+            await db.saveConnectedClient({
+              ...(client?.permissions !== undefined ? { permissions: client.permissions } : {}),
+              clientPubkey: req.clientPubkey,
+              appName: client?.appName ?? 'Unknown app',
+              appUrl: client?.appUrl,
+              connectedAt: client?.connectedAt ?? now,
+              lastSeenAt: now,
+              allowAlways: true,
+            });
+          } else if (client) {
+            await db.saveConnectedClient({ ...client, lastSeenAt: now });
+          }
+        } catch { /* allowAlways persistence is best-effort; never leak internals */ }
+        return;
+      }
 
       if (decision === 'deny') {
         // Dependant-route denial with an origin-scoped scope: persist a deny
