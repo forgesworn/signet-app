@@ -282,6 +282,19 @@ export async function addDependantViaUi(page: Page, name: string, options?: { st
 }
 
 /**
+ * The stored id of the first dependant, as the harness setters take it
+ * (`dependant:<id>` in the identity store).
+ */
+export async function firstDependantId(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const db = await import('/src/lib/db.ts');
+    const records = await (await db.getDb()).getAll('identity');
+    const dependant = records.find((record: any) => String(record.id).startsWith('dependant:'));
+    return String(dependant.id).replace(/^dependant:/, '');
+  });
+}
+
+/**
  * Walk the real-identity activation ceremony (explanation, legal name, typed
  * confirmation, recovery words). Call it from any page showing the
  * `RequireRealIdentity` gate ("Activate my real identity"): features that

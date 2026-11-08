@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import jsQR from 'jsqr';
-import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi } from './fixtures';
+import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, firstDependantId } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
 test.use({ actionTimeout: 15000 });
 test('delivers current contact policy to a genuinely paired child without identity keys', async ({ page, context, browser }) => {
@@ -14,12 +14,7 @@ test('delivers current contact policy to a genuinely paired child without identi
   await page.getByRole('button', { name: 'Approved contacts', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Approved contacts', exact: true })).toHaveClass(/btn-tile-selected/);
 
-  const depId = await page.evaluate(async () => {
-    const db = await import('/src/lib/db.ts');
-    const records = await (await db.getDb()).getAll('identity');
-    const dependant = records.find(record => record.guardianPubkey);
-    return dependant.id.replace(/^dependant:/, '');
-  });
+  const depId = await firstDependantId(page);
   await page.evaluate(async id => await (window as any).__TEST__.setDependantStage(id, 'request-approve'), depId);
   await navigateViaHarness(page, 'pair-dependant-device');
   await page.getByRole('button', { name: 'Open Bunker settings' }).click();

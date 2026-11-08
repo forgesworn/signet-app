@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import jsQR from 'jsqr';
-import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, unlockWithPin } from './fixtures';
+import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, unlockWithPin, firstDependantId } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
 import { androidAcceptance } from './helpers/android-acceptance';
 test.use({ actionTimeout: 15000 });
@@ -21,12 +21,7 @@ test('child asks to connect; the guardian approves one and denies another', asyn
   // --- Guardian: activates real identity, adds Robin, opens contact policy, pairs a child device. ---
   await createIdentityAndUnlock(page, { name: 'Guardian' });
   await addDependantViaUi(page, 'Robin');
-  const depId = await page.evaluate(async () => {
-    const db = await import('/src/lib/db.ts');
-    const records = await (await db.getDb()).getAll('identity');
-    const dependant = records.find((record: any) => record.guardianPubkey);
-    return dependant.id.replace(/^dependant:/, '');
-  });
+  const depId = await firstDependantId(page);
   await page.evaluate(async id => await (window as any).__TEST__.setDependantStage(id, 'request-approve'), depId);
   await navigateViaHarness(page, 'family-list');
   await page.getByRole('button', { name: /Robin/ }).click();
@@ -57,8 +52,8 @@ test('child asks to connect; the guardian approves one and denies another', asyn
   // out) — the mock intercepts any hostname, so any wss:// string works.
   await friend.evaluate(() => (window as any).__TEST__.setRelayUrl('wss://friend-invite.test'));
   await friend.keyboard.press('ArrowRight');
-  await friend.getByRole('button', { name: 'Create reusable contact invite', exact: true }).click();
-  await expect(friend.getByRole('option', { name: 'My contact card', exact: true })).toHaveCount(1);
+  // The QR card sets up the standing invite on its own; its QR appears once it exists.
+  await expect(friend.locator('.qr-tabbed .qr-box canvas:visible')).toBeVisible({ timeout: 30_000 });
   await friend.getByRole('button', { name: 'Manage invites', exact: true }).click();
   await expect(friend.getByText('My contact card', { exact: true })).toBeVisible();
   await friend.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true,
