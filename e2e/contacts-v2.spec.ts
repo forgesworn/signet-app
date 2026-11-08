@@ -3,7 +3,7 @@ import { nip19 } from 'nostr-tools';
 import { privateRelays } from './helpers/private-relays';
 
 test.beforeEach(async ({ context }) => { await privateRelays().install(context); });
-import { createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { createIdentityAndUnlock, clearDatabase, navigateViaHarness, addDependantViaUi } from './fixtures';
 import {
   tierChipLabel, tierProvenanceSuffix,
   CANCEL_LABEL, CONFIRM_LABEL, CONTACTS_GRANTS_LIST_TITLE, CONTACTS_GRANTS_LIST_EMPTY,
@@ -14,43 +14,6 @@ import {
 /** A well-known secp256k1 x-coordinate, reused from `e2e/family.spec.ts` as a stand-in real pubkey. */
 const TEST_PUBKEY = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
 
-/**
- * Adding a dependant, or reaching a dependant's Advanced page, both need the
- * guardian's real identity active first (spec §7.3 — "you are the guardian on
- * record"). A fresh `createIdentityAndUnlock` identity has it dormant, so
- * `navigateViaHarness(page, 'add-dependant')` lands on the RequireRealIdentity
- * gate instead of the form. Walk the real activation ceremony (explanation →
- * legal name → typed confirm → first-backup words) the same way
- * `e2e/_capture-ux-audit.spec.ts` does — it's a no-op when the gate isn't
- * showing (npActive already true).
- */
-/**
- * `Locator.isVisible()` checks the current state and does not poll — the
- * async writes below (activating the real identity persists an encrypted
- * identity record) can easily outlast a snapshot check taken the instant the
- * previous action resolves. `waitFor` is the actual polling wait.
- */
-async function waitVisible(locator: ReturnType<Page['getByRole']>, timeout: number): Promise<boolean> {
-  return locator.waitFor({ state: 'visible', timeout }).then(() => true).catch(() => false);
-}
-
-async function activateRealIdentityIfGated(page: Page, legalName = 'Guardian Person') {
-  const activate = page.getByRole('button', { name: 'Activate my real identity' });
-  if (!(await waitVisible(activate, 3_000))) return;
-  await activate.click();
-  await page.locator('#legal-name').fill(legalName);
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await page.getByPlaceholder(legalName).fill(legalName);
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  // Fresh identity + never backed up ⇒ the first-backup words step follows,
-  // once the async activation write resolves.
-  const checkbox = page.getByRole('checkbox');
-  if (await waitVisible(checkbox, 30_000)) {
-    await checkbox.click();
-    await page.getByRole('button', { name: 'Done' }).click();
-  }
-}
-
 async function addKeylessContact(page: Page, name: string, email?: string) {
   await navigateViaHarness(page, 'contact-new');
   await page.getByLabel('Name').fill(name);
@@ -59,12 +22,9 @@ async function addKeylessContact(page: Page, name: string, email?: string) {
   await expect(page.getByText(name)).toBeVisible({ timeout: 20_000 });
 }
 
+/** Adds a dependant and stays on the "identity is ready" screen (openDependantAdvanced leaves it). */
 async function addDependant(page: Page, name: string) {
-  await navigateViaHarness(page, 'add-dependant');
-  await activateRealIdentityIfGated(page);
-  await page.getByLabel(/Their name/i).fill(name);
-  await page.getByRole('button', { name: 'Create identity' }).click();
-  await expect(page.getByText(new RegExp(`${name}'s identity is ready`))).toBeVisible({ timeout: 60_000 });
+  await addDependantViaUi(page, name, { stay: true });
 }
 
 /**
@@ -144,7 +104,7 @@ test.describe('Contacts v2', () => {
     await waitForCarouselSettled(page, 'h', 1);
     await page.keyboard.press('ArrowRight');
     await waitForCarouselSettled(page, 'h', 2);
-    await expect(page.getByRole('heading', { name: 'Test User’s contacts' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Test User’s contacts' })).toBeVisible();
     await expect(page.getByText('Corner Shop', { exact: true })).toBeVisible();
     const search = page.getByRole('searchbox');
     await search.fill('Corner');

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import jsQR from 'jsqr';
-import { createIdentityAndUnlock, navigateViaHarness, unlockWithPin } from './fixtures';
+import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, unlockWithPin } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
 import { androidAcceptance } from './helpers/android-acceptance';
 test.use({ actionTimeout: 15000 });
@@ -20,18 +20,7 @@ test('child asks to connect; the guardian approves one and denies another', asyn
 
   // --- Guardian: activates real identity, adds Robin, opens contact policy, pairs a child device. ---
   await createIdentityAndUnlock(page, { name: 'Guardian' });
-  await navigateViaHarness(page, 'add-dependant');
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  await page.locator('#legal-name').fill('Guardian Person');
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await page.getByPlaceholder('Guardian Person').fill('Guardian Person');
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  await page.getByRole('checkbox').click();
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await page.getByLabel(/Their name/i).fill('Robin');
-  await page.getByRole('button', { name: 'Create identity', exact: true }).click();
-  await expect(page.getByText(/Robin's identity is ready/)).toBeVisible({ timeout: 60000 });
-  await page.getByRole('button', { name: /Done for now/ }).click();
+  await addDependantViaUi(page, 'Robin');
   const depId = await page.evaluate(async () => {
     const db = await import('/src/lib/db.ts');
     const records = await (await db.getDb()).getAll('identity');

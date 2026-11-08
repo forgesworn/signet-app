@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import jsQR from 'jsqr';
 import { nip19 } from 'nostr-tools';
-import { createIdentityAndUnlock, navigateViaHarness, unlockWithPin } from './fixtures';
+import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, unlockWithPin } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
 import { androidAcceptance } from './helpers/android-acceptance';
 test.use({ actionTimeout: 15000 });
@@ -10,18 +10,7 @@ test('delivers a scoped read-only directory to a paired child, withdraws blocked
   const network = privateRelays(); await network.install(context);
   await createIdentityAndUnlock(page, { name: 'Guardian' });
   await page.evaluate(() => (window as any).__TEST__.setRelayUrl('wss://family-invite.test'));
-  await navigateViaHarness(page, 'add-dependant');
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  await page.locator('#legal-name').fill('Guardian Person');
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await page.getByPlaceholder('Guardian Person').fill('Guardian Person');
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  await page.getByRole('checkbox').click();
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await page.getByLabel(/Their name/i).fill('Robin');
-  await page.getByRole('button', { name: 'Create identity', exact: true }).click();
-  await expect(page.getByText(/Robin's identity is ready/)).toBeVisible({ timeout: 60000 });
-  await page.getByRole('button', { name: /Done for now/ }).click();
+  await addDependantViaUi(page, 'Robin');
   const depId = await page.evaluate(async () => {
     const db = await import('/src/lib/db.ts');
     const records = await (await db.getDb()).getAll('identity');
