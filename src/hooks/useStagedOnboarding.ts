@@ -1,5 +1,9 @@
 import { useState } from 'react';
-import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
+import { parseRestoreInput, consumeSecretKeyAsNsec, RESTORE_ERROR_COPY } from '../lib/recovery-words';
+
+/** Shown when raw-nsec words reach a staged screen that has no nsec import wired. */
+export const RAW_NSEC_WORDS_NOT_HERE_COPY =
+  'These words restore one Nostr key. Import it from the My Signet welcome screen.';
 
 export type StagedOnboardingStage =
   | 'choice'
@@ -11,9 +15,15 @@ export type StagedOnboardingStage =
 interface Options {
   onCreate: (displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean) => Promise<void>;
   onImport: (mnemonic: string, displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean) => Promise<void>;
+  /**
+   * Raw-nsec recovery words (one imported key, 31 words) restore through the
+   * existing nsec import, into the persona slot. This staged flow already asks
+   * for a display name, so there is no relay profile lookup here.
+   */
+  onImportNsec?: (nsec: string, displayName: string) => Promise<void>;
 }
 
-export function useStagedOnboarding({ onCreate, onImport }: Options) {
+export function useStagedOnboarding({ onCreate, onImport, onImportNsec }: Options) {
   const [stage, setStage] = useState<StagedOnboardingStage>('choice');
   const [phrase, setPhrase] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -48,15 +58,24 @@ export function useStagedOnboarding({ onCreate, onImport }: Options) {
       );
       return;
     }
-    const mnemonic = parsed.mnemonic;
     const name = displayName.trim();
+    if (parsed.kind === 'raw-nsec' && !onImportNsec) {
+      parsed.secretKey.fill(0);
+      setError(RAW_NSEC_WORDS_NOT_HERE_COPY);
+      return;
+    }
     if (!name) {
+      if (parsed.kind === 'raw-nsec') parsed.secretKey.fill(0);
       setError('Please give this identity a display name.');
       return;
     }
     setBusy(true);
     try {
-      await onImport(mnemonic, name, 'persona', false);
+      if (parsed.kind === 'raw-nsec') {
+        await onImportNsec!(consumeSecretKeyAsNsec(parsed.secretKey), name);
+      } else {
+        await onImport(parsed.mnemonic, name, 'persona', false);
+      }
     } catch (e) {
       setBusy(false);
       setError(e instanceof Error ? e.message : 'Could not restore that Signet — please try again.');

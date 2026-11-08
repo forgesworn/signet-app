@@ -64,6 +64,28 @@ describe('Nip55ApprovalModal', () => {
     expect(onApproveOnce).toHaveBeenCalledWith(1, B);
   });
 
+  it('an older-format decrypt says so, names who gets the text, and shows who it is from', () => {
+    const { onApproveOnce } = setup(
+      approval({ method: 'nip04_decrypt', description: 'read an older-format message sent to you', peer: B, pubkey: A }),
+      [{ pubkey: A, label: 'Persona' }],
+    );
+    expect(screen.getByRole('heading').textContent).toBe('Kithmoot wants to read an older-format message sent to you.');
+    expect(screen.getByText(/Kithmoot receives the decrypted text of this message\. It was sent in the older NIP-04 format\./)).toBeTruthy();
+    expect(screen.getByText('With:')).toBeTruthy();
+    expect(screen.getByText('Persona')).toBeTruthy();
+    expect(screen.queryByRole('radio')).toBeNull();
+    fireEvent.click(screen.getByText('Allow once'));
+    expect(onApproveOnce).toHaveBeenCalledWith(1, A);
+  });
+
+  it('the older-format line is only for the older format', () => {
+    for (const method of ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'] as const) {
+      const { unmount } = setup(approval({ method, peer: B }), [{ pubkey: A, label: 'Persona' }]);
+      expect(screen.queryByText(/NIP-04/)).toBeNull();
+      unmount();
+    }
+  });
+
   it('a named key that is listed: no picker even for get_public_key, and exactly that key is approved', () => {
     const two = [{ pubkey: A, label: 'Persona' }, { pubkey: B, label: 'Extra' }];
     const { onApproveOnce } = setup(approval({ pubkey: B, named: true }), two);

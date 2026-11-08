@@ -156,6 +156,18 @@ describe('BunkerSigningBackend signing methods — bounded by SIGNER_REQUEST_TIM
     expect(Object.keys(signer.listeners)).toEqual([]);
   });
 
+  it('nip04Decrypt times out too: a signer that ignores the method fails the request instead of hanging it', async () => {
+    const backend = new BunkerSigningBackend('1'.repeat(64));
+    const signer = silentSigner();
+    (backend as unknown as { signer: unknown }).signer = signer;
+
+    const pending = backend.nip04Decrypt('a'.repeat(64), 'ciphertext?iv=iv');
+    const assertion = expect(pending).rejects.toBeInstanceOf(BunkerRequestTimeoutError);
+    await vi.advanceTimersByTimeAsync(SIGNER_REQUEST_TIMEOUT_MS);
+    await assertion;
+    expect(Object.keys(signer.listeners)).toEqual([]);
+  });
+
   it('only the timed-out request of two concurrent ones is dropped; the other still resolves', async () => {
     const backend = new BunkerSigningBackend('1'.repeat(64));
     let serial = 0;

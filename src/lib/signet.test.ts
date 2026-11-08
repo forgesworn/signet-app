@@ -118,4 +118,10 @@ describe('naturalPersonActive on creation and import', () => {
     expect(identity.naturalPerson.publicKey).toBe('');
     expect(identity.liteImported).toBeUndefined();
   });
+
+  it('an nsec import starts not backed up, so its recovery words are asked for', () => {
+    const identity = importFromNsec(TEST_NSEC, 'FromNostr', 'persona');
+    expect(identity.backedUp).toBe(false);
+    expect(identity.mnemonic).toBe('');
+  });
 });

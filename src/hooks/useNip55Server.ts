@@ -67,7 +67,8 @@ interface Options {
    * through the child's gate (appId `nip55:<package>`) instead of the local
    * approval screen; the gate's created_at is stamped on the forwarded
    * Heartwood request. A content-provider request never waits: if the gate
-   * has to ask, it is rejected and the ask stays live.
+   * has to ask, it is rejected and the ask stays live. `nip04_decrypt` never
+   * reaches the gate: it has no NIP-04 policy, so a gated install refuses it.
    */
   gate?: (req: {
     persona: string; appId: string; appLabel: string; method: 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
@@ -120,10 +121,15 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const byIntent = !raw.viaProvider;
     const route = routesRef.current.find(r => !r.dependantId && r.pubkey.toLowerCase() === pubkey);
     if (!route) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
-    let backend: Pick<typeof route.backend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt'> = route.signingBackend ?? route.backend;
+    let backend: Pick<typeof route.backend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt' | 'nip04Decrypt'> = route.signingBackend ?? route.backend;
     let template = parsed.template ? { ...parsed.template, pubkey } as UnsignedEvent : undefined;
     const g = gateRef.current;
     if (g && parsed.method !== 'get_public_key') {
+      // The child's gate has no NIP-04 policy, so a child-direct install does
+      // not serve it (the NIP-46 server answers the same way). `planFor`
+      // refuses it first; this is the backstop for an approval that outlived
+      // the plan.
+      if (parsed.method === 'nip04_decrypt') { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
       const pkg = raw.callerPackage ?? '';
       if (!pkg) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
       let outcome: ChildGateOutcome;
@@ -137,6 +143,10 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       backend = withRequestCreatedAt(route.signingBackend ?? route.backend, outcome.requestCreatedAt);
       if (outcome.template) template = outcome.template;
     }
+    // NIP-04 is optional on a backend: one that cannot do it (a wrapper, or a
+    // signer behind a gate) is refused here, before the window is extended
+    // and before anything is called.
+    if (parsed.method === 'nip04_decrypt' && !backend.nip04Decrypt) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
     onServedRef.current?.();
     try {
       switch (parsed.method) {
@@ -154,6 +164,9 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
         case 'nip44_decrypt':
           await respond({ id: raw.id, status: 'ok', result: await backend.nip44Decrypt(parsed.peer!, parsed.payload!) }, byIntent);
           return;
+        case 'nip04_decrypt':
+          await respond({ id: raw.id, status: 'ok', result: await backend.nip04Decrypt!(parsed.peer!, parsed.payload!) }, byIntent);
+          return;
       }
     } catch {
       await respond({ id: raw.id, status: 'rejected' }, byIntent);
@@ -166,6 +179,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
    * not deferred: it goes to `execute`, where the gate decides.
    */
   const planFor = useCallback((parsed: ParsedNip55 | null, viaProvider: boolean, grant: Nip55Grant | undefined, owned: string[], active: string | null): Nip55Plan => {
+    // A gated (child-direct) install does not serve NIP-04: refused before any unlock prompt or screen.
+    if (gateRef.current && parsed?.method === 'nip04_decrypt') return { kind: 'reject', reason: 'unsupported' };
     const gated = !!gateRef.current && !!parsed && parsed.method !== 'get_public_key' && owned.length > 0;
     const plan = planNip55(parsed, gated ? false : viaProvider, grant, owned, active);
     if (gated && plan.kind === 'ask') return plan.pubkey ? { kind: 'forward', pubkey: plan.pubkey } : { kind: 'reject', reason: 'no-identity' };

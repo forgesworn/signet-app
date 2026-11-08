@@ -13,8 +13,10 @@
  * rewires the gear-fab and Phase 2F adds the route to App.tsx.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NpubRow } from '../components/NpubRow';
+import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
+import { IMPORTED_KEY_NOT_HERE, IMPORTED_PERSONA_NOTE, IMPORTED_PERSONA_SHOW_WORDS } from '../lib/raw-nsec-backup-copy';
 import { Icon } from '../components/Icon';
 import type { SignetIdentity, DependantIdentity, AutonomyStage, PersonaPublicProfile, PublicProfileBase, FollowsImportState } from '../types';
 import { ExistingProfilePanel } from '../components/ExistingProfilePanel';
@@ -121,6 +123,12 @@ export interface PersonaAdvancedProps {
   onStopContactAvatarShare?: (target: string, depId?: string) => Promise<string | void>;
   onDeletePersona?: (pubkey: string) => Promise<void>;
   onShowImportedNsec?: () => void;
+  /**
+   * An imported extra persona's own 31 raw-nsec recovery words. The caller
+   * runs fresh auth and derives the words from the key on this device;
+   * `null` means declined or no key here. Absent on a paired-child install.
+   */
+  onRevealImportedKeyWords?: (pubkey: string, depPubkey?: string) => Promise<string | null>;
 
   // — Dep-NP-only (the dep-level "Manage Alex" surface) —
   onChangeAutonomyStage?: (stage: AutonomyStage) => Promise<void>;
@@ -172,6 +180,8 @@ interface ResolvedSlot {
   followsImport?: FollowsImportState;
   /** Imported nsec — only meaningful for extras. */
   imported?: boolean;
+  /** Whether this device holds the slot's private key (never the key itself). Extras only. */
+  hasPrivateKey?: boolean;
   hidden?: boolean;
   /** Present while this slot shares its picture with contacts (the AES key contacts hold). */
   contactAvatarKey?: string;
@@ -218,6 +228,7 @@ function resolveUserSlot(identity: SignetIdentity, target: string): ResolvedSlot
     followsImport: ep.followsImport,
     contactAvatarKey: ep.contactAvatarKey,
     imported: ep.imported,
+    hasPrivateKey: !!ep.privateKey,
     hidden: ep.hidden,
   };
 }
@@ -251,6 +262,7 @@ function resolveDepSlot(dep: DependantIdentity | undefined, target: string): Res
     publicProfileBase: ep.publicProfileBase,
     contactAvatarKey: ep.contactAvatarKey,
     imported: ep.imported,
+    hasPrivateKey: !!ep.privateKey,
     hidden: ep.hidden,
   };
 }
@@ -384,9 +396,16 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
         <p role="status" className="card section" style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{shareStopNote}</p>
       )}
 
-      {/* Imported nsec note — extras (user + dep) only, if imported. */}
+      {/* Imported nsec note + its own recovery words — extras (user + dep) only, if imported. */}
       {(slotKind === 'extra' || slotKind === 'dep-extra') && slot.imported && (
-        <ImportedNoteBlock onShowImportedNsec={props.onShowImportedNsec} />
+        <ImportedNoteBlock
+          key={slot.publicKey}
+          hasPrivateKey={!!slot.hasPrivateKey}
+          onRevealWords={props.onRevealImportedKeyWords
+            ? () => props.onRevealImportedKeyWords!(slot.publicKey, depPubkey)
+            : undefined}
+          onShowImportedNsec={props.onShowImportedNsec}
+        />
       )}
 
       {/* Hide / unhide — extras only. */}
@@ -873,16 +892,80 @@ function KeysBlock({ pubkey }: { pubkey: string }) {
   );
 }
 
-function ImportedNoteBlock({ onShowImportedNsec }: { onShowImportedNsec?: () => void }) {
+/**
+ * An imported extra persona: why the Signet's words don't cover it, and its
+ * own 31 raw-nsec recovery words. Same guardrails as Security settings'
+ * Backup Words card: fresh auth before the words are derived (the caller's
+ * job), auto-hide after 90 s, clipboard cleared after 60 s. A slot whose key
+ * isn't held here says so instead of offering a reveal with nothing behind it.
+ */
+function ImportedNoteBlock({
+  hasPrivateKey,
+  onRevealWords,
+  onShowImportedNsec,
+}: {
+  hasPrivateKey: boolean;
+  onRevealWords?: () => Promise<string | null>;
+  onShowImportedNsec?: () => void;
+}) {
+  const [words, setWords] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!words) return;
+    const timer = setTimeout(() => setWords(null), 90_000);
+    return () => clearTimeout(timer);
+  }, [words]);
+
+  async function reveal() {
+    if (!onRevealWords || busy) return;
+    setBusy(true);
+    try {
+      const revealed = await onRevealWords();
+      if (revealed) setWords(revealed);
+    } catch {
+      // Declined or unavailable: leave the words hidden. Nothing to report
+      // beyond the auth prompt the user just saw.
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="card section">
       <div className="section-title">Imported persona</div>
       <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-        This persona was imported from an existing nsec, not derived from your Signet
-        seed phrase. Your recovery words won't bring it back — make sure your nsec
-        is backed up separately. Imported personas stay on this device only; they are
-        not included in the cross-device backup.
+        {IMPORTED_PERSONA_NOTE}
       </p>
+      {!hasPrivateKey ? (
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+          {IMPORTED_KEY_NOT_HERE}
+        </p>
+      ) : words ? (
+        <div>
+          <RecoveryWordsGrid words={words.split(' ')} bare />
+          <button className="btn btn-ghost" onClick={() => {
+            navigator.clipboard?.writeText(words);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+            // Clear clipboard after 60 seconds
+            setTimeout(() => navigator.clipboard?.writeText(''), 60_000);
+          }}>
+            {copied ? 'Copied!' : 'Copy to clipboard'}
+          </button>
+          <button className="btn btn-ghost" onClick={() => setWords(null)}>
+            Hide words
+          </button>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8, marginBottom: 0 }}>
+            Words auto-hide after 90 seconds. Clipboard clears after 60 seconds.
+          </p>
+        </div>
+      ) : onRevealWords ? (
+        <button className="btn btn-secondary" disabled={busy} onClick={() => void reveal()}>
+          {IMPORTED_PERSONA_SHOW_WORDS}
+        </button>
+      ) : null}
       {onShowImportedNsec && (
         <button className="btn btn-secondary" onClick={onShowImportedNsec}>Show nsec</button>
       )}

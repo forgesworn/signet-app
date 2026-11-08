@@ -51,7 +51,7 @@ class Nip55SignerActivity : Activity() {
             permissions = intent?.getStringExtra(Nip55Wire.EXTRA_PERMISSIONS),
         )
         android.util.Log.i("Nip55", "intent ${request.type} from ${callingPackage} payload=${request.payload?.length ?: 0}")
-        if (request.type == null || request.type.lowercase() !in Nip55Wire.METHODS) {
+        if (!Nip55Wire.supports(request.type)) {
             finishRejected()
             return
         }

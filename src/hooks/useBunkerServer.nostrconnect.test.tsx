@@ -404,8 +404,8 @@ describe('useBunkerServer NostrConnect integration', () => {
     unmount();
   });
 
-  it('rejects owner NIP-44 when the NostrConnect approval was not persisted', async () => {
-    const { ownerBackend, relayUrl, unmount } = renderOwnerServer('wss://canary-denied.example');
+  it('queues owner NIP-44 from a client with no saved approval instead of refusing it (#189)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-queued.example');
     const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
     const clientSk = generateSecretKey();
     const peerPubkey = getPublicKey(generateSecretKey());
@@ -414,17 +414,187 @@ describe('useBunkerServer NostrConnect integration', () => {
       ws.deliver(buildClientRequest({
         clientSk,
         targetPubkey: ownerBackend.activePublicKeyHex,
-        id: 'nip44-denied',
+        id: 'nip44-queued',
         method: 'nip44_encrypt',
-        params: [peerPubkey, 'blocked plaintext'],
+        params: [peerPubkey, 'held plaintext'],
       }));
     });
 
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    const pending = result.current.pendingApprovals[0];
+    expect(pending.method).toBe('nip44_encrypt');
+    expect(pending.route.dependantId).toBeNull();
+    // Nothing runs, and nothing is answered, until the owner decides.
+    expect(ws.published).toHaveLength(0);
+
+    await act(async () => { await result.current.deny(pending.handle); });
     await waitFor(() => expect(ws.published).toHaveLength(1));
     expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({
-      id: 'nip44-denied',
-      error: 'not connected',
+      id: 'nip44-queued',
+      error: 'user denied',
     });
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    unmount();
+  });
+
+  it('a Stash-style vault-key unwrap asks once, then "Allow always" answers later unwraps silently (#189)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-always.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    const self = ownerBackend.activePublicKeyHex;
+    // Data the owner encrypted to themselves, as Stash wraps its vault key.
+    const wrapped = await ownerBackend.nip44Encrypt(self, 'vault key bytes');
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({
+        clientSk, targetPubkey: self, id: 'unwrap-1', method: 'nip44_decrypt', params: [self, wrapped],
+      }));
+    });
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    const pending = result.current.pendingApprovals[0];
+    expect(pending.description).toBe('Decrypt data you encrypted to yourself');
+    expect(pending.alwaysAvailable).toBe(true);
+
+    await act(async () => { await result.current.approveAlways(pending.handle); });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({ id: 'unwrap-1', result: 'vault key bytes' });
+    expect((await getConnectedClient(clientPubkey))?.allowAlways).toBe(true);
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({
+        clientSk, targetPubkey: self, id: 'unwrap-2', method: 'nip44_decrypt', params: [self, wrapped],
+      }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(2));
+    expect(decryptServerResponse(clientSk, ws.published[1])).toEqual({ id: 'unwrap-2', result: 'vault key bytes' });
+    expect(result.current.pendingApprovals).toHaveLength(0);
+
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
+  it('"Allow once" answers one owner NIP-44 request and saves nothing (#189)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-once.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    const peerSk = generateSecretKey();
+    const peerPubkey = getPublicKey(peerSk);
+    const incoming = encrypt('hello', getConversationKey(peerSk, ownerBackend.activePublicKeyHex));
+
+    const ask = async (id: string) => {
+      await act(async () => {
+        ws.deliver(buildClientRequest({
+          clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id, method: 'nip44_decrypt', params: [peerPubkey, incoming],
+        }));
+      });
+    };
+    await ask('once-1');
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(result.current.pendingApprovals[0].description).toMatch(/^Decrypt a message from npub1/);
+    await act(async () => { await result.current.approveOnce(result.current.pendingApprovals[0].handle); });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({ id: 'once-1', result: 'hello' });
+    expect(await getConnectedClient(clientPubkey)).toBeUndefined();
+
+    // The next request asks again.
+    await ask('once-2');
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(1);
+    unmount();
+  });
+
+  it('ignores a saved client that addresses an owner persona other than the one it paired with (#194)', async () => {
+    const personaA = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const personaB = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const relayUrl = 'wss://canary-bound.example';
+    const { unmount } = renderHook(() => useBunkerServer({
+      enabled: true,
+      relayUrl,
+      routes: [
+        { pubkey: personaA.activePublicKeyHex, backend: personaA },
+        { pubkey: personaB.activePublicKeyHex, backend: personaB },
+      ],
+      isOwnerServingActive: () => true,
+    }));
+    await waitFor(() => expect(MockRelaySocket.instances[0]?.subId).toBeTruthy());
+    const ws = MockRelaySocket.instances[0];
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    await saveConnectedClient({
+      clientPubkey, appName: 'Bark', connectedAt: 1, lastSeenAt: 1, allowAlways: true,
+      boundPubkey: personaA.activePublicKeyHex,
+    });
+
+    // To persona B: no reply of any kind, not even a refusal.
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaB.activePublicKeyHex, id: 'to-b', method: 'get_public_key', params: [] }));
+    });
+    // To persona A, after it: answered. Ordering proves B was dropped, not slow.
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaA.activePublicKeyHex, id: 'to-a', method: 'get_public_key', params: [] }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(ws.published[0].pubkey).toBe(personaA.activePublicKeyHex);
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({ id: 'to-a', result: personaA.activePublicKeyHex });
+
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
+  it('binds a pre-binding saved client to the first owner persona it uses (#194)', async () => {
+    const personaA = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const personaB = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const relayUrl = 'wss://canary-lazybind.example';
+    const { unmount } = renderHook(() => useBunkerServer({
+      enabled: true,
+      relayUrl,
+      routes: [
+        { pubkey: personaA.activePublicKeyHex, backend: personaA },
+        { pubkey: personaB.activePublicKeyHex, backend: personaB },
+      ],
+      isOwnerServingActive: () => true,
+    }));
+    await waitFor(() => expect(MockRelaySocket.instances[0]?.subId).toBeTruthy());
+    const ws = MockRelaySocket.instances[0];
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    await saveConnectedClient({ clientPubkey, appName: 'Legacy', connectedAt: 1, lastSeenAt: 1, allowAlways: true });
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaB.activePublicKeyHex, id: 'first', method: 'get_public_key', params: [] }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    await waitFor(async () => expect((await getConnectedClient(clientPubkey))?.boundPubkey).toBe(personaB.activePublicKeyHex));
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaA.activePublicKeyHex, id: 'other', method: 'get_public_key', params: [] }));
+    });
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaB.activePublicKeyHex, id: 'again', method: 'get_public_key', params: [] }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(2));
+    expect(decryptServerResponse(clientSk, ws.published[1]).id).toBe('again');
+
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
+  it('"Allow always" on an owner request binds the client to that persona (#194)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-bind-on-allow.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    const self = ownerBackend.activePublicKeyHex;
+    const wrapped = await ownerBackend.nip44Encrypt(self, 'k');
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: self, id: 'bind', method: 'nip44_decrypt', params: [self, wrapped] }));
+    });
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { await result.current.approveAlways(result.current.pendingApprovals[0].handle); });
+    await waitFor(async () => expect((await getConnectedClient(clientPubkey))?.boundPubkey).toBe(self));
+    await deleteConnectedClient(clientPubkey);
     unmount();
   });
 

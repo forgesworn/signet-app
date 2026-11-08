@@ -11,7 +11,7 @@ const HOUR_AGO_SECONDS = Math.floor(NOW / 1000) - 3600;
 function input(o: Partial<Parameters<typeof shouldShowBackupNudge>[0]> = {}) {
   return {
     backedUp: false,
-    hasMnemonic: true,
+    hasRecoveryWords: true,
     isPairedChild: false,
     createdAtSeconds: DAY_AGO_SECONDS,
     authorizedSiteCount: 0,
@@ -39,8 +39,8 @@ describe('shouldShowBackupNudge', () => {
     expect(shouldShowBackupNudge(input({ backedUp: true }))).toBe(false);
   });
 
-  it('never shows when there is nothing to back up (nsec import)', () => {
-    expect(shouldShowBackupNudge(input({ hasMnemonic: false }))).toBe(false);
+  it('never shows when this device has no recovery words to back up', () => {
+    expect(shouldShowBackupNudge(input({ hasRecoveryWords: false }))).toBe(false);
   });
 
   it('never shows on a paired child', () => {
@@ -68,7 +68,7 @@ describe('shouldShowBackupNudge', () => {
   });
 
   it('still stays quiet with a dependant when there is no mnemonic', () => {
-    expect(shouldShowBackupNudge(input({ dependantCount: 1, hasMnemonic: false }))).toBe(false);
+    expect(shouldShowBackupNudge(input({ dependantCount: 1, hasRecoveryWords: false }))).toBe(false);
   });
 
   it('still stays quiet with a dependant on a paired child', () => {
