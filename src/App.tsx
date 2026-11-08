@@ -210,7 +210,8 @@ import { toRecoveryWords, toNsecRecoveryWords, recoveryWordsSource } from './lib
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
 import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
-import { publishPublicProfile, retractPublicProfile, adoptPublishedIntoCard, toPublicProfileBase } from './lib/public-profile-publish';
+import { publishPublicProfile, retractPublicProfile, adoptPublishedIntoCard, adoptRelayProfile, toPublicProfileBase } from './lib/public-profile-publish';
+import { RelayProfileChangedModal, type RelayProfileChoice } from './components/RelayProfileChangedModal';
 import { fetchExistingProfile, buildMatchSeed } from './lib/existing-profile';
 import { fetchFollowList, fetchFollowNames, fetchKind0Profiles, shortNpub } from './lib/nostr-follows';
 import { planScannedContact } from './lib/scan-add-contact';
@@ -7169,6 +7170,13 @@ function AppContent() {
    * Returns `{ ok, message }` so callers can surface relay errors verbatim
    * without throwing.
    */
+  // "This profile was changed in another app" (#194): publishPersonaProfile
+  // awaits the choice; the modal resolves it.
+  const [relayProfileAsk, setRelayProfileAsk] = useState<{ changedAt: number; resolve: (c: RelayProfileChoice) => void } | null>(null);
+  const askRelayProfileChoice = useCallback((changedAt: number) => new Promise<RelayProfileChoice>(resolve => {
+    setRelayProfileAsk(prev => { prev?.resolve('cancel'); return { changedAt, resolve }; });
+  }), []);
+
   const publishPersonaProfile = useCallback(async (
     slotTarget: 'natural-person' | 'persona' | 'professional-persona' | string,
     depPubkey: string | undefined,
@@ -7278,23 +7286,44 @@ function AppContent() {
     const priorHash = slot.publicProfile?.lastPublishedContentHash;
 
     const owned = !!slot.privateKey;
-    const backend: DecryptingSigningBackend = owned ? new LocalSigningBackend(slot.privateKey) : routedBackend!;
-    let result: import('./lib/public-profile-publish').PublishResult;
-    try {
-      result = await publishPublicProfile(
-        config,
-        slot.publicProfile,
-        fallbackDisplayName,
-        backend,
-        relayUrl,
-        priorHash,
-        // Lossless publish: with a stored base the publisher looks up the
-        // relay's current kind-0 and three-way merges onto it; without one it
-        // is the plain card build, as before.
-        { storedBase: slot.publicProfileBase, lookupRelays: syncRelays.read },
-      );
-    } finally {
-      if (owned) backend.destroy();
+    const publishSlot = slot;
+    const runPublish = async (unbasedRelayChange: 'ask' | 'replace') => {
+      const backend: DecryptingSigningBackend = owned ? new LocalSigningBackend(publishSlot.privateKey) : routedBackend!;
+      try {
+        return await publishPublicProfile(
+          config,
+          publishSlot.publicProfile,
+          fallbackDisplayName,
+          backend,
+          relayUrl,
+          priorHash,
+          // Lossless publish: with a stored base the publisher looks up the
+          // relay's current kind-0 and three-way merges onto it; without one
+          // the fetched kind-0 stands in, and a profile made elsewhere is
+          // asked about first (#194).
+          { storedBase: publishSlot.publicProfileBase, lookupRelays: syncRelays.read, unbasedRelayChange },
+        );
+      } finally {
+        if (owned) backend.destroy();
+      }
+    };
+    let result = await runPublish('ask');
+    if (result.relayChange) {
+      const choice = await askRelayProfileChoice(result.relayChange.event.created_at);
+      if (choice === 'cancel') return { ok: false, message: 'Not published. Your card is unchanged.' };
+      if (choice === 'adopt') {
+        // A dependant's name is the guardian's to set, and a natural person's
+        // legal name never comes from a relay.
+        const adopted = adoptRelayProfile(result.relayChange, config, { adoptName: !depPubkey && slotTarget !== 'natural-person' });
+        if (depPubkey) {
+          await setDependantPersonaPublicProfile(depPubkey, slotTarget, adopted.config, adopted.state, adopted.base);
+        } else {
+          await setPersonaPublicProfile(slotTarget, adopted.config, adopted.state, adopted.base);
+          if (adopted.name) await updateDisplayName(slotTarget, adopted.name);
+        }
+        return { ok: true, message: 'Your card now shows the profile from the other app.' };
+      }
+      result = await runPublish('replace');
     }
     if (!result.ok) return { ok: false, message: result.message };
 
@@ -7356,7 +7385,7 @@ function AppContent() {
       if (nameFromRelay) await updateDisplayName(slotTarget, nameFromRelay);
     }
     return { ok: true };
-	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect]);
+	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect, askRelayProfileChoice]);
 
   /**
    * Phase 2F shared retract helper. Mirror of `publishPersonaProfile`:
@@ -10713,8 +10742,17 @@ function AppContent() {
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
 
+  // "Changed in another app" (#194) rides on the auth overlay, which every
+  // page renders, so it shows wherever a publish was started.
+  const relayProfileOverlay = relayProfileAsk ? (
+    <RelayProfileChangedModal
+      changedAt={relayProfileAsk.changedAt}
+      onChoose={(choice) => { relayProfileAsk.resolve(choice); setRelayProfileAsk(null); }}
+    />
+  ) : null;
+
   // On-demand auth prompt overlay — rendered on any page that triggers requestAuth
-  const authOverlay = showAuthPrompt ? (
+  const authOverlay = relayProfileOverlay ?? (showAuthPrompt ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: Z.overlay, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={(e) => { if (e.target === e.currentTarget) handleContextualAuthDeclined(); }}
@@ -10727,7 +10765,7 @@ function AppContent() {
         />
       </div>
     </div>
-  ) : null;
+  ) : null);
 
   // NIP-46 bunker server approval UI (Phase 2).
   // Rendered alongside authOverlay on every page so inbound sign_event
