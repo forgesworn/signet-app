@@ -36,10 +36,12 @@ test.describe('Venue Entry', () => {
     await expect(arc).toBeVisible({ timeout: 10_000 });
   });
 
-  // FIXME: "Back to home" relies on navigation history that the test-harness
-  // setPage() jump bypasses, so back-nav doesn't land on the home carousel here.
-  // Needs a rewrite once a harness nav-stack hook exists. Tracked in the E2E-rot issue.
-  test.fixme('back navigation returns to home', async ({ page }) => {
+  // The harness's setPage() jump pushes no history entry, so navigateBack()
+  // would pop to whatever the activation steps left below. Reset the app's own
+  // history depth to its bottom first: a page reached with nothing below it
+  // goes straight home on Back (useNavigation).
+  test('back navigation returns to home', async ({ page }) => {
+    await page.evaluate(() => window.history.replaceState({ page: 'home', depth: 0 }, ''));
     await navigateViaHarness(page, 'venue-entry');
     await page.getByRole('button', { name: 'Back to home' }).click();
     await expect(page.locator('.carousel-viewport')).toBeVisible();
