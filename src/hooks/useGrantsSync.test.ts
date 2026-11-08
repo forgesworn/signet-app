@@ -217,3 +217,98 @@ describe('useGrantsSync — publish-hash reseed after fetch (§11.1.10)', () => 
     expect(mockPublish).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('useGrantsSync: republish after a merge the local side won (#192)', () => {
+  const REMOTE = (grants: RememberedGrant[]) => ({
+    grants, createdAt: 12345, eventId: 'e'.repeat(64), reachableRelays: 1,
+  });
+
+  function renderGrants(initialProps: { grants: RememberedGrant[]; relayUrl?: string }) {
+    return renderHook(
+      (props: { grants: RememberedGrant[]; relayUrl?: string }) => useGrantsSync({
+        identity,
+        npBackend: backend,
+        relayUrl: props.relayUrl ?? RELAY_URL,
+        encryptionKey: KEY,
+        grants: props.grants,
+      }),
+      { initialProps },
+    );
+  }
+
+  it('publishes when the local side holds a newer decision than the relay', async () => {
+    const local = grant({ decision: 'deny', decidedAt: 200 });
+    await saveGrant(local);
+    mockFetch.mockResolvedValue(REMOTE([grant({ decision: 'allow', decidedAt: 100 })]));
+
+    vi.useFakeTimers();
+    renderGrants({ grants: [local] });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+    expect(mockPublish.mock.calls[0][0]).toEqual([local]);
+  });
+
+  it('publishes a grant only this device holds', async () => {
+    const local = grant();
+    await saveGrant(local);
+    mockFetch.mockResolvedValue(REMOTE([]));
+
+    vi.useFakeTimers();
+    renderGrants({ grants: [local] });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish when the relay is the richer side', async () => {
+    await saveGrant(grant({ decision: 'allow', decidedAt: 100 }));
+    const newer = grant({ decision: 'deny', decidedAt: 200 });
+    const remoteOnly = grant({ scope: 'other-scope', decidedAt: 150 });
+    mockFetch.mockResolvedValue(REMOTE([newer, remoteOnly]));
+
+    vi.useFakeTimers();
+    const { rerender } = renderGrants({ grants: [grant({ decision: 'allow', decidedAt: 100 })] });
+    await flushHydration();
+    // App reloads its grants after `onRemoteMerged`; mirror that with the
+    // merged state so the publish effect hashes what is now stored.
+    rerender({ grants: [newer, remoteOnly] });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('republishes a won merge even though this device already published that exact state', async () => {
+    const local = grant({ decidedAt: 200 });
+    await saveGrant(local);
+    mockFetch.mockResolvedValueOnce(null);
+
+    vi.useFakeTimers();
+    const { rerender } = renderGrants({ grants: [local] });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+
+    // Another device overwrote the relay with a poorer record. A re-fetch (the
+    // relay set changed) finds it: our state is richer, and must go back out
+    // even though it matches what we published a moment ago.
+    mockFetch.mockResolvedValue(REMOTE([]));
+    rerender({ grants: [local], relayUrl: 'wss://relay-two.example.com' });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+
+    expect(mockPublish).toHaveBeenCalledTimes(2);
+  });
+});

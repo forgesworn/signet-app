@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // that URL.
 const relayMock = vi.hoisted(() => ({
   events: [] as unknown[],
-  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string }>>,
+  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string; pubkey?: string }>>,
   fetchThrows: new Set<string>(),
   fetchFailUrls: new Set<string>(),
   published: [] as Array<{ url: string; id: string }>,
@@ -54,7 +54,7 @@ beforeEach(() => {
 });
 
 import type { Contact } from '../types';
-import { mergeContactLists, identityKeypairs, fetchContactsSync, publishContactsSync } from './contacts-sync';
+import { mergeContactLists, isContactsRicherThan, identityKeypairs, fetchContactsSync, publishContactsSync } from './contacts-sync';
 import { createSyncDecryptCache, forgetSyncCacheKeys } from './sync-decrypt-cache';
 
 function makeContact(overrides: Partial<Contact>): Contact {
@@ -336,5 +336,75 @@ describe('fetchContactsSync — relay pool', () => {
     const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
     const result = await fetchContactsSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
     expect(result).toBe('unreachable');
+  });
+
+  it('ignores a newer event authored by someone else (author pin)', async () => {
+    const payload = JSON.stringify({ v: 1, contacts: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content: fakeNip44(payload) }],
+      'wss://b.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchContactsSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
+    expect(result).not.toBe('unreachable');
+    expect(result).not.toBeNull();
+    if (result && result !== 'unreachable') {
+      expect(result.eventId).toBe('1'.repeat(64));
+      expect(result.createdAt).toBe(1000);
+    }
+  });
+
+  it("reads a pool that only holds a stranger's event as nothing found, not unreachable", async () => {
+    const payload = JSON.stringify({ v: 1, contacts: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchContactsSync(AUTHOR, backend, ['wss://a.example']);
+    expect(result).toBeNull();
+  });
+});
+
+describe('isContactsRicherThan', () => {
+  const A = 'a'.repeat(64);
+  const B = 'b'.repeat(64);
+
+  it('identical lists are not richer', () => {
+    const list = [makeContact({ pubkey: A }), makeContact({ pubkey: B, displayName: 'Two' })];
+    expect(isContactsRicherThan(list, [...list])).toBe(false);
+  });
+
+  it('a contact only the merged side holds is richer', () => {
+    expect(isContactsRicherThan([makeContact({ pubkey: A }), makeContact({ pubkey: B })], [makeContact({ pubkey: A })])).toBe(true);
+  });
+
+  it('a contact only the remote holds is NOT richer (the relay is the richer side)', () => {
+    expect(isContactsRicherThan([makeContact({ pubkey: A })], [makeContact({ pubkey: A }), makeContact({ pubkey: B })])).toBe(false);
+  });
+
+  it('a strictly newer verifiedAt is richer, and only in that direction', () => {
+    const newer = [makeContact({ pubkey: A, verifiedAt: 2000 })];
+    const older = [makeContact({ pubkey: A, verifiedAt: 1000 })];
+    expect(isContactsRicherThan(newer, older)).toBe(true);
+    expect(isContactsRicherThan(older, newer)).toBe(false);
+  });
+
+  it('a tie with differing fields is not richer in either direction (no flapping)', () => {
+    const one = [makeContact({ pubkey: A, displayName: 'Local', verifiedAt: 1000 })];
+    const two = [makeContact({ pubkey: A, displayName: 'Remote', verifiedAt: 1000 })];
+    expect(isContactsRicherThan(one, two)).toBe(false);
+    expect(isContactsRicherThan(two, one)).toBe(false);
+  });
+
+  it('agrees with mergeContactLists: a merge the local side won is richer, one the remote won is not', () => {
+    const localWins = mergeContactLists(
+      [makeContact({ pubkey: A, displayName: 'Local', verifiedAt: 2000 })],
+      [makeContact({ pubkey: A, displayName: 'Remote', verifiedAt: 1000 })],
+    ).merged;
+    expect(isContactsRicherThan(localWins, [makeContact({ pubkey: A, displayName: 'Remote', verifiedAt: 1000 })])).toBe(true);
+
+    const remote = [makeContact({ pubkey: A, displayName: 'Remote', verifiedAt: 2000 })];
+    const remoteWins = mergeContactLists([makeContact({ pubkey: A, verifiedAt: 1000 })], remote).merged;
+    expect(isContactsRicherThan(remoteWins, remote)).toBe(false);
   });
 });

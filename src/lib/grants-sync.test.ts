@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the relay transport so publish/fetch resolve without a live relay —
 // same vi.hoisted per-URL pattern as personas-sync.test.ts.
 const relayMock = vi.hoisted(() => ({
-  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string }>>,
+  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string; pubkey?: string }>>,
   fetchThrows: new Set<string>(),
   fetchFailUrls: new Set<string>(),
   published: [] as Array<{ url: string; id: string }>,
@@ -45,7 +45,7 @@ beforeEach(() => {
   relayMock.publishOk = {};
 });
 
-import { mergeGrantLists, publishGrantsSync, fetchGrantsSync } from './grants-sync';
+import { mergeGrantLists, isGrantsRicherThan, publishGrantsSync, fetchGrantsSync } from './grants-sync';
 import type { RememberedGrant, GrantSchedule } from '../types';
 
 const DEP = 'a'.repeat(64);
@@ -321,5 +321,104 @@ describe('fetchGrantsSync — relay pool', () => {
     const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
     const result = await fetchGrantsSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
     expect(result).toBe('unreachable');
+  });
+
+  it('ignores a newer event authored by someone else (author pin)', async () => {
+    const payload = JSON.stringify({ v: 1, grants: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content: fakeNip44(payload) }],
+      'wss://b.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchGrantsSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
+    expect(result).not.toBe('unreachable');
+    expect(result).not.toBeNull();
+    if (result && result !== 'unreachable') {
+      expect(result.eventId).toBe('1'.repeat(64));
+      expect(result.createdAt).toBe(1000);
+    }
+  });
+
+  it("reads a pool that only holds a stranger's event as nothing found, not unreachable", async () => {
+    const payload = JSON.stringify({ v: 1, grants: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchGrantsSync(AUTHOR, backend, ['wss://a.example']);
+    expect(result).toBeNull();
+  });
+});
+
+describe('isGrantsRicherThan', () => {
+  function schedule(issuedAt: number, hour: string = '16:00'): GrantSchedule {
+    return {
+      v: 1,
+      tz: 'Europe/London',
+      weekly: { fri: [{ start: hour, end: '20:00' }] },
+      issuedAt,
+    };
+  }
+
+  it('identical lists are not richer', () => {
+    const list = [grant(), grant({ origin: 'https://example.com', decidedAt: 200 })];
+    expect(isGrantsRicherThan(list, [...list])).toBe(false);
+  });
+
+  it('a grant only the merged side holds is richer', () => {
+    expect(isGrantsRicherThan([grant(), grant({ scope: 'other' })], [grant()])).toBe(true);
+  });
+
+  it('a grant only the remote holds is NOT richer (the relay is the richer side)', () => {
+    expect(isGrantsRicherThan([grant()], [grant(), grant({ scope: 'other' })])).toBe(false);
+  });
+
+  it('a strictly newer decision is richer, and only in that direction', () => {
+    const newer = [grant({ decision: 'deny', decidedAt: 200 })];
+    const older = [grant({ decision: 'allow', decidedAt: 100 })];
+    expect(isGrantsRicherThan(newer, older)).toBe(true);
+    expect(isGrantsRicherThan(older, newer)).toBe(false);
+  });
+
+  it('a tombstone newer than the remote decision is richer', () => {
+    expect(isGrantsRicherThan([grant({ tombstonedAt: 300 })], [grant({ decidedAt: 200 })])).toBe(true);
+  });
+
+  it('on an equal effective time a tombstone we hold is richer, and the reverse is not', () => {
+    const tombstoned = [grant({ decidedAt: 100, tombstonedAt: 100 })];
+    const live = [grant({ decidedAt: 100 })];
+    expect(isGrantsRicherThan(tombstoned, live)).toBe(true);
+    expect(isGrantsRicherThan(live, tombstoned)).toBe(false);
+  });
+
+  it('a schedule the remote lacks, or a strictly newer one, is richer', () => {
+    expect(isGrantsRicherThan([grant({ schedule: schedule(500) })], [grant()])).toBe(true);
+    expect(isGrantsRicherThan([grant({ schedule: schedule(500) })], [grant({ schedule: schedule(100) })])).toBe(true);
+  });
+
+  it('an equal-age schedule is a tie (the merge lets the remote win it), so not richer', () => {
+    const one = [grant({ schedule: schedule(500, '16:00') })];
+    const two = [grant({ schedule: schedule(500, '17:00') })];
+    expect(isGrantsRicherThan(one, two)).toBe(false);
+    expect(isGrantsRicherThan(two, one)).toBe(false);
+  });
+
+  it('a schedule only the remote holds is NOT richer', () => {
+    expect(isGrantsRicherThan([grant()], [grant({ schedule: schedule(500) })])).toBe(false);
+  });
+
+  it('agrees with mergeGrantLists: a merge the local side won is richer, one the remote won is not', () => {
+    const remoteOld = [grant({ decidedAt: 100 })];
+    const localWins = mergeGrantLists([grant({ decision: 'deny', decidedAt: 200 })], remoteOld).merged;
+    expect(isGrantsRicherThan(localWins, remoteOld)).toBe(true);
+
+    // Remote wins the grant, local keeps the fresher schedule: still local-richer.
+    const remoteNewGrant = [grant({ decidedAt: 300 })];
+    const mixed = mergeGrantLists([grant({ decidedAt: 100, schedule: schedule(500) })], remoteNewGrant).merged;
+    expect(isGrantsRicherThan(mixed, remoteNewGrant)).toBe(true);
+
+    const remoteNew = [grant({ decidedAt: 300, schedule: schedule(600) })];
+    const remoteWins = mergeGrantLists([grant({ decidedAt: 100, schedule: schedule(500) })], remoteNew).merged;
+    expect(isGrantsRicherThan(remoteWins, remoteNew)).toBe(false);
   });
 });

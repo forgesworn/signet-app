@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 
 vi.mock('../lib/contacts-sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/contacts-sync')>();
@@ -157,5 +157,110 @@ describe('useContactsSync — publishEnabled gate (R10)', () => {
     await saveContact(makeContact(identity.naturalPerson.publicKey), KEY);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2000)); });
     expect(mockPublish).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Real timers throughout, for the reason `withRealTimers` documents above:
+ * `saveContact` / `getContacts` run real WebCrypto.
+ *
+ * State the hook sets while a test is inside an `act` scope is only rendered
+ * when that scope exits, so a negative assertion first lets one short `act`
+ * flush hydration (arming the publish timer) and only then waits out the
+ * debounce. Without that the "no publish" cases could pass without the
+ * publish effect ever having been armed.
+ */
+describe('useContactsSync: republish after a merge the local side won (#192)', () => {
+  const REMOTE = (contacts: Contact[]) => ({
+    contacts, createdAt: 500, eventId: 'e'.repeat(64), reachableRelays: 1,
+  }) as never;
+
+  interface Props { relays: { read: string[]; write: string[] } }
+  function renderContacts(initialProps: Props) {
+    return renderHook(
+      (props: Props) => useContactsSync({
+        identity, npBackend: backend, relays: props.relays, encryptionKey: KEY,
+        contacts: [makeContact(identity.naturalPerson.publicKey)],
+      }),
+      { initialProps },
+    );
+  }
+
+  const settle = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+  const publishes = (n: number) => waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(n), { timeout: 8000 });
+
+  it('publishes a contact only this device holds', async () => {
+    await saveContact(makeContact(identity.naturalPerson.publicKey), KEY);
+    mockFetch.mockResolvedValue(REMOTE([]));
+
+    renderContacts({ relays: RELAYS });
+    await publishes(1);
+  });
+
+  it('publishes when the local side holds a strictly newer verifiedAt than the relay', async () => {
+    const owner = identity.naturalPerson.publicKey;
+    await saveContact({ ...makeContact(owner), displayName: 'Local', verifiedAt: 2000 }, KEY);
+    mockFetch.mockResolvedValue(REMOTE([{ ...makeContact(owner), displayName: 'Remote', verifiedAt: 1000 }]));
+
+    renderContacts({ relays: RELAYS });
+    await publishes(1);
+    expect((mockPublish.mock.calls[0][0] as Contact[]).map((c) => c.displayName)).toEqual(['Local']);
+  });
+
+  it('does not publish when the relay is the richer side', async () => {
+    const owner = identity.naturalPerson.publicKey;
+    await saveContact({ ...makeContact(owner), displayName: 'Old', verifiedAt: 1000 }, KEY);
+    mockFetch.mockResolvedValue(REMOTE([
+      { ...makeContact(owner), displayName: 'Newer', verifiedAt: 2000 },
+      { ...makeContact(owner), pubkey: 'd'.repeat(64), displayName: 'Remote only', verifiedAt: 1500 },
+    ]));
+
+    const { result } = renderContacts({ relays: RELAYS });
+    await waitFor(() => expect(result.current.remoteState).toBe('present'));
+    await settle(300);
+    await settle(2000);
+
+    expect(mockPublish).not.toHaveBeenCalled();
+    expect(await getContacts(owner, KEY)).toHaveLength(2);
+  });
+
+  it('does not publish when the relay already holds exactly this state', async () => {
+    const contact = makeContact(identity.naturalPerson.publicKey);
+    await saveContact(contact, KEY);
+    mockFetch.mockResolvedValue(REMOTE([contact]));
+
+    const { result } = renderContacts({ relays: RELAYS });
+    await waitFor(() => expect(result.current.remoteState).toBe('present'));
+    await settle(300);
+    await settle(2000);
+
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('republishes a won merge even though this device already published that exact state', async () => {
+    await saveContact(makeContact(identity.naturalPerson.publicKey), KEY);
+    mockFetch.mockResolvedValueOnce(null);
+
+    const { rerender } = renderContacts({ relays: RELAYS });
+    await publishes(1);
+
+    // Another device overwrote the relay with an empty record; the relay set
+    // changing re-fetches it. Our contact is something it lacks, so the
+    // unchanged local state must go back out.
+    mockFetch.mockResolvedValue(REMOTE([]));
+    rerender({ relays: { read: ['wss://relay-two.example.com'], write: RELAYS.write } });
+    await publishes(2);
+  });
+
+  it('does not publish after an unreachable fetch, even after a local change', async () => {
+    mockFetch.mockResolvedValue('unreachable');
+
+    const { result } = renderContacts({ relays: RELAYS });
+    await waitFor(() => expect(result.current.remoteState).toBe('unreachable'));
+    await settle(300);
+    await saveContact(makeContact(identity.naturalPerson.publicKey), KEY);
+    await settle(2000);
+
+    expect(mockPublish).not.toHaveBeenCalled();
   });
 });

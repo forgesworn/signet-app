@@ -21,6 +21,7 @@ import {
   publishGrantsSync,
   fetchGrantsSync,
   mergeGrantLists,
+  isGrantsRicherThan,
   SYNC_D_TAG as GRANTS_SYNC_D_TAG,
 } from '../lib/grants-sync';
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
@@ -156,10 +157,19 @@ export function useGrantsSync({ publishEnabled = true,  identity, npBackend, rel
         // useDependantsSync's "post-fetch reseed". Hash against the
         // current local set (post-merge), whether or not anything actually
         // changed, so the publish effect's next hash comparison is a
-        // true no-op on an unchanged warm unlock.
+        // true no-op on an unchanged warm unlock. Unless the merge kept
+        // something the relay does not hold (a grant only we have, a newer
+        // decision or tombstone, a newer schedule): then clear the ref so the
+        // publish effect pushes the merge instead of leaving this device's
+        // edit unbacked-up until its next unrelated change (issue #192). NOT
+        // a plain inequality: the relay can be the richer side, see
+        // `isGrantsRicherThan`. Cleared rather than left alone so a wire this
+        // device already published this session cannot suppress it.
         const currentLocal = await db.listAllGrantsIncludingTombstones();
         if (cancelled) return;
-        lastPublishedHashRef.current = hashGrants(currentLocal);
+        lastPublishedHashRef.current = isGrantsRicherThan(currentLocal, remote.grants)
+          ? ''
+          : hashGrants(currentLocal);
 
         if (toSave.length > 0) {
           onRemoteMerged?.();

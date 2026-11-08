@@ -277,3 +277,29 @@ function pickNewerSchedule(
   if (remote === undefined) return local;
   return remote.issuedAt >= local.issuedAt ? remote : local;
 }
+
+/**
+ * Is `merged` carrying anything the relay's `remote` record does not hold?
+ *
+ * Mirrors `mergeGrantLists`' own tie posture, so only the asymmetric cases
+ * count (a plain inequality would flap whenever the relay is the richer side):
+ *   - a grant (by compound key) the remote lacks;
+ *   - a strictly newer `effectiveTime`, or an equal one where we hold the
+ *     tombstone and the remote does not (the merge keeps a local tombstone
+ *     on a tie);
+ *   - a schedule the remote lacks, or one with a strictly newer `issuedAt`
+ *     (the merge lets the remote win a schedule tie).
+ */
+export function isGrantsRicherThan(merged: RememberedGrant[], remote: RememberedGrant[]): boolean {
+  const remoteByKey = new Map(remote.map((g) => [grantKey(g), g] as const));
+  for (const m of merged) {
+    const r = remoteByKey.get(grantKey(m));
+    if (!r) return true;
+    const mt = effectiveTime(m);
+    const rt = effectiveTime(r);
+    if (mt > rt) return true;
+    if (mt === rt && !!m.tombstonedAt && !r.tombstonedAt) return true;
+    if (m.schedule && (!r.schedule || m.schedule.issuedAt > r.schedule.issuedAt)) return true;
+  }
+  return false;
+}

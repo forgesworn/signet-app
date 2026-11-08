@@ -258,3 +258,24 @@ export function mergeCredentialLists(local: StoredCredential[], remote: StoredCr
   }
   return { merged: Array.from(byId.values()), toSave };
 }
+
+/**
+ * Is `merged` carrying anything the relay's `remote` record does not hold?
+ *
+ * "Richer" means the merge's own ordering would let the merged copy replace
+ * the remote one: a credential (by id) the remote lacks, or one for which
+ * `isNewer(merged, remote)` holds. `isNewer` is antisymmetric (every
+ * tie-break is a strict `>`), so a tie with differing fields is NOT richer;
+ * a plain inequality would have two devices that disagree at a tie each
+ * republish on every unlock and flap. Credentials only the remote holds do
+ * not count either.
+ */
+export function isCredentialsRicherThan(merged: StoredCredential[], remote: StoredCredential[]): boolean {
+  const remoteById = new Map(remote.map((c) => [c.id, c] as const));
+  for (const c of merged) {
+    const r = remoteById.get(c.id);
+    if (!r) return true;
+    if (isNewer(c, r)) return true;
+  }
+  return false;
+}
