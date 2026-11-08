@@ -4611,11 +4611,12 @@ function AppContent() {
   const knownPlaceCtx = useCallback((place: KnownPlace): KnownPlaceCtx => {
     const app = place.nativePackage && isNativeApp() ? placeAppCache.get(place.nativePackage) : undefined;
     const appLabel = app?.label ?? undefined;
+    const appIcon = app?.icon ?? null;
     if (place.kind === 'nip46') {
       // Until the paired clients have loaded, whether this one asks is unknown: say nothing.
-      if (connectedClientsLoading) return { askToSign: undefined, loading: true, appLabel };
+      if (connectedClientsLoading) return { askToSign: undefined, loading: true, appLabel, appIcon };
       const client = connectedClients.find(c => `nc:${c.clientPubkey}` === place.placeKey);
-      return { askToSign: !!client?.askToSign, lastSeenAt: client?.lastSeenAt, appLabel };
+      return { askToSign: !!client?.askToSign, lastSeenAt: client?.lastSeenAt, appLabel, appIcon };
     }
     if (place.kind === 'nip55') {
       // A grant is pinned to one identity; a row for another identity gets no say over it.
@@ -4625,9 +4626,10 @@ function AppContent() {
         nip55Grant: grant && mine ? { allowAlways: grant.allowAlways, denyAlways: grant.denyAlways } : null,
         nip55OtherIdentity: !!grant && !mine,
         appLabel,
+        appIcon,
       };
     }
-    return { appLabel };
+    return { appLabel, appIcon };
     // placeIconVersion: an app label that has just landed must reach the rows.
   }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion]);
   const knownPlaceActions = useMemo<KnownPlaceActions>(() => {

@@ -17,6 +17,8 @@ export interface KnownPlaceCtx {
   nip55OtherIdentity?: boolean;
   /** nip46: the paired-client list has not loaded, so whether this one asks is unknown (no auto badge or action). */
   loading?: boolean;
+  /** The installed app's icon as a data URL from the phone's package manager (native only). */
+  appIcon?: string | null;
   /** The installed app's own name from the phone's package manager (native only). */
   appLabel?: string;
   /** nip46: unix seconds the paired client was last seen. */
@@ -132,7 +134,9 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   return (
     <li className={`kp-row${expanded ? ' kp-row--open' : ''}`} data-kp-row={place.id}>
       <button type="button" className="kp-row-head" aria-expanded={expanded} onClick={onToggle}>
-        <span className="kp-row-tile" aria-hidden="true" style={{ background: placeTint(place) }}>{label.charAt(0).toUpperCase()}</span>
+        {ctx.appIcon
+          ? <img className="kp-row-tile kp-row-tile--img" src={ctx.appIcon} alt="" aria-hidden="true" />
+          : <span className="kp-row-tile" aria-hidden="true" style={{ background: placeTint(place) }}>{label.charAt(0).toUpperCase()}</span>}
         <span className="kp-row-text">
           <span className="kp-row-name">{label}</span>
           <span className="kp-row-summary">{placeSummary(place, ctx, identityName, last, now)}</span>

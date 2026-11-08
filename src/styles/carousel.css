@@ -457,7 +457,7 @@
   max-width: 100%;
 }
 .kp-strip-empty { margin: 0; font-size: 0.8rem; color: var(--text-secondary); text-align: center; }
-.kp-chip { max-width: 70%; padding: 4px 12px 4px 4px; font-size: 0.8125rem; }
+.kp-chip { max-width: 48%; padding: 4px 12px 4px 4px; font-size: 0.8125rem; }
 /* A chip is as wide as its content (capped at 70% of the strip so one name
    cannot take a whole row); the label takes every pixel left inside it and the
    tile and badge glyph never give any up. 45% clipped "harness.example" in a

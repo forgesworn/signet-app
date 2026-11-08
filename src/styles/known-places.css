@@ -52,6 +52,7 @@
   color: #fff; font-size: .95rem; font-weight: 800;
 }
 .kp-row-tile--hw { background: var(--brand-gold-light); color: var(--brand-gold-text); }
+.kp-row-tile--img { object-fit: cover; padding: 0; background: var(--bg-card-alt); }
 .kp-row-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .kp-row-name { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kp-row-summary { font-size: .75rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
