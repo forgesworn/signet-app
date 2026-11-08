@@ -32,6 +32,10 @@ description: |
   keeps serving signing requests with the screen off, and notifications when
   a request needs your decision.
 
+  Which signer to pick: if your keys live in My Signet, My Signet is the
+  signer for your other Android apps. If they live on a Heartwood and you only
+  need signing for Android apps, use Cambium.
+
   No Google Play services or Firebase. Built GrapheneOS-first.
 license: MIT
 website: https://mysignet.app
