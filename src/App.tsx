@@ -206,7 +206,7 @@ import { RequireRealIdentity } from './components/RequireRealIdentity';
 import { resolveActivationBackupStep } from './lib/activation-backup-step';
 import { isNaturalPersonActive, isDependantNaturalPersonActive, hasPublicNostrProfile } from './lib/identity-display';
 import { dependantGateReason } from './lib/real-identity-gate-reasons';
-import { toRecoveryWords } from './lib/recovery-words';
+import { toRecoveryWords, toNsecRecoveryWords, recoveryWordsSource } from './lib/recovery-words';
 import type { SlotKind as PersonaAdvancedSlotKind } from './pages/PersonaAdvanced';
 import { KenAdd } from './pages/KenAdd';
 import { KenDetail } from './pages/KenDetail';
@@ -872,7 +872,9 @@ function AppContent() {
   }, [identity?.mnemonic, identity?.backedUp]);
   const showBackupNudge = !!identity && !!encryptionKey && shouldShowBackupNudge({
     backedUp: identity.backedUp === true,
-    hasMnemonic: !!identity.mnemonic,
+    // A Signet mnemonic or an imported nsec's own raw-nsec words (§W1). A
+    // signer/extension-held key has nothing here to write down.
+    hasRecoveryWords: recoveryWordsSource(identity) !== null,
     isPairedChild: preferences.signingMode === 'paired-child',
     createdAtSeconds: identity.createdAt,
     authorizedSiteCount: authorizedSites.length,
@@ -10282,6 +10284,7 @@ function AppContent() {
           originHost={originHost}
           onCreate={(displayName, primary, isChild) => handleCreate(displayName, primary, isChild, undefined)}
           onImport={(mnemonic, displayName, primary, isChild) => handleImport(mnemonic, displayName, primary, isChild, undefined)}
+          onImportNsec={(nsec, displayName) => handleImportNsec(nsec, displayName, 'persona')}
           onCancel={handleDenyAuth}
           mode="auth"
         />
@@ -10305,6 +10308,7 @@ function AppContent() {
           originHost={originHost}
           onCreate={(displayName, primary, isChild) => handleCreate(displayName, primary, isChild, undefined)}
           onImport={(mnemonic, displayName, primary, isChild) => handleImport(mnemonic, displayName, primary, isChild, undefined)}
+          onImportNsec={(nsec, displayName) => handleImportNsec(nsec, displayName, 'persona')}
           onCancel={handleConnectDone}
           mode="connect"
         />
@@ -11285,6 +11289,7 @@ function AppContent() {
         mnemonicOnSigner={preferences.signingMode === 'bunker'}
         focusSection={pendingSecurityFocus}
         onConsumeFocus={() => setPendingSecurityFocus(null)}
+        onMarkBackedUp={handleMarkBackedUp}
       />
     ), privateVaultBanner);
   }
@@ -11969,6 +11974,23 @@ function AppContent() {
           navigateBack();
         }}
         onShowImportedNsec={undefined /* no in-app reveal UI today; tracked for follow-up */}
+        // An imported extra persona's own raw-nsec recovery words (§W1). Fresh
+        // auth first; the words are derived only after it, from the key held
+        // on this device, and never on a paired-child install.
+        onRevealImportedKeyWords={isPairedChild ? undefined : async (pubkey, depId) => {
+          const owner = depId ? dependants.find(d => d.id === depId) : identityRef.current;
+          const extra = owner?.extraPersonas?.find(p => p.publicKey === pubkey && p.imported);
+          const key = await requestFreshAuth({ purpose: 'reveal-recovery-words', scope: 'key', personaName: extra?.displayName });
+          if (!key || encryptionKeyRef.current !== key) return null;
+          const fresh = depId ? dependants.find(d => d.id === depId) : identityRef.current;
+          const privateKey = fresh?.extraPersonas?.find(p => p.publicKey === pubkey && p.imported)?.privateKey ?? '';
+          if (!privateKey) return null;
+          try {
+            return toNsecRecoveryWords(privateKey);
+          } catch {
+            return null;
+          }
+        }}
         onChangeAutonomyStage={depPubkey ? async (stage) => {
           await updateAutonomyStage(depPubkey, stage);
         } : undefined}
