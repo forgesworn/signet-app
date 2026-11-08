@@ -761,3 +761,37 @@ it('resets the fetch cursor and backup status when switching authors in the same
   expect(hook.result.current.remoteState).toBe('never-seen');
   hook.unmount();
 });
+
+describe('usePersonasSync: republish a won merge this device already published', () => {
+  it('clears the publish hash rather than leaving it, so a wire published earlier this session is not suppressed', async () => {
+    identity = { ...identity, extraPersonas: [makeExtra()] };
+    mockFetch.mockResolvedValueOnce(null);
+
+    vi.useFakeTimers();
+    const { rerender } = renderSync({ identity });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6100);
+    });
+    expect(mockPublish).toHaveBeenCalledTimes(1);
+
+    // Another device overwrote the relay with an empty record. A re-fetch
+    // (a fresh identity object re-runs the fetch effect) finds it: this
+    // device's persona is something the relay lacks, so the merge is
+    // richer. The identity is unchanged, so its wire still equals the one
+    // published above; the republish only happens if the ref was cleared.
+    mockFetch.mockResolvedValue({
+      payload: { v: 1, personas: [], tombstones: [] },
+      createdAt: 99999,
+      eventId: 'evt-poorer',
+      reachableRelays: 1,
+    });
+    rerender({ identity: { ...identity } });
+    await flushHydration();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6100);
+    });
+
+    expect(mockPublish).toHaveBeenCalledTimes(2);
+  });
+});
