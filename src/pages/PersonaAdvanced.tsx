@@ -955,7 +955,7 @@ function ImportedNoteBlock({
             {copied ? 'Copied!' : 'Copy to clipboard'}
           </button>
           <button className="btn btn-ghost" onClick={() => setWords(null)}>
-            Hide
+            Hide words
           </button>
           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8, marginBottom: 0 }}>
             Words auto-hide after 90 seconds. Clipboard clears after 60 seconds.

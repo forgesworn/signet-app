@@ -61,4 +61,11 @@ describe('Personas — import a Nostr account from its 31 recovery words', () =>
     expect(await screen.findByText(NSEC_INPUT_ERROR_COPY['not-nsec'])).toBeDefined();
     expect(onImport).not.toHaveBeenCalled();
   });
+
+  it('a bare 12-word phrase gets this box\'s copy, not the restore box\'s older-backup hint', async () => {
+    const { onImport } = openAndFill('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+    expect(await screen.findByText(NSEC_INPUT_ERROR_COPY['not-nsec'])).toBeDefined();
+    expect(screen.queryByText(RESTORE_ERROR_COPY['not-recovery-words'])).toBeNull();
+    expect(onImport).not.toHaveBeenCalled();
+  });
 });

@@ -176,9 +176,13 @@ export function Personas({
     const parsedInput = parseNsecOrRecoveryWords(importNsecInput);
     if (!parsedInput.ok) {
       const reason = parsedInput.reason;
-      setImportError(reason === 'not-nsec' || reason === 'whole-signet'
-        ? NSEC_INPUT_ERROR_COPY[reason]
-        : RESTORE_ERROR_COPY[reason]);
+      // 'not-recovery-words' points at an older-backup option this box does
+      // not have, so it reads as "not an nsec or its words" here.
+      setImportError(reason === 'whole-signet'
+        ? NSEC_INPUT_ERROR_COPY['whole-signet']
+        : reason === 'not-nsec' || reason === 'not-recovery-words'
+          ? NSEC_INPUT_ERROR_COPY['not-nsec']
+          : RESTORE_ERROR_COPY[reason]);
       return;
     }
     if (!importDisplayName.trim()) {
