@@ -11,8 +11,9 @@ export function knownPlaceId(placeKey: string, pubkey: string): string {
   return `${placeKey}:${pubkey.toLowerCase()}`;
 }
 
-function cleanName(value: string | undefined): string {
-  return sanitizeDisplayName(value ?? '', KNOWN_PLACE_NAME_MAX);
+function cleanName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return sanitizeDisplayName(value, KNOWN_PLACE_NAME_MAX);
 }
 
 /** Normalise an input: lowercase pubkey, sanitised capped strings. Null if unusable. */
@@ -52,8 +53,18 @@ export function mergeKnownPlace(
     };
   }
   const alias = existing.alias ?? inputAlias;
+  // A new channel means a fresh observation: its package/origin replace the
+  // old ones as-is (absent clears), so a browser visit drops a stale package.
+  const { nativePackage: _np, origin: _o, ...existingBase } = existing;
+  const base = input.channel
+    ? {
+        ...existingBase,
+        ...(input.nativePackage !== undefined ? { nativePackage: input.nativePackage } : {}),
+        ...(input.origin !== undefined ? { origin: input.origin } : {}),
+      }
+    : existing;
   return {
-    ...existing,
+    ...base,
     ...rest,
     id,
     ...(alias ? { alias } : {}),

@@ -9019,7 +9019,7 @@ function AppContent() {
             consumerDisplayName: consumerDisplayName ?? undefined,
           },
         );
-        await recordKnownPlace(knownPlaceInput);
+        void recordKnownPlace(knownPlaceInput);
 
         // Record per-origin policy memory.
         await recordOriginSignIn(pendingAuthRequest.origin, keypairLabel, {

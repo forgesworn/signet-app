@@ -36,6 +36,33 @@ async function seedV27() {
 }
 
 describe('DB v28 — knownPlaces', () => {
+  it('survives bad legacy rows: skips them, migrates the good one, DB opens at 28', async () => {
+    const v27 = await openDB('my-signet', 27, {
+      upgrade(d) {
+        d.createObjectStore('authorizedSites', { keyPath: 'id' }).createIndex('origin', 'origin');
+      },
+    });
+    await v27.put('authorizedSites', {
+      id: 'g', origin: 'https://good.example', name: 'Good', keypairUsed: 'persona',
+      pubkeyShared: PK_A, authorizedAt: 1, lastUsedAt: 2,
+    });
+    await v27.put('authorizedSites', {
+      id: 'n', origin: 'https://num.example', name: 42, keypairUsed: 'persona',
+      pubkeyShared: PK_B, authorizedAt: 1, lastUsedAt: 2,
+    });
+    await v27.put('authorizedSites', {
+      id: 'o', origin: 'https://obj.example', name: 'Obj', keypairUsed: 'persona',
+      pubkeyShared: 'c'.repeat(64), authorizedAt: 1, lastUsedAt: 2, consumerDisplayName: { a: 1 },
+    });
+    v27.close();
+    const db = await freshDb();
+    const raw = await db.getDb();
+    expect(raw.version).toBe(28);
+    const places = await db.listKnownPlaces();
+    expect(places.map((p) => p.placeKey)).toContain('https://good.example');
+    expect(places.find((p) => p.placeKey === 'https://good.example')?.name).toBe('Good');
+  });
+
   it('migrates every authorizedSites row from a v27 database and keeps authorizedSites', async () => {
     await seedV27();
     const db = await freshDb();

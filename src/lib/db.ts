@@ -11,6 +11,7 @@ import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
 import type { AppGrantV2, ChildRule, KnownPlace, KnownPlaceInput } from '../types';
 import { knownPlaceFromAuthorizedSite, mergeKnownPlace, normaliseKnownPlaceInput } from './known-places';
+import { sanitizeDisplayName } from './text-sanitize';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -351,11 +352,19 @@ function getDB(): Promise<IDBPDatabase> {
           if (db.objectStoreNames.contains('authorizedSites')) {
             const rawTx = unwrap(transaction) as unknown as IDBTransaction;
             const sitesReq = rawTx.objectStore('authorizedSites').getAll();
+            // A failed read or a bad legacy row must never abort the upgrade.
+            sitesReq.onerror = function (e) {
+              e.preventDefault();
+            };
             sitesReq.onsuccess = function () {
               const target = rawTx.objectStore('knownPlaces');
               for (const site of sitesReq.result as AuthorizedSite[]) {
-                const place = knownPlaceFromAuthorizedSite(site);
-                if (place) target.put(place);
+                try {
+                  const place = knownPlaceFromAuthorizedSite(site);
+                  if (place) target.put(place);
+                } catch {
+                  // skip the bad row
+                }
               }
             };
           }
@@ -2849,7 +2858,7 @@ async function patchKnownPlace(id: string, patch: (row: KnownPlace) => KnownPlac
 }
 
 export async function setKnownPlaceAlias(id: string, alias: string): Promise<void> {
-  const trimmed = alias.trim().slice(0, 64);
+  const trimmed = sanitizeDisplayName(typeof alias === 'string' ? alias : '', 64);
   await patchKnownPlace(id, (row) => {
     const { alias: _drop, ...rest } = row;
     return trimmed ? { ...rest, alias: trimmed } : rest;
