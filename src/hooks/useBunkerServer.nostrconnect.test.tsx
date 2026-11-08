@@ -505,6 +505,99 @@ describe('useBunkerServer NostrConnect integration', () => {
     unmount();
   });
 
+  it('ignores a saved client that addresses an owner persona other than the one it paired with (#194)', async () => {
+    const personaA = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const personaB = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const relayUrl = 'wss://canary-bound.example';
+    const { unmount } = renderHook(() => useBunkerServer({
+      enabled: true,
+      relayUrl,
+      routes: [
+        { pubkey: personaA.activePublicKeyHex, backend: personaA },
+        { pubkey: personaB.activePublicKeyHex, backend: personaB },
+      ],
+      isOwnerServingActive: () => true,
+    }));
+    await waitFor(() => expect(MockRelaySocket.instances[0]?.subId).toBeTruthy());
+    const ws = MockRelaySocket.instances[0];
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    await saveConnectedClient({
+      clientPubkey, appName: 'Bark', connectedAt: 1, lastSeenAt: 1, allowAlways: true,
+      boundPubkey: personaA.activePublicKeyHex,
+    });
+
+    // To persona B: no reply of any kind, not even a refusal.
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaB.activePublicKeyHex, id: 'to-b', method: 'get_public_key', params: [] }));
+    });
+    // To persona A, after it: answered. Ordering proves B was dropped, not slow.
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaA.activePublicKeyHex, id: 'to-a', method: 'get_public_key', params: [] }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(ws.published[0].pubkey).toBe(personaA.activePublicKeyHex);
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({ id: 'to-a', result: personaA.activePublicKeyHex });
+
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
+  it('binds a pre-binding saved client to the first owner persona it uses (#194)', async () => {
+    const personaA = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const personaB = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const relayUrl = 'wss://canary-lazybind.example';
+    const { unmount } = renderHook(() => useBunkerServer({
+      enabled: true,
+      relayUrl,
+      routes: [
+        { pubkey: personaA.activePublicKeyHex, backend: personaA },
+        { pubkey: personaB.activePublicKeyHex, backend: personaB },
+      ],
+      isOwnerServingActive: () => true,
+    }));
+    await waitFor(() => expect(MockRelaySocket.instances[0]?.subId).toBeTruthy());
+    const ws = MockRelaySocket.instances[0];
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    await saveConnectedClient({ clientPubkey, appName: 'Legacy', connectedAt: 1, lastSeenAt: 1, allowAlways: true });
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaB.activePublicKeyHex, id: 'first', method: 'get_public_key', params: [] }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    await waitFor(async () => expect((await getConnectedClient(clientPubkey))?.boundPubkey).toBe(personaB.activePublicKeyHex));
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaA.activePublicKeyHex, id: 'other', method: 'get_public_key', params: [] }));
+    });
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: personaB.activePublicKeyHex, id: 'again', method: 'get_public_key', params: [] }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(2));
+    expect(decryptServerResponse(clientSk, ws.published[1]).id).toBe('again');
+
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
+  it('"Allow always" on an owner request binds the client to that persona (#194)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-bind-on-allow.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    const self = ownerBackend.activePublicKeyHex;
+    const wrapped = await ownerBackend.nip44Encrypt(self, 'k');
+    await act(async () => {
+      ws.deliver(buildClientRequest({ clientSk, targetPubkey: self, id: 'bind', method: 'nip44_decrypt', params: [self, wrapped] }));
+    });
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { await result.current.approveAlways(result.current.pendingApprovals[0].handle); });
+    await waitFor(async () => expect((await getConnectedClient(clientPubkey))?.boundPubkey).toBe(self));
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
   it('rejects queued owner approvals when the serve socket tears down', async () => {
     const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-teardown.example');
     const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);

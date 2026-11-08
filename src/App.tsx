@@ -4025,7 +4025,7 @@ function AppContent() {
     },
     appPairingsEncryptionKey: encryptionKey ?? null,
     pendingAuthPairingsRef,
-    onAuthFlowPairingComplete: async ({ clientPubkey, appName, origin }) => {
+    onAuthFlowPairingComplete: async ({ clientPubkey, appName, origin, signingPubkey }) => {
       // Persist the connecting client with allowAlways: true. The user
       // already authorised this app via the redirect-flow approval
       // screen, so it'd be redundant to prompt them again on first
@@ -4042,6 +4042,7 @@ function AppContent() {
         connectedAt: now,
         lastSeenAt: now,
         allowAlways: true,
+        boundPubkey: signingPubkey.toLowerCase(),
       });
     },
     onAuditEvent: (params) => {
@@ -7994,6 +7995,9 @@ function AppContent() {
             relayUrls: relayCandidates,
           }),
           pairingNonce,
+          // The connect reply comes from this route's key, so that is the
+          // persona the app will address from now on.
+          boundPubkey: routeBackend.activePublicKeyHex.toLowerCase(),
         }),
         stillOurs: async () => (await getConnectedClient(connectRequest.clientPubkey))?.pairingNonce === pairingNonce,
         deleteClient: () => deleteConnectedClient(connectRequest.clientPubkey),
