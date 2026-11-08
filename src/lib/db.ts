@@ -382,8 +382,11 @@ function getDB(): Promise<IDBPDatabase> {
             if (db.objectStoreNames.contains('authorizedSites')) db.deleteObjectStore('authorizedSites');
           };
           if (legacySitesRead) {
+            // Success only: if the legacy read fails, the rows stay where they
+            // are rather than being deleted uncopied. The upgrade still never
+            // aborts (the read's error is swallowed above); the orphaned store
+            // is dropped on the next upgrade that finds it readable.
             (legacySitesRead as IDBRequest).addEventListener('success', dropLegacySites);
-            (legacySitesRead as IDBRequest).addEventListener('error', dropLegacySites);
           } else {
             dropLegacySites();
           }

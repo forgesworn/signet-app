@@ -31,7 +31,6 @@ interface Props {
   showPairedChildSwitcher?: boolean;
   /** A child's phone paired straight to the Heartwood: link to the read-only Permissions page (spec §9.3). */
   showChildPermissions?: boolean;
-  /** Number of authorized (connected) sites for display in the Connections row. */
   /** Places this identity is known (the card's Where you're known column). */
   knownPlaceCount?: number;
   /** Nostr Connect clients plus phone apps listed on the Connected apps page. */

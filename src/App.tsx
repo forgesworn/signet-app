@@ -4610,9 +4610,15 @@ function AppContent() {
   // arrow API is needed: set it, then show the home carousel.
   const knownPlaceCountActive = carousel.activeIdentity.publicKey ? knownPlacesFor(carousel.activeIdentity.publicKey).length : 0;
   const openKnownPlaces = useCallback(() => {
-    carousel.commitPosition(carousel.row, 3);
+    // Only owner and bot rows have a places column; from a dependant or the
+    // add row, land on the first owner row (the ring always starts with one).
+    const here = carousel.rows[carousel.row]?.type;
+    const ownerRow = here && here !== 'dependant' && here !== 'add' && !here.startsWith('dependant-')
+      ? carousel.row
+      : Math.max(0, carousel.rows.findIndex(r => r.type === 'persona' || r.type === 'natural-person' || r.type === 'extra-persona' || r.type === 'bot'));
+    carousel.commitPosition(ownerRow, 3);
     navigateTo('home');
-  }, [carousel.commitPosition, carousel.row, navigateTo]);
+  }, [carousel.commitPosition, carousel.row, carousel.rows, navigateTo]);
   const knownPlaceCtx = useCallback((place: KnownPlace): KnownPlaceCtx => {
     const app = place.nativePackage && isNativeApp() ? placeAppCache.get(place.nativePackage) : undefined;
     // A browser sign-in records the browser's package for the channel only; the
