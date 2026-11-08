@@ -165,7 +165,12 @@ async function syncPrivateVaultDatasetLocked(args: PrivateVaultSyncOptions): Pro
     current();
     if (restored.state === 'absent' && before.confirmed) return { state: 'unusable', canonical };
     const priorPlaintext = snapshots.length ? await args.adapter.snapshot() : undefined;
+    // A snapshot carrying the revision this device last confirmed or queued
+    // holds nothing it lacks. Merging it anyway lets that older copy win every
+    // wire field over an edit made since (a dependant's stage reverting, #197).
+    const own = new Set([before.confirmed?.revision, before.pending?.manifest.revision].filter(Boolean));
     for (const snapshot of snapshots) {
+      if (own.has(snapshot.checkpoint.revision)) continue;
       try { await args.adapter.merge(snapshot.plaintext, snapshot.event.created_at); }
       catch { return { state: args.isCurrent() ? 'unusable' : 'cancelled', canonical }; }
       current();

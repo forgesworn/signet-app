@@ -96,6 +96,12 @@ export function usePrivateVaults(options: {
    * cycle then runs promptly rather than sitting out a backoff armed before.
    */
   paused?: boolean;
+  /**
+   * Bump `token` to re-sync one dataset on the next cycle even though its
+   * content is unchanged, e.g. after its backup key rotated (#198): a change
+   * cycle otherwise skips a verified dataset whose snapshot hash matches.
+   */
+  resync?: { token: number; purpose: string } | null;
   relays: { read: string[]; write: string[] };
   jobs(isCurrent: () => boolean): Promise<PrivateVaultJob[]>;
   onMerged(): void;
@@ -103,7 +109,7 @@ export function usePrivateVaults(options: {
 }) {
   const [health, setHealth] = useState<PrivateVaultHealth>({ phase: 'checking', datasets: {} });
   const opts = useRef(options); opts.current = options;
-  const kick = useRef<((kind?: CycleKind) => void) | null>(null);
+  const kick = useRef<((kind?: CycleKind, purpose?: string) => void) | null>(null);
   const session = `${options.sessionKey ?? ''}:${options.encryptionKey ?? ''}`;
   const currentSession = useRef(session); currentSession.current = session;
   const relayKey = JSON.stringify(options.relays);
@@ -235,8 +241,9 @@ export function usePrivateVaults(options: {
         }
       }
     };
-    kick.current = (kind: CycleKind = 'change') => {
+    kick.current = (kind: CycleKind = 'change', purpose?: string) => {
       if (stoppedSession.current === session) return;
+      if (purpose) forced.add(purpose);
       want(kind);
       if (running) dirty = true; else schedule(1000);
     };
@@ -268,6 +275,13 @@ export function usePrivateVaults(options: {
     lastChangeToken.current = options.changeToken;
     kick.current?.();
   }, [options.changeToken]);
+
+  const lastResyncToken = useRef(options.resync?.token);
+  useEffect(() => {
+    if (!options.resync || lastResyncToken.current === options.resync.token) return;
+    lastResyncToken.current = options.resync.token;
+    kick.current?.('change', options.resync.purpose);
+  }, [options.resync?.token, options.resync?.purpose]);
   return health;
 }
 

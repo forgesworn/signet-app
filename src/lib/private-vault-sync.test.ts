@@ -171,3 +171,18 @@ it('reports no holding relays when this device has no confirmed copy', async () 
   remote.mockImplementation(async resolve => { await resolve(0); return { state: 'unavailable', failedRelays: ['wss://relay.damus.io'] }; });
   expect(await syncPrivateVaultDataset(args)).not.toHaveProperty('heldOn');
 });
+it('does not merge back its own confirmed snapshot over a newer local edit (#197)', async () => {
+  const { args, backend } = setup();
+  await confirmCopyOn(args, backend, ['wss://relay.damus.io']);
+  const confirmed = (await loadVaultBackup(backend.activePublicKeyHex, args.encryptionKey)).confirmed!;
+  // The local copy has moved on since that confirmation (a stage change).
+  args.adapter.snapshot.mockImplementation(async () => '{"v":1,"edited":true}');
+  const snapshot = (revision: string, plaintext: string) => ({ event: { created_at: args.now - 10 },
+    checkpoint: { v: 1, purpose: 'signet:vault:profiles', rotation: 0, sequence: 1, revision, devicePubkeys: [], chunks: [] }, plaintext });
+  remote.mockImplementation(async resolve => { await resolve(0); return { state: 'ready', snapshots: [
+    snapshot(confirmed.revision, '{"v":1}'), snapshot('from-another-device', '{"v":1,"other":true}')] }; });
+  flush.mockImplementation(async () => ({ state: 'verified', confirmedRelays: [] }));
+  await syncPrivateVaultDataset(args);
+  expect(args.adapter.merge).toHaveBeenCalledTimes(1);
+  expect(args.adapter.merge).toHaveBeenCalledWith('{"v":1,"other":true}', args.now - 10);
+});
