@@ -89,7 +89,7 @@ import { generateContactAvatarKey } from './lib/photo-crypto';
 import { publishContactAvatarPointer, retractContactAvatarPointer } from './lib/contact-avatar';
 import { verifiedAuthoredEvent } from './lib/event-verify';
 import { resolveSettingsViewer } from './lib/carousel-routing';
-import type { StoredCredential, RememberedGrant, ChildSettings as ChildSettingsType, GrantScope, CompanionGrant } from './types';
+import type { IdentityDocument, StoredCredential, RememberedGrant, ChildSettings as ChildSettingsType, GrantScope, CompanionGrant } from './types';
 import { COMPANION_GRANT_CAP } from './types';
 import { useSwUpdate } from './hooks/useSwUpdate';
 import { useIdentity } from './hooks/useIdentity';
@@ -4702,6 +4702,23 @@ function AppContent() {
         };
       },
       addCredential: (cred: Parameters<typeof addCredentialRef.current>[0]) => addCredentialRef.current(cred),
+      /**
+       * Seed one identity document through the encrypted writer the app uses
+       * (`saveDocument`). Documents are encrypted at rest under the unlock key,
+       * so a raw IndexedDB `put` of plaintext fields can no longer be read back;
+       * only the live unlock key can write a row the My Documents page opens.
+       * `ownerPubkey` defaults to the real identity's pubkey, which is what the
+       * page lists. The page's list only reloads on the next unlock, so reload
+       * and unlock before opening it.
+       */
+      seedIdentityDocument: async (doc: Partial<IdentityDocument> & Pick<IdentityDocument, 'id' | 'country' | 'documentType' | 'fullName' | 'dateOfBirth' | 'documentNumber'>) => {
+        const key = benchRef.current.encryptionKey;
+        const owner = identityRef.current?.naturalPerson.publicKey;
+        if (!key || !owner) throw new Error('locked');
+        const { saveDocument } = await import('./lib/db');
+        const now = Date.now();
+        await saveDocument({ ownerPubkey: owner, createdAt: now, updatedAt: now, ...doc }, key);
+      },
       injectGetVerifiedSaved: (eventJsons: string[]) => getVerifiedSavedInjectorRef.current?.(eventJsons),
       // Hardware-bench helpers — go through the real setters so the change
       // republishes on the dependants sync rail (a raw IDB write is
