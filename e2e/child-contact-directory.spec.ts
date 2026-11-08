@@ -5,14 +5,7 @@ import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, unlockW
 import { privateRelays } from './helpers/private-relays';
 import { androidAcceptance } from './helpers/android-acceptance';
 test.use({ actionTimeout: 15000 });
-// FIXME(app bug): a dependant's autonomy stage change does not stick. About a
-// second after setDependantStage('request-approve') the stored stage is back at
-// 'full-control' whenever the relay already holds the dependant's earlier copy
-// (with relays answering empty it holds): a sync merge applies the older relay
-// record over the newer local edit (mergeDependantWithLocal is remote-wins for
-// autonomyStage). At 'full-control' the guardian publishes an empty directory
-// (childDirectoryPersonas is bypassed), so the child never sees "Shared Friend".
-// Re-enable once a local stage change survives the next sync.
+// FIXME(app bug): setDependantStage('request-approve') is reverted to 'full-control' about a second later by the private-vault profiles restore (private-vault-profiles.ts: remote-wins mergeDependantWithLocal), so the guardian publishes an empty directory.
 test.fixme('delivers a scoped read-only directory to a paired child, withdraws blocked contacts and preserves local records', async ({ page, context, browser }) => {
   test.setTimeout(360000);
   const network = privateRelays(); await network.install(context);
