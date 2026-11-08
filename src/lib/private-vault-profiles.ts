@@ -103,7 +103,7 @@ export function profilesVaultAdapter(args: {
         current();
         const existing = (await db.getDependants(args.ownerPubkey, args.encryptionKey)).find(d => d.id === dep!.id);
         if (existing && existing.createdAt > dep!.createdAt) continue;
-        await db.saveDependant(mergeDependantWithLocal(dep!, existing ?? null), args.encryptionKey);
+        await db.saveDependant(mergeDependantWithLocal(dep!, existing ?? null, createdAt), args.encryptionKey);
       }
       });
       for (const closure of closures) {

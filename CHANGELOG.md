@@ -18,6 +18,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 - An app you paired as one persona can no longer ask another of your personas to sign
 - Publishing a persona's profile for the first time from this phone asks first if the profile was changed in another app, so you can keep that version
 - A dependant's autonomy stage no longer reverts a second after you change it
+- A change to a dependant on one device is no longer undone by an older copy from another device
 - After you change a backup key, its row shows the new key version straight away
 - Edits made on two devices close together are no longer left out of the backup
 

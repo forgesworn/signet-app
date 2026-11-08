@@ -37,6 +37,7 @@
  * permanent tombstones, which win over stale live copies.
  */
 
+import { dependantScalarsDiffer, validEditTime } from './dependant-edit-time';
 import type { UnsignedEvent } from 'signet-protocol';
 import type { AutonomyStage, DependantIdentity, ExtraPersona, ExtraPersonaTombstone, GrantSchedule, PersonaPublicProfile } from '../types';
 import type { DecryptingSigningBackend } from './signing-backend';
@@ -71,6 +72,12 @@ export interface SyncedDependant {
   autonomyStage: AutonomyStage;
   primaryKeypair: 'natural-person' | 'persona' | string;
   createdAt: number;
+  /**
+   * When the sending device last changed a scalar field, in ms (#199).
+   * Optional: older builds neither send nor read it, and the merge then
+   * dates the record by its event's `created_at`.
+   */
+  updatedAt?: number;
   /** NP + Persona pubkeys + display names. Privkeys re-derived on receive. */
   np: { publicKey: string; displayName: string };
   persona: { publicKey: string; displayName: string };
@@ -171,6 +178,7 @@ export function toSyncWire(dep: DependantIdentity): SyncedDependant | null {
     persona: { publicKey: dep.persona.publicKey, displayName: dep.persona.displayName },
   };
   if (dep.dateOfBirth) wire.dateOfBirth = dep.dateOfBirth;
+  if (dep.updatedAt !== undefined) wire.updatedAt = dep.updatedAt;
   if (extras.length > 0) wire.extras = extras;
   const tombstones = dependantPersonaTombstones(dep.derivationPath, dep.extraPersonaTombstones);
   if (tombstones.length) wire.extraPersonaTombstones = tombstones;
@@ -203,6 +211,7 @@ function keylessRecordFromWire(wire: SyncedDependant, derivationPath: string): D
     naturalPersonActive: wireNaturalPersonActive(wire),
   };
   if (wire.dateOfBirth) dep.dateOfBirth = wire.dateOfBirth;
+  if (wire.updatedAt !== undefined) dep.updatedAt = wire.updatedAt;
   if (wire.extras && wire.extras.length > 0) {
     dep.extraPersonas = wire.extras.map((ep) => ({
       publicKey: ep.publicKey,
@@ -305,6 +314,7 @@ export function fromSyncWire(
       naturalPersonActive: wireNaturalPersonActive(wire),
     };
     if (wire.dateOfBirth) dep.dateOfBirth = wire.dateOfBirth;
+    if (wire.updatedAt !== undefined) dep.updatedAt = wire.updatedAt;
     if (extras.length > 0) dep.extraPersonas = extras;
     const ds = parseScheduleField(wire.defaultSchedule);
     if (ds) dep.defaultSchedule = ds;
@@ -436,8 +446,15 @@ function preserveLocalPrivateKey<T extends { privateKey: string }>(remote: T, lo
 export function mergeDependantWithLocal(
   remote: DependantIdentity,
   local: DependantIdentity | null,
+  /** The remote event's `created_at` in seconds, dating a record with no `updatedAt`. */
+  remoteEventAt?: number,
 ): DependantIdentity {
   if (!local) return applyDependantPersonaTombstones(remote);
+  // #199: the side with the newer scalar edit keeps its scalar fields. A
+  // remote record from an older build is dated by its event, which is never
+  // earlier than the edit it carries.
+  const remoteAt = remote.updatedAt ?? (remoteEventAt !== undefined ? remoteEventAt * 1000 : undefined);
+  const localWins = local.updatedAt !== undefined && remoteAt !== undefined && local.updatedAt > remoteAt;
   const merged: DependantIdentity = {
     ...remote,
     // Device-local fields: never cross the wire, always keep local copy.
@@ -477,6 +494,23 @@ export function mergeDependantWithLocal(
       ...(local.extraPersonaTombstones ?? []), ...(remote.extraPersonaTombstones ?? []),
     ]),
   };
+  if (localWins) {
+    merged.displayName = local.displayName;
+    merged.autonomyStage = local.autonomyStage;
+    merged.primaryKeypair = local.primaryKeypair;
+    merged.naturalPerson = { ...merged.naturalPerson, displayName: local.naturalPerson.displayName };
+    merged.persona = { ...merged.persona, displayName: local.persona.displayName };
+    if (local.dateOfBirth !== undefined) merged.dateOfBirth = local.dateOfBirth; else delete merged.dateOfBirth;
+    merged.updatedAt = local.updatedAt;
+  } else if (remote.updatedAt === undefined) {
+    // An older build's record. When it changes a field, carry its event
+    // time, so saveDependant sees a deliberate value and does not stamp the
+    // accepted change as a local edit. When it changes nothing, leave the
+    // local record as it was rather than writing a new time on every fetch.
+    if (!dependantScalarsDiffer(local, remote)) {
+      if (local.updatedAt !== undefined) merged.updatedAt = local.updatedAt;
+    } else if (remoteAt !== undefined) merged.updatedAt = remoteAt;
+  }
   // Charter clause #1. Schedule rides on the
   // wire as of phase 3: independent LWW on `issuedAt`, with remote
   // breaking ties (consistent with the rest of the merge's posture).
@@ -517,6 +551,9 @@ export function isDependantsRicherThan(merged: DependantIdentity[], remote: Sync
     const r = remoteById.get(m.id);
     if (!r) return true;
     if (m.createdAt > r.createdAt) return true;
+    // A local scalar edit the relay lacks (#199). Only when the values
+    // differ, so an older build's record without the field cannot flap.
+    if (m.updatedAt !== undefined && m.updatedAt > (r.updatedAt ?? 0) && dependantScalarsDiffer(m, r)) return true;
     if (m.naturalPersonActive === true && !wireNaturalPersonActive(r)) return true;
     if (m.defaultSchedule && (!r.defaultSchedule || m.defaultSchedule.issuedAt > r.defaultSchedule.issuedAt)) return true;
 
@@ -707,6 +744,8 @@ export function parsePayload(raw: string): SyncedDependant[] | null {
       persona: { publicKey: persona.publicKey, displayName: persona.displayName.slice(0, 200) },
     };
     if (typeof d.dateOfBirth === 'string') wire.dateOfBirth = d.dateOfBirth;
+    const updatedAt = validEditTime(d.updatedAt);
+    if (updatedAt !== undefined) wire.updatedAt = updatedAt;
     if (Array.isArray(d.extras)) {
       const extras: SyncedExtraPersona[] = [];
       for (const ep of (d.extras as Record<string, unknown>[]).slice(0, MAX_SYNC_EXTRAS)) {

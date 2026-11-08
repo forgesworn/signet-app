@@ -1910,6 +1910,7 @@ export async function deleteOriginPolicy(origin: string): Promise<void> {
 // --- Dependant Identities ---
 
 import type { DependantIdentity, ExtraPersona } from '../types';
+import { dependantScalarsDiffer } from './dependant-edit-time';
 import type { KenEntry } from '@forgesworn/kenspeckle';
 
 const DEPENDANT_PREFIX = 'dependant:';
@@ -1982,13 +1983,21 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
   // A25: `childDevice` is set only by the pairing flow and cleared only by
   // `clearChildDevice`. A generic save (mutators, sync merges) whose object
   // lacks it keeps the stored one.
+  const existing = await db.get('identity', DEPENDANT_PREFIX + dependant.id) as DependantIdentity | undefined;
   let childDevice = dependant.childDevice;
-  if (childDevice === undefined) {
-    const existing = await db.get('identity', DEPENDANT_PREFIX + dependant.id) as { childDevice?: DependantIdentity['childDevice'] } | undefined;
-    if (existing?.childDevice) childDevice = existing.childDevice;
-  }
+  if (childDevice === undefined && existing?.childDevice) childDevice = existing.childDevice;
+  // #199: stamp the edit time when a synced scalar field changes. A caller
+  // carrying a newer time (a sync merge with the remote edit time) keeps it;
+  // one carrying none or an older one (a stale in-memory copy) is stamped,
+  // so a second quick edit cannot drop the first's time. A first save has
+  // no edit to date.
+  const callerAt = dependant.updatedAt;
+  const updatedAt = existing && dependantScalarsDiffer(existing, dependant)
+    && (callerAt === undefined || (existing.updatedAt !== undefined && callerAt <= existing.updatedAt))
+    ? Math.max(Date.now(), (existing.updatedAt ?? 0) + 1) : callerAt;
   const stored = {
     ...dependant,
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
     ...(childDevice ? { childDevice } : {}),
     id: DEPENDANT_PREFIX + dependant.id,
     naturalPerson: { ...dependant.naturalPerson, privateKey: encNpPriv, avatarKey: encNpAvatarKey, contactAvatarKey: encNpContactAvatarKey },

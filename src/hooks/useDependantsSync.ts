@@ -174,7 +174,7 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
           const existing = await db.getDependants(reconstructed.guardianPubkey, encryptionKey);
           const localHit = existing.find(d => d.id === reconstructed.id);
           if (localHit && localHit.createdAt > reconstructed.createdAt) continue;
-          const merged = mergeDependantWithLocal(reconstructed, localHit ?? null);
+          const merged = mergeDependantWithLocal(reconstructed, localHit ?? null, remote.createdAt);
           await db.saveDependant(merged, encryptionKey);
           savedAny = true;
         }

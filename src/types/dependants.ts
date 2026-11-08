@@ -127,6 +127,12 @@ export interface DependantIdentity {
   encrypted?: boolean;
   /** Delegation stage */
   autonomyStage: AutonomyStage;
+  /**
+   * When this device last changed a synced scalar field (name, date of
+   * birth, stage, primary keypair, NP/persona names), in ms. Stamped by
+   * `db.saveDependant`; the sync merge keeps the newer side (#199).
+   */
+  updatedAt?: number;
   /** Which keypair is currently active — 'natural-person', 'persona', or an extra persona's pubkey */
   primaryKeypair: 'natural-person' | 'persona' | string;
   /**
