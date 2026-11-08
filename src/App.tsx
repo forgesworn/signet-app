@@ -6899,6 +6899,7 @@ function AppContent() {
     if (!isCurrent()) return 'Backup session changed. Check its status after unlocking.';
     refreshPrivateVaultData();
     setBotsChangeVersion(v => v + 1);
+    setPrivateVaultResync(prev => ({ token: (prev?.token ?? 0) + 1, purpose }));
     if (result.state === 'complete') return 'Backup key changed and verified. Your recovery words still restore this backup.';
     if (result.state === 'unusable') return 'The key change needs attention. Existing backups are retained; the new recovery path could not be validated.';
     if (result.state === 'cancelled') return 'Backup key change interrupted. Check its status after unlocking.';
@@ -6917,6 +6918,8 @@ function AppContent() {
   // device refused (usePrivateVaults stops retrying on its own).
   const [privateVaultApproveToken, setPrivateVaultApproveToken] = useState(0);
   const [privateVaultApprovalDismissed, setPrivateVaultApprovalDismissed] = useState(false);
+  // Bumped after a backup-key rotation so the rotated dataset's row re-reads its key version (#198).
+  const [privateVaultResync, setPrivateVaultResync] = useState<{ token: number; purpose: string } | null>(null);
   usePrivateVaults({
     sessionKey: identity && encryptionKey ? privateVaultSession : null,
     ownerPubkey: identity?.naturalPerson.publicKey ?? null,
@@ -6935,6 +6938,7 @@ function AppContent() {
       dependants.map(dependantChangeWire), credentials?.map(c => c.id), grantsForSync,
       portableSettingsValues(preferences), [...childSettingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)]),
     approveToken: privateVaultApproveToken,
+    resync: privateVaultResync,
     // A sign-in gets the Heartwood first: while one is on screen or being
     // signed, no new vault request goes to the device (its cards would queue
     // ahead of, or beside, the sign-in's own). Bunker mode only — local-key

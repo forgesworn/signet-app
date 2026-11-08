@@ -5,8 +5,7 @@ import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, unlockW
 import { privateRelays } from './helpers/private-relays';
 import { androidAcceptance } from './helpers/android-acceptance';
 test.use({ actionTimeout: 15000 });
-// FIXME(app bug): setDependantStage('request-approve') is reverted to 'full-control' about a second later by the private-vault profiles restore (private-vault-profiles.ts: remote-wins mergeDependantWithLocal), so the guardian publishes an empty directory.
-test.fixme('delivers a scoped read-only directory to a paired child, withdraws blocked contacts and preserves local records', async ({ page, context, browser }) => {
+test('delivers a scoped read-only directory to a paired child, withdraws blocked contacts and preserves local records', async ({ page, context, browser }) => {
   test.setTimeout(360000);
   const network = privateRelays(); await network.install(context);
   await createIdentityAndUnlock(page, { name: 'Guardian' });

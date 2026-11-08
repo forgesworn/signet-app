@@ -456,3 +456,30 @@ it('C4: a signer refusal while listing is an approval, not a stop', async () => 
   expect(result.current.stopped).toBeUndefined();
   unmount();
 });
+
+it('a resync bump re-reads a verified dataset whose content did not change, so a rotated key version shows (#198)', async () => {
+  vi.useFakeTimers();
+  const revision = vaultContentHash('{}');
+  sync.mockResolvedValueOnce({ state: 'verified', canonical: true, revision, rotation: 0 })
+    .mockResolvedValue({ state: 'verified', canonical: true, revision, rotation: 1 });
+  let props: ReturnType<typeof opts> & { resync?: { token: number; purpose: string } | null } = opts();
+  const { result, rerender, unmount } = renderHook(p => usePrivateVaults(p), { initialProps: props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(sync).toHaveBeenCalledTimes(1);
+  // An ordinary change kick skips it: the content hash still matches.
+  props = { ...props, changeToken: 'rotated' };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(sync).toHaveBeenCalledTimes(1);
+  expect(result.current.datasets['signet:vault:profiles'].rotation).toBe(0);
+  props = { ...props, resync: { token: 1, purpose: 'signet:vault:profiles' } };
+  rerender(props);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(sync).toHaveBeenCalledTimes(2);
+  expect(result.current.datasets['signet:vault:profiles'].rotation).toBe(1);
+  // The same token again does nothing.
+  rerender({ ...props });
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(sync).toHaveBeenCalledTimes(2);
+  unmount();
+});
