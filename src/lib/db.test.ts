@@ -45,7 +45,7 @@ const TIMEOUT = 45_000;
 // Used to write records that bypass saveIdentityEncrypted.
 async function rawOpen() {
   const { openDB } = await import('idb');
-  return openDB('my-signet', 27, {
+  return openDB('my-signet', 29, {
     upgrade(d) {
       if (!d.objectStoreNames.contains('identity')) d.createObjectStore('identity', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('contacts')) {
@@ -62,10 +62,6 @@ async function rawOpen() {
       if (!d.objectStoreNames.contains('credentials')) {
         const creds = d.createObjectStore('credentials', { keyPath: 'id' });
         creds.createIndex('documentId', 'documentId');
-      }
-      if (!d.objectStoreNames.contains('authorizedSites')) {
-        const sites = d.createObjectStore('authorizedSites', { keyPath: 'id' });
-        sites.createIndex('origin', 'origin');
       }
       if (!d.objectStoreNames.contains('originPolicies')) {
         d.createObjectStore('originPolicies', { keyPath: 'origin' });
@@ -2764,7 +2760,7 @@ describe('contacts v2 stores', () => {
     // names a version: it was pinned at v23 while this assertion had already
     // moved to 24, which is exactly the drift that makes a stale literal hard
     // to spot.
-    expect(raw.version).toBe(27);
+    expect(raw.version).toBe(29);
     expect(raw.objectStoreNames.contains('privateVaultState')).toBe(true);
     expect(raw.objectStoreNames.contains('contactRecordsV2')).toBe(true);
     expect(raw.objectStoreNames.contains('contactOpsV2')).toBe(true);

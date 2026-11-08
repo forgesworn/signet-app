@@ -321,7 +321,7 @@ it('Handshake remains outside the blur layer and works on a dormant child card',
   expect(blur).toHaveStyle({ filter: 'blur(6px)' });
 });
 
-describe('IdentityCard — quick-open launcher and contacts pill', () => {
+describe('IdentityCard — known-places strip and contacts pill', () => {
   const ownerRow = {
     type: 'owner',
     identity: { displayName: 'Alice', publicKey: 'aa'.repeat(32), keypairType: 'persona' },
@@ -334,19 +334,34 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
     isDependant: false,
   };
 
-  it('renders a chip per site and opens its origin on tap', () => {
-    const onOpenSite = vi.fn();
+  const placeOf = (key: string, over: Record<string, unknown> = {}) => ({
+    id: `${key}:${'aa'.repeat(32)}`, pubkey: 'aa'.repeat(32), placeKey: key, kind: 'sign-in', name: 'Primal',
+    origin: 'https://primal.net', channel: 'browser', signer: 'local', firstAt: 1, lastAt: 2, uses: 1, shared: {}, ...over,
+  }) as never as import('../types/known-places').KnownPlace;
+  const site = (key = 'https://primal.net', over: Record<string, unknown> = {}) => ({ place: placeOf(key, over), badge: null });
+
+  it('renders a chip per place and reports the id on tap, without opening a window', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const onOpenPlace = vi.fn();
+    const s = site();
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]}
-      onOpenSite={onOpenSite} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open Primal' }));
-    expect(onOpenSite).toHaveBeenCalledWith('https://primal.net');
+      knownPlaceItems={[s]} onOpenPlace={onOpenPlace} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Primal' }));
+    expect(onOpenPlace).toHaveBeenCalledWith(s.place.id);
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
   });
 
-  it('shows no launcher when the identity has no sign-ins yet — the Scan tile is the invitation', () => {
-    const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
-    expect(container.querySelector('.card-launcher')).toBeNull();
+  it('shows a quiet line when the identity is not known anywhere yet — the Scan tile is the invitation', () => {
+    const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} knownPlaceItems={[]} />);
+    expect(screen.getByText('Not known anywhere yet')).toBeDefined();
+    expect(container.querySelector('.kp-strip')).toBeNull();
     expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+  });
+
+  it('shows no strip at all when no places were supplied', () => {
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} />);
+    expect(screen.queryByText('Not known anywhere yet')).toBeNull();
   });
 
   it('shows the contacts count, or an add-first prompt at zero', () => {
@@ -361,7 +376,7 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
   it('shows one unlock chip on a locked owner card and asks to unlock on tap', () => {
     const onUnlockRequest = vi.fn();
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[]} launcherLocked onUnlockRequest={onUnlockRequest} />);
+      knownPlaceItems={[]} placesLocked onUnlockRequest={onUnlockRequest} />);
     const chip = screen.getByRole('button', { name: 'Unlock to see where this identity is known' });
     expect(chip.className).toContain('card-launcher-chip--locked');
     fireEvent.click(chip);
@@ -370,20 +385,21 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
 
   it('shows no unlock chip when unlocked', () => {
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[]} launcherLocked={false} onUnlockRequest={vi.fn()} />);
+      knownPlaceItems={[]} placesLocked={false} onUnlockRequest={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Unlock to see where this identity is known' })).toBeNull();
   });
 
   it('shows no unlock chip on a dependant row even when locked', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
-      launcherLocked onUnlockRequest={vi.fn()} />);
+      placesLocked onUnlockRequest={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Unlock to see where this identity is known' })).toBeNull();
   });
 
-  it('hides the launcher, contacts pill and Scan on a dependant card', () => {
+  it('hides the places strip, contacts pill and Scan on a dependant card', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
-      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]} contactsCount={3} />);
-    expect(screen.queryByRole('button', { name: 'Open Primal' })).toBeNull();
+      knownPlaceItems={[site()]} contactsCount={3} />);
+    expect(screen.queryByRole('button', { name: 'Primal' })).toBeNull();
+    expect(screen.queryByText('Not known anywhere yet')).toBeNull();
     expect(screen.queryByRole('button', { name: "Open this identity's contacts" })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Scan' })).toBeNull();
   });

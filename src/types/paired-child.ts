@@ -30,6 +30,14 @@ export interface ConnectedClient {
   /** Explicit NIP-46 method/kind ceiling. Absent only on legacy connections. */
   permissions?: string[];
   /**
+   * When true, `sign_event` from this client asks every time even though
+   * `allowAlways` is set. `allowAlways` is deliberately left alone: it doubles
+   * as "this client is connected" for the nip04/nip44 gate, so crypto stays
+   * silent either way. Read in exactly one place — the owner-route sign_event
+   * silent path in useBunkerServer.
+   */
+  askToSign?: boolean;
+  /**
    * The owner persona route (hex pubkey) this client paired with. A client
    * that addresses any other owner persona is ignored, so pairing as one
    * persona never reaches another, and a refusal never reveals that both

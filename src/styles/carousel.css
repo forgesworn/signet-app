@@ -50,7 +50,7 @@
 }
 
 /* A steady frame across every card: swiping changes content, not its size. */
-.id-card, .qr-view, .contacts-card, .camera-view, .settings-view, .add-view,
+.id-card, .qr-view, .contacts-card, .known-places-card, .camera-view, .settings-view, .add-view,
 .card-stage {
   width: 100%;
   max-width: 420px;
@@ -85,6 +85,7 @@
 /* Dense tool cards stay near-opaque: the wallpaper reads as a tint, and
    none of their text needs its own plate. */
 .card-stage.has-backdrop .contacts-card,
+.card-stage.has-backdrop .known-places-card,
 .card-stage.has-backdrop .settings-view { background: rgba(13, 25, 42, 0.93); box-shadow: none; border-color: rgba(255, 255, 255, 0.08); max-width: none; }
 
 /* ── Readability ──
@@ -441,6 +442,36 @@
   font-weight: 800;
 }
 .card-launcher-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* ── Known-places strip: chips filled by space, two rows (one on a short card) ──
+   Every chip stays in the DOM so its width can be measured; the ones that do not
+   fit are taken out of the flow but not out of the layout. */
+.kp-strip {
+  --kp-rows: 2;
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+}
+.kp-strip-empty { margin: 0; font-size: 0.8rem; color: var(--text-secondary); text-align: center; }
+.kp-chip { max-width: 48%; padding: 4px 12px 4px 4px; font-size: 0.8125rem; }
+/* A chip is as wide as its content (capped at 70% of the strip so one name
+   cannot take a whole row); the label takes every pixel left inside it and the
+   tile and badge glyph never give any up. 45% clipped "harness.example" in a
+   380 px strip (needs ~190 px), so the cap is generous and ellipsis is the
+   exception. */
+.kp-chip .card-launcher-label { flex: 1 1 auto; min-width: 0; }
+.kp-chip .card-launcher-tile, .kp-chip .kp-glyph { flex-shrink: 0; }
+.kp-chip .card-launcher-tile { width: 36px; height: 36px; border-radius: 10px; font-size: 0.95rem; }
+.kp-tile-img { object-fit: cover; background: var(--bg-card-alt); }
+.kp-chip--hidden { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }
+.kp-chip--more { min-width: 52px; height: 44px; justify-content: center; padding: 0 12px; color: var(--text-secondary); }
+.kp-glyph { flex-shrink: 0; color: var(--brand-gold); }
+.kp-glyph-text { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.04em; }
+.kp-glyph-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--brand-gold); }
 .card-contacts-pill {
   display: inline-flex;
   align-items: center;
@@ -1492,6 +1523,9 @@
   .card-stage.has-backdrop .card-identity { padding: 10px 16px 10px; }
   .card-launcher-chip { font-size: .78rem; padding: 5px 11px 5px 6px; }
   .card-launcher-tile { width: 21px; height: 21px; }
+  .kp-chip { padding: 3px 10px 3px 3px; font-size: .78rem; }
+  .kp-chip .card-launcher-tile { width: 30px; height: 30px; border-radius: 9px; }
+  .kp-chip--more { height: 36px; }
   .card-brand { margin-top: 0; gap: 14px; }
   .card-brand img:first-child { height: 44px; }
   .card-brand img:last-child { height: 28px; }
@@ -1506,6 +1540,9 @@
   .card-photo-wrap { margin-bottom: 6px; }
   .card-quick { gap: 5px; }
   .card-launcher { max-height: 40px; }
+  .kp-strip { --kp-rows: 1; }
+  .kp-chip .card-launcher-tile { width: 24px; height: 24px; border-radius: 7px; }
+  .kp-chip--more { height: 32px; }
   .card-contacts-pill { padding: 2px 10px; }
   .card-brand img:first-child { height: 32px; }
   .card-brand img:last-child { height: 22px; }

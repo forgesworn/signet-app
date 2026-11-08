@@ -39,7 +39,7 @@ async function shot(page: Page, name: string) {
   }
 }
 
-/** Move the carousel horizontally (card→qr→contacts→settings→camera→card…) via the document-level ArrowKey handler in Carousel.tsx. */
+/** Move the carousel horizontally (card→qr→contacts→places→settings→camera→card…) via the document-level ArrowKey handler in Carousel.tsx. */
 async function colRight(page: Page, times = 1) {
   for (let i = 0; i < times; i++) {
     await page.keyboard.press('ArrowRight');
@@ -155,10 +155,10 @@ test('02 onboarding: restore + recovery words + name-choice + name step', async 
 // ─────────────────────────────────────────────────────────────────────────
 // 2. Fresh identity: the Persona row is the landing row (row 0) — the real
 // identity is dormant by default and has NO carousel card at all (spec §5) —
-// all 5 columns, plus gear-fab -> persona-advanced.
+// all 6 columns, plus gear-fab -> persona-advanced.
 // ─────────────────────────────────────────────────────────────────────────
 
-test('11 home carousel: Persona row (landing card), all 5 columns', async ({ page }) => {
+test('11 home carousel: Persona row (landing card), all 6 columns', async ({ page }) => {
   await clearDatabase(page);
   await createIdentityAndUnlock(page, { name: 'Alex Rivera' });
   await confirmRealNameIfPrompted(page);
@@ -169,7 +169,7 @@ test('11 home carousel: Persona row (landing card), all 5 columns', async ({ pag
 
   await colRight(page);
   await shot(page, '13-home-persona-contacts');
-  await colRight(page);
+  await colRight(page, 2); // past the places column
   await shot(page, '13-home-persona-settings');
 
   await colRight(page);
@@ -180,7 +180,7 @@ test('12 gear-fab: Persona -> persona-advanced', async ({ page }) => {
   await clearDatabase(page);
   await createIdentityAndUnlock(page, { name: 'Alex Rivera' });
   await confirmRealNameIfPrompted(page);
-  await colRight(page, 3); // card -> qr -> contacts -> settings
+  await colRight(page, 4); // card -> qr -> contacts -> places -> settings
   await page.locator('.gear-fab').click({ timeout: 8_000 }).catch(() => {});
   await page.waitForTimeout(500);
   await shot(page, '15-persona-advanced-persona');
@@ -224,7 +224,7 @@ test('12b activation page: explanation -> name -> typed confirm -> backup', asyn
   await shot(page, '15d-activation-backup-words');
 });
 
-test('13 home carousel: NP row (activated), all 5 columns + gear-fab', async ({ page }) => {
+test('13 home carousel: NP row (activated), all 6 columns + gear-fab', async ({ page }) => {
   await clearDatabase(page);
   await restoreIdentityAndUnlock(page, { name: 'Alex Rivera', keypair: 'natural-person' });
   await confirmRealNameIfPrompted(page);
@@ -236,7 +236,7 @@ test('13 home carousel: NP row (activated), all 5 columns + gear-fab', async ({ 
 
   await colRight(page);
   await shot(page, '18-home-np-contacts');
-  await colRight(page);
+  await colRight(page, 2); // past the places column
   await shot(page, '18-home-np-settings');
   await page.locator('.gear-fab').click({ timeout: 8_000 }).catch(() => {});
   await page.waitForTimeout(500);
@@ -245,7 +245,7 @@ test('13 home carousel: NP row (activated), all 5 columns + gear-fab', async ({ 
   await navigateViaHarness(page, 'home');
   await page.waitForTimeout(500);
   await rowDown(page); // back to NP row — the landing row is always Persona (row 0)
-  await colRight(page, 4); // card -> qr -> contacts -> settings -> camera
+  await colRight(page, 5); // card -> qr -> contacts -> places -> settings -> camera
   await shot(page, '20-home-np-camera');
 });
 
@@ -294,7 +294,7 @@ test('15 add extra persona + dependant via UI, screenshot both rows', async ({ p
   await shot(page, '26-home-extra-persona-qr');
   await colRight(page);
   await shot(page, '27-home-extra-persona-contacts');
-  await colRight(page);
+  await colRight(page, 2); // past the places column
   await shot(page, '27-home-extra-persona-settings');
   await page.locator('.gear-fab').click({ timeout: 8_000 }).catch(() => {});
   await page.waitForTimeout(500);
@@ -367,7 +367,7 @@ test('15 add extra persona + dependant via UI, screenshot both rows', async ({ p
   await shot(page, '30-home-dependant-qr');
   await colRight(page);
   await shot(page, '31-home-dependant-contacts');
-  await colRight(page);
+  await colRight(page, 2); // past the places column
   await shot(page, '31-home-dependant-settings');
   await page.locator('.gear-fab').click({ timeout: 8_000 }).catch(() => {});
   await page.waitForTimeout(500);
@@ -531,7 +531,7 @@ test('21 dark theme sweep', async ({ page }) => {
   await shot(page, '70-dark-home-np-card');
 
   try {
-    await colRight(page, 2); // -> settings col
+    await colRight(page, 4); // -> settings col
     await page.locator('.gear-fab').click({ timeout: 8_000 }).catch(() => {});
     await page.waitForTimeout(500);
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));

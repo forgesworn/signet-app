@@ -11,6 +11,7 @@ import { CardBackdropRow } from './CardBackdropRow';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
 import { armPickerGrace } from '../lib/picker-grace';
+import { useCarouselArrows } from './CarouselArrowContext';
 import type { DeleteOutcome } from '../lib/blob-deletion';
 
 /**
@@ -582,6 +583,7 @@ export function SettingsCard({
   onClearDepPersonaAvatar,
   onDepNip05Checked,
 }: Props) {
+  const arrows = useCarouselArrows();
   const isGuardianViewingChild = row.type === 'dependant' && !childMode;
   // Paired-child surface: no consequential actions on the dep persona card.
   // The §6.6.11 read-only framing is the whole UX — surfacing the gear-fab
@@ -882,8 +884,12 @@ export function SettingsCard({
           </button>
 
           <div className="settings-label">Connections</div>
+          <button className="settings-row" onClick={() => arrows?.jump(3)}>
+            <span className="sr-label">Where you're known</span>
+            <span className="sr-chevron">&rsaquo;</span>
+          </button>
           <button className="settings-row" onClick={() => onNavigateDeepPage('connections')}>
-            <span className="sr-label">Connected Sites</span>
+            <span className="sr-label">Connected apps</span>
             <span className="sr-chevron">&rsaquo;</span>
           </button>
         </>

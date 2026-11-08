@@ -100,17 +100,7 @@ test('rotates a private backup and restores human/bot contacts and family contac
   // Rotation requires fresh presence even though the app is already unlocked.
   for (const digit of '123456') await page.getByRole('button', { name: digit, exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Backup key changed and verified.' })).toBeVisible({ timeout: 60000 });
-  // Probable app bug, not test drift: the rotation is complete and verified (the
-  // fresh browser below reads key version 1 from the relays), but this device's
-  // own row keeps reading the old version until the next full vault poll, five
-  // minutes away: the post-rotation change kick re-syncs only datasets whose
-  // local content moved (usePrivateVaults `needsSync`), and a rotation does not
-  // move content. Record it rather than fail, so the cross-device recovery
-  // guarantee below still runs; delete this block when the row updates at once.
-  await expect(ownerBackup).toContainText('key version', { timeout: 60000 });
-  if (!(await ownerBackup.innerText()).includes('key version 1')) {
-    test.info().annotations.push({ type: 'app-bug', description: 'owner backup row still reads "key version 0" after a completed rotation (stale until the next full vault poll)' });
-  }
+  await expect(ownerBackup).toContainText('key version 1', { timeout: 15000 });
   const second = await browser.newContext({ ignoreHTTPSErrors: true, baseURL: new URL(page.url()).origin, viewport: { width: 390, height: 844 } });
   try {
     await installRelays(second, events);

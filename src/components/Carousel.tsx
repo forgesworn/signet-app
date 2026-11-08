@@ -7,7 +7,7 @@ import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
 import { shouldShowPairingStatus } from '../lib/carousel-routing';
 import { NavDots } from './NavDots';
-import { IdentityCard, type LauncherSite } from './IdentityCard';
+import { IdentityCard, type KnownPlaceItem } from './IdentityCard';
 import { CardStage } from './CardStage';
 import { IdentitySwitcher } from './IdentitySwitcher';
 import type { IdentityCardProps } from './IdentityCard';
@@ -24,14 +24,16 @@ interface CarouselProps {
   renderBotCard?: (row: Extract<CarouselRow, { type: 'bot' }>, col: CarouselColumn) => ReactNode;
   renderInviteCard?: (row: CarouselRow, resolved: ResolvedIdentity, renderPublicCard: (slots?: QRCardSlots) => ReactNode) => ReactNode;
   /** Quick-open launcher rows for an owner identity's card (col 0). */
-  launcherSitesFor?: (resolved: ResolvedIdentity) => LauncherSite[];
+  knownPlacesFor?: (resolved: ResolvedIdentity) => KnownPlaceItem[];
   /** The app is locked: owner cards show one unlock chip in place of the site chips. */
-  launcherLocked?: boolean;
+  placesLocked?: boolean;
   onUnlockRequest?: () => void;
-  onOpenSite?: (origin: string) => void;
+  onOpenPlace?: (placeId: string) => void;
   /** Active contacts count for an owner identity, or null to hide the pill. */
   contactsCountFor?: (resolved: ResolvedIdentity) => number | null;
   renderContactsCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
+  /** The known-places column (col 3) for an owner identity. */
+  renderKnownPlacesCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
   row: number;
   col: CarouselColumn;
   rows: CarouselRow[];
@@ -307,10 +309,10 @@ function renderCard(
             photoUrl={null}
             proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
             onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
-            launcherSites={props.launcherSitesFor?.(resolved)}
-            launcherLocked={props.launcherLocked}
+            knownPlaceItems={props.knownPlacesFor?.(resolved)}
+            placesLocked={props.placesLocked}
             onUnlockRequest={props.onUnlockRequest}
-            onOpenSite={props.onOpenSite}
+            onOpenPlace={props.onOpenPlace}
             contactsCount={props.contactsCountFor?.(resolved) ?? null}
             recentSignInLabel={recentSignInLabel}
             blurIdentityNames={props.blurIdentityNames}
@@ -340,6 +342,8 @@ function renderCard(
       case 2:
         return props.renderContactsCard?.(row, resolved) ?? null;
       case 3:
+        return props.renderKnownPlacesCard?.(row, resolved) ?? null;
+      case 4:
         return (
           <SettingsCard
             resolved={resolved}
@@ -368,7 +372,7 @@ function renderCard(
             onDepNip05Checked={props.onDepNip05Checked}
           />
         );
-      case 4:
+      case 5:
         return (
           <CameraCard
             resolved={resolved}
@@ -379,7 +383,7 @@ function renderCard(
     }
   })();
   // The camera feed covers the whole card, so the backdrop has nothing to show there.
-  if (col === 4) return node;
+  if (col === 5) return node;
   return <CardStage pubkey={resolved.publicKey || undefined} blur={props.blurIdentityNames}>{node}</CardStage>;
 }
 

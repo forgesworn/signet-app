@@ -20,6 +20,10 @@ import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricPrompt
@@ -460,6 +464,65 @@ class SignetNativePlugin : Plugin() {
         } catch (_: ActivityNotFoundException) {
             call.reject("battery settings unavailable")
         }
+    }
+
+    // ── Known places: who opened us, and other apps' icons ────────────────
+    //
+    // getLaunchReferrer: the package that opened the last link (a hint, never
+    // a trust input). getAppIcon / openApp need the narrow <queries> launcher
+    // declaration in the manifest on API 30+. Never rejects for an unknown
+    // package: nulls / false.
+    @PluginMethod
+    fun getLaunchReferrer(call: PluginCall) {
+        val js = JSObject()
+        js.put("package", LaunchReferrer.pkg ?: JSONObject.NULL)
+        js.put("url", LaunchReferrer.url ?: JSONObject.NULL)
+        call.resolve(js)
+    }
+
+    @PluginMethod
+    fun getAppIcon(call: PluginCall) {
+        val js = JSObject()
+        js.put("label", JSONObject.NULL)
+        js.put("iconPngBase64", JSONObject.NULL)
+        val pkg = call.getString("package")
+        if (pkg.isNullOrEmpty()) { call.resolve(js); return }
+        try {
+            val pm = context.packageManager
+            val info = pm.getApplicationInfo(pkg, 0)
+            js.put("label", info.loadLabel(pm).toString())
+            val drawable = info.loadIcon(pm)
+            val size = 96
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            val out = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            bmp.recycle()
+            js.put("iconPngBase64", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
+        } catch (_: Exception) {
+            // Unknown package or a drawable that won't render: whatever we
+            // have so far (possibly nothing) is the answer.
+        }
+        call.resolve(js)
+    }
+
+    @PluginMethod
+    fun openApp(call: PluginCall) {
+        val pkg = call.getString("package")
+        var opened = false
+        if (!pkg.isNullOrEmpty()) {
+            try {
+                val intent = context.packageManager.getLaunchIntentForPackage(pkg)
+                if (intent != null) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    opened = true
+                }
+            } catch (_: Exception) {}
+        }
+        call.resolve(JSObject().put("opened", opened))
     }
 
     // ── Contact pictures: capped image download ───────────────────────────

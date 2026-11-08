@@ -1,6 +1,8 @@
 import { HandshakeButton } from './HandshakeButton';
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import type { CarouselRow } from '../types';
+import type { KnownPlace } from '../types/known-places';
+import type { Badge } from '../lib/known-place-badges';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
@@ -9,19 +11,21 @@ import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
 import { BACKDROP_PRIVACY_COPY, useCardBackdrop } from '../hooks/useCardBackdrop';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
+import { KnownPlacesStrip } from './KnownPlacesStrip';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
 import { armPickerGrace } from '../lib/picker-grace';
 
-/** One site this identity has signed in to, for the quick-open launcher. */
-export interface LauncherSite {
-  id: string;
-  /** Site origin, e.g. "https://example.com" — what onOpenSite receives. */
-  origin: string;
-  /** Short display label: the site's name, falling back to its domain. */
-  label: string;
-  /** Pinned via the Connections page — listed first. */
-  pinned?: boolean;
+/**
+ * One place this identity is known (a signed-in site, a paired app), with the
+ * badge and icon its chip shows. Carousel routes these through its
+ * `knownPlacesFor` / `onOpenPlace` props.
+ */
+export interface KnownPlaceItem {
+  place: KnownPlace;
+  badge: Badge | null;
+  /** A data-URL app icon, or null for the letter tile. */
+  iconUrl?: string | null;
 }
 
 export interface IdentityCardProps {
@@ -60,14 +64,15 @@ export interface IdentityCardProps {
   proAnchorActive?: boolean;
   /** Called when the Pro pill is tapped. Navigates to `professional` page. */
   onProPillTap?: () => void;
-  /** Sites this identity has signed in to, pinned first then most recent.
-   *  Empty or undefined hides the launcher: the Scan tile already invites the first sign-in. */
-  launcherSites?: LauncherSite[];
-  /** The app is locked: show one unlock chip instead of the (hidden) site chips. */
-  launcherLocked?: boolean;
+  /** Places this identity is known. An array (even empty) shows the strip, with a quiet
+   *  "Not known anywhere yet" line when empty; undefined hides it. */
+  knownPlaceItems?: KnownPlaceItem[];
+  /** The app is locked: show one unlock chip instead of the (hidden) place chips. */
+  placesLocked?: boolean;
   onUnlockRequest?: () => void;
-  /** Opens a launcher site (e.g. window.open). Required for chips to render as buttons. */
-  onOpenSite?: (origin: string) => void;
+  /** A chip was tapped: the id of the place to open in the known-places column. The card
+   *  then jumps to that column itself; the "+N" chip jumps with no id. */
+  onOpenPlace?: (placeId: string) => void;
   /** Active contacts on this identity's private list. null/undefined hides the pill
    *  (dependant rows, locked directory, still loading). */
   contactsCount?: number | null;
@@ -102,14 +107,7 @@ export interface IdentityCardProps {
 
 const BACKDROP_NOTE_MS = 4000;
 
-/** A stable tint per site, so the launcher tiles tell sites apart the way avatars do. */
-function colourFromLabel(text: string): string {
-  let h = 7;
-  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
-  return colourFromPubkey(h.toString(16).padStart(8, '0'));
-}
-
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, launcherLocked, onUnlockRequest, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -215,6 +213,16 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   }, [blurIdentityNames]);
 
   const blurActive = blurIdentityNames && !revealed;
+
+  // The strip takes plain lookups; the badge and icon ride beside each place.
+  const { stripPlaces, stripBadges, stripIcons } = useMemo(() => {
+    const sites = knownPlaceItems ?? [];
+    return {
+      stripPlaces: sites.map(s => s.place),
+      stripBadges: new Map(sites.map(s => [s.place.id, s.badge] as const)),
+      stripIcons: new Map(sites.map(s => [s.place.id, s.iconUrl ?? null] as const)),
+    };
+  }, [knownPlaceItems]);
   // ────────────────────────────────────────────────────────────────────────
 
   // ── Inline name editor ──────────────────────────────────────
@@ -467,37 +475,18 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
 
         {/* ── Quick-open: this identity's sign-ins and contacts.
             Dependant rows keep their pairing/dormant surfaces instead. ── */}
-        {!isDependant && ownerCard && (launcherLocked || (launcherSites && launcherSites.length > 0) || typeof contactsCount === 'number') && (
+        {!isDependant && ownerCard && (placesLocked || knownPlaceItems || typeof contactsCount === 'number') && (
           <div className="card-quick">
-            {launcherLocked && (
-              <div className="card-launcher">
-                <button
-                  type="button"
-                  className="card-launcher-chip card-launcher-chip--locked"
-                  onClick={e => { e.stopPropagation(); onUnlockRequest?.(); }}
-                  aria-label="Unlock to see where this identity is known"
-                >
-                  Unlock to see where this identity is known
-                </button>
-              </div>
-            )}
-            {!launcherLocked && launcherSites && launcherSites.length > 0 && (
-              <div className="card-launcher" aria-label="Sites this identity is signed in to">
-                {launcherSites.map(site => (
-                  <button
-                    key={site.id}
-                    type="button"
-                    className="card-launcher-chip"
-                    onClick={e => { e.stopPropagation(); onOpenSite?.(site.origin); }}
-                    aria-label={`Open ${site.label}`}
-                  >
-                    <span className="card-launcher-tile" aria-hidden="true" style={{ background: colourFromLabel(site.origin), ...(blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : {}) }}>
-                      {site.label.charAt(0).toUpperCase()}
-                    </span>
-                    <span className="card-launcher-label" style={blurActive ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{site.label}</span>
-                  </button>
-                ))}
-              </div>
+            {(placesLocked || knownPlaceItems) && (
+              <KnownPlacesStrip
+                places={stripPlaces}
+                badges={p => stripBadges.get(p.id) ?? null}
+                iconFor={p => stripIcons.get(p.id) ?? null}
+                locked={!!placesLocked}
+                onUnlock={() => onUnlockRequest?.()}
+                onOpenPlace={id => { if (id) onOpenPlace?.(id); arrows?.jump(3); }}
+                blur={blurActive}
+              />
             )}
             {typeof contactsCount === 'number' && (
               <button
@@ -570,7 +559,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 type="button"
                 className="btn btn-primary card-action-tile card-scan-btn"
                 aria-label="Scan a QR code"
-                onClick={e => { e.stopPropagation(); arrows?.jump(4); }}
+                onClick={e => { e.stopPropagation(); arrows?.jump(5); }}
               >
                 <Icon name="qrScan" size={24} />
                 Scan

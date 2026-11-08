@@ -13,6 +13,7 @@ import './styles/global.css';
 import './styles/carousel.css';
 import './styles/qr-scanner.css';
 import './styles/desktop-frame.css';
+import './styles/known-places.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

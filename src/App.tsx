@@ -79,7 +79,7 @@ import { contactsForGrant } from './lib/contacts-v2-grant-scope';
 import { contactIdentityLists } from './lib/contacts-v2-identity-lists';
 import { contactBelongsToList, unlinkContactList } from './lib/contacts-v2-membership';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import type { Page, CarouselRow, SignetIdentity } from './types';
+import type { Page, CarouselRow, SignetIdentity, KnownPlace } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
 import { resolveSelectedPubkey } from './lib/auth-selection';
 import { deleteOwnedBlob, deleteReplacedAvatar, deleteStoppedShareCopy, findSlotBlobs, type DeleteOutcome } from './lib/blob-deletion';
@@ -133,7 +133,8 @@ import { useEscalations } from './hooks/useEscalations';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
-import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, updateClientEscalate as mgmtUpdateClientEscalate, revokeClientIdentity as mgmtRevokeClientIdentity } from './lib/heartwood-mgmt';
+import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, updateClientEscalate as mgmtUpdateClientEscalate, revokeClientIdentity as mgmtRevokeClientIdentity, revokeClient as mgmtRevokeClient, canRevokeClient } from './lib/heartwood-mgmt';
+import type { DeviceClientSlot } from './lib/heartwood-mgmt-types';
 import { awayApprovalBlocked, ownAppSlots, setAwayApproval } from './lib/away-approval';
 import type { AwayApprovalListProps } from './components/AwayApprovalList';
 import { ChildPermissions, ChildPermissionsGuardianRoute } from './pages/ChildPermissions';
@@ -146,6 +147,18 @@ import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
 import { isNativeApp, SignetNative } from './lib/native';
+import { referrerPackageFor } from './lib/launch-referrer';
+import { deriveSignInChannel, deriveSigner } from './lib/known-place-channel';
+import { buildSignInKnownPlace, recordKnownPlace } from './lib/known-places-record';
+import { useKnownPlaces } from './hooks/useKnownPlaces';
+import { KnownPlacesCard, KnownPlacesDependantCard } from './components/KnownPlacesCard';
+import { canOpenPlace } from './lib/known-place-open';
+import type { KnownPlaceIdentityType, KnownPlaceCtx, KnownPlaceActions } from './components/KnownPlaceRow';
+import type { ResolvedIdentity } from './lib/carousel-utils';
+import { resolveActiveIdentity } from './lib/carousel-utils';
+import { updateConnectedClient } from './lib/db';
+import { primaryBadge, badgesFor } from './lib/known-place-badges';
+import { heartwoodEntriesFor } from './lib/known-place-heartwood';
 import { BunkerApprovalModal } from './components/BunkerApprovalModal';
 import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
@@ -399,7 +412,6 @@ import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, 
  * these few minutes, as it is for a stay-awake window.
  */
 const PHONE_APPS_WINDOW_MS = 5 * 60 * 1000;
-import { useAuthorizedSites } from './hooks/useAuthorizedSites';
 import { useConnectedClients } from './hooks/useConnectedClients';
 import { useOriginPolicies } from './hooks/useOriginPolicies';
 import { useOwnBadge } from './hooks/useOwnBadge';
@@ -509,6 +521,10 @@ export function App() {
     </ScannerSettingsProvider>
   );
 }
+
+/** Installed-app icon and label by package, filled lazily on native only. null = none available. */
+const placeAppCache = new Map<string, { icon: string | null; label: string | null }>();
+const placeIconPending = new Set<string>();
 
 function AppContent() {
   // Auth state (must be declared before hooks that depend on encryptionKey)
@@ -750,9 +766,9 @@ function AppContent() {
   // read-side pin cannot orphan an existing record.
   const { documents } = useDocuments(identity?.naturalPerson.publicKey, encryptionKey);
   const { credentials, addCredential, refresh: reloadCredentials } = useCredentials(encryptionKey);
-  const { sites: authorizedSites, authorize: authorizeSite, revoke: revokeSite, updateAlias: updateSiteAlias } = useAuthorizedSites();
-  const { clients: connectedClients, disconnect: disconnectClient } = useConnectedClients();
+  const { clients: connectedClients, loading: connectedClientsLoading, disconnect: disconnectClient } = useConnectedClients();
   const { policies: originPolicies, recordSignIn: recordOriginSignIn, setPinned: setOriginPinned } = useOriginPolicies();
+  const knownPlaces = useKnownPlaces(encryptionKey);
   const { badge: ownBadge } = useOwnBadge(activePubkey, preferences.relayUrl);
   // Pro persona pubkey — null until identity is loaded and Pro persona derived.
   // Separate from NP pubkey; used for all Pro-surface acts (§4.5).
@@ -878,7 +894,7 @@ function AppContent() {
     hasRecoveryWords: recoveryWordsSource(identity) !== null,
     isPairedChild: preferences.signingMode === 'paired-child',
     createdAtSeconds: identity.createdAt,
-    authorizedSiteCount: authorizedSites.length,
+    signedInSiteCount: new Set(knownPlaces.places.filter(p => p.kind === 'sign-in' && p.origin).map(p => p.origin)).size,
     snoozedUntilMs: preferences.backupNudgeSnoozedUntil,
     nowMs: Date.now(),
     dependantCount: dependants.length,
@@ -1250,6 +1266,9 @@ function AppContent() {
   // when the consumer sent no name= (an empty urlAuthSiteName).
   const urlAuthRequestsRef = useRef(new WeakSet<object>());
   const signInAppPermissionsRef = useRef(new WeakMap<object, SignInAppPermission>());
+  /** Package that launched a native sign-in link. UNTRUSTED: display and Open
+   *  only. Kept beside the request object, never in the URL or AuthRequest. */
+  const signInReferrerRef = useRef(new WeakMap<object, string>());
   authApprovalInFlightRef.current = () => {
     const current = pendingAuthRequestRef.current;
     if (current && authSettlementRef.current.isInFlight(authRequestKey(current))) return true;
@@ -4037,6 +4056,8 @@ function AppContent() {
       const existing = await getConnectedClient(clientPubkey.toLowerCase());
       await saveConnectedClient({
         ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
+        // A re-pair must not silently undo a user's "ask each time" choice.
+        ...(existing?.askToSign ? { askToSign: true } : {}),
         clientPubkey: clientPubkey.toLowerCase(),
         appName,
         appUrl: origin,
@@ -4127,7 +4148,7 @@ function AppContent() {
     onKeyExpired: lockExpiredPhoneAppsKey,
   });
   refuseHeldNip55Ref.current = nip55.refuseHeld;
-  // The remembered NIP-55 decisions, as the Connected Sites page lists them; grants keep milliseconds, the page reads seconds.
+  // The remembered NIP-55 decisions, as the Connected apps page lists them; grants keep milliseconds, the page reads seconds.
   const phoneApps = useMemo<PhoneApp[]>(() => Object.entries(nip55.grants)
     .map(([packageName, g]) => ({ packageName, label: g.label ?? null, pubkey: g.pubkey, allowAlways: g.allowAlways, denyAlways: g.denyAlways, grantedAt: Math.floor(g.grantedAt / 1000) }))
     .sort((a, b) => b.grantedAt - a.grantedAt), [nip55.grants]);
@@ -4540,6 +4561,168 @@ function AppContent() {
     };
     return { blocked, load, set };
   }, [isPairedChild, heartwoodOperator.client, heartwoodOperator.credential, heartwoodOperator.canVerdict, escalationsEnabled, dependants, policyPush.guardianClientPubkey]);
+
+  // ── Known places: the card strip and the list column (col 3) ──────────────
+  // A chip tap on the identity card names the place to open; the column expands
+  // it on arrival and says so, which clears this. The nonce keeps a repeat tap
+  // on the same chip a new event.
+  const [knownPlaceFocus, setKnownPlaceFocus] = useState<{ id: string; nonce: number } | null>(null);
+  const [placeIconVersion, setPlaceIconVersion] = useState(0); // bumped when an icon lands, so cards repaint
+  const [heartwoodSlots, setHeartwoodSlots] = useState<DeviceClientSlot[] | null>(null);
+  const familyForSlotsRef = useRef({ dependants, guardianClientPubkey: policyPush.guardianClientPubkey });
+  familyForSlotsRef.current = { dependants, guardianClientPubkey: policyPush.guardianClientPubkey };
+
+  // Apps paired straight to the Heartwood, read from the device through the
+  // operator key. Nothing is stored; without a started operator client the
+  // column points at Sapwood instead.
+  const operatorForPlaces = isPairedChild ? null : heartwoodOperator.client;
+  const refreshHeartwoodSlots = useCallback(async (): Promise<void> => {
+    if (!operatorForPlaces) { setHeartwoodSlots(null); return; }
+    try {
+      const all = await withOperatorLock(operatorForPlaces, () => mgmtListClients(operatorForPlaces));
+      setHeartwoodSlots(ownAppSlots(all, familyForSlotsRef.current));
+    } catch { /* leave the last list; the next unlock tries again */ }
+  }, [operatorForPlaces]);
+  useEffect(() => {
+    if (!operatorForPlaces || !encryptionKey) { setHeartwoodSlots(null); return; }
+    void refreshHeartwoodSlots();
+  }, [operatorForPlaces, encryptionKey, refreshHeartwoodSlots]);
+
+  // App icons and names come from the phone's own package manager, native only,
+  // for any place that names a package (an app sign-in as well as a NIP-55 app).
+  useEffect(() => {
+    if (!encryptionKey || !isNativeApp()) return;
+    for (const place of knownPlaces.places) {
+      const pkg = place.nativePackage;
+      if (!pkg || placeAppCache.has(pkg) || placeIconPending.has(pkg)) continue;
+      placeIconPending.add(pkg);
+      void SignetNative.getAppIcon({ package: pkg })
+        .then(r => { placeAppCache.set(pkg, { icon: r.iconPngBase64 ? `data:image/png;base64,${r.iconPngBase64}` : null, label: r.label || null }); })
+        .catch(() => { placeAppCache.set(pkg, { icon: null, label: null }); })
+        .finally(() => { placeIconPending.delete(pkg); setPlaceIconVersion(v => v + 1); });
+    }
+  }, [encryptionKey, knownPlaces.places]);
+
+  const pinnedOrigins = useMemo(() => new Set(originPolicies.filter(p => p.pinned).map(p => p.origin)), [originPolicies]);
+  /** Places to show: a pairing that was disconnected elsewhere is no longer a place, and a pin kept in the per-origin policy still counts. */
+  const visibleKnownPlaces = useMemo(() => knownPlaces.places
+    .filter(p => p.kind !== 'nip46' || connectedClientsLoading || connectedClients.some(c => `nc:${c.clientPubkey}` === p.placeKey))
+    .map(p => (p.kind === 'sign-in' && !p.pinned && p.origin && pinnedOrigins.has(p.origin) ? { ...p, pinned: true } : p)),
+  [knownPlaces.places, connectedClients, connectedClientsLoading, pinnedOrigins]);
+  const knownPlacesFor = useCallback((pubkey: string) => (encryptionKey ? visibleKnownPlaces.filter(p => p.pubkey === pubkey) : []), [encryptionKey, visibleKnownPlaces]);
+  // Settings rows land on column 3 of the active row. Position is App state, so no
+  // arrow API is needed: set it, then show the home carousel.
+  const knownPlaceCountActive = carousel.activeIdentity.publicKey ? knownPlacesFor(carousel.activeIdentity.publicKey).length : 0;
+  const openKnownPlaces = useCallback(() => {
+    // Only owner and bot rows have a places column; from a dependant or the
+    // add row, land on the first owner row (the ring always starts with one).
+    const here = carousel.rows[carousel.row]?.type;
+    const ownerRow = here && here !== 'dependant' && here !== 'add' && !here.startsWith('dependant-')
+      ? carousel.row
+      : Math.max(0, carousel.rows.findIndex(r => r.type === 'persona' || r.type === 'natural-person' || r.type === 'extra-persona' || r.type === 'bot'));
+    carousel.commitPosition(ownerRow, 3);
+    navigateTo('home');
+  }, [carousel.commitPosition, carousel.row, carousel.rows, navigateTo]);
+  const knownPlaceCtx = useCallback((place: KnownPlace): KnownPlaceCtx => {
+    const app = place.nativePackage && isNativeApp() ? placeAppCache.get(place.nativePackage) : undefined;
+    // A browser sign-in records the browser's package for the channel only; the
+    // place is the site, so it keeps its own tile and name, not the browser's.
+    const appLabel = place.channel === 'browser' ? undefined : app?.label ?? undefined;
+    const appIcon = place.channel === 'browser' ? null : app?.icon ?? null;
+    if (place.kind === 'nip46') {
+      // Until the paired clients have loaded, whether this one asks is unknown: say nothing.
+      if (connectedClientsLoading) return { askToSign: undefined, loading: true, appLabel, appIcon };
+      const client = connectedClients.find(c => `nc:${c.clientPubkey}` === place.placeKey);
+      return { askToSign: !!client?.askToSign, lastSeenAt: client?.lastSeenAt, appLabel, appIcon };
+    }
+    if (place.kind === 'nip55') {
+      // A grant is pinned to one identity; a row for another identity gets no say over it.
+      const grant = place.nativePackage ? nip55.grants[place.nativePackage] : undefined;
+      const mine = !!grant && grant.pubkey.toLowerCase() === place.pubkey.toLowerCase();
+      return {
+        nip55Grant: grant && mine ? { allowAlways: grant.allowAlways, denyAlways: grant.denyAlways } : null,
+        nip55OtherIdentity: !!grant && !mine,
+        appLabel,
+        appIcon,
+      };
+    }
+    return { appLabel, appIcon };
+    // placeIconVersion: an app label that has just landed must reach the rows.
+  }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion]);
+  const knownPlaceActions = useMemo<KnownPlaceActions>(() => {
+    const clientOf = (place: KnownPlace) => place.placeKey.startsWith('nc:') ? place.placeKey.slice(3) : '';
+    return {
+      pin: async (id, pinned) => {
+        const place = knownPlaces.places.find(p => p.id === id);
+        await knownPlaces.setPinned(id, pinned);
+        // The per-origin sign-in policy keeps its own pin; the two stay together.
+        if (place?.kind === 'sign-in' && place.origin) await setOriginPinned(place.origin, pinned);
+      },
+      setAlias: (id, alias) => knownPlaces.setAlias(id, alias),
+      setAuto: async (place, value) => {
+        if (place.kind === 'nip46') {
+          await updateConnectedClient(clientOf(place), { askToSign: value === 'ask' });
+        } else if (place.kind === 'nip55' && place.nativePackage) {
+          nip55.setAllowAlways(place.nativePackage, value === 'always', place.pubkey);
+        }
+      },
+      open: async place => {
+        if (!canOpenPlace(place, isNativeApp())) return;
+        if (place.channel === 'phone-app' && place.nativePackage && isNativeApp()) {
+          const r = await SignetNative.openApp({ package: place.nativePackage }).catch(() => ({ opened: false }));
+          if (r.opened) return;
+        }
+        if (place.origin) window.open(place.origin, '_blank', 'noopener');
+      },
+      forget: async place => {
+        // Every delete is awaited; one that fails reaches the row's error line, none is left running.
+        const origin = place.origin;
+        const results = await Promise.allSettled([
+          knownPlaces.forget(place.id),
+          ...(origin ? [setOriginPinned(origin, false)] : []),
+        ]);
+        if (results.some(r => r.status === 'rejected')) throw new Error('Could not forget every record of this place.');
+      },
+      disconnect: async place => {
+        if (place.kind === 'nip46') await disconnectClient(clientOf(place));
+        // Pubkey-scoped: a grant pinned to another identity is left alone.
+        else if (place.kind === 'nip55' && place.nativePackage) nip55.forget(place.nativePackage, place.pubkey);
+        await knownPlaces.forget(place.id);
+      },
+      revokeOnHeartwood: async fingerprint => {
+        const client = operatorForPlaces;
+        const slot = heartwoodSlots?.find(s => s.secretFingerprint === fingerprint);
+        if (!client || !slot) throw new Error('The Heartwood app is no longer listed.');
+        await withOperatorLock(client, () => mgmtRevokeClient(client, { slotIndex: slot.slotIndex, secretFingerprint: slot.secretFingerprint }));
+        await refreshHeartwoodSlots();
+      },
+    };
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots]);
+  const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
+    if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
+    if (!resolved.publicKey) return null;
+    const names = new Map(carousel.rows.filter(r => r.type !== 'add').map(r => { const x = resolveActiveIdentity(r); return [x.publicKey.toLowerCase(), x.displayName] as const; }));
+    const identityType: KnownPlaceIdentityType = row.type === 'natural-person' ? 'natural-person' : row.type === 'extra-persona' ? 'extra' : row.type === 'bot' ? 'bot' : 'persona';
+    const places = knownPlacesFor(resolved.publicKey);
+    return (
+      <KnownPlacesCard
+        key={resolved.publicKey}
+        identityName={resolved.displayName}
+        identityType={identityType}
+        places={places}
+        locked={!encryptionKey}
+        onUnlock={() => { void requestAuth({ purpose: 'unlock-app' }); }}
+        // Only the card that owns the place takes the hand-off; a neighbouring row must not swallow it.
+        focusId={knownPlaceFocus && places.some(p => p.id === knownPlaceFocus.id) ? knownPlaceFocus.id : null}
+        onFocusConsumed={() => setKnownPlaceFocus(null)}
+        ctxFor={knownPlaceCtx}
+        heartwoodClients={heartwoodSlots ? heartwoodEntriesFor(heartwoodSlots, resolved.publicKey, pk => names.get(pk)) : null}
+        hideHeartwood={isPairedChild}
+        canRevokeOnHeartwood={canRevokeClient(heartwoodOperator.status) !== false}
+        actions={knownPlaceActions}
+      />
+    );
+  };
 
   // Guardian → child rules rail for every dependant whose own phone is
   // paired straight to the Heartwood (spec §5.2), on the rail relay.
@@ -6725,6 +6908,7 @@ function AppContent() {
     if (!isCurrent()) return 'Backup session changed. Check its status after unlocking.';
     refreshPrivateVaultData();
     setBotsChangeVersion(v => v + 1);
+    setPrivateVaultResync(prev => ({ token: (prev?.token ?? 0) + 1, purpose }));
     if (result.state === 'complete') return 'Backup key changed and verified. Your recovery words still restore this backup.';
     if (result.state === 'unusable') return 'The key change needs attention. Existing backups are retained; the new recovery path could not be validated.';
     if (result.state === 'cancelled') return 'Backup key change interrupted. Check its status after unlocking.';
@@ -6743,6 +6927,8 @@ function AppContent() {
   // device refused (usePrivateVaults stops retrying on its own).
   const [privateVaultApproveToken, setPrivateVaultApproveToken] = useState(0);
   const [privateVaultApprovalDismissed, setPrivateVaultApprovalDismissed] = useState(false);
+  // Bumped after a backup-key rotation so the rotated dataset's row re-reads its key version (#198).
+  const [privateVaultResync, setPrivateVaultResync] = useState<{ token: number; purpose: string } | null>(null);
   usePrivateVaults({
     sessionKey: identity && encryptionKey ? privateVaultSession : null,
     ownerPubkey: identity?.naturalPerson.publicKey ?? null,
@@ -6761,6 +6947,7 @@ function AppContent() {
       dependants.map(dependantChangeWire), credentials?.map(c => c.id), grantsForSync,
       portableSettingsValues(preferences), [...childSettingsMap].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)]),
     approveToken: privateVaultApproveToken,
+    resync: privateVaultResync,
     // A sign-in gets the Heartwood first: while one is on screen or being
     // signed, no new vault request goes to the device (its cards would queue
     // ahead of, or beside, the sign-in's own). Bunker mode only — local-key
@@ -7790,7 +7977,7 @@ function AppContent() {
     })
   ), [routedApprovalUnavailableMessage]);
 
-  const approveConnectUnguarded = useCallback(async (sel: AuthSelection) => {
+  const approveConnectUnguarded = useCallback(async (sel: AuthSelection, connectOptions: { askToSign: boolean } = { askToSign: false }) => {
     if (!pendingConnectRequest || !identity) throw new Error('No pending connect request');
     const connectRequest = pendingConnectRequest;
     const connectKey = requestObjectKey(connectRequest);
@@ -8022,7 +8209,7 @@ function AppContent() {
             ...connectRequest,
             relayUrl,
             relayUrls: relayCandidates,
-          }),
+          }, undefined, { askToSign: connectOptions.askToSign }),
           pairingNonce,
           // The connect reply comes from this route's key, so that is the
           // persona the app will address from now on.
@@ -8047,6 +8234,24 @@ function AppContent() {
       // Connected: the route now serves the new pairing, so a later Cancel
       // on this request must leave it alone.
       connectRouteTrackerRef.current.forget(connectKey);
+
+      // Remember the app as a known place for the identity it was bound to.
+      // Display facts only; failure to record never affects the pairing.
+      let connectOrigin: string | undefined;
+      try {
+        const u = new URL(connectRequest.appUrl ?? '');
+        if (u.protocol === 'https:' || u.protocol === 'http:') connectOrigin = u.origin;
+      } catch { /* no usable app URL */ }
+      void recordKnownPlace({
+        placeKey: `nc:${connectRequest.clientPubkey.toLowerCase()}`,
+        pubkey: routeBackend.activePublicKeyHex,
+        kind: 'nip46',
+        name: connectRequest.appName,
+        ...(connectOrigin ? { origin: connectOrigin } : {}),
+        channel: 'nip46',
+        signer: deriveSigner((selectedBackend as { type?: string }).type, bunkerRouterRef.current !== null),
+        shared: {},
+      });
 
       // Capture the callback before state is cleared — the setTimeout
       // below closes over the value at resolution time, not at queue time.
@@ -8082,7 +8287,7 @@ function AppContent() {
   // One answer per connect request, as for sign-in: starts the in-flight
   // approval synchronously, dismisses a request already answered, and reopens
   // it for retry/cancel if the approval failed without connecting.
-  const handleApproveConnect = useCallback(async (sel: AuthSelection) => {
+  const handleApproveConnect = useCallback(async (sel: AuthSelection, connectOptions?: { askToSign: boolean }) => {
     const request = pendingConnectRequestRef.current;
     if (!request) throw new Error('No pending connect request');
     const key = requestObjectKey(request);
@@ -8096,7 +8301,7 @@ function AppContent() {
     }
     if (began === 'in-flight') throw new Error('Already connecting this request.');
     try {
-      await approveConnectUnguarded(sel);
+      await approveConnectUnguarded(sel, connectOptions);
     } finally {
       connectSettlementRef.current.endApproval(key);
     }
@@ -8490,6 +8695,10 @@ function AppContent() {
       }
     }
 
+    // Which signer approves, read BEFORE any child-gate wrapper replaces the
+    // backend (wrappers carry no `type`). Display fact for known places only.
+    const knownPlaceSigner = deriveSigner((selectedBackend as { type?: string }).type, bunkerRouterRef.current !== null);
+
     // A direct-paired child: Sign in with Signet goes through the child's gate
     // (target site:<origin>, spec §8.1). The wait for a guardian answer shows
     // as the "Asking your guardian…" panel on the approval screen. Redirect
@@ -8563,7 +8772,8 @@ function AppContent() {
       }
 
       // Resolve display name for site authorisation and ack screen
-      let siteName = urlAuthSiteName;
+      // A scanned QR never passes the URL handler that sets urlAuthSiteName, but its request carries the name.
+      let siteName = urlAuthSiteName || pendingAuthRequest.name || '';
       if (!siteName) {
         try { siteName = new URL(pendingAuthRequest.origin).hostname; }
         catch { siteName = pendingAuthRequest.origin.slice(0, 64); }
@@ -8623,6 +8833,29 @@ function AppContent() {
       const handleToShare = (pickedToken !== 'natural-person' && shareHandle)
         ? pickedDisplayName
         : undefined;
+
+      // The place this sign-in leaves behind (display facts only). Built once
+      // here so both delivery paths record the same row, and so the relay
+      // retry closure — which runs after the request is cleared — can't see
+      // cleared state. The referrer package is untrusted: it labels the row
+      // and may enable "Open", nothing else.
+      const referrerPackage = signInReferrerRef.current.get(request);
+      const knownPlaceInput = buildSignInKnownPlace({
+        origin: request.origin,
+        pubkey,
+        siteName,
+        consumerDisplayName: consumerDisplayName ?? undefined,
+        nativePackage: referrerPackage,
+        channel: deriveSignInChannel({
+          isRelayMode,
+          urlArrived: urlAuthRequestsRef.current.has(request),
+          referrerPackage,
+          native: isNativeApp(),
+        }),
+        signer: knownPlaceSigner,
+        handleShared: handleToShare,
+        pictureShared: !!pickedAvatar,
+      });
 
       // ── Relay delivery mode ───────────────────────────────────────────────────
       if (isRelayMode) {
@@ -8774,7 +9007,6 @@ function AppContent() {
         // Capture transient state BEFORE the `set*(null)` cleanup below — the
         // retry closure runs later and would see cleared values otherwise.
         const capturedAllow = consumerHint?.allow;
-        const capturedConsumerDisplayName = consumerDisplayName;
         const capturedPostUrl = pendingPostUrl;
 
         // Denied, withdrawn or replaced while signing: deliver nothing, and
@@ -8826,17 +9058,8 @@ function AppContent() {
           // response to the consumer's listener; see comment block above.
           const ok = deliveredToConsumer(results, consumerCount);
           if (ok) {
-            // Record the authorised site in the Connections manager
-            authorizeSite(
-              capturedRequest.origin,
-              capturedSiteName,
-              capturedKeypairLabel,
-              pubkey,
-              {
-                shareHandle: pickedToken !== 'natural-person' ? shareHandle : undefined,
-                consumerDisplayName: capturedConsumerDisplayName ?? undefined,
-              },
-            ).catch(() => {});
+            // Record where this identity is now known (the card's Where you're known column)
+            void recordKnownPlace(knownPlaceInput);
 
             // Record per-origin policy memory.
             recordOriginSignIn(capturedRequest.origin, capturedKeypairLabel, {
@@ -8990,16 +9213,7 @@ function AppContent() {
         if (!authDeliveryStillOpen(request)) return;
 
         // Commit the connection before navigation can unload this page.
-        await authorizeSite(
-          pendingAuthRequest.origin,
-          siteName,
-          keypairLabel,
-          pubkey,
-          {
-            shareHandle: pickedToken !== 'natural-person' ? shareHandle : undefined,
-            consumerDisplayName: consumerDisplayName ?? undefined,
-          },
-        );
+        await recordKnownPlace(knownPlaceInput);
 
         // Record per-origin policy memory.
         await recordOriginSignIn(pendingAuthRequest.origin, keypairLabel, {
@@ -9076,7 +9290,7 @@ function AppContent() {
       // The temporary serving route owns its backend until expiry or lock.
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
     }
-  }, [pendingAuthRequest, identity, dependants, activeDependant, childDirect, authorizeSite, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
+  }, [pendingAuthRequest, identity, dependants, activeDependant, childDirect, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
 
   // One answer per request: starts the in-flight approval synchronously so a
   // Deny/Back tapped while signing is a no-op, refuses a request that has
@@ -9851,7 +10065,7 @@ function AppContent() {
     cleanupUnencryptedIdentities().catch(() => {});
   }, []);
 
-  const consumeUrlAuthRequest = useCallback((targetHref?: string) => {
+  const consumeUrlAuthRequest = useCallback((targetHref?: string, opts?: { referrerPackage?: string }) => {
     let url: URL;
     try {
       url = targetHref ? new URL(targetHref, window.location.href) : new URL(window.location.href);
@@ -9893,6 +10107,7 @@ function AppContent() {
     // be staged invisibly if MySignet was backgrounded on Settings/Bunker.
     setPendingAuthSelection(null);
     urlAuthRequestsRef.current.add(parsed.request);
+    if (opts?.referrerPackage) signInReferrerRef.current.set(parsed.request, opts.referrerPackage);
     if (parsed.appPermission) signInAppPermissionsRef.current.set(parsed.request, parsed.appPermission);
     setPendingAuthRequest(parsed.request);
     navigateReplace('approve-auth');
@@ -10188,9 +10403,16 @@ function AppContent() {
         // notice, R-8/M7) and navigates, once real state has loaded.
         setHeldContactsGrantV2(action.request);
         return;
-      case 'sign-in':
-        consumeUrlAuthRequest(action.href);
+      case 'sign-in': {
+        // The launching package is read from the shell and carried beside the
+        // request object only. It is a display hint (untrusted), so a missing
+        // or failed read just means no hint — the sign-in proceeds regardless.
+        const href = action.href;
+        void referrerPackageFor(url, () => SignetNative.getLaunchReferrer()).then((referrerPackage) => {
+          consumeUrlAuthRequest(href, referrerPackage ? { referrerPackage } : undefined);
+        });
         return;
+      }
       case 'root-carrier': {
         let search = '';
         try { search = new URL(action.href).search; } catch { return; }
@@ -10987,18 +11209,12 @@ function AppContent() {
   };
 
   if (page === 'connections') {
-    return renderSettingsPage('connections', 'Connected Sites', (
+    return renderSettingsPage('connections', 'Connected apps', (
       <Connections
-        sites={authorizedSites}
-        identity={identity}
-        originPolicies={originPolicies}
         connectedClients={connectedClients}
-        onRevoke={revokeSite}
         onDisconnectClient={disconnectClient}
         phoneApps={phoneApps}
         onForgetPhoneApp={nip55.forget}
-        onSetPinned={setOriginPinned}
-        onUpdateAlias={updateSiteAlias}
         onBack={() => navigateBack()}
       />
     ));
@@ -11212,7 +11428,9 @@ function AppContent() {
         }}
         showPairedChildSwitcher={preferences.signingMode === 'paired-child' && pairedChildMetas.length > 1}
         showChildPermissions={childDirect}
-        connectedSiteCount={authorizedSites.length}
+        knownPlaceCount={knownPlaceCountActive}
+        connectedAppsCount={connectedClients.length + phoneApps.length}
+        onOpenKnownPlaces={openKnownPlaces}
         dependantsCount={dependants.length}
         companionGrantCount={companionGrantCount}
         webUpdateReady={needRefresh}
@@ -11383,8 +11601,8 @@ function AppContent() {
           onUpdateName={async (name) => { await updateDisplayName(name, encryptionKey!); }}
           onUpdatePhoto={() => navigateTo('photo-capture')}
           ownBadge={ownBadge}
-          connectedSiteCount={authorizedSites.length}
-          onNavigateConnections={() => navigateTo('connections')}
+          knownPlaceCount={knownPlaceCountActive}
+          onNavigateKnownPlaces={openKnownPlaces}
           onNavigateBadgeEmbed={() => navigateTo('badge-embed')}
           onGoToProfessional={() => navigateTo('settings-professional')}
           onSaveProName={async (name) => {
@@ -14174,6 +14392,7 @@ function AppContent() {
             onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
           : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
+          placesCard={col === 3 ? knownPlacesColumn(row, resolveActiveIdentity(row)) : undefined}
           onSignIn={async (selection, request, valid) => {
             const key = encryptionKey, root = identity.naturalPerson.publicKey, mode = preferences.signingMode;
             const current = () => valid() && !!key && botSession.current.key === key && botSession.current.owner === root
@@ -14195,29 +14414,20 @@ function AppContent() {
             });
             setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1);
           }} />}
-        launcherLocked={!encryptionKey}
+        placesLocked={!encryptionKey}
         onUnlockRequest={() => { void requestAuth({ purpose: 'unlock-app' }); }}
-        launcherSitesFor={resolved => {
-          // Sign-in sites link a persona to where it is used, and authorizedSites
-          // loads without the key, so a locked card must not list them.
+        knownPlacesFor={resolved => {
+          // Places link an identity to where it is used, and the store reads without the
+          // key, so a locked card must not list them. Dependant cards keep their own surfaces.
           if (!encryptionKey || resolved.isDependant) return [];
-          const pinned = new Set(originPolicies.filter(p => p.pinned).map(p => p.origin));
-          const originOf = (raw: string) => { try { return new URL(raw).origin; } catch { return raw; } };
-          const domainOf = (raw: string) => { try { return new URL(raw).hostname; } catch { return raw; } };
-          return authorizedSites
-            .filter(site => site.pubkeyShared === resolved.publicKey)
-            .sort((a, b) =>
-              Number(pinned.has(originOf(b.origin))) - Number(pinned.has(originOf(a.origin)))
-              || b.lastUsedAt - a.lastUsedAt)
-            .slice(0, 4)
-            .map(site => ({
-              id: site.id,
-              origin: site.origin,
-              label: (site.name || domainOf(site.origin)).slice(0, 24),
-              pinned: pinned.has(originOf(site.origin)),
-            }));
+          return knownPlacesFor(resolved.publicKey).map(place => {
+            const ctx = knownPlaceCtx(place);
+            const badge = primaryBadge(badgesFor(place, { askToSign: ctx.askToSign, nip55Grant: ctx.nip55Grant, loading: ctx.loading, now: Math.floor(Date.now() / 1000) }));
+            return { place, badge, iconUrl: ctx.appIcon ?? null };
+          });
         }}
-        onOpenSite={origin => { window.open(origin, '_blank', 'noopener'); }}
+        onOpenPlace={placeId => { setKnownPlaceFocus(f => ({ id: placeId, nonce: (f?.nonce ?? 0) + 1 })); }}
+        renderKnownPlacesCard={knownPlacesColumn}
         contactsCountFor={resolved => {
           // Locked, the log is unreadable and reads as empty: hide the pill rather than invite a first contact.
           if (!encryptionKey || resolved.isDependant || !(contactsScope.directoryId === 'owner' || isPairedChild) || contactsV2.loading) return null;

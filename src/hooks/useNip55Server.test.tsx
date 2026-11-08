@@ -29,6 +29,7 @@ vi.mock('../lib/native', () => ({
 import { useNip55Server } from './useNip55Server';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import type { BunkerRoute } from './useBunkerServer';
+import * as db from '../lib/db';
 
 const sk = generateSecretKey();
 const pubkey = getPublicKey(sk);
@@ -142,6 +143,37 @@ describe('useNip55Server', () => {
     await act(async () => { listeners.nip55Request[0](request({ payload: 'not an event' })); });
     await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
     expect(respond.mock.calls[0][0]).toMatchObject({ status: 'rejected' });
+  });
+
+  it('setAllowAlways changes a remembered app, lifts a refusal, and ignores an unknown app', async () => {
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 }, 'dev.blocked': { pubkey, allowAlways: false, denyAlways: true, grantedAt: 1 } }));
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    act(() => { result.current.setAllowAlways('dev.forgesworn.kithmoot', false, pubkey); });
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toMatchObject({ allowAlways: false, denyAlways: false });
+    expect(JSON.parse(localStorage.getItem('signet.nip55.grants')!)['dev.forgesworn.kithmoot'].allowAlways).toBe(false);
+    act(() => { result.current.setAllowAlways('dev.blocked', false, pubkey); });
+    expect(result.current.grants['dev.blocked']).toMatchObject({ allowAlways: false, denyAlways: false });
+    act(() => { result.current.setAllowAlways('dev.unknown', true, pubkey); });
+    expect(result.current.grants['dev.unknown']).toBeUndefined();
+  });
+
+  it('setAllowAlways and forget leave a grant pinned to another identity unchanged', () => {
+    const other = 'b'.repeat(64);
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: other, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    let changed = true;
+    act(() => { changed = result.current.setAllowAlways('dev.forgesworn.kithmoot', false, pubkey); });
+    expect(changed).toBe(false);
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toMatchObject({ pubkey: other, allowAlways: true });
+    let removed = true;
+    act(() => { removed = result.current.forget('dev.forgesworn.kithmoot', pubkey); });
+    expect(removed).toBe(false);
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toBeDefined();
+    expect(JSON.parse(localStorage.getItem('signet.nip55.grants')!)['dev.forgesworn.kithmoot'].allowAlways).toBe(true);
+    // The owning identity can still act on it.
+    act(() => { removed = result.current.forget('dev.forgesworn.kithmoot', other); });
+    expect(removed).toBe(true);
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
   });
 
   it('a request held through an unlock is answered silently when the app was allowed always', async () => {
@@ -648,6 +680,63 @@ describe('useNip55Server', () => {
       gate.mockClear();
       await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null, viaProvider: true })); });
       expect(gate).not.toHaveBeenCalled();
+    });
+  });
+  describe('known places', () => {
+    beforeEach(async () => { await db.purgeAllUserData(); });
+
+    it('approve once and approve always each write a pkg row under the approving key; deny writes none', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ callerLabel: 'Kithmoot' })); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.deny(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(await db.listKnownPlaces()).toEqual([]);
+
+      await act(async () => { listeners.nip55Request[0](request({ callerLabel: 'Kithmoot' })); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+      await waitFor(async () => expect(await db.listKnownPlaces()).toHaveLength(1));
+      expect((await db.listKnownPlaces())[0]).toMatchObject({
+        id: `pkg:dev.forgesworn.kithmoot:${pubkey}`, pubkey, placeKey: 'pkg:dev.forgesworn.kithmoot',
+        kind: 'nip55', name: 'Kithmoot', nativePackage: 'dev.forgesworn.kithmoot', channel: 'nip55', signer: 'local', uses: 1,
+      });
+
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+      await waitFor(async () => expect((await db.listKnownPlaces())[0].uses).toBe(2));
+    });
+
+    it('falls back to the package name when the shell gave no label', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(async () => expect(await db.listKnownPlaces()).toHaveLength(1));
+      expect((await db.listKnownPlaces())[0].name).toBe('dev.forgesworn.kithmoot');
+    });
+
+    it('grants are gone from state and storage after purgeAllUserData', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle); });
+      await waitFor(() => expect(result.current.grants['dev.forgesworn.kithmoot']).toBeDefined());
+      expect(localStorage.getItem('signet.nip55.grants')).not.toBeNull();
+      await act(async () => { await db.purgeAllUserData(); });
+      expect(result.current.grants).toEqual({});
+      expect(localStorage.getItem('signet.nip55.grants')).toBeNull();
+      // The next provider query is a stranger again.
+      respond.mockClear();
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'deferred' });
     });
   });
 });

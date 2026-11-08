@@ -14,7 +14,7 @@ function input(o: Partial<Parameters<typeof shouldShowBackupNudge>[0]> = {}) {
     hasRecoveryWords: true,
     isPairedChild: false,
     createdAtSeconds: DAY_AGO_SECONDS,
-    authorizedSiteCount: 0,
+    signedInSiteCount: 0,
     snoozedUntilMs: undefined,
     nowMs: NOW,
     dependantCount: 0,
@@ -28,11 +28,11 @@ describe('shouldShowBackupNudge', () => {
   });
 
   it('shows on a fresh identity once three sites have been authorized', () => {
-    expect(shouldShowBackupNudge(input({ createdAtSeconds: HOUR_AGO_SECONDS, authorizedSiteCount: 3 }))).toBe(true);
+    expect(shouldShowBackupNudge(input({ createdAtSeconds: HOUR_AGO_SECONDS, signedInSiteCount: 3 }))).toBe(true);
   });
 
   it('stays quiet on a fresh identity with fewer than three sites', () => {
-    expect(shouldShowBackupNudge(input({ createdAtSeconds: HOUR_AGO_SECONDS, authorizedSiteCount: 2 }))).toBe(false);
+    expect(shouldShowBackupNudge(input({ createdAtSeconds: HOUR_AGO_SECONDS, signedInSiteCount: 2 }))).toBe(false);
   });
 
   it('never shows once the words are written down', () => {
@@ -60,7 +60,7 @@ describe('shouldShowBackupNudge', () => {
   });
 
   it('shows on a fresh identity with no sites once a dependant is held', () => {
-    expect(shouldShowBackupNudge(input({ createdAtSeconds: HOUR_AGO_SECONDS, authorizedSiteCount: 0, dependantCount: 1 }))).toBe(true);
+    expect(shouldShowBackupNudge(input({ createdAtSeconds: HOUR_AGO_SECONDS, signedInSiteCount: 0, dependantCount: 1 }))).toBe(true);
   });
 
   it('still stays quiet with a dependant once backed up', () => {

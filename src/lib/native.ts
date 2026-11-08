@@ -78,6 +78,15 @@ export interface SignetNativePlugin {
   requestBatteryExemption(): Promise<void>;
   requestCameraPermission(): Promise<{ granted: boolean }>;
   /**
+   * The app that opened the last link (hint only, never a trust input) and
+   * the URL it opened. Both null when nothing has launched us with link data.
+   */
+  getLaunchReferrer(): Promise<{ package: string | null; url: string | null }>;
+  /** Label and 96x96 PNG icon of an installed app; nulls for an unknown package. */
+  getAppIcon(opts: { package: string }): Promise<{ label: string | null; iconPngBase64: string | null }>;
+  /** Launch an installed app by package; `opened` is false if it can't be launched. */
+  openApp(opts: { package: string }): Promise<{ opened: boolean }>;
+  /**
    * Contact pictures (APK): one https GET, no redirects/cookies/cache, body
    * capped at `maxBytes` while reading, answered by `timeoutMs` (+1 s) at the
    * latest. At most four run at once, off the plugin thread.

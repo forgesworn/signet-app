@@ -7,6 +7,8 @@
  * arrives while the app is locked waits too, and `onNeedsUnlock` asks for
  * the PIN, so the approval screen only ever renders over an unlocked app.
  */
+import { subscribePurge } from '../lib/db';
+import { recordKnownPlace } from '../lib/known-places-record';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UnsignedEvent } from 'signet-protocol';
 import { describeEventTemplate } from '../lib/nip46-server';
@@ -79,6 +81,11 @@ interface Waiting {
   raw: NativeNip55Request;
   parsed: ParsedNip55;
   pubkey: string | null;
+}
+
+/** A grant is pinned to one key; a caller that names another key must leave it alone. */
+function grantIsFor(grant: Nip55Grants[string], pubkey: string): boolean {
+  return !!pubkey && grant.pubkey.toLowerCase() === pubkey.toLowerCase();
 }
 
 export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = () => Date.now(), gate }: Options) {
@@ -295,6 +302,21 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     setGrants(g => { const next = { ...g, [pkg]: grant }; saveNip55Grants(next); return next; });
   }, []);
 
+  /** Display fact only: the app now has a row under the key that approved it. */
+  const noteKnownPlace = useCallback((raw: { callerPackage: string | null; callerLabel?: string | null }, key: string) => {
+    if (!raw.callerPackage) return;
+    void recordKnownPlace({
+      placeKey: `pkg:${raw.callerPackage}`,
+      pubkey: key,
+      kind: 'nip55',
+      name: raw.callerLabel || raw.callerPackage,
+      nativePackage: raw.callerPackage,
+      channel: 'nip55',
+      signer: 'local',
+      shared: {},
+    });
+  }, []);
+
   const take = useCallback((handle: number): Waiting | undefined => {
     const item = queue.find(w => w.handle === handle);
     if (item) setQueue(q => q.filter(w => w.handle !== handle));
@@ -322,18 +344,22 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     if (item.raw.callerPackage) {
       const prior = grantsRef.current[item.raw.callerPackage];
       remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? prior?.label });
+      noteKnownPlace(item.raw, key);
     }
     void execute(item.raw, item.parsed, key);
-  }, [take, approvedKey, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, noteKnownPlace, execute, now]);
 
   const approveAlways = useCallback((handle: number, pubkey?: string) => {
     const item = take(handle);
     if (!item) return;
     const key = approvedKey(item, pubkey);
     if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
-    if (item.raw.callerPackage) remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
+    if (item.raw.callerPackage) {
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
+      noteKnownPlace(item.raw, key);
+    }
     void execute(item.raw, item.parsed, key);
-  }, [take, approvedKey, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, noteKnownPlace, execute, now]);
 
   const deny = useCallback((handle: number) => {
     const item = take(handle);
@@ -362,9 +388,36 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     for (const item of held) void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
   }, [respond]);
 
-  const forget = useCallback((pkg: string) => {
+  // `purgeAllUserData` empties the localStorage grants; the in-memory copy
+  // must follow or a deleted identity's "always" grants keep being honoured.
+  useEffect(() => subscribePurge(() => { grantsRef.current = {}; setGrants({}); }), []);
+
+  /**
+   * Forget a remembered app. With `forPubkey`, only if its grant is pinned to
+   * that key (a row for persona A must never delete persona B's pairing);
+   * returns whether a grant was removed.
+   */
+  const forget = useCallback((pkg: string, forPubkey?: string): boolean => {
+    const grant = grantsRef.current[pkg];
+    if (!grant) return false;
+    if (forPubkey !== undefined && !grantIsFor(grant, forPubkey)) return false;
     setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });
+    return true;
   }, []);
+
+  /**
+   * Change how a remembered app is treated from the known-places list:
+   * `true` signs without asking, `false` asks each time (and lifts a standing
+   * refusal). No-op (returns false) for an app with no grant, or whose grant is
+   * pinned to a key other than `forPubkey`. Goes through `remember` so the
+   * synchronous request path sees it at once.
+   */
+  const setAllowAlways = useCallback((pkg: string, allow: boolean, forPubkey: string): boolean => {
+    const grant = grantsRef.current[pkg];
+    if (!grant || !grantIsFor(grant, forPubkey)) return false;
+    remember(pkg, { ...grant, allowAlways: allow, denyAlways: false });
+    return true;
+  }, [remember]);
 
   const pending = useMemo<PendingNip55 | null>(() => {
     const item = queue[0];
@@ -388,5 +441,5 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     };
   }, [queue, locked, grants, activePubkey, routes]);
 
-  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld };
+  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld, setAllowAlways };
 }

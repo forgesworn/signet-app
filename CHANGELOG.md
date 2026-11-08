@@ -12,6 +12,15 @@ section for the version being published (`release_notes` in zapstore.yaml).
 - A site you sign in to as two different personas now appears on both cards instead of the second overwriting the first
 - Settings: "Connected Sites" is replaced by "Where you're known" (opens the column) and "Connected apps" (Nostr Connect clients and apps on this phone)
 - Delete all data now also clears the permissions given to apps on this phone
+- Apps that ask My Signet to encrypt or decrypt (NIP-44 or NIP-04) now get an approval prompt instead of a refusal. "Allow always" remembers the app
+- Android: other apps on the phone can decrypt older NIP-04 direct messages through My Signet
+- An imported nsec now has its own 31 recovery words in Security, Backup Words, and an imported persona shows its words on its Advanced page
+- An app you paired as one persona can no longer ask another of your personas to sign
+- Publishing a persona's profile for the first time from this phone asks first if the profile was changed in another app, so you can keep that version
+- A dependant's autonomy stage no longer reverts a second after you change it
+- After you change a backup key, its row shows the new key version straight away
+- Edits made on two devices close together are no longer left out of the backup
+
 
 ## 0.24.2
 - Identity cards: while the app is locked, the card shows "Unlock to see where this identity is known" instead of an empty space where your sites go

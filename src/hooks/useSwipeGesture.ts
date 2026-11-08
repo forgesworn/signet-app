@@ -117,9 +117,9 @@ export function useSwipeGesture({
     const onInteractiveZone = !!el?.closest(INTERACTIVE_ZONE_SELECTOR);
     // Scrollable card bodies own vertical movement; horizontal movement
     // still changes cards, and the contacts header can change personas.
-    const scrollBody = el?.closest<HTMLElement>('.settings-view, .contacts-card-body, .qr-view, .camera-view');
+    const scrollBody = el?.closest<HTMLElement>('.settings-view, .contacts-card-body, .kp-list, .qr-view, .camera-view');
     verticalSwipeBlocked.current = !!scrollBody && (
-      scrollBody.matches('.settings-view, .contacts-card-body') || scrollBody.scrollHeight > scrollBody.clientHeight + 1
+      scrollBody.matches('.settings-view, .contacts-card-body, .kp-list') || scrollBody.scrollHeight > scrollBody.clientHeight + 1
     );
 
     startX.current = clientX;
