@@ -59,7 +59,8 @@
         </activity>
 
         <!-- NIP-55: other apps on this phone (Amethyst, KithMoot, anything
-             Amber-shaped) ask for a public key, a signature or NIP-44 through
+             Amber-shaped) ask for a public key, a signature, NIP-44 or a NIP-04
+             decrypt (older messages; there is no NIP-04 encrypt) through
              `nostrsigner:` intents and, once allowed always, through the
              content provider below without a screen. The activity has no UI
              of its own; the decision is made in the app. -->
@@ -79,7 +80,7 @@
         </activity>
         <provider
             android:name=".Nip55SignerProvider"
-            android:authorities="${applicationId}.GET_PUBLIC_KEY;${applicationId}.SIGN_EVENT;${applicationId}.NIP44_ENCRYPT;${applicationId}.NIP44_DECRYPT;${applicationId}.PING"
+            android:authorities="${applicationId}.GET_PUBLIC_KEY;${applicationId}.SIGN_EVENT;${applicationId}.NIP44_ENCRYPT;${applicationId}.NIP44_DECRYPT;${applicationId}.NIP04_DECRYPT;${applicationId}.PING"
             android:exported="true" />
 
         <provider

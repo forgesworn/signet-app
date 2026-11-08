@@ -105,6 +105,16 @@ describe('RoutedBunkerSigningBackend', () => {
     expect(inner.reconnect).toHaveBeenCalledTimes(1);
   });
 
+  it('nip04Decrypt goes to the slot it is addressed to, and a signer error comes back as a rejection', async () => {
+    const inner = fakeInner();
+    const backend = new RoutedBunkerSigningBackend(SECRET, buildSlotBunkerUri(BASE_URI, PK_B), PK_B, () => inner);
+    await expect(backend.nip04Decrypt(PK_A, 'ct?iv=iv')).resolves.toBe('pt4');
+    expect(inner.nip04Decrypt).toHaveBeenCalledWith(PK_A, 'ct?iv=iv');
+    // A device that does not do NIP-04 answers with an error string; the caller sees a rejection, not a hang.
+    (inner.nip04Decrypt as ReturnType<typeof vi.fn>).mockRejectedValueOnce('unsupported method');
+    await expect(backend.nip04Decrypt(PK_A, 'ct?iv=iv')).rejects.toBe('unsupported method');
+  });
+
   it('rejects signEvent templates addressed to a different pubkey without connecting', async () => {
     const inner = fakeInner();
     const backend = new RoutedBunkerSigningBackend(SECRET, buildSlotBunkerUri(BASE_URI, PK_B), PK_B, () => inner);

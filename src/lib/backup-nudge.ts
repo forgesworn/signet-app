@@ -14,8 +14,9 @@ const IDENTITY_AGE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
  * Creating a Signet takes under a minute precisely because the words are NOT
  * demanded at the door — so the nudge waits until the identity is worth losing:
  * three sites signed in to, or a day old. Never for an identity with nothing to
- * back up (an nsec import has no mnemonic), and never on a paired child, whose
- * keys are their guardian's responsibility.
+ * back up (no recovery words on this device: a key held by a signer or
+ * extension), and never on a paired child, whose keys are their guardian's
+ * responsibility. A Signet mnemonic and an imported nsec both have words.
  *
  * Once a dependant is held, the identity is already worth losing regardless of
  * age or site count — someone else's keys ride on these same words — so the
@@ -26,7 +27,7 @@ const IDENTITY_AGE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
  */
 export function shouldShowBackupNudge(input: {
   backedUp: boolean;
-  hasMnemonic: boolean;
+  hasRecoveryWords: boolean;
   isPairedChild: boolean;
   /** `SignetIdentity.createdAt` — unix SECONDS, not ms. */
   createdAtSeconds: number;
@@ -38,7 +39,7 @@ export function shouldShowBackupNudge(input: {
   dependantCount: number;
 }): boolean {
   if (input.backedUp) return false;
-  if (!input.hasMnemonic) return false;
+  if (!input.hasRecoveryWords) return false;
   if (input.isPairedChild) return false;
   if (input.snoozedUntilMs !== undefined && input.snoozedUntilMs > input.nowMs) return false;
 

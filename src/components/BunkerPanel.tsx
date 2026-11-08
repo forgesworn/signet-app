@@ -290,7 +290,7 @@ export function BunkerPanel({
     </div>
   ) : null;
 
-  if (reviewed && isKinterestAuthority(reviewed.template)) {
+  if (reviewed && reviewed.method === 'sign_event' && isKinterestAuthority(reviewed.template)) {
     return <BunkerApprovalModal approval={reviewed}
       onApproveOnce={handle => { onApproveOnce(handle); setReviewHandle(null); }}
       onApproveAlways={handle => { onApproveOnce(handle); setReviewHandle(null); }}
@@ -393,10 +393,10 @@ export function BunkerPanel({
                     <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{a.client.appUrl}</div>
                   )}
                   <div style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0' }}>
-                    {a.description} · signing as <strong>{target}</strong>
+                    {a.description} · {a.method === 'sign_event' ? 'signing as' : 'as'} <strong>{target}</strong>
                   </div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    {isKinterestAuthority(a.template) ? (
+                    {a.method === 'sign_event' && isKinterestAuthority(a.template) ? (
                       <button type="button" className="btn btn-primary" onClick={() => setReviewHandle(a.handle)}
                         style={{ flex: 1, fontSize: 13, padding: '6px 0' }}>Review authorisation</button>
                     ) : <>

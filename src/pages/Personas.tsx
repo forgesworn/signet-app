@@ -5,6 +5,7 @@ import { Icon } from '../components/Icon';
 import { resolveRealIdentityRow } from '../lib/real-identity-row';
 import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/ExistingProfilePanel';
 import { decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
+import { parseNsecOrRecoveryWords, NSEC_INPUT_ERROR_COPY, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import type { ExistingProfile } from '../lib/existing-profile';
 import { FollowsImportPanel } from '../components/FollowsImportPanel';
 import type { FollowsHandlers } from '../lib/follows-import-flow';
@@ -170,8 +171,18 @@ export function Personas({
 
   async function handleImportNostrSubmit() {
     if (!onImportNostrAccount) return;
-    if (!importNsecInput.trim().startsWith('nsec1')) {
-      setImportError("Paste your nsec key. It starts with 'nsec1'.");
+    // An nsec, or that key's 31 raw-nsec recovery words (turned into the same
+    // nsec here, so the rest of this path is unchanged).
+    const parsedInput = parseNsecOrRecoveryWords(importNsecInput);
+    if (!parsedInput.ok) {
+      const reason = parsedInput.reason;
+      // 'not-recovery-words' points at an older-backup option this box does
+      // not have, so it reads as "not an nsec or its words" here.
+      setImportError(reason === 'whole-signet'
+        ? NSEC_INPUT_ERROR_COPY['whole-signet']
+        : reason === 'not-nsec' || reason === 'not-recovery-words'
+          ? NSEC_INPUT_ERROR_COPY['not-nsec']
+          : RESTORE_ERROR_COPY[reason]);
       return;
     }
     if (!importDisplayName.trim()) {
@@ -185,7 +196,7 @@ export function Personas({
     setImportBusy(true);
     setImportError('');
     try {
-      const nsec = importNsecInput.trim();
+      const nsec = parsedInput.nsec;
       let match: ExistingProfile | undefined = importLookedUpFor === nsec && importMatch && importChoice === 'match' ? importMatch : undefined;
       let unreachable = false;
       if (onLookupExistingProfile && importLookedUpFor !== nsec) {
@@ -564,7 +575,7 @@ export function Personas({
                         borderRadius: 12,
                         fontWeight: 400,
                       }}
-                      title="This Nostr account isn't derived from your Signet seed phrase. Make sure your nsec is backed up separately — Signet's recovery-words restore won't bring this persona back."
+                      title="This Nostr account isn't derived from your Signet seed phrase, so your Signet's recovery words won't bring it back. It has its own, on its Advanced page."
                     >
                       Imported — not in your seed phrase
                     </span>
@@ -639,7 +650,7 @@ export function Personas({
             <div ref={importBodyRef} style={{ minHeight: 0, overflowY: 'auto', position: 'relative' }}>
               <h3 style={{ marginTop: 0, marginBottom: 8 }}>Import an existing Nostr account</h3>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
-                Paste your nsec key. We'll add it as a Persona alongside your existing personas.
+                Paste your nsec key, or its 31 recovery words. We'll add it as a Persona alongside your existing personas.
               </p>
 
               {importError && (
@@ -653,7 +664,7 @@ export function Personas({
                 }}>{importError}</div>
               )}
 
-              <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Nsec key</label>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Nsec key or recovery words</label>
               <textarea
                 className="input"
                 rows={2}
@@ -702,7 +713,7 @@ export function Personas({
                   <Icon name="alertTriangle" size={14} className="icon-inline" /><strong>This Nostr account isn't derived from your Signet seed phrase.</strong>
                 </p>
                 <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: '0 0 10px' }}>
-                  If you lose this device and restore Signet from your recovery words, this imported persona won't come back — your normal Signet personas will, but this one is a separate keypair.
+                  If you lose this device and restore Signet from your recovery words, this imported persona won't come back. Your normal Signet personas will, but this one is a separate keypair with its own 31 recovery words, shown on its Advanced page.
                   Make sure you have your nsec backed up somewhere safe (a password manager, a written copy) before importing.
                 </p>
                 <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.85rem', cursor: 'pointer' }}>

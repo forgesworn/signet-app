@@ -4,6 +4,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { nip19 } from 'nostr-tools';
+import { encrypt as nip04Encrypt } from 'nostr-tools/nip04';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 const listeners: Record<string, Array<(r: unknown) => void>> = {};
@@ -454,6 +455,177 @@ describe('useNip55Server', () => {
     await act(async () => { listeners.nip55Request[0](raw); });
     expect(result.current.pending).toBeNull();
     expect(respond).not.toHaveBeenCalled();
+  });
+
+  describe('nip04_decrypt (older-format messages)', () => {
+    const peerSk = generateSecretKey();
+    const peer = getPublicKey(peerSk);
+    const sealed = (text: string, to = pubkey) => nip04Encrypt(peerSk, to, text);
+    const decryptRequest = (over: Record<string, unknown> = {}) => request({ type: 'nip04_decrypt', payload: sealed('an old direct message'), peerPubkey: peer, ...over });
+    /** An owner route whose backend has exactly the calls given; the rest of a real backend's surface is delegated. */
+    const routeWith = (nip04Decrypt?: (peer: string, ciphertext: string) => Promise<string>): BunkerRoute => {
+      const local = new LocalSigningBackend(bytesToHex(sk));
+      return { pubkey, backend: {
+        type: local.type, activePublicKeyHex: pubkey,
+        signEvent: e => local.signEvent(e), nip44Encrypt: (p, t) => local.nip44Encrypt(p, t), nip44Decrypt: (p, t) => local.nip44Decrypt(p, t),
+        ...(nip04Decrypt ? { nip04Decrypt } : {}), destroy() { /* nothing held */ },
+      } as BunkerRoute['backend'] };
+    };
+
+    it('asks in plain words, then answers with the plaintext and nothing else', async () => {
+      const onServed = vi.fn();
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, onServed }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      const raw = decryptRequest();
+      await act(async () => { listeners.nip55Request[0](raw); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      expect(result.current.pending).toMatchObject({ method: 'nip04_decrypt', description: 'read an older-format message sent to you', peer, pubkey, named: false });
+      expect(respond).not.toHaveBeenCalled();
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toEqual({ id: raw.id, status: 'ok', result: 'an old direct message' });
+      expect(onServed).toHaveBeenCalledTimes(1);
+      expect(result.current.pending).toBeNull();
+    });
+
+    it('a provider query is deferred until the app is allowed always, then answered without a screen', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](decryptRequest({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'deferred' });
+
+      await act(async () => { listeners.nip55Request[0](decryptRequest()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+
+      const next = decryptRequest({ viaProvider: true, payload: sealed('a second old message') });
+      await act(async () => { listeners.nip55Request[0](next); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+      expect(respond.mock.calls[2][0]).toEqual({ id: next.id, status: 'ok', result: 'a second old message' });
+      expect(result.current.pending).toBeNull();
+    });
+
+    it('nip04_encrypt is still refused, by intent and by provider: no screen, no key touched', async () => {
+      const backend = route.backend as LocalSigningBackend;
+      const encrypt = vi.spyOn(backend, 'nip04Encrypt');
+      const decrypt = vi.spyOn(backend, 'nip04Decrypt');
+      const onServed = vi.fn();
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, onServed }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      for (const viaProvider of [false, true]) {
+        await act(async () => { listeners.nip55Request[0](request({ type: 'nip04_encrypt', payload: 'hello', peerPubkey: peer, viaProvider })); });
+      }
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+      expect(respond.mock.calls.map(c => c[0].status)).toEqual(['rejected', 'rejected']);
+      expect(respond.mock.calls.every(c => c[0].result === undefined && c[0].event === undefined)).toBe(true);
+      expect(result.current.pending).toBeNull();
+      expect(encrypt).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
+      expect(onServed).not.toHaveBeenCalled();
+      encrypt.mockRestore();
+      decrypt.mockRestore();
+    });
+
+    it('a request that is not NIP-04 content is rejected without a screen', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](decryptRequest({ payload: 'just some text' })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0].status).toBe('rejected');
+      expect(result.current.pending).toBeNull();
+    });
+
+    it('decrypts with the key the app named, and refuses a key this phone has no route for', async () => {
+      const sk2 = generateSecretKey();
+      const pubkey2 = getPublicKey(sk2);
+      const route2: BunkerRoute = { pubkey: pubkey2, backend: new LocalSigningBackend(bytesToHex(sk2)) };
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route, route2], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](decryptRequest({ currentUser: pubkey2, payload: sealed('for the second key', pubkey2) })); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      expect(result.current.pending).toMatchObject({ pubkey: pubkey2, named: true });
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok', result: 'for the second key' });
+
+      // A key that is not an owner route (a dormant real identity has none) is never substituted.
+      const dormant = getPublicKey(generateSecretKey());
+      await act(async () => { listeners.nip55Request[0](decryptRequest({ currentUser: dormant })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+      expect(respond.mock.calls[1][0]).toMatchObject({ status: 'rejected' });
+      expect(result.current.pending).toBeNull();
+    });
+
+    it('a ciphertext the key cannot open is rejected, with nothing about why', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](decryptRequest({ payload: 'AAAA?iv=AAAAAAAAAAAAAAAAAAAAAA==' })); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'rejected' });
+      expect(respond.mock.calls[0][0].result).toBeUndefined();
+    });
+
+    it('a backend with no NIP-04 is refused at once, not called and not counted as serving', async () => {
+      const onServed = vi.fn();
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [routeWith()], locked: false, activePubkey: pubkey, onServed }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](decryptRequest()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'rejected' });
+      expect(onServed).not.toHaveBeenCalled();
+    });
+
+    it('a signer that answers with an error (it does not do NIP-04) is rejected, by intent and by provider', async () => {
+      // nostr-tools rejects with the signer's error string, not an Error.
+      const failing = vi.fn(async () => { throw 'unsupported method'; });
+      localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+      renderHook(() => useNip55Server({ enabled: true, routes: [routeWith(failing)], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      for (const viaProvider of [true, false]) {
+        await act(async () => { listeners.nip55Request[0](decryptRequest({ viaProvider })); });
+      }
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+      expect(failing).toHaveBeenCalledTimes(2);
+      expect(respond.mock.calls.map(c => c[0].status)).toEqual(['rejected', 'rejected']);
+    });
+
+    it('a request held through an unlock is decrypted once the keys are there, for an app allowed always', async () => {
+      localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+      const { rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey }), { initialProps: { locked: true } });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      const raw = decryptRequest();
+      await act(async () => { listeners.nip55Request[0](raw); });
+      rerender({ locked: false });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toEqual({ id: raw.id, status: 'ok', result: 'an old direct message' });
+    });
+
+    it('a child-direct (gated) install does not serve it: refused before any gate, screen or unlock prompt', async () => {
+      const gate = vi.fn(async () => ({ ok: true as const, requestCreatedAt: 1_900_000_000 }));
+      const onNeedsUnlock = vi.fn();
+      const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey, gate, onNeedsUnlock }), { initialProps: { locked: false } });
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      for (const viaProvider of [false, true]) {
+        await act(async () => { listeners.nip55Request[0](decryptRequest({ viaProvider })); });
+      }
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+      expect(respond.mock.calls.map(c => c[0].status)).toEqual(['rejected', 'rejected']);
+      // Locked, it is refused as well and the person is not asked for a PIN for it.
+      rerender({ locked: true });
+      await act(async () => { listeners.nip55Request[0](decryptRequest()); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+      expect(respond.mock.calls[2][0].status).toBe('rejected');
+      expect(gate).not.toHaveBeenCalled();
+      expect(onNeedsUnlock).not.toHaveBeenCalled();
+      expect(result.current.pending).toBeNull();
+      expect(result.current.waiting).toBe(0);
+    });
   });
 
   describe('child-direct gate (spec §8.3)', () => {

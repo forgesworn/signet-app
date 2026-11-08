@@ -17,7 +17,12 @@ import { inferScope } from './scope-inference';
 import { nip19 } from 'nostr-tools';
 import type { UnsignedEvent } from 'signet-protocol';
 
-export type Nip55Method = 'get_public_key' | 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
+/**
+ * `nip04_decrypt` only reads messages sent in the older NIP-04 format. There is
+ * deliberately no `nip04_encrypt`: My Signet never makes new NIP-04 ciphertext,
+ * so that request is refused as malformed like any unknown method.
+ */
+export type Nip55Method = 'get_public_key' | 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt' | 'nip04_decrypt';
 
 /** What the native shell lifts off an intent or a provider query. */
 export interface NativeNip55Request {
@@ -73,6 +78,8 @@ export const NIP55_GRANTS_KEY = 'signet.nip55.grants';
 
 const HEX64 = /^[0-9a-f]{64}$/i;
 const MAX_PAYLOAD = 256 * 1024;
+/** NIP-04 content: standard base64 ciphertext, `?iv=`, standard base64 IV. Anything else cannot decrypt, so it never reaches a screen. */
+const NIP04_CIPHERTEXT = /^[A-Za-z0-9+/]+={0,2}\?iv=[A-Za-z0-9+/]+={0,2}$/;
 
 /** A key as hex from hex or npub, lowercased; null for anything else. */
 export function pubkeyHexFrom(value: string | null | undefined): string | null {
@@ -116,6 +123,12 @@ export function parseNip55Request(raw: NativeNip55Request): ParsedNip55 | null {
       const peer = pubkeyHexFrom(raw.peerPubkey);
       const payload = raw.payload?.trim();
       if (!peer || !payload) return null;
+      return { method, peer, payload, currentUser, permissions: [] };
+    }
+    case 'nip04_decrypt': {
+      const peer = pubkeyHexFrom(raw.peerPubkey);
+      const payload = raw.payload?.trim();
+      if (!peer || !payload || !NIP04_CIPHERTEXT.test(payload)) return null;
       return { method, peer, payload, currentUser, permissions: [] };
     }
     default:
@@ -183,7 +196,8 @@ export function saveNip55Grants(grants: Nip55Grants, storage: Pick<Storage, 'set
 }
 
 export type Nip55Plan =
-  | { kind: 'reject'; reason: 'malformed' | 'denied' | 'unknown-identity' | 'no-identity' }
+  /** `unsupported`: a method this install does not serve (decided by the caller; `planNip55` itself never says it). */
+  | { kind: 'reject'; reason: 'malformed' | 'denied' | 'unknown-identity' | 'no-identity' | 'unsupported' }
   /** Provider path only: nothing remembered says yes, so the app should ask by intent. */
   | { kind: 'defer' }
   | { kind: 'forward'; pubkey: string }
@@ -247,5 +261,6 @@ export function describeNip55(parsed: ParsedNip55, describeTemplate: (t: Unsigne
     case 'sign_event': return `sign a ${describeTemplate(parsed.template!)}`;
     case 'nip44_encrypt': return 'encrypt a message to someone';
     case 'nip44_decrypt': return 'read a message sent to you';
+    case 'nip04_decrypt': return 'read an older-format message sent to you';
   }
 }

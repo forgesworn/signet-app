@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import { nip19 } from 'nostr-tools';
-import { defaultNip55Pubkey, loadNip55Grants, parseNip55Request, parsePermissions, planNip55, pubkeyHexFrom, saveNip55Grants, type NativeNip55Request } from './nip55';
+import { defaultNip55Pubkey, describeNip55, loadNip55Grants, parseNip55Request, parsePermissions, planNip55, pubkeyHexFrom, saveNip55Grants, type NativeNip55Request } from './nip55';
 
 const A = 'a'.repeat(64);
 const B = 'b'.repeat(64);
@@ -38,6 +38,44 @@ describe('parseNip55Request', () => {
     expect(parseNip55Request(raw({ type: 'nip44_decrypt', peerPubkey: null, payload: 'x' }))).toBeNull();
     expect(parseNip55Request(raw({ type: 'nip44_decrypt', peerPubkey: B, payload: '' }))).toBeNull();
     expect(parseNip55Request(raw({ type: 'nip04_encrypt', peerPubkey: B, payload: 'x' }))).toBeNull();
+  });
+
+  describe('nip04_decrypt', () => {
+    const CIPHER = 'AqWa+b/cd==?iv=Zm9vYmFyYmF6cXV4MTIzNA==';
+
+    it('reads a peer and a NIP-04 ciphertext, hex or npub, any case of method', () => {
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: CIPHER }))).toMatchObject({ method: 'nip04_decrypt', peer: B, payload: CIPHER, permissions: [] });
+      expect(parseNip55Request(raw({ type: 'NIP04_DECRYPT', peerPubkey: nip19.npubEncode(B), payload: ` ${CIPHER}\n` }))).toMatchObject({ method: 'nip04_decrypt', peer: B, payload: CIPHER });
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: CIPHER, currentUser: A }))!.currentUser).toBe(A);
+    });
+
+    it('needs a peer and a payload, like the other crypto methods', () => {
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: null, payload: CIPHER }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: 'nope', payload: CIPHER }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: '' }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: null }))).toBeNull();
+    });
+
+    it('refuses what is not NIP-04 content, so it never reaches a screen', () => {
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: 'AqWa+b/cd==' }))).toBeNull(); // no iv
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: '?iv=Zm9v' }))).toBeNull(); // no ciphertext
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: 'AqWa?iv=' }))).toBeNull(); // empty iv
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: 'AqWa?iv=Zm9v?iv=Zm9v' }))).toBeNull(); // two ivs
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: 'not base64!?iv=Zm9v' }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: '{"kind":1}' }))).toBeNull();
+    });
+
+    it('is bounded like every other payload', () => {
+      const huge = `${'A'.repeat(256 * 1024)}?iv=Zm9v`;
+      expect(parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: huge }))).toBeNull();
+    });
+
+    it('nip04_encrypt is still refused, whatever it carries', () => {
+      expect(parseNip55Request(raw({ type: 'nip04_encrypt', peerPubkey: B, payload: 'hello' }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'nip04_encrypt', peerPubkey: B, payload: CIPHER }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'NIP04_ENCRYPT', peerPubkey: B, payload: 'hello', viaProvider: true }))).toBeNull();
+      expect(parseNip55Request(raw({ type: 'decrypt_zap_event', peerPubkey: B, payload: CIPHER }))).toBeNull();
+    });
   });
 
   it('reads the permissions list for display and shrugs at a bad one', () => {
@@ -89,6 +127,47 @@ describe('planNip55', () => {
   it('with no key available, the provider defers and the intent is refused', () => {
     expect(planNip55(signIt, true, undefined, [], null)).toEqual({ kind: 'defer' });
     expect(planNip55(signIt, false, undefined, [], null)).toEqual({ kind: 'reject', reason: 'no-identity' });
+  });
+
+  describe('nip04_decrypt is planned exactly as nip44_decrypt is', () => {
+    const CIPHER = 'AqWa+b/cd==?iv=Zm9vYmFyYmF6cXV4MTIzNA==';
+    const old = parseNip55Request(raw({ type: 'nip04_decrypt', peerPubkey: B, payload: CIPHER }))!;
+    const current = parseNip55Request(raw({ type: 'nip44_decrypt', peerPubkey: B, payload: 'AqWa' }))!;
+    const grant = { pubkey: A, allowAlways: true, denyAlways: false, grantedAt: 1 };
+    const cases: Array<[string, boolean, Parameters<typeof planNip55>[2], string[], string | null]> = [
+      ['intent, nothing remembered', false, undefined, [A], A],
+      ['provider, nothing remembered', true, undefined, [A], A],
+      ['provider, allowed always', true, grant, [A, B], A],
+      ['intent, allowed always', false, grant, [A, B], A],
+      ['refused for good', true, { ...grant, denyAlways: true }, [A], A],
+      ['no keys, provider', true, undefined, [], null],
+      ['no keys, intent', false, undefined, [], null],
+      ['several keys, none active', false, undefined, [A, B], null],
+    ];
+    it.each(cases)('%s', (_name, viaProvider, g, owned, active) => {
+      expect(planNip55(old, viaProvider, g, owned, active)).toEqual(planNip55(current, viaProvider, g, owned, active));
+    });
+
+    it('the key it names must be one this phone holds; a dormant real identity has no route, so it is unknown', () => {
+      const dormant = 'd'.repeat(64);
+      expect(planNip55({ ...old, currentUser: dormant }, false, undefined, [A, B], A)).toEqual({ kind: 'reject', reason: 'unknown-identity' });
+      expect(planNip55({ ...old, currentUser: dormant }, true, grant, [A, B], A)).toEqual({ kind: 'reject', reason: 'unknown-identity' });
+      expect(planNip55({ ...old, currentUser: B }, false, undefined, [A, B], A)).toEqual({ kind: 'ask', pubkey: B });
+    });
+  });
+});
+
+describe('describeNip55', () => {
+  const never = () => { throw new Error('no template'); };
+
+  it('says what each method asks for', () => {
+    expect(describeNip55({ method: 'get_public_key', permissions: [] }, never)).toBe('know which key you are');
+    expect(describeNip55({ method: 'nip44_encrypt', permissions: [] }, never)).toBe('encrypt a message to someone');
+    expect(describeNip55({ method: 'nip44_decrypt', permissions: [] }, never)).toBe('read a message sent to you');
+  });
+
+  it('nip04_decrypt says the message is in an older format and that it is read', () => {
+    expect(describeNip55({ method: 'nip04_decrypt', permissions: [] }, never)).toBe('read an older-format message sent to you');
   });
 });
 

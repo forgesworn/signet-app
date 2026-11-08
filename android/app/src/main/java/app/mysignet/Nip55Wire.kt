@@ -29,7 +29,17 @@ object Nip55Wire {
     const val EXTRA_PACKAGE = "package"
     const val EXTRA_REJECTED = "rejected"
 
-    val METHODS = setOf("get_public_key", "sign_event", "nip44_encrypt", "nip44_decrypt")
+    /**
+     * What this signer answers. `nip04_decrypt` is here so a person can read
+     * messages sent in the older NIP-04 format; `nip04_encrypt` is deliberately
+     * absent, because My Signet never makes new NIP-04 ciphertext. Every
+     * provider authority in the manifest must match this set (pinned by
+     * `Nip55WireTest`).
+     */
+    val METHODS = setOf("get_public_key", "sign_event", "nip44_encrypt", "nip44_decrypt", "nip04_decrypt")
+
+    /** Whether an intent's `type` extra names a method this signer answers. Case-insensitive, as the intent path has always been. */
+    fun supports(type: String?): Boolean = type != null && type.lowercase() in METHODS
 
     /**
      * The extras an intent result carries. `id` is the CALLER's own id,

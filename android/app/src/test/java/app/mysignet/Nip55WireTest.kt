@@ -55,6 +55,68 @@ class Nip55WireTest {
         assertNull(Nip55Wire.methodOf("com.other.SIGN_EVENT", "app.mysignet"))
     }
 
+    @Test fun `nip04_decrypt is answered, nip04_encrypt and the zap decrypt are not`() {
+        assertEquals("app.mysignet.NIP04_DECRYPT", Nip55Wire.authority("app.mysignet", "nip04_decrypt"))
+        assertEquals("nip04_decrypt", Nip55Wire.methodOf("app.mysignet.NIP04_DECRYPT", "app.mysignet"))
+        // The debug build has its own package, and so its own authorities.
+        assertEquals("nip04_decrypt", Nip55Wire.methodOf("app.mysignet.debug.NIP04_DECRYPT", "app.mysignet.debug"))
+        assertTrue("nip04_decrypt" in Nip55Wire.METHODS)
+        assertFalse("nip04_encrypt" in Nip55Wire.METHODS)
+        assertFalse("decrypt_zap_event" in Nip55Wire.METHODS)
+        assertNull(Nip55Wire.methodOf("app.mysignet.NIP04_ENCRYPT", "app.mysignet"))
+        assertNull(Nip55Wire.methodOf("app.mysignet.DECRYPT_ZAP_EVENT", "app.mysignet"))
+    }
+
+    @Test fun `an intent type is supported only for the methods this signer answers, in any case`() {
+        for (type in listOf("get_public_key", "sign_event", "nip44_encrypt", "nip44_decrypt", "nip04_decrypt", "NIP04_DECRYPT")) {
+            assertTrue(type, Nip55Wire.supports(type))
+        }
+        for (type in listOf("nip04_encrypt", "NIP04_ENCRYPT", "decrypt_zap_event", "ping", "", null)) {
+            assertFalse(type ?: "null", Nip55Wire.supports(type))
+        }
+    }
+
+    @Test fun `the manifest offers a provider authority for every method, and none for nip04_encrypt`() {
+        // Unit tests run in the module directory (android/app); the checkout root is a fallback for other runners.
+        val manifest = listOf("src/main/AndroidManifest.xml", "app/src/main/AndroidManifest.xml", "android/app/src/main/AndroidManifest.xml")
+            .map { java.io.File(it) }.first { it.isFile }.readText()
+        val declared = Regex("android:authorities=\"([^\"]*)\"").findAll(manifest)
+            .flatMap { it.groupValues[1].split(';') }
+            .filter { it.startsWith("\${applicationId}.") }
+            .map { it.removePrefix("\${applicationId}.") }
+            .filter { it == it.uppercase() } // the method authorities; `fileprovider` is another provider's
+            .toSet()
+        assertEquals(Nip55Wire.METHODS.map { it.uppercase() }.toSet() + "PING", declared)
+        assertFalse("NIP04_ENCRYPT" in declared)
+    }
+
+    @Test fun `a NIP-04 ciphertext keeps its query and base64 characters, raw or percent-encoded`() {
+        // NIP-04 content is `<base64>?iv=<base64>`; the `?`, `=`, `+` and `/` must reach the page exactly.
+        val cipher = "AqWa+b/cd==?iv=Zm9v+/YQ=="
+        val raw = Nip55Incoming.fromIntent("id1", "com.vitorpamplona.amethyst", "Amethyst", "nostrsigner:$cipher", "nip04_decrypt", null, "ab".repeat(32), null)
+        assertEquals(cipher, raw.payload)
+        assertEquals("nip04_decrypt", raw.type)
+        assertEquals("ab".repeat(32), raw.peerPubkey)
+        val encoded = "nostrsigner:AqWa%2Bb%2Fcd%3D%3D%3Fiv%3DZm9v%2B%2FYQ%3D%3D"
+        assertEquals(cipher, Nip55Incoming.fromIntent("id2", null, null, encoded, "nip04_decrypt", null, null, null).payload)
+    }
+
+    @Test fun `a nip04_decrypt provider query lays out like the other crypto methods`() {
+        val cipher = "AqWa+b/cd==?iv=Zm9v+/YQ=="
+        val r = Nip55Incoming.fromProvider("id", "com.app", "An App", "nip04_decrypt", arrayOf(cipher, "ab".repeat(32), "cd".repeat(32)))
+        assertEquals(cipher, r.payload); assertEquals("ab".repeat(32), r.peerPubkey); assertEquals("cd".repeat(32), r.currentUser)
+        assertTrue(r.viaProvider)
+        assertEquals("nip04_decrypt", r.fields()["type"])
+    }
+
+    @Test fun `a decrypt answer hands the plaintext back as result and signature, never as an event`() {
+        val extras = Nip55Wire.resultExtras("caller-9", "app.mysignet", Nip55Answer("ok", "an old message", null))
+        assertEquals("an old message", extras[Nip55Wire.EXTRA_RESULT])
+        assertEquals("caller-9", extras[Nip55Wire.EXTRA_ID])
+        assertFalse(extras.containsKey(Nip55Wire.EXTRA_EVENT))
+        assertFalse(extras.containsKey(Nip55Wire.EXTRA_REJECTED))
+    }
+
     @Test fun `the registry holds a request while the page is down and routes the answer by id`() {
         assertTrue(Nip55Answer("ok", "sig", "{}").ok)
         assertTrue(Nip55Answer("deferred", null, null).deferred)

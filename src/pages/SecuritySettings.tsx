@@ -4,7 +4,8 @@ import type { SignetIdentity, SecurityTier } from '../types';
 import { getAuthMethod, changePIN, enableBiometric, disableBiometric, isBiometricAvailable, hasPinFallback, biometricAcceptsDevicePin } from '../lib/auth';
 import { securityMethodLabel } from '../lib/security-method-label';
 import { BACKUP_WORDS_ON_SIGNER, NO_BACKUP_WORDS_CHILD, NO_BACKUP_WORDS_IMPORTED } from '../lib/local-key-only-copy';
-import { toRecoveryWords } from '../lib/recovery-words';
+import { toRecoveryWords, toNsecRecoveryWords, recoveryWordsSource } from '../lib/recovery-words';
+import { RAW_NSEC_WORDS_CONFIRMED, RAW_NSEC_WORDS_CONFIRM_LABEL, RAW_NSEC_WORDS_INTRO, SHAMIR_NOT_FOR_RAW_NSEC } from '../lib/raw-nsec-backup-copy';
 import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
 import { Icon } from '../components/Icon';
 import { PillToggle } from '../components/PillToggle';
@@ -57,6 +58,13 @@ interface Props {
    */
   focusSection?: string | null;
   onConsumeFocus?: () => void;
+  /**
+   * Set `identity.backedUp = true`. Offered after the words of an identity
+   * created from an nsec are shown: such an identity has no real identity to
+   * activate and no family, so this card is its only way to clear the backup
+   * prompt (and the Heartwood connect gate).
+   */
+  onMarkBackedUp?: () => Promise<void>;
 }
 
 /** Compact inline PIN keypad for the Security settings section */
@@ -123,27 +131,38 @@ function SecurityPinPad({ title, value, error, saving, onDigit, onDelete, onNext
   );
 }
 
-export function SecuritySettings({ identity, securityTier, onSetSecurityTier, onRequestAuth, onRequestFreshAuth, blurIdentityNames, onSetBlurIdentityNames, requireNpConfirmation, onSetRequireNpConfirmation, preferPersonaForSignIns, onSetPreferPersonaForSignIns, preferredPersonaPubkey, onSetPreferredPersonaPubkey, onNavigateShamir, mnemonicOnSigner = false, focusSection, onConsumeFocus }: Props) {
+export function SecuritySettings({ identity, securityTier, onSetSecurityTier, onRequestAuth, onRequestFreshAuth, blurIdentityNames, onSetBlurIdentityNames, requireNpConfirmation, onSetRequireNpConfirmation, preferPersonaForSignIns, onSetPreferPersonaForSignIns, preferredPersonaPubkey, onSetPreferredPersonaPubkey, onNavigateShamir, mnemonicOnSigner = false, focusSection, onConsumeFocus, onMarkBackedUp }: Props) {
   const [showBackup, setShowBackup] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [markingBackedUp, setMarkingBackedUp] = useState(false);
   // Pulse-highlight target for the focused section (e.g. 'bunker'). Cleared
   // after the animation so re-renders don't re-flash.
   const [highlighted, setHighlighted] = useState<string | null>(null);
 
-  // The stored secret is still bare BIP-39; recovery words are the typed
-  // envelope we *show*. An nsec-imported identity has no mnemonic and no
-  // backup, so it renders nothing rather than throwing.
+  // The stored secret is still bare BIP-39 (or, for an identity created from
+  // an nsec, the imported key itself); recovery words are the typed envelope
+  // we *show*: 19 words for a Signet, 31 for one imported key. Nothing is
+  // derived until the reveal, and a malformed record renders nothing rather
+  // than throwing.
+  const wordsSource = recoveryWordsSource(identity);
+  const rawKeyHex = wordsSource === 'raw-nsec'
+    ? (identity.primaryKeypair === 'natural-person' ? identity.naturalPerson.privateKey : identity.persona.privateKey)
+    : '';
   const recoveryWords = useMemo(() => {
-    if (!showBackup || !identity.mnemonic) return '';
+    if (!showBackup) return '';
     try {
-      return toRecoveryWords(identity.mnemonic);
+      if (identity.mnemonic) return toRecoveryWords(identity.mnemonic);
+      if (rawKeyHex) return toNsecRecoveryWords(rawKeyHex);
+      return '';
     } catch {
       return '';
     }
-  }, [showBackup, identity.mnemonic]);
-  // Decrypted and still empty: an nsec import or a paired child. Revealing would
-  // sit on "Unlocking..." for the whole 90 s under copy promising 19 words.
-  const noRecoveryWords = !identity.encrypted && !identity.mnemonic;
+  }, [showBackup, identity.mnemonic, rawKeyHex]);
+  // Decrypted and still empty: a key held elsewhere or a paired child.
+  // Revealing would sit on "Unlocking..." for the whole 90 s under copy
+  // promising words that do not exist.
+  const noRecoveryWords = !identity.encrypted && wordsSource === null;
+  const rawNsecWords = wordsSource === 'raw-nsec';
 
   useEffect(() => {
     if (!showBackup) return;
@@ -475,13 +494,17 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
         ) : (
         <>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
-          19 words. Write them down in order. They restore your whole Signet — every persona and dependant — on a new phone or a family Heartwood.
+          {rawNsecWords
+            ? RAW_NSEC_WORDS_INTRO
+            : '19 words. Write them down in order. They restore your whole Signet — every persona and dependant — on a new phone or a family Heartwood.'}
         </p>
         {!showBackup ? (
           <button className="btn btn-secondary" onClick={async () => {
             const auth = onRequestFreshAuth ?? onRequestAuth;
             if (!auth) return;
-            const key = await auth({ purpose: 'reveal-recovery-words' });
+            const key = await auth(rawNsecWords
+              ? { purpose: 'reveal-recovery-words', scope: 'key' }
+              : { purpose: 'reveal-recovery-words' });
             if (!key) return;
             setShowBackup(true);
           }}>
@@ -511,6 +534,36 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
               Words auto-hide after 90 seconds. Clipboard clears after 60 seconds.
             </p>
+            {/*
+              An identity created from an nsec has no activation step and no
+              family, the other places that confirm a backup, so it confirms
+              here. A Signet mnemonic keeps its existing confirm points.
+            */}
+            {rawNsecWords && onMarkBackedUp && (
+              identity.backedUp === true ? (
+                <p role="status" style={{ fontSize: '0.85rem', color: 'var(--success)', marginTop: 8, marginBottom: 0 }}>
+                  {RAW_NSEC_WORDS_CONFIRMED}
+                </p>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  disabled={markingBackedUp}
+                  style={{ marginTop: 8 }}
+                  onClick={async () => {
+                    setMarkingBackedUp(true);
+                    try {
+                      await onMarkBackedUp();
+                    } catch {
+                      // Not saved (locked mid-tap): the button stays, so it can be tapped again.
+                    } finally {
+                      setMarkingBackedUp(false);
+                    }
+                  }}
+                >
+                  {RAW_NSEC_WORDS_CONFIRM_LABEL}
+                </button>
+              )
+            )}
           </div>
         ) : (
           <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Unlocking...</div>
@@ -521,7 +574,7 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
 
       {/* Shamir Backup — splits the mnemonic (ShamirBackup reads
           identity.mnemonic), so it's hidden under the same on-signer gate. */}
-      {!mnemonicOnSigner && !noRecoveryWords && (
+      {!mnemonicOnSigner && !noRecoveryWords && !rawNsecWords && (
         <div className="card section">
           <div className="section-title">Shamir Backup</div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
@@ -530,6 +583,16 @@ export function SecuritySettings({ identity, securityTier, onSetSecurityTier, on
           <button className="btn btn-secondary" onClick={onNavigateShamir}>
             Manage Shamir Backup
           </button>
+        </div>
+      )}
+      {/* Shamir v3 splits Signet recovery words only; a raw-nsec envelope is
+          not covered this pass, so say so rather than split the wrong thing. */}
+      {!mnemonicOnSigner && rawNsecWords && (
+        <div className="card section">
+          <div className="section-title">Shamir Backup</div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+            {SHAMIR_NOT_FOR_RAW_NSEC}
+          </p>
         </div>
       )}
 

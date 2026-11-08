@@ -39,7 +39,7 @@ import { verifiedAuthoredEvents } from './event-verify';
 import { isValidRelayUrl } from './relay-url';
 import { isPrivateOrInternalHost } from './safe-url';
 import type { PersonaPublicProfile, PublicProfileBase, PublicProfileConfig } from '../types';
-import { fetchExistingProfile } from './existing-profile';
+import { fetchExistingProfile, type ExistingProfile } from './existing-profile';
 import { CAP_ABOUT } from './about-cap';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -438,6 +438,41 @@ export function adoptPublishedIntoCard(
 }
 
 /**
+ * "Use that version" for a profile made elsewhere (#194): the card becomes the
+ * relay's kind-0 exactly, fields it lacks included (cleared), and the slot is
+ * recorded as published with that event, so nothing is sent and the next
+ * publish three-way merges onto it. A natural person's legal name is never
+ * taken from the relay (`adoptName: false`).
+ */
+export function adoptRelayProfile(
+  change: RelayProfileChange,
+  card: PublicProfileConfig,
+  opts: { adoptName: boolean },
+): { config: PublicProfileConfig; state: PersonaPublicProfile; base: PublicProfileBase | null; name?: string } {
+  const p = change.profile;
+  const config: PublicProfileConfig = {
+    displayName: card.displayName,
+    about: p.about,
+    pictureUrl: p.pictureUrl,
+    pictureBlossomHash: p.pictureUrl && p.pictureUrl === card.pictureUrl ? card.pictureBlossomHash : undefined,
+    bannerUrl: p.bannerUrl,
+    bannerBlossomHash: p.bannerUrl && p.bannerUrl === card.bannerUrl ? card.bannerBlossomHash : undefined,
+    nip05: p.nip05,
+    lud16: p.lud16,
+    website: p.website,
+  };
+  const state: PersonaPublicProfile = {
+    enabled: true,
+    lastEventId: change.event.id,
+    lastPublishedAt: change.event.created_at,
+    lastPublishedRelay: change.relay,
+    lastPublishedContentHash: bytesToHex(sha256(new TextEncoder().encode(change.event.content))),
+  };
+  const name = opts.adoptName && p.displayName && p.displayName !== card.displayName ? p.displayName : undefined;
+  return { config, state, base: change.base ?? null, ...(name ? { name } : {}) };
+}
+
+/**
  * Name-only rename of a kind-0: for a profile Signet does NOT manage (never
  * enabled), a rename must not publish any card field. With a usable base (a
  * non-empty plain object) it sets `display_name`, sets `name` only when the
@@ -483,6 +518,8 @@ export interface PublishResult {
   contentHash?: string;
   /** True when the content came from the three-way merge (a relay kind-0 was carried forward). */
   merged?: boolean;
+  /** Set (with ok: false, nothing published) when `unbasedRelayChange: 'ask'` found a profile made elsewhere. */
+  relayChange?: RelayProfileChange;
 }
 
 /** What the optional lossless-publish inputs of `publishPublicProfile` carry. */
@@ -491,6 +528,27 @@ export interface PublishMergeInput {
   storedBase?: PublicProfileBase;
   /** Extra relays to look the current kind-0 up on (the user's read relays). */
   lookupRelays?: string[];
+  /**
+   * What to do when there is no stored base and the relay already holds a
+   * newer kind-0 this device did not publish (an edit made in another Nostr
+   * app, signet-app-internal#194). With no base the card's blank or stale
+   * fields read as edits, so publishing would replace that profile.
+   * `'ask'` returns `relayChange` instead of publishing; `'replace'` (the
+   * default) publishes as before.
+   */
+  unbasedRelayChange?: 'ask' | 'replace';
+}
+
+/** A newer kind-0 made elsewhere that a first publish from this card would replace. */
+export interface RelayProfileChange {
+  /** The relay's kind-0, signature verified and author pinned. */
+  event: { id: string; created_at: number; content: string };
+  /** Its content, parsed and validated. */
+  profile: Partial<PublicProfileConfig>;
+  /** The event as a device-local base; `undefined` when too big to store. */
+  base: PublicProfileBase | undefined;
+  /** A relay it was seen on. */
+  relay: string;
 }
 
 /**
@@ -538,12 +596,13 @@ export async function publishPublicProfile(
   // Look the relay's CURRENT kind-0 up (best-effort; unreachable or nothing
   // found both read as "no fetched profile").
   let fetchedEvent: { content: string; tags: string[][]; created_at: number } | null = null;
+  let fetchedProfile: ExistingProfile | null = null;
   try {
     const fetched = await fetchExistingProfile(
       backend.activePublicKeyHex,
       [relayUrl, ...(merge?.lookupRelays ?? [])],
     );
-    if (fetched && fetched !== 'unreachable') fetchedEvent = fetched.event;
+    if (fetched && fetched !== 'unreachable') { fetchedEvent = fetched.event; fetchedProfile = fetched; }
   } catch { /* publish from what we have */ }
 
   // Comparison base = the stored base; with none, the fetched kind-0 stands in
@@ -568,6 +627,25 @@ export async function publishPublicProfile(
     baseCreatedAt = fetchedEvent.created_at;
   }
   const result = mergeKindZeroContent({ comparisonContent: comparison, contentBase, config, fallbackDisplayName });
+
+  // No base, and the relay holds a profile this device did not publish (not
+  // our own last event, and newer than it) that this card would change. Ask
+  // first: the card's blank fields would otherwise clear what was set there.
+  if (merge?.unbasedRelayChange === 'ask' && !storedBase && fetchedProfile
+      && result.content !== fetchedProfile.event.content
+      && fetchedProfile.event.id !== state?.lastEventId
+      && fetchedProfile.event.created_at > (state?.lastPublishedAt ?? 0)) {
+    return {
+      ok: false, eventId: '', relayUrl, createdAt: 0, message: 'profile changed elsewhere',
+      relayChange: {
+        event: { id: fetchedProfile.event.id, created_at: fetchedProfile.event.created_at, content: fetchedProfile.event.content },
+        profile: fetchedProfile.profile,
+        base: fetchedProfile.base,
+        relay: fetchedProfile.relay,
+      },
+    };
+  }
+
   content = result.content;
   tags = result.tags;
   merged = result.merged;
