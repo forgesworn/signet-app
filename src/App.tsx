@@ -411,7 +411,6 @@ import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, 
  * these few minutes, as it is for a stay-awake window.
  */
 const PHONE_APPS_WINDOW_MS = 5 * 60 * 1000;
-import { useAuthorizedSites } from './hooks/useAuthorizedSites';
 import { useConnectedClients } from './hooks/useConnectedClients';
 import { useOriginPolicies } from './hooks/useOriginPolicies';
 import { useOwnBadge } from './hooks/useOwnBadge';
@@ -766,7 +765,6 @@ function AppContent() {
   // read-side pin cannot orphan an existing record.
   const { documents } = useDocuments(identity?.naturalPerson.publicKey, encryptionKey);
   const { credentials, addCredential, refresh: reloadCredentials } = useCredentials(encryptionKey);
-  const { sites: authorizedSites, authorize: authorizeSite, revoke: revokeSite, updateAlias: updateSiteAlias } = useAuthorizedSites();
   const { clients: connectedClients, loading: connectedClientsLoading, disconnect: disconnectClient } = useConnectedClients();
   const { policies: originPolicies, recordSignIn: recordOriginSignIn, setPinned: setOriginPinned } = useOriginPolicies();
   const knownPlaces = useKnownPlaces(encryptionKey);
@@ -893,7 +891,7 @@ function AppContent() {
     hasMnemonic: !!identity.mnemonic,
     isPairedChild: preferences.signingMode === 'paired-child',
     createdAtSeconds: identity.createdAt,
-    authorizedSiteCount: authorizedSites.length,
+    signedInSiteCount: new Set(knownPlaces.places.filter(p => p.kind === 'sign-in' && p.origin).map(p => p.origin)).size,
     snoozedUntilMs: preferences.backupNudgeSnoozedUntil,
     nowMs: Date.now(),
     dependantCount: dependants.length,
@@ -4146,7 +4144,7 @@ function AppContent() {
     onKeyExpired: lockExpiredPhoneAppsKey,
   });
   refuseHeldNip55Ref.current = nip55.refuseHeld;
-  // The remembered NIP-55 decisions, as the Connected Sites page lists them; grants keep milliseconds, the page reads seconds.
+  // The remembered NIP-55 decisions, as the Connected apps page lists them; grants keep milliseconds, the page reads seconds.
   const phoneApps = useMemo<PhoneApp[]>(() => Object.entries(nip55.grants)
     .map(([packageName, g]) => ({ packageName, label: g.label ?? null, pubkey: g.pubkey, allowAlways: g.allowAlways, denyAlways: g.denyAlways, grantedAt: Math.floor(g.grantedAt / 1000) }))
     .sort((a, b) => b.grantedAt - a.grantedAt), [nip55.grants]);
@@ -4602,12 +4600,19 @@ function AppContent() {
   }, [encryptionKey, knownPlaces.places]);
 
   const pinnedOrigins = useMemo(() => new Set(originPolicies.filter(p => p.pinned).map(p => p.origin)), [originPolicies]);
-  /** Places to show: a pairing that was disconnected elsewhere is no longer a place, and a pin made on the Connected Sites page still counts. */
+  /** Places to show: a pairing that was disconnected elsewhere is no longer a place, and a pin kept in the per-origin policy still counts. */
   const visibleKnownPlaces = useMemo(() => knownPlaces.places
     .filter(p => p.kind !== 'nip46' || connectedClientsLoading || connectedClients.some(c => `nc:${c.clientPubkey}` === p.placeKey))
     .map(p => (p.kind === 'sign-in' && !p.pinned && p.origin && pinnedOrigins.has(p.origin) ? { ...p, pinned: true } : p)),
   [knownPlaces.places, connectedClients, connectedClientsLoading, pinnedOrigins]);
   const knownPlacesFor = useCallback((pubkey: string) => (encryptionKey ? visibleKnownPlaces.filter(p => p.pubkey === pubkey) : []), [encryptionKey, visibleKnownPlaces]);
+  // Settings rows land on column 3 of the active row. Position is App state, so no
+  // arrow API is needed: set it, then show the home carousel.
+  const knownPlaceCountActive = carousel.activeIdentity.publicKey ? knownPlacesFor(carousel.activeIdentity.publicKey).length : 0;
+  const openKnownPlaces = useCallback(() => {
+    carousel.commitPosition(carousel.row, 3);
+    navigateTo('home');
+  }, [carousel.commitPosition, carousel.row, navigateTo]);
   const knownPlaceCtx = useCallback((place: KnownPlace): KnownPlaceCtx => {
     const app = place.nativePackage && isNativeApp() ? placeAppCache.get(place.nativePackage) : undefined;
     // A browser sign-in records the browser's package for the channel only; the
@@ -4640,7 +4645,7 @@ function AppContent() {
       pin: async (id, pinned) => {
         const place = knownPlaces.places.find(p => p.id === id);
         await knownPlaces.setPinned(id, pinned);
-        // The Connected Sites page keeps its own per-origin pin; the two stay together.
+        // The per-origin sign-in policy keeps its own pin; the two stay together.
         if (place?.kind === 'sign-in' && place.origin) await setOriginPinned(place.origin, pinned);
       },
       setAlias: (id, alias) => knownPlaces.setAlias(id, alias),
@@ -4664,8 +4669,6 @@ function AppContent() {
         const origin = place.origin;
         const results = await Promise.allSettled([
           knownPlaces.forget(place.id),
-          // authorizedSites is per origin, not per identity: the legacy row goes with it (PR D removes that store).
-          ...(origin ? authorizedSites.filter(s => s.origin === origin).map(site => revokeSite(site.id)) : []),
           ...(origin ? [setOriginPinned(origin, false)] : []),
         ]);
         if (results.some(r => r.status === 'rejected')) throw new Error('Could not forget every record of this place.');
@@ -4684,7 +4687,7 @@ function AppContent() {
         await refreshHeartwoodSlots();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, authorizedSites, revokeSite, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots]);
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
@@ -8959,7 +8962,6 @@ function AppContent() {
         // Capture transient state BEFORE the `set*(null)` cleanup below — the
         // retry closure runs later and would see cleared values otherwise.
         const capturedAllow = consumerHint?.allow;
-        const capturedConsumerDisplayName = consumerDisplayName;
         const capturedPostUrl = pendingPostUrl;
 
         // Denied, withdrawn or replaced while signing: deliver nothing, and
@@ -9011,17 +9013,7 @@ function AppContent() {
           // response to the consumer's listener; see comment block above.
           const ok = deliveredToConsumer(results, consumerCount);
           if (ok) {
-            // Record the authorised site in the Connections manager
-            authorizeSite(
-              capturedRequest.origin,
-              capturedSiteName,
-              capturedKeypairLabel,
-              pubkey,
-              {
-                shareHandle: pickedToken !== 'natural-person' ? shareHandle : undefined,
-                consumerDisplayName: capturedConsumerDisplayName ?? undefined,
-              },
-            ).catch(() => {});
+            // Record where this identity is now known (the card's Where you're known column)
             void recordKnownPlace(knownPlaceInput);
 
             // Record per-origin policy memory.
@@ -9176,17 +9168,7 @@ function AppContent() {
         if (!authDeliveryStillOpen(request)) return;
 
         // Commit the connection before navigation can unload this page.
-        await authorizeSite(
-          pendingAuthRequest.origin,
-          siteName,
-          keypairLabel,
-          pubkey,
-          {
-            shareHandle: pickedToken !== 'natural-person' ? shareHandle : undefined,
-            consumerDisplayName: consumerDisplayName ?? undefined,
-          },
-        );
-        void recordKnownPlace(knownPlaceInput);
+        await recordKnownPlace(knownPlaceInput);
 
         // Record per-origin policy memory.
         await recordOriginSignIn(pendingAuthRequest.origin, keypairLabel, {
@@ -9263,7 +9245,7 @@ function AppContent() {
       // The temporary serving route owns its backend until expiry or lock.
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
     }
-  }, [pendingAuthRequest, identity, dependants, activeDependant, childDirect, authorizeSite, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
+  }, [pendingAuthRequest, identity, dependants, activeDependant, childDirect, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
 
   // One answer per request: starts the in-flight approval synchronously so a
   // Deny/Back tapped while signing is a no-op, refuses a request that has
@@ -11171,18 +11153,12 @@ function AppContent() {
   };
 
   if (page === 'connections') {
-    return renderSettingsPage('connections', 'Connected Sites', (
+    return renderSettingsPage('connections', 'Connected apps', (
       <Connections
-        sites={authorizedSites}
-        identity={identity}
-        originPolicies={originPolicies}
         connectedClients={connectedClients}
-        onRevoke={revokeSite}
         onDisconnectClient={disconnectClient}
         phoneApps={phoneApps}
         onForgetPhoneApp={nip55.forget}
-        onSetPinned={setOriginPinned}
-        onUpdateAlias={updateSiteAlias}
         onBack={() => navigateBack()}
       />
     ));
@@ -11396,7 +11372,9 @@ function AppContent() {
         }}
         showPairedChildSwitcher={preferences.signingMode === 'paired-child' && pairedChildMetas.length > 1}
         showChildPermissions={childDirect}
-        connectedSiteCount={authorizedSites.length}
+        knownPlaceCount={knownPlaceCountActive}
+        connectedAppsCount={connectedClients.length + phoneApps.length}
+        onOpenKnownPlaces={openKnownPlaces}
         dependantsCount={dependants.length}
         companionGrantCount={companionGrantCount}
         webUpdateReady={needRefresh}
@@ -11566,8 +11544,8 @@ function AppContent() {
           onUpdateName={async (name) => { await updateDisplayName(name, encryptionKey!); }}
           onUpdatePhoto={() => navigateTo('photo-capture')}
           ownBadge={ownBadge}
-          connectedSiteCount={authorizedSites.length}
-          onNavigateConnections={() => navigateTo('connections')}
+          knownPlaceCount={knownPlaceCountActive}
+          onNavigateKnownPlaces={openKnownPlaces}
           onNavigateBadgeEmbed={() => navigateTo('badge-embed')}
           onGoToProfessional={() => navigateTo('settings-professional')}
           onSaveProName={async (name) => {
@@ -14362,9 +14340,9 @@ function AppContent() {
             });
             setBotsVersion(v => v + 1); setBotsChangeVersion(v => v + 1);
           }} />}
-        launcherLocked={!encryptionKey}
+        placesLocked={!encryptionKey}
         onUnlockRequest={() => { void requestAuth({ purpose: 'unlock-app' }); }}
-        launcherSitesFor={resolved => {
+        knownPlacesFor={resolved => {
           // Places link an identity to where it is used, and the store reads without the
           // key, so a locked card must not list them. Dependant cards keep their own surfaces.
           if (!encryptionKey || resolved.isDependant) return [];
@@ -14374,7 +14352,7 @@ function AppContent() {
             return { place, badge, iconUrl: ctx.appIcon ?? null };
           });
         }}
-        onOpenSite={placeId => { setKnownPlaceFocus(f => ({ id: placeId, nonce: (f?.nonce ?? 0) + 1 })); }}
+        onOpenPlace={placeId => { setKnownPlaceFocus(f => ({ id: placeId, nonce: (f?.nonce ?? 0) + 1 })); }}
         renderKnownPlacesCard={knownPlacesColumn}
         contactsCountFor={resolved => {
           // Locked, the log is unreadable and reads as empty: hide the pill rather than invite a first contact.

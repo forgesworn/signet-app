@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { createIdentityAndUnlock, clearDatabase, unlockWithPin, confirmRealNameIfPrompted, navigateViaHarness } from './fixtures';
 import { verifyEvent } from 'nostr-tools/pure';
 
@@ -74,7 +74,21 @@ test.describe('Sign in with Signet', () => {
     expect(page.url()).toContain('error=denied');
   });
 
-  test('approved site appears in connections', async ({ page }) => {
+  /** The knownPlaces rows in IndexedDB, read without the encryption key (routing metadata is in clear). */
+  async function readKnownPlaces(page: Page): Promise<Array<{ origin?: string; pubkey: string; kind: string }>> {
+    return page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open('my-signet');
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const req = db.transaction('knownPlaces', 'readonly').objectStore('knownPlaces').getAll();
+        req.onsuccess = () => { db.close(); resolve(req.result); };
+        req.onerror = () => { db.close(); reject(req.error); };
+      };
+    }));
+  }
+
+  test('approved site is recorded as a known place, not on the Connected apps page', async ({ page }) => {
     await page.goto(buildAuthUrl());
     await unlockWithPin(page);
 
@@ -84,29 +98,29 @@ test.describe('Sign in with Signet', () => {
     await page.waitForURL(/example\.com\/callback/, { timeout: 10_000 });
 
     // Return to the app. Guardian auth is on-demand: a plain reload shows Home
-    // (locked) with no unlock prompt; the connections view reads local state and
-    // doesn't require unlock.
+    // (locked) with no unlock prompt.
     await page.goto('/');
     await expect(page.getByText('Test User')).toBeVisible({ timeout: 15_000 });
 
-    // Connections need no encryption key; the locked Home has no Settings button,
-    // so reach the page via the test harness.
-    await navigateViaHarness(page, 'connections');
+    const places = await readKnownPlaces(page);
+    expect(places.some(p => p.kind === 'sign-in' && p.origin === 'https://example.com')).toBe(true);
 
-    // Approved site should appear — "Forget" button is inside the visible card
-    await expect(page.getByRole('button', { name: 'Forget', exact: true })).toBeVisible({ timeout: 15_000 });
+    // The Connected apps page lists Nostr Connect clients and phone apps only.
+    await navigateViaHarness(page, 'connections');
+    await expect(page.getByText('No connected apps')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Forget', exact: true })).toHaveCount(0);
   });
 
-  test('revoke connection removes site', async ({ page }) => {
-    // Hold the connection's write transaction open briefly. Redirecting before
-    // tx.done used to abort it and lose the row the user needs for revocation.
+  test('the place is saved before the redirect leaves the page', async ({ page }) => {
+    // Hold the place's write transaction open briefly. Redirecting before
+    // tx.done used to abort it and lose the row.
     await page.addInitScript(() => {
       const original = IDBDatabase.prototype.transaction;
       IDBDatabase.prototype.transaction = function (...args: Parameters<typeof original>) {
         const tx = original.apply(this, args);
         const names = typeof args[0] === 'string' ? [args[0]] : Array.from(args[0]);
-        if (args[1] === 'readwrite' && names.includes('authorizedSites')) {
-          const store = tx.objectStore('authorizedSites');
+        if (args[1] === 'readwrite' && names.includes('knownPlaces')) {
+          const store = tx.objectStore('knownPlaces');
           const until = performance.now() + 500;
           const hold = () => {
             if (performance.now() >= until) return;
@@ -118,7 +132,6 @@ test.describe('Sign in with Signet', () => {
       };
     });
 
-    // Approve a site first
     await page.goto(buildAuthUrl());
     await unlockWithPin(page);
 
@@ -127,18 +140,9 @@ test.describe('Sign in with Signet', () => {
     await page.getByRole('button', { name: 'Approve' }).click();
     await page.waitForURL(/example\.com\/callback/, { timeout: 10_000 });
 
-    // Return to the app (on-demand auth: locked Home, no unlock prompt).
     await page.goto('/');
     await expect(page.getByText('Test User')).toBeVisible({ timeout: 15_000 });
-
-    // Go to connections (via harness — locked Home has no Settings) and revoke
-    await navigateViaHarness(page, 'connections');
-    await expect(page.getByRole('button', { name: 'Forget', exact: true })).toBeVisible({ timeout: 15_000 });
-    await page.getByRole('button', { name: 'Forget', exact: true }).click();
-    // Forgetting is a two-step confirm.
-    await page.getByRole('button', { name: 'Forget', exact: true }).click();
-
-    // After revoke, should show empty state
-    await expect(page.getByText('No connected sites')).toBeVisible();
+    const places = await readKnownPlaces(page);
+    expect(places.some(p => p.kind === 'sign-in' && p.origin === 'https://example.com')).toBe(true);
   });
 });

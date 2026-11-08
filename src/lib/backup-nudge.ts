@@ -5,7 +5,7 @@ export const BACKUP_NUDGE_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
 export const BACKUP_NUDGE_FAMILY_SNOOZE_MS = 48 * 60 * 60 * 1000;
 
 /** Show once the identity has accumulated something worth losing. */
-const AUTHORIZED_SITES_THRESHOLD = 3;
+const SIGNED_IN_SITES_THRESHOLD = 3;
 const IDENTITY_AGE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -13,7 +13,7 @@ const IDENTITY_AGE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
  *
  * Creating a Signet takes under a minute precisely because the words are NOT
  * demanded at the door — so the nudge waits until the identity is worth losing:
- * three authorized sites, or a day old. Never for an identity with nothing to
+ * three sites signed in to, or a day old. Never for an identity with nothing to
  * back up (an nsec import has no mnemonic), and never on a paired child, whose
  * keys are their guardian's responsibility.
  *
@@ -30,7 +30,8 @@ export function shouldShowBackupNudge(input: {
   isPairedChild: boolean;
   /** `SignetIdentity.createdAt` — unix SECONDS, not ms. */
   createdAtSeconds: number;
-  authorizedSiteCount: number;
+  /** Distinct sites this identity has signed in to (known places of kind sign-in, one per origin). */
+  signedInSiteCount: number;
   /** `AppPreferences.backupNudgeSnoozedUntil` — ms epoch. */
   snoozedUntilMs: number | undefined;
   nowMs: number;
@@ -43,7 +44,7 @@ export function shouldShowBackupNudge(input: {
 
   if (input.dependantCount > 0) return true;
 
-  if (input.authorizedSiteCount >= AUTHORIZED_SITES_THRESHOLD) return true;
+  if (input.signedInSiteCount >= SIGNED_IN_SITES_THRESHOLD) return true;
   return input.nowMs - input.createdAtSeconds * 1000 >= IDENTITY_AGE_THRESHOLD_MS;
 }
 

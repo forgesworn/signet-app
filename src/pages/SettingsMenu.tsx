@@ -32,7 +32,12 @@ interface Props {
   /** A child's phone paired straight to the Heartwood: link to the read-only Permissions page (spec §9.3). */
   showChildPermissions?: boolean;
   /** Number of authorized (connected) sites for display in the Connections row. */
-  connectedSiteCount?: number;
+  /** Places this identity is known (the card's Where you're known column). */
+  knownPlaceCount?: number;
+  /** Nostr Connect clients plus phone apps listed on the Connected apps page. */
+  connectedAppsCount?: number;
+  /** Show the home carousel on its Where you're known column. */
+  onOpenKnownPlaces?: () => void;
   /**
    * Number of dependants on this device. When `> 0`, surfaces a Family
    * entry between Personas and Security that routes to the
@@ -49,7 +54,7 @@ interface Props {
   onApplyWebUpdate?: () => void;
 }
 
-export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, connectedSiteCount = 0, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
+export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, knownPlaceCount = 0, connectedAppsCount = 0, onOpenKnownPlaces, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [versionTaps, setVersionTaps] = useState(0);
   // Advanced settings holds the calibration card only on an owner install.
@@ -72,7 +77,7 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
         <button className="row-button" onClick={() => onNavigate('settings-profile')}>
           <span className="row-main">
             <span className="row-label" style={{ fontWeight: 600 }}>Profile</span>
-            <span className="row-sub">Name, photo, badge tier, connected sites</span>
+            <span className="row-sub">Name, photo, badge tier, where you're known</span>
           </span>
           <span className="row-chevron">&rsaquo;</span>
         </button>
@@ -122,13 +127,24 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
           <span className="row-chevron">&rsaquo;</span>
         </button>
 
-        <button className="row-button" onClick={() => onNavigate('connections')}>
+        <button className="row-button" onClick={() => onOpenKnownPlaces ? onOpenKnownPlaces() : onNavigate('home')}>
           <span className="row-main">
-            <span className="row-label" style={{ fontWeight: 600 }}>Connections</span>
-            <span className="row-sub">Sites signed in with Signet</span>
+            <span className="row-label" style={{ fontWeight: 600 }}>Where you're known</span>
+            <span className="row-sub">Sites and apps this identity has signed in to</span>
           </span>
           <span className="row-meta" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {connectedSiteCount > 0 && connectedSiteCount}
+            {knownPlaceCount > 0 && knownPlaceCount}
+            <span className="row-chevron">&rsaquo;</span>
+          </span>
+        </button>
+
+        <button className="row-button" onClick={() => onNavigate('connections')}>
+          <span className="row-main">
+            <span className="row-label" style={{ fontWeight: 600 }}>Connected apps</span>
+            <span className="row-sub">Nostr Connect clients and apps on this phone</span>
+          </span>
+          <span className="row-meta" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {connectedAppsCount > 0 && connectedAppsCount}
             <span className="row-chevron">&rsaquo;</span>
           </span>
         </button>

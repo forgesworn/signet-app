@@ -5,12 +5,12 @@ import { clearKeepNicknames } from './keep-nicknames';
 
 import { openDB, unwrap, type IDBPDatabase } from 'idb';
 import { DEFAULT_THEME } from '../types';
-import type { SignetIdentity, Contact, ChildSettings, AppPreferences, IdentityDocument, StoredCredential, AuthorizedSite, OriginPolicy, ConnectedClient, RememberedGrant, PairedChildRecord, DependantStatusRecord, TrustedAppEndpoint, TrustedAppPairing, ContactOperation, ContactRecord } from '../types';
+import type { SignetIdentity, Contact, ChildSettings, AppPreferences, IdentityDocument, StoredCredential, OriginPolicy, ConnectedClient, RememberedGrant, PairedChildRecord, DependantStatusRecord, TrustedAppEndpoint, TrustedAppPairing, ContactOperation, ContactRecord } from '../types';
 import { TRUSTED_APP_PAIRING_CAP, COMPANION_GRANT_CAP } from '../types';
 import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
 import type { AppGrantV2, ChildRule, KnownPlace, KnownPlaceInput } from '../types';
-import { knownPlaceFromAuthorizedSite, mergeKnownPlace, normaliseKnownPlaceInput } from './known-places';
+import { knownPlaceFromAuthorizedSite, mergeKnownPlace, normaliseKnownPlaceInput, type LegacyAuthorizedSite } from './known-places';
 import { sanitizeDisplayName } from './text-sanitize';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -36,7 +36,7 @@ export { encryptSecret, decryptSecret } from './crypto-store';
 import { NIP55_GRANTS_KEY } from './nip55';
 
 const DB_NAME = 'my-signet';
-const DB_VERSION = 28;
+const DB_VERSION = 29;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -344,7 +344,9 @@ function getDB(): Promise<IDBPDatabase> {
         // sites, paired NIP-46 apps, NIP-55 callers). Rows in clear, like
         // authorizedSites (routing metadata). Existing authorizedSites rows are
         // copied in inside this upgrade transaction (ids are deterministic, so
-        // a re-run overwrites). authorizedSites itself is NOT deleted here.
+        // a re-run overwrites). The v29 block below deletes the legacy store
+        // once this read has been served.
+        let legacySitesRead: IDBRequest | null = null;
         if (oldVersion < 28 && !db.objectStoreNames.contains('knownPlaces')) {
           const places = db.createObjectStore('knownPlaces', { keyPath: 'id' });
           places.createIndex('by-pubkey', 'pubkey');
@@ -352,13 +354,14 @@ function getDB(): Promise<IDBPDatabase> {
           if (db.objectStoreNames.contains('authorizedSites')) {
             const rawTx = unwrap(transaction) as unknown as IDBTransaction;
             const sitesReq = rawTx.objectStore('authorizedSites').getAll();
+            legacySitesRead = sitesReq;
             // A failed read or a bad legacy row must never abort the upgrade.
             sitesReq.onerror = function (e) {
               e.preventDefault();
             };
             sitesReq.onsuccess = function () {
               const target = rawTx.objectStore('knownPlaces');
-              for (const site of sitesReq.result as AuthorizedSite[]) {
+              for (const site of sitesReq.result as LegacyAuthorizedSite[]) {
                 try {
                   const place = knownPlaceFromAuthorizedSite(site);
                   if (place) target.put(place);
@@ -367,6 +370,22 @@ function getDB(): Promise<IDBPDatabase> {
                 }
               }
             };
+          }
+        }
+        // Version 29: authorizedSites is retired — knownPlaces holds every
+        // sign-in. It goes AFTER the v28 copy: a v27 -> v29 jump must migrate
+        // first, so when that copy's read is still pending the delete waits
+        // for it (handlers run in registration order, inside the same
+        // versionchange transaction).
+        if (oldVersion < 29 && db.objectStoreNames.contains('authorizedSites')) {
+          const dropLegacySites = () => {
+            if (db.objectStoreNames.contains('authorizedSites')) db.deleteObjectStore('authorizedSites');
+          };
+          if (legacySitesRead) {
+            (legacySitesRead as IDBRequest).addEventListener('success', dropLegacySites);
+            (legacySitesRead as IDBRequest).addEventListener('error', dropLegacySites);
+          } else {
+            dropLegacySites();
           }
         }
       },
@@ -1848,58 +1867,6 @@ export async function deleteCardBackdrop(pubkey: string): Promise<void> {
   await db.delete('preferences', `backdrop:${pubkey}`);
 }
 
-// --- Authorized Sites ---
-
-export async function getAuthorizedSites(): Promise<AuthorizedSite[]> {
-  const db = await getDB();
-  return db.getAll('authorizedSites');
-}
-
-export async function getAuthorizedSiteByOrigin(origin: string): Promise<AuthorizedSite | undefined> {
-  const db = await getDB();
-  const all = await db.getAllFromIndex('authorizedSites', 'origin', origin);
-  return all[0];
-}
-
-export async function saveAuthorizedSite(site: AuthorizedSite): Promise<void> {
-  const db = await getDB();
-  await db.put('authorizedSites', site);
-}
-
-/**
- * Upsert an authorization by origin in a single transaction, so concurrent
- * approvals for the same origin collapse to one row instead of leaving
- * duplicate `id`-keyed records behind. The store keys on `id`, but the
- * `origin` index is used to look up existing rows first.
- */
-export async function upsertAuthorizedSiteByOrigin(
-  origin: string,
-  patch: Omit<AuthorizedSite, 'id' | 'origin' | 'authorizedAt'>,
-): Promise<void> {
-  const db = await getDB();
-  const tx = db.transaction('authorizedSites', 'readwrite');
-  const idx = tx.store.index('origin');
-  const existing: AuthorizedSite | undefined = await idx.get(origin);
-  const now = Math.floor(Date.now() / 1000);
-  if (existing) {
-    await tx.store.put({ ...existing, ...patch, origin, lastUsedAt: patch.lastUsedAt ?? now });
-  } else {
-    await tx.store.put({
-      ...patch,
-      id: crypto.randomUUID(),
-      origin,
-      authorizedAt: now,
-      lastUsedAt: patch.lastUsedAt ?? now,
-    });
-  }
-  await tx.done;
-}
-
-export async function deleteAuthorizedSite(id: string): Promise<void> {
-  const db = await getDB();
-  await db.delete('authorizedSites', id);
-}
-
 // --- Origin Policies (per-origin identity-selection memory) ---
 
 /** Normalise an origin to the form used as the keyPath — no path, no trailing slash. */
@@ -2714,7 +2681,6 @@ export async function purgeAllUserData(): Promise<void> {
   await db.clear('preferences');
   await db.clear('documents');
   await db.clear('credentials');
-  await db.clear('authorizedSites');
   if (db.objectStoreNames.contains('originPolicies')) {
     await db.clear('originPolicies');
   }

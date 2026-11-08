@@ -18,10 +18,10 @@ import { armPickerGrace } from '../lib/picker-grace';
 
 /**
  * One place this identity is known (a signed-in site, a paired app), with the
- * badge and icon its chip shows. The name is historical: Carousel still routes
- * these through its `launcherSitesFor` / `onOpenSite` props.
+ * badge and icon its chip shows. Carousel routes these through its
+ * `knownPlacesFor` / `onOpenPlace` props.
  */
-export interface LauncherSite {
+export interface KnownPlaceItem {
   place: KnownPlace;
   badge: Badge | null;
   /** A data-URL app icon, or null for the letter tile. */
@@ -66,13 +66,13 @@ export interface IdentityCardProps {
   onProPillTap?: () => void;
   /** Places this identity is known. An array (even empty) shows the strip, with a quiet
    *  "Not known anywhere yet" line when empty; undefined hides it. */
-  launcherSites?: LauncherSite[];
+  knownPlaceItems?: KnownPlaceItem[];
   /** The app is locked: show one unlock chip instead of the (hidden) place chips. */
-  launcherLocked?: boolean;
+  placesLocked?: boolean;
   onUnlockRequest?: () => void;
   /** A chip was tapped: the id of the place to open in the known-places column. The card
    *  then jumps to that column itself; the "+N" chip jumps with no id. */
-  onOpenSite?: (placeId: string) => void;
+  onOpenPlace?: (placeId: string) => void;
   /** Active contacts on this identity's private list. null/undefined hides the pill
    *  (dependant rows, locked directory, still loading). */
   contactsCount?: number | null;
@@ -107,7 +107,7 @@ export interface IdentityCardProps {
 
 const BACKDROP_NOTE_MS = 4000;
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, launcherSites, launcherLocked, onUnlockRequest, onOpenSite, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -216,13 +216,13 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
 
   // The strip takes plain lookups; the badge and icon ride beside each place.
   const { stripPlaces, stripBadges, stripIcons } = useMemo(() => {
-    const sites = launcherSites ?? [];
+    const sites = knownPlaceItems ?? [];
     return {
       stripPlaces: sites.map(s => s.place),
       stripBadges: new Map(sites.map(s => [s.place.id, s.badge] as const)),
       stripIcons: new Map(sites.map(s => [s.place.id, s.iconUrl ?? null] as const)),
     };
-  }, [launcherSites]);
+  }, [knownPlaceItems]);
   // ────────────────────────────────────────────────────────────────────────
 
   // ── Inline name editor ──────────────────────────────────────
@@ -475,16 +475,16 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
 
         {/* ── Quick-open: this identity's sign-ins and contacts.
             Dependant rows keep their pairing/dormant surfaces instead. ── */}
-        {!isDependant && ownerCard && (launcherLocked || launcherSites || typeof contactsCount === 'number') && (
+        {!isDependant && ownerCard && (placesLocked || knownPlaceItems || typeof contactsCount === 'number') && (
           <div className="card-quick">
-            {(launcherLocked || launcherSites) && (
+            {(placesLocked || knownPlaceItems) && (
               <KnownPlacesStrip
                 places={stripPlaces}
                 badges={p => stripBadges.get(p.id) ?? null}
                 iconFor={p => stripIcons.get(p.id) ?? null}
-                locked={!!launcherLocked}
+                locked={!!placesLocked}
                 onUnlock={() => onUnlockRequest?.()}
-                onOpenPlace={id => { if (id) onOpenSite?.(id); arrows?.jump(3); }}
+                onOpenPlace={id => { if (id) onOpenPlace?.(id); arrows?.jump(3); }}
                 blur={blurActive}
               />
             )}
