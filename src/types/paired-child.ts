@@ -30,6 +30,14 @@ export interface ConnectedClient {
   /** Explicit NIP-46 method/kind ceiling. Absent only on legacy connections. */
   permissions?: string[];
   /**
+   * The owner persona route (hex pubkey) this client paired with. A client
+   * that addresses any other owner persona is ignored, so pairing as one
+   * persona never reaches another, and a refusal never reveals that both
+   * live on this device. Absent on records saved before binding existed;
+   * those are bound to the first owner route they use.
+   */
+  boundPubkey?: string;
+  /**
    * Random marker written by the connect approval that saved this record.
    * Its rollback (cancelled / withdrawn / failed) touches the record only
    * while it still carries that marker — never a newer pairing or a record

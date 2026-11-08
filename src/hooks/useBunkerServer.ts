@@ -784,6 +784,20 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       return;
     }
 
+    // A saved client belongs to the owner persona it paired with (#194). One
+    // that addresses a different owner persona gets no answer at all: even a
+    // refusal would tell it both personas are served by this device. A record
+    // from before binding existed is bound to the first owner route it uses.
+    if (!route.dependantId && !route.childGate && scopedClient) {
+      const routePubkey = route.pubkey.toLowerCase();
+      const bound = scopedClient.boundPubkey?.toLowerCase();
+      if (bound && bound !== routePubkey) return;
+      if (!bound) {
+        try { await db.saveConnectedClient({ ...scopedClient, boundPubkey: routePubkey }); }
+        catch { /* binding is retried on the next request */ }
+      }
+    }
+
     // Standard connect params[2] is the requested permissions string. Some
     // older integrations use metadata JSON there; preserve that compatibility.
     if (request.method === 'connect' && request.params[2] && !request.params[2].trimStart().startsWith('{')) {
@@ -1730,6 +1744,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               connectedAt: client?.connectedAt ?? now,
               lastSeenAt: now,
               allowAlways: true,
+              boundPubkey: client?.boundPubkey ?? req.route.pubkey.toLowerCase(),
             });
           } else if (client) {
             await db.saveConnectedClient({ ...client, lastSeenAt: now });
@@ -1863,6 +1878,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               connectedAt: existing?.connectedAt ?? now,
               lastSeenAt: now,
               allowAlways: true,
+              boundPubkey: existing?.boundPubkey ?? req.route.pubkey.toLowerCase(),
             });
           }
         } catch { /* allowAlways persistence is best-effort; never leak internals */ }
