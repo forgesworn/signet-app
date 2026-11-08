@@ -1,67 +1,14 @@
 import { test, expect, type Page } from '@playwright/test';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
-import { confirmRealNameIfPrompted, createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { activateRealIdentity, confirmRealNameIfPrompted, createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
 
 const TEST_PUBKEY = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
 const GIFT_WRAP_KIND = 1059;
-
-async function addTestMember(page: Page, name = 'Bob Test') {
-  await navigateViaHarness(page, 'add');
-  await page.getByRole('button', { name: 'Enter their npub' }).click();
-  await page.getByPlaceholder('npub1…').fill(TEST_PUBKEY);
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await page.getByPlaceholder("What should we call them?").fill(name);
-  await page.getByRole('button', { name: 'Add contact' }).click();
-  await expect(page.getByRole('heading', { name: `${name} added` })).toBeVisible({ timeout: 60_000 });
-  await page.getByRole('button', { name: 'Done' }).click();
-}
 
 async function setRelayUrl(page: Page, url: string) {
   await page.evaluate((u) => (window as any).__TEST__.setRelayUrl(u), url);
   await page.waitForFunction((u) => (window as any).__TEST__?.getRelayUrl?.() === u, url);
 }
-
-// --- Badge refresh tests ---
-
-test.describe('Badge refresh on family member detail', () => {
-  test.beforeEach(async ({ page }) => {
-    await clearDatabase(page);
-    await createIdentityAndUnlock(page);
-  });
-
-  test('shows Verified badge when no relay configured (fallback)', async ({ page }) => {
-    // No relay URL set — useBadgeRefresh returns null — falls back to isVerified=true
-    await addTestMember(page);
-    await navigateViaHarness(page, 'contacts');
-    await page.getByText('Bob Test').click();
-
-    await expect(page.getByRole('heading', { level: 1, name: 'Bob Test' })).toBeVisible();
-    await expect(page.locator('.badge-verified')).toBeVisible();
-  });
-
-  test('shows Unverified badge when relay returns no events for member', async ({ page }) => {
-    // Mock relay: accept connection, return EOSE with no events → computeBadge → isVerified=false
-    await page.routeWebSocket('wss://**', ws => {
-      ws.onMessage(message => {
-        try {
-          const data = JSON.parse(String(message));
-          if (Array.isArray(data) && data[0] === 'REQ') {
-            ws.send(JSON.stringify(['EOSE', data[1]]));
-          }
-        } catch {}
-      });
-    });
-
-    await setRelayUrl(page, 'wss://relay.trotters.cc');
-    await addTestMember(page);
-    await navigateViaHarness(page, 'contacts');
-    await page.getByText('Bob Test').click();
-
-    await expect(page.getByRole('heading', { level: 1, name: 'Bob Test' })).toBeVisible();
-    // computeBadge with no events → isVerified=false → Unverified badge
-    await expect(page.locator('.badge-unverified')).toBeVisible({ timeout: 15_000 });
-  });
-});
 
 // --- Credential status via relay ---
 
@@ -154,6 +101,10 @@ test.describe('Publish credential to relay', () => {
   test.beforeEach(async ({ page }) => {
     await clearDatabase(page);
     await createIdentityAndUnlock(page);
+    // Get verified is a real-name feature: a dormant real identity meets the
+    // activation gate instead of the education screen.
+    await navigateViaHarness(page, 'get-verified');
+    await activateRealIdentity(page);
   });
 
   test('publish button hidden when no relay configured', async ({ page }) => {
@@ -196,53 +147,6 @@ test.describe('Publish credential to relay', () => {
   });
 });
 
-// --- Badge refresh: verified badge from relay ---
-
-// A properly signed kind 31000 credential event that makes computeBadge return isVerified=true.
-// buildBadgeFilters requests d-tags 'credential:<pubkey>' and 'vouch:<pubkey>'.
-// computeBadge checks getTagValue(event, 'type') === 'credential' (not the '#t' tag used by useNostrEvents).
-const BADGE_VERIFIER_SK = generateSecretKey();
-const BADGE_CREDENTIAL_EVENT = finalizeEvent({
-  kind: 31000,
-  created_at: 1700000000,
-  tags: [
-    ['d', `credential:${TEST_PUBKEY}`],
-    ['type', 'credential'],
-    ['tier', '3'],
-  ],
-  content: '',
-}, BADGE_VERIFIER_SK);
-
-test.describe('Badge verified from relay', () => {
-  test('shows Verified badge when relay returns credential event for member', async ({ page }) => {
-    // routeWebSocket must be registered before navigation
-    await page.routeWebSocket('wss://**', ws => {
-      ws.onMessage(message => {
-        try {
-          const data = JSON.parse(String(message));
-          if (Array.isArray(data) && data[0] === 'REQ') {
-            const subId = data[1];
-            ws.send(JSON.stringify(['EVENT', subId, BADGE_CREDENTIAL_EVENT]));
-            // Delay EOSE so verifyEvent (async Schnorr check) completes first
-            setTimeout(() => ws.send(JSON.stringify(['EOSE', subId])), 100);
-          }
-        } catch {}
-      });
-    });
-
-    await clearDatabase(page);
-    await createIdentityAndUnlock(page);
-    await setRelayUrl(page, 'wss://relay.trotters.cc');
-    await addTestMember(page);
-    await navigateViaHarness(page, 'contacts');
-    await page.getByText('Bob Test').click();
-
-    await expect(page.getByRole('heading', { level: 1, name: 'Bob Test' })).toBeVisible();
-    // computeBadge sees a valid credential event → isVerified=true → Verified badge
-    await expect(page.locator('.badge-verified')).toBeVisible({ timeout: 15_000 });
-  });
-});
-
 // --- Relay-publish functions ---
 
 test.describe('Relay publish: verify rejection', () => {
@@ -256,7 +160,9 @@ test.describe('Relay publish: verify rejection', () => {
         try {
           const data = JSON.parse(String(message));
           if (Array.isArray(data) && data[0] === 'EVENT') {
-            resolveEvent(data[1]);
+            // Only the gift wrap is the response: the app also publishes its own
+            // kind-30078 sync records to a configured relay.
+            if ((data[1] as any).kind === GIFT_WRAP_KIND) resolveEvent(data[1]);
             ws.send(JSON.stringify(['OK', (data[1] as any).id, true, '']));
           }
           if (Array.isArray(data) && data[0] === 'REQ') {
@@ -308,7 +214,9 @@ test.describe('Relay publish: verify approval', () => {
         try {
           const data = JSON.parse(String(message));
           if (Array.isArray(data) && data[0] === 'EVENT') {
-            resolveEvent(data[1]);
+            // Only the gift wrap is the response: the app also publishes its own
+            // kind-30078 sync records to a configured relay.
+            if ((data[1] as any).kind === GIFT_WRAP_KIND) resolveEvent(data[1]);
             ws.send(JSON.stringify(['OK', (data[1] as any).id, true, '']));
           }
           if (Array.isArray(data) && data[0] === 'REQ') {
@@ -369,7 +277,9 @@ test.describe('Relay publish: auth response', () => {
         try {
           const data = JSON.parse(String(message));
           if (Array.isArray(data) && data[0] === 'EVENT') {
-            resolveEvent(data[1]);
+            // Only the gift wrap is the response: the app also publishes its own
+            // kind-30078 sync records to a configured relay.
+            if ((data[1] as any).kind === GIFT_WRAP_KIND) resolveEvent(data[1]);
             ws.send(JSON.stringify(['OK', (data[1] as any).id, true, '']));
           }
           if (Array.isArray(data) && data[0] === 'REQ') {

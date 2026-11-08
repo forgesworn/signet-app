@@ -26,7 +26,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { createIdentityAndUnlock } from './fixtures';
+import { activateRealIdentity, createIdentityAndUnlock } from './fixtures';
 
 // §11 AC 1: A faked Pro-mode signet.json on a non-listed domain fails verification.
 // NOTE: Cannot be exercised E2E without mockResolver + mockFetch + mock credential
@@ -74,6 +74,10 @@ test('AC-4 [unit-verified]: onboarding infrastructure is present (proxy for non-
   // Navigate to Professional entry point via test harness
   await page.evaluate((p) => (window as Window & { __TEST__?: { setPage: (p: string) => void } }).__TEST__?.setPage(p), 'settings-professional');
 
+  // Professional is a real-name act: with the real identity dormant the route
+  // shows the activation gate, so activate first (it returns to this page).
+  await activateRealIdentity(page);
+
   // Professional page should render with the explainer + CTA
   await expect(page.getByText('Set up Professional role')).toBeVisible({ timeout: 5_000 });
 
@@ -105,6 +109,10 @@ test('AC-6: user without role anchor sees explainer, not Professional Dashboard'
 
   // Navigate to the Professional gateway page
   await page.evaluate((p) => (window as Window & { __TEST__?: { setPage: (p: string) => void } }).__TEST__?.setPage(p), 'settings-professional');
+
+  // Professional is a real-name act: with the real identity dormant the route
+  // shows the activation gate, so activate first (it returns to this page).
+  await activateRealIdentity(page);
 
   // Must see explainer + CTA
   await expect(page.getByText('Set up Professional role')).toBeVisible({ timeout: 5_000 });

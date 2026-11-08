@@ -36,15 +36,15 @@ for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }
       }
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     };
-    await expect(body.locator('.card-type')).toHaveText('Persona');
+    await expect(body.locator('.card-type')).toHaveText(/^Persona\d/);
     await checkFit();
     await swipe(-90);
     await expect(wallet).toHaveAttribute('data-carousel-cell', '1:0');
-    await expect(body.locator('.card-type')).toHaveText('Natural Person');
+    await expect(body.locator('.card-type')).toHaveText(/^Natural Person\d/);
     await checkFit();
     await swipe(90);
     await expect(wallet).toHaveAttribute('data-carousel-cell', '0:0');
-    await expect(body.locator('.card-type')).toHaveText('Persona');
+    await expect(body.locator('.card-type')).toHaveText(/^Persona\d/);
     await checkFit();
   });
 }

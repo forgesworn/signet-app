@@ -11,8 +11,8 @@
  *   - Without a relay URL the publish button is absent after credential injection
  */
 
-import { test, expect } from '@playwright/test';
-import { createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { test, expect, type Page } from '@playwright/test';
+import { createIdentityAndUnlock, clearDatabase, navigateViaHarness, activateRealIdentity } from './fixtures';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
 const TEST_VERIFIER_SK = generateSecretKey();
@@ -42,10 +42,25 @@ const MOCK_EVENT_JSON = JSON.stringify({
   sig: 'a'.repeat(128),
 });
 
+/**
+ * Get verified is a real-name feature: while the real identity is dormant
+ * (every fresh `createIdentityAndUnlock` identity) it routes to the
+ * activation gate. Activate, but stop short of confirming the backup, so the
+ * identity is activated and never backed up (the state GetVerified's "Before
+ * you verify" phase is for), then return to the carousel.
+ */
+async function startWithActivatedUnbackedIdentity(page: Page) {
+  await clearDatabase(page);
+  await createIdentityAndUnlock(page);
+  await navigateViaHarness(page, 'get-verified');
+  await activateRealIdentity(page, { confirmBackup: false });
+  await navigateViaHarness(page, 'home');
+  await page.locator('.carousel-viewport').waitFor({ state: 'visible', timeout: 10_000 });
+}
+
 test.describe('GetVerified — credential display', () => {
   test.beforeEach(async ({ page }) => {
-    await clearDatabase(page);
-    await createIdentityAndUnlock(page);
+    await startWithActivatedUnbackedIdentity(page);
   });
 
   test('stored credential injection leaves home usable', async ({ page }) => {
@@ -106,8 +121,7 @@ test.describe('GetVerified — credential display', () => {
 
 test.describe('GetVerified — saved injection transitions', () => {
   test.beforeEach(async ({ page }) => {
-    await clearDatabase(page);
-    await createIdentityAndUnlock(page);
+    await startWithActivatedUnbackedIdentity(page);
   });
 
   test('injectGetVerifiedSaved transitions to receive-credentials phase with success banner', async ({ page }) => {
@@ -163,8 +177,7 @@ test.describe('GetVerified — saved injection transitions', () => {
 
 test.describe('GetVerified — with-verifier phase', () => {
   test.beforeEach(async ({ page }) => {
-    await clearDatabase(page);
-    await createIdentityAndUnlock(page);
+    await startWithActivatedUnbackedIdentity(page);
   });
 
   test('after backup the with-verifier phase shows Scan verifier QR button', async ({ page }) => {

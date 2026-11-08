@@ -110,13 +110,12 @@ test('§6.10.9: SubRoleProDashboard route is reachable and renders pending state
   // Navigate via test harness — no anchor exists so this is the sub-role pending path.
   await page.evaluate((p) => (window as Window & { __TEST__?: { setPage: (p: string) => void } }).__TEST__?.setPage(p), 'sub-role-pro-dashboard');
 
-  // Page must render without crashing. The exact text depends on whether Pro persona
-  // is derived; we check that the app doesn't fall back to the error boundary.
-  // Accept either the sub-role dashboard content or the Professional gateway fallback.
-  const hasSubRoleContent = await page.getByText(/Professional credential/i).isVisible({ timeout: 5_000 }).catch(() => false);
-  const hasGatewayContent = await page.getByText(/Set up Professional role/i).isVisible({ timeout: 2_000 }).catch(() => false);
-  const hasHome = await page.getByText('Test User').isVisible({ timeout: 2_000 }).catch(() => false);
-  expect(hasSubRoleContent || hasGatewayContent || hasHome).toBe(true);
+  // The sub-role dashboard is not behind the real-identity gate (it runs on the
+  // Pro persona), so it renders directly: the pending state and the hand-off
+  // CTA, never the lead Professional dashboard.
+  await expect(page.getByRole('heading', { name: 'Professional role' })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/pending confirmation/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Scan to attest' })).toBeVisible();
 });
 
 // §6.10.10 — Tier 1 auth required for self-cert issuance.

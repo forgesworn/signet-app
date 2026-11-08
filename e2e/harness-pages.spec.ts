@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { confirmRealNameIfPrompted, createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { activateRealIdentity, confirmRealNameIfPrompted, createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
 
 test.describe('Pages via test harness', () => {
   test.beforeEach(async ({ page }) => {
@@ -9,6 +9,9 @@ test.describe('Pages via test harness', () => {
 
   test('my documents shows empty state', async ({ page }) => {
     await navigateViaHarness(page, 'my-documents');
+    // Documents belong to the real identity: the dormant one meets the
+    // activation gate first, and activating returns to this page.
+    await activateRealIdentity(page);
     await expect(page.getByText('No documents yet')).toBeVisible();
   });
 

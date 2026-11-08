@@ -11,8 +11,8 @@ test('two identities complete an invite exchange and explicitly compare fixed wo
   await page.evaluate(() => (window as any).__TEST__.setRelayUrl('wss://invite.test'));
   await expect(page.locator('.carousel-viewport')).toBeVisible();
   await page.keyboard.press('ArrowRight');
-  await page.getByRole('button', { name: 'Create reusable contact invite', exact: true }).click();
-  await expect(page.getByRole('option', { name: 'My contact card', exact: true })).toHaveCount(1);
+  // The QR card sets up the standing invite on its own; its QR appears once it exists.
+  await expect(page.locator('.qr-tabbed .qr-box canvas:visible')).toBeVisible({ timeout: 30_000 });
   await page.getByRole('button', { name: 'Manage invites', exact: true }).click();
   await expect(page.getByText('My contact card', { exact: true })).toBeVisible();
   // Capture the link through the actual copy action, without requiring clipboard permissions.

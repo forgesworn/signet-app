@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import jsQR from 'jsqr';
-import { createIdentityAndUnlock, navigateViaHarness } from './fixtures';
+import { createIdentityAndUnlock, navigateViaHarness, addDependantViaUi, firstDependantId } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
 test.use({ actionTimeout: 15000 });
 test('delivers current contact policy to a genuinely paired child without identity keys', async ({ page, context, browser }) => {
@@ -8,29 +8,13 @@ test('delivers current contact policy to a genuinely paired child without identi
   const network = privateRelays(); await network.install(context);
   await createIdentityAndUnlock(page, { name: 'Guardian' });
   await page.evaluate(() => (window as any).__TEST__.setRelayUrl('wss://family-invite.test'));
-  await navigateViaHarness(page, 'add-dependant');
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  await page.locator('#legal-name').fill('Guardian Person');
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await page.getByPlaceholder('Guardian Person').fill('Guardian Person');
-  await page.getByRole('button', { name: 'Activate my real identity' }).click();
-  await page.getByRole('checkbox').click();
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await page.getByLabel(/Their name/i).fill('Robin');
-  await page.getByRole('button', { name: 'Create identity', exact: true }).click();
-  await expect(page.getByText(/Robin's identity is ready/)).toBeVisible({ timeout: 60000 });
-  await page.getByRole('button', { name: /Done for now/ }).click();
+  await addDependantViaUi(page, 'Robin');
   await navigateViaHarness(page, 'family-list');
   await page.getByRole('button', { name: /Robin/ }).click();
   await page.getByRole('button', { name: 'Approved contacts', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Approved contacts', exact: true })).toHaveClass(/btn-tile-selected/);
 
-  const depId = await page.evaluate(async () => {
-    const db = await import('/src/lib/db.ts');
-    const records = await (await db.getDb()).getAll('identity');
-    const dependant = records.find(record => record.guardianPubkey);
-    return dependant.id.replace(/^dependant:/, '');
-  });
+  const depId = await firstDependantId(page);
   await page.evaluate(async id => await (window as any).__TEST__.setDependantStage(id, 'request-approve'), depId);
   await navigateViaHarness(page, 'pair-dependant-device');
   await page.getByRole('button', { name: 'Open Bunker settings' }).click();

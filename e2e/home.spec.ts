@@ -42,9 +42,11 @@ test.describe('Home', () => {
   });
 
   test('bottom navigation is present', async ({ page }) => {
-    await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Contacts' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
+    const nav = page.getByRole('navigation', { name: 'Primary' });
+    await expect(nav).toBeVisible();
+    // Scoped to the nav: the card carries its own "Open this identity's contacts" pill.
+    await expect(nav.getByRole('button', { name: 'Contacts' })).toBeVisible();
+    await expect(nav.getByRole('button', { name: 'Settings' })).toBeVisible();
   });
 
   test('empty family list shows dependant prompt', async ({ page }) => {

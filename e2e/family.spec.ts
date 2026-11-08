@@ -1,6 +1,6 @@
 import { nip19 } from 'nostr-tools';
 import { test, expect, Page } from '@playwright/test';
-import { createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { addDependantViaUi, createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
 
 const TEST_PUBKEY = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
 
@@ -46,10 +46,11 @@ test.describe('Family Management', () => {
     await navigateViaHarness(page, 'contacts');
     await page.getByText('Bob Test').click();
 
-    // Member detail page assertions
+    // Contact detail assertions: the key exchange left a mutually verified
+    // identity on the record, and the Signet Me words are offered.
     await expect(page.getByRole('heading', { level: 1, name: 'Bob Test' })).toBeVisible();
-    await expect(page.getByText(/Connected/)).toBeVisible();
-    await expect(page.getByText(/Signet Me/)).toBeVisible();
+    await expect(page.getByText(/Mutually verified/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Signet Me' })).toBeVisible();
   });
 
   test('remove member from family', async ({ page }) => {
@@ -58,14 +59,15 @@ test.describe('Family Management', () => {
     await navigateViaHarness(page, 'contacts');
     await page.getByText('Bob Test').click();
 
-    // Click "Remove from family" to show confirmation dialog
+    // "Remove contact" opens the confirmation card
     await page.getByRole('button', { name: 'Remove contact' }).click();
-    await expect(page.getByText(/Remove Bob Test from your contacts/)).toBeVisible();
+    const confirmation = page.locator('.card', { hasText: /Remove Bob Test from your contacts/ });
+    await expect(confirmation).toBeVisible();
 
-    // Confirm removal
-    await page.getByRole('button', { name: 'Remove' }).click();
+    // Confirm removal. Scoped to the card: the identity row has its own "Remove".
+    await confirmation.getByRole('button', { name: 'Remove', exact: true }).click();
 
-    // Should return to Family page with no members
+    // Back on the list with no contacts
     await expect(page.getByText('No contacts yet')).toBeVisible();
   });
 
@@ -102,12 +104,8 @@ test.describe('AddDependant — 3-button success flow', () => {
   });
 
   test('AddDependant success screen shows 3 buttons in correct order', async ({ page }) => {
-    await navigateViaHarness(page, 'add-dependant');
-    await page.getByLabel(/Their name/i).fill('Lily');
-    await page.getByRole('button', { name: 'Create identity' }).click();
-
-    // Wait for success
-    await expect(page.getByText(/Lily's identity is ready/)).toBeVisible({ timeout: 60_000 });
+    // Fills the form, confirms the recovery words and lands on the success screen.
+    await addDependantViaUi(page, 'Lily', { stay: true });
 
     // Bunker is off by default in fresh test session — shows the bunker-off CTA
     await expect(page.getByRole('button', { name: /Turn the Bunker on first/ })).toBeVisible();
@@ -117,24 +115,20 @@ test.describe('AddDependant — 3-button success flow', () => {
   });
 
   test('Dependant carousel card shows pairing-status subtitle after creation', async ({ page }) => {
-    await navigateViaHarness(page, 'add-dependant');
-    await page.getByLabel(/Their name/i).fill('Lily');
-    await page.getByRole('button', { name: 'Create identity' }).click();
-
-    await expect(page.getByText(/Lily's identity is ready/)).toBeVisible({ timeout: 60_000 });
+    await addDependantViaUi(page, 'Lily', { stay: true });
     // Navigate back to home via harness (avoids browser history.back() issues)
     await navigateViaHarness(page, 'home');
 
     // Wait for carousel to be visible
     await page.locator('.carousel-viewport').waitFor({ state: 'visible', timeout: 10_000 });
-    // Navigate down to Lily's dependant card using keyboard
-    // Row order: 0=app-settings, 1=natural-person, 2=persona, 3=Lily(dependant), 4=add
-    // Start at row 1, need to press ArrowDown twice to reach row 3
-    await page.locator('.carousel-viewport').click();
-    await page.keyboard.press('ArrowDown');
-    await page.waitForTimeout(400);
-    await page.keyboard.press('ArrowDown');
-    await page.waitForTimeout(400);
+    // Step down to Lily's dependant card using the keyboard. The ring is
+    // persona, visible extras, natural person (once activated), dependants,
+    // then add; the real identity is dormant here, so Lily follows the persona.
+    const subtitle = page.getByText(/No phone paired — swipe . to settings/);
+    for (let row = 1; row <= 4 && !(await subtitle.isVisible()); row++) {
+      await page.keyboard.press('ArrowDown');
+      await expect(page.locator('.nav-dots-v .nav-dot').nth(row)).toHaveClass(/active/, { timeout: 5_000 });
+    }
 
     // Lily's card should now be in the carousel — pairing status subtitle visible
     await expect(page.getByText(/No phone paired — swipe . to settings/)).toBeVisible({ timeout: 10_000 });

@@ -19,7 +19,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { createIdentityAndUnlock } from './fixtures';
+import { activateRealIdentity, createIdentityAndUnlock } from './fixtures';
 
 // §4.5.2 — Three sibling keypairs derived from the same mnemonic.
 // [unit-verified] src/lib/professional/pro-persona.test.ts
@@ -64,6 +64,10 @@ test('§4.5.6: Professional gateway renders; Pro Onboarding reachable from setti
   // Navigate to Professional gateway
   await page.evaluate((p) => (window as Window & { __TEST__?: { setPage: (p: string) => void } }).__TEST__?.setPage(p), 'settings-professional');
 
+  // Professional is a real-name act: with the real identity dormant the route
+  // shows the activation gate, so activate first (it returns to this page).
+  await activateRealIdentity(page);
+
   // Professional page must be visible with setup CTA (no Pro anchor yet)
   await expect(page.getByText('Set up Professional role')).toBeVisible({ timeout: 5_000 });
 
@@ -106,6 +110,10 @@ test('§4.5.10: Pro mode entry does not crash when mnemonic present (Heartwood g
 
   await page.evaluate((p) => (window as Window & { __TEST__?: { setPage: (p: string) => void } }).__TEST__?.setPage(p), 'settings-professional');
 
+  // Professional is a real-name act: with the real identity dormant the route
+  // shows the activation gate, so activate first (it returns to this page).
+  await activateRealIdentity(page);
+
   // With standard fixture (mnemonic present), Professional page renders normally.
   await expect(page.getByText('Set up Professional role')).toBeVisible({ timeout: 5_000 });
 
@@ -120,6 +128,10 @@ test('§11 AC 6: user without role anchor sees explainer, not Professional Dashb
   await createIdentityAndUnlock(page);
 
   await page.evaluate((p) => (window as Window & { __TEST__?: { setPage: (p: string) => void } }).__TEST__?.setPage(p), 'settings-professional');
+
+  // Professional is a real-name act: with the real identity dormant the route
+  // shows the activation gate, so activate first (it returns to this page).
+  await activateRealIdentity(page);
 
   await expect(page.getByText('Set up Professional role')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByRole('button', { name: /Sign roster/i })).not.toBeVisible();

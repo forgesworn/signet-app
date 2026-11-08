@@ -156,6 +156,31 @@ export async function unlockWithPin(page: Page, pin?: string) {
 }
 
 /**
+ * Get back to a decrypted identity after `page.reload()`.
+ *
+ * The guardian app does not prompt for the PIN on a plain reload: auth is
+ * on demand, so Home renders from the public record behind an "Unlock to see
+ * where this identity is known" chip, and a recent unlock may even be restored
+ * without a prompt. Ask for the unlock when it is still needed, enter the PIN,
+ * then wait for the key material to decrypt.
+ */
+export async function unlockAfterReload(page: Page, pin?: string) {
+  const chip = page.getByRole('button', { name: 'Unlock to see where this identity is known' });
+  const keypadOne = page.getByRole('button', { name: '1', exact: true });
+  const decrypted = page
+    .waitForFunction(() => (window as any).__TEST__?.isIdentityDecrypted?.() === true, undefined, { timeout: 20_000 })
+    .then(() => 'decrypted' as const, () => 'timeout' as const);
+  const needsUnlock = chip.or(keypadOne).first()
+    .waitFor({ state: 'visible', timeout: 20_000 })
+    .then(() => 'locked' as const, () => 'timeout' as const);
+  if ((await Promise.race([decrypted, needsUnlock])) === 'locked') {
+    if (!(await keypadOne.isVisible())) await chip.click();
+    await unlockWithPin(page, pin);
+  }
+  await waitForDecryptedIdentity(page);
+}
+
+/**
  * Tap the real-name confirmation if `requireNpConfirmation` (default-on) gated
  * the Approve button. Covers both the sign-in ("Yes, use my real-name
  * identity") and connect ("Yes, connect with my real-name identity") copy.
@@ -227,4 +252,76 @@ export async function navigateToSettings(page: Page) {
  */
 export async function navigateViaHarness(page: Page, target: string) {
   await page.evaluate((p) => (window as any).__TEST__.setPage(p), target);
+}
+
+/**
+ * Create a dependant through the real Add Dependant form and (unless `stay`)
+ * leave via "Done for now".
+ *
+ * Adding a dependant no longer needs the real identity activated: the form
+ * names the child's first persona and the guardian's identity can stay
+ * dormant. The primary button reads "I'll hold their keys" the first time an
+ * identity ever adds a dependant (role confirmation) and "Create identity"
+ * afterwards, and a guardian who has never backed up gets the recovery-words
+ * step between the form and the "identity is ready" screen.
+ */
+export async function addDependantViaUi(page: Page, name: string, options?: { stay?: boolean }) {
+  await navigateViaHarness(page, 'add-dependant');
+  await page.getByLabel(/Their name/i).fill(name);
+  await page.getByRole('button', { name: /^(I'll hold their keys|Create identity)$/ }).click();
+
+  const written = page.getByRole('checkbox', { name: /written these down somewhere safe/ });
+  const ready = page.getByText(new RegExp(`${name}'s identity is ready`));
+  await ready.or(written).first().waitFor({ state: 'visible', timeout: 60_000 });
+  if (await written.isVisible()) {
+    await written.check();
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+  }
+  await ready.waitFor({ state: 'visible', timeout: 60_000 });
+  if (!options?.stay) await page.getByRole('button', { name: /Done for now/ }).click();
+}
+
+/**
+ * The stored id of the first dependant, as the harness setters take it
+ * (`dependant:<id>` in the identity store).
+ */
+export async function firstDependantId(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const db = await import('/src/lib/db.ts');
+    const records = await (await db.getDb()).getAll('identity');
+    const dependant = records.find((record: any) => String(record.id).startsWith('dependant:'));
+    return String(dependant.id).replace(/^dependant:/, '');
+  });
+}
+
+/**
+ * Walk the real-identity activation ceremony (explanation, legal name, typed
+ * confirmation, recovery words). Call it from any page showing the
+ * `RequireRealIdentity` gate ("Activate my real identity"): features that
+ * name the person (verification, venue entry, Professional, identity bridge)
+ * route there while the real identity is dormant, which is how every
+ * `createIdentityAndUnlock` identity starts.
+ *
+ * `confirmBackup: false` stops on the recovery-words step without ticking
+ * "written these down". The activation has been written by then, but
+ * `backedUp` has not moved, which is the state GetVerified's "Before you
+ * verify" phase needs (an activated identity that never confirmed a backup).
+ * Navigate away from the words step afterwards.
+ */
+export async function activateRealIdentity(
+  page: Page,
+  options?: { legalName?: string; confirmBackup?: boolean },
+) {
+  const legalName = options?.legalName ?? 'Real Person';
+  await page.getByRole('button', { name: 'Activate my real identity' }).click();
+  await page.locator('#legal-name').fill(legalName);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByPlaceholder(legalName).fill(legalName);
+  await page.getByRole('button', { name: 'Activate my real identity' }).click();
+  // The words step only renders once the async activation write has resolved.
+  const written = page.getByRole('checkbox');
+  await written.waitFor({ state: 'visible', timeout: 30_000 });
+  if (options?.confirmBackup === false) return;
+  await written.check();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
 }
