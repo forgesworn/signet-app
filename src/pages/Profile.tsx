@@ -8,8 +8,9 @@ interface Props {
   onUpdateName: (name: string) => Promise<void>;
   onUpdatePhoto: () => void;
   ownBadge: CachedBadge | null;
-  connectedSiteCount: number;
-  onNavigateConnections: () => void;
+  knownPlaceCount: number;
+  /** Show the home carousel on its Where you're known column. */
+  onNavigateKnownPlaces: () => void;
   onNavigateBadgeEmbed: () => void;
   /** Navigate to the Professional gateway page. Omit to hide the section (e.g. the paired-child surface). */
   onGoToProfessional?: () => void;
@@ -22,8 +23,8 @@ export function Profile({
   onUpdateName,
   onUpdatePhoto,
   ownBadge,
-  connectedSiteCount,
-  onNavigateConnections,
+  knownPlaceCount,
+  onNavigateKnownPlaces,
   onNavigateBadgeEmbed,
   onGoToProfessional,
   onSaveProName,
@@ -90,9 +91,9 @@ export function Profile({
 
       <div className="card section">
         <div className="section-title">Sites</div>
-        <button className="row row-button" onClick={onNavigateConnections} style={{ width: '100%' }}>
-          <span>Connected sites</span>
-          <span className="row-meta">{connectedSiteCount} ›</span>
+        <button className="row row-button" onClick={onNavigateKnownPlaces} style={{ width: '100%' }}>
+          <span>Where you're known</span>
+          <span className="row-meta">{knownPlaceCount} ›</span>
         </button>
         <button className="row row-button" onClick={onNavigateBadgeEmbed} style={{ width: '100%' }}>
           <span>Get your badge embed</span>

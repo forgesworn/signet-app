@@ -35,8 +35,8 @@ async function seedV27() {
   v27.close();
 }
 
-describe('DB v28 — knownPlaces', () => {
-  it('survives bad legacy rows: skips them, migrates the good one, DB opens at 28', async () => {
+describe('DB v28/v29 — knownPlaces and the retired authorizedSites', () => {
+  it('survives bad legacy rows: skips them, migrates the good one, DB opens at 29', async () => {
     const v27 = await openDB('my-signet', 27, {
       upgrade(d) {
         d.createObjectStore('authorizedSites', { keyPath: 'id' }).createIndex('origin', 'origin');
@@ -57,13 +57,13 @@ describe('DB v28 — knownPlaces', () => {
     v27.close();
     const db = await freshDb();
     const raw = await db.getDb();
-    expect(raw.version).toBe(28);
+    expect(raw.version).toBe(29);
     const places = await db.listKnownPlaces();
     expect(places.map((p) => p.placeKey)).toContain('https://good.example');
     expect(places.find((p) => p.placeKey === 'https://good.example')?.name).toBe('Good');
   });
 
-  it('migrates every authorizedSites row from a v27 database and keeps authorizedSites', async () => {
+  it('v27 -> v29: migrates every authorizedSites row, then drops the authorizedSites store', async () => {
     await seedV27();
     const db = await freshDb();
     const places = (await db.listKnownPlaces()).sort((a, b) => a.name.localeCompare(b.name));
@@ -85,13 +85,50 @@ describe('DB v28 — knownPlaces', () => {
     });
     expect(places[1].pubkey).toBe('b'.repeat(64));
     expect(places[1].alias).toBeUndefined();
-    expect(await db.getAuthorizedSites()).toHaveLength(3);
+    const raw = await db.getDb();
+    expect(raw.version).toBe(29);
+    expect(raw.objectStoreNames.contains('authorizedSites')).toBe(false);
+  });
+
+  it('v28 -> v29: deletes the already-migrated authorizedSites store without duplicating rows', async () => {
+    const v28 = await openDB('my-signet', 28, {
+      upgrade(d) {
+        d.createObjectStore('authorizedSites', { keyPath: 'id' }).createIndex('origin', 'origin');
+        const places = d.createObjectStore('knownPlaces', { keyPath: 'id' });
+        places.createIndex('by-pubkey', 'pubkey');
+        places.createIndex('by-place', 'placeKey');
+      },
+    });
+    await v28.put('authorizedSites', {
+      id: 's1', origin: 'https://one.example', name: 'One', keypairUsed: 'persona',
+      pubkeyShared: PK_A, authorizedAt: 100, lastUsedAt: 300,
+    });
+    await v28.put('knownPlaces', {
+      id: `https://one.example:${PK_A}`, pubkey: PK_A, placeKey: 'https://one.example', kind: 'sign-in',
+      name: 'One', origin: 'https://one.example', channel: 'browser', signer: 'local',
+      firstAt: 100, lastAt: 400, uses: 5, shared: {},
+    });
+    v28.close();
+    const db = await freshDb();
+    const raw = await db.getDb();
+    expect(raw.version).toBe(29);
+    expect(raw.objectStoreNames.contains('authorizedSites')).toBe(false);
+    const places = await db.listKnownPlaces();
+    expect(places).toHaveLength(1);
+    // The migrated row stays as it was; the old store is not re-read.
+    expect(places[0]).toMatchObject({ uses: 5, channel: 'browser', signer: 'local', lastAt: 400 });
+  });
+
+  it('a fresh database has no authorizedSites store', async () => {
+    const db = await freshDb();
+    const raw = await db.getDb();
+    expect(raw.objectStoreNames.contains('authorizedSites')).toBe(false);
   });
 
   it('creates the store with its two indexes', async () => {
     const db = await freshDb();
     const raw = await db.getDb();
-    expect(raw.version).toBe(28);
+    expect(raw.version).toBe(29);
     const tx = raw.transaction('knownPlaces', 'readonly');
     expect(tx.store.keyPath).toBe('id');
     expect(Array.from(tx.store.indexNames).sort()).toEqual(['by-place', 'by-pubkey']);

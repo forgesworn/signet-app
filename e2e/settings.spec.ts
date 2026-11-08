@@ -8,12 +8,12 @@ test.describe('Settings', () => {
     await navigateToSettings(page);
   });
 
-  test('Settings menu shows Profile, Personas, Security & Backup, Connections in order', async ({ page }) => {
+  test('Settings menu shows Profile, Personas, Security & Backup, Where you're known, Connected apps in order', async ({ page }) => {
     // D10 (UX polish) moved the primary nav items into a single
     // `.card-flush` list of `.row-button` rows — the old
     // `button.btn-secondary` locator no longer matches them.
     const labels = await page.locator('.card-flush .row-button .row-label').allTextContents();
-    const expected = ['Profile', 'Personas', 'Security & Backup', 'Connections'];
+    const expected = ['Profile', 'Personas', 'Security & Backup', "Where you're known", 'Connected apps'];
     let lastIdx = -1;
     for (const label of expected) {
       const idx = labels.findIndex(l => l.includes(label));
@@ -72,9 +72,9 @@ test.describe('Settings', () => {
     await expect(page.getByText('Relays', { exact: true })).toBeVisible();
   });
 
-  test('connected sites shows empty state', async ({ page }) => {
-    await page.getByRole('button', { name: /Connections/ }).click();
-    await expect(page.getByText('No connected sites')).toBeVisible();
+  test('connected apps shows empty state', async ({ page }) => {
+    await page.getByRole('button', { name: /Connected apps/ }).click();
+    await expect(page.getByText('No connected apps')).toBeVisible();
   });
 
   test('relay URL editing persists', async ({ page }) => {

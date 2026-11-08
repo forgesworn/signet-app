@@ -110,13 +110,13 @@ describe('IdentityCard controls and the swipe gesture', () => {
       id: 'https://x.example:' + 'b'.repeat(64), pubkey: 'b'.repeat(64), placeKey: 'https://x.example', kind: 'sign-in',
       name: 'Xsite', origin: 'https://x.example', channel: 'browser', signer: 'local', firstAt: 1, lastAt: 2, uses: 1, shared: {},
     };
-    const onOpenSite = vi.fn();
-    const { getByLabelText, api, onTap } = setup(arrowApi(), { launcherSites: [{ place, badge: null }], onOpenSite });
+    const onOpenPlace = vi.fn();
+    const { getByLabelText, api, onTap } = setup(arrowApi(), { knownPlaceItems: [{ place, badge: null }], onOpenPlace });
     const chip = getByLabelText('Xsite');
     fireEvent.touchStart(chip, touch(100, 300));
     fireEvent.touchEnd(chip, touch(100, 300));
     fireEvent.click(chip);
-    expect(onOpenSite).toHaveBeenCalledWith(place.id);
+    expect(onOpenPlace).toHaveBeenCalledWith(place.id);
     expect(api.jump).toHaveBeenCalledWith(3);
     expect(onTap).not.toHaveBeenCalled();
   });

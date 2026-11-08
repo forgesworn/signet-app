@@ -1,7 +1,7 @@
 // Pure helpers for the `knownPlaces` store (DB v28). No IndexedDB here —
 // db.ts imports this, so the migration and the writer share one definition.
 
-import type { AuthorizedSite, KnownPlace, KnownPlaceInput } from '../types';
+import type { KnownPlace, KnownPlaceInput } from '../types';
 import { sanitizeDisplayName } from './text-sanitize';
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -76,11 +76,27 @@ export function mergeKnownPlace(
 }
 
 /**
+ * The row shape of the retired `authorizedSites` store (deleted in DB v29).
+ * Only the v27 -> v28 migration still reads it.
+ */
+export interface LegacyAuthorizedSite {
+  id: string;
+  origin: string;
+  name: string;
+  keypairUsed: string;
+  pubkeyShared: string;
+  authorizedAt: number;
+  lastUsedAt: number;
+  shareHandle?: boolean;
+  consumerDisplayName?: string;
+}
+
+/**
  * DB v27 -> v28 migration of one `authorizedSites` row. Null when the row
  * cannot be a known place (bad pubkey or origin). Deterministic id, so a
  * re-run overwrites rather than duplicates.
  */
-export function knownPlaceFromAuthorizedSite(site: AuthorizedSite): KnownPlace | null {
+export function knownPlaceFromAuthorizedSite(site: LegacyAuthorizedSite): KnownPlace | null {
   const pubkey = typeof site.pubkeyShared === 'string' ? site.pubkeyShared.toLowerCase() : '';
   if (!HEX64.test(pubkey) || typeof site.origin !== 'string' || !site.origin) return null;
   const alias = cleanName(site.consumerDisplayName);

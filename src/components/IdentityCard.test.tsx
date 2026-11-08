@@ -321,7 +321,7 @@ it('Handshake remains outside the blur layer and works on a dormant child card',
   expect(blur).toHaveStyle({ filter: 'blur(6px)' });
 });
 
-describe('IdentityCard — quick-open launcher and contacts pill', () => {
+describe('IdentityCard — known-places strip and contacts pill', () => {
   const ownerRow = {
     type: 'owner',
     identity: { displayName: 'Alice', publicKey: 'aa'.repeat(32), keypairType: 'persona' },
@@ -342,18 +342,18 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
 
   it('renders a chip per place and reports the id on tap, without opening a window', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
-    const onOpenSite = vi.fn();
+    const onOpenPlace = vi.fn();
     const s = site();
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[s]} onOpenSite={onOpenSite} />);
+      knownPlaceItems={[s]} onOpenPlace={onOpenPlace} />);
     fireEvent.click(screen.getByRole('button', { name: 'Primal' }));
-    expect(onOpenSite).toHaveBeenCalledWith(s.place.id);
+    expect(onOpenPlace).toHaveBeenCalledWith(s.place.id);
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
   });
 
   it('shows a quiet line when the identity is not known anywhere yet — the Scan tile is the invitation', () => {
-    const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
+    const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} knownPlaceItems={[]} />);
     expect(screen.getByText('Not known anywhere yet')).toBeDefined();
     expect(container.querySelector('.kp-strip')).toBeNull();
     expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
@@ -376,7 +376,7 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
   it('shows one unlock chip on a locked owner card and asks to unlock on tap', () => {
     const onUnlockRequest = vi.fn();
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[]} launcherLocked onUnlockRequest={onUnlockRequest} />);
+      knownPlaceItems={[]} placesLocked onUnlockRequest={onUnlockRequest} />);
     const chip = screen.getByRole('button', { name: 'Unlock to see where this identity is known' });
     expect(chip.className).toContain('card-launcher-chip--locked');
     fireEvent.click(chip);
@@ -385,19 +385,19 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
 
   it('shows no unlock chip when unlocked', () => {
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[]} launcherLocked={false} onUnlockRequest={vi.fn()} />);
+      knownPlaceItems={[]} placesLocked={false} onUnlockRequest={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Unlock to see where this identity is known' })).toBeNull();
   });
 
   it('shows no unlock chip on a dependant row even when locked', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
-      launcherLocked onUnlockRequest={vi.fn()} />);
+      placesLocked onUnlockRequest={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Unlock to see where this identity is known' })).toBeNull();
   });
 
-  it('hides the launcher, contacts pill and Scan on a dependant card', () => {
+  it('hides the places strip, contacts pill and Scan on a dependant card', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
-      launcherSites={[site()]} contactsCount={3} />);
+      knownPlaceItems={[site()]} contactsCount={3} />);
     expect(screen.queryByRole('button', { name: 'Primal' })).toBeNull();
     expect(screen.queryByText('Not known anywhere yet')).toBeNull();
     expect(screen.queryByRole('button', { name: "Open this identity's contacts" })).toBeNull();

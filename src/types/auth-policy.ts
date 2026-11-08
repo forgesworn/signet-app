@@ -27,13 +27,13 @@ export interface AppGuardrails {
 /**
  * Per-origin identity-selection policy record. Populated silently on each
  * Sign-in-with-Signet approval; surfaced in Connections for the user to
- * pin an identity for this origin or clear their history.
+ * pin an identity for this origin (from the card's Where you're known column) or clear their history.
  */
 export interface OriginPolicy {
   /** Normalised origin — e.g. "https://axenstax.com" (no trailing slash, no path). */
   origin: string;
   /**
-   * Last keypair used. Matches `AuthorizedSite.keypairUsed` — literal token
+   * Last keypair used. Literal token
    * ('natural-person' | 'persona') or an extra persona's hex pubkey.
    */
   lastKeypair: string;
@@ -57,39 +57,3 @@ export interface OriginPolicy {
 
 /** Max number of accept-history entries retained per origin. */
 export const ORIGIN_POLICY_HISTORY_CAP = 16;
-
-/** A site the user has signed into with Signet */
-export interface AuthorizedSite {
-  /** Generated unique ID */
-  id: string;
-  /** Site origin, e.g. "https://example.com" */
-  origin: string;
-  /** Human-readable site name */
-  name: string;
-  /**
-   * Which keypair was used for sign-in.
-   * - 'natural-person' | 'persona' — built-in keypairs.
-   * - 64-char hex pubkey — an extra persona. The Connections page resolves the
-   *   display name by looking up `pubkeyShared` against the current identity.
-   */
-  keypairUsed: string;
-  /** Which pubkey the site received */
-  pubkeyShared: string;
-  /** When the user first approved this site (unix timestamp) */
-  authorizedAt: number;
-  /** Updated on each re-authorization (unix timestamp) */
-  lastUsedAt: number;
-  /**
-   * Whether the user agreed to share their persona handle with this site
-   * on the most recent sign-in. Persisted so the checkbox default sticks
-   * across visits. Undefined on rows written before this field existed.
-   */
-  shareHandle?: boolean;
-  /**
-   * Service-side display name the consumer told us about for this user
-   * (via `consumer_display_name` URL param on a sign-in request) or that
-   * the user typed in via the Connections page. Stored in plaintext —
-   * AuthorizedSites are not encrypted at rest, same as today.
-   */
-  consumerDisplayName?: string;
-}
