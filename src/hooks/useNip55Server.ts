@@ -7,6 +7,8 @@
  * arrives while the app is locked waits too, and `onNeedsUnlock` asks for
  * the PIN, so the approval screen only ever renders over an unlocked app.
  */
+import { subscribePurge } from '../lib/db';
+import { recordKnownPlace } from '../lib/known-places-record';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UnsignedEvent } from 'signet-protocol';
 import { describeEventTemplate } from '../lib/nip46-server';
@@ -295,6 +297,21 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     setGrants(g => { const next = { ...g, [pkg]: grant }; saveNip55Grants(next); return next; });
   }, []);
 
+  /** Display fact only: the app now has a row under the key that approved it. */
+  const noteKnownPlace = useCallback((raw: { callerPackage: string | null; callerLabel?: string | null }, key: string) => {
+    if (!raw.callerPackage) return;
+    void recordKnownPlace({
+      placeKey: `pkg:${raw.callerPackage}`,
+      pubkey: key,
+      kind: 'nip55',
+      name: raw.callerLabel || raw.callerPackage,
+      nativePackage: raw.callerPackage,
+      channel: 'nip55',
+      signer: 'local',
+      shared: {},
+    });
+  }, []);
+
   const take = useCallback((handle: number): Waiting | undefined => {
     const item = queue.find(w => w.handle === handle);
     if (item) setQueue(q => q.filter(w => w.handle !== handle));
@@ -322,18 +339,22 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     if (item.raw.callerPackage) {
       const prior = grantsRef.current[item.raw.callerPackage];
       remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? prior?.label });
+      noteKnownPlace(item.raw, key);
     }
     void execute(item.raw, item.parsed, key);
-  }, [take, approvedKey, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, noteKnownPlace, execute, now]);
 
   const approveAlways = useCallback((handle: number, pubkey?: string) => {
     const item = take(handle);
     if (!item) return;
     const key = approvedKey(item, pubkey);
     if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
-    if (item.raw.callerPackage) remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
+    if (item.raw.callerPackage) {
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
+      noteKnownPlace(item.raw, key);
+    }
     void execute(item.raw, item.parsed, key);
-  }, [take, approvedKey, respond, remember, execute, now]);
+  }, [take, approvedKey, respond, remember, noteKnownPlace, execute, now]);
 
   const deny = useCallback((handle: number) => {
     const item = take(handle);
@@ -361,6 +382,10 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     setQueue([]);
     for (const item of held) void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
   }, [respond]);
+
+  // `purgeAllUserData` empties the localStorage grants; the in-memory copy
+  // must follow or a deleted identity's "always" grants keep being honoured.
+  useEffect(() => subscribePurge(() => { grantsRef.current = {}; setGrants({}); }), []);
 
   const forget = useCallback((pkg: string) => {
     setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });

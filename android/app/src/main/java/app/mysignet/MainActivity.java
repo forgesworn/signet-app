@@ -58,6 +58,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(SignetNativePlugin.class);
+        captureLaunchReferrer(getIntent());
         super.onCreate(savedInstanceState);
         // The WebView renderer is a separate process whose priority is waived
         // while the page is not visible; a backgrounded bunker page is not.
@@ -102,7 +103,20 @@ public class MainActivity extends BridgeActivity {
         String action = intent == null ? null : intent.getAction();
         if (NfcAdapter.ACTION_TAG_DISCOVERED.equals(action) || NfcAdapter.ACTION_TECH_DISCOVERED.equals(action)
                 || NfcAdapter.ACTION_NDEF_DISCOVERED.equals(action)) return;
+        // Make this the activity's intent first, so getReferrer() reads it
+        // rather than the previous launch's extras.
+        setIntent(intent);
+        captureLaunchReferrer(intent);
         super.onNewIntent(intent);
+    }
+
+    /**
+     * Remember which app opened this one with a link, before the bridge hands
+     * the URL to the web layer. Only when the intent carries link data.
+     */
+    private void captureLaunchReferrer(Intent intent) {
+        if (intent == null || intent.getData() == null) return;
+        LaunchReferrer.capture(getReferrer(), intent.getDataString());
     }
 
     @Override

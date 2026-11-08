@@ -284,4 +284,15 @@ describe('buildConnectedClientFromNostrConnect', () => {
       allowAlways: true,
     });
   });
+
+  it('leaves askToSign absent by default and sets it only when asked, never touching allowAlways', () => {
+    const request = parseNostrConnectURI(
+      `nostrconnect://${'A'.repeat(64)}?relay=wss://relay.example.com&secret=s&name=Canary`,
+    )!;
+    expect(buildConnectedClientFromNostrConnect(request, 1)).not.toHaveProperty('askToSign');
+    expect(buildConnectedClientFromNostrConnect(request, 1, { askToSign: false })).not.toHaveProperty('askToSign');
+    const asking = buildConnectedClientFromNostrConnect(request, 1, { askToSign: true });
+    expect(asking.askToSign).toBe(true);
+    expect(asking.allowAlways).toBe(true);
+  });
 });
