@@ -3,6 +3,16 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.25.0
+- Identity cards: the site tiles are now a record of where each identity is known, not shortcuts. Chips fill the space available (two per row, "+N" for the rest), each with one small badge: signs automatically, approved on your Heartwood, another device, shared handle or picture, pinned, not used in 3 months
+- New "Where you're known" column on each card (swipe past Contacts): every site and app that identity has signed in to or paired with, grouped Pinned / Recent / Not used in 3 months, with the full story when you tap a row — which identity, how it arrived (an app on this phone, this phone's browser, another device, Nostr Connect), whether your Heartwood approved it, what was shared, first and last use
+- Row actions say what they do: Pin, Open (only for an app on this phone or a browser sign-in), Forget (removes it from this phone; the site still has your account), Disconnect, Stop signing automatically
+- Nostr Connect: when an app connects you can now choose "Ask me each time it signs"; encrypting and decrypting stay automatic either way
+- Apps on this phone show their own icon and name
+- A site you sign in to as two different personas now appears on both cards instead of the second overwriting the first
+- Settings: "Connected Sites" is replaced by "Where you're known" (opens the column) and "Connected apps" (Nostr Connect clients and apps on this phone)
+- Delete all data now also clears the permissions given to apps on this phone
+
 ## 0.24.2
 - Identity cards: while the app is locked, the card shows "Unlock to see where this identity is known" instead of an empty space where your sites go
 - Connected Sites: "Revoke" is now "Forget", and says that it only removes the site from this phone. The site still has your account
