@@ -302,13 +302,18 @@ export function importFromNsec(
   displayName: string,
   primaryKeypair: 'natural-person' | 'persona',
 ): SignetIdentity {
-  const privateKey = bytesToHex(decodeNsec(nsec));
+  const secret = decodeNsec(nsec);
+  const privateKey = bytesToHex(secret);
+  secret.fill(0);
   const publicKey = getPublicKey(privateKey);
   const emptyKeypair = { publicKey: '', privateKey: '', displayName: '' };
 
   return {
     id: publicKey,
-    mnemonic: '', // nsec import has no mnemonic — Shamir/backup unavailable
+    // No mnemonic: the backup is the key's own raw-nsec recovery words
+    // (`toNsecRecoveryWords`), shown in Security settings. Shamir does not
+    // cover them.
+    mnemonic: '',
     naturalPerson: primaryKeypair === 'natural-person'
       ? { publicKey, privateKey, displayName }
       : emptyKeypair,
@@ -318,7 +323,12 @@ export function importFromNsec(
     primaryKeypair,
     isChild: false,
     createdAt: Math.floor(Date.now() / 1000),
-    backedUp: true, // no mnemonic to back up — suppress backup nag
+    // Not yet backed up: the user is prompted to write down the key's 31
+    // recovery words, and confirming them in Security settings sets this.
+    // Deliberately also engages the Heartwood connect gate (`backedUp ===
+    // true` required), since connecting a signer deletes this local key.
+    // Identities stored before this change keep the `true` they were saved with.
+    backedUp: false,
     // An nsec import has no tree-derived NP key at all when it lands in the
     // persona slot — there is nothing to activate. Keeping the invariant
     // "active ⟺ the NP slot carries a name" makes the NP-slot variant correct

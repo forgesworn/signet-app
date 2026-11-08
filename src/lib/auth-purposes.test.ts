@@ -325,6 +325,8 @@ describe('Contextual action prompts', () => {
     { purpose: 'manage-signing-session' },
     { purpose: 'rotate-backup-key' },
     { purpose: 'reveal-recovery-words' },
+    { purpose: 'reveal-recovery-words', scope: 'key' },
+    { purpose: 'reveal-recovery-words', scope: 'key', personaName: 'Fox' },
     { purpose: 'change-biometric', enabled: true },
     { purpose: 'change-biometric', enabled: false },
     { purpose: 'recheck-professional', firmName: 'Example School' },

@@ -139,7 +139,8 @@ export type PurposeContext =
   /** `claim` (the default): make the Keep this persona's. `link` / `unlink`: add or take off an owner persona of a Keep. */
   | { purpose: 'manage-keep'; keepName: string; personaName: string; action?: 'claim' | 'link' | 'unlink' }
   | { purpose: 'rotate-backup-key' }
-  | { purpose: 'reveal-recovery-words' }
+  /** `scope: 'key'`: the 31 words of one imported Nostr key, not the whole Signet. */
+  | { purpose: 'reveal-recovery-words'; scope?: 'signet' | 'key'; personaName?: string }
   | { purpose: 'change-biometric'; enabled: boolean }
   | { purpose: 'recheck-professional'; firmName: string };
 
@@ -261,8 +262,17 @@ export const PURPOSES: Record<AuthPurpose, PurposeConfig> = {
   },
   'reveal-recovery-words': {
     tier: 2, icon: 'key-plus', accent: 'warning',
-    title: () => 'Reveal your recovery words',
-    description: () => 'Show the words that restore your whole Signet, including your personas and dependants. Anyone with these words can recover your identity.',
+    title: raw => as(raw, 'reveal-recovery-words').scope === 'key'
+      ? 'Reveal this key’s recovery words'
+      : 'Reveal your recovery words',
+    description: raw => {
+      const ctx = as(raw, 'reveal-recovery-words');
+      if (ctx.scope !== 'key') {
+        return 'Show the words that restore your whole Signet, including your personas and dependants. Anyone with these words can recover your identity.';
+      }
+      const who = ctx.personaName?.trim() ? ` for **${ctx.personaName.trim()}**` : '';
+      return `Show the words that restore this one Nostr key${who}. Anyone with these words controls it.`;
+    },
   },
   'change-biometric': {
     tier: 2, icon: 'shield-warn', accent: 'warning',

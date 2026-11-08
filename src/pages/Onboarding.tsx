@@ -5,6 +5,8 @@ interface Props {
   originHost: string;
   onCreate: (displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean) => Promise<void>;
   onImport: (mnemonic: string, displayName: string, primaryKeypair: 'natural-person' | 'persona', isChild: boolean) => Promise<void>;
+  /** Raw-nsec recovery words (one imported key) restore through the nsec import. */
+  onImportNsec?: (nsec: string, displayName: string) => Promise<void>;
   onCancel: () => void;
   /**
    * `auth` = Sign-in-with-Signet redirect; `connect` = NIP-46 pairing request.
@@ -18,6 +20,7 @@ export function Onboarding({
   originHost,
   onCreate,
   onImport,
+  onImportNsec,
   onCancel,
   mode = 'auth',
 }: Props) {
@@ -32,7 +35,7 @@ export function Onboarding({
     goBack,
     handleImportSubmit,
     handleCreateSubmit,
-  } = useStagedOnboarding({ onCreate, onImport });
+  } = useStagedOnboarding({ onCreate, onImport, onImportNsec });
 
   const site = siteName || originHost;
 

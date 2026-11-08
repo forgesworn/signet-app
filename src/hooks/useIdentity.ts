@@ -594,6 +594,7 @@ export function useIdentity(encryptionKey?: string | null) {
     const { bytesToHex: btoh } = await import('@noble/hashes/utils.js');
     const skBytes = dec(nsec);
     const privateKey = btoh(skBytes);
+    skBytes.fill(0);
     const publicKey = gpk(privateKey);
 
     const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, key);

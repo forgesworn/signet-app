@@ -7,7 +7,8 @@ import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/
 import { isNativeApp } from '../lib/native';
 import { ANDROID_APP_URL, ANDROID_APP_PITCH, isAndroidWeb } from '../lib/android-promo';
 import type { PublicProfileBase, PublicProfileConfig } from '../types';
-import { parseRestoreInput, RESTORE_ERROR_COPY } from '../lib/recovery-words';
+import { parseRestoreInput, consumeSecretKeyAsNsec, RESTORE_ERROR_COPY } from '../lib/recovery-words';
+import { NSEC_CONFIRM_BACKUP_COPY, NSEC_CONFIRM_FROM_WORDS_COPY } from '../lib/raw-nsec-backup-copy';
 import { BrandMark } from '../components/BrandMark';
 import { PAIR_WITH_GUARDIAN_LABEL } from '../lib/child-device-copy';
 import { FullAccessChoice } from '../components/FullAccessChoice';
@@ -101,6 +102,10 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   const [nip07Detected, setNip07Detected] = useState(false);
   const [nip07Connecting, setNip07Connecting] = useState(false);
   const [nsecImporting, setNsecImporting] = useState(false);
+  // The nsec came from raw-nsec recovery words typed in the restore box, not
+  // from the nsec box. Back then returns to the words screen, and the nsec box
+  // never displays a key the user did not paste there.
+  const [nsecFromWords, setNsecFromWords] = useState(false);
   const [error, setError] = useState('');
 
   // Detect NIP-07 extension — may inject after page load
@@ -120,6 +125,20 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
           ? "That doesn't look right. Check you have exactly 12 words, separated by spaces."
           : RESTORE_ERROR_COPY[parsed.reason],
       );
+      return;
+    }
+    if (parsed.kind === 'raw-nsec') {
+      // One imported Nostr key, not a Signet: hand it to the existing nsec
+      // import (persona slot, relay profile lookup) rather than a second path.
+      // The words box is cleared; the nsec is never shown in the nsec box.
+      const nsec = consumeSecretKeyAsNsec(parsed.secretKey);
+      setImportWords('');
+      setNsecFromWords(true);
+      setDisplayName('');
+      setNsecInput(nsec);
+      setNsecStep('fetching');
+      setFlow('import-nsec');
+      await startNsecImport(nsec);
       return;
     }
     const words = parsed.mnemonic;
@@ -211,11 +230,22 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   // name pick "Persona" with their real name as the display name.
 
   const handleNsecSubmit = async () => {
-    const trimmed = nsecInput.trim();
+    setNsecFromWords(false);
+    await startNsecImport(nsecInput);
+  };
+
+  // Shared by the nsec box and by raw-nsec recovery words from the restore
+  // box: validate, look up an existing profile, then confirm.
+  const startNsecImport = async (nsec: string) => {
+    const trimmed = nsec.trim();
     let pubkey: string;
     try {
       const skBytes = decodeNsec(trimmed);
-      pubkey = getPublicKey(bytesToHex(skBytes));
+      try {
+        pubkey = getPublicKey(bytesToHex(skBytes));
+      } finally {
+        skBytes.fill(0);
+      }
     } catch {
       if (trimmed.toLowerCase().startsWith('npub1')) {
         setError("That's your public key — we need your nsec (private), or connect your extension.");
@@ -559,7 +589,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             )}
             <button
               className={nip07Detected ? 'btn btn-secondary' : 'btn btn-primary'}
-              onClick={() => { setNsecInput(''); setNsecStep('nsec'); setDisplayName(''); setError(''); setFlow('import-nsec'); }}
+              onClick={() => { setNsecInput(''); setNsecFromWords(false); setNsecStep('nsec'); setDisplayName(''); setError(''); setFlow('import-nsec'); }}
             >
               Paste your nsec
             </button>
@@ -861,7 +891,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             </div>
 
             <div style={{ padding: 12, background: 'var(--warning-light)', border: '1px solid var(--warning)', borderRadius: 'var(--radius-sm)', marginBottom: 16, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              <strong>Signet can't back this up — keep your nsec safe yourself.</strong>
+              <strong>{nsecFromWords ? NSEC_CONFIRM_FROM_WORDS_COPY : NSEC_CONFIRM_BACKUP_COPY}</strong>
             </div>
 
             <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Display name</label>
@@ -903,7 +933,23 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleNsecComplete} disabled={!displayName.trim() || nsecImporting} style={{ marginTop: 8 }}>
               {nsecImporting ? 'Importing...' : 'Import as Persona'}
             </button>
-            <button className="btn btn-ghost" onClick={() => setNsecStep('nsec')} style={{ marginTop: 8 }} disabled={nsecImporting}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                if (nsecFromWords) {
+                  // Back to the words screen, and drop the key derived from them.
+                  setNsecInput('');
+                  setNsecFromWords(false);
+                  setNsecStep('nsec');
+                  setFlow('import');
+                  setImportStep('phrase');
+                } else {
+                  setNsecStep('nsec');
+                }
+              }}
+              style={{ marginTop: 8 }}
+              disabled={nsecImporting}
+            >
               Back
             </button>
           </div>
