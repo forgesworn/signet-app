@@ -3,9 +3,9 @@ import { fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BunkerApprovalModal } from './BunkerApprovalModal';
 import { BunkerPanel } from './BunkerPanel';
-import type { PendingApproval } from '../hooks/useBunkerServer';
+import type { PendingApproval, PendingCryptoApproval, PendingSignApproval } from '../hooks/useBunkerServer';
 
-function approval(over: Partial<PendingApproval> & { dependantId?: string | null } = {}): PendingApproval {
+function approval(over: Partial<PendingSignApproval> & { dependantId?: string | null } = {}): PendingApproval {
   const { dependantId = null, ...rest } = over;
   return {
     handle: 7,
@@ -19,6 +19,19 @@ function approval(over: Partial<PendingApproval> & { dependantId?: string | null
   };
 }
 afterEach(cleanup);
+
+function cryptoApproval(over: Partial<PendingCryptoApproval> = {}): PendingCryptoApproval {
+  return {
+    handle: 9,
+    route: { pubkey: 'b'.repeat(64), dependantId: null },
+    method: 'nip44_decrypt',
+    peerPubkey: 'b'.repeat(64),
+    client: { appName: 'Stash', existing: false, pubkey: 'c'.repeat(64) },
+    description: 'Decrypt data you encrypted to yourself',
+    alwaysAvailable: true,
+    ...over,
+  };
+}
 
 function renderModal(a: PendingApproval, once = vi.fn(), always = vi.fn()) {
   render(<BunkerApprovalModal approval={a} onApproveOnce={once} onApproveAlways={always} onDeny={() => {}} />);
@@ -69,4 +82,20 @@ it('shows the Bunker panel "Always" button for a dependant approval that will be
     dependantNameFor={() => 'Sam'} hasDependants serveStatus={{ phase: 'idle', routePubkeys: [], relayUrl: 'wss://example.com' } as never}
     locked={false} onRequestUnlockWithPendingArm={() => {}} onRequestUnlockForAlwaysOn={() => {}} isNative={false} backgroundServing={false} alwaysOnWanted={false} onSetBackgroundServing={async () => {}} />);
   expect(screen.getAllByRole('button', { name: 'Always' })).toHaveLength(1);
+});
+
+it('frames an owner decrypt request as a decryption, says the app sees the result, and offers "Allow always" (#189)', () => {
+  const { always } = renderModal(cryptoApproval());
+  expect(screen.getByText('Decryption request')).toBeTruthy();
+  expect(screen.getByRole('heading').textContent).toBe('Stash wants to: Decrypt data you encrypted to yourself.');
+  expect(screen.getByText(/The app will see what it decrypts/)).toBeTruthy();
+  expect(screen.queryByText(/Event kind/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: /Allow always for Stash/ }));
+  expect(always).toHaveBeenCalledWith(9);
+});
+
+it('frames an owner encrypt request as an encryption (#189)', () => {
+  renderModal(cryptoApproval({ method: 'nip44_encrypt', description: 'Encrypt data to yourself' }));
+  expect(screen.getByText('Encryption request')).toBeTruthy();
+  expect(screen.getByText(/encrypt with your key without asking again/)).toBeTruthy();
 });

@@ -6,6 +6,7 @@ import type { PendingChildAsk } from '../hooks/useChildAsks';
 import { shortPubkey, safeAppName } from '../lib/bunker-display';
 import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
 import { CHILD_ASK_COPY, CHILD_DEVICE_COPY } from '../lib/child-device-copy';
+import { isDecryptMethod } from '../lib/bunker-crypto-approval';
 
 /**
  * Modal surfaced when a NIP-46 client has asked the bunker server to
@@ -45,7 +46,8 @@ function safeUrl(url: string | undefined): string | null {
 
 export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny, onBack }: Props) {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const avatar = approval.kinterestChildAvatar;
+  const sign = approval.method === 'sign_event' ? approval : null;
+  const avatar = sign?.kinterestChildAvatar;
   useEffect(() => {
     let cancelled = false; let url: string | null = null;
     setAvatarUrl(null);
@@ -58,8 +60,9 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onBack]);
-  const authority = parseKinterestRequest(approval.template);
-  const reserved = isKinterestAuthority(approval.template);
+  const authority = sign ? parseKinterestRequest(sign.template) : null;
+  const reserved = sign ? isKinterestAuthority(sign.template) : false;
+  const decrypt = approval.method !== 'sign_event' && isDecryptMethod(approval.method);
   const name = safeAppName(approval.client.appName);
   const url = safeUrl(approval.client.appUrl);
 
@@ -96,10 +99,12 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
         <div>
           {avatarUrl && <img src={avatarUrl} alt="Selected child" style={{width:48,height:48,borderRadius:"50%",objectFit:"cover"}} />}
           <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: 4 }}>
-            Signature request
+            {sign ? 'Signature request' : decrypt ? 'Decryption request' : 'Encryption request'}
           </div>
           <h2 id="bunker-approval-title" style={{ margin: 0, fontSize: '1.2rem', lineHeight: 1.3 }}>
-            <strong>{name}</strong> wants to sign a {approval.description}.
+            {sign
+              ? <><strong>{name}</strong> wants to sign a {approval.description}.</>
+              : <><strong>{name}</strong> wants to: {approval.description}.</>}
           </h2>
         </div>
 
@@ -114,17 +119,25 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
             <span style={{ color: 'var(--text-muted)' }}>Client key: </span>
             <span style={{ fontFamily: 'var(--font-mono)' }}>{shortPubkey(approval.client.pubkey)}</span>
           </div>
-          <div>
-            <span style={{ color: 'var(--text-muted)' }}>Event kind: </span>
-            <span style={{ fontFamily: 'var(--font-mono)' }}>{approval.template.kind}</span>
-          </div>
+          {sign ? (
+            <div>
+              <span style={{ color: 'var(--text-muted)' }}>Event kind: </span>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{sign.template.kind}</span>
+            </div>
+          ) : (
+            <div>
+              {decrypt
+                ? 'The app will see what it decrypts. Allow always lets it decrypt without asking again.'
+                : 'Allow always lets this app encrypt with your key without asking again.'}
+            </div>
+          )}
         </div>
 
         {authority && <div className="card">
           <strong>{authority.parentPresence ? 'Confirm parent PIN setup or reset' : authority.child ? 'Add this child and authorise their Kinterest device' : 'Authorise this Kinterest family'}</strong>
           <p>{authority.parentPresence ? 'This confirms your presence to set or reset the separate parent PIN on this Kinterest device. It does not reveal or change your My Signet PIN.' : authority.child ? 'This shares the selected dependant’s persona name and picture with Kinterest. This device may ask, tick chores and count pots; it cannot approve spending or change parent settings.' : 'This family key may manage Kinterest and back up the family to your My Signet identity. Approve only the family you are setting up.'}</p>
           <p style={{ overflowWrap: 'anywhere' }}>Family key: {authority.familyPk}</p>
-          {authority.child && <><p>Selected child: <strong>{approval.kinterestChildName}</strong></p><p style={{ overflowWrap: 'anywhere' }}>Child identity: {authority.child.identityPk}</p><p style={{ overflowWrap: 'anywhere' }}>Device key: {authority.child.devicePk}</p></>}
+          {authority.child && <><p>Selected child: <strong>{sign?.kinterestChildName}</strong></p><p style={{ overflowWrap: 'anywhere' }}>Child identity: {authority.child.identityPk}</p><p style={{ overflowWrap: 'anywhere' }}>Device key: {authority.child.devicePk}</p></>}
           <p>This approval applies once. It is never remembered for future family or child authorisations.</p>
         </div>}
         {!approval.client.existing && (

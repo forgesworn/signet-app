@@ -404,8 +404,8 @@ describe('useBunkerServer NostrConnect integration', () => {
     unmount();
   });
 
-  it('rejects owner NIP-44 when the NostrConnect approval was not persisted', async () => {
-    const { ownerBackend, relayUrl, unmount } = renderOwnerServer('wss://canary-denied.example');
+  it('queues owner NIP-44 from a client with no saved approval instead of refusing it (#189)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-queued.example');
     const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
     const clientSk = generateSecretKey();
     const peerPubkey = getPublicKey(generateSecretKey());
@@ -414,17 +414,94 @@ describe('useBunkerServer NostrConnect integration', () => {
       ws.deliver(buildClientRequest({
         clientSk,
         targetPubkey: ownerBackend.activePublicKeyHex,
-        id: 'nip44-denied',
+        id: 'nip44-queued',
         method: 'nip44_encrypt',
-        params: [peerPubkey, 'blocked plaintext'],
+        params: [peerPubkey, 'held plaintext'],
       }));
     });
 
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    const pending = result.current.pendingApprovals[0];
+    expect(pending.method).toBe('nip44_encrypt');
+    expect(pending.route.dependantId).toBeNull();
+    // Nothing runs, and nothing is answered, until the owner decides.
+    expect(ws.published).toHaveLength(0);
+
+    await act(async () => { await result.current.deny(pending.handle); });
     await waitFor(() => expect(ws.published).toHaveLength(1));
     expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({
-      id: 'nip44-denied',
-      error: 'not connected',
+      id: 'nip44-queued',
+      error: 'user denied',
     });
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    unmount();
+  });
+
+  it('a Stash-style vault-key unwrap asks once, then "Allow always" answers later unwraps silently (#189)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-always.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    const self = ownerBackend.activePublicKeyHex;
+    // Data the owner encrypted to themselves, as Stash wraps its vault key.
+    const wrapped = await ownerBackend.nip44Encrypt(self, 'vault key bytes');
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({
+        clientSk, targetPubkey: self, id: 'unwrap-1', method: 'nip44_decrypt', params: [self, wrapped],
+      }));
+    });
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    const pending = result.current.pendingApprovals[0];
+    expect(pending.description).toBe('Decrypt data you encrypted to yourself');
+    expect(pending.alwaysAvailable).toBe(true);
+
+    await act(async () => { await result.current.approveAlways(pending.handle); });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({ id: 'unwrap-1', result: 'vault key bytes' });
+    expect((await getConnectedClient(clientPubkey))?.allowAlways).toBe(true);
+
+    await act(async () => {
+      ws.deliver(buildClientRequest({
+        clientSk, targetPubkey: self, id: 'unwrap-2', method: 'nip44_decrypt', params: [self, wrapped],
+      }));
+    });
+    await waitFor(() => expect(ws.published).toHaveLength(2));
+    expect(decryptServerResponse(clientSk, ws.published[1])).toEqual({ id: 'unwrap-2', result: 'vault key bytes' });
+    expect(result.current.pendingApprovals).toHaveLength(0);
+
+    await deleteConnectedClient(clientPubkey);
+    unmount();
+  });
+
+  it('"Allow once" answers one owner NIP-44 request and saves nothing (#189)', async () => {
+    const { ownerBackend, relayUrl, result, unmount } = renderOwnerServer('wss://canary-once.example');
+    const ws = await waitForOpenRelay(ownerBackend.activePublicKeyHex, relayUrl);
+    const clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    const peerSk = generateSecretKey();
+    const peerPubkey = getPublicKey(peerSk);
+    const incoming = encrypt('hello', getConversationKey(peerSk, ownerBackend.activePublicKeyHex));
+
+    const ask = async (id: string) => {
+      await act(async () => {
+        ws.deliver(buildClientRequest({
+          clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id, method: 'nip44_decrypt', params: [peerPubkey, incoming],
+        }));
+      });
+    };
+    await ask('once-1');
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(result.current.pendingApprovals[0].description).toMatch(/^Decrypt a message from npub1/);
+    await act(async () => { await result.current.approveOnce(result.current.pendingApprovals[0].handle); });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toEqual({ id: 'once-1', result: 'hello' });
+    expect(await getConnectedClient(clientPubkey)).toBeUndefined();
+
+    // The next request asks again.
+    await ask('once-2');
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(1);
     unmount();
   });
 
