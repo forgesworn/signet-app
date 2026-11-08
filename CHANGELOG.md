@@ -3,6 +3,11 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.24.2
+- Identity cards: while the app is locked, the card shows "Unlock to see where this identity is known" instead of an empty space where your sites go
+- Connected Sites: "Revoke" is now "Forget", and says that it only removes the site from this phone. The site still has your account
+- Locking while changes are still saving no longer locks the app again if you unlock it before the save finishes
+
 ## 0.24.1
 - Identity cards: “MY IDENTITY – MY SOVEREIGNTY – MY COMMUNITY” now runs across the top of the card
 - Android: the Bunker lets the phone sleep when signing has stopped. Waiting-request alerts use periodic network checks instead of keeping the CPU awake
