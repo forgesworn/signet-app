@@ -3,14 +3,22 @@ import type { KnownPlace, KnownPlaceChannel } from '../types/known-places';
 import type { Badge } from '../lib/known-place-badges';
 import { placeLabel, placeTint, relativeTime, hostnameOf } from '../lib/known-place-label';
 import { KnownPlaceBadgeGlyph } from './KnownPlaceBadgeGlyph';
+import { canOpenPlace } from '../lib/known-place-open';
+import { isNativeApp } from '../lib/native';
 
 export type KnownPlaceIdentityType = 'persona' | 'natural-person' | 'extra' | 'dependant' | 'bot';
 
 export interface KnownPlaceCtx {
   /** nip46: the paired client asks before each signature. */
   askToSign?: boolean;
-  /** nip55: the grant for this caller and this identity, if any. */
+  /** nip55: the grant for this caller AND this identity; null when there is none for this identity. */
   nip55Grant?: { allowAlways: boolean; denyAlways: boolean } | null;
+  /** nip55: the app's grant is pinned to a different identity, which this row must not touch. */
+  nip55OtherIdentity?: boolean;
+  /** nip46: the paired-client list has not loaded, so whether this one asks is unknown (no auto badge or action). */
+  loading?: boolean;
+  /** The installed app's own name from the phone's package manager (native only). */
+  appLabel?: string;
   /** nip46: unix seconds the paired client was last seen. */
   lastSeenAt?: number;
 }
@@ -54,9 +62,7 @@ const CHANNEL_SENTENCE: Record<KnownPlaceChannel, string> = {
   unknown: '',
 };
 
-export function canOpenPlace(place: KnownPlace): boolean {
-  return (place.channel === 'phone-app' && !!place.nativePackage) || (place.channel === 'browser' && !!place.origin);
-}
+export const PAIRED_TO_OTHER_IDENTITY_COPY = 'This app is currently paired to a different identity.';
 
 /** The one-line row summary: "<identity> · <channel> · <time>". */
 export function placeSummary(place: KnownPlace, ctx: KnownPlaceCtx, identityName: string, last: number, now: number): string {
@@ -92,8 +98,11 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const label = placeLabel(place);
   const primary = badges[0] ?? null;
   const grant = place.kind === 'nip55' ? ctx.nip55Grant ?? null : null;
-  const isAuto = place.kind === 'nip46' ? !ctx.askToSign : !!grant?.allowAlways;
-  const canAuto = place.kind === 'nip46' || place.kind === 'nip55';
+  const isAuto = place.kind === 'nip46' ? !ctx.loading && !ctx.askToSign : !!grant?.allowAlways;
+  // No auto action until the client list has loaded; and a NIP-55 row acts only on a grant pinned to ITS identity.
+  const canAuto = (place.kind === 'nip46' && !ctx.loading) || (place.kind === 'nip55' && grant !== null);
+  const canDisconnect = place.kind === 'nip46' || (place.kind === 'nip55' && !ctx.nip55OtherIdentity);
+  const openable = canOpenPlace(place, isNativeApp());
   const channelSentence = CHANNEL_SENTENCE[place.channel];
 
   const run = async (fn: () => void | Promise<void>) => {
@@ -108,10 +117,17 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
     : place.signer === 'extension' ? 'a browser extension' : '';
 
   let otherLine: ReactNode = null;
-  if (!canOpenPlace(place)) {
+  if (place.kind === 'nip55' && ctx.nip55OtherIdentity) otherLine = PAIRED_TO_OTHER_IDENTITY_COPY;
+  else if (!openable) {
     if (place.channel === 'other-device') otherLine = 'Signed in on another device';
     else if (place.kind === 'nip46' || place.kind === 'nip55') otherLine = 'Paired app';
   }
+
+  const knownAsParts = [
+    place.name && place.name !== label && place.name !== place.nativePackage && place.name !== ctx.appLabel ? place.name : '',
+    place.origin ? hostnameOf(place.origin) : '',
+    place.nativePackage ? (ctx.appLabel ? `${ctx.appLabel} app` : 'Android app') : '',
+  ].filter(Boolean);
 
   return (
     <li className={`kp-row${expanded ? ' kp-row--open' : ''}`} data-kp-row={place.id}>
@@ -131,10 +147,8 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             <div>
               <dt>Known as</dt>
               <dd>
-                {place.name && place.name !== label ? `${place.name} · ` : ''}
-                {place.origin ? hostnameOf(place.origin) : ''}
-                {place.nativePackage ? `${place.origin ? ' · ' : ''}Android app ${place.nativePackage}` : ''}
-                {!place.origin && !place.nativePackage && !place.name ? label : ''}
+                {knownAsParts.length > 0 ? knownAsParts.join(' · ') : label}
+                {place.nativePackage && <span className="kp-fact-sub">{place.nativePackage}</span>}
               </dd>
             </div>
             {channelSentence && <div><dt>How</dt><dd>{channelSentence}</dd></div>}
@@ -194,14 +208,14 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
                   {grant?.denyAlways ? 'Ask each time' : isAuto ? 'Stop signing automatically' : 'Sign automatically'}
                 </button>
               )}
-              {canOpenPlace(place) && (
+              {openable && (
                 <button type="button" className="btn btn-secondary kp-btn" disabled={busy}
                   onClick={() => void run(() => actions.open(place))}>Open</button>
               )}
               {place.kind === 'sign-in' && (
                 <button type="button" className="btn btn-ghost kp-btn kp-btn--danger" onClick={() => setConfirm('forget')}>Forget</button>
               )}
-              {canAuto && (
+              {canDisconnect && (
                 <button type="button" className="btn btn-ghost kp-btn kp-btn--danger" onClick={() => setConfirm('disconnect')}>Disconnect</button>
               )}
             </div>
@@ -222,10 +236,12 @@ interface HeartwoodRowProps {
   expanded: boolean;
   onToggle: () => void;
   onRevoke: (fingerprint: string) => void | Promise<void>;
+  /** False when the device is known not to support revoking; the action is then not offered. */
+  canRevoke?: boolean;
 }
 
 /** An app paired straight to the Heartwood: read from the device, never stored. */
-export function HeartwoodRow({ fingerprint, label, boundIdentity, policySummary, expanded, onToggle, onRevoke }: HeartwoodRowProps) {
+export function HeartwoodRow({ fingerprint, label, boundIdentity, policySummary, expanded, onToggle, onRevoke, canRevoke = true }: HeartwoodRowProps) {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -246,7 +262,7 @@ export function HeartwoodRow({ fingerprint, label, boundIdentity, policySummary,
             <div><dt>Identity</dt><dd>{boundIdentity}</dd></div>
             <div><dt>Rules</dt><dd>{policySummary}</dd></div>
           </dl>
-          {confirm ? (
+          {!canRevoke ? null : confirm ? (
             <div className="kp-confirm" role="group" aria-label="Confirm">
               <p>Removes this app from the device.</p>
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}

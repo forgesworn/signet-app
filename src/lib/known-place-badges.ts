@@ -25,6 +25,8 @@ export interface BadgeContext {
   askToSign?: boolean;
   /** nip55 only: the grant for this caller, if the person made one. */
   nip55Grant?: { allowAlways: boolean; denyAlways: boolean } | null;
+  /** The paired-client list has not loaded yet: whether a client signs automatically is unknown, so claim nothing. */
+  loading?: boolean;
   /** Unix seconds when this place's access ends, if it ends. */
   expiresAt?: number;
   /** Unix seconds. */
@@ -49,9 +51,9 @@ export function badgesFor(place: KnownPlace, ctx: BadgeContext): Badge[] {
     badges.push({ kind: 'expires-soon', label: 'Expires soon' });
   }
 
-  const signsAutomatically =
+  const signsAutomatically = !ctx.loading && (
     (place.kind === 'nip46' && !ctx.askToSign) ||
-    (place.kind === 'nip55' && ctx.nip55Grant?.allowAlways === true);
+    (place.kind === 'nip55' && ctx.nip55Grant?.allowAlways === true));
   if (signsAutomatically) badges.push({ kind: 'auto', label: 'Signs automatically' });
 
   if (place.signer === 'heartwood') badges.push({ kind: 'heartwood', label: 'Approved on Heartwood' });

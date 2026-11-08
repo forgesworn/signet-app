@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { KnownPlacesCard, type KnownPlacesCardProps } from './KnownPlacesCard';
+import { KnownPlacesCard, KnownPlacesDependantCard, type KnownPlacesCardProps } from './KnownPlacesCard';
 import type { KnownPlace } from '../types/known-places';
+
+const native = vi.hoisted(() => ({ value: true }));
+vi.mock('../lib/native', () => ({ isNativeApp: () => native.value }));
 
 const NOW = 1_800_000_000;
 const DAY = 86_400;
@@ -204,5 +207,63 @@ describe('KnownPlacesCard', () => {
   it('puts the known-places-card class on its root', () => {
     const { view } = setup();
     expect(view.container.firstElementChild?.className).toContain('known-places-card');
+  });
+
+  it('offers no Auto or Disconnect for a NIP-55 row whose app is paired to another identity', () => {
+    const app = place('pkg', { kind: 'nip55', channel: 'nip55', origin: undefined, nativePackage: 'org.y' });
+    setup({ places: [app], ctxFor: () => ({ nip55Grant: null, nip55OtherIdentity: true }) });
+    expand('pkg');
+    expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically|Ask each time/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+    expect(screen.getByText('This app is currently paired to a different identity.')).toBeDefined();
+  });
+
+  it('offers no Auto action for a NIP-55 row with no grant, but still lets the stale row be removed', () => {
+    const app = place('pkg', { kind: 'nip55', channel: 'nip55', origin: undefined, nativePackage: 'org.y' });
+    setup({ places: [app], ctxFor: () => ({ nip55Grant: null }) });
+    expand('pkg');
+    expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeDefined();
+    expect(screen.queryByText('This app is currently paired to a different identity.')).toBeNull();
+  });
+
+  it('shows no auto action while the paired clients load', () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined });
+    setup({ places: [nc], ctxFor: () => ({ loading: true }) });
+    expand('nc');
+    expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically/ })).toBeNull();
+  });
+
+  it('opens a phone-app place only on native', () => {
+    native.value = false;
+    try {
+      setup({ places: [place('zeta', { channel: 'phone-app', nativePackage: 'org.x' })] });
+      expand('zeta');
+      expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+    } finally { native.value = true; }
+  });
+
+  it("names an app by the phone's own label, with the package in a smaller line", () => {
+    setup({ places: [place('Stampede', { channel: 'phone-app', nativePackage: 'dev.stampede', origin: undefined })], ctxFor: () => ({ appLabel: 'Stampede' }) });
+    expand('Stampede');
+    expect(screen.getByText('Stampede app')).toBeDefined();
+    expect(screen.getByText('dev.stampede').className).toContain('kp-fact-sub');
+  });
+
+  it('hides the revoke action when the device cannot revoke, and the whole group for a paired child', () => {
+    const hw = [{ fingerprint: 'ff00', label: 'Bark', boundIdentity: 'Alice', policySummary: 'Asks on the device' }];
+    const { view, props } = setup({ heartwoodClients: hw, canRevokeOnHeartwood: false });
+    expand('Bark');
+    expect(screen.queryByRole('button', { name: 'Revoke on Heartwood' })).toBeNull();
+    view.rerender(<KnownPlacesCard {...props} heartwoodClients={null} hideHeartwood />);
+    expect(screen.queryByText(/managed in Sapwood/)).toBeNull();
+    expect(screen.queryByRole('region', { name: 'On your Heartwood' })).toBeNull();
+  });
+
+  it('renders a minimal dependant card pointing at their Activity page', () => {
+    const { container } = render(<KnownPlacesDependantCard name="Sam" />);
+    expect(container.firstElementChild?.className).toContain('known-places-card');
+    expect(screen.getByText('Where Sam is known shows on their Activity page.')).toBeDefined();
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 });

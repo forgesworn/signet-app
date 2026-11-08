@@ -26,6 +26,12 @@ const kinds = (p: KnownPlace, ctx: Partial<Parameters<typeof badgesFor>[1]> = {}
   badgesFor(p, { now: NOW, ...ctx }).map(b => b.kind);
 
 describe('badgesFor', () => {
+  it('claims no automatic signing while the paired clients are still loading', () => {
+    const nc = place({ kind: 'nip46', channel: 'nip46' });
+    expect(kinds(nc, { askToSign: undefined })).toContain('auto');
+    expect(kinds(nc, { askToSign: undefined, loading: true })).not.toContain('auto');
+  });
+
   it('gives a plain recent sign-in no badges', () => {
     expect(badgesFor(place(), { now: NOW })).toEqual([]);
     expect(primaryBadge([])).toBeNull();

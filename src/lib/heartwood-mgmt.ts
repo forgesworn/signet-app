@@ -376,6 +376,18 @@ export function hasCapability(s: DeviceStatus, cap: string): boolean | null {
   return s.capabilities.includes(cap);
 }
 
+/**
+ * Whether the device can `revoke_client`. The firmware advertises no capability
+ * for it (the method predates the capability list), so the only definite "no"
+ * is a device that answered `get_status` with no capabilities at all (older
+ * firmware that never advertised any). No/truncated status ⇒ `null`
+ * (unverified); treated as available, like `resolve_approval_v1`.
+ */
+export function canRevokeClient(status: DeviceStatus | null): boolean | null {
+  if (!status || status.capabilities === null) return null;
+  return status.capabilities.length > 0;
+}
+
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every(x => typeof x === 'string');
 }

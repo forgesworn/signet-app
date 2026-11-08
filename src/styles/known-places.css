@@ -62,6 +62,7 @@
 .kp-facts > div { display: flex; gap: 10px; }
 .kp-facts dt { flex: 0 0 92px; color: var(--text-secondary); }
 .kp-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.kp-fact-sub { display: block; font-size: .72rem; color: var(--text-secondary); }
 .kp-alias, .kp-alias-edit { display: flex; align-items: center; gap: 8px; font-size: .8rem; flex-wrap: wrap; }
 .kp-alias-edit .kp-input { flex: 1 1 140px; width: auto; }
 .kp-actions, .kp-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

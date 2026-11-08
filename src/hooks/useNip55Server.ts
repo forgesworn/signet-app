@@ -82,6 +82,11 @@ interface Waiting {
   pubkey: string | null;
 }
 
+/** A grant is pinned to one key; a caller that names another key must leave it alone. */
+function grantIsFor(grant: Nip55Grants[string], pubkey: string): boolean {
+  return !!pubkey && grant.pubkey.toLowerCase() === pubkey.toLowerCase();
+}
+
 export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = () => Date.now(), gate }: Options) {
   const keyExpiredRef = useRef(keyExpired);
   keyExpiredRef.current = keyExpired;
@@ -372,20 +377,31 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   // must follow or a deleted identity's "always" grants keep being honoured.
   useEffect(() => subscribePurge(() => { grantsRef.current = {}; setGrants({}); }), []);
 
-  const forget = useCallback((pkg: string) => {
+  /**
+   * Forget a remembered app. With `forPubkey`, only if its grant is pinned to
+   * that key (a row for persona A must never delete persona B's pairing);
+   * returns whether a grant was removed.
+   */
+  const forget = useCallback((pkg: string, forPubkey?: string): boolean => {
+    const grant = grantsRef.current[pkg];
+    if (!grant) return false;
+    if (forPubkey !== undefined && !grantIsFor(grant, forPubkey)) return false;
     setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });
+    return true;
   }, []);
 
   /**
    * Change how a remembered app is treated from the known-places list:
    * `true` signs without asking, `false` asks each time (and lifts a standing
-   * refusal). No-op for an app with no grant. Goes through `remember` so the
+   * refusal). No-op (returns false) for an app with no grant, or whose grant is
+   * pinned to a key other than `forPubkey`. Goes through `remember` so the
    * synchronous request path sees it at once.
    */
-  const setAllowAlways = useCallback((pkg: string, allow: boolean) => {
+  const setAllowAlways = useCallback((pkg: string, allow: boolean, forPubkey: string): boolean => {
     const grant = grantsRef.current[pkg];
-    if (!grant) return;
+    if (!grant || !grantIsFor(grant, forPubkey)) return false;
     remember(pkg, { ...grant, allowAlways: allow, denyAlways: false });
+    return true;
   }, [remember]);
 
   const pending = useMemo<PendingNip55 | null>(() => {

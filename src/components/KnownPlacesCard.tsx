@@ -27,6 +27,10 @@ export interface KnownPlacesCardProps {
   ctxFor: (place: KnownPlace) => KnownPlaceCtx;
   /** Apps paired straight to the Heartwood, or null when no operator key can list them. */
   heartwoodClients: HeartwoodAppEntry[] | null;
+  /** A paired-child install has no Heartwood management: the group, and the line about Sapwood, are not rendered. */
+  hideHeartwood?: boolean;
+  /** False when the device is known not to support revoking an app. Default true (unknown counts as available). */
+  canRevokeOnHeartwood?: boolean;
   actions: KnownPlaceActions;
 }
 
@@ -40,7 +44,7 @@ interface Entry { place: KnownPlace; ctx: KnownPlaceCtx; last: number }
  * nothing here is a trust input.
  */
 export function KnownPlacesCard({
-  identityName, identityType, places, locked, onUnlock, focusId, onFocusConsumed, ctxFor, heartwoodClients, actions,
+  identityName, identityType, places, locked, onUnlock, focusId, onFocusConsumed, ctxFor, heartwoodClients, hideHeartwood, canRevokeOnHeartwood = true, actions,
 }: KnownPlacesCardProps) {
   const [query, setQuery] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -98,7 +102,7 @@ export function KnownPlacesCard({
             identityType={identityType}
             last={e.last}
             now={now}
-            badges={badgesFor(e.place, { askToSign: e.ctx.askToSign, nip55Grant: e.ctx.nip55Grant, now })}
+            badges={badgesFor(e.place, { askToSign: e.ctx.askToSign, nip55Grant: e.ctx.nip55Grant, loading: e.ctx.loading, now })}
             expanded={expandedId === e.place.id}
             onToggle={() => toggle(e.place.id)}
             actions={actions}
@@ -140,7 +144,7 @@ export function KnownPlacesCard({
             {renderGroup('Pinned', pinned)}
             {renderGroup('Recent', recent)}
             {renderGroup('Not used in 3 months', dormant)}
-            {heartwoodClients !== null ? (
+            {hideHeartwood ? null : heartwoodClients !== null ? (
               heartwoodClients.length === 0 && !needle ? (
                 <p className="kp-note">No apps are paired straight to your Heartwood.</p>
               ) : heartwood.length > 0 && (
@@ -154,6 +158,7 @@ export function KnownPlacesCard({
                         expanded={expandedId === `hw:${c.fingerprint}`}
                         onToggle={() => toggle(`hw:${c.fingerprint}`)}
                         onRevoke={actions.revokeOnHeartwood}
+                        canRevoke={canRevokeOnHeartwood}
                       />
                     ))}
                   </ul>
@@ -164,6 +169,21 @@ export function KnownPlacesCard({
             )}
           </>
         )}
+      </div>
+    </section>
+  );
+}
+
+/** A dependant's card: the places live with the dependant's own activity, not here. */
+export function KnownPlacesDependantCard({ name }: { name: string }) {
+  return (
+    <section className="known-places-card" aria-label={`Where ${name || 'this dependant'} is known`}>
+      <header className="kp-header">
+        <h2>Where you’re known</h2>
+        <p className="kp-header-sub" title={name}>{name || 'This dependant'}</p>
+      </header>
+      <div className="kp-body">
+        <p className="kp-note">Where {name || 'this dependant'} is known shows on their Activity page.</p>
       </div>
     </section>
   );

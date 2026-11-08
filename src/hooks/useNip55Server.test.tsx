@@ -147,13 +147,32 @@ describe('useNip55Server', () => {
   it('setAllowAlways changes a remembered app, lifts a refusal, and ignores an unknown app', async () => {
     localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 }, 'dev.blocked': { pubkey, allowAlways: false, denyAlways: true, grantedAt: 1 } }));
     const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
-    act(() => { result.current.setAllowAlways('dev.forgesworn.kithmoot', false); });
+    act(() => { result.current.setAllowAlways('dev.forgesworn.kithmoot', false, pubkey); });
     expect(result.current.grants['dev.forgesworn.kithmoot']).toMatchObject({ allowAlways: false, denyAlways: false });
     expect(JSON.parse(localStorage.getItem('signet.nip55.grants')!)['dev.forgesworn.kithmoot'].allowAlways).toBe(false);
-    act(() => { result.current.setAllowAlways('dev.blocked', false); });
+    act(() => { result.current.setAllowAlways('dev.blocked', false, pubkey); });
     expect(result.current.grants['dev.blocked']).toMatchObject({ allowAlways: false, denyAlways: false });
-    act(() => { result.current.setAllowAlways('dev.unknown', true); });
+    act(() => { result.current.setAllowAlways('dev.unknown', true, pubkey); });
     expect(result.current.grants['dev.unknown']).toBeUndefined();
+  });
+
+  it('setAllowAlways and forget leave a grant pinned to another identity unchanged', () => {
+    const other = 'b'.repeat(64);
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: other, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    let changed = true;
+    act(() => { changed = result.current.setAllowAlways('dev.forgesworn.kithmoot', false, pubkey); });
+    expect(changed).toBe(false);
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toMatchObject({ pubkey: other, allowAlways: true });
+    let removed = true;
+    act(() => { removed = result.current.forget('dev.forgesworn.kithmoot', pubkey); });
+    expect(removed).toBe(false);
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toBeDefined();
+    expect(JSON.parse(localStorage.getItem('signet.nip55.grants')!)['dev.forgesworn.kithmoot'].allowAlways).toBe(true);
+    // The owning identity can still act on it.
+    act(() => { removed = result.current.forget('dev.forgesworn.kithmoot', other); });
+    expect(removed).toBe(true);
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toBeUndefined();
   });
 
   it('a request held through an unlock is answered silently when the app was allowed always', async () => {

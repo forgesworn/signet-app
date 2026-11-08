@@ -17,6 +17,7 @@ import {
   type MgmtTransport,
   getStatus,
   hasCapability,
+  canRevokeClient,
   listClients,
   parseDeviceClientSlot,
   updateClientPolicy,
@@ -1021,5 +1022,15 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
     await expect(nostrconnectV2(c, req())).rejects.toThrow('create_slot failed (slot table full)');
     await expect(revokeClient(c, { slotIndex: 1, secretFingerprint: 'x' })).rejects.toThrow(/stale_client_slot/);
     c.stop();
+  });
+});
+
+describe('canRevokeClient', () => {
+  const st = (capabilities: string[] | null) => ({ capabilities, masterNpubHex: 'a'.repeat(64), truncated: false });
+  it('is unverified without a status or a capability list, and false only for a device that advertises none', () => {
+    expect(canRevokeClient(null)).toBeNull();
+    expect(canRevokeClient(st(null))).toBeNull();
+    expect(canRevokeClient(st([]))).toBe(false);
+    expect(canRevokeClient(st(['mutation_challenge_v1']))).toBe(true);
   });
 });
