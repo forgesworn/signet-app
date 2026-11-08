@@ -1,10 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { activateRealIdentity, createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
 
 test.describe('Venue Entry', () => {
   test.beforeEach(async ({ page }) => {
     await clearDatabase(page);
     await createIdentityAndUnlock(page);
+    // The venue pass is signed by the real identity, which starts dormant: the
+    // route shows the activation gate until it is activated.
+    await navigateViaHarness(page, 'venue-entry');
+    await activateRealIdentity(page);
   });
 
   test('QR code displayed with correct payload', async ({ page }) => {

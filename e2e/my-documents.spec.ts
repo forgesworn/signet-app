@@ -5,50 +5,40 @@
  * duplicated here.
  *
  * onAddDocument and onSelectDocument are both no-ops in App.tsx (the page
- * renders as a read-only list). Documents are therefore injected directly
- * into IndexedDB via page.evaluate, then the page is re-navigated so that
- * useDocuments re-loads from the store.
+ * renders as a read-only list). Documents are therefore seeded through the
+ * DEV harness's `seedIdentityDocument`, which writes through the app's
+ * encrypted `saveDocument` (documents are encrypted at rest, so a raw
+ * IndexedDB put of plaintext fields is unreadable), then the app is reloaded
+ * and unlocked so that useDocuments re-loads from the store.
+ *
+ * My Documents belongs to the real identity, which starts dormant: the route
+ * shows the activation gate until the real identity is activated.
  */
 
 import { test, expect } from '@playwright/test';
-import { createIdentityAndUnlock, clearDatabase, navigateViaHarness } from './fixtures';
+import { activateRealIdentity, createIdentityAndUnlock, clearDatabase, navigateViaHarness, unlockAfterReload } from './fixtures';
+
+type SeedDocument = {
+  id: string;
+  /** Omit for the real identity's own pubkey (what the page lists). */
+  ownerPubkey?: string;
+  country: string;
+  documentType: string;
+  fullName: string;
+  dateOfBirth: string;
+  documentNumber: string;
+};
 
 // ---------------------------------------------------------------------------
-// Helper: write one or more IdentityDocument objects into the 'documents' IDB
-// store and return to the my-documents page so useDocuments picks them up.
+// Helper: write one or more documents through the app's encrypted writer, then
+// reload and unlock so useDocuments picks them up.
 // ---------------------------------------------------------------------------
-async function injectDocuments(
-  page: import('@playwright/test').Page,
-  docs: Array<{
-    id: string;
-    ownerPubkey: string;
-    country: string;
-    documentType: string;
-    fullName: string;
-    dateOfBirth: string;
-    documentNumber: string;
-  }>,
-) {
-  await page.evaluate((records) => {
-    return new Promise<void>((resolve, reject) => {
-      // Open the existing DB at its current version (the app created it at
-      // DB_VERSION during createIdentityAndUnlock). Hardcoding a version here
-      // throws VersionError once the app's DB_VERSION moves past it.
-      const req = indexedDB.open('my-signet');
-      req.onsuccess = () => {
-        const db = req.result;
-        const tx = db.transaction('documents', 'readwrite');
-        const store = tx.objectStore('documents');
-        for (const doc of records) {
-          store.put({ ...doc, createdAt: Date.now(), updatedAt: Date.now() });
-        }
-        tx.oncomplete = () => { db.close(); resolve(); };
-        tx.onerror = () => { db.close(); reject(tx.error); };
-      };
-      req.onerror = () => reject(req.error);
-    });
-  }, docs);
+async function injectDocuments(page: import('@playwright/test').Page, docs: SeedDocument[]) {
+  for (const doc of docs) {
+    await page.evaluate((record) => (window as any).__TEST__.seedIdentityDocument(record), doc);
+  }
   await page.reload();
+  await unlockAfterReload(page);
   await page.locator('.carousel-viewport, div[role="main"]').first().waitFor({ state: 'visible', timeout: 60_000 });
 }
 
@@ -59,15 +49,14 @@ test.describe('MyDocuments — with documents present', () => {
   test.beforeEach(async ({ page }) => {
     await clearDatabase(page);
     await createIdentityAndUnlock(page);
+    await navigateViaHarness(page, 'my-documents');
+    await activateRealIdentity(page);
   });
 
   test('displays a single passport in the list', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-pp-001',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'passport',
         fullName: 'Alice Example',
@@ -100,12 +89,9 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('displays the correct icon abbreviations for each document type', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-pp-002',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'passport',
         fullName: 'Bob Smith',
@@ -114,7 +100,6 @@ test.describe('MyDocuments — with documents present', () => {
       },
       {
         id: 'doc-dl-001',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'driving_licence',
         fullName: 'Bob Smith',
@@ -123,7 +108,6 @@ test.describe('MyDocuments — with documents present', () => {
       },
       {
         id: 'doc-id-001',
-        ownerPubkey: pubkey,
         country: 'DE',
         documentType: 'national_id',
         fullName: 'Bob Schmidt',
@@ -132,7 +116,6 @@ test.describe('MyDocuments — with documents present', () => {
       },
       {
         id: 'doc-bc-001',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'birth_certificate',
         fullName: 'Baby Jones',
@@ -151,12 +134,9 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('displays the correct human-readable label for each document type', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-label-pp',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'passport',
         fullName: 'Carol Test',
@@ -165,7 +145,6 @@ test.describe('MyDocuments — with documents present', () => {
       },
       {
         id: 'doc-label-dl',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'driving_licence',
         fullName: 'Carol Test',
@@ -182,12 +161,9 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('masks document number showing only last 4 digits', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-mask-001',
-        ownerPubkey: pubkey,
         country: 'FR',
         documentType: 'national_id',
         fullName: 'Denis Dupont',
@@ -207,12 +183,9 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('short document number (4 chars or fewer) is shown unmasked', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-short-001',
-        ownerPubkey: pubkey,
         country: 'US',
         documentType: 'national_id',
         fullName: 'Eve Short',
@@ -229,12 +202,9 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('multiple documents are all rendered in the list', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-multi-1',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'passport',
         fullName: 'Frank Alpha',
@@ -243,7 +213,6 @@ test.describe('MyDocuments — with documents present', () => {
       },
       {
         id: 'doc-multi-2',
-        ownerPubkey: pubkey,
         country: 'IE',
         documentType: 'driving_licence',
         fullName: 'Frank Alpha',
@@ -266,12 +235,9 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('"Add another document" button is present in non-empty state', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       {
         id: 'doc-add-btn-001',
-        ownerPubkey: pubkey,
         country: 'AU',
         documentType: 'passport',
         fullName: 'Grace Hopper',
@@ -290,13 +256,10 @@ test.describe('MyDocuments — with documents present', () => {
   });
 
   test('documents from a different owner pubkey are not shown', async ({ page }) => {
-    const pubkey = await page.evaluate(() => (window as any).__TEST__.getActivePubkey());
-
     await injectDocuments(page, [
       // Correct owner
       {
         id: 'doc-owner-match',
-        ownerPubkey: pubkey,
         country: 'GB',
         documentType: 'passport',
         fullName: 'Correct Owner',
