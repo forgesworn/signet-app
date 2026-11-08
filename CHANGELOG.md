@@ -4,6 +4,7 @@ Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
 ## 0.25.0
+- Family: an edit to a dependant made on this phone is no longer undone by an older copy arriving from another device
 - Identity cards: the site tiles are now a record of where each identity is known, not shortcuts. Chips fill the space available (two per row, "+N" for the rest), each with one small badge: signs automatically, approved on your Heartwood, another device, shared handle or picture, pinned, not used in 3 months
 - New "Where you're known" column on each card (swipe past Contacts): every site and app that identity has signed in to or paired with, grouped Pinned / Recent / Not used in 3 months, with the full story when you tap a row — which identity, how it arrived (an app on this phone, this phone's browser, another device, Nostr Connect), whether your Heartwood approved it, what was shared, first and last use
 - Row actions say what they do: Pin, Open (only for an app on this phone or a browser sign-in), Forget (removes it from this phone; the site still has your account), Disconnect, Stop signing automatically
