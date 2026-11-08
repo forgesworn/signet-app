@@ -3,6 +3,16 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.24.3
+- Apps that ask My Signet to encrypt or decrypt (NIP-44 or NIP-04) now get an approval prompt instead of a refusal. "Allow always" remembers the app
+- Android: other apps on the phone can decrypt older NIP-04 direct messages through My Signet
+- An imported nsec now has its own 31 recovery words in Security, Backup Words, and an imported persona shows its words on its Advanced page
+- An app you paired as one persona can no longer ask another of your personas to sign
+- Publishing a persona's profile for the first time from this phone asks first if the profile was changed in another app, so you can keep that version
+- A dependant's autonomy stage no longer reverts a second after you change it
+- After you change a backup key, its row shows the new key version straight away
+- Edits made on two devices close together are no longer left out of the backup
+
 ## 0.24.2
 - Identity cards: while the app is locked, the card shows "Unlock to see where this identity is known" instead of an empty space where your sites go
 - Connected Sites: "Revoke" is now "Forget", and says that it only removes the site from this phone. The site still has your account
