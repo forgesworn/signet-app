@@ -305,16 +305,19 @@ export function usePersonasSync({ publishEnabled = true,
           // Only a genuine local win — a newer rename, a local-only
           // persona, a newer tombstone — or a local ordering that should
           // win (our own record is at least as new as the relay's, and the
-          // order actually differs) leaves the ref alone so the publish
-          // effect pushes the merge after the jittered delay.
+          // order actually differs) clears the ref so the publish effect
+          // pushes the merge after the jittered delay. Cleared rather than
+          // left alone: if this device already published exactly this wire
+          // earlier in the session, the stale ref would match it and the
+          // republish would be suppressed until the next mount.
           const mergedWire = toWire(mergedIdentity);
           const orderKey = (payload: { personas: Array<{ derivationName: string }> }) =>
             payload.personas.map((x) => x.derivationName).join('|');
           const localOrderWon =
             remote.createdAt <= localRecordAt && orderKey(mergedWire) !== orderKey(remote.payload);
-          if (!isWireRicherThan(mergedWire, remote.payload) && !localOrderWon) {
-            lastPublishedHashRef.current = JSON.stringify(mergedWire);
-          }
+          lastPublishedHashRef.current = isWireRicherThan(mergedWire, remote.payload) || localOrderWon
+            ? ''
+            : JSON.stringify(mergedWire);
 
           setRemoteState('present');
         }

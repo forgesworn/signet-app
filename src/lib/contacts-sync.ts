@@ -241,6 +241,29 @@ export function mergeContactLists(local: Contact[], remote: Contact[]): {
 }
 
 /**
+ * Is `merged` carrying anything the relay's `remote` record does not hold?
+ *
+ * The post-fetch reseed needs this, not a plain inequality: the merge keeps
+ * the local copy on a `verifiedAt` tie, so two devices that disagree on a
+ * field at the same timestamp would each see `merged !== remote` and
+ * republish on every unlock, flapping. Only the asymmetric cases count:
+ *   - a contact (by pubkey) the remote record lacks;
+ *   - a contact whose `verifiedAt` is STRICTLY newer than the remote's.
+ * Anything remote holds and `merged` lacks does not count (the merge never
+ * drops it, but a record that failed `parsePayload` is not in `remote`), and
+ * neither does a tie.
+ */
+export function isContactsRicherThan(merged: Contact[], remote: Contact[]): boolean {
+  const remoteByPubkey = new Map(remote.map((c) => [c.pubkey, c] as const));
+  for (const c of merged) {
+    const r = remoteByPubkey.get(c.pubkey);
+    if (!r) return true;
+    if (c.verifiedAt > r.verifiedAt) return true;
+  }
+  return false;
+}
+
+/**
  * Collect the pubkeys that belong to a given identity — used to
  * gather the full contacts set before publishing.
  */

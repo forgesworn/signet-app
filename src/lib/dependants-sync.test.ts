@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the relay transport so publish/fetch resolve without a live relay —
 // same vi.hoisted per-URL pattern as personas-sync.test.ts.
 const relayMock = vi.hoisted(() => ({
-  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string }>>,
+  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string; pubkey?: string }>>,
   fetchThrows: new Set<string>(),
   fetchFailUrls: new Set<string>(),
   published: [] as Array<{ url: string; id: string }>,
@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 import type { DependantIdentity, DependantBunkerEndpoint, TrustedAppEndpoint } from '../types';
-import { toSyncWire, fromSyncWire, mergeDependantWithLocal, parsePayload, publishDependantsSync, fetchDependantsSync } from './dependants-sync';
+import { toSyncWire, fromSyncWire, mergeDependantWithLocal, isDependantsRicherThan, parsePayload, publishDependantsSync, fetchDependantsSync } from './dependants-sync';
 import { isDependantNaturalPersonActive } from './identity-display';
 
 // Standard all-zeros BIP-39 mnemonic — deterministic test fixture.
@@ -906,6 +906,32 @@ describe('fetchDependantsSync — relay pool', () => {
     expect(result).toBe('unreachable');
   });
 
+  it('ignores a newer event authored by someone else (author pin)', async () => {
+    const payload = JSON.stringify({ v: 1, dependants: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content: fakeNip44(payload) }],
+      'wss://b.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchDependantsSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
+    expect(result).not.toBe('unreachable');
+    expect(result).not.toBeNull();
+    if (result && result !== 'unreachable') {
+      expect(result.eventId).toBe('1'.repeat(64));
+      expect(result.createdAt).toBe(1000);
+    }
+  });
+
+  it("reads a pool that only holds a stranger's event as nothing found, not unreachable", async () => {
+    const payload = JSON.stringify({ v: 1, dependants: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeSyncBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchDependantsSync(AUTHOR, backend, ['wss://a.example']);
+    expect(result).toBeNull();
+  });
+
   it('accepts a plain string relayUrl (single-relay pool)', async () => {
     const payload = JSON.stringify({ v: 1, dependants: [] });
     relayMock.fetchReturns = { 'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content: fakeNip44(payload) }] };
@@ -1016,5 +1042,100 @@ describe('deleted dependant persona recovery', () => {
       extraPersonaTombstones: [{ derivationName: 'dependant-1-persona-99', removedAt: 1 }],
     });
     expect(nextDependantPersonaName(dep)).toBe('dependant-0-persona-5');
+  });
+});
+
+describe('isDependantsRicherThan', () => {
+  const EXTRA = (name: string, pub: string) => ({
+    publicKey: pub,
+    privateKey: '',
+    displayName: name,
+    derivationName: `dependant-0-persona-${name.length}`,
+  });
+  const wireOf = (dep: DependantIdentity) => toSyncWire(dep)!;
+  const schedule = (issuedAt: number) => ({
+    v: 1 as const,
+    tz: 'Europe/London',
+    weekly: { fri: [{ start: '16:00', end: '20:00' }] },
+    issuedAt,
+  });
+
+  it('an identical dependant is not richer', () => {
+    const dep = makeDerivedDep();
+    expect(isDependantsRicherThan([dep], [wireOf(dep)])).toBe(false);
+  });
+
+  it('a dependant only the merged side holds is richer (no-deletion policy)', () => {
+    expect(isDependantsRicherThan([makeDerivedDep(), makeViewOnlyDep()], [wireOf(makeDerivedDep())])).toBe(true);
+  });
+
+  it('a dependant only the remote holds is NOT richer (the relay is the richer side)', () => {
+    expect(isDependantsRicherThan([makeDerivedDep()], [wireOf(makeDerivedDep()), wireOf(makeViewOnlyDep())])).toBe(false);
+  });
+
+  it('a local record that cannot be put on the wire (imported with a mnemonic) never counts', () => {
+    expect(isDependantsRicherThan([makePrivateImportDep()], [])).toBe(false);
+  });
+
+  it('a strictly newer createdAt (the LWW guard kept the local record whole) is richer', () => {
+    const remote = wireOf(makeDerivedDep({ createdAt: 1000 }));
+    expect(isDependantsRicherThan([makeDerivedDep({ createdAt: 2000 })], [remote])).toBe(true);
+    expect(isDependantsRicherThan([makeDerivedDep({ createdAt: 1000 })], [wireOf(makeDerivedDep({ createdAt: 2000 }))])).toBe(false);
+  });
+
+  it('a field the merge hands to the remote does not count, even when local differs', () => {
+    const remote = wireOf(makeDerivedDep({ displayName: 'Remote Name', autonomyStage: 'request-approve' }));
+    const merged = makeDerivedDep({ displayName: 'Local Name', autonomyStage: 'full-control' });
+    // Same createdAt, so mergeDependantWithLocal would take the remote's values.
+    expect(isDependantsRicherThan([merged], [remote])).toBe(false);
+  });
+
+  it('an extra persona the remote lacks is richer; one only the remote holds is not', () => {
+    const withExtra = makeDerivedDep({ extraPersonas: [EXTRA('Alt', 'e'.repeat(64))] });
+    const without = makeDerivedDep();
+    expect(isDependantsRicherThan([withExtra], [wireOf(without)])).toBe(true);
+    expect(isDependantsRicherThan([without], [wireOf(withExtra)])).toBe(false);
+  });
+
+  it('an extra persona tombstone the remote lacks, or a newer removedAt, is richer', () => {
+    const tombstoned = makeDerivedDep({ extraPersonaTombstones: [{ derivationName: 'dependant-0-persona-7', removedAt: 20 }] });
+    expect(isDependantsRicherThan([tombstoned], [wireOf(makeDerivedDep())])).toBe(true);
+    const older = wireOf(makeDerivedDep({ extraPersonaTombstones: [{ derivationName: 'dependant-0-persona-7', removedAt: 10 }] }));
+    expect(isDependantsRicherThan([tombstoned], [older])).toBe(true);
+    const newer = wireOf(makeDerivedDep({ extraPersonaTombstones: [{ derivationName: 'dependant-0-persona-7', removedAt: 30 }] }));
+    expect(isDependantsRicherThan([tombstoned], [newer])).toBe(false);
+  });
+
+  it('a defaultSchedule the remote lacks, or a strictly newer one, is richer; a tie is not', () => {
+    const local = makeDerivedDep({ defaultSchedule: schedule(500) });
+    expect(isDependantsRicherThan([local], [wireOf(makeDerivedDep())])).toBe(true);
+    expect(isDependantsRicherThan([local], [wireOf(makeDerivedDep({ defaultSchedule: schedule(100) }))])).toBe(true);
+    expect(isDependantsRicherThan([local], [wireOf(makeDerivedDep({ defaultSchedule: schedule(500) }))])).toBe(false);
+    expect(isDependantsRicherThan([makeDerivedDep()], [wireOf(local)])).toBe(false);
+  });
+
+  it('an activation the remote cannot say is richer', () => {
+    const dormantName = { publicKey: DEP0_NP_PUB, privateKey: '', displayName: '' };
+    const active = makeDerivedDep({ naturalPersonActive: true });
+    const dormant = makeDerivedDep({ naturalPersonActive: false, naturalPerson: dormantName });
+    expect(isDependantsRicherThan([active], [wireOf(dormant)])).toBe(true);
+    expect(isDependantsRicherThan([dormant], [wireOf(active)])).toBe(false);
+  });
+
+  it('an older build\'s unflagged-but-named record already says active (§3.2 lift), so no republish loop', () => {
+    const active = makeDerivedDep({ naturalPersonActive: true });
+    const olderBuild = wireOf(active);
+    delete (olderBuild as { naturalPersonActive?: true }).naturalPersonActive;
+    // np.displayName is non-empty on the fixture, so the remote lifts to active.
+    expect(isDependantsRicherThan([active], [olderBuild])).toBe(false);
+  });
+
+  it('agrees with mergeDependantWithLocal: a local-only extra survives the merge and is richer', () => {
+    const remote = makeDerivedDep();
+    const local = makeDerivedDep({ extraPersonas: [EXTRA('Alt', 'e'.repeat(64))] });
+    const merged = mergeDependantWithLocal(remote, local);
+    expect(isDependantsRicherThan([merged], [wireOf(remote)])).toBe(true);
+    // And when the remote already holds it, the merged record is not richer.
+    expect(isDependantsRicherThan([mergeDependantWithLocal(local, local)], [wireOf(local)])).toBe(false);
   });
 });

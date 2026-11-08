@@ -39,6 +39,7 @@ import {
   publishContactsSync,
   fetchContactsSync,
   mergeContactLists,
+  isContactsRicherThan,
   identityKeypairs,
   SYNC_D_TAG as CONTACTS_SYNC_D_TAG,
 } from '../lib/contacts-sync';
@@ -181,7 +182,7 @@ export function useContactsSync({ identity, npBackend, relays, relayUrl, encrypt
         );
         const local = localByOwner.flat();
 
-        const { toSave } = mergeContactLists(local, remote.contacts);
+        const { merged, toSave } = mergeContactLists(local, remote.contacts);
         if (cancelled) return;
         for (const c of toSave) {
           await db.saveContact(c, encryptionKey);
@@ -193,9 +194,17 @@ export function useContactsSync({ identity, npBackend, relays, relayUrl, encrypt
         setRemoteState('present');
 
         // Seed the last-published hash with the merged state so we don't
-        // immediately republish what we just fetched.
-        const merged = mergeContactLists(local, remote.contacts).merged;
-        lastPublishedHashRef.current = hashContacts(merged);
+        // immediately republish what we just fetched. Unless the merge kept
+        // something the relay does not hold (a contact only we have, or a
+        // strictly newer `verifiedAt`): then clear the ref so the publish
+        // effect pushes the merge instead of leaving this device's edit
+        // unbacked-up until its next unrelated change (issue #192). NOT a
+        // plain inequality: the relay can be the richer side, see
+        // `isContactsRicherThan`. Cleared rather than left alone so a wire
+        // this device already published this session cannot suppress it.
+        lastPublishedHashRef.current = isContactsRicherThan(merged, remote.contacts)
+          ? ''
+          : hashContacts(merged);
 
         if (toSave.length > 0) onRemoteMerged?.();
       } finally {

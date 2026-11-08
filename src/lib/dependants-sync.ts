@@ -62,7 +62,7 @@ interface SyncedExtraPersona {
 }
 
 /** Wire shape for a single dependant. Only metadata + pubkeys — never privkeys. */
-interface SyncedDependant {
+export interface SyncedDependant {
   id: string;
   guardianPubkey: string;
   displayName: string;
@@ -484,6 +484,53 @@ export function mergeDependantWithLocal(
   if (newDefault) merged.defaultSchedule = newDefault;
   else delete merged.defaultSchedule;
   return applyDependantPersonaTombstones(merged);
+}
+
+/**
+ * Is `merged` (the local records AFTER the merge) carrying anything the
+ * relay's `remote` record does not hold?
+ *
+ * `mergeDependantWithLocal` lets the remote win every wire field, so a plain
+ * wire inequality is the wrong question: it would also fire when the relay is
+ * the richer side (an extra this device could not re-derive and so dropped)
+ * and publishing then would overwrite the richer record. Only the places the
+ * merge keeps LOCAL state count:
+ *   - a dependant (by id) the remote lacks (no-deletion policy);
+ *   - a strictly newer `createdAt` (the LWW guard kept the local record whole);
+ *   - an activation we hold and the remote cannot say. The remote side is read
+ *     through the §3.2 lift rule, so an older build's unflagged-but-named
+ *     record is not "missing" the flag and does not trigger a republish loop;
+ *   - a `defaultSchedule` the remote lacks or that has a strictly newer
+ *     `issuedAt` (the merge lets the remote win a schedule tie);
+ *   - an extra persona (by public key) or an extra-persona tombstone the
+ *     remote lacks, or a tombstone with a strictly newer `removedAt`.
+ * Anything the remote holds and `merged` lacks does not count. Callers pass
+ * only dependants they could actually reconcile: a remote record this device
+ * cannot represent (no mnemonic, failed re-derivation) says nothing about
+ * what local should publish.
+ */
+export function isDependantsRicherThan(merged: DependantIdentity[], remote: SyncedDependant[]): boolean {
+  const remoteById = new Map(remote.map((w) => [w.id, w] as const));
+  for (const dep of merged) {
+    const m = toSyncWire(dep);
+    if (!m) continue;
+    const r = remoteById.get(m.id);
+    if (!r) return true;
+    if (m.createdAt > r.createdAt) return true;
+    if (m.naturalPersonActive === true && !wireNaturalPersonActive(r)) return true;
+    if (m.defaultSchedule && (!r.defaultSchedule || m.defaultSchedule.issuedAt > r.defaultSchedule.issuedAt)) return true;
+
+    const remoteExtras = new Set((r.extras ?? []).map((e) => e.publicKey));
+    for (const e of m.extras ?? []) {
+      if (e.publicKey && !remoteExtras.has(e.publicKey)) return true;
+    }
+    const remoteTombstones = new Map((r.extraPersonaTombstones ?? []).map((t) => [t.derivationName, t] as const));
+    for (const t of m.extraPersonaTombstones ?? []) {
+      const rt = remoteTombstones.get(t.derivationName);
+      if (!rt || t.removedAt > rt.removedAt) return true;
+    }
+  }
+  return false;
 }
 
 function pickNewerSchedule(

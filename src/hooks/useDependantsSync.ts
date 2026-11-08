@@ -30,6 +30,7 @@ import {
   toSyncWire,
   fromSyncWire,
   mergeDependantWithLocal,
+  isDependantsRicherThan,
   SYNC_D_TAG as DEPENDANTS_SYNC_D_TAG,
 } from '../lib/dependants-sync';
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
@@ -153,12 +154,17 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
         }
 
         let savedAny = false;
+        // Remote records this device cannot represent (no mnemonic to
+        // re-derive from, failed re-derivation). They are the relay's to hold,
+        // so the richer-than check below must not read local's copy of the
+        // same id as a local win.
+        const unreconciled = new Set<string>();
         for (const wire of remote.dependants) {
           // Skip records that need the mnemonic when we don't have it.
           const needsMnemonic = wire.derivationPath.startsWith('dependant-');
-          if (needsMnemonic && !guardianMnemonic && !deviceHeldKeys) continue;
+          if (needsMnemonic && !guardianMnemonic && !deviceHeldKeys) { unreconciled.add(wire.id); continue; }
           const reconstructed = fromSyncWire(wire, guardianMnemonic ?? '', { deviceHeldKeys });
-          if (!reconstructed) continue;
+          if (!reconstructed) { unreconciled.add(wire.id); continue; }
           // LWW guard: keep local if it has a strictly newer createdAt.
           // This only catches the delete-then-recreate edge case — for the
           // common "local has fresh extras / bunker endpoint, remote is
@@ -180,8 +186,21 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
 
         // Seed last-published hash so we don't immediately republish what
         // we just pulled. Hash against the current local set (post-merge).
+        // Unless the merge kept something the relay does not hold (a
+        // dependant only we have, an extra or tombstone only we have, a newer
+        // schedule, an activation): then clear the ref so the publish effect
+        // pushes the merge instead of leaving this device's edit unbacked-up
+        // until its next unrelated change (issue #192). NOT a plain
+        // inequality: the relay can be the richer side, see
+        // `isDependantsRicherThan`. Cleared rather than left alone so a wire
+        // this device already published this session cannot suppress it.
         const merged = await db.getDependants(identity.naturalPerson.publicKey, encryptionKey);
-        lastPublishedHashRef.current = hashDependants(merged);
+        lastPublishedHashRef.current = isDependantsRicherThan(
+          merged.filter((d) => !unreconciled.has(d.id)),
+          remote.dependants,
+        )
+          ? ''
+          : hashDependants(merged);
 
         if (savedAny) onRemoteMerged?.();
       } finally {

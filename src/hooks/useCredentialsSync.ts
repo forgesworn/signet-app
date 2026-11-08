@@ -18,6 +18,7 @@ import {
   publishCredentialsSync,
   fetchCredentialsSync,
   mergeCredentialLists,
+  isCredentialsRicherThan,
   SYNC_D_TAG as CREDENTIALS_SYNC_D_TAG,
 } from '../lib/credentials-sync';
 import { createSyncDecryptCache } from '../lib/sync-decrypt-cache';
@@ -126,7 +127,7 @@ export function useCredentialsSync({ publishEnabled = true,  identity, npBackend
         }
 
         const local = await db.getAllCredentials(encryptionKey);
-        const { toSave } = mergeCredentialLists(local, remote.credentials);
+        const { merged, toSave } = mergeCredentialLists(local, remote.credentials);
         if (cancelled) return;
         for (const c of toSave) {
           await db.saveCredential(c, encryptionKey);
@@ -138,8 +139,17 @@ export function useCredentialsSync({ publishEnabled = true,  identity, npBackend
         setRemoteState('present');
 
         // Seed the last-published hash post-merge so we don't echo-publish.
-        const merged = mergeCredentialLists(local, remote.credentials).merged;
-        lastPublishedHashRef.current = hashCredentials(merged);
+        // Unless the merge kept something the relay does not hold (a
+        // credential only we have, or one that beats the relay's under the
+        // merge's own ordering): then clear the ref so the publish effect
+        // pushes the merge instead of leaving this device's edit unbacked-up
+        // until its next unrelated change (issue #192). NOT a plain
+        // inequality: the relay can be the richer side, see
+        // `isCredentialsRicherThan`. Cleared rather than left alone so a wire
+        // this device already published this session cannot suppress it.
+        lastPublishedHashRef.current = isCredentialsRicherThan(merged, remote.credentials)
+          ? ''
+          : hashCredentials(merged);
 
         if (toSave.length > 0) onRemoteMerged?.();
       } finally {

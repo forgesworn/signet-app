@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // fails at fetch() after a successful connect() — the two are distinct
 // failure points a caller might handle differently.
 const relayMock = vi.hoisted(() => ({
-  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string }>>,
+  fetchReturns: {} as Record<string, Array<{ id: string; created_at: number; content: string; pubkey?: string }>>,
   fetchThrows: new Set<string>(),
   fetchFailUrls: new Set<string>(),
   published: [] as Array<{ url: string; id: string }>,
@@ -851,6 +851,32 @@ describe('fetchPersonasSync', () => {
     const backend = makeBackend({ activePublicKeyHex: AUTHOR });
     const result = await fetchPersonasSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
     expect(result).toBe('unreachable');
+  });
+
+  it('ignores a newer event authored by someone else (author pin)', async () => {
+    const payload = JSON.stringify({ v: 1, personas: [], tombstones: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '1'.repeat(64), created_at: 1000, content: fakeNip44(payload) }],
+      'wss://b.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchPersonasSync(AUTHOR, backend, ['wss://a.example', 'wss://b.example']);
+    expect(result).not.toBe('unreachable');
+    expect(result).not.toBeNull();
+    if (result && result !== 'unreachable') {
+      expect(result.eventId).toBe('1'.repeat(64));
+      expect(result.createdAt).toBe(1000);
+    }
+  });
+
+  it("reads a pool that only holds a stranger's event as nothing found, not unreachable", async () => {
+    const payload = JSON.stringify({ v: 1, personas: [], tombstones: [] });
+    relayMock.fetchReturns = {
+      'wss://a.example': [{ id: '2'.repeat(64), created_at: 9000, content: fakeNip44(payload), pubkey: 'f'.repeat(64) }],
+    };
+    const backend = makeBackend({ activePublicKeyHex: AUTHOR });
+    const result = await fetchPersonasSync(AUTHOR, backend, ['wss://a.example']);
+    expect(result).toBeNull();
   });
 
   it('returns null when relays are reachable but nothing is found', async () => {
