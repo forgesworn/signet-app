@@ -123,6 +123,12 @@ export function Nip55ApprovalModal({ approval, identities, onApproveOnce, onAppr
           ) : null}
         </div>
 
+        {approval.method === 'nip04_decrypt' && (
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '4px 2px' }}>
+            {app} receives the decrypted text of this message. It was sent in the older NIP-04 format.
+          </div>
+        )}
+
         {!approval.existing && (
           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '4px 2px' }}>
             First time this app has asked. Only approve if you started this.

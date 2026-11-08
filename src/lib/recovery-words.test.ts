@@ -1,28 +1,47 @@
 import { describe, it, expect } from 'vitest';
 import {
   toRecoveryWords,
+  toNsecRecoveryWords,
   fromRecoveryWords,
+  consumeSecretKeyAsNsec,
+  parseNsecOrRecoveryWords,
+  recoveryWordsSource,
   recoveryWordsCompactBytes,
   parseRestoreInput,
   recoveryWordRole,
   RESTORE_ERROR_COPY,
 } from './recovery-words';
 import type { RecoveryFailureReason } from './recovery-words';
-import { generateMnemonic, splitSecretToWordsV3 } from './signet';
+import { generateMnemonic, splitSecretToWordsV3, decodeNsec, getPublicKey } from './signet';
 import { reconstructWordsV3 } from '@forgesworn/shamir-words';
 import { recoveryWordsFromBytes } from 'nsec-tree/recovery';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { generateSecretKey, nip19 } from 'nostr-tools';
 
 // Frozen vectors from nsec-tree/RECOVERY.md — do not regenerate these.
 const MNEMONIC_VECTOR =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const RECOVERY_VECTOR =
   'edge obtain doll auto level leave morning abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-// "Scalar-one nsec, exact identity" — kind 2 (raw-nsec-v1), which MySignet must refuse.
+// "Scalar-one nsec, exact identity" — kind 2 (raw-nsec-v1), an imported key.
 const KIND2_VECTOR = [
   'edge', 'obtain', 'lizard', 'frost', 'kitten', 'own', 'grit',
   ...Array<string>(23).fill('abandon'),
   'diesel',
 ].join(' ');
+// "Scalar-one nsec, nsec-tree source" — kind 3 (nsec-tree-nsec-v1), refused.
+const KIND3_VECTOR = [
+  'edge', 'obtain', 'seed', 'afford', 'today', 'police', 'pyramid',
+  ...Array<string>(23).fill('abandon'),
+  'diesel',
+].join(' ');
+// The published NIP-06 test key ("leader monkey parrot ring guide accident
+// before fence cannon height naive bean"), and the raw-nsec words Sapwood's
+// own encoder produced for it. Public test material only.
+const NIP06_TEST_KEY = '7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a';
+const NIP06_TEST_PUBKEY = '17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917';
+const SAPWOOD_NIP06_WORDS =
+  'edge obtain logic quote enemy riot armed legal zebra aunt caught junior hero ramp city whip digital swap blossom prize pumpkin property window girl end avocado speak business town tuna frog';
 
 describe('toRecoveryWords', () => {
   it('reproduces the frozen RECOVERY.md vector', () => {
@@ -41,19 +60,19 @@ describe('toRecoveryWords', () => {
 describe('fromRecoveryWords', () => {
   it('round-trips the frozen vector back to the exact mnemonic', () => {
     const result = fromRecoveryWords(RECOVERY_VECTOR);
-    expect(result).toEqual({ ok: true, mnemonic: MNEMONIC_VECTOR });
+    expect(result).toEqual({ ok: true, kind: 'mnemonic', mnemonic: MNEMONIC_VECTOR });
   });
 
   it('round-trips a freshly generated mnemonic', () => {
     const mnemonic = generateMnemonic();
     const words = toRecoveryWords(mnemonic);
     expect(words.split(' ')).toHaveLength(19);
-    expect(fromRecoveryWords(words)).toEqual({ ok: true, mnemonic });
+    expect(fromRecoveryWords(words)).toEqual({ ok: true, kind: 'mnemonic', mnemonic });
   });
 
   it('normalises case and whitespace', () => {
     const messy = `  ${RECOVERY_VECTOR.toUpperCase().replace(/ /g, '\n  ')}  `;
-    expect(fromRecoveryWords(messy)).toEqual({ ok: true, mnemonic: MNEMONIC_VECTOR });
+    expect(fromRecoveryWords(messy)).toEqual({ ok: true, kind: 'mnemonic', mnemonic: MNEMONIC_VECTOR });
   });
 
   it('rejects a bare BIP-39 phrase as not-recovery-words', () => {
@@ -80,12 +99,126 @@ describe('fromRecoveryWords', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('rejects the kind-2 (raw nsec) frozen vector as unsupported-kind', () => {
+});
+
+describe('raw-nsec recovery words (kind 2)', () => {
+  const SCALAR_ONE_HEX = '00'.repeat(31) + '01';
+
+  it('reproduces the frozen RECOVERY.md scalar-one vector', () => {
+    expect(toNsecRecoveryWords(SCALAR_ONE_HEX)).toBe(KIND2_VECTOR);
     expect(KIND2_VECTOR.split(' ')).toHaveLength(31);
-    expect(fromRecoveryWords(KIND2_VECTOR)).toEqual({
-      ok: false,
-      reason: 'unsupported-kind',
-    });
+  });
+
+  it('restores the frozen vector to the exact scalar-one key', () => {
+    const result = fromRecoveryWords(KIND2_VECTOR);
+    expect(result.ok && result.kind).toBe('raw-nsec');
+    if (!result.ok || result.kind !== 'raw-nsec') return;
+    expect(bytesToHex(result.secretKey)).toBe(SCALAR_ONE_HEX);
+    result.secretKey.fill(0);
+  });
+
+  it('round-trips a fresh key: create, restore, same pubkey', () => {
+    const privateKey = bytesToHex(generateSecretKey());
+    const words = toNsecRecoveryWords(privateKey);
+    expect(words.split(' ')).toHaveLength(31);
+    const result = fromRecoveryWords(words);
+    if (!result.ok || result.kind !== 'raw-nsec') throw new Error('expected raw-nsec');
+    expect(getPublicKey(bytesToHex(result.secretKey))).toBe(getPublicKey(privateKey));
+    result.secretKey.fill(0);
+  });
+
+  it('restores a Sapwood-produced sequence to the same npub', () => {
+    // Produced by Sapwood's own recovery-words implementation
+    // (`createNsecRecoveryWords(bytes, false)`, as `key backup` calls it), not
+    // by nsec-tree: an independent encoder agreeing byte-for-byte. The key is
+    // the published NIP-06 test vector, never a real one.
+    const result = fromRecoveryWords(SAPWOOD_NIP06_WORDS);
+    if (!result.ok || result.kind !== 'raw-nsec') throw new Error('expected raw-nsec');
+    expect(bytesToHex(result.secretKey)).toBe(NIP06_TEST_KEY);
+    expect(getPublicKey(bytesToHex(result.secretKey))).toBe(NIP06_TEST_PUBKEY);
+    result.secretKey.fill(0);
+    // And this app encodes the same key to the same words.
+    expect(toNsecRecoveryWords(NIP06_TEST_KEY)).toBe(SAPWOOD_NIP06_WORDS);
+  });
+
+  it('zero-fills the key once consumed as an nsec', () => {
+    const result = fromRecoveryWords(SAPWOOD_NIP06_WORDS);
+    if (!result.ok || result.kind !== 'raw-nsec') throw new Error('expected raw-nsec');
+    const bytes = result.secretKey;
+    const nsec = consumeSecretKeyAsNsec(bytes);
+    expect(nsec.startsWith('nsec1')).toBe(true);
+    expect(getPublicKey(bytesToHex(decodeNsec(nsec)))).toBe(NIP06_TEST_PUBKEY);
+    expect(bytes.every(b => b === 0)).toBe(true);
+  });
+
+  it('rejects a flipped key word as checksum', () => {
+    const parts = KIND2_VECTOR.split(' ');
+    parts[10] = 'ability';
+    expect(fromRecoveryWords(parts.join(' '))).toEqual({ ok: false, reason: 'checksum' });
+  });
+
+  it('refuses a malformed private key rather than encoding it', () => {
+    expect(() => toNsecRecoveryWords('')).toThrow();
+    expect(() => toNsecRecoveryWords('zz'.repeat(32))).toThrow();
+  });
+});
+
+describe('tree-root nsec recovery words (kind 3)', () => {
+  it('refuses the frozen vector with its own reason', () => {
+    expect(KIND3_VECTOR.split(' ')).toHaveLength(31);
+    expect(fromRecoveryWords(KIND3_VECTOR)).toEqual({ ok: false, reason: 'tree-root-nsec' });
+    expect(parseRestoreInput(KIND3_VECTOR, 'recovery-words')).toEqual({ ok: false, reason: 'tree-root-nsec' });
+  });
+
+  it('says plainly what it is', () => {
+    expect(RESTORE_ERROR_COPY['tree-root-nsec']).toContain('tree-root nsec');
+    expect(RESTORE_ERROR_COPY['tree-root-nsec']).not.toContain('—');
+  });
+});
+
+describe('parseNsecOrRecoveryWords', () => {
+  it('passes an nsec through untouched', () => {
+    const nsec = nip19.nsecEncode(hexToBytes(NIP06_TEST_KEY));
+    expect(parseNsecOrRecoveryWords(`  ${nsec}\n`)).toEqual({ ok: true, nsec });
+  });
+
+  it('turns raw-nsec recovery words into the same nsec', () => {
+    const nsec = nip19.nsecEncode(hexToBytes(NIP06_TEST_KEY));
+    expect(parseNsecOrRecoveryWords(SAPWOOD_NIP06_WORDS)).toEqual({ ok: true, nsec });
+  });
+
+  it('refuses a whole-Signet sequence, a tree-root nsec and bare BIP-39', () => {
+    expect(parseNsecOrRecoveryWords(RECOVERY_VECTOR)).toEqual({ ok: false, reason: 'whole-signet' });
+    expect(parseNsecOrRecoveryWords(KIND3_VECTOR)).toEqual({ ok: false, reason: 'tree-root-nsec' });
+    expect(parseNsecOrRecoveryWords(MNEMONIC_VECTOR)).toEqual({ ok: false, reason: 'not-recovery-words' });
+  });
+
+  it('refuses a single token that is not an nsec', () => {
+    expect(parseNsecOrRecoveryWords('npub1abc')).toEqual({ ok: false, reason: 'not-nsec' });
+  });
+});
+
+describe('recoveryWordsSource', () => {
+  const empty = { publicKey: '', privateKey: '', displayName: '' };
+  const key = { publicKey: 'b'.repeat(64), privateKey: '1'.repeat(64), displayName: 'Me' };
+  const base = { mnemonic: '', primaryKeypair: 'persona' as const, isChild: false, naturalPerson: empty, persona: key };
+
+  it('is the mnemonic when there is one', () => {
+    expect(recoveryWordsSource({ ...base, mnemonic: MNEMONIC_VECTOR })).toBe('mnemonic');
+  });
+
+  it('is the raw key for an identity created from an nsec, in either slot', () => {
+    expect(recoveryWordsSource(base)).toBe('raw-nsec');
+    expect(recoveryWordsSource({ ...base, primaryKeypair: 'natural-person', naturalPerson: key, persona: empty })).toBe('raw-nsec');
+  });
+
+  it('is nothing when the key is not on this device', () => {
+    expect(recoveryWordsSource({ ...base, persona: { ...key, privateKey: '' } })).toBeNull();
+    expect(recoveryWordsSource({ ...base, isChild: true })).toBeNull();
+  });
+
+  it('is nothing for a tree identity that lost its mnemonic but kept derived keys', () => {
+    expect(recoveryWordsSource({ ...base, naturalPerson: { ...key, privateKey: '2'.repeat(64) } })).toBeNull();
   });
 });
 
@@ -102,8 +235,19 @@ describe('parseRestoreInput', () => {
   it('accepts recovery words in recovery-words mode', () => {
     expect(parseRestoreInput(RECOVERY_VECTOR, 'recovery-words')).toEqual({
       ok: true,
+      kind: 'mnemonic',
       mnemonic: MNEMONIC_VECTOR,
     });
+  });
+
+  it('accepts raw-nsec recovery words in recovery-words mode', () => {
+    const parsed = parseRestoreInput(KIND2_VECTOR, 'recovery-words');
+    expect(parsed.ok && parsed.kind).toBe('raw-nsec');
+    if (parsed.ok && parsed.kind === 'raw-nsec') parsed.secretKey.fill(0);
+  });
+
+  it('refuses raw-nsec recovery words in legacy-bip39 mode', () => {
+    expect(parseRestoreInput(KIND2_VECTOR, 'legacy-bip39')).toEqual({ ok: false, reason: 'legacy-invalid' });
   });
 
   it('refuses a bare BIP-39 phrase in recovery-words mode', () => {
@@ -116,6 +260,7 @@ describe('parseRestoreInput', () => {
   it('accepts a bare BIP-39 phrase in legacy-bip39 mode', () => {
     expect(parseRestoreInput(`  ${MNEMONIC_VECTOR.toUpperCase()}  `, 'legacy-bip39')).toEqual({
       ok: true,
+      kind: 'mnemonic',
       mnemonic: MNEMONIC_VECTOR,
     });
   });
@@ -143,6 +288,7 @@ describe('RESTORE_ERROR_COPY', () => {
       'checksum',
       'fingerprint',
       'unsupported-kind',
+      'tree-root-nsec',
     ];
     for (const reason of reasons) {
       expect(RESTORE_ERROR_COPY[reason].length).toBeGreaterThan(0);
@@ -180,7 +326,7 @@ describe('Shamir v3 over the recovery-words envelope', () => {
     const result = reconstructWordsV3([shares[1]!, shares[2]!]);
     const words = recoveryWordsFromBytes(result.secret);
     result.secret.fill(0);
-    expect(fromRecoveryWords(words)).toEqual({ ok: true, mnemonic: MNEMONIC_VECTOR });
+    expect(fromRecoveryWords(words)).toEqual({ ok: true, kind: 'mnemonic', mnemonic: MNEMONIC_VECTOR });
   });
 
   it('refuses shares mixed across separate split operations', () => {

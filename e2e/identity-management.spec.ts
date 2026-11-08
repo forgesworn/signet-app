@@ -54,7 +54,7 @@ test(`import, recognise, open, reload and sign with the same Nostr identity (${s
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(importedNpub);
   const identityActions = address.locator('..');
   await identityActions.getByRole('button', { name: 'Manage identity' }).click();
-  await expect(page.getByText(/Your recovery words won't bring it back/)).toBeVisible();
+  await expect(page.getByText(/It has its own 31 words instead/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy hex' })).toBeHidden();
   await page.screenshot({ path: testInfo.outputPath('manage-imported-identity.png'), fullPage: true });
   await page.getByRole('button', { name: 'Hide this persona', exact: true }).click();

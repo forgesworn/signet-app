@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import type { SignetIdentity } from '../types';
 import { splitSecretToWordsV3 } from '../lib/signet';
 import { recoveryWordsCompactBytes } from '../lib/recovery-words';
+import { SHAMIR_NOT_FOR_RAW_NSEC } from '../lib/raw-nsec-backup-copy';
 
 interface Props {
   identity: SignetIdentity;
@@ -145,8 +146,19 @@ export function ShamirBackup({ identity }: Props) {
         </p>
       </div>
 
+      {/* No Signet mnemonic here (an identity created from an nsec, or one
+          whose key lives elsewhere). Shamir v3 splits Signet recovery words
+          only, so say so instead of a button that silently does nothing. */}
+      {!shares && !identity.mnemonic && (
+        <div className="card section">
+          <p role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+            {SHAMIR_NOT_FOR_RAW_NSEC}
+          </p>
+        </div>
+      )}
+
       {/* Split button (before generating) */}
-      {!shares && (
+      {!shares && !!identity.mnemonic && (
         <div className="section">
           <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleSplit}>
             Split my backup
