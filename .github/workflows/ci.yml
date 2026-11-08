@@ -56,6 +56,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+          # Keeps the Gradle distribution between runs: fetching it fresh each
+          # time kept timing out.
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Android service tests and debug build
         run: |
