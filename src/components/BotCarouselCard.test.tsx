@@ -12,6 +12,19 @@ it('shares only the labelled bot key, never its private owner link or an inherit
   expect(qr).toContain(bot.publicKey);
   expect(qr).not.toContain(bot.ownerPersona);
   expect(qr).not.toContain('ownership');
-  rerender(<BotCarouselCard bot={bot} col={4} onOpen={vi.fn()} onHide={async () => {}} />);
+  rerender(<BotCarouselCard bot={bot} col={5} onOpen={vi.fn()} onHide={async () => {}} />);
   expect(screen.getByText('Camera signing for bots is not available yet.')).toBeTruthy();
+});
+
+it('shows the places slot at column 3 and the manage buttons at column 4', () => {
+  const bot = { publicKey: 'b'.repeat(64), ownerPersona: 'c'.repeat(64), label: 'Helper', source: 'derived' as const,
+    derivationName: 'bot-0', hidden: false, createdAt: 1, updatedAt: 1 };
+  const { rerender, container } = render(<BotCarouselCard bot={bot} col={3} onOpen={vi.fn()} onHide={async () => {}} />);
+  expect(container.querySelector('.card-placeholder')).not.toBeNull();
+  expect(screen.queryByText('Manage bot')).toBeNull();
+  rerender(<BotCarouselCard bot={bot} col={3} onOpen={vi.fn()} onHide={async () => {}} placesCard={<p>Places here</p>} />);
+  expect(screen.getByText('Places here')).toBeTruthy();
+  expect(container.querySelector('.card-placeholder')).toBeNull();
+  rerender(<BotCarouselCard bot={bot} col={4} onOpen={vi.fn()} onHide={async () => {}} />);
+  expect(screen.getByText('Manage bot')).toBeTruthy();
 });

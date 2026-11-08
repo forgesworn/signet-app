@@ -62,7 +62,7 @@ for (const viewport of [{ width: 320, height: 568 }, { width: 768, height: 1024 
       const current = page.locator('.carousel-screen:not([data-testid])');
       const first = await current.locator('.id-card').boundingBox();
       expect(first).toBeTruthy();
-      for (let col = 1; col < 5; col++) {
+      for (let col = 1; col < 6; col++) {
         await page.keyboard.press('ArrowRight');
         // Capture the incoming node before the animation promotes it.
         await page.evaluate(() => {
@@ -71,7 +71,7 @@ for (const viewport of [{ width: 320, height: 568 }, { width: 768, height: 1024 
         await expect(wallet).toHaveAttribute('data-carousel-cell', `0:${col}`);
         await expect(page.getByTestId('carousel-incoming-screen')).toHaveCount(0);
         expect(await current.evaluate(el => el === (window as any).preparedScreen)).toBe(true);
-        const frame = await current.locator(':is(.qr-view,.contacts-card,.settings-view,.camera-view):visible').boundingBox();
+        const frame = await current.locator(':is(.qr-view,.contacts-card,.known-places-card,.settings-view,.camera-view):visible').boundingBox();
         expect(frame).toBeTruthy();
         expect(Math.abs(frame!.width - first!.width)).toBeLessThanOrEqual(1);
         expect(Math.abs(frame!.height - first!.height)).toBeLessThanOrEqual(1);

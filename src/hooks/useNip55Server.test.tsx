@@ -144,6 +144,18 @@ describe('useNip55Server', () => {
     expect(respond.mock.calls[0][0]).toMatchObject({ status: 'rejected' });
   });
 
+  it('setAllowAlways changes a remembered app, lifts a refusal, and ignores an unknown app', async () => {
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 }, 'dev.blocked': { pubkey, allowAlways: false, denyAlways: true, grantedAt: 1 } }));
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    act(() => { result.current.setAllowAlways('dev.forgesworn.kithmoot', false); });
+    expect(result.current.grants['dev.forgesworn.kithmoot']).toMatchObject({ allowAlways: false, denyAlways: false });
+    expect(JSON.parse(localStorage.getItem('signet.nip55.grants')!)['dev.forgesworn.kithmoot'].allowAlways).toBe(false);
+    act(() => { result.current.setAllowAlways('dev.blocked', false); });
+    expect(result.current.grants['dev.blocked']).toMatchObject({ allowAlways: false, denyAlways: false });
+    act(() => { result.current.setAllowAlways('dev.unknown', true); });
+    expect(result.current.grants['dev.unknown']).toBeUndefined();
+  });
+
   it('a request held through an unlock is answered silently when the app was allowed always', async () => {
     localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
     const { result, rerender } = renderHook(({ locked }) => useNip55Server({ enabled: true, routes: locked ? [] : [route], locked, activePubkey: pubkey }), { initialProps: { locked: true } });

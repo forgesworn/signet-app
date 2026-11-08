@@ -376,6 +376,18 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });
   }, []);
 
+  /**
+   * Change how a remembered app is treated from the known-places list:
+   * `true` signs without asking, `false` asks each time (and lifts a standing
+   * refusal). No-op for an app with no grant. Goes through `remember` so the
+   * synchronous request path sees it at once.
+   */
+  const setAllowAlways = useCallback((pkg: string, allow: boolean) => {
+    const grant = grantsRef.current[pkg];
+    if (!grant) return;
+    remember(pkg, { ...grant, allowAlways: allow, denyAlways: false });
+  }, [remember]);
+
   const pending = useMemo<PendingNip55 | null>(() => {
     const item = queue[0];
     if (!item || locked) return null;
@@ -398,5 +410,5 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     };
   }, [queue, locked, grants, activePubkey, routes]);
 
-  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld };
+  return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld, setAllowAlways };
 }

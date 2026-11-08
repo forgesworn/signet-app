@@ -70,6 +70,8 @@ async function openDependantAdvanced(page: Page, dependantName: string) {
   await waitForCarouselSettled(page, 'h', 2);
   await page.keyboard.press('ArrowRight');
   await waitForCarouselSettled(page, 'h', 3);
+  await page.keyboard.press('ArrowRight');
+  await waitForCarouselSettled(page, 'h', 4);
   await page.locator('.gear-fab').click({ timeout: 8_000 });
 }
 
@@ -99,7 +101,7 @@ test.describe('Contacts v2', () => {
   test('opens scoped contacts from the five-column carousel and keeps the column between rows', async ({ page }) => {
     await addKeylessContact(page, 'Corner Shop');
     await navigateViaHarness(page, 'home');
-    await expect(page.locator('.nav-dots-h .nav-dot')).toHaveCount(5);
+    await expect(page.locator('.nav-dots-h .nav-dot')).toHaveCount(6);
     await page.keyboard.press('ArrowRight');
     await waitForCarouselSettled(page, 'h', 1);
     await page.keyboard.press('ArrowRight');

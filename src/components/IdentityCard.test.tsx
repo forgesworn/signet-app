@@ -334,19 +334,34 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
     isDependant: false,
   };
 
-  it('renders a chip per site and opens its origin on tap', () => {
+  const placeOf = (key: string, over: Record<string, unknown> = {}) => ({
+    id: `${key}:${'aa'.repeat(32)}`, pubkey: 'aa'.repeat(32), placeKey: key, kind: 'sign-in', name: 'Primal',
+    origin: 'https://primal.net', channel: 'browser', signer: 'local', firstAt: 1, lastAt: 2, uses: 1, shared: {}, ...over,
+  }) as never as import('../types/known-places').KnownPlace;
+  const site = (key = 'https://primal.net', over: Record<string, unknown> = {}) => ({ place: placeOf(key, over), badge: null });
+
+  it('renders a chip per place and reports the id on tap, without opening a window', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
     const onOpenSite = vi.fn();
+    const s = site();
     render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false}
-      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]}
-      onOpenSite={onOpenSite} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open Primal' }));
-    expect(onOpenSite).toHaveBeenCalledWith('https://primal.net');
+      launcherSites={[s]} onOpenSite={onOpenSite} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Primal' }));
+    expect(onOpenSite).toHaveBeenCalledWith(s.place.id);
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
   });
 
-  it('shows no launcher when the identity has no sign-ins yet — the Scan tile is the invitation', () => {
+  it('shows a quiet line when the identity is not known anywhere yet — the Scan tile is the invitation', () => {
     const { container } = render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} launcherSites={[]} />);
-    expect(container.querySelector('.card-launcher')).toBeNull();
+    expect(screen.getByText('Not known anywhere yet')).toBeDefined();
+    expect(container.querySelector('.kp-strip')).toBeNull();
     expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+  });
+
+  it('shows no strip at all when no places were supplied', () => {
+    render(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} />);
+    expect(screen.queryByText('Not known anywhere yet')).toBeNull();
   });
 
   it('shows the contacts count, or an add-first prompt at zero', () => {
@@ -382,8 +397,9 @@ describe('IdentityCard — quick-open launcher and contacts pill', () => {
 
   it('hides the launcher, contacts pill and Scan on a dependant card', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false}
-      launcherSites={[{ id: 's1', origin: 'https://primal.net', label: 'Primal' }]} contactsCount={3} />);
-    expect(screen.queryByRole('button', { name: 'Open Primal' })).toBeNull();
+      launcherSites={[site()]} contactsCount={3} />);
+    expect(screen.queryByRole('button', { name: 'Primal' })).toBeNull();
+    expect(screen.queryByText('Not known anywhere yet')).toBeNull();
     expect(screen.queryByRole('button', { name: "Open this identity's contacts" })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Scan' })).toBeNull();
   });

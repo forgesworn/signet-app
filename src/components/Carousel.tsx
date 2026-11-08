@@ -32,6 +32,8 @@ interface CarouselProps {
   /** Active contacts count for an owner identity, or null to hide the pill. */
   contactsCountFor?: (resolved: ResolvedIdentity) => number | null;
   renderContactsCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
+  /** The known-places column (col 3) for an owner identity. */
+  renderKnownPlacesCard?: (row: CarouselRow, resolved: ResolvedIdentity) => ReactNode;
   row: number;
   col: CarouselColumn;
   rows: CarouselRow[];
@@ -340,6 +342,8 @@ function renderCard(
       case 2:
         return props.renderContactsCard?.(row, resolved) ?? null;
       case 3:
+        return props.renderKnownPlacesCard?.(row, resolved) ?? null;
+      case 4:
         return (
           <SettingsCard
             resolved={resolved}
@@ -368,7 +372,7 @@ function renderCard(
             onDepNip05Checked={props.onDepNip05Checked}
           />
         );
-      case 4:
+      case 5:
         return (
           <CameraCard
             resolved={resolved}
@@ -379,7 +383,7 @@ function renderCard(
     }
   })();
   // The camera feed covers the whole card, so the backdrop has nothing to show there.
-  if (col === 4) return node;
+  if (col === 5) return node;
   return <CardStage pubkey={resolved.publicKey || undefined} blur={props.blurIdentityNames}>{node}</CardStage>;
 }
 
