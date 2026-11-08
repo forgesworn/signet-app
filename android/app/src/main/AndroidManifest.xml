@@ -123,6 +123,16 @@
         </receiver>
     </application>
 
+    <!-- Known places: label, icon and launch for apps that can be opened from
+         the launcher. Narrowest declaration that works on API 30+; not
+         QUERY_ALL_PACKAGES. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

@@ -18,6 +18,7 @@ export * from './child-rules';
 export * from './auth-policy';
 export * from './routing';
 export * from './companion';
+export * from './known-places';
 
 /**
  * Max companion-app data grants a Signet identity may hold at once.

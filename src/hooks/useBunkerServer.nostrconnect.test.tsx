@@ -1012,3 +1012,77 @@ describe('switchRelaysAnswer', () => {
     expect(switchRelaysAnswer('https://relay.example', 'wss://pairing.example')).toBeNull();
   });
 });
+
+describe('askToSign: "ask me each time it signs" (allowAlways untouched)', () => {
+  afterEach(() => { MockRelaySocket.instances.length = 0; });
+
+  async function pairAsking(relayUrl: string) {
+    const server = renderOwnerServer(relayUrl);
+    const ws = await waitForOpenRelay(server.ownerBackend.activePublicKeyHex, server.relayUrl);
+    const clientSk = generateSecretKey(), clientPubkey = getPublicKey(clientSk);
+    await saveConnectedClient(buildConnectedClientFromNostrConnect(
+      { clientPubkey, relayUrl, relayUrls: [relayUrl], secret: 'ask-secret', appName: 'Asker' }, 1_770_000_000, { askToSign: true },
+    ));
+    return { ...server, ws, clientSk, clientPubkey };
+  }
+  const note = (content: string) => JSON.stringify({ kind: 1, created_at: 1, tags: [], content });
+
+  it('prompts for sign_event instead of signing silently', async () => {
+    const { ownerBackend, ws, clientSk, result, unmount } = await pairAsking('wss://ask-sign.example');
+    const signing = vi.spyOn(ownerBackend, 'signEvent');
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'ask', method: 'sign_event', params: [note('hi')] })));
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    expect(ws.published).toHaveLength(0);
+    expect(signing).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps nip44 encrypt silent for the same client', async () => {
+    const { ownerBackend, ws, clientSk, result, unmount } = await pairAsking('wss://ask-crypto.example');
+    const peerPubkey = getPublicKey(generateSecretKey());
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'enc', method: 'nip44_encrypt', params: [peerPubkey, 'still silent'] })));
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0])).toMatchObject({ id: 'enc', result: expect.any(String) });
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    unmount();
+  });
+
+  it('allowAlways is still true on the stored record, and approving "always" clears askToSign', async () => {
+    const { ownerBackend, ws, clientSk, clientPubkey, result, unmount } = await pairAsking('wss://ask-clear.example');
+    expect(await getConnectedClient(clientPubkey)).toMatchObject({ allowAlways: true, askToSign: true });
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'ask', method: 'sign_event', params: [note('hi')] })));
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { await result.current.approveAlways(result.current.pendingApprovals[0].handle); });
+    const stored = await getConnectedClient(clientPubkey);
+    expect(stored?.allowAlways).toBe(true);
+    expect(stored).not.toHaveProperty('askToSign');
+    // ...and the next sign_event is silent again.
+    const before = ws.published.length;
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'quiet', method: 'sign_event', params: [note('again')] })));
+    await waitFor(() => expect(ws.published.length).toBe(before + 1));
+    expect(result.current.pendingApprovals).toHaveLength(0);
+    unmount();
+  });
+
+  it('approving once leaves askToSign in place', async () => {
+    const { ownerBackend, ws, clientSk, clientPubkey, result, unmount } = await pairAsking('wss://ask-once.example');
+    await act(async () => ws.deliver(buildClientRequest({ clientSk, targetPubkey: ownerBackend.activePublicKeyHex, id: 'ask', method: 'sign_event', params: [note('hi')] })));
+    await waitFor(() => expect(result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { await result.current.approveOnce(result.current.pendingApprovals[0].handle); });
+    expect(await getConnectedClient(clientPubkey)).toMatchObject({ allowAlways: true, askToSign: true });
+    unmount();
+  });
+});
+
+describe('db.updateConnectedClient', () => {
+  it('toggles askToSign without touching allowAlways or anything else', async () => {
+    const clientPubkey = getPublicKey(generateSecretKey());
+    await saveConnectedClient({ clientPubkey, appName: 'A', connectedAt: 1, lastSeenAt: 2, allowAlways: true, permissions: ['sign_event:1'] });
+    await db.updateConnectedClient(clientPubkey, { askToSign: true });
+    expect(await getConnectedClient(clientPubkey)).toEqual({ clientPubkey, appName: 'A', connectedAt: 1, lastSeenAt: 2, allowAlways: true, permissions: ['sign_event:1'], askToSign: true });
+    await db.updateConnectedClient(clientPubkey, { askToSign: false });
+    expect(await getConnectedClient(clientPubkey)).not.toHaveProperty('askToSign');
+    await db.updateConnectedClient('f'.repeat(64), { askToSign: true });
+    expect(await getConnectedClient('f'.repeat(64))).toBeUndefined();
+  });
+});

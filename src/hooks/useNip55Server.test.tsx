@@ -28,6 +28,7 @@ vi.mock('../lib/native', () => ({
 import { useNip55Server } from './useNip55Server';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import type { BunkerRoute } from './useBunkerServer';
+import * as db from '../lib/db';
 
 const sk = generateSecretKey();
 const pubkey = getPublicKey(sk);
@@ -476,6 +477,63 @@ describe('useNip55Server', () => {
       gate.mockClear();
       await act(async () => { listeners.nip55Request[0](request({ type: 'get_public_key', payload: null, viaProvider: true })); });
       expect(gate).not.toHaveBeenCalled();
+    });
+  });
+  describe('known places', () => {
+    beforeEach(async () => { await db.purgeAllUserData(); });
+
+    it('approve once and approve always each write a pkg row under the approving key; deny writes none', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request({ callerLabel: 'Kithmoot' })); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.deny(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(await db.listKnownPlaces()).toEqual([]);
+
+      await act(async () => { listeners.nip55Request[0](request({ callerLabel: 'Kithmoot' })); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+      await waitFor(async () => expect(await db.listKnownPlaces()).toHaveLength(1));
+      expect((await db.listKnownPlaces())[0]).toMatchObject({
+        id: `pkg:dev.forgesworn.kithmoot:${pubkey}`, pubkey, placeKey: 'pkg:dev.forgesworn.kithmoot',
+        kind: 'nip55', name: 'Kithmoot', nativePackage: 'dev.forgesworn.kithmoot', channel: 'nip55', signer: 'local', uses: 1,
+      });
+
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+      await waitFor(async () => expect((await db.listKnownPlaces())[0].uses).toBe(2));
+    });
+
+    it('falls back to the package name when the shell gave no label', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveOnce(result.current.pending!.handle); });
+      await waitFor(async () => expect(await db.listKnownPlaces()).toHaveLength(1));
+      expect((await db.listKnownPlaces())[0].name).toBe('dev.forgesworn.kithmoot');
+    });
+
+    it('grants are gone from state and storage after purgeAllUserData', async () => {
+      const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+      await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+      await act(async () => { listeners.nip55Request[0](request()); });
+      await waitFor(() => expect(result.current.pending).not.toBeNull());
+      await act(async () => { result.current.approveAlways(result.current.pending!.handle); });
+      await waitFor(() => expect(result.current.grants['dev.forgesworn.kithmoot']).toBeDefined());
+      expect(localStorage.getItem('signet.nip55.grants')).not.toBeNull();
+      await act(async () => { await db.purgeAllUserData(); });
+      expect(result.current.grants).toEqual({});
+      expect(localStorage.getItem('signet.nip55.grants')).toBeNull();
+      // The next provider query is a stranger again.
+      respond.mockClear();
+      await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+      await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      expect(respond.mock.calls[0][0]).toMatchObject({ status: 'deferred' });
     });
   });
 });

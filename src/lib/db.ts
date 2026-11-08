@@ -9,7 +9,8 @@ import type { SignetIdentity, Contact, ChildSettings, AppPreferences, IdentityDo
 import { TRUSTED_APP_PAIRING_CAP, COMPANION_GRANT_CAP } from '../types';
 import type { CompanionGrant } from '../types';
 import { CONTACT_GRANT_V2_CAP, MAX_APP_LABELS_PER_GRANT } from '../types';
-import type { AppGrantV2, ChildRule } from '../types';
+import type { AppGrantV2, ChildRule, KnownPlace, KnownPlaceInput } from '../types';
+import { knownPlaceFromAuthorizedSite, mergeKnownPlace, normaliseKnownPlaceInput } from './known-places';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -31,9 +32,10 @@ import { forgetContactPictureKeys, contactPictureGeneration, ContactPicturesLock
 import { parseGuardianActingEntry, pruneGuardianActing, type GuardianActingEntry } from './guardian-acting';
 
 export { encryptSecret, decryptSecret } from './crypto-store';
+import { NIP55_GRANTS_KEY } from './nip55';
 
 const DB_NAME = 'my-signet';
-const DB_VERSION = 27;
+const DB_VERSION = 28;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -336,6 +338,27 @@ function getDB(): Promise<IDBPDatabase> {
         // only id / updatedAt stay clear. Never on any sync rail.
         if (oldVersion < 27 && !db.objectStoreNames.contains('contactPictures')) {
           db.createObjectStore('contactPictures', { keyPath: 'id' });
+        }
+        // Version 28: knownPlaces — where each identity is known (signed-in
+        // sites, paired NIP-46 apps, NIP-55 callers). Rows in clear, like
+        // authorizedSites (routing metadata). Existing authorizedSites rows are
+        // copied in inside this upgrade transaction (ids are deterministic, so
+        // a re-run overwrites). authorizedSites itself is NOT deleted here.
+        if (oldVersion < 28 && !db.objectStoreNames.contains('knownPlaces')) {
+          const places = db.createObjectStore('knownPlaces', { keyPath: 'id' });
+          places.createIndex('by-pubkey', 'pubkey');
+          places.createIndex('by-place', 'placeKey');
+          if (db.objectStoreNames.contains('authorizedSites')) {
+            const rawTx = unwrap(transaction) as unknown as IDBTransaction;
+            const sitesReq = rawTx.objectStore('authorizedSites').getAll();
+            sitesReq.onsuccess = function () {
+              const target = rawTx.objectStore('knownPlaces');
+              for (const site of sitesReq.result as AuthorizedSite[]) {
+                const place = knownPlaceFromAuthorizedSite(site);
+                if (place) target.put(place);
+              }
+            };
+          }
         }
       },
     });
@@ -2752,6 +2775,108 @@ export async function purgeAllUserData(): Promise<void> {
   }
   forgetContactPictureKeys();
   if (db.objectStoreNames.contains('contactPictures')) await db.clear('contactPictures');
+  if (db.objectStoreNames.contains('knownPlaces')) {
+    await db.clear('knownPlaces');
+    notifyKnownPlacesChanged();
+  }
+  // NIP-55 caller grants live in localStorage (not IDB), so the store clears
+  // above never reached them. Callers must re-ask after a purge.
+  try { localStorage.removeItem(NIP55_GRANTS_KEY); } catch { /* storage unavailable */ }
+  notifyStorageGrantsPurged();
+}
+
+// --- Known places (v28) ---
+
+const knownPlaceListeners = new Set<() => void>();
+
+/** Notify mounted views after a known-places write commits. */
+export function subscribeKnownPlaces(listener: () => void): () => void {
+  knownPlaceListeners.add(listener);
+  return () => { knownPlaceListeners.delete(listener); };
+}
+
+function notifyKnownPlacesChanged(): void {
+  for (const listener of knownPlaceListeners) listener();
+}
+
+const purgeListeners = new Set<() => void>();
+
+/** Fires after `purgeAllUserData` has emptied localStorage-held grants. */
+export function subscribePurge(listener: () => void): () => void {
+  purgeListeners.add(listener);
+  return () => { purgeListeners.delete(listener); };
+}
+
+function notifyStorageGrantsPurged(): void {
+  for (const listener of purgeListeners) listener();
+}
+
+export async function listKnownPlaces(): Promise<KnownPlace[]> {
+  const db = await getDB();
+  return db.getAll('knownPlaces');
+}
+
+export async function listKnownPlacesForPubkey(pubkey: string): Promise<KnownPlace[]> {
+  const db = await getDB();
+  return db.getAllFromIndex('knownPlaces', 'by-pubkey', pubkey.toLowerCase());
+}
+
+/**
+ * Record one observation of a place in a single readwrite transaction: read
+ * by id, merge (keeps firstAt / alias / pinned), `uses + 1`, `lastAt = now`.
+ */
+export async function upsertKnownPlace(input: KnownPlaceInput): Promise<KnownPlace | null> {
+  const clean = normaliseKnownPlaceInput(input);
+  if (!clean) return null;
+  const db = await getDB();
+  const tx = db.transaction('knownPlaces', 'readwrite');
+  const id = `${clean.placeKey}:${clean.pubkey}`;
+  const existing: KnownPlace | undefined = await tx.store.get(id);
+  const next = mergeKnownPlace(existing, clean, Math.floor(Date.now() / 1000));
+  await tx.store.put(next);
+  await tx.done;
+  notifyKnownPlacesChanged();
+  return next;
+}
+
+async function patchKnownPlace(id: string, patch: (row: KnownPlace) => KnownPlace): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('knownPlaces', 'readwrite');
+  const existing: KnownPlace | undefined = await tx.store.get(id);
+  if (existing) await tx.store.put(patch(existing));
+  await tx.done;
+  notifyKnownPlacesChanged();
+}
+
+export async function setKnownPlaceAlias(id: string, alias: string): Promise<void> {
+  const trimmed = alias.trim().slice(0, 64);
+  await patchKnownPlace(id, (row) => {
+    const { alias: _drop, ...rest } = row;
+    return trimmed ? { ...rest, alias: trimmed } : rest;
+  });
+}
+
+export async function setKnownPlacePinned(id: string, pinned: boolean): Promise<void> {
+  await patchKnownPlace(id, (row) => {
+    const { pinned: _drop, ...rest } = row;
+    return pinned ? { ...rest, pinned: true } : rest;
+  });
+}
+
+export async function deleteKnownPlace(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('knownPlaces', id);
+  notifyKnownPlacesChanged();
+}
+
+/** Delete every row for one place (all identities that know it). */
+export async function deleteKnownPlacesForPlace(placeKey: string): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction('knownPlaces', 'readwrite');
+  const keys = await tx.store.index('by-place').getAllKeys(placeKey);
+  for (const key of keys) await tx.store.delete(key);
+  await tx.done;
+  notifyKnownPlacesChanged();
 }
 
 // --- Contact pictures (v27) ---
@@ -3287,6 +3412,28 @@ export async function saveConnectedClient(client: ConnectedClient): Promise<void
   }
   await db.put('connectedClients', client);
   notifyConnectedClientsChanged();
+}
+
+/**
+ * Change the "ask each time" choice on a connected client without touching
+ * anything else (`allowAlways` in particular, which also means "connected" for
+ * the crypto gate). `askToSign: false` removes the field. No-op when the
+ * client is gone.
+ */
+export async function updateConnectedClient(
+  clientPubkey: string,
+  patch: { askToSign: boolean },
+): Promise<void> {
+  const db = await getDB();
+  if (!db.objectStoreNames.contains('connectedClients')) return;
+  const tx = db.transaction('connectedClients', 'readwrite');
+  const existing: ConnectedClient | undefined = await tx.store.get(clientPubkey);
+  if (existing) {
+    const { askToSign: _drop, ...rest } = existing;
+    await tx.store.put(patch.askToSign ? { ...rest, askToSign: true } : rest);
+  }
+  await tx.done;
+  if (existing) notifyConnectedClientsChanged();
 }
 
 export async function deleteConnectedClient(clientPubkey: string): Promise<void> {

@@ -91,6 +91,7 @@ export interface NostrConnectRequest {
 export function buildConnectedClientFromNostrConnect(
   request: NostrConnectRequest,
   nowS = Math.floor(Date.now() / 1000),
+  opts?: { askToSign?: boolean },
 ): ConnectedClient {
   return {
     clientPubkey: request.clientPubkey.toLowerCase(),
@@ -99,6 +100,8 @@ export function buildConnectedClientFromNostrConnect(
     connectedAt: nowS,
     lastSeenAt: nowS,
     allowAlways: true,
+    // `allowAlways` stays true: it also means "connected" for the crypto gate.
+    ...(opts?.askToSign ? { askToSign: true } : {}),
     ...(request.permissions ? { permissions: request.permissions } : {}),
   };
 }

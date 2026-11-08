@@ -30,6 +30,14 @@ export interface ConnectedClient {
   /** Explicit NIP-46 method/kind ceiling. Absent only on legacy connections. */
   permissions?: string[];
   /**
+   * When true, `sign_event` from this client asks every time even though
+   * `allowAlways` is set. `allowAlways` is deliberately left alone: it doubles
+   * as "this client is connected" for the nip04/nip44 gate, so crypto stays
+   * silent either way. Read in exactly one place — the owner-route sign_event
+   * silent path in useBunkerServer.
+   */
+  askToSign?: boolean;
+  /**
    * Random marker written by the connect approval that saved this record.
    * Its rollback (cancelled / withdrawn / failed) touches the record only
    * while it still carries that marker — never a newer pairing or a record

@@ -146,6 +146,9 @@ import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
 import { isNativeApp, SignetNative } from './lib/native';
+import { referrerPackageFor } from './lib/launch-referrer';
+import { deriveSignInChannel, deriveSigner } from './lib/known-place-channel';
+import { buildSignInKnownPlace, recordKnownPlace } from './lib/known-places-record';
 import { BunkerApprovalModal } from './components/BunkerApprovalModal';
 import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
@@ -1247,6 +1250,9 @@ function AppContent() {
   // when the consumer sent no name= (an empty urlAuthSiteName).
   const urlAuthRequestsRef = useRef(new WeakSet<object>());
   const signInAppPermissionsRef = useRef(new WeakMap<object, SignInAppPermission>());
+  /** Package that launched a native sign-in link. UNTRUSTED: display and Open
+   *  only. Kept beside the request object, never in the URL or AuthRequest. */
+  const signInReferrerRef = useRef(new WeakMap<object, string>());
   authApprovalInFlightRef.current = () => {
     const current = pendingAuthRequestRef.current;
     if (current && authSettlementRef.current.isInFlight(authRequestKey(current))) return true;
@@ -4034,6 +4040,8 @@ function AppContent() {
       const existing = await getConnectedClient(clientPubkey.toLowerCase());
       await saveConnectedClient({
         ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
+        // A re-pair must not silently undo a user's "ask each time" choice.
+        ...(existing?.askToSign ? { askToSign: true } : {}),
         clientPubkey: clientPubkey.toLowerCase(),
         appName,
         appUrl: origin,
@@ -7758,7 +7766,7 @@ function AppContent() {
     })
   ), [routedApprovalUnavailableMessage]);
 
-  const approveConnectUnguarded = useCallback(async (sel: AuthSelection) => {
+  const approveConnectUnguarded = useCallback(async (sel: AuthSelection, connectOptions: { askToSign: boolean } = { askToSign: false }) => {
     if (!pendingConnectRequest || !identity) throw new Error('No pending connect request');
     const connectRequest = pendingConnectRequest;
     const connectKey = requestObjectKey(connectRequest);
@@ -7990,7 +7998,7 @@ function AppContent() {
             ...connectRequest,
             relayUrl,
             relayUrls: relayCandidates,
-          }),
+          }, undefined, { askToSign: connectOptions.askToSign }),
           pairingNonce,
         }),
         stillOurs: async () => (await getConnectedClient(connectRequest.clientPubkey))?.pairingNonce === pairingNonce,
@@ -8012,6 +8020,24 @@ function AppContent() {
       // Connected: the route now serves the new pairing, so a later Cancel
       // on this request must leave it alone.
       connectRouteTrackerRef.current.forget(connectKey);
+
+      // Remember the app as a known place for the identity it was bound to.
+      // Display facts only; failure to record never affects the pairing.
+      let connectOrigin: string | undefined;
+      try {
+        const u = new URL(connectRequest.appUrl ?? '');
+        if (u.protocol === 'https:' || u.protocol === 'http:') connectOrigin = u.origin;
+      } catch { /* no usable app URL */ }
+      void recordKnownPlace({
+        placeKey: `nc:${connectRequest.clientPubkey.toLowerCase()}`,
+        pubkey: routeBackend.activePublicKeyHex,
+        kind: 'nip46',
+        name: connectRequest.appName,
+        ...(connectOrigin ? { origin: connectOrigin } : {}),
+        channel: 'nip46',
+        signer: deriveSigner((selectedBackend as { type?: string }).type, bunkerRouterRef.current !== null),
+        shared: {},
+      });
 
       // Capture the callback before state is cleared — the setTimeout
       // below closes over the value at resolution time, not at queue time.
@@ -8047,7 +8073,7 @@ function AppContent() {
   // One answer per connect request, as for sign-in: starts the in-flight
   // approval synchronously, dismisses a request already answered, and reopens
   // it for retry/cancel if the approval failed without connecting.
-  const handleApproveConnect = useCallback(async (sel: AuthSelection) => {
+  const handleApproveConnect = useCallback(async (sel: AuthSelection, connectOptions?: { askToSign: boolean }) => {
     const request = pendingConnectRequestRef.current;
     if (!request) throw new Error('No pending connect request');
     const key = requestObjectKey(request);
@@ -8061,7 +8087,7 @@ function AppContent() {
     }
     if (began === 'in-flight') throw new Error('Already connecting this request.');
     try {
-      await approveConnectUnguarded(sel);
+      await approveConnectUnguarded(sel, connectOptions);
     } finally {
       connectSettlementRef.current.endApproval(key);
     }
@@ -8455,6 +8481,10 @@ function AppContent() {
       }
     }
 
+    // Which signer approves, read BEFORE any child-gate wrapper replaces the
+    // backend (wrappers carry no `type`). Display fact for known places only.
+    const knownPlaceSigner = deriveSigner((selectedBackend as { type?: string }).type, bunkerRouterRef.current !== null);
+
     // A direct-paired child: Sign in with Signet goes through the child's gate
     // (target site:<origin>, spec §8.1). The wait for a guardian answer shows
     // as the "Asking your guardian…" panel on the approval screen. Redirect
@@ -8588,6 +8618,29 @@ function AppContent() {
       const handleToShare = (pickedToken !== 'natural-person' && shareHandle)
         ? pickedDisplayName
         : undefined;
+
+      // The place this sign-in leaves behind (display facts only). Built once
+      // here so both delivery paths record the same row, and so the relay
+      // retry closure — which runs after the request is cleared — can't see
+      // cleared state. The referrer package is untrusted: it labels the row
+      // and may enable "Open", nothing else.
+      const referrerPackage = signInReferrerRef.current.get(request);
+      const knownPlaceInput = buildSignInKnownPlace({
+        origin: request.origin,
+        pubkey,
+        siteName,
+        consumerDisplayName: consumerDisplayName ?? undefined,
+        nativePackage: referrerPackage,
+        channel: deriveSignInChannel({
+          isRelayMode,
+          urlArrived: urlAuthRequestsRef.current.has(request),
+          referrerPackage,
+          native: isNativeApp(),
+        }),
+        signer: knownPlaceSigner,
+        handleShared: handleToShare,
+        pictureShared: !!pickedAvatar,
+      });
 
       // ── Relay delivery mode ───────────────────────────────────────────────────
       if (isRelayMode) {
@@ -8802,6 +8855,7 @@ function AppContent() {
                 consumerDisplayName: capturedConsumerDisplayName ?? undefined,
               },
             ).catch(() => {});
+            void recordKnownPlace(knownPlaceInput);
 
             // Record per-origin policy memory.
             recordOriginSignIn(capturedRequest.origin, capturedKeypairLabel, {
@@ -8965,6 +9019,7 @@ function AppContent() {
             consumerDisplayName: consumerDisplayName ?? undefined,
           },
         );
+        await recordKnownPlace(knownPlaceInput);
 
         // Record per-origin policy memory.
         await recordOriginSignIn(pendingAuthRequest.origin, keypairLabel, {
@@ -9816,7 +9871,7 @@ function AppContent() {
     cleanupUnencryptedIdentities().catch(() => {});
   }, []);
 
-  const consumeUrlAuthRequest = useCallback((targetHref?: string) => {
+  const consumeUrlAuthRequest = useCallback((targetHref?: string, opts?: { referrerPackage?: string }) => {
     let url: URL;
     try {
       url = targetHref ? new URL(targetHref, window.location.href) : new URL(window.location.href);
@@ -9858,6 +9913,7 @@ function AppContent() {
     // be staged invisibly if MySignet was backgrounded on Settings/Bunker.
     setPendingAuthSelection(null);
     urlAuthRequestsRef.current.add(parsed.request);
+    if (opts?.referrerPackage) signInReferrerRef.current.set(parsed.request, opts.referrerPackage);
     if (parsed.appPermission) signInAppPermissionsRef.current.set(parsed.request, parsed.appPermission);
     setPendingAuthRequest(parsed.request);
     navigateReplace('approve-auth');
@@ -10153,9 +10209,16 @@ function AppContent() {
         // notice, R-8/M7) and navigates, once real state has loaded.
         setHeldContactsGrantV2(action.request);
         return;
-      case 'sign-in':
-        consumeUrlAuthRequest(action.href);
+      case 'sign-in': {
+        // The launching package is read from the shell and carried beside the
+        // request object only. It is a display hint (untrusted), so a missing
+        // or failed read just means no hint — the sign-in proceeds regardless.
+        const href = action.href;
+        void referrerPackageFor(url, () => SignetNative.getLaunchReferrer()).then((referrerPackage) => {
+          consumeUrlAuthRequest(href, referrerPackage ? { referrerPackage } : undefined);
+        });
         return;
+      }
       case 'root-carrier': {
         let search = '';
         try { search = new URL(action.href).search; } catch { return; }

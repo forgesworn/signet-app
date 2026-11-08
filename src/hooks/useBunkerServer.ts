@@ -1369,7 +1369,10 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // M6: a standing app permission (kind 30420) is one decision per
       // request, never covered by a remembered "allow always" either.
       const sensitiveForAllowAlways = kinterest || scope === 'pair-device' || scope === 'mutate-identity' || scope === 'app-permission' || (existing?.permissions !== undefined && template.kind === 5);
-      if (existing?.allowAlways && !sensitiveForAllowAlways) {
+      // `askToSign` is the ONLY place the "ask each time" choice is read: it
+      // makes a connected client's sign_event prompt while `allowAlways` keeps
+      // meaning "connected" for the nip04/nip44 gate, so crypto stays silent.
+      if (existing?.allowAlways && !existing.askToSign && !sensitiveForAllowAlways) {
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
           await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
@@ -1771,6 +1774,8 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             // Guardian route: whole-client ConnectedClient.allowAlways.
             const now = Math.floor(Date.now() / 1000);
             const existing = await db.getConnectedClient(req.clientPubkey);
+            // Rebuilt field by field, so a stored `askToSign` is dropped: the
+            // user just chose "Allow always" for this app.
             await db.saveConnectedClient({
               ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
               clientPubkey: req.clientPubkey,

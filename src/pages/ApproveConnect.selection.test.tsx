@@ -48,7 +48,7 @@ function page(o: {
   waiting?: string[];
   userChoice?: { selection: AuthSelection | null };
   onUserChoice?: (s: AuthSelection | null) => void;
-  onApprove?: (s: AuthSelection) => Promise<void>;
+  onApprove?: (s: AuthSelection, o: { askToSign: boolean }) => Promise<void>;
 } = {}) {
   return (
     <ApproveConnect
@@ -94,7 +94,7 @@ describe('ApproveConnect — the user\'s choice is final', () => {
     rerender(page({ waiting: [], userChoice: choice, onApprove }));
     expect(approveButton().disabled).toBe(false);
     fireEvent.click(approveButton());
-    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: TREE });
+    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: TREE }, { askToSign: false });
   });
 
   it('the default applies before the user touches the picker', () => {

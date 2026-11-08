@@ -31,7 +31,7 @@ interface Props {
    * sendConnectResponse. Should reject on network/send failure so the
    * component can surface the retry state.
    */
-  onApprove: (selection: AuthSelection) => Promise<void>;
+  onApprove: (selection: AuthSelection, options: { askToSign: boolean }) => Promise<void>;
   onDeny: () => void;
   /** The user's explicit pick for THIS request, held by App (survives a lock remount). */
   userChoice?: { selection: AuthSelection | null };
@@ -161,6 +161,9 @@ export function ApproveConnect({
   });
   const [showNpConfirm, setShowNpConfirm] = useState(false);
   const [status, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error'>('pending');
+  // Crypto (nip44 / nip04) stays automatic either way; this only decides
+  // whether sign_event asks each time.
+  const [askToSign, setAskToSign] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const isGuardianSelected = (keypairType: string) =>
@@ -178,7 +181,7 @@ export function ApproveConnect({
     setStatus('sending');
     setError(null);
     try {
-      await onApprove(selection);
+      await onApprove(selection, { askToSign });
       setStatus('sent');
     } catch (e) {
       setStatus('error');
@@ -395,6 +398,32 @@ export function ApproveConnect({
           )}
         </div>
       )}
+
+      <div className="card section" role="radiogroup" aria-label="How this app signs">
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
+          <input
+            type="radio"
+            name="connect-sign-mode"
+            checked={!askToSign}
+            disabled={status === 'sending' || status === 'sent'}
+            onChange={() => setAskToSign(false)}
+          />
+          <span>Sign automatically for this app</span>
+        </label>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <input
+            type="radio"
+            name="connect-sign-mode"
+            checked={askToSign}
+            disabled={status === 'sending' || status === 'sent'}
+            onChange={() => setAskToSign(true)}
+          />
+          <span>Ask me each time it signs</span>
+        </label>
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '8px 0 0' }}>
+          Encrypting and decrypting stay automatic either way.
+        </p>
+      </div>
 
       {error && (
         <div className="card section" style={{ background: 'var(--danger-light)', borderColor: 'var(--danger)' }}>
