@@ -4610,8 +4610,10 @@ function AppContent() {
   const knownPlacesFor = useCallback((pubkey: string) => (encryptionKey ? visibleKnownPlaces.filter(p => p.pubkey === pubkey) : []), [encryptionKey, visibleKnownPlaces]);
   const knownPlaceCtx = useCallback((place: KnownPlace): KnownPlaceCtx => {
     const app = place.nativePackage && isNativeApp() ? placeAppCache.get(place.nativePackage) : undefined;
-    const appLabel = app?.label ?? undefined;
-    const appIcon = app?.icon ?? null;
+    // A browser sign-in records the browser's package for the channel only; the
+    // place is the site, so it keeps its own tile and name, not the browser's.
+    const appLabel = place.channel === 'browser' ? undefined : app?.label ?? undefined;
+    const appIcon = place.channel === 'browser' ? null : app?.icon ?? null;
     if (place.kind === 'nip46') {
       // Until the paired clients have loaded, whether this one asks is unknown: say nothing.
       if (connectedClientsLoading) return { askToSign: undefined, loading: true, appLabel, appIcon };
@@ -14369,8 +14371,7 @@ function AppContent() {
           return knownPlacesFor(resolved.publicKey).map(place => {
             const ctx = knownPlaceCtx(place);
             const badge = primaryBadge(badgesFor(place, { askToSign: ctx.askToSign, nip55Grant: ctx.nip55Grant, loading: ctx.loading, now: Math.floor(Date.now() / 1000) }));
-            const app = place.nativePackage && isNativeApp() ? placeAppCache.get(place.nativePackage) : undefined;
-            return { place, badge, iconUrl: app?.icon ?? null };
+            return { place, badge, iconUrl: ctx.appIcon ?? null };
           });
         }}
         onOpenSite={placeId => { setKnownPlaceFocus(f => ({ id: placeId, nonce: (f?.nonce ?? 0) + 1 })); }}
