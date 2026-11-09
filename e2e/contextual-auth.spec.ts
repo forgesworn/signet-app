@@ -30,17 +30,17 @@ test('recovery words require fresh authentication, with cancel and wrong PIN lea
 test('deletion is named before authentication and its final confirmation stays gated', async ({ page }) => {
   await navigateViaHarness(page, 'settings');
   await page.getByRole('button', { name: /Power Mode/ }).click();
-  const remove = page.getByRole('button', { name: 'Delete MySignet', exact: true });
+  const remove = page.getByRole('button', { name: 'Remove MySignet from this phone…', exact: true });
   await remove.click();
   await expect(page.getByRole('heading', { name: 'Delete MySignet' })).toBeVisible();
   await expect(page.getByText(/This deletes all data from this device/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Delete forever' })).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Remove from this phone' })).toBeHidden();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(remove).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Delete forever' })).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Remove from this phone' })).toBeHidden();
   await remove.click();
   await unlockWithPin(page);
-  await expect(page.getByRole('button', { name: 'Delete forever' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove from this phone' })).toBeVisible();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(remove).toBeVisible();
 });

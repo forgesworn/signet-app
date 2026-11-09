@@ -451,6 +451,7 @@ import type { AuthRequest, LoginRequest } from './lib/qr-router';
 import { Z } from './lib/z-index';
 import { hasPendingPublishes, flushPendingPublishes } from './lib/pending-publish';
 import { createLockRequester } from './lib/lock-after-flush';
+import { buildDeviceWipeInventory } from './lib/device-wipe';
 import { clearPickerGrace, hideGetsGrace } from './lib/picker-grace';
 
 const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
@@ -4612,6 +4613,17 @@ function AppContent() {
   const knownPlacesFor = useCallback((pubkey: string) => (encryptionKey ? visibleKnownPlaces.filter(p => p.pubkey === pubkey) : []), [encryptionKey, visibleKnownPlaces]);
   // Settings rows land on column 3 of the active row. Position is App state, so no
   // arrow API is needed: set it, then show the home carousel.
+  // What "Remove MySignet from this phone" costs, for the Settings confirm card.
+  // Active grants come from the same registry rows `tombstoneGrantsFor` reads.
+  const deviceWipeInventory = useMemo(() => buildDeviceWipeInventory({
+    identity,
+    dependants,
+    signingMode: preferences.signingMode,
+    hasOperatorKey: !!heartwoodOperator.credential,
+    activeGrantCount: contactsGrantRows.filter((g) => !g.revokedAt).length,
+    childDirect,
+    hasBunkerRouter: !!bunkerRouter,
+  }), [identity, dependants, preferences.signingMode, heartwoodOperator.credential, contactsGrantRows, childDirect, bunkerRouter]);
   const knownPlaceCountActive = carousel.activeIdentity.publicKey ? knownPlacesFor(carousel.activeIdentity.publicKey).length : 0;
   const openKnownPlaces = useCallback(() => {
     // Only owner and bot rows have a places column; from a dependant or the
@@ -6596,7 +6608,7 @@ function AppContent() {
     } finally { tap?.end(); }
   }, [encryptionKey, identity, bunkerBackend, reloadIdentity, reloadPreferences, setBackgroundBunkerEnabled]);
 
-  const handleDeleteIdentity = useCallback(async () => {
+  const handleDeleteIdentity = useCallback(async ({ takeDownOnNostr }: { takeDownOnNostr: boolean }) => {
     // Proof-of-presence gate: the most destructive action in the app must cost
     // an unlock. Falls through only if no PIN/biometric was ever set up.
     if (isAuthSetUp()) {
@@ -6622,7 +6634,8 @@ function AppContent() {
     // with no way for them to reach it.
     // A42: a direct child signs nothing here — its slots live on the family
     // Heartwood behind the gate, and the guardian manages their profiles.
-    if (identity && !childDirect) {
+    // The whole block is opt-in: a phone-only removal publishes nothing.
+    if (takeDownOnNostr && identity && !childDirect) {
       const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
       const retractions: Array<Promise<unknown>> = [];
 
@@ -11409,10 +11422,11 @@ function AppContent() {
         preferences={preferences}
         onSetTheme={setTheme}
         onDeleteIdentity={handleDeleteIdentity}
+        deviceWipe={deviceWipeInventory}
         onRequestDeleteAuth={async () => {
           // PIN-gate Delete My Signet.
           // A fresh PIN/biometric prompt must succeed before the user
-          // even sees the "Delete forever" confirm card — proof of
+          // even sees the "Remove from this phone" confirm card — proof of
           // presence for the most destructive action the app offers.
           const key = await requestFreshAuth({ purpose: 'delete-my-signet' });
           return key !== null;
