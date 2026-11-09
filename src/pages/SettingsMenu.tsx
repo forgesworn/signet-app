@@ -3,19 +3,23 @@ import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 import type { SignetIdentity, AppPreferences, Page } from '../types';
 import { ANDROID_APP_URL, isAndroidWeb, isWebBuild } from '../lib/android-promo';
 import { UpdateStatusLine } from '../components/UpdateStatusLine';
+import { describeTakedown, EMPTY_DEVICE_WIPE_INVENTORY, type DeviceWipeInventory } from '../lib/device-wipe';
 
 interface Props {
   identity: SignetIdentity;
   preferences: AppPreferences;
   onSetTheme: (theme: 'system' | 'light' | 'dark') => void;
-  onDeleteIdentity: () => void;
+  /** `takeDownOnNostr` false = wipe this phone only and publish nothing. */
+  onDeleteIdentity: (opts: { takeDownOnNostr: boolean }) => void;
+  /** What the removal costs; drives the confirm card. Defaults to nothing to warn about. */
+  deviceWipe?: DeviceWipeInventory;
   /**
-   * Called when the user taps "Delete MySignet". Must prompt for a fresh
+   * Called when the user taps "Remove MySignet from this phone…". Must prompt for a fresh
    * PIN / biometric and resolve `true` only after successful auth. Returning
    * `false` (or throwing) leaves the menu untouched.
    *
    * The PIN-first ordering is deliberate: the user
-   * must prove presence before even seeing the "Delete forever" confirm
+   * must prove presence before even seeing the confirm
    * card, so there's no chance of tapping into a dead end if they've
    * forgotten their PIN.
    */
@@ -53,8 +57,10 @@ interface Props {
   onApplyWebUpdate?: () => void;
 }
 
-export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdentity, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, knownPlaceCount = 0, connectedAppsCount = 0, onOpenKnownPlaces, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
+export function SettingsMenu({ preferences, onSetTheme, onDeleteIdentity, deviceWipe = EMPTY_DEVICE_WIPE_INVENTORY, onRequestDeleteAuth, powerMode, onSetPowerMode, onNavigate, showPairedChildSwitcher, showChildPermissions = false, knownPlaceCount = 0, connectedAppsCount = 0, onOpenKnownPlaces, dependantsCount, companionGrantCount = 0, webUpdateReady = false, onApplyWebUpdate }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [savedAck, setSavedAck] = useState(false);
+  const [takeDown, setTakeDown] = useState(false);
   const [versionTaps, setVersionTaps] = useState(0);
   // Advanced settings holds the calibration card only on an owner install.
   const offersHandshakeCalibration = preferences.signingMode !== 'paired-child';
@@ -342,33 +348,84 @@ export function SettingsMenu({ identity, preferences, onSetTheme, onDeleteIdenti
             }}
             style={{ color: 'var(--danger)' }}
           >
-            Delete MySignet
+            Remove MySignet from this phone…
           </button>
         ) : (
           (() => {
-            // §6.9 — when any of the user's keypair slots has an active
-            // public profile we surface the relay-retract clause. The
-            // deletion code (App.tsx handleDeleteIdentity) fires the kind-5
-            // + tombstone loop regardless, but the user deserves to know
-            // BEFORE confirming that relay state is also being targeted.
-            const hasActiveProfile =
-              identity.naturalPerson.publicProfile?.enabled === true ||
-              identity.persona.publicProfile?.enabled === true ||
-              identity.professionalPersona?.publicProfile?.enabled === true ||
-              (identity.extraPersonas ?? []).some(p => p.publicProfile?.enabled === true);
+            const { phoneOnly, recoverable, takedown } = deviceWipe;
+            const canTakeDown = takedown.profiles + takedown.appGrants > 0;
+            // Never trust a stale tick if the counts fell to zero meanwhile.
+            const takeDownOnNostr = takeDown && canTakeDown;
+            const blocked = phoneOnly.length > 0 && !savedAck;
+            const closeCard = () => {
+              setConfirmDelete(false);
+              setSavedAck(false);
+              setTakeDown(false);
+            };
+            const listStyle = { margin: '0 0 12px', paddingLeft: 20, fontSize: '0.9rem' } as const;
             return (
               <div className="card" style={{ borderColor: 'var(--danger)' }}>
                 <p style={{ marginBottom: 12, fontSize: '0.9rem' }}>
-                  This will permanently delete your identity from this device. Make sure you've saved your backup words.
+                  This removes your Signet from this phone. Nothing on Nostr changes unless you tick the box below.
                 </p>
-                {hasActiveProfile && (
-                  <p style={{ marginBottom: 12, fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                    Signet will also ask Nostr relays to delete your public profiles. Some relays may keep a copy — your verifications and other relay events stay, only your kind-0 profiles are retracted.
-                  </p>
+                {phoneOnly.length > 0 && (
+                  <>
+                    <p style={{ marginBottom: 6, fontSize: '0.9rem', fontWeight: 600 }}>
+                      Only on this phone — gone unless you've saved them:
+                    </p>
+                    <ul style={listStyle}>
+                      {phoneOnly.map(item => <li key={item.id}>{item.label}</li>)}
+                    </ul>
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, fontSize: '0.9rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={savedAck}
+                        onChange={e => setSavedAck(e.target.checked)}
+                      />
+                      I've saved these
+                    </label>
+                  </>
+                )}
+                {recoverable.length > 0 && (
+                  <>
+                    <p style={{ marginBottom: 6, fontSize: '0.9rem', fontWeight: 600 }}>
+                      You can bring these back afterwards:
+                    </p>
+                    <ul style={listStyle}>
+                      {recoverable.map(item => <li key={item.id}>{item.label}</li>)}
+                    </ul>
+                  </>
+                )}
+                {canTakeDown && (
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: '0.9rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={takeDown}
+                        onChange={e => setTakeDown(e.target.checked)}
+                      />
+                      Also take it down on Nostr
+                    </label>
+                    <p style={{ margin: '4px 0 0 24px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                      {describeTakedown(takedown)}
+                    </p>
+                    {takeDown && (
+                      <p style={{ margin: '4px 0 0 24px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        Some relays may keep a copy. Your verifications and other relay events stay.
+                      </p>
+                    )}
+                  </div>
                 )}
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-danger" onClick={onDeleteIdentity} style={{ flex: 1 }}>Delete forever</button>
-                  <button className="btn btn-secondary" onClick={() => setConfirmDelete(false)} style={{ flex: 1 }}>Cancel</button>
+                  <button
+                    className="btn btn-danger"
+                    disabled={blocked}
+                    onClick={() => onDeleteIdentity({ takeDownOnNostr })}
+                    style={{ flex: 1 }}
+                  >
+                    {takeDownOnNostr ? 'Delete everywhere' : 'Remove from this phone'}
+                  </button>
+                  <button className="btn btn-secondary" onClick={closeCard} style={{ flex: 1 }}>Cancel</button>
                 </div>
               </div>
             );
