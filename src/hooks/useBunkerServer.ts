@@ -69,7 +69,7 @@ import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
 import { parseNip46Permissions, nip46PermissionAllows } from '../lib/nip46-permissions';
 import { isNativeApp } from '../lib/native';
-import { markAnswered, wasAnswered } from '../lib/bunker-answered-store';
+import { markAnswered, wasAnswered, subscribeAnswered } from '../lib/bunker-answered-store';
 
 /**
  * Dev-only diagnostics for the bunker-serve socket lifecycle. Stripped from
@@ -257,6 +257,7 @@ export interface PendingSignApproval {
 /** Full context for a queued sign_event, keyed by handle. */
 interface ActiveSignRequest {
   requestId: string;
+  inboundEventId: string;
   clientPubkey: string;
   kinterestChildName?: string;
   template: UnsignedEvent;
@@ -271,6 +272,7 @@ interface ActiveSignRequest {
 /** Full context for a queued owner-route NIP-04 / NIP-44 request. Owner routes only. */
 interface ActiveCryptoRequest {
   requestId: string;
+  inboundEventId: string;
   clientPubkey: string;
   route: BunkerRoute;
   crypto: { method: BunkerCryptoMethod; peerPubkey: string; payload: string };
@@ -644,9 +646,27 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   const shareAnswered = isNativeApp();
   const inboundEventByRequestRef = useRef<Map<string, string>>(new Map());
 
+  useEffect(() => {
+    if (!shareAnswered) return;
+    return subscribeAnswered(() => {
+      const retired = new Set<number>();
+      for (const [handle, request] of activeRequestRef.current) {
+        const key = `${request.clientPubkey}:${request.requestId}`;
+        if (!wasAnswered(request.inboundEventId)) continue;
+        activeRequestRef.current.delete(handle);
+        if (inboundEventByRequestRef.current.get(key) === request.inboundEventId) inboundEventByRequestRef.current.delete(key);
+        retired.add(handle);
+      }
+      if (retired.size) {
+        queueSizeRef.current = activeRequestRef.current.size;
+        setPendingApprovals(prev => prev.filter(request => !retired.has(request.handle)));
+      }
+    });
+  }, [shareAnswered]);
+
   /** Publish a response event to the relay the client spoke to us on. */
   const publishResponse = useCallback(
-    async (backend: DecryptingSigningBackend, clientPubkey: string, requestId: string, result?: string, error?: string) => {
+    async (backend: DecryptingSigningBackend, clientPubkey: string, requestId: string, result?: string, error?: string, answeredEventId?: string) => {
       const generation = responseGenerationRef.current;
       const response = { id: requestId, ...(result !== undefined ? { result } : {}), ...(error !== undefined ? { error } : {}) };
       let event: NostrEvent;
@@ -662,11 +682,11 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         devLog('[bunker-serve] response buffer full');
         return;
       }
-      let inboundEventId: string | undefined;
+      let inboundEventId = shareAnswered ? answeredEventId : undefined;
       if (shareAnswered) {
         const key = `${clientPubkey}:${requestId}`;
-        inboundEventId = inboundEventByRequestRef.current.get(key);
-        inboundEventByRequestRef.current.delete(key);
+        inboundEventId ??= inboundEventByRequestRef.current.get(key);
+        if (inboundEventByRequestRef.current.get(key) === inboundEventId) inboundEventByRequestRef.current.delete(key);
       }
       responseOutboxRef.current.set(event.id, { event, expiresAt: Date.now() + 300_000, inboundEventId });
       flushResponses();
@@ -1163,10 +1183,12 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           }
           const method = request.method as BunkerCryptoMethod;
           const peerPubkey = theirPubkey.toLowerCase();
+          if (shareAnswered && wasAnswered(event.id)) return;
           queueSizeRef.current += 1;
           const handle = ++handleCounterRef.current;
           activeRequestRef.current.set(handle, {
             requestId: request.id,
+            inboundEventId: event.id,
             clientPubkey: request.clientPubkey,
             route,
             crypto: { method, peerPubkey, payload },
@@ -1668,6 +1690,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     const handle = ++handleCounterRef.current;
     activeRequestRef.current.set(handle, {
       requestId: request.id,
+      inboundEventId: event.id,
       clientPubkey: request.clientPubkey,
       template,
       route,
@@ -1676,6 +1699,15 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       ...(kinterestChildName ? { kinterestChildName } : {}),
     });
     const existing = route.dependantId ? undefined : await db.getConnectedClient(request.clientPubkey);
+    // Another view can answer while this lookup is in flight, before the
+    // approval has entered React state. Do not append an already-retired entry.
+    if (shareAnswered && wasAnswered(event.id)) {
+      activeRequestRef.current.delete(handle);
+      queueSizeRef.current = activeRequestRef.current.size;
+      const key = `${request.clientPubkey}:${request.id}`;
+      if (inboundEventByRequestRef.current.get(key) === event.id) inboundEventByRequestRef.current.delete(key);
+      return;
+    }
     const appName = authorizedAppPairing?.label ?? existing?.appName ?? 'Unknown app';
     const appUrl = authorizedAppPairing?.origin ?? existing?.appUrl;
     const entry: PendingApproval = {
@@ -1705,6 +1737,8 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     async (handle: number, decision: 'approve-once' | 'approve-always' | 'deny') => {
       const req = activeRequestRef.current.get(handle);
       if (!req) return;
+      const key = `${req.clientPubkey}:${req.requestId}`;
+      const alreadyAnswered = shareAnswered && wasAnswered(req.inboundEventId);
       const generation = responseGenerationRef.current;
       activeRequestRef.current.delete(handle);
       setPendingApprovals(prev => {
@@ -1712,30 +1746,37 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         queueSizeRef.current = next.length;
         return next;
       });
+      // Cross-view storage notification may arrive after a tap on stale UI.
+      if (alreadyAnswered) {
+        if (inboundEventByRequestRef.current.get(key) === req.inboundEventId) inboundEventByRequestRef.current.delete(key);
+        return;
+      }
 
       const { backend } = req.route;
+      const respond = (result?: string, error?: string) =>
+        publishResponse(backend, req.clientPubkey, req.requestId, result, error, req.inboundEventId);
 
       if (req.crypto) {
         // Owner-route NIP-04 / NIP-44 (#189). Only owner routes queue these.
         if (decision === 'deny') {
           if (generation !== responseGenerationRef.current) return;
-          await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'user denied');
+          await respond(undefined, 'user denied');
           return;
         }
         const { method, peerPubkey, payload } = req.crypto;
         let client: import('../types').ConnectedClient | undefined;
         try { client = await db.getConnectedClient(req.clientPubkey); } catch { client = undefined; }
         if (!nip46PermissionAllows(client?.permissions, method)) {
-          await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'permission not granted');
+          await respond(undefined, 'permission not granted');
           return;
         }
         const outcome = await runBunkerCrypto(req.route.signingBackend ?? backend, method, peerPubkey, payload);
         if (generation !== responseGenerationRef.current) return;
         if (!outcome.ok) {
-          await publishResponse(backend, req.clientPubkey, req.requestId, undefined, outcome.error);
+          await respond(undefined, outcome.error);
           return;
         }
-        await publishResponse(backend, req.clientPubkey, req.requestId, outcome.result);
+        await respond(outcome.result);
         try {
           const now = Math.floor(Date.now() / 1000);
           if (decision === 'approve-always') {
@@ -1776,7 +1817,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           } catch { /* best-effort — denial still fires below */ }
         }
         if (generation !== responseGenerationRef.current) return;
-        await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'user denied');
+        await respond(undefined, 'user denied');
         if (req.route.dependantId) {
           fireAudit({
             dependantPubkey: req.route.dependantId,
@@ -1791,7 +1832,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
 
       const currentClient = await db.getConnectedClient(req.clientPubkey);
       if (!nip46PermissionAllows(currentClient?.permissions, 'sign_event', req.template.kind)) {
-        await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'permission not granted');
+        await respond(undefined, 'permission not granted');
         return;
       }
       let signed: NostrEvent;
@@ -1813,14 +1854,14 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         signed = await signingBackend.signEvent(template);
       } catch {
         if (generation !== responseGenerationRef.current) return;
-        await publishResponse(backend, req.clientPubkey, req.requestId, undefined, 'signing failed');
+        await respond(undefined, 'signing failed');
         return;
       }
 
       if (generation !== responseGenerationRef.current) return;
       // Publish BEFORE persisting the approve-always grant, so a transient
       // IDB error doesn't mask a successful sign from the client.
-      await publishResponse(backend, req.clientPubkey, req.requestId, JSON.stringify(signed));
+      await respond(JSON.stringify(signed));
 
       // Emit audit for dependant-route approvals (guardian-route signs of
       // the guardian's own identity aren't audited — OQ1 scope is the
@@ -1889,7 +1930,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         } catch { /* allowAlways persistence is best-effort; never leak internals */ }
       }
     },
-    [publishResponse],
+    [publishResponse, shareAnswered],
   );
 
   const approveOnce = useCallback(

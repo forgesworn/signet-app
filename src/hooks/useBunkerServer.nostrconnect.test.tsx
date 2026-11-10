@@ -15,6 +15,8 @@ import { deleteConnectedClient, getConnectedClient, saveConnectedClient } from '
 import * as db from '../lib/db';
 import { CHILD_PURPOSE } from '../lib/kinterest-authority';
 import type { TrustedAppPairing } from '../types';
+import { markAnswered } from '../lib/bunker-answered-store';
+import * as native from '../lib/native';
 
 class MockRelaySocket {
   static CONNECTING = 0;
@@ -136,6 +138,141 @@ function buildClientRequest(input: {
 function decryptServerResponse(clientSk: Uint8Array, event: NostrEvent): { id: string; result?: string; error?: string } {
   return JSON.parse(decrypt(event.content, getConversationKey(clientSk, event.pubkey)));
 }
+
+describe('native approvals completed in another view', () => {
+  afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); });
+  it('retires a queued answered request while leaving a different request awaiting consent', async () => {
+    vi.spyOn(native, 'isNativeApp').mockReturnValue(true);
+    const h = renderOwnerServer();
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const clientSk = generateSecretKey();
+    const request = (id: string) => buildClientRequest({
+      clientSk, targetPubkey: h.ownerBackend.activePublicKeyHex, id, method: 'sign_event',
+      params: [JSON.stringify({ kind: 3063, tags: [], content: id, created_at: Math.floor(Date.now() / 1000) })],
+    });
+    const answered = request('answered-in-other-view');
+    await act(async () => { ws.deliver(answered); ws.deliver(request('still-needs-consent')); });
+    await waitFor(() => expect(h.result.current.pendingApprovals).toHaveLength(2));
+    const remaining = h.result.current.pendingApprovals.find(p => p.method === 'sign_event' && p.template.content === 'still-needs-consent')!;
+    await act(async () => { markAnswered(answered.id); });
+    await waitFor(() => expect(h.result.current.pendingApprovals.map(p => p.handle)).toEqual([remaining.handle]));
+    expect(ws.published).toHaveLength(0);
+  });
+
+  it('retires the second live view after the first view delivers its signed response', async () => {
+    vi.spyOn(native, 'isNativeApp').mockReturnValue(true);
+    const first = renderOwnerServer();
+    const firstSocket = await waitForOpenRelay(first.ownerBackend.activePublicKeyHex, first.relayUrl);
+    const second = renderHook(() => useBunkerServer({
+      enabled: true, relayUrl: first.relayUrl,
+      routes: [{ pubkey: first.ownerBackend.activePublicKeyHex, backend: first.ownerBackend }],
+      isOwnerServingActive: () => true,
+    }));
+    await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
+    const secondSocket = MockRelaySocket.instances.at(-1)!;
+    const clientSk = generateSecretKey();
+    const request = buildClientRequest({
+      clientSk, targetPubkey: first.ownerBackend.activePublicKeyHex, id: 'shared-approval', method: 'sign_event',
+      params: [JSON.stringify({ kind: 3063, tags: [], content: 'one catalogue record', created_at: Math.floor(Date.now() / 1000) })],
+    });
+    await act(async () => { firstSocket.deliver(request); secondSocket.deliver(request); });
+    await waitFor(() => {
+      expect(first.result.current.pendingApprovals).toHaveLength(1);
+      expect(second.result.current.pendingApprovals).toHaveLength(1);
+    });
+    const staleHandle = second.result.current.pendingApproval!.handle;
+    const signing = vi.spyOn(first.ownerBackend, 'signEvent');
+    await act(async () => { await first.result.current.approveOnce(first.result.current.pendingApproval!.handle); });
+    await waitFor(() => expect(second.result.current.pendingApprovals).toHaveLength(0));
+    await act(async () => { await second.result.current.approveOnce(staleHandle); });
+    expect(signing).toHaveBeenCalledTimes(2); // one user event and its response envelope
+    expect(firstSocket.published).toHaveLength(1);
+    expect(secondSocket.published).toHaveLength(0);
+    expect(decryptServerResponse(clientSk, firstSocket.published[0]).id).toBe('shared-approval');
+  });
+
+  it.each(['storage', 'focus', 'tap'])('retires a completed request on %s even if the original notification was missed', async mode => {
+    vi.spyOn(native, 'isNativeApp').mockReturnValue(true);
+    const h = renderOwnerServer();
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const request = buildClientRequest({
+      clientSk: generateSecretKey(), targetPubkey: h.ownerBackend.activePublicKeyHex, id: 'already-completed', method: 'sign_event',
+      params: [JSON.stringify({ kind: 3063, tags: [], content: '', created_at: Math.floor(Date.now() / 1000) })],
+    });
+    await act(async () => { ws.deliver(request); });
+    await waitFor(() => expect(h.result.current.pendingApprovals).toHaveLength(1));
+    const handle = h.result.current.pendingApproval!.handle;
+    const signing = vi.spyOn(h.ownerBackend, 'signEvent');
+    // A different WebView has written the receipt, without a local event here.
+    localStorage.setItem('signet:bunker-answered:v1', JSON.stringify([[request.id, Date.now()]]));
+    await act(async () => {
+      if (mode === 'storage') window.dispatchEvent(new StorageEvent('storage', { key: 'signet:bunker-answered:v1' }));
+      else if (mode === 'focus') window.dispatchEvent(new Event('focus'));
+      else await h.result.current.approveOnce(handle);
+    });
+    await waitFor(() => expect(h.result.current.pendingApprovals).toHaveLength(0));
+    expect(signing).not.toHaveBeenCalled();
+    expect(ws.published).toHaveLength(0);
+  });
+
+  it.each(['sign_event', 'nip44_decrypt'])('does not enqueue a completed %s while its permission lookup is in flight', async method => {
+    vi.spyOn(native, 'isNativeApp').mockReturnValue(true);
+    const pending = vi.fn();
+    const h = renderOwnerServer('wss://late-approval.example', { onApprovalPending: pending });
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const lookup = vi.spyOn(db, 'getConnectedClient').mockImplementation(async () => { await gate; return undefined; });
+    const request = buildClientRequest({
+      clientSk: generateSecretKey(), targetPubkey: h.ownerBackend.activePublicKeyHex, id: 'completed-during-lookup', method,
+      params: method === 'sign_event'
+        ? [JSON.stringify({ kind: 3063, tags: [], content: '', created_at: Math.floor(Date.now() / 1000) })]
+        : [getPublicKey(generateSecretKey()), 'cipher'],
+    });
+    await act(async () => { ws.deliver(request); });
+    await waitFor(() => expect(lookup).toHaveBeenCalled());
+    await act(async () => {
+      markAnswered(request.id); release();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(h.result.current.pendingApprovals).toHaveLength(0);
+    expect(pending).not.toHaveBeenCalled();
+    expect(ws.published).toHaveLength(0);
+  });
+
+  it('binds retirement to the envelope even when a client reuses an RPC id', async () => {
+    vi.spyOn(native, 'isNativeApp').mockReturnValue(true);
+    const h = renderOwnerServer();
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const clientSk = generateSecretKey();
+    const request = (content: string) => buildClientRequest({
+      clientSk, targetPubkey: h.ownerBackend.activePublicKeyHex, id: 'reused-id', method: 'sign_event',
+      params: [JSON.stringify({ kind: 3063, tags: [], content, created_at: Math.floor(Date.now() / 1000) })],
+    });
+    await act(async () => { ws.deliver(request('first')); ws.deliver(request('second')); });
+    await waitFor(() => expect(h.result.current.pendingApprovals).toHaveLength(2));
+    const first = h.result.current.pendingApprovals.find(p => p.method === 'sign_event' && p.template.content === 'first')!;
+    await act(async () => { await h.result.current.approveOnce(first.handle); });
+    expect(h.result.current.pendingApprovals).toHaveLength(1);
+    expect(h.result.current.pendingApprovals[0]).toMatchObject({ template: { content: 'second' } });
+    expect(ws.published).toHaveLength(1);
+  });
+
+  it('leaves web approvals independent of native answered receipts', async () => {
+    vi.spyOn(native, 'isNativeApp').mockReturnValue(false);
+    const h = renderOwnerServer();
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const request = buildClientRequest({
+      clientSk: generateSecretKey(), targetPubkey: h.ownerBackend.activePublicKeyHex, id: 'web-approval', method: 'sign_event',
+      params: [JSON.stringify({ kind: 3063, tags: [], content: '', created_at: Math.floor(Date.now() / 1000) })],
+    });
+    await act(async () => { ws.deliver(request); });
+    await waitFor(() => expect(h.result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { markAnswered(request.id); window.dispatchEvent(new Event('focus')); });
+    expect(h.result.current.pendingApprovals).toHaveLength(1);
+    expect(ws.published).toHaveLength(0);
+  });
+});
 
 describe('useBunkerServer NostrConnect integration', () => {
   it('listens on the requested relay and answers the immediate get_public_key follow-up', async () => {
