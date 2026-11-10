@@ -3,6 +3,8 @@ import { createIdentityAndUnlock, unlockWithPin } from './fixtures';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
+test.use({ actionTimeout: 20_000 });
+
 for (const scenario of ['signing off', 'new connection', 'previous persona'] as const) test(`KithMoot desktop with My Signet: ${scenario}`, async ({ page: signet, context, baseURL }) => {
   const signing = scenario !== 'signing off';
   const kithmoot = process.env.KITHMOOT_BASE_URL;
@@ -61,7 +63,13 @@ for (const scenario of ['signing off', 'new connection', 'previous persona'] as 
     }, clientPubkey);
     expect(boundPubkey).toBe(account);
   }
-  if (!await desktop.locator('#roomName').isVisible()) await desktop.locator('#newRoom').click();
+  if (!await desktop.locator('#roomName').isVisible()) {
+    if (await desktop.locator('#newRoom').isVisible()) await desktop.locator('#newRoom').click();
+    else {
+      await desktop.locator('#newMenuButton').click();
+      await desktop.locator('#newMenuRoom').click();
+    }
+  }
   await desktop.locator('#roomName').fill('Actual Signet integration');
   const creatorName = desktop.locator('#newRoomYourName');
   if (await creatorName.isVisible()) await creatorName.fill('KithMoot Signet tester');
