@@ -3,7 +3,7 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.25.2
 - Android: completed signing requests clear from other open approval screens and when returning to the app
 
 ## 0.25.1
