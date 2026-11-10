@@ -5,7 +5,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { decrypt, encrypt, getConversationKey } from 'nostr-tools/nip44';
 import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/nip04';
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { NostrConnect } from 'nostr-tools/kinds';
 import type { NostrEvent } from 'signet-protocol';
 import { switchRelaysAnswer, useBunkerServer } from './useBunkerServer';
@@ -679,6 +679,70 @@ describe('useBunkerServer NostrConnect integration', () => {
     await deleteConnectedClient(clientPubkey);
     unmount();
   });
+
+  it.each(['approved', 'expired', 'wrong secret', 'wrong persona', 'persistence failure', 'no persistence handler'] as const)(
+    'checks fresh QR consent before changing an existing persona binding: %s', async mode => {
+      const personaA = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+      const personaB = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+      const clientSk = generateSecretKey(), clientPubkey = getPublicKey(clientSk);
+      const secret = 'fresh-qr-pairing-secret';
+      const pendingAuthPairingsRef = { current: new Map([[secret, {
+        origin: 'https://kithmoot.example', appName: 'KithMoot',
+        signingPubkey: mode === 'wrong persona' ? personaA.activePublicKeyHex : personaB.activePublicKeyHex,
+        expiresAt: Date.now() + (mode === 'expired' ? -60_000 : 60_000),
+      }]]) };
+      const persist = vi.fn(async ({ signingPubkey }: { signingPubkey: string }) => {
+        if (mode === 'persistence failure') throw new Error('write failed');
+        const existing = (await getConnectedClient(clientPubkey))!;
+        await saveConnectedClient({ ...existing, boundPubkey: signingPubkey });
+      });
+      await saveConnectedClient({ clientPubkey, appName: 'KithMoot', connectedAt: 1, lastSeenAt: 1,
+        allowAlways: true, boundPubkey: personaA.activePublicKeyHex });
+      const h = renderHook(() => useBunkerServer({
+        enabled: true, relayUrl: 'wss://qr-repair.example', isOwnerServingActive: () => true,
+        routes: [personaA, personaB].map(backend => ({ pubkey: backend.activePublicKeyHex, backend })),
+        pendingAuthPairingsRef, onAuthFlowPairingComplete: mode === 'no persistence handler' ? undefined : persist,
+      }));
+      await waitFor(() => expect(MockRelaySocket.instances[0]?.subId).toBeTruthy());
+      const ws = MockRelaySocket.instances[0];
+      const ask = (backend: LocalSigningBackend, id: string, method: string, params: string[] = []) =>
+        ws.deliver(buildClientRequest({ clientSk, targetPubkey: backend.activePublicKeyHex, id, method, params }));
+      try {
+        await act(async () => { ask(personaB, 'new-qr-connect', 'connect', [personaB.activePublicKeyHex,
+          mode === 'wrong secret' ? 'some-other-secret' : secret]); });
+        if (mode === 'approved' || mode === 'persistence failure') {
+          await waitFor(() => expect(ws.published).toHaveLength(1));
+          expect(decryptServerResponse(clientSk, ws.published[0])).toEqual(mode === 'approved'
+            ? { id: 'new-qr-connect', result: 'ack' }
+            : { id: 'new-qr-connect', error: 'pairing failed — try again' });
+          expect(persist).toHaveBeenCalledOnce();
+          expect(pendingAuthPairingsRef.current.has(secret)).toBe(mode !== 'approved');
+        } else expect(persist).not.toHaveBeenCalled();
+        const expected = mode === 'approved' ? personaB : personaA;
+        const other = mode === 'approved' ? personaA : personaB;
+        // The old persona still stays silent unless fresh consent was persisted.
+        await act(async () => { ask(other, 'unapproved-persona', 'get_public_key'); });
+        await act(async () => { ask(expected, 'approved-persona', 'get_public_key'); });
+        await waitFor(() => expect(ws.published).toHaveLength(mode === 'approved' || mode === 'persistence failure' ? 2 : 1));
+        expect(decryptServerResponse(clientSk, ws.published.at(-1)!)).toEqual({ id: 'approved-persona', result: expected.activePublicKeyHex });
+        expect((await getConnectedClient(clientPubkey))?.boundPubkey).toBe(expected.activePublicKeyHex);
+        if (mode === 'approved') {
+          // A consumed secret cannot take the client back to the old persona.
+          await act(async () => { ask(personaA, 'spent-secret', 'connect', [personaA.activePublicKeyHex, secret]); });
+          await act(async () => { ask(personaB, 'sign-after-qr', 'sign_event', [JSON.stringify({
+            kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'after explicit QR approval',
+          })]); });
+          await waitFor(() => expect(ws.published).toHaveLength(3));
+          const response = decryptServerResponse(clientSk, ws.published[2]);
+          expect(response.id).toBe('sign-after-qr');
+          const signed = JSON.parse(response.result!);
+          expect(signed.pubkey).toBe(personaB.activePublicKeyHex);
+          expect(signed.content).toBe('after explicit QR approval');
+          expect(verifyEvent(signed)).toBe(true);
+        }
+      } finally { h.unmount(); await deleteConnectedClient(clientPubkey); }
+    },
+  );
 
   it('binds a pre-binding saved client to the first owner persona it uses (#194)', async () => {
     const personaA = new LocalSigningBackend(bytesToHex(generateSecretKey()));
