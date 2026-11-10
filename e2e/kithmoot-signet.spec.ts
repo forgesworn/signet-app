@@ -15,7 +15,7 @@ for (const scenario of ['signing off', 'new connection', 'previous persona'] as 
   await createIdentityAndUnlock(signet, { name: 'KithMoot Signet tester' });
   if (signing) {
     await signet.getByRole('button', { name: 'Settings', exact: true }).click();
-    await signet.getByRole('button', { name: /Security/ }).first().click();
+    await signet.getByRole('button', { name: /Bunker & Scanning/ }).click();
     await signet.getByRole('button', { name: 'Turn the Bunker on', exact: true }).click();
     await expect(signet.getByLabel('Bunker is on', { exact: true })).toBeVisible();
   }
