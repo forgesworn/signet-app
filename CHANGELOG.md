@@ -3,6 +3,9 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.25.3
+- Sign-in: approving a QR sign-in with another persona now reconnects apps that remember an earlier persona, instead of leaving them without a signing connection
+
 ## 0.25.2
 - Android: completed signing requests clear from other open approval screens and when returning to the app
 

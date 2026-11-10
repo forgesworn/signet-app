@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { createIdentityAndUnlock, unlockWithPin } from './fixtures';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
-for (const signing of [false, true]) test(`KithMoot desktop with My Signet ${signing ? 'connects the signer and joins a room' : 'explains when signing is off'}`, async ({ page: signet, context, baseURL }) => {
+for (const scenario of ['signing off', 'new connection', 'previous persona'] as const) test(`KithMoot desktop with My Signet: ${scenario}`, async ({ page: signet, context, baseURL }) => {
+  const signing = scenario !== 'signing off';
   const kithmoot = process.env.KITHMOOT_BASE_URL;
   test.skip(!kithmoot, 'Run with playwright.kithmoot.config.ts and KITHMOOT_REPO_PATH.');
   const relay = new URL('/__test-relay', kithmoot); relay.protocol = 'wss:';
@@ -16,11 +19,23 @@ for (const signing of [false, true]) test(`KithMoot desktop with My Signet ${sig
     await signet.getByRole('button', { name: 'Turn the Bunker on', exact: true }).click();
     await expect(signet.getByLabel('Bunker is on', { exact: true })).toBeVisible();
   }
+  const clientKey = generateSecretKey();
+  const clientSecret = bytesToHex(clientKey);
+  const clientPubkey = getPublicKey(clientKey);
+  const previousPersona = getPublicKey(generateSecretKey());
+  if (scenario === 'previous persona') {
+    await signet.evaluate(async ({ clientPubkey, previousPersona }) => {
+      const { saveConnectedClient } = await import('/src/lib/db.ts');
+      await saveConnectedClient({ clientPubkey, appName: 'KithMoot', connectedAt: 1, lastSeenAt: 1,
+        allowAlways: true, boundPubkey: previousPersona });
+    }, { clientPubkey, previousPersona });
+  }
 
   const desktop = await context.newPage();
-  await desktop.addInitScript(relay => {
+  await desktop.addInitScript(({ relay, clientSecret }) => {
     localStorage.setItem('kithmoot.relays.v1', JSON.stringify({ default: [{ url: relay, read: true, write: true }] }));
-  }, relay.href);
+    localStorage.setItem('signet:login.clientSk', clientSecret);
+  }, { relay: relay.href, clientSecret });
   await desktop.goto(kithmoot! + '?signin=nostr');
   await desktop.locator('[data-choice="remote-signet"]').click();
   const handoff = desktop.locator('#signet-login-open-signet');
@@ -38,10 +53,19 @@ for (const signing of [false, true]) test(`KithMoot desktop with My Signet ${sig
   await expect.poll(() => desktop.evaluate(() => localStorage.getItem('signet:login.method'))).toBe('bunker');
   const account = await desktop.evaluate(() => localStorage.getItem('signet:login.pubkey'));
   expect(account).toMatch(/^[a-f0-9]{64}$/);
+  if (scenario === 'previous persona') {
+    expect(account).not.toBe(previousPersona);
+    const boundPubkey = await signet.evaluate(async clientPubkey => {
+      const { getConnectedClient } = await import('/src/lib/db.ts');
+      return (await getConnectedClient(clientPubkey))?.boundPubkey;
+    }, clientPubkey);
+    expect(boundPubkey).toBe(account);
+  }
   if (!await desktop.locator('#roomName').isVisible()) await desktop.locator('#newRoom').click();
   await desktop.locator('#roomName').fill('Actual Signet integration');
+  const creatorName = desktop.locator('#newRoomYourName');
+  if (await creatorName.isVisible()) await creatorName.fill('KithMoot Signet tester');
   await desktop.locator('#create').click();
-  await desktop.locator('#join').click();
   await expect(desktop.locator('#roomArea')).toBeVisible({ timeout: 45_000 });
   await expect(desktop.locator('#chatInput')).toBeEditable();
 });

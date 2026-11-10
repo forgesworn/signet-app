@@ -804,6 +804,26 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       return;
     }
 
+    // A fresh QR approval may select another persona while the consumer reuses
+    // its persistent NIP-46 client key. Resolve that one-shot consent before
+    // checking the old binding, or the approved handshake is silently dropped.
+    const register = pendingAuthPairingsRef?.current;
+    let authPairing: { secret: string; origin: string; appName: string; signingPubkey: string } | undefined;
+    if (request.method === 'connect' && !route.dependantId && !route.childGate && register) {
+      const authSecret = typeof request.params[1] === 'string' ? request.params[1] : '';
+      if (authSecret.length >= 8) {
+        const now = Date.now();
+        for (const [secret, entry] of register) {
+          if (entry.expiresAt < now) { register.delete(secret); continue; }
+          if (entry.signingPubkey.toLowerCase() !== route.pubkey.toLowerCase()) continue;
+          if (constantTimeStringEqual(secret, authSecret)) {
+            authPairing = { secret, origin: entry.origin, appName: entry.appName, signingPubkey: entry.signingPubkey };
+            break;
+          }
+        }
+      }
+    }
+
     // A saved client belongs to the owner persona it paired with (#194). One
     // that addresses a different owner persona gets no answer at all: even a
     // refusal would tell it both personas are served by this device. A record
@@ -811,7 +831,9 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     if (!route.dependantId && !route.childGate && scopedClient) {
       const routePubkey = route.pubkey.toLowerCase();
       const bound = scopedClient.boundPubkey?.toLowerCase();
-      if (bound && bound !== routePubkey) return;
+      // Only fresh consent that can be persisted may replace a binding. The
+      // connect handler saves it before ACK; other methods still stay silent.
+      if (bound && bound !== routePubkey && !(authPairing && onAuthFlowPairingCompleteRef.current)) return;
       if (!bound) {
         try { await db.saveConnectedClient({ ...scopedClient, boundPubkey: routePubkey }); }
         catch { /* binding is retried on the next request */ }
@@ -977,52 +999,29 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // surface a prompt for every event. If no match (or the register
       // is empty), behaviour is identical to before — ACK and let the
       // first sign_event prompt as usual.
-      const authSecret = typeof request.params[1] === 'string' ? request.params[1] : '';
-      const register = pendingAuthPairingsRef?.current;
-      if (register && authSecret.length >= 8) {
-        const now = Date.now();
-        let matched: { origin: string; appName: string; signingPubkey: string } | undefined;
-        let matchedKey: string | undefined;
-        for (const [secret, entry] of register) {
-          if (entry.expiresAt < now) {
-            register.delete(secret);
-            continue;
-          }
-          // Bind the secret only to the route whose signing pubkey was
-          // chosen at approval time — a redirect approval as persona
-          // shouldn't auto-pair an app to the NP route just because both
-          // routes are on this device.
-          if (entry.signingPubkey.toLowerCase() !== route.pubkey.toLowerCase()) continue;
-          if (constantTimeStringEqual(secret, authSecret)) {
-            matched = { origin: entry.origin, appName: entry.appName, signingPubkey: entry.signingPubkey };
-            matchedKey = secret;
-            break;
+      if (register && authPairing) {
+        const meta = parseConnectMetadata(connectMetadataParam(request.params));
+        const finishAuthPair = onAuthFlowPairingCompleteRef.current;
+        if (finishAuthPair) {
+          try {
+            await finishAuthPair({
+              clientPubkey: request.clientPubkey.toLowerCase(),
+              appName: meta.label || authPairing.appName,
+              origin: meta.origin || authPairing.origin,
+              signingPubkey: authPairing.signingPubkey,
+            });
+          } catch {
+            // Persistence failed. Do NOT ACK this as paired: owner-route
+            // silent crypto is gated on the ConnectedClient.allowAlways row,
+            // so ACK-without-persist creates a "paired" client whose first
+            // nip44_decrypt fails as "not connected" and cannot retry the
+            // one-shot secret. Keep the secret until TTL so the consumer can
+            // retry after a transient IndexedDB/version problem.
+            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing failed — try again');
+            return;
           }
         }
-        if (matched && matchedKey) {
-          const meta = parseConnectMetadata(connectMetadataParam(request.params));
-          const finishAuthPair = onAuthFlowPairingCompleteRef.current;
-          if (finishAuthPair) {
-            try {
-              await finishAuthPair({
-                clientPubkey: request.clientPubkey.toLowerCase(),
-                appName: meta.label || matched.appName,
-                origin: meta.origin || matched.origin,
-                signingPubkey: matched.signingPubkey,
-              });
-            } catch {
-              // Persistence failed. Do NOT ACK this as paired: owner-route
-              // silent crypto is gated on the ConnectedClient.allowAlways row,
-              // so ACK-without-persist creates a "paired" client whose first
-              // nip44_decrypt fails as "not connected" and cannot retry the
-              // one-shot secret. Keep the secret until TTL so the consumer can
-              // retry after a transient IndexedDB/version problem.
-              await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing failed — try again');
-              return;
-            }
-          }
-          register.delete(matchedKey);
-        }
+        register.delete(authPairing.secret);
       }
       await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
       return;
