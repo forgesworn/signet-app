@@ -14,6 +14,7 @@ import { QRScanner } from '../components/QRScanner';
 import { useScannerSettings } from '../components/ScannerSettingsContext';
 import { PAIR_WITH_GUARDIAN_LABEL } from '../lib/child-device-copy';
 import { FullAccessChoice } from '../components/FullAccessChoice';
+import { useNativeBack } from '../hooks/useNativeBack';
 import type { FullAccessDecision, FullAccessOffer, HeartwoodConnectUi } from '../lib/heartwood-one-hold';
 
 interface Props {
@@ -55,6 +56,9 @@ interface Props {
    */
   onCreate: (displayName: string) => Promise<void>;
 }
+
+/** Swallows the Android back gesture on a step with no (enabled) Back. */
+const NO_BACK = () => {};
 
 type Flow = 'welcome' | 'create' | 'signet-restore' | 'nostr-native' | 'import' | 'import-lite' | 'import-nsec' | 'heartwood' | 'nip07';
 type ImportStep = 'phrase' | 'fetching' | 'name-choice' | 'name' | 'done';
@@ -426,7 +430,17 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   };
 
   // --- Render: compute the current stage's body ---
+  // The Android back gesture does what the step's on-screen Back does: each
+  // Back button registers its action through `asBack` while rendering. A step
+  // with no Back (or a disabled one) swallows the gesture; only the welcome
+  // screen leaves the app.
+  let backAction: (() => void) | null = null;
+  const asBack = (action: () => void, disabled = false) => {
+    backAction = disabled ? NO_BACK : action;
+    return action;
+  };
   const body = renderMobile();
+  useNativeBack(flow === 'welcome' ? null : (backAction ?? NO_BACK));
 
   return body;
 
@@ -538,7 +552,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
           >
             {creating ? 'Creating…' : 'Continue'}
           </button>
-          <button className="btn btn-ghost" onClick={() => setFlow('welcome')} style={{ marginTop: 8 }} disabled={creating}>
+          <button className="btn btn-ghost" onClick={asBack(() => setFlow('welcome'), creating)} style={{ marginTop: 8 }} disabled={creating}>
             Back
           </button>
         </div>
@@ -588,7 +602,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               Import a Nostr key (nsec / extension)
             </button>
           </div>
-          <button className="btn btn-ghost" onClick={() => setFlow('welcome')} style={{ marginTop: 8 }}>
+          <button className="btn btn-ghost" onClick={asBack(() => setFlow('welcome'))} style={{ marginTop: 8 }}>
             Back
           </button>
         </div>
@@ -615,7 +629,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               Paste your nsec
             </button>
           </div>
-          <button className="btn btn-ghost" onClick={() => setFlow('signet-restore')} style={{ marginTop: 8 }}>
+          <button className="btn btn-ghost" onClick={asBack(() => setFlow('signet-restore'))} style={{ marginTop: 8 }}>
             Back
           </button>
         </div>
@@ -661,7 +675,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleImportPhrase} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => setFlow('signet-restore')} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => setFlow('signet-restore'))} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -695,7 +709,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               <button className="btn btn-primary" onClick={() => handleImportNameChoice('natural-person')}>Use my real name</button>
               <button className="btn btn-secondary" onClick={() => handleImportNameChoice('persona')}>Use a nickname</button>
             </div>
-            <button className="btn btn-ghost" onClick={() => setImportStep('phrase')} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => setImportStep('phrase'))} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -724,7 +738,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleImportComplete} disabled={!displayName.trim()} style={{ marginTop: 16 }}>
               Restore MySignet
             </button>
-            <button className="btn btn-ghost" onClick={() => setImportStep('name-choice')} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => setImportStep('name-choice'))} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -774,7 +788,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleLiteImportPhrase}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => setFlow('signet-restore')} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => setFlow('signet-restore'))} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -800,7 +814,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleLiteImportComplete} disabled={!displayName.trim()} style={{ marginTop: 16 }}>
               Restore Lite Identity
             </button>
-            <button className="btn btn-ghost" onClick={() => setLiteImportStep('phrase')} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => setLiteImportStep('phrase'))} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -838,7 +852,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleNsecSubmit} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => setFlow('nostr-native')} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => setFlow('nostr-native'))} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -956,7 +970,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             </button>
             <button
               className="btn btn-ghost"
-              onClick={() => {
+              onClick={asBack(() => {
                 if (nsecFromWords) {
                   // Back to the words screen, and drop the key derived from them.
                   setNsecInput('');
@@ -967,7 +981,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
                 } else {
                   setNsecStep('nsec');
                 }
-              }}
+              }, nsecImporting)}
               style={{ marginTop: 8 }}
               disabled={nsecImporting}
             >
@@ -1004,7 +1018,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
           <button className="btn btn-primary" onClick={handleNip07Complete} disabled={!displayName.trim() || nip07Connecting} style={{ marginTop: 16 }}>
             {nip07Connecting ? 'Connecting...' : 'Connect Extension'}
           </button>
-          <button className="btn btn-ghost" onClick={() => { setFlow('nostr-native'); setDisplayName(''); setError(''); }} disabled={nip07Connecting} style={{ marginTop: 8 }}>
+          <button className="btn btn-ghost" onClick={asBack(() => { setFlow('nostr-native'); setDisplayName(''); setError(''); }, nip07Connecting)} disabled={nip07Connecting} style={{ marginTop: 8 }}>
             Back
           </button>
         </div>
@@ -1050,7 +1064,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={handleHeartwoodUri} disabled={!bunkerUri.trim()} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setBunkerScanning(false); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => { cancelHeartwood(); setBunkerScanning(false); setFlow('signet-restore'); setBunkerUri(''); setError(''); })} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
@@ -1086,7 +1100,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
                 If your Heartwood asks, press its button to approve. It may ask more than once.
               </p>
             )}
-            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setHeartwoodStep('uri'); }} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={asBack(() => { cancelHeartwood(); setHeartwoodStep('uri'); }, heartwoodConnecting)} disabled={heartwoodConnecting} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>

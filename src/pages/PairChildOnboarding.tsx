@@ -24,6 +24,7 @@ import { ChildDirectPairError, type ChildTapChannel } from '../lib/child-direct-
 import { CHILD_SIDE_COPY as KID } from '../lib/child-device-copy';
 import { useChildPairNearby } from '../hooks/useChildPairNearby';
 import { isNativeApp } from '../lib/native';
+import { useNativeBack } from '../hooks/useNativeBack';
 
 /** Plain-English copy for a failed child-direct pairing run. */
 function directErrorCopy(err: unknown): string {
@@ -186,6 +187,16 @@ export function PairChildOnboarding({ onConfirm, onCancel, expectedDependantPubk
       });
     }
   };
+
+  // The Android back gesture does what each step's Back / Cancel does; a
+  // confirm that is saving swallows it, as its disabled Back does.
+  useNativeBack(
+    step.kind === 'welcome' ? onCancel
+      : step.kind === 'capture' || step.kind === 'confirm-direct' ? () => setStep({ kind: 'welcome' })
+        : step.kind === 'confirm' ? (step.saving ? () => {} : () => setStep({ kind: 'welcome' }))
+          : step.kind === 'pairing-direct' ? cancelDirect
+            : () => {},
+  );
 
   if (step.kind === 'welcome') {
     // Probing: say so rather than flash the scan buttons and then swap them.
