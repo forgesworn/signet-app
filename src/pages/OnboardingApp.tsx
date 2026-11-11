@@ -432,8 +432,8 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   // --- Render: compute the current stage's body ---
   // The Android back gesture does what the step's on-screen Back does: each
   // Back button registers its action through `asBack` while rendering. A step
-  // with no Back (or a disabled one) swallows the gesture; only the welcome
-  // screen leaves the app.
+  // with no Back (or a disabled one) swallows the gesture; the welcome screen
+  // keeps Capacitor's default.
   let backAction: (() => void) | null = null;
   const asBack = (action: () => void, disabled = false) => {
     backAction = disabled ? NO_BACK : action;

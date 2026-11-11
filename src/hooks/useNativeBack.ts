@@ -7,12 +7,11 @@ import { isNativeApp } from '../lib/native';
  * Android back gesture / button for screens that move between steps in local
  * state rather than through history (onboarding, first-run setup, pairing).
  *
- * Capacitor's default back pops WebView history, and on an empty history it
- * sends the app to the background. These screens push no history, so without
- * this a back swipe from (say) "Connect your remote signer" left the app
- * instead of returning to the previous step.
+ * Capacitor's default back pops WebView history and does nothing when there
+ * is none. These screens push no history, so without this a back swipe from
+ * (say) "Connect your remote signer" did nothing at all.
  *
- * Pass the step's back action, or null where the platform default should
+ * Pass the step's back action, or null where Capacitor's default should
  * apply (a root screen). A no-op function swallows the gesture, for a step
  * whose on-screen Back is hidden or disabled. Only the most recently
  * activated handler runs, so a child screen can take over from its host and
