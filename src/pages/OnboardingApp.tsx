@@ -10,6 +10,8 @@ import type { PublicProfileBase, PublicProfileConfig } from '../types';
 import { parseRestoreInput, consumeSecretKeyAsNsec, RESTORE_ERROR_COPY } from '../lib/recovery-words';
 import { NSEC_CONFIRM_BACKUP_COPY, NSEC_CONFIRM_FROM_WORDS_COPY } from '../lib/raw-nsec-backup-copy';
 import { BrandMark } from '../components/BrandMark';
+import { QRScanner } from '../components/QRScanner';
+import { useScannerSettings } from '../components/ScannerSettingsContext';
 import { PAIR_WITH_GUARDIAN_LABEL } from '../lib/child-device-copy';
 import { FullAccessChoice } from '../components/FullAccessChoice';
 import type { FullAccessDecision, FullAccessOffer, HeartwoodConnectUi } from '../lib/heartwood-one-hold';
@@ -95,6 +97,10 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
   const [nsecPublishProfile, setNsecPublishProfile] = useState(false);
   const [heartwoodStep, setHeartwoodStep] = useState<HeartwoodStep>('uri');
   const [bunkerUri, setBunkerUri] = useState('');
+  // The camera on the remote-signer step. Starts on its own when the user's
+  // Camera setting says so (default on); a scan stops it either way.
+  const scannerSettings = useScannerSettings();
+  const [bunkerScanning, setBunkerScanning] = useState(false);
   const [heartwoodConnecting, setHeartwoodConnecting] = useState(false);
   // The full-access choice (A1): the offer from the connect handler and the
   // resolver that carries the owner's decision back to it.
@@ -357,6 +363,21 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
     setHeartwoodStep('name');
   };
 
+  // One scan per camera run (QRScanner stops after a hit). A bunker:// code
+  // goes straight on to the name step; anything else stops the camera and
+  // says so, with "Scan again" to retry.
+  const handleBunkerScan = (data: string) => {
+    const scanned = data.trim();
+    setBunkerScanning(false);
+    if (!isValidBunkerUri(scanned)) {
+      setError("That QR code isn't a bunker:// connection. Scan the code your signer shows, or paste it below.");
+      return;
+    }
+    setBunkerUri(scanned);
+    setError('');
+    setHeartwoodStep('name');
+  };
+
   const handleHeartwoodComplete = async () => {
     if (!displayName.trim()) return;
     setHeartwoodStep('connecting');
@@ -535,7 +556,7 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
             <button className="btn btn-primary" onClick={() => { setImportStep('phrase'); setError(''); setFlow('import'); }}>
               Enter my recovery words
             </button>
-            <button className="btn btn-secondary" onClick={() => { setHeartwoodStep('uri'); setBunkerUri(''); setError(''); setFlow('heartwood'); }}>
+            <button className="btn btn-secondary" onClick={() => { setHeartwoodStep('uri'); setBunkerUri(''); setError(''); setBunkerScanning(scannerSettings.autoStart); setFlow('heartwood'); }}>
               Connect a remote signer
             </button>
             <button
@@ -995,15 +1016,28 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
         return (
           <div className="page fade-in" role="main">
             <h1 style={{ marginBottom: 8 }}>Connect your remote signer</h1>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>
-              Paste the bunker:// connection from your phone, Heartwood device or other NIP-46 signer.
+            <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
+              Scan the bunker:// QR code from your phone, Heartwood device or other NIP-46 signer, or paste the connection below.
             </p>
             {error && (
               <div style={{ padding: 8, background: 'var(--danger-light)', borderRadius: 'var(--radius-sm)', marginBottom: 12, color: 'var(--danger)', fontSize: '0.9rem' }}>
                 {error}
               </div>
             )}
+            {bunkerScanning ? (
+              <div style={{ marginBottom: 16 }}>
+                <QRScanner active compact onScan={handleBunkerScan} />
+              </div>
+            ) : (
+              <button className="btn btn-secondary" onClick={() => { setError(''); setBunkerScanning(true); }} style={{ marginBottom: 16 }}>
+                {error ? 'Scan again' : 'Scan QR code'}
+              </button>
+            )}
+            <label htmlFor="bunker-uri" style={{ display: 'block', fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: 6 }}>
+              Or paste it
+            </label>
             <textarea
+              id="bunker-uri"
               className="input"
               rows={3}
               placeholder="bunker://..."
@@ -1012,12 +1046,11 @@ export function OnboardingApp({ onImport, onImportLiteMnemonic, onImportWithProf
               style={{ resize: 'none', fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}
               autoComplete="off"
               spellCheck={false}
-              autoFocus
             />
             <button className="btn btn-primary" onClick={handleHeartwoodUri} disabled={!bunkerUri.trim()} style={{ marginTop: 16 }}>
               Continue
             </button>
-            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => { cancelHeartwood(); setBunkerScanning(false); setFlow('signet-restore'); setBunkerUri(''); setError(''); }} style={{ marginTop: 8 }}>
               Back
             </button>
           </div>
