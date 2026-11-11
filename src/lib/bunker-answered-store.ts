@@ -9,6 +9,7 @@
 const STORAGE_KEY = 'signet:bunker-answered:v1';
 const TTL_MS = 10 * 60_000;
 const CAP = 1000;
+const ANSWERED_EVENT = 'signet:bunker-answered';
 
 type Entry = [eventId: string, answeredAt: number];
 
@@ -32,6 +33,7 @@ export function markAnswered(eventId: string, storage: Storage = localStorage, n
     const entries = read(storage, now).filter(e => e[0] !== eventId);
     entries.push([eventId, now]);
     storage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(-CAP)));
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event(ANSWERED_EVENT));
   } catch {
     // storage unavailable: worst case a request is answered twice
   }
@@ -39,4 +41,20 @@ export function markAnswered(eventId: string, storage: Storage = localStorage, n
 
 export function wasAnswered(eventId: string, storage: Storage = localStorage, now = Date.now()): boolean {
   return read(storage, now).some(e => e[0] === eventId);
+}
+
+/** Retire queued requests when another native page answers or this page resumes. */
+export function subscribeAnswered(listener: () => void): () => void {
+  const storageChanged = (event: StorageEvent) => { if (event.key === STORAGE_KEY) listener(); };
+  const visible = () => { if (document.visibilityState === 'visible') listener(); };
+  window.addEventListener(ANSWERED_EVENT, listener);
+  window.addEventListener('storage', storageChanged);
+  window.addEventListener('focus', listener);
+  document.addEventListener('visibilitychange', visible);
+  return () => {
+    window.removeEventListener(ANSWERED_EVENT, listener);
+    window.removeEventListener('storage', storageChanged);
+    window.removeEventListener('focus', listener);
+    document.removeEventListener('visibilitychange', visible);
+  };
 }

@@ -3,6 +3,16 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.25.4
+- Getting started: "Connect a remote signer" now opens the camera so you can scan the bunker QR from your phone or Heartwood. Pasting the connection still works
+- Android: the back gesture now steps back through the first-run screens (restoring, connecting a signer, pairing with a guardian's phone, choosing a PIN) instead of doing nothing
+
+## 0.25.3
+- Sign-in: approving a QR sign-in with another persona now reconnects apps that remember an earlier persona, instead of leaving them without a signing connection
+
+## 0.25.2
+- Android: completed signing requests clear from other open approval screens and when returning to the app
+
 ## 0.25.1
 - Settings: "Delete MySignet" is now "Remove MySignet from this phone". It clears this phone only and publishes nothing to Nostr unless you tick "Also take it down on Nostr" (shown only when you have a public profile or a connected app to take down)
 - Before removing, the card lists anything that exists only on this phone and asks you to confirm you've saved it, and lists what you can bring back afterwards, such as your Heartwood pairing

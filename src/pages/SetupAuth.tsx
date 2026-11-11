@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNativeBack } from '../hooks/useNativeBack';
 import { isBiometricAvailable, setupBiometric, setupPIN, endGraceWithPin, endGraceWithBiometric } from '../lib/auth';
 import { Z } from '../lib/z-index';
 import { Icon } from '../components/Icon';
@@ -143,6 +144,13 @@ export function SetupAuth({ encryptionKey, onComplete, mode = 'first-run' }: Pro
   const currentPinValue = pinPhase === 'entry' ? pin : confirmPin;
 
   // --- Intro ---
+  // Nothing is saved until a PIN or biometric is set, so the Android back
+  // gesture must not drop out of setup: it follows the PIN step's Back and is
+  // swallowed everywhere else.
+  useNativeBack(step === 'pin-entry'
+    ? () => { setStep('choose'); setPin(''); setConfirmPin(''); setError(''); }
+    : () => {});
+
   if (step === 'intro') {
     return (
       <div className="auth-screen" style={fullScreenStyle}>
