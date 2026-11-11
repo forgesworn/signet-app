@@ -76,7 +76,7 @@ export function HeartwoodKeyPersonaAdd({ onAdd, onClose }: Props) {
                   {error}
                 </div>
               )}
-              {scanning && !busy ? (
+              {scanning && !busy && !parsed ? (
                 <div style={{ marginBottom: 12 }}>
                   <QRScanner active compact onScan={handleScan} />
                 </div>
