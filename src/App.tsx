@@ -289,6 +289,10 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
+import { handOffNostrConnect } from './lib/heartwood-handoff';
+import { loadHeartwoodHandoffs, saveHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
+import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
+import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
@@ -3830,6 +3834,13 @@ function AppContent() {
           personaBackend: backends?.persona ?? null,
           extraPersonas: identity?.extraPersonas,
           professionalPersona: identity?.professionalPersona ?? null,
+          // A persona whose key is on the Heartwood is served by passing each
+          // request on to the device (other apps on this phone, and apps
+          // paired "Through My Signet").
+          routedBackendFor: bunkerRouter && signerStatus === 'connected' && preferences.signingMode === 'bunker'
+            ? (pk) => bunkerRouter.backendFor(pk)
+            : null,
+          personaPubkey: identity?.persona.publicKey,
         },
         (priv) => new LocalSigningBackend(priv),
       ),
@@ -3927,7 +3938,7 @@ function AppContent() {
     }
     return routes;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bunkerBackendForServer, naturalPersonServingBackend, npActive, dependants, encryptionKey, backends, identity, nostrConnectTransientRoute, childDirect, childBunkerRoutes]);
+  }, [bunkerBackendForServer, naturalPersonServingBackend, npActive, dependants, encryptionKey, backends, identity, nostrConnectTransientRoute, childDirect, childBunkerRoutes, bunkerRouter, signerStatus, preferences.signingMode]);
   // Subscription is live for dependant reachability (guardian approval must
   // work whenever the app is open) OR while an owner serve session is armed.
   // Owner-route requests are additionally gated per-request on the session
@@ -3938,7 +3949,21 @@ function AppContent() {
   // (resolved in-app, or dropped when serving stops). Cancelling an id that was
   // never posted or already dismissed is a harmless no-op.
   const notifiedApprovalHandlesRef = useRef<Set<number>>(new Set());
+  // Apps handed to a Heartwood (Straight to my Heartwood): the device answers
+  // them, so the phone's server stays silent for them and Disconnect revokes
+  // the device slot. Loaded on unlock.
+  const [heartwoodHandoffs, setHeartwoodHandoffs] = useState<HeartwoodHandoffRecord[]>([]);
+  const heartwoodHandoffsRef = useRef(heartwoodHandoffs);
+  heartwoodHandoffsRef.current = heartwoodHandoffs;
+  useEffect(() => {
+    if (!encryptionKey) { setHeartwoodHandoffs([]); return; }
+    let cancelled = false;
+    loadHeartwoodHandoffs(encryptionKey).then(r => { if (!cancelled) setHeartwoodHandoffs(r); }).catch(() => { /* none stored */ });
+    return () => { cancelled = true; };
+  }, [encryptionKey]);
+
   const { pendingApproval: bunkerPendingApproval, pendingApprovals: bunkerPendingApprovals, approveOnce: bunkerApproveOnce, approveAlways: bunkerApproveAlways, deny: bunkerDeny, serveStatus: bunkerServeStatus } = useBunkerServer({
+    isHandedOffClient: (pk) => heartwoodHandoffsRef.current.some(h => h.clientPubkey === pk.toLowerCase()),
     // Subscription live when dependant routes exist (guardian approval must
     // work whenever the app is open) OR while an owner serve session is armed.
     // Owner-route requests are gated per-request via isOwnerServingActive.
@@ -4445,6 +4470,35 @@ function AppContent() {
   // signing goes through its NIP-46 client, not the operator channel.
   const operatorEnabled = !!encryptionKey && preferences.signingMode !== 'paired-child';
   const heartwoodOperator = useHeartwoodOperator({ encryptionKey, enabled: operatorEnabled });
+  // Operator keys for other Heartwoods (personas held on a second device).
+  const extraOperators = useExtraHeartwoodOperators({ encryptionKey, enabled: operatorEnabled, primaryDeviceHex: heartwoodOperator.credential?.deviceHex ?? null });
+  const handoffClients = useMemo(
+    () => [heartwoodOperator.client, ...extraOperators.clients].filter((c): c is HeartwoodMgmtClient => !!c),
+    [heartwoodOperator.client, extraOperators.clients],
+  );
+  const handoffClientsRef = useRef(handoffClients);
+  handoffClientsRef.current = handoffClients;
+  // A key held on another Heartwood is reached on its own relays (from its QR).
+  useEffect(() => {
+    if (!bunkerRouter) return;
+    for (const ep of identity?.extraPersonas ?? []) {
+      if (ep.heartwoodKey) bunkerRouter.setRelayOverride(ep.publicKey, ep.heartwoodRelays ?? null);
+    }
+  }, [bunkerRouter, identity]);
+  /** Disconnect an app handed to a Heartwood: revoke its slot on the device, then drop the record. */
+  const revokeHeartwoodHandoff = useCallback(async (rec: HeartwoodHandoffRecord) => {
+    const client = handoffClientsRef.current.find(c => c.deviceHex === rec.deviceHex);
+    if (!client) throw new Error("This Heartwood's operator key isn't on this phone. Add it in Advanced settings, or remove the app in Sapwood.");
+    try {
+      await withOperatorLock(client, () => mgmtRevokeClient(client, { slotIndex: rec.slotIndex, secretFingerprint: rec.secretFingerprint }, { targetHex: rec.targetHex }));
+    } catch (e) {
+      // Already gone on the device (removed in Sapwood): just drop the record.
+      if (!/no such slot|stale_client_slot/i.test(e instanceof Error ? e.message : String(e))) throw e;
+    }
+    const next = heartwoodHandoffsRef.current.filter(h => h.clientPubkey !== rec.clientPubkey);
+    if (encryptionKey) await saveHeartwoodHandoffs(next, encryptionKey);
+    setHeartwoodHandoffs(next);
+  }, [encryptionKey]);
 
   // One-hold pairing (spec A1b, A8-A11): is this phone's pairing an owner
   // pairing, and in which style. Gated on the Heartwood listing the bundle
@@ -4697,7 +4751,11 @@ function AppContent() {
         if (results.some(r => r.status === 'rejected')) throw new Error('Could not forget every record of this place.');
       },
       disconnect: async place => {
-        if (place.kind === 'nip46') await disconnectClient(clientOf(place));
+        const handoff = place.kind === 'nip46'
+          ? heartwoodHandoffsRef.current.find(h => h.clientPubkey === clientOf(place).toLowerCase())
+          : undefined;
+        if (handoff) await revokeHeartwoodHandoff(handoff);
+        else if (place.kind === 'nip46') await disconnectClient(clientOf(place));
         // Pubkey-scoped: a grant pinned to another identity is left alone.
         else if (place.kind === 'nip55' && place.nativePackage) nip55.forget(place.nativePackage, place.pubkey);
         await knownPlaces.forget(place.id);
@@ -4710,7 +4768,7 @@ function AppContent() {
         await refreshHeartwoodSlots();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots]);
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
@@ -7991,7 +8049,7 @@ function AppContent() {
     })
   ), [routedApprovalUnavailableMessage]);
 
-  const approveConnectUnguarded = useCallback(async (sel: AuthSelection, connectOptions: { askToSign: boolean } = { askToSign: false }) => {
+  const approveConnectUnguarded = useCallback(async (sel: AuthSelection, connectOptions: { askToSign: boolean; viaHeartwood?: boolean } = { askToSign: false }) => {
     if (!pendingConnectRequest || !identity) throw new Error('No pending connect request');
     const connectRequest = pendingConnectRequest;
     const connectKey = requestObjectKey(connectRequest);
@@ -8051,6 +8109,73 @@ function AppContent() {
         const attempts = delivery.failures.length > 0 ? delivery.failures.join(' | ') : 'no valid relay candidates';
         throw new Error(`Could not complete NostrConnect pairing. Tried ${delivery.failures.length} relay${delivery.failures.length === 1 ? '' : 's'}: ${attempts}`);
       }
+      const callback = pendingConnectCallback;
+      setTimeout(() => {
+        if (pendingConnectRequestRef.current !== connectRequest) return;
+        const cameByIntent = connectCameByIntentRef.current;
+        connectCameByIntentRef.current = false;
+        setPendingConnectRequest(null);
+        setPendingConnectSelection(null);
+        setPendingConnectCallback(null);
+        alignCarouselToApprovedSelection(sel);
+        if (cameByIntent) {
+          navigateReplace('home');
+          void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
+          return;
+        }
+        if (callback) { window.location.href = buildCallbackRedirect(callback, 'approved'); return; }
+        navigateReplace('home');
+      }, 1500);
+      return;
+    }
+
+    // Straight to my Heartwood: the device that holds this persona accepts the
+    // app's invitation itself and answers it from now on; this phone sends no
+    // connect reply and installs no route.
+    if (connectOptions.viaHeartwood && sel.source === 'guardian' && !activeDependant) {
+      const personaHex = (resolveSelectedPubkey(sel, identity, dependants) ?? '').toLowerCase();
+      if (!personaHex) throw new Error('Choose who this app signs as.');
+      const key = encryptionKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
+      if (!key) throw new Error('Authentication required');
+      if (!connectStillPending() || !connectSettlementRef.current.claimDelivery(connectKey)) return;
+      let handed: Awaited<ReturnType<typeof handOffNostrConnect>>;
+      try {
+        handed = await handOffNostrConnect({ request: connectRequest, personaHex, clients: handoffClientsRef.current, withLock: withOperatorLock });
+      } catch (e) {
+        connectSettlementRef.current.unclaimDelivery(connectKey);
+        throw e;
+      }
+      connectSettlementRef.current.finishDelivery(connectKey);
+      const record: HeartwoodHandoffRecord = {
+        clientPubkey: connectRequest.clientPubkey.toLowerCase(),
+        appName: connectRequest.appName,
+        persona: personaHex,
+        deviceHex: handed.deviceHex,
+        targetHex: handed.targetHex,
+        slotIndex: handed.slotIndex,
+        secretFingerprint: handed.secretFingerprint,
+        relay: handed.relay,
+        createdAt: Math.floor(Date.now() / 1000),
+      };
+      const nextHandoffs = [...heartwoodHandoffsRef.current.filter(h => h.clientPubkey !== record.clientPubkey), record];
+      heartwoodHandoffsRef.current = nextHandoffs;
+      setHeartwoodHandoffs(nextHandoffs);
+      try { await saveHeartwoodHandoffs(nextHandoffs, key); } catch { /* the device holds the pairing either way */ }
+      let handoffOrigin: string | undefined;
+      try {
+        const u = new URL(connectRequest.appUrl ?? '');
+        if (u.protocol === 'https:' || u.protocol === 'http:') handoffOrigin = u.origin;
+      } catch { /* no usable app URL */ }
+      void recordKnownPlace({
+        placeKey: `nc:${record.clientPubkey}`,
+        pubkey: personaHex,
+        kind: 'nip46',
+        name: connectRequest.appName,
+        ...(handoffOrigin ? { origin: handoffOrigin } : {}),
+        channel: 'nip46',
+        signer: 'heartwood',
+        shared: {},
+      });
       const callback = pendingConnectCallback;
       setTimeout(() => {
         if (pendingConnectRequestRef.current !== connectRequest) return;
@@ -8301,7 +8426,7 @@ function AppContent() {
   // One answer per connect request, as for sign-in: starts the in-flight
   // approval synchronously, dismisses a request already answered, and reopens
   // it for retry/cancel if the approval failed without connecting.
-  const handleApproveConnect = useCallback(async (sel: AuthSelection, connectOptions?: { askToSign: boolean }) => {
+  const handleApproveConnect = useCallback(async (sel: AuthSelection, connectOptions?: { askToSign: boolean; viaHeartwood?: boolean }) => {
     const request = pendingConnectRequestRef.current;
     if (!request) throw new Error('No pending connect request');
     const key = requestObjectKey(request);
@@ -11713,10 +11838,10 @@ function AppContent() {
             if (!clientSecret) throw new Error("This phone's Heartwood pairing couldn't be read. Reconnect your Heartwood, then try again.");
             const pubkey = await bindHeartwoodKey(uri, {
               makeBinder: () => new BunkerSigningBackend(clientSecret),
-              routeFor: (pk) => router.backendFor(pk),
+              routeFor: (pk) => { router.setRelayOverride(pk, parsed.relays); return router.backendFor(pk); },
               timeoutMs: CARD_REQUEST_TIMEOUT_MS,
             });
-            const result = await addHeartwoodKeyPersona(pubkey, displayName, key);
+            const result = await addHeartwoodKeyPersona(pubkey, displayName, key, parsed.relays);
             if (!result.added) throw new Error(`That key is already here as ${result.collisionDisplayName}.`);
           } : undefined}
           followsHandlersFor={(pubkey, name) => followsHandlersFor(pubkey, pubkey, name)}
@@ -11751,6 +11876,12 @@ function AppContent() {
         onSetShowMyKeep={preferences.signingMode !== 'paired-child' ? (show => { void setShowMyKeep(show); }) : undefined}
         handshakeSeamGapMm={preferences.handshakeSeamGapMm}
         onSetHandshakeSeamGapMm={isPairedChild ? undefined : mm => { void setHandshakeSeamGapMm(mm); }}
+        otherHeartwoods={operatorEnabled ? {
+          devices: extraOperators.credentials.map(c => ({ deviceHex: c.deviceHex, relays: c.relays })),
+          importLink: extraOperators.importLink,
+          importPhrase: extraOperators.importPhrase,
+          forget: extraOperators.forget,
+        } : undefined}
         heartwoodOwner={heartwoodOwner.supported ? {
           supported: true,
           status: heartwoodOwner.status,
@@ -13492,6 +13623,9 @@ function AppContent() {
           userChoice={connectPickerChoice?.key === connectRequestKey ? { selection: connectPickerChoice.selection } : undefined}
           onUserChoice={(selection) => setConnectPickerChoice({ key: connectRequestKey, selection })}
           waitingGuardianPubkeys={waitingGuardianPubkeys}
+          canHandOffToHeartwood={preferences.signingMode === 'bunker' && handoffClients.length > 0 && !activeDependant
+            ? (pk) => !isImportedGuardianPersona(identity, pk)
+            : undefined}
         />
       </Layout>
       {authOverlay}{nip55Overlay}

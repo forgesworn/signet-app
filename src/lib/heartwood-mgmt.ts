@@ -160,6 +160,9 @@ export class HeartwoodMgmtClient {
   private readonly transport: MgmtTransport;
   private sk: Uint8Array;
   private ck: Uint8Array;
+  /** Conversation keys for other identities on the same device (operator
+   *  requests addressed to a non-primary master, as Sapwood's `targetHex`). */
+  private readonly targetCks = new Map<string, Uint8Array>();
   private unsubscribe: (() => void) | null = null;
   private readonly pending = new Map<string, Pending>();
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -210,6 +213,8 @@ export class HeartwoodMgmtClient {
     this.unsubscribe = null;
     this.sk.fill(0);
     this.ck.fill(0);
+    this.targetCks.forEach(ck => ck.fill(0));
+    this.targetCks.clear();
   }
 
   /** Send a management request and await the device's decrypted reply.
@@ -218,13 +223,15 @@ export class HeartwoodMgmtClient {
   request<T = Record<string, unknown>>(
     method: string,
     params: Record<string, unknown> = {},
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; targetHex?: string },
   ): Promise<T> {
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_MGMT_TIMEOUT_MS;
+    const target = opts?.targetHex?.toLowerCase();
+    if (target !== undefined && !HEX64.test(target)) return Promise.reject(new Error('management target must be 64 hex chars'));
     if (!requiresMutationChallenge(method)) {
-      return this.requestRaw(method, params, timeoutMs) as Promise<T>;
+      return this.requestRaw(method, params, timeoutMs, undefined, target) as Promise<T>;
     }
-    const run = () => this.sendReplaySafe(method, params, timeoutMs);
+    const run = () => this.sendReplaySafe(method, params, timeoutMs, target);
     const result = this.mutationQueue.then(run, run);
     this.mutationQueue = result.then(() => undefined, () => undefined);
     return result as Promise<T>;
@@ -234,10 +241,11 @@ export class HeartwoodMgmtClient {
     method: string,
     params: Record<string, unknown>,
     timeoutMs: number,
+    target?: string,
   ): Promise<Record<string, unknown>> {
     let discovered: Record<string, unknown>;
     try {
-      discovered = await this.requestRaw('get_management_challenge', {}, timeoutMs);
+      discovered = await this.requestRaw('get_management_challenge', {}, timeoutMs, undefined, target);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (/unknown method.*get_management_challenge/i.test(message)) {
@@ -251,7 +259,18 @@ export class HeartwoodMgmtClient {
     }
     // The mutation itself is sent exactly once. A stale-challenge error
     // propagates verbatim (see isStaleChallengeError) — never auto-retried.
-    return this.requestRaw(method, params, timeoutMs, challenge);
+    return this.requestRaw(method, params, timeoutMs, challenge, target);
+  }
+
+  /** Conversation key for `target` (the device master when absent). */
+  private ckFor(target?: string): Uint8Array {
+    if (!target || target === this.deviceHex) return this.ck;
+    let ck = this.targetCks.get(target);
+    if (!ck) {
+      ck = nip44.utils.getConversationKey(this.sk, target);
+      this.targetCks.set(target, ck);
+    }
+    return ck;
   }
 
   private requestRaw(
@@ -259,6 +278,7 @@ export class HeartwoodMgmtClient {
     params: Record<string, unknown>,
     timeoutMs: number,
     mutationChallenge?: string,
+    target?: string,
   ): Promise<Record<string, unknown>> {
     if (this.closed) return Promise.reject(new Error('transport closed'));
     if (!this.unsubscribe) return Promise.reject(new Error('not started'));
@@ -278,8 +298,8 @@ export class HeartwoodMgmtClient {
           {
             kind: MGMT_KIND,
             created_at: Math.floor(Date.now() / 1000),
-            tags: [['p', this.deviceHex]],
-            content: nip44.encrypt(plaintext, this.ck),
+            tags: [['p', target ?? this.deviceHex]],
+            content: nip44.encrypt(plaintext, this.ckFor(target)),
           },
           this.sk,
         ) as unknown as NostrEvent;
@@ -323,12 +343,14 @@ export class HeartwoodMgmtClient {
     // Only the device master authors replies on this channel. Anything else
     // p-tagged to the operator is noise (or an impersonation attempt whose
     // ciphertext would fail under our ck anyway) — drop before decrypting.
-    if (ev.pubkey !== this.deviceHex) return;
+    // Or another identity on the same device this client has addressed.
+    const ck = ev.pubkey === this.deviceHex ? this.ck : this.targetCks.get(ev.pubkey);
+    if (!ck) return;
     if (ev.kind !== MGMT_KIND) return;
     if (typeof ev.content !== 'string' || ev.content.length === 0 || ev.content.length > MAX_REPLY_CONTENT_CHARS) return;
     let parsed: unknown;
     try {
-      parsed = JSON.parse(nip44.decrypt(ev.content, this.ck));
+      parsed = JSON.parse(nip44.decrypt(ev.content, ck));
     } catch {
       return;
     }
@@ -449,6 +471,31 @@ export async function listClients(c: HeartwoodMgmtClient): Promise<DeviceClientS
   for (const row of r.clients) {
     const slot = parseDeviceClientSlot(row);
     if (slot) out.push(slot);
+  }
+  return out;
+}
+
+export interface DeviceIdentity {
+  kind: 'master' | 'persona';
+  /** The master slot it belongs to (its own slot for a master). */
+  slot: number;
+  pubkeyHex: string;
+  label: string;
+}
+
+/** Operator `list_identities`: every master and persona on the device (the
+ *  device-wide operator sees them all), malformed rows dropped. */
+export async function listDeviceIdentities(c: HeartwoodMgmtClient): Promise<DeviceIdentity[]> {
+  const r = await c.request('list_identities');
+  if (!Array.isArray(r.identities)) return [];
+  const out: DeviceIdentity[] = [];
+  for (const row of r.identities) {
+    if (!isRecord(row)) continue;
+    const kind = row.kind;
+    const pk = typeof row.npub_hex === 'string' ? row.npub_hex.toLowerCase() : '';
+    if ((kind !== 'master' && kind !== 'persona') || !HEX64.test(pk)) continue;
+    if (typeof row.slot !== 'number' || !Number.isInteger(row.slot) || row.slot < 0) continue;
+    out.push({ kind, slot: row.slot, pubkeyHex: pk, label: typeof row.label === 'string' ? row.label : '' });
   }
   return out;
 }
@@ -596,6 +643,7 @@ function checkSlotRef(slot: { slotIndex: number; secretFingerprint: string }): v
 export async function nostrconnectV2(
   c: HeartwoodMgmtClient,
   req: NostrconnectMintRequest,
+  opts?: { targetHex?: string },
 ): Promise<NostrconnectMintResult> {
   const identity = (req.identity ?? '').toLowerCase();
   if (!HEX64.test((req.clientPubkey ?? '').toLowerCase())) throw new Error('clientPubkey must be 64 hex chars');
@@ -615,7 +663,7 @@ export async function nostrconnectV2(
     identity,
     label: req.label,
     policy: policyWireFields(req.policy),
-  });
+  }, opts?.targetHex ? { targetHex: opts.targetHex } : undefined);
   const slotIndex = r.slot_index;
   const fingerprint = typeof r.secret_fingerprint === 'string' ? r.secret_fingerprint.toLowerCase() : '';
   const validSlot = typeof slotIndex === 'number' && Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex <= 255;
@@ -628,7 +676,7 @@ export async function nostrconnectV2(
   if (!validSlot || fingerprint.length === 0 || !echoOk) {
     let revoked = false;
     if (validSlot && fingerprint.length > 0) {
-      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }); revoked = true; } catch { /* reported below */ }
+      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }, opts); revoked = true; } catch { /* reported below */ }
     }
     if (validSlot && !revoked) {
       // The slot may exist on the device and we could not remove it: say so, with its index.
@@ -643,12 +691,13 @@ export async function nostrconnectV2(
 export async function revokeClient(
   c: HeartwoodMgmtClient,
   slot: { slotIndex: number; secretFingerprint: string },
+  opts?: { targetHex?: string },
 ): Promise<void> {
   checkSlotRef(slot);
   const r = await c.request('revoke_client', {
     slot_index: slot.slotIndex,
     expected_secret_fingerprint: slot.secretFingerprint,
-  });
+  }, opts?.targetHex ? { targetHex: opts.targetHex } : undefined);
   if (r.revoked !== true) throw new Error('revoke_client did not confirm the revocation');
   if (r.slot_index !== slot.slotIndex) throw new Error('revoke_client confirmed a different slot');
 }

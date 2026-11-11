@@ -406,6 +406,8 @@ interface Options {
    * serving is always active (back-compat).
    */
   isOwnerServingActive?: () => boolean;
+  /** Apps handed to a Heartwood: the device answers them, so this server stays silent. */
+  isHandedOffClient?: (clientPubkey: string) => boolean;
 }
 
 /**
@@ -503,7 +505,9 @@ async function publishResponseToSocket(
   }
 }
 
-export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey }: Options) {
+export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey, isHandedOffClient }: Options) {
+  const isHandedOffClientRef = useRef(isHandedOffClient);
+  isHandedOffClientRef.current = isHandedOffClient;
   const kinterestChildLabelRef = useRef(kinterestChildLabel);
   kinterestChildLabelRef.current = kinterestChildLabel;
   const kinterestChildConsentRef = useRef(kinterestChildConsent);
@@ -739,6 +743,10 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       || r.signingBackend?.transportClientPubkeyHex === author)) {
       return;
     }
+
+    // An app handed to a Heartwood is the device's to answer. Any reply from
+    // here (an approval prompt, a "not connected") would race the device's.
+    if (!route.dependantId && isHandedOffClientRef.current?.(author)) return;
 
     // Verify envelope signature — a relay can serve forged events.
     if (!verifyEvent(event as unknown as NTEvent)) return;

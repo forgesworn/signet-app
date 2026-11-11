@@ -652,6 +652,7 @@ export function useIdentity(encryptionKey?: string | null) {
     publicKeyHex: string,
     displayName: string,
     overrideEncryptionKey?: string,
+    relays?: string[],
   ): Promise<{ added: true } | { added: false; collisionDisplayName: string }> => {
     if (!activeIdentity) throw new Error('No active identity');
     const key = overrideEncryptionKey || encryptionKey;
@@ -668,6 +669,7 @@ export function useIdentity(encryptionKey?: string | null) {
       displayName: displayName.trim(),
       derivationName: '',
       heartwoodKey: true,
+      ...(relays && relays.length > 0 ? { heartwoodRelays: [...relays] } : {}),
       updatedAt: Math.floor(Date.now() / 1000),
     };
     await db.saveIdentityEncrypted({ ...decrypted, extraPersonas: [...(decrypted.extraPersonas ?? []), newPersona] }, key);

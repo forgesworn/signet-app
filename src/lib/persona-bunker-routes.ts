@@ -46,6 +46,15 @@ export interface OwnerPersonaRouteInputs {
   extraPersonas?: ReadonlyArray<OwnerPersonaSlot>;
   /** Owner's professional persona slot, if present. */
   professionalPersona?: OwnerPersonaSlot | null;
+  /**
+   * The Heartwood route for a persona whose key is not on this phone (a
+   * tree persona after the move to the Heartwood, or a key held there as its
+   * own identity). Absent or null ⇒ such personas get no route, as before.
+   * Each request then costs a round trip to the device.
+   */
+  routedBackendFor?: ((pubkeyHex: string) => DecryptingSigningBackend | null) | null;
+  /** Default persona pubkey, for its routed fallback when `personaBackend` is null. */
+  personaPubkey?: string;
 }
 
 /**
@@ -68,7 +77,13 @@ export function buildOwnerPersonaRoutes(
   inputs: OwnerPersonaRouteInputs,
   makeLocalBackend: (privateKeyHex: string) => DecryptingSigningBackend,
 ): BunkerRoute[] {
-  const { primaryBackend, naturalPersonBackend, unlocked, personaBackend, extraPersonas, professionalPersona } = inputs;
+  const { primaryBackend, naturalPersonBackend, unlocked, personaBackend, extraPersonas, professionalPersona, routedBackendFor, personaPubkey } = inputs;
+  const has = (pk: string) => routes.some(r => r.pubkey.toLowerCase() === pk.toLowerCase());
+  const pushRouted = (pk: string | undefined) => {
+    if (!pk || !routedBackendFor || has(pk)) return;
+    const backend = routedBackendFor(pk);
+    if (backend) routes.push({ pubkey: pk, backend });
+  };
   const routes: BunkerRoute[] = [];
 
   // Primary route — the identity a generic pairing binds to (§8: the persona
@@ -96,11 +111,14 @@ export function buildOwnerPersonaRoutes(
     if (personaPub && personaPub.toLowerCase() !== (primaryBackend?.activePublicKeyHex ?? '').toLowerCase()) {
       routes.push({ pubkey: personaPub, backend: personaBackend });
     }
+  } else {
+    pushRouted(personaPubkey);
   }
 
   // Extra-persona routes.
   for (const ep of extraPersonas ?? []) {
-    if (!ep.privateKey || !ep.publicKey) continue;
+    if (!ep.publicKey) continue;
+    if (!ep.privateKey) { pushRouted(ep.publicKey); continue; }
     if (routes.some(r => r.pubkey.toLowerCase() === ep.publicKey.toLowerCase())) continue;
     try {
       routes.push({ pubkey: ep.publicKey, backend: makeLocalBackend(ep.privateKey) });
@@ -110,6 +128,7 @@ export function buildOwnerPersonaRoutes(
   }
 
   // Professional-persona route.
+  if (professionalPersona?.publicKey && !professionalPersona.privateKey) pushRouted(professionalPersona.publicKey);
   if (professionalPersona?.privateKey && professionalPersona.publicKey) {
     const proPub = professionalPersona.publicKey;
     if (!routes.some(r => r.pubkey.toLowerCase() === proPub.toLowerCase())) {

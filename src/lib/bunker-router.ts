@@ -43,13 +43,18 @@ export function parseHeartwoodCapabilities(raw: string): HeartwoodCapabilities |
  * every query param except the pairing secret (the client is already
  * slot-bound; persona URIs are secret-less by design).
  */
-export function buildSlotBunkerUri(baseUri: string, slotPubkeyHex: string): string {
+export function buildSlotBunkerUri(baseUri: string, slotPubkeyHex: string, relays?: readonly string[]): string {
   const pk = (slotPubkeyHex || '').trim().toLowerCase();
   if (!HEX64_RE.test(pk)) throw new Error('Invalid slot pubkey: expected 64-char hex');
   const match = /^bunker:\/\/([0-9a-fA-F]{64})(\?(.*))?$/.exec((baseUri || '').trim());
   if (!match) throw new Error('Invalid bunker URI');
   const params = new URLSearchParams(match[3] ?? '');
   params.delete('secret');
+  // A key held on another Heartwood is reached on that device's own relays.
+  if (relays && relays.length > 0) {
+    params.delete('relay');
+    for (const r of relays) params.append('relay', r);
+  }
   const qs = params.toString();
   return `bunker://${pk}${qs ? `?${qs}` : ''}`;
 }
@@ -356,6 +361,8 @@ export class BunkerBackendRouter {
   private readonly routes = new Map<string, RoutedBunkerSigningBackend>();
   private destroyed = false;
   private decorator: RouteDecorator | null = null;
+  /** Per-pubkey relays for keys held on another Heartwood (from their own QR). */
+  private relayOverrides = new Map<string, string[]>();
 
   private constructor(primary: BunkerSigningBackend, clientSecretHex: string, capabilities: HeartwoodCapabilities, makeBackend: MakeBackend) {
     this.primary = primary;
@@ -433,6 +440,18 @@ export class BunkerBackendRouter {
     this.decorator = fn;
   }
 
+  /** Reach `pubkey` on these relays instead of the primary pairing's. A changed
+   *  set retires the cached route so the next lookup builds it afresh. */
+  setRelayOverride(pubkeyHex: string, relays: readonly string[] | null): void {
+    const pk = pubkeyHex.trim().toLowerCase();
+    const next = relays && relays.length > 0 ? [...relays] : null;
+    const prev = this.relayOverrides.get(pk);
+    if ((prev?.join('|') ?? '') === (next?.join('|') ?? '')) return;
+    if (next) this.relayOverrides.set(pk, next); else this.relayOverrides.delete(pk);
+    const route = this.routes.get(pk);
+    if (route) { route.destroy(); this.routes.delete(pk); }
+  }
+
   backendFor(slotPubkeyHex: string | undefined | null): DecryptingSigningBackend | null {
     if (this.destroyed) return null;
     const pk = (slotPubkeyHex || '').trim().toLowerCase();
@@ -449,7 +468,7 @@ export class BunkerBackendRouter {
     if (!route) {
       let uri: string;
       try {
-        uri = buildSlotBunkerUri(this.primary.bunkerUri, pk);
+        uri = buildSlotBunkerUri(this.primary.bunkerUri, pk, this.relayOverrides.get(pk));
       } catch {
         return null;
       }

@@ -26,7 +26,10 @@ const identity = {
   naturalPersonActive: false,
 } as unknown as SignetIdentity;
 
-function renderPage(onApprove = vi.fn((_s: unknown, _o: { askToSign: boolean }) => Promise.resolve())) {
+function renderPage(
+  onApprove = vi.fn((_s: unknown, _o: { askToSign: boolean; viaHeartwood?: boolean }) => Promise.resolve()),
+  canHandOffToHeartwood?: (pk: string) => boolean,
+) {
   render(
     <ApproveConnect
       request={request}
@@ -36,6 +39,7 @@ function renderPage(onApprove = vi.fn((_s: unknown, _o: { askToSign: boolean }) 
       requireNpConfirmation={true}
       onApprove={onApprove}
       onDeny={vi.fn()}
+      canHandOffToHeartwood={canHandOffToHeartwood}
     />,
   );
   return onApprove;
@@ -55,7 +59,7 @@ describe('ApproveConnect sign-mode control', () => {
     const onApprove = renderPage();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
-    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: false });
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: false, viaHeartwood: false });
   });
 
   it('passes askToSign true when "Ask me each time" is chosen', async () => {
@@ -63,6 +67,22 @@ describe('ApproveConnect sign-mode control', () => {
     fireEvent.click(screen.getByLabelText('Ask me each time it signs'));
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
-    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: true });
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: true, viaHeartwood: false });
+  });
+
+  it('with a Heartwood that holds the key, defaults to Straight to my Heartwood', async () => {
+    const onApprove = renderPage(undefined, (pk) => pk === PERSONA);
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: false, viaHeartwood: true });
+  });
+
+  it('can still go through My Signet when a Heartwood is offered', async () => {
+    const onApprove = renderPage(undefined, () => true);
+    fireEvent.click(screen.getByLabelText('Through My Signet, ask me each time it signs'));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: true, viaHeartwood: false });
   });
 });

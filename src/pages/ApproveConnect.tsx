@@ -31,7 +31,9 @@ interface Props {
    * sendConnectResponse. Should reject on network/send failure so the
    * component can surface the retry state.
    */
-  onApprove: (selection: AuthSelection, options: { askToSign: boolean }) => Promise<void>;
+  onApprove: (selection: AuthSelection, options: { askToSign: boolean; viaHeartwood?: boolean }) => Promise<void>;
+  /** Whether the app can be handed to the Heartwood holding this key (an operator key for it is on this phone). */
+  canHandOffToHeartwood?: (pubkey: string) => boolean;
   onDeny: () => void;
   /** The user's explicit pick for THIS request, held by App (survives a lock remount). */
   userChoice?: { selection: AuthSelection | null };
@@ -39,6 +41,8 @@ interface Props {
   /** Listed guardian slots whose route to the paired signer is not back yet. */
   waitingGuardianPubkeys?: readonly string[];
 }
+
+type SignMode = 'heartwood' | 'auto' | 'ask';
 
 export function ApproveConnect({
   request,
@@ -55,6 +59,7 @@ export function ApproveConnect({
   userChoice,
   onUserChoice,
   waitingGuardianPubkeys,
+  canHandOffToHeartwood,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -163,7 +168,15 @@ export function ApproveConnect({
   const [status, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error'>('pending');
   // Crypto (nip44 / nip04) stays automatic either way; this only decides
   // whether sign_event asks each time.
-  const [askToSign, setAskToSign] = useState(false);
+  const [signMode, setSignMode] = useState<SignMode | null>(null);
+  const selectedPubkey = selection?.source !== 'guardian' ? null
+    : selection.keypairType === 'natural-person' ? identity.naturalPerson.publicKey
+      : selection.keypairType === 'persona' ? identity.persona.publicKey
+        : selection.keypairType;
+  const handOffOffered = !!selectedPubkey && !!canHandOffToHeartwood?.(selectedPubkey);
+  // Straight to the Heartwood is the default wherever it is offered.
+  const mode: SignMode = signMode === 'heartwood' && !handOffOffered ? 'auto' : (signMode ?? (handOffOffered ? 'heartwood' : 'auto'));
+  const askToSign = mode === 'ask';
   const [error, setError] = useState<string | null>(null);
 
   const isGuardianSelected = (keypairType: string) =>
@@ -181,7 +194,7 @@ export function ApproveConnect({
     setStatus('sending');
     setError(null);
     try {
-      await onApprove(selection, { askToSign });
+      await onApprove(selection, { askToSign, viaHeartwood: mode === 'heartwood' });
       setStatus('sent');
     } catch (e) {
       setStatus('error');
@@ -400,28 +413,47 @@ export function ApproveConnect({
       )}
 
       <div className="card section" role="radiogroup" aria-label="How this app signs">
+        {handOffOffered && (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
+            <input
+              type="radio"
+              name="connect-sign-mode"
+              checked={mode === 'heartwood'}
+              disabled={status === 'sending' || status === 'sent'}
+              onChange={() => setSignMode('heartwood')}
+            />
+            <span>
+              Straight to my Heartwood
+              <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to press its button once.
+              </span>
+            </span>
+          </label>
+        )}
         <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
           <input
             type="radio"
             name="connect-sign-mode"
-            checked={!askToSign}
+            checked={mode === 'auto'}
             disabled={status === 'sending' || status === 'sent'}
-            onChange={() => setAskToSign(false)}
+            onChange={() => setSignMode('auto')}
           />
-          <span>Sign automatically for this app</span>
+          <span>{handOffOffered ? 'Through My Signet, automatically' : 'Sign automatically for this app'}</span>
         </label>
         <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
           <input
             type="radio"
             name="connect-sign-mode"
-            checked={askToSign}
+            checked={mode === 'ask'}
             disabled={status === 'sending' || status === 'sent'}
-            onChange={() => setAskToSign(true)}
+            onChange={() => setSignMode('ask')}
           />
-          <span>Ask me each time it signs</span>
+          <span>{handOffOffered ? 'Through My Signet, ask me each time it signs' : 'Ask me each time it signs'}</span>
         </label>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '8px 0 0' }}>
-          Encrypting and decrypting stay automatic either way.
+          {handOffOffered
+            ? 'Through My Signet, My Signet must stay open to answer. Encrypting and decrypting stay automatic.'
+            : 'Encrypting and decrypting stay automatic either way.'}
         </p>
       </div>
 

@@ -94,7 +94,7 @@ describe('ApproveConnect — the user\'s choice is final', () => {
     rerender(page({ waiting: [], userChoice: choice, onApprove }));
     expect(approveButton().disabled).toBe(false);
     fireEvent.click(approveButton());
-    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: TREE }, { askToSign: false });
+    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: TREE }, { askToSign: false, viaHeartwood: false });
   });
 
   it('the default applies before the user touches the picker', () => {

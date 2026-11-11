@@ -2534,6 +2534,77 @@ export async function deleteHeartwoodOperator(): Promise<void> {
   await db.delete('identity', HEARTWOOD_OPERATOR_KEY);
 }
 
+// Operator keys for OTHER Heartwoods (a second device holding some of the
+// owner's personas). One encrypted row holding the list; the primary device's
+// key stays in its own row above, which the family policy push keys off.
+const EXTRA_HEARTWOOD_OPERATORS_KEY = 'heartwoodOperatorsExtra';
+
+export async function saveExtraHeartwoodOperators(
+  creds: HeartwoodOperatorCredential[],
+  encryptionKey: string,
+): Promise<void> {
+  const db = await getDB();
+  if (creds.length === 0) { await db.delete('identity', EXTRA_HEARTWOOD_OPERATORS_KEY); return; }
+  const encrypted = await encryptSecret(JSON.stringify(creds), encryptionKey);
+  await db.put('identity', { id: EXTRA_HEARTWOOD_OPERATORS_KEY, secret: encrypted });
+}
+
+// Apps handed to a Heartwood (`lib/heartwood-handoff.ts`): the device answers
+// them directly, so the phone's own NIP-46 server must stay silent for them,
+// and Disconnect revokes the slot on the device. Encrypted like the rest.
+const HEARTWOOD_HANDOFFS_KEY = 'heartwoodHandoffs';
+
+export interface HeartwoodHandoffRecord {
+  clientPubkey: string;
+  appName: string;
+  persona: string;
+  deviceHex: string;
+  targetHex: string;
+  slotIndex: number;
+  secretFingerprint: string;
+  relay: string;
+  createdAt: number;
+}
+
+function isHandoffRecord(v: unknown): v is HeartwoodHandoffRecord {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.clientPubkey === 'string' && typeof r.persona === 'string' && typeof r.deviceHex === 'string'
+    && typeof r.targetHex === 'string' && typeof r.slotIndex === 'number' && typeof r.secretFingerprint === 'string'
+    && typeof r.relay === 'string' && typeof r.createdAt === 'number' && typeof r.appName === 'string';
+}
+
+export async function saveHeartwoodHandoffs(records: HeartwoodHandoffRecord[], encryptionKey: string): Promise<void> {
+  const db = await getDB();
+  if (records.length === 0) { await db.delete('identity', HEARTWOOD_HANDOFFS_KEY); return; }
+  const encrypted = await encryptSecret(JSON.stringify(records), encryptionKey);
+  await db.put('identity', { id: HEARTWOOD_HANDOFFS_KEY, secret: encrypted });
+}
+
+export async function loadHeartwoodHandoffs(encryptionKey: string): Promise<HeartwoodHandoffRecord[]> {
+  const db = await getDB();
+  const record = await db.get('identity', HEARTWOOD_HANDOFFS_KEY);
+  if (!record || !record.secret) return [];
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(record.secret, encryptionKey));
+    return Array.isArray(parsed) ? parsed.filter(isHandoffRecord) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function loadExtraHeartwoodOperators(encryptionKey: string): Promise<HeartwoodOperatorCredential[]> {
+  const db = await getDB();
+  const record = await db.get('identity', EXTRA_HEARTWOOD_OPERATORS_KEY);
+  if (!record || !record.secret) return [];
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(record.secret, encryptionKey));
+    return Array.isArray(parsed) ? parsed.filter(isHeartwoodOperatorCredential) : [];
+  } catch {
+    return [];
+  }
+}
+
 // --- Claimed Keeps (encrypted) ---
 // One `identity`-store row keyed 'keeps': the whole account-level list of Keeps
 // this account has claimed (K1d), JSON encrypted with the unlock key, same
