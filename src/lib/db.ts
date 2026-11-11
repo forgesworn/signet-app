@@ -425,6 +425,8 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== BUNKER_SECRET_KEY &&
     r.id !== PRO_PERSONA_KEY &&
     r.id !== HEARTWOOD_OPERATOR_KEY &&
+    r.id !== EXTRA_HEARTWOOD_OPERATORS_KEY &&
+    r.id !== HEARTWOOD_HANDOFFS_KEY &&
     r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     r.id !== KEEPS_KEY &&
@@ -637,6 +639,8 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === BUNKER_SECRET_KEY) continue;
     if (identity.id === PRO_PERSONA_KEY) continue;
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
+    if (identity.id === EXTRA_HEARTWOOD_OPERATORS_KEY) continue;
+    if (identity.id === HEARTWOOD_HANDOFFS_KEY) continue;
     if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (identity.id === KEEPS_KEY) continue;

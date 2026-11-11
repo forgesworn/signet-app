@@ -4662,9 +4662,11 @@ function AppContent() {
   const pinnedOrigins = useMemo(() => new Set(originPolicies.filter(p => p.pinned).map(p => p.origin)), [originPolicies]);
   /** Places to show: a pairing that was disconnected elsewhere is no longer a place, and a pin kept in the per-origin policy still counts. */
   const visibleKnownPlaces = useMemo(() => knownPlaces.places
-    .filter(p => p.kind !== 'nip46' || connectedClientsLoading || connectedClients.some(c => `nc:${c.clientPubkey}` === p.placeKey))
+    // An app handed to a Heartwood has no phone-side pairing; its record is the handoff.
+    .filter(p => p.kind !== 'nip46' || connectedClientsLoading || connectedClients.some(c => `nc:${c.clientPubkey}` === p.placeKey)
+      || heartwoodHandoffs.some(h => `nc:${h.clientPubkey}` === p.placeKey))
     .map(p => (p.kind === 'sign-in' && !p.pinned && p.origin && pinnedOrigins.has(p.origin) ? { ...p, pinned: true } : p)),
-  [knownPlaces.places, connectedClients, connectedClientsLoading, pinnedOrigins]);
+  [knownPlaces.places, connectedClients, connectedClientsLoading, pinnedOrigins, heartwoodHandoffs]);
   const knownPlacesFor = useCallback((pubkey: string) => (encryptionKey ? visibleKnownPlaces.filter(p => p.pubkey === pubkey) : []), [encryptionKey, visibleKnownPlaces]);
   // Settings rows land on column 3 of the active row. Position is App state, so no
   // arrow API is needed: set it, then show the home carousel.

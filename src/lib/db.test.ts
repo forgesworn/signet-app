@@ -464,6 +464,20 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect(await db.loadHeartwoodOperator(PASSPHRASE)).toEqual(cred);
   }, TIMEOUT);
 
+  it('other Heartwoods and handed-off apps are not identities and survive the cleanup', async () => {
+    const db = await freshDb();
+    const identity = makeIdentity();
+    await db.saveIdentityEncrypted(identity, PASSPHRASE);
+    await db.saveExtraHeartwoodOperators([cred], PASSPHRASE);
+    const handoff = { clientPubkey: 'c'.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 };
+    await db.saveHeartwoodHandoffs([handoff], PASSPHRASE);
+    expect((await db.getAllIdentities()).map(i => i.id)).toEqual([identity.id]);
+    expect(await db.cleanupUnencryptedIdentities()).toBe(0);
+    expect(await db.loadExtraHeartwoodOperators(PASSPHRASE)).toEqual([cred]);
+    expect(await db.loadHeartwoodHandoffs(PASSPHRASE)).toEqual([handoff]);
+  }, TIMEOUT);
+
   it('purgeAllUserData clears the credential', async () => {
     const db = await freshDb();
     await db.saveHeartwoodOperator(cred, PASSPHRASE);
