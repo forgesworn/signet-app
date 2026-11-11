@@ -25,10 +25,37 @@ import type { NostrConnectRequest } from './nip46';
 /** What a handed-off app may ask the device for. Every kind; no button. */
 export const HANDOFF_METHODS: readonly string[] = ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'];
 
-export function handoffPolicy(identityHex: string): SlotPolicyUpdate {
+/**
+ * Whether an invitation can go straight to the Heartwood. One whose scope asks
+ * to sign deletions (kind 5) cannot: this phone asks before every deletion for
+ * a scoped app, and the device would sign them without asking.
+ */
+export function handoffAllowedFor(permissions: readonly string[] | undefined): boolean {
+  return !permissions?.includes('sign_event:5');
+}
+
+/**
+ * The device grant for an invitation: everything in HANDOFF_METHODS when the
+ * app asked for no scope, else only what it asked for (never more). An empty
+ * `kinds` means any kind, so it is empty only when plain `sign_event` was asked.
+ */
+export function handoffScope(permissions: readonly string[] | undefined): { methods: string[]; kinds: number[] } {
+  if (permissions === undefined) return { methods: [...HANDOFF_METHODS], kinds: [] };
+  const methods = ['get_public_key'];
+  for (const m of ['nip44_encrypt', 'nip44_decrypt']) if (permissions.includes(m)) methods.push(m);
+  const anyKind = permissions.includes('sign_event');
+  const kinds = anyKind ? [] : [...new Set(permissions
+    .filter(p => p.startsWith('sign_event:'))
+    .map(p => Number(p.slice('sign_event:'.length))))].sort((a, b) => a - b);
+  if (anyKind || kinds.length > 0) methods.splice(1, 0, 'sign_event');
+  return { methods, kinds };
+}
+
+export function handoffPolicy(identityHex: string, permissions?: readonly string[]): SlotPolicyUpdate {
+  const scope = handoffScope(permissions);
   return {
-    allowedMethods: [...HANDOFF_METHODS],
-    allowedKinds: [],
+    allowedMethods: scope.methods,
+    allowedKinds: scope.kinds,
     autoApprove: true,
     escalate: false,
     petitionOnDeny: false,
@@ -120,6 +147,7 @@ export async function handOffNostrConnect(params: {
   withLock?: <T>(client: object, task: () => Promise<T>) => Promise<T>;
 }): Promise<HandoffResult> {
   const persona = params.personaHex.toLowerCase();
+  if (!handoffAllowedFor(params.request.permissions)) throw new Error('This app asks to sign deletions, so My Signet asks you each time. Choose Through My Signet.');
   const holder = await findHeartwoodHolder(params.clients, persona, params.cache);
   if (!holder) throw new HandoffUnavailableError();
   const appRelays = params.request.relayUrls?.length ? params.request.relayUrls : [params.request.relayUrl];
@@ -134,7 +162,62 @@ export async function handOffNostrConnect(params: {
     relay,
     identity: persona,
     label,
-    policy: handoffPolicy(persona),
+    policy: handoffPolicy(persona, params.request.permissions),
   }, { targetHex: holder.targetHex }));
   return { ...minted, deviceHex: holder.client.deviceHex, targetHex: holder.targetHex, relay };
+}
+
+export class HandoffNotSavedError extends Error {
+  constructor() {
+    super("This phone couldn't save the pairing, so it was undone on your Heartwood. Try again.");
+    this.name = 'HandoffNotSavedError';
+  }
+}
+
+export class HandoffStrandedError extends Error {
+  constructor() {
+    super("This phone couldn't save the pairing, and your Heartwood didn't confirm undoing it. Remove the app from your Heartwood in Sapwood.");
+    this.name = 'HandoffStrandedError';
+  }
+}
+
+/**
+ * After the device has minted the app's slot (and already told the app):
+ * - cancelled meanwhile ⇒ undo it on the device ('undone');
+ * - otherwise the record is saved before anything relies on it; a slot that
+ *   can't be saved is undone ({@link HandoffNotSavedError}).
+ * A slot the device didn't confirm undoing stays tracked: saved when it can be
+ * ('cancelled-kept', so Disconnect can reach it later), else held in memory for
+ * this session only ({@link HandoffStrandedError}).
+ *
+ * `track` runs first, so this phone ignores the app's requests from the moment
+ * the device holds it; `untrack` runs once the slot is gone again.
+ */
+export async function settleHandoff(p: {
+  cancelled: boolean;
+  track: () => void;
+  untrack: () => void;
+  persist: () => Promise<void>;
+  undo: () => Promise<void>;
+}): Promise<'kept' | 'undone' | 'cancelled-kept'> {
+  p.track();
+  if (p.cancelled) {
+    try {
+      await p.undo();
+      p.untrack();
+      return 'undone';
+    } catch { /* the device still holds it: keep it tracked, below */ }
+  }
+  try {
+    await p.persist();
+  } catch {
+    try {
+      await p.undo();
+    } catch {
+      throw new HandoffStrandedError();
+    }
+    p.untrack();
+    throw new HandoffNotSavedError();
+  }
+  return p.cancelled ? 'cancelled-kept' : 'kept';
 }

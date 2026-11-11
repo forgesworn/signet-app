@@ -425,7 +425,7 @@ export function ApproveConnect({
             <span>
               Straight to my Heartwood
               <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to press its button once.
+                The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
               </span>
             </span>
           </label>

@@ -478,6 +478,20 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect(await db.loadHeartwoodHandoffs(PASSPHRASE)).toEqual([handoff]);
   }, TIMEOUT);
 
+  it('updateHeartwoodHandoffs: concurrent writers both land, against what is stored', async () => {
+    const db = await freshDb();
+    const rec = (c: string) => ({ clientPubkey: c.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 });
+    await db.saveHeartwoodHandoffs([rec('a')], PASSPHRASE);
+    const [one, two] = await Promise.all([
+      db.updateHeartwoodHandoffs(PASSPHRASE, l => [...l, rec('b')]),
+      db.updateHeartwoodHandoffs(PASSPHRASE, l => [...l.filter(h => h.clientPubkey !== 'a'.repeat(64)), rec('c')]),
+    ]);
+    expect(one.map(h => h.clientPubkey[0])).toEqual(['a', 'b']);
+    expect(two.map(h => h.clientPubkey[0])).toEqual(['b', 'c']);
+    expect((await db.loadHeartwoodHandoffs(PASSPHRASE)).map(h => h.clientPubkey[0])).toEqual(['b', 'c']);
+  }, TIMEOUT);
+
   it('purgeAllUserData clears the credential', async () => {
     const db = await freshDb();
     await db.saveHeartwoodOperator(cred, PASSPHRASE);

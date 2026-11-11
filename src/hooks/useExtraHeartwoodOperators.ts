@@ -73,11 +73,15 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
       return { error: 'That is the Heartwood this phone is already paired with. Its key goes in the card above.' };
     }
     const next = [...credentials.filter(c => c.deviceHex.toLowerCase() !== device), cred];
+    const gen = genRef.current;
     try {
       await saveExtraHeartwoodOperators(next, encryptionKey);
     } catch (e) {
       return { error: e instanceof Error ? e.message : 'Could not save the operator key.' };
     }
+    // Locked (or the session changed) while saving: the key is stored and loads
+    // on the next unlock; starting clients now would outlive the lock.
+    if (genRef.current !== gen) return { imported: true };
     setCredentials(next);
     activate(next);
     return { imported: true };
@@ -99,7 +103,9 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
   const forget = useCallback(async (deviceHex: string) => {
     if (!encryptionKey) return;
     const next = credentials.filter(c => c.deviceHex.toLowerCase() !== deviceHex.toLowerCase());
+    const gen = genRef.current;
     try { await saveExtraHeartwoodOperators(next, encryptionKey); } catch { /* state dropped regardless */ }
+    if (genRef.current !== gen) return;
     setCredentials(next);
     activate(next);
   }, [encryptionKey, credentials, activate]);

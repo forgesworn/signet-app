@@ -21,6 +21,7 @@ import { BunkerRequestTimeoutError } from './signing-backend';
 
 const PK_A = 'a'.repeat(64);
 const PK_B = 'b'.repeat(64);
+const PK_C = 'c'.repeat(64);
 const BASE_URI = `bunker://${PK_A}?relay=wss%3A%2F%2Frelay.example.com&secret=shh`;
 const SECRET = '1'.repeat(64);
 
@@ -183,6 +184,20 @@ describe('BunkerBackendRouter', () => {
     expect(a).not.toBeNull();
     expect(a).toBe(b);
     expect(a!.activePublicKeyHex).toBe(PK_B);
+  });
+
+  it('setRelayResolver: a route is built on the resolved relays; an explicit override wins; nothing held is retired', async () => {
+    const router = (await BunkerBackendRouter.create(connectedPrimary(), SECRET))!;
+    const before = router.backendFor(PK_B)!;
+    router.setRelayResolver(pk => (pk === PK_B || pk === PK_C ? ['wss://own.example'] : null));
+    // A route a consumer already holds stays alive (the resolver only applies to new routes).
+    expect(router.backendFor(PK_B)).toBe(before);
+    expect((before as unknown as { isDestroyed: boolean }).isDestroyed).toBe(false);
+    const uriOf = (b: unknown) => (b as { slotBunkerUri: string }).slotBunkerUri;
+    expect(uriOf(router.backendFor(PK_C))).toContain(encodeURIComponent('wss://own.example'));
+    router.setRelayOverride(PK_C, ['wss://explicit.example']);
+    expect(uriOf(router.backendFor(PK_C))).toContain(encodeURIComponent('wss://explicit.example'));
+    expect(uriOf(router.backendFor(PK_C))).not.toContain(encodeURIComponent('wss://own.example'));
   });
 
   it('A48: setRouteDecorator wraps derived routes, never the primary', async () => {

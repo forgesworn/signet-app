@@ -23,6 +23,8 @@ export interface KnownPlaceCtx {
   appLabel?: string;
   /** nip46: unix seconds the paired client was last seen. */
   lastSeenAt?: number;
+  /** nip46: the app was handed to a Heartwood, which signs for it; the phone has no ask setting for it. */
+  heartwoodHeld?: boolean;
 }
 
 export interface KnownPlaceActions {
@@ -64,6 +66,8 @@ const CHANNEL_SENTENCE: Record<KnownPlaceChannel, string> = {
   unknown: '',
 };
 
+export const HEARTWOOD_HELD_SIGNING = 'By your Heartwood, without asking this phone';
+
 export const PAIRED_TO_OTHER_IDENTITY_COPY = 'This app is currently paired to a different identity.';
 
 /** The one-line row summary: "<identity> · <channel> · <time>". */
@@ -102,7 +106,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const grant = place.kind === 'nip55' ? ctx.nip55Grant ?? null : null;
   const isAuto = place.kind === 'nip46' ? !ctx.loading && !ctx.askToSign : !!grant?.allowAlways;
   // No auto action until the client list has loaded; and a NIP-55 row acts only on a grant pinned to ITS identity.
-  const canAuto = (place.kind === 'nip46' && !ctx.loading) || (place.kind === 'nip55' && grant !== null);
+  const canAuto = (place.kind === 'nip46' && !ctx.loading && !ctx.heartwoodHeld) || (place.kind === 'nip55' && grant !== null);
   const canDisconnect = place.kind === 'nip46' || (place.kind === 'nip55' && !ctx.nip55OtherIdentity);
   const openable = canOpenPlace(place, isNativeApp());
   const channelSentence = CHANNEL_SENTENCE[place.channel];
@@ -161,6 +165,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
               <div><dt>Shared</dt><dd>{[place.shared.handle && 'Your handle', place.shared.picture && 'Your picture'].filter(Boolean).join(' and ')}</dd></div>
             )}
             {place.kind === 'nip46' && ctx.askToSign && <div><dt>Signing</dt><dd>{ASK_EACH_TIME_SUMMARY}</dd></div>}
+            {place.kind === 'nip46' && ctx.heartwoodHeld && <div><dt>Signing</dt><dd>{HEARTWOOD_HELD_SIGNING}</dd></div>}
             {grant?.denyAlways && <div><dt>Signing</dt><dd>Refused every time</dd></div>}
             <div><dt>First seen</dt><dd>{dateOf(place.firstAt)}</dd></div>
             <div><dt>Last used</dt><dd>{relativeTime(last, now)}</dd></div>

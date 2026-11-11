@@ -2585,6 +2585,26 @@ export async function saveHeartwoodHandoffs(records: HeartwoodHandoffRecord[], e
   await db.put('identity', { id: HEARTWOOD_HANDOFFS_KEY, secret: encrypted });
 }
 
+let handoffWrites: Promise<unknown> = Promise.resolve();
+
+/**
+ * Load → change → save the hand-off records, one writer at a time, against
+ * what is stored rather than an in-memory copy (which is empty while locked or
+ * still loading). Resolves to the saved list.
+ */
+export function updateHeartwoodHandoffs(
+  encryptionKey: string,
+  change: (records: HeartwoodHandoffRecord[]) => HeartwoodHandoffRecord[],
+): Promise<HeartwoodHandoffRecord[]> {
+  const run = handoffWrites.then(async () => {
+    const next = change(await loadHeartwoodHandoffs(encryptionKey));
+    await saveHeartwoodHandoffs(next, encryptionKey);
+    return next;
+  });
+  handoffWrites = run.catch(() => undefined);
+  return run;
+}
+
 export async function loadHeartwoodHandoffs(encryptionKey: string): Promise<HeartwoodHandoffRecord[]> {
   const db = await getDB();
   const record = await db.get('identity', HEARTWOOD_HANDOFFS_KEY);

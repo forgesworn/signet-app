@@ -6,10 +6,15 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import { HeartwoodMgmtClient, MGMT_KIND, type MgmtTransport } from './heartwood-mgmt';
 import {
   HANDOFF_METHODS,
+  HandoffNotSavedError,
+  HandoffStrandedError,
   HandoffUnavailableError,
   handOffNostrConnect,
+  handoffAllowedFor,
+  handoffScope,
   holderTarget,
   pickHandoffRelay,
+  settleHandoff,
 } from './heartwood-handoff';
 import { buildOwnerPersonaRoutes } from './persona-bunker-routes';
 import { buildSlotBunkerUri } from './bunker-router';
@@ -100,6 +105,24 @@ describe('handOffNostrConnect', () => {
     expect((params as { policy: Record<string, unknown> }).policy).toMatchObject({ allowed_methods: [...HANDOFF_METHODS], allowed_kinds: [], auto_approve: true, bound_identity: m1 });
   });
 
+  it('grants a scoped invitation only what it asked for', async () => {
+    const m0 = hex();
+    const b = fakeClient(m0, [{ kind: 'master', slot: 0, npub_hex: m0 }]);
+    await handOffNostrConnect({ request: { ...request, permissions: ['sign_event:1', 'nip44_encrypt'] }, personaHex: m0, clients: [b] });
+    const [, params] = b.request.mock.calls.find(c => c[0] === 'nostrconnect_v2')!;
+    expect((params as { policy: Record<string, unknown> }).policy).toMatchObject({
+      allowed_methods: ['get_public_key', 'sign_event', 'nip44_encrypt'], allowed_kinds: [1], auto_approve: true,
+    });
+  });
+
+  it('refuses an invitation that asks to sign deletions, before asking any device', async () => {
+    const m0 = hex();
+    const b = fakeClient(m0, [{ kind: 'master', slot: 0, npub_hex: m0 }]);
+    await expect(handOffNostrConnect({ request: { ...request, permissions: ['sign_event:5'] }, personaHex: m0, clients: [b] }))
+      .rejects.toThrow(/deletions/);
+    expect(b.request).not.toHaveBeenCalled();
+  });
+
   it('says so when no Heartwood on this phone holds the key', async () => {
     const a = fakeClient(hex(), [{ kind: 'master', slot: 0, npub_hex: hex() }]);
     await expect(handOffNostrConnect({ request, personaHex: hex(), clients: [a] })).rejects.toBeInstanceOf(HandoffUnavailableError);
@@ -131,5 +154,69 @@ describe('buildSlotBunkerUri with a key on another Heartwood', () => {
     const pk = hex();
     const uri = buildSlotBunkerUri(`bunker://${hex()}?relay=wss://a.example&secret=x`, pk, ['wss://b.example', 'wss://c.example']);
     expect(uri).toBe(`bunker://${pk}?relay=wss%3A%2F%2Fb.example&relay=wss%3A%2F%2Fc.example`);
+  });
+});
+
+describe('handoffScope', () => {
+  it('an unscoped invitation gets the full hand-off set, any kind', () => {
+    expect(handoffScope(undefined)).toEqual({ methods: [...HANDOFF_METHODS], kinds: [] });
+  });
+  it('only narrows: no sign_event unless asked, and kinds are listed unless plain sign_event was asked', () => {
+    expect(handoffScope(['nip44_decrypt'])).toEqual({ methods: ['get_public_key', 'nip44_decrypt'], kinds: [] });
+    expect(handoffScope(['sign_event:7', 'sign_event:1', 'sign_event:7'])).toEqual({ methods: ['get_public_key', 'sign_event'], kinds: [1, 7] });
+    expect(handoffScope(['sign_event', 'sign_event:1'])).toEqual({ methods: ['get_public_key', 'sign_event'], kinds: [] });
+    // nip04 is not served by a hand-off, scoped or not.
+    expect(handoffScope(['nip04_encrypt', 'get_public_key'])).toEqual({ methods: ['get_public_key'], kinds: [] });
+  });
+  it('a scope with kind-5 signing is not handed off', () => {
+    expect(handoffAllowedFor(undefined)).toBe(true);
+    expect(handoffAllowedFor(['sign_event:1'])).toBe(true);
+    expect(handoffAllowedFor(['sign_event:1', 'sign_event:5'])).toBe(false);
+  });
+});
+
+describe('settleHandoff', () => {
+  function harness(opts: { persist?: 'ok' | 'fail'; undo?: 'ok' | 'fail' } = {}) {
+    const log: string[] = [];
+    let tracked = false;
+    return {
+      log,
+      get tracked() { return tracked; },
+      p: {
+        track: () => { tracked = true; log.push('track'); },
+        untrack: () => { tracked = false; log.push('untrack'); },
+        persist: async () => { log.push('persist'); if (opts.persist === 'fail') throw new Error('idb'); },
+        undo: async () => { log.push('undo'); if (opts.undo === 'fail') throw new Error('offline'); },
+      },
+    };
+  }
+  it('keeps and saves a pairing nobody cancelled', async () => {
+    const h = harness();
+    expect(await settleHandoff({ cancelled: false, ...h.p })).toBe('kept');
+    expect(h.log).toEqual(['track', 'persist']);
+    expect(h.tracked).toBe(true);
+  });
+  it('undoes a pairing cancelled while minting, and saves nothing', async () => {
+    const h = harness();
+    expect(await settleHandoff({ cancelled: true, ...h.p })).toBe('undone');
+    expect(h.log).toEqual(['track', 'undo', 'untrack']);
+    expect(h.tracked).toBe(false);
+  });
+  it('a cancelled pairing the device would not undo is saved, so Disconnect can reach it', async () => {
+    const h = harness({ undo: 'fail' });
+    expect(await settleHandoff({ cancelled: true, ...h.p })).toBe('cancelled-kept');
+    expect(h.log).toEqual(['track', 'undo', 'persist']);
+    expect(h.tracked).toBe(true);
+  });
+  it('a pairing that cannot be saved is undone on the device', async () => {
+    const h = harness({ persist: 'fail' });
+    await expect(settleHandoff({ cancelled: false, ...h.p })).rejects.toBeInstanceOf(HandoffNotSavedError);
+    expect(h.log).toEqual(['track', 'persist', 'undo', 'untrack']);
+    expect(h.tracked).toBe(false);
+  });
+  it('neither saved nor undone: stays tracked for this session and says to remove it in Sapwood', async () => {
+    const h = harness({ persist: 'fail', undo: 'fail' });
+    await expect(settleHandoff({ cancelled: false, ...h.p })).rejects.toBeInstanceOf(HandoffStrandedError);
+    expect(h.tracked).toBe(true);
   });
 });

@@ -440,6 +440,17 @@ export class BunkerBackendRouter {
     this.decorator = fn;
   }
 
+  private relayResolver: ((pubkeyHex: string) => readonly string[] | null | undefined) | null = null;
+
+  /**
+   * Where a route not yet built should be reached, read when it is built (an
+   * explicit {@link setRelayOverride} wins). Install it before the router is
+   * handed out: unlike an override, it never retires a route a consumer holds.
+   */
+  setRelayResolver(fn: ((pubkeyHex: string) => readonly string[] | null | undefined) | null): void {
+    this.relayResolver = fn;
+  }
+
   /** Reach `pubkey` on these relays instead of the primary pairing's. A changed
    *  set retires the cached route so the next lookup builds it afresh. */
   setRelayOverride(pubkeyHex: string, relays: readonly string[] | null): void {
@@ -468,7 +479,8 @@ export class BunkerBackendRouter {
     if (!route) {
       let uri: string;
       try {
-        uri = buildSlotBunkerUri(this.primary.bunkerUri, pk, this.relayOverrides.get(pk));
+        const resolved = this.relayResolver?.(pk);
+        uri = buildSlotBunkerUri(this.primary.bunkerUri, pk, this.relayOverrides.get(pk) ?? (resolved?.length ? resolved : undefined));
       } catch {
         return null;
       }

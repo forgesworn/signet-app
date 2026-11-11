@@ -234,6 +234,14 @@ describe('KnownPlacesCard', () => {
     expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically/ })).toBeNull();
   });
 
+  it('offers no auto action for an app handed to a Heartwood, and says who signs', () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined });
+    setup({ places: [nc], ctxFor: () => ({ heartwoodHeld: true }) });
+    expand('nc');
+    expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically/ })).toBeNull();
+    expect(screen.getByText('By your Heartwood, without asking this phone')).toBeTruthy();
+  });
+
   it('opens a phone-app place only on native', () => {
     native.value = false;
     try {
