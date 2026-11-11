@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNativeBack } from '../hooks/useNativeBack';
 import {
   FULL_ACCESS_COPY,
   cardLines,
@@ -95,6 +96,8 @@ export function FullAccessChoice({
   }
 
   const running = phase.kind === 'running';
+  // The Android back gesture follows the on-screen Back, which hides mid-run.
+  useNativeBack(onBack && !running ? onBack : null);
   const problem = phase.kind === 'problem' ? phase.failure : null;
   const canRetry = problem !== null && problem.action === 'retry';
 
