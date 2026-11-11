@@ -644,6 +644,38 @@ export function useIdentity(encryptionKey?: string | null) {
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**
+   * Adds a persona whose key is a separate identity on the paired Heartwood
+   * (see `lib/heartwood-key-persona.ts`). Public key only; the caller has
+   * already bound this phone on that identity and checked it signs.
+   */
+  const addHeartwoodKeyPersona = useCallback(async (
+    publicKeyHex: string,
+    displayName: string,
+    overrideEncryptionKey?: string,
+  ): Promise<{ added: true } | { added: false; collisionDisplayName: string }> => {
+    if (!activeIdentity) throw new Error('No active identity');
+    const key = overrideEncryptionKey || encryptionKey;
+    if (!key) throw new Error('Encryption key required');
+    const publicKey = publicKeyHex.trim().toLowerCase();
+    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, key);
+    if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
+    const existing = [decrypted.naturalPerson, decrypted.persona, decrypted.professionalPersona, ...(decrypted.extraPersonas ?? [])]
+      .find(p => p?.publicKey.toLowerCase() === publicKey);
+    if (existing) return { added: false, collisionDisplayName: existing.displayName };
+    const newPersona: ExtraPersona = {
+      publicKey,
+      privateKey: '',
+      displayName: displayName.trim(),
+      derivationName: '',
+      heartwoodKey: true,
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+    await db.saveIdentityEncrypted({ ...decrypted, extraPersonas: [...(decrypted.extraPersonas ?? []), newPersona] }, key);
+    await loadAll();
+    return { added: true };
+  }, [activeIdentity, loadAll, encryptionKey]);
+
+  /**
    * Soft-delete an extra persona (hide it from the carousel and pickers).
    * The slot stays in the array so its derivation name isn't re-used by
    * a future addPersona — that would re-derive the same keypair, which
@@ -1124,7 +1156,7 @@ export function useIdentity(encryptionKey?: string | null) {
     await loadAll();
   }, [activeIdentity, loadAll, encryptionKey]);
 
-  return { identity: activeIdentity, identities, loading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, remove, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: loadAll };
+  return { identity: activeIdentity, identities, loading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addHeartwoodKeyPersona, remove, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: loadAll };
 }
 
 /**

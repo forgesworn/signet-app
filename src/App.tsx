@@ -288,6 +288,7 @@ import type { OwnerChoiceKind } from './components/HeartwoodFullAccessCard';
 import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
+import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
@@ -685,7 +686,7 @@ function AppContent() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -11696,6 +11697,28 @@ function AppContent() {
             } : undefined);
           }}
           onLookupExistingProfile={isPairedChild ? undefined : (pubkey) => fetchExistingProfile(pubkey, syncRelays.read)}
+          onAddHeartwoodKey={!isPairedChild && preferences.signingMode === 'bunker' && bunkerRouter ? async (uri, displayName) => {
+            const router = bunkerRouter;
+            const parsed = parseHeartwoodKeyUri(uri);
+            if (!parsed) throw new Error("That isn't a bunker:// code with a relay and a pairing secret.");
+            if (parsed.pubkey === router.primary.activePublicKeyHex.toLowerCase()) {
+              throw new Error('That code is for the Heartwood identity this phone is already paired to. Choose the other identity under "It will sign as" in Sapwood.');
+            }
+            const dup = identity && [identity.naturalPerson, identity.persona, identity.professionalPersona, ...(identity.extraPersonas ?? [])]
+              .find(p => p?.publicKey.toLowerCase() === parsed.pubkey);
+            if (dup) throw new Error(`That key is already here as ${dup.displayName}.`);
+            const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'import', personaName: displayName });
+            if (!key) throw new Error('Authentication required');
+            const clientSecret = await loadBunkerSecret(key);
+            if (!clientSecret) throw new Error("This phone's Heartwood pairing couldn't be read. Reconnect your Heartwood, then try again.");
+            const pubkey = await bindHeartwoodKey(uri, {
+              makeBinder: () => new BunkerSigningBackend(clientSecret),
+              routeFor: (pk) => router.backendFor(pk),
+              timeoutMs: CARD_REQUEST_TIMEOUT_MS,
+            });
+            const result = await addHeartwoodKeyPersona(pubkey, displayName, key);
+            if (!result.added) throw new Error(`That key is already here as ${result.collisionDisplayName}.`);
+          } : undefined}
           followsHandlersFor={(pubkey, name) => followsHandlersFor(pubkey, pubkey, name)}
           startEditPersona={pendingPersonaFocus}
           onConsumeFocus={() => setPendingPersonaFocus(null)}
