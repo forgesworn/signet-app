@@ -139,6 +139,20 @@ describe('AuthRequestSettlement — one answer per sign-in request', () => {
     expect(s.claimDelivery(key)).toBe(false);
   });
 
+  it('a cancel during a claimed delivery can be looked at without being used up', () => {
+    const s = new AuthRequestSettlement();
+    const key = authRequestKey(req());
+    s.beginApproval(key);
+    expect(s.claimDelivery(key)).toBe(true);
+    expect(s.isCancelRequested(key)).toBe(false);
+    expect(s.deny(key)).toBe('already-answered');
+    expect(s.requestCancelDuringDelivery(key)).toBe(true);
+    expect(s.isCancelRequested(key)).toBe(true);
+    expect(s.isCancelRequested(key)).toBe(true);
+    expect(s.finishDelivery(key)).toBe(true);
+    expect(s.isCancelRequested(key)).toBe(false);
+  });
+
   it('keys requests without requestId/challenge per request, never a shared ":"', () => {
     const a = {};
     const b = {};

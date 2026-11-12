@@ -12,6 +12,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import { v2 as nip44 } from 'nostr-tools/nip44';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import {
+  HeartwoodDeviceError,
   HeartwoodMgmtClient,
   MGMT_KIND,
   type MgmtTransport,
@@ -349,6 +350,7 @@ describe('HeartwoodMgmtClient request/reply', () => {
     const c = d.client();
     c.start();
     await expect(c.request('list_clients')).rejects.toThrow('no such slot: 7');
+    await expect(c.request('list_clients')).rejects.toBeInstanceOf(HeartwoodDeviceError);
     c.stop();
   });
 
@@ -538,6 +540,31 @@ describe('HeartwoodMgmtClient request/reply', () => {
     expect(d.unsubscribed).toBe(1);
   });
 
+  it('stop() names the request it cut off in flight; one still queued, or made after, is bare', async () => {
+    const d = makeFakeDevice({ handler: (req) => (req.method === 'nostrconnect_v2' ? null : undefined) });
+    const c = d.client();
+    c.start();
+    const mint = c.request('nostrconnect_v2', {}).catch(e => (e as Error).message);
+    await vi.waitFor(() => expect(d.seen.some(s => s.method === 'nostrconnect_v2')).toBe(true));
+    const queued = c.request('revoke_client', {}).catch(e => (e as Error).message);
+    c.stop();
+    expect(await mint).toBe('transport closed (nostrconnect_v2)');
+    expect(await queued).toBe('transport closed');
+    expect(d.seen.some(s => s.method === 'revoke_client')).toBe(false);
+    expect(await c.request('nostrconnect_v2', {}).catch(e => (e as Error).message)).toBe('transport closed');
+  });
+
+  it('a mutation stopped during its challenge is named by the challenge: the mutation was never sent', async () => {
+    const d = makeFakeDevice({ handler: (req) => (req.method === 'get_management_challenge' ? null : undefined) });
+    const c = d.client();
+    c.start();
+    const mint = c.request('nostrconnect_v2', {}).catch(e => (e as Error).message);
+    await vi.waitFor(() => expect(d.seen.some(s => s.method === 'get_management_challenge')).toBe(true));
+    c.stop();
+    expect(await mint).toBe('transport closed (get_management_challenge)');
+    expect(d.seen.some(s => s.method === 'nostrconnect_v2')).toBe(false);
+  });
+
   it('stop() zeroizes the operator sk and conversation key', () => {
     const d = makeFakeDevice();
     const c = d.client();
@@ -558,7 +585,7 @@ describe('HeartwoodMgmtClient request/reply', () => {
     const id = d.seen[0].id;
     const sub = d.subs[0];
     c.stop();
-    expect(await p).toBe('transport closed');
+    expect(await p).toBe('transport closed (get_status)');
     // Deliver straight to the captured callback (the transport has already
     // dropped it) — must not throw.
     expect(() => sub.onEvent(finalizeEvent({
@@ -677,6 +704,27 @@ describe('listClients / parseDeviceClientSlot', () => {
       slotIndex: 5, label: '', escalate: false, petitionOnDeny: false, auditChildWrap: false, boundIdentity: null, currentPubkey: null,
     });
     c.stop();
+  });
+
+  it('strict: a reply that cannot be fully read throws, and targetHex addresses another master', async () => {
+    const target = 'a'.repeat(64);
+    const bad = makeFakeDevice({ handler: () => ({ result: { clients: [goodRow(), { ...goodRow(), slot_index: 'x' }] } }) });
+    const c1 = bad.client();
+    c1.start();
+    await expect(listClients(c1, { strict: true })).rejects.toThrow(/could not read/);
+    c1.stop();
+    const none = makeFakeDevice({ handler: () => ({ result: {} }) });
+    const c2 = none.client();
+    c2.start();
+    await expect(listClients(c2, { strict: true })).rejects.toThrow(/no client list/);
+    c2.stop();
+    const good = makeFakeDevice({ handler: () => ({ result: { clients: [goodRow()] } }) });
+    const c3 = good.client();
+    c3.start();
+    const spy = vi.spyOn(c3, 'request').mockResolvedValue({ clients: [goodRow()] });
+    expect(await listClients(c3, { targetHex: target, strict: true })).toHaveLength(1);
+    expect(spy).toHaveBeenCalledWith('list_clients', {}, { targetHex: target });
+    c3.stop();
   });
 
   it('non-array clients ⇒ []', async () => {
@@ -953,13 +1001,14 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
   });
 
   it('throws heartwood-mint-mismatch-unrevoked with slotIndex when the revoke fails or has no fingerprint', async () => {
-    for (const echoOver of [{ identity: 'd'.repeat(64) }, { identity: 'd'.repeat(64), secret_fingerprint: '' }]) {
+    for (const [echoOver, fp] of [[{ identity: 'd'.repeat(64) }, 'fp4'], [{ identity: 'd'.repeat(64), secret_fingerprint: '' }, '']] as const) {
       const d = makeFakeDevice({ handler: (r) => (r.method === 'nostrconnect_v2' ? { result: echo(echoOver) } : r.method === 'revoke_client' ? { error: 'boom' } : undefined) });
       const c = d.client();
       c.start();
-      const err = await nostrconnectV2(c, req()).catch((e: unknown) => e) as Error & { slotIndex?: number };
+      const err = await nostrconnectV2(c, req()).catch((e: unknown) => e) as Error & { slotIndex?: number; secretFingerprint?: string };
       expect(err.message).toBe('heartwood-mint-mismatch-unrevoked');
       expect(err.slotIndex).toBe(4);
+      expect(err.secretFingerprint).toBe(fp);
       c.stop();
     }
   });

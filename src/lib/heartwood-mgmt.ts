@@ -153,6 +153,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * An error the device itself sent back, as opposed to a timeout or a relay
+ * that would not take the request. The message is the device's own text,
+ * unchanged, so callers that match on it keep working.
+ */
+export class HeartwoodDeviceError extends Error {
+  readonly method: string;
+  constructor(message: string, method: string) {
+    super(message);
+    this.name = 'HeartwoodDeviceError';
+    this.method = method;
+  }
+}
+
 export class HeartwoodMgmtClient {
   readonly operatorPub: string;
   readonly deviceHex: string;
@@ -160,6 +174,9 @@ export class HeartwoodMgmtClient {
   private readonly transport: MgmtTransport;
   private sk: Uint8Array;
   private ck: Uint8Array;
+  /** Conversation keys for other identities on the same device (operator
+   *  requests addressed to a non-primary master, as Sapwood's `targetHex`). */
+  private readonly targetCks = new Map<string, Uint8Array>();
   private unsubscribe: (() => void) | null = null;
   private readonly pending = new Map<string, Pending>();
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -200,16 +217,25 @@ export class HeartwoodMgmtClient {
   }
 
   /** Close the subscription, reject every in-flight request, and zeroize the
-   *  operator key material. The client is unusable afterwards. */
+   *  operator key material. The client is unusable afterwards.
+   *
+   *  A request in flight (its publish has started, so the device may have
+   *  acted on it) is rejected with `transport closed (<method>)`. One still
+   *  queued, or made after this, gets the bare `transport closed`: nothing of
+   *  it was sent. */
   stop(): void {
     if (this.closed) return;
     this.closed = true;
-    const err = new Error('transport closed');
-    for (const id of [...this.pending.keys()]) this.removePending(id)?.reject(err);
+    for (const id of [...this.pending.keys()]) {
+      const p = this.removePending(id);
+      p?.reject(new Error(`transport closed (${p.method})`));
+    }
     try { this.unsubscribe?.(); } catch { /* already gone */ }
     this.unsubscribe = null;
     this.sk.fill(0);
     this.ck.fill(0);
+    this.targetCks.forEach(ck => ck.fill(0));
+    this.targetCks.clear();
   }
 
   /** Send a management request and await the device's decrypted reply.
@@ -218,13 +244,15 @@ export class HeartwoodMgmtClient {
   request<T = Record<string, unknown>>(
     method: string,
     params: Record<string, unknown> = {},
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; targetHex?: string },
   ): Promise<T> {
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_MGMT_TIMEOUT_MS;
+    const target = opts?.targetHex?.toLowerCase();
+    if (target !== undefined && !HEX64.test(target)) return Promise.reject(new Error('management target must be 64 hex chars'));
     if (!requiresMutationChallenge(method)) {
-      return this.requestRaw(method, params, timeoutMs) as Promise<T>;
+      return this.requestRaw(method, params, timeoutMs, undefined, target) as Promise<T>;
     }
-    const run = () => this.sendReplaySafe(method, params, timeoutMs);
+    const run = () => this.sendReplaySafe(method, params, timeoutMs, target);
     const result = this.mutationQueue.then(run, run);
     this.mutationQueue = result.then(() => undefined, () => undefined);
     return result as Promise<T>;
@@ -234,10 +262,11 @@ export class HeartwoodMgmtClient {
     method: string,
     params: Record<string, unknown>,
     timeoutMs: number,
+    target?: string,
   ): Promise<Record<string, unknown>> {
     let discovered: Record<string, unknown>;
     try {
-      discovered = await this.requestRaw('get_management_challenge', {}, timeoutMs);
+      discovered = await this.requestRaw('get_management_challenge', {}, timeoutMs, undefined, target);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (/unknown method.*get_management_challenge/i.test(message)) {
@@ -251,7 +280,18 @@ export class HeartwoodMgmtClient {
     }
     // The mutation itself is sent exactly once. A stale-challenge error
     // propagates verbatim (see isStaleChallengeError) — never auto-retried.
-    return this.requestRaw(method, params, timeoutMs, challenge);
+    return this.requestRaw(method, params, timeoutMs, challenge, target);
+  }
+
+  /** Conversation key for `target` (the device master when absent). */
+  private ckFor(target?: string): Uint8Array {
+    if (!target || target === this.deviceHex) return this.ck;
+    let ck = this.targetCks.get(target);
+    if (!ck) {
+      ck = nip44.utils.getConversationKey(this.sk, target);
+      this.targetCks.set(target, ck);
+    }
+    return ck;
   }
 
   private requestRaw(
@@ -259,6 +299,7 @@ export class HeartwoodMgmtClient {
     params: Record<string, unknown>,
     timeoutMs: number,
     mutationChallenge?: string,
+    target?: string,
   ): Promise<Record<string, unknown>> {
     if (this.closed) return Promise.reject(new Error('transport closed'));
     if (!this.unsubscribe) return Promise.reject(new Error('not started'));
@@ -278,8 +319,8 @@ export class HeartwoodMgmtClient {
           {
             kind: MGMT_KIND,
             created_at: Math.floor(Date.now() / 1000),
-            tags: [['p', this.deviceHex]],
-            content: nip44.encrypt(plaintext, this.ck),
+            tags: [['p', target ?? this.deviceHex]],
+            content: nip44.encrypt(plaintext, this.ckFor(target)),
           },
           this.sk,
         ) as unknown as NostrEvent;
@@ -323,12 +364,14 @@ export class HeartwoodMgmtClient {
     // Only the device master authors replies on this channel. Anything else
     // p-tagged to the operator is noise (or an impersonation attempt whose
     // ciphertext would fail under our ck anyway) — drop before decrypting.
-    if (ev.pubkey !== this.deviceHex) return;
+    // Or another identity on the same device this client has addressed.
+    const ck = ev.pubkey === this.deviceHex ? this.ck : this.targetCks.get(ev.pubkey);
+    if (!ck) return;
     if (ev.kind !== MGMT_KIND) return;
     if (typeof ev.content !== 'string' || ev.content.length === 0 || ev.content.length > MAX_REPLY_CONTENT_CHARS) return;
     let parsed: unknown;
     try {
-      parsed = JSON.parse(nip44.decrypt(ev.content, this.ck));
+      parsed = JSON.parse(nip44.decrypt(ev.content, ck));
     } catch {
       return;
     }
@@ -336,11 +379,11 @@ export class HeartwoodMgmtClient {
     const p = this.removePending(parsed.id);
     if (!p) return; // unknown / already-settled id — ignore
     if (typeof parsed.error === 'string') {
-      p.reject(new Error(parsed.error));
+      p.reject(new HeartwoodDeviceError(parsed.error, p.method));
       return;
     }
     if ('error' in parsed && parsed.error !== undefined && parsed.error !== null) {
-      p.reject(new Error(`device error (${p.method})`));
+      p.reject(new HeartwoodDeviceError(`device error (${p.method})`, p.method));
       return;
     }
     p.resolve(isRecord(parsed.result) ? parsed.result : {});
@@ -441,14 +484,50 @@ export function parseDeviceClientSlot(row: unknown): DeviceClientSlot | undefine
 }
 
 /** `list_clients` → `{ clients: [...] }`, snake_case → camelCase, malformed
- *  rows dropped. */
-export async function listClients(c: HeartwoodMgmtClient): Promise<DeviceClientSlot[]> {
-  const r = await c.request('list_clients');
-  if (!Array.isArray(r.clients)) return [];
+ *  rows dropped. `targetHex` lists another master's slots on the device.
+ *  `strict`: a reply that can't be fully read (no list, or a row that doesn't
+ *  parse) throws instead, for callers that must not read a gap as "absent". */
+export async function listClients(
+  c: HeartwoodMgmtClient,
+  opts?: { targetHex?: string; strict?: boolean },
+): Promise<DeviceClientSlot[]> {
+  const r = opts?.targetHex
+    ? await c.request('list_clients', {}, { targetHex: opts.targetHex })
+    : await c.request('list_clients');
+  if (!Array.isArray(r.clients)) {
+    if (opts?.strict) throw new Error('list_clients reply had no client list');
+    return [];
+  }
   const out: DeviceClientSlot[] = [];
   for (const row of r.clients) {
     const slot = parseDeviceClientSlot(row);
     if (slot) out.push(slot);
+    else if (opts?.strict) throw new Error('list_clients reply had a row this phone could not read');
+  }
+  return out;
+}
+
+export interface DeviceIdentity {
+  kind: 'master' | 'persona';
+  /** The master slot it belongs to (its own slot for a master). */
+  slot: number;
+  pubkeyHex: string;
+  label: string;
+}
+
+/** Operator `list_identities`: every master and persona on the device (the
+ *  device-wide operator sees them all), malformed rows dropped. */
+export async function listDeviceIdentities(c: HeartwoodMgmtClient): Promise<DeviceIdentity[]> {
+  const r = await c.request('list_identities');
+  if (!Array.isArray(r.identities)) return [];
+  const out: DeviceIdentity[] = [];
+  for (const row of r.identities) {
+    if (!isRecord(row)) continue;
+    const kind = row.kind;
+    const pk = typeof row.npub_hex === 'string' ? row.npub_hex.toLowerCase() : '';
+    if ((kind !== 'master' && kind !== 'persona') || !HEX64.test(pk)) continue;
+    if (typeof row.slot !== 'number' || !Number.isInteger(row.slot) || row.slot < 0) continue;
+    out.push({ kind, slot: row.slot, pubkeyHex: pk, label: typeof row.label === 'string' ? row.label : '' });
   }
   return out;
 }
@@ -591,11 +670,12 @@ function checkSlotRef(slot: { slotIndex: number; secretFingerprint: string }): v
  *  persona, and have the device publish the connect ACK. The reply is
  *  verified against what was asked for (policy version, addressed identity,
  *  methods, kinds, auto-approve); anything else revokes the slot just minted
- *  and throws `heartwood-mint-mismatch` (`heartwood-mint-mismatch-unrevoked`, with `slotIndex`, when the revoke fails or cannot be attempted). Sent once — a stale challenge
+ *  and throws `heartwood-mint-mismatch` (`heartwood-mint-mismatch-unrevoked`, with `slotIndex` and `secretFingerprint` (empty when none came back), when the revoke fails or cannot be attempted). Sent once — a stale challenge
  *  propagates to the caller (see the transport notes above). */
 export async function nostrconnectV2(
   c: HeartwoodMgmtClient,
   req: NostrconnectMintRequest,
+  opts?: { targetHex?: string },
 ): Promise<NostrconnectMintResult> {
   const identity = (req.identity ?? '').toLowerCase();
   if (!HEX64.test((req.clientPubkey ?? '').toLowerCase())) throw new Error('clientPubkey must be 64 hex chars');
@@ -615,7 +695,7 @@ export async function nostrconnectV2(
     identity,
     label: req.label,
     policy: policyWireFields(req.policy),
-  });
+  }, opts?.targetHex ? { targetHex: opts.targetHex } : undefined);
   const slotIndex = r.slot_index;
   const fingerprint = typeof r.secret_fingerprint === 'string' ? r.secret_fingerprint.toLowerCase() : '';
   const validSlot = typeof slotIndex === 'number' && Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex <= 255;
@@ -628,11 +708,11 @@ export async function nostrconnectV2(
   if (!validSlot || fingerprint.length === 0 || !echoOk) {
     let revoked = false;
     if (validSlot && fingerprint.length > 0) {
-      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }); revoked = true; } catch { /* reported below */ }
+      try { await revokeClient(c, { slotIndex, secretFingerprint: fingerprint }, opts); revoked = true; } catch { /* reported below */ }
     }
     if (validSlot && !revoked) {
       // The slot may exist on the device and we could not remove it: say so, with its index.
-      throw Object.assign(new Error('heartwood-mint-mismatch-unrevoked'), { slotIndex });
+      throw Object.assign(new Error('heartwood-mint-mismatch-unrevoked'), { slotIndex, secretFingerprint: fingerprint });
     }
     throw new Error('heartwood-mint-mismatch');
   }
@@ -643,12 +723,13 @@ export async function nostrconnectV2(
 export async function revokeClient(
   c: HeartwoodMgmtClient,
   slot: { slotIndex: number; secretFingerprint: string },
+  opts?: { targetHex?: string },
 ): Promise<void> {
   checkSlotRef(slot);
   const r = await c.request('revoke_client', {
     slot_index: slot.slotIndex,
     expected_secret_fingerprint: slot.secretFingerprint,
-  });
+  }, opts?.targetHex ? { targetHex: opts.targetHex } : undefined);
   if (r.revoked !== true) throw new Error('revoke_client did not confirm the revocation');
   if (r.slot_index !== slot.slotIndex) throw new Error('revoke_client confirmed a different slot');
 }

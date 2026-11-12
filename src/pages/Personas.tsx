@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { HeartwoodKeyPersonaAdd } from '../components/HeartwoodKeyPersonaAdd';
 import type { SignetIdentity, AppPreferences } from '../types';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
@@ -57,6 +58,8 @@ interface Props {
    * => the import goes straight through as before.
    */
   onLookupExistingProfile?: (pubkey: string) => Promise<ExistingProfile | null | 'unreachable'>;
+  /** A key kept as its own identity on the paired Heartwood. Absent unless a Heartwood is connected. */
+  onAddHeartwoodKey?: (bunkerUri: string, displayName: string) => Promise<void>;
   /**
    * Handlers for "Import who this account follows" for one persona (by its
    * pubkey / slot target and name). When it returns handlers, a successful
@@ -98,6 +101,7 @@ export function Personas({
   onConsumeFocus,
   onImportNostrAccount,
   onLookupExistingProfile,
+  onAddHeartwoodKey,
   followsHandlersFor,
   pairedChildView = false,
   onActivateRealIdentity,
@@ -118,6 +122,7 @@ export function Personas({
 
   // Phase C.3 — post-onboarding nsec import modal state.
   const [importingNostr, setImportingNostr] = useState(false);
+  const [addingHeartwoodKey, setAddingHeartwoodKey] = useState(false);
   const [importNsecInput, setImportNsecInput] = useState('');
   const [importDisplayName, setImportDisplayName] = useState('');
   const [importBackupConfirmed, setImportBackupConfirmed] = useState(false);
@@ -620,6 +625,15 @@ export function Personas({
                   Import an existing Nostr account
                 </button>
               )}
+              {onAddHeartwoodKey && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setAddingHeartwoodKey(true)}
+                  style={{ width: '100%', marginTop: 6 }}
+                >
+                  Add a key from my Heartwood
+                </button>
+              )}
             </>
           )
         )}
@@ -631,6 +645,10 @@ export function Personas({
           <div className="row"><strong>{identity.professionalPersona.displayName}</strong></div>
           {personaActions('professional-persona', identity.professionalPersona.publicKey)}
         </div>
+      )}
+
+      {addingHeartwoodKey && onAddHeartwoodKey && (
+        <HeartwoodKeyPersonaAdd onAdd={onAddHeartwoodKey} onClose={() => setAddingHeartwoodKey(false)} />
       )}
 
       {/* Phase C.3 — post-onboarding nsec import modal */}

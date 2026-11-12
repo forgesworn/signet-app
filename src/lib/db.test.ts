@@ -464,6 +464,69 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect(await db.loadHeartwoodOperator(PASSPHRASE)).toEqual(cred);
   }, TIMEOUT);
 
+  it('other Heartwoods and handed-off apps are not identities and survive the cleanup', async () => {
+    const db = await freshDb();
+    const identity = makeIdentity();
+    await db.saveIdentityEncrypted(identity, PASSPHRASE);
+    await db.saveExtraHeartwoodOperators([cred], PASSPHRASE);
+    const handoff = { clientPubkey: 'c'.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 };
+    await db.saveHeartwoodHandoffs([handoff], PASSPHRASE);
+    expect((await db.getAllIdentities()).map(i => i.id)).toEqual([identity.id]);
+    expect(await db.cleanupUnencryptedIdentities()).toBe(0);
+    expect(await db.loadExtraHeartwoodOperators(PASSPHRASE)).toEqual([cred]);
+    expect(await db.loadHeartwoodHandoffs(PASSPHRASE)).toEqual([handoff]);
+  }, TIMEOUT);
+
+  it('updateHeartwoodHandoffs: concurrent writers both land, against what is stored', async () => {
+    const db = await freshDb();
+    const rec = (c: string) => ({ clientPubkey: c.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 });
+    await db.saveHeartwoodHandoffs([rec('a')], PASSPHRASE);
+    const [one, two] = await Promise.all([
+      db.updateHeartwoodHandoffs(PASSPHRASE, l => [...l, rec('b')]),
+      db.updateHeartwoodHandoffs(PASSPHRASE, l => [...l.filter(h => h.clientPubkey !== 'a'.repeat(64)), rec('c')]),
+    ]);
+    expect(one.map(h => h.clientPubkey[0])).toEqual(['a', 'b']);
+    expect(two.map(h => h.clientPubkey[0])).toEqual(['b', 'c']);
+    expect((await db.loadHeartwoodHandoffs(PASSPHRASE)).map(h => h.clientPubkey[0])).toEqual(['b', 'c']);
+  }, TIMEOUT);
+
+  it('updateExtraHeartwoodOperators changes what is stored, one writer at a time', async () => {
+    const db = await freshDb();
+    const op = (d: string) => ({ ...cred, deviceHex: d.repeat(64) });
+    await db.saveExtraHeartwoodOperators([op('a')], PASSPHRASE);
+    const [one, two] = await Promise.all([
+      db.updateExtraHeartwoodOperators(PASSPHRASE, l => [...l, op('b')]),
+      db.updateExtraHeartwoodOperators(PASSPHRASE, l => l.filter(c => c.deviceHex !== 'a'.repeat(64))),
+    ]);
+    expect(one.map(c => c.deviceHex[0])).toEqual(['a', 'b']);
+    expect(two.map(c => c.deviceHex[0])).toEqual(['b']);
+    expect((await db.readExtraHeartwoodOperators(PASSPHRASE)).map(c => c.deviceHex[0])).toEqual(['b']);
+  }, TIMEOUT);
+
+  it('a hand-off kept with no slot index (the phone locked mid-mint) survives a save and load', async () => {
+    const db = await freshDb();
+    const kept = { clientPubkey: 'c'.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: undefined, secretFingerprint: '', relay: 'wss://r.example', createdAt: 1 };
+    await db.saveHeartwoodHandoffs([kept], PASSPHRASE);
+    const [loaded] = await db.loadHeartwoodHandoffs(PASSPHRASE);
+    expect(loaded).toMatchObject({ clientPubkey: 'c'.repeat(64), secretFingerprint: '' });
+    expect(loaded.slotIndex).toBeUndefined();
+  }, TIMEOUT);
+
+  it('readHeartwoodHandoffs waits for a write already queued, and the row check needs no key', async () => {
+    const db = await freshDb();
+    const rec = (c: string) => ({ clientPubkey: c.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 });
+    expect(await db.hasHeartwoodHandoffsRow()).toBe(false);
+    const write = db.updateHeartwoodHandoffs(PASSPHRASE, l => [...l, rec('a')]);
+    const read = db.readHeartwoodHandoffs(PASSPHRASE);
+    expect((await read).map(h => h.clientPubkey[0])).toEqual(['a']);
+    await write;
+    expect(await db.hasHeartwoodHandoffsRow()).toBe(true);
+  }, TIMEOUT);
+
   it('purgeAllUserData clears the credential', async () => {
     const db = await freshDb();
     await db.saveHeartwoodOperator(cred, PASSPHRASE);

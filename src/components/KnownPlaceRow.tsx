@@ -5,6 +5,7 @@ import { placeLabel, placeTint, relativeTime, hostnameOf } from '../lib/known-pl
 import { KnownPlaceBadgeGlyph } from './KnownPlaceBadgeGlyph';
 import { canOpenPlace } from '../lib/known-place-open';
 import { isNativeApp } from '../lib/native';
+import { heartwoodMgmtErrorCopy } from '../lib/heartwood-mgmt-error-copy';
 
 export type KnownPlaceIdentityType = 'persona' | 'natural-person' | 'extra' | 'dependant' | 'bot';
 
@@ -23,6 +24,8 @@ export interface KnownPlaceCtx {
   appLabel?: string;
   /** nip46: unix seconds the paired client was last seen. */
   lastSeenAt?: number;
+  /** nip46: the app was handed to a Heartwood, which signs for it; the phone has no ask setting for it. */
+  heartwoodHeld?: boolean;
 }
 
 export interface KnownPlaceActions {
@@ -33,7 +36,11 @@ export interface KnownPlaceActions {
   forget(place: KnownPlace): void | Promise<void>;
   disconnect(place: KnownPlace): void | Promise<void>;
   revokeOnHeartwood(fingerprint: string): void | Promise<void>;
+  /** An app handed to a Heartwood whose Disconnect failed: drop all its records and its row, here only. */
+  forgetHandoffHere?(place: KnownPlace): void | Promise<void>;
 }
+
+export const FORGET_HANDOFF_HERE_COPY = 'Removes this app from this phone only. It may still sign on your Heartwood: remove it there in Sapwood.';
 
 export const ASK_EACH_TIME_SUMMARY = 'Encrypts and decrypts for this app without asking; signing asks each time.';
 
@@ -64,6 +71,8 @@ const CHANNEL_SENTENCE: Record<KnownPlaceChannel, string> = {
   unknown: '',
 };
 
+export const HEARTWOOD_HELD_SIGNING = 'By your Heartwood, without asking this phone';
+
 export const PAIRED_TO_OTHER_IDENTITY_COPY = 'This app is currently paired to a different identity.';
 
 /** The one-line row summary: "<identity> · <channel> · <time>". */
@@ -93,25 +102,36 @@ interface RowProps {
 export function KnownPlaceRow({ place, ctx, identityName, identityType, last, now, badges, expanded, onToggle, actions }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  const [confirm, setConfirm] = useState<'forget' | 'disconnect' | null>(null);
+  const [confirm, setConfirm] = useState<'forget' | 'disconnect' | 'forget-here' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Set once a Disconnect of an app handed to a Heartwood has failed, for any
+  // reason (or an action found that Heartwood can't be managed from here).
+  const [disconnectFailed, setDisconnectFailed] = useState(false);
 
   const label = placeLabel(place);
   const primary = badges[0] ?? null;
   const grant = place.kind === 'nip55' ? ctx.nip55Grant ?? null : null;
   const isAuto = place.kind === 'nip46' ? !ctx.loading && !ctx.askToSign : !!grant?.allowAlways;
   // No auto action until the client list has loaded; and a NIP-55 row acts only on a grant pinned to ITS identity.
-  const canAuto = (place.kind === 'nip46' && !ctx.loading) || (place.kind === 'nip55' && grant !== null);
+  const canAuto = (place.kind === 'nip46' && !ctx.loading && !ctx.heartwoodHeld) || (place.kind === 'nip55' && grant !== null);
   const canDisconnect = place.kind === 'nip46' || (place.kind === 'nip55' && !ctx.nip55OtherIdentity);
   const openable = canOpenPlace(place, isNativeApp());
   const channelSentence = CHANNEL_SENTENCE[place.channel];
 
-  const run = async (fn: () => void | Promise<void>) => {
+  const heartwoodHeld = place.kind === 'nip46' && !!ctx.heartwoodHeld;
+  const run = async (fn: () => void | Promise<void>, opts: { disconnecting?: boolean } = {}) => {
     if (busy) return;
     setBusy(true); setError('');
-    try { await fn(); } catch { setError('That did not work. Try again.'); } finally { setBusy(false); }
+    try { await fn(); } catch (e) {
+      setError(heartwoodMgmtErrorCopy(e));
+      // A Heartwood app whose Disconnect failed can still be forgotten here.
+      if (heartwoodHeld && (opts.disconnecting || (e as { unmanaged?: unknown } | null)?.unmanaged === true)) {
+        setDisconnectFailed(true); setConfirm(null);
+      }
+    } finally { setBusy(false); }
   };
+  const canForgetHere = heartwoodHeld && disconnectFailed && !!actions.forgetHandoffHere;
 
   const approvedOn = place.signer === 'local' ? 'this phone'
     : place.signer === 'heartwood' ? 'your Heartwood'
@@ -161,6 +181,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
               <div><dt>Shared</dt><dd>{[place.shared.handle && 'Your handle', place.shared.picture && 'Your picture'].filter(Boolean).join(' and ')}</dd></div>
             )}
             {place.kind === 'nip46' && ctx.askToSign && <div><dt>Signing</dt><dd>{ASK_EACH_TIME_SUMMARY}</dd></div>}
+            {place.kind === 'nip46' && ctx.heartwoodHeld && <div><dt>Signing</dt><dd>{HEARTWOOD_HELD_SIGNING}</dd></div>}
             {grant?.denyAlways && <div><dt>Signing</dt><dd>Refused every time</dd></div>}
             <div><dt>First seen</dt><dd>{dateOf(place.firstAt)}</dd></div>
             <div><dt>Last used</dt><dd>{relativeTime(last, now)}</dd></div>
@@ -195,10 +216,16 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             <div className="kp-confirm" role="group" aria-label="Confirm">
               <p>{confirm === 'forget'
                 ? 'Removes this from your phone. The site still has your account; sign out there too.'
+                : confirm === 'forget-here' ? FORGET_HANDOFF_HERE_COPY
                 : 'This app will have to pair again.'}</p>
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}
-                onClick={() => void run(async () => { await (confirm === 'forget' ? actions.forget(place) : actions.disconnect(place)); setConfirm(null); })}>
-                {confirm === 'forget' ? 'Forget' : 'Disconnect'}
+                onClick={() => void run(async () => {
+                  await (confirm === 'forget' ? actions.forget(place)
+                    : confirm === 'forget-here' ? actions.forgetHandoffHere?.(place)
+                    : actions.disconnect(place));
+                  setConfirm(null);
+                }, { disconnecting: confirm === 'disconnect' })}>
+                {confirm === 'forget' ? 'Forget' : confirm === 'forget-here' ? 'Forget on this phone' : 'Disconnect'}
               </button>
               <button type="button" className="btn btn-ghost kp-btn" onClick={() => setConfirm(null)}>Cancel</button>
             </div>
@@ -221,6 +248,9 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
               )}
               {canDisconnect && (
                 <button type="button" className="btn btn-ghost kp-btn kp-btn--danger" onClick={() => setConfirm('disconnect')}>Disconnect</button>
+              )}
+              {canForgetHere && (
+                <button type="button" className="btn btn-ghost kp-btn kp-btn--danger" onClick={() => setConfirm('forget-here')}>Forget on this phone</button>
               )}
             </div>
           )}
@@ -272,7 +302,7 @@ export function HeartwoodRow({ fingerprint, label, boundIdentity, policySummary,
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}
                 onClick={async () => {
                   setBusy(true); setError('');
-                  try { await onRevoke(fingerprint); setConfirm(false); } catch { setError('That did not work. Try again.'); } finally { setBusy(false); }
+                  try { await onRevoke(fingerprint); setConfirm(false); } catch (e) { setError(heartwoodMgmtErrorCopy(e)); } finally { setBusy(false); }
                 }}>Revoke</button>
               <button type="button" className="btn btn-ghost kp-btn" onClick={() => setConfirm(false)}>Cancel</button>
             </div>

@@ -406,6 +406,12 @@ interface Options {
    * serving is always active (back-compat).
    */
   isOwnerServingActive?: () => boolean;
+  /**
+   * Apps handed to a Heartwood: the device answers them, so this server stays
+   * silent. May answer later (a promise) while the stored list is still
+   * loading; the request waits for it rather than being answered meanwhile.
+   */
+  isHandedOffClient?: (clientPubkey: string) => boolean | Promise<boolean>;
 }
 
 /**
@@ -503,7 +509,9 @@ async function publishResponseToSocket(
   }
 }
 
-export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey }: Options) {
+export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey, isHandedOffClient }: Options) {
+  const isHandedOffClientRef = useRef(isHandedOffClient);
+  isHandedOffClientRef.current = isHandedOffClient;
   const kinterestChildLabelRef = useRef(kinterestChildLabel);
   kinterestChildLabelRef.current = kinterestChildLabel;
   const kinterestChildConsentRef = useRef(kinterestChildConsent);
@@ -739,6 +747,19 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       || r.signingBackend?.transportClientPubkeyHex === author)) {
       return;
     }
+
+    // An app handed to a Heartwood is the device's to answer. Any reply from
+    // here (an approval prompt, a "not connected") would race the device's.
+    // Right after unlock the list is still loading: wait for it, never answer
+    // meanwhile (a leftover allow-always pairing would even be signed for).
+    // A wait can outlast the load it was for (a lock and re-unlock meanwhile),
+    // so once it lands the question is asked again of what is loaded now.
+    let handedOff = route.dependantId ? false : isHandedOffClientRef.current?.(author);
+    for (let asked = 0; asked < 3 && handedOff instanceof Promise; asked++) {
+      await handedOff;
+      handedOff = isHandedOffClientRef.current?.(author);
+    }
+    if (handedOff && await handedOff) return;
 
     // Verify envelope signature — a relay can serve forged events.
     if (!verifyEvent(event as unknown as NTEvent)) return;

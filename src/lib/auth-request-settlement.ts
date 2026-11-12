@@ -89,6 +89,15 @@ export class AuthRequestSettlement {
     return true;
   }
 
+  /**
+   * A cancel is waiting on the claimed delivery. Only looks: the delivery
+   * still ends with {@link finishDelivery}, so a cancel landing later is still
+   * recorded.
+   */
+  isCancelRequested(key: string): boolean {
+    return this.cancelRequested.has(key);
+  }
+
   /** The claimed delivery finished. True ⇒ the user cancelled meanwhile: undo it. */
   finishDelivery(key: string): boolean {
     this.delivering.delete(key);

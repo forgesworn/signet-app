@@ -117,6 +117,16 @@ export interface ExtraPersona extends SlotAvatarFields, SlotPublicationFields {
    */
   imported?: boolean;
   /**
+   * True when the key is a separate identity on the paired Heartwood (another
+   * master slot, e.g. an nsec imported onto the device): `privateKey` is '',
+   * `derivationName` is '' and `imported` is unset, so it signs through the
+   * router like a device-derived persona, stays off the personas sync rail and
+   * out of the migration plan. Not recoverable from this tree's words.
+   */
+  heartwoodKey?: boolean;
+  /** Relays from that identity's own bunker QR; its requests go there (it may be on another Heartwood). */
+  heartwoodRelays?: string[];
+  /**
    * Unix seconds of the last local name / hidden / profile-config edit —
    * NOT reorders (order travels with the record). Drives last-writer-wins
    * in the personas sync rail.

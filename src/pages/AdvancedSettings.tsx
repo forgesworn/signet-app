@@ -101,6 +101,8 @@ interface Props {
   heartwoodOperator?: HeartwoodOperatorSettingsProps;
   /** One-hold pairing status and actions (absent unless the Heartwood lists the bundle method). */
   heartwoodOwner?: HeartwoodOwnerSettingsProps;
+  /** Operator keys for other Heartwoods holding some of your personas (bunker mode only). */
+  otherHeartwoods?: OtherHeartwoodsProps;
   /** Open the choice screen straight away (the "approve again" banner lands here). */
   openOwnerChoice?: OwnerChoiceKind | null;
   /** The owner left the "approve this phone again" choice without holding: backups stop waiting for it. */
@@ -108,9 +110,48 @@ interface Props {
   onOwnerChoiceHandled?: () => void;
 }
 
+export interface OtherHeartwoodsProps {
+  devices: Array<{ deviceHex: string; relays: string[] }>;
+  importLink: (text: string, pin?: string) => Promise<import('../hooks/useHeartwoodOperator').OperatorImportOutcome>;
+  importPhrase: (words: string, deviceInput: string, relaysText: string) => Promise<import('../hooks/useHeartwoodOperator').OperatorImportOutcome>;
+  forget: (deviceHex: string) => Promise<void>;
+}
+
+function OtherHeartwoodsCard({ devices, importLink, importPhrase, forget }: OtherHeartwoodsProps) {
+  const [adding, setAdding] = useState(false);
+  return (
+    <div className="card section">
+      <div className="section-title">Other Heartwoods</div>
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
+        A Heartwood that holds some of your personas, besides the one this phone is paired with. With its operator key here, apps you approve for those personas can sign with that Heartwood directly.
+      </p>
+      {devices.length === 0 && <p style={{ fontSize: '0.85rem', marginBottom: 8 }}>None added.</p>}
+      {devices.map(d => (
+        <div key={d.deviceHex} className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+          <span style={{ fontSize: '0.85rem' }}>
+            Device <code>{shortDeviceLabel(d.deviceHex)}</code> · {d.relays.length} relay{d.relays.length === 1 ? '' : 's'}
+          </span>
+          <button className="btn btn-ghost btn-sm" onClick={() => { void forget(d.deviceHex); }}>Forget</button>
+        </div>
+      ))}
+      {adding ? (
+        <HeartwoodOperatorImport
+          title="Add another Heartwood"
+          intro="Paste that Heartwood's Manage from your phone link from Sapwood (Settings → Phone)."
+          onImportLink={importLink}
+          onImportPhrase={importPhrase}
+          onImported={() => setAdding(false)}
+        />
+      ) : (
+        <button className="btn btn-secondary" onClick={() => setAdding(true)} style={{ width: '100%' }}>Add another Heartwood</button>
+      )}
+    </div>
+  );
+}
+
 const OWNER_SILENT_MESSAGE = "Full access couldn't be confirmed. Check the Full access line on this page, then try again if it's off.";
 
-export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, onSetShowMyKeep, handshakeSeamGapMm, onSetHandshakeSeamGapMm, heartwoodOperator, heartwoodOwner, openOwnerChoice, onOwnerAgainDeclined, onOwnerChoiceHandled }: Props) {
+export function AdvancedSettings({ identity, preferences, relays, onSetRelays, onSetFallbackBunkerRelays, onConnectSigner, onDisconnectSigner, signingMode, bunkerUri, onNavigateBridge, onNavigateRoster, onNavigateDeveloper, onOpenMigration, onSetDefaultBlossomUrl, onResetDefaultBlossomUrl, onSetBlossomConsent, onSetShowMyKeep, handshakeSeamGapMm, onSetHandshakeSeamGapMm, heartwoodOperator, heartwoodOwner, otherHeartwoods, openOwnerChoice, onOwnerAgainDeclined, onOwnerChoiceHandled }: Props) {
   const [ownerChoice, setOwnerChoice] = useState<OwnerChoiceKind | null>(null);
   useEffect(() => {
     if (!openOwnerChoice) return;
@@ -760,6 +801,7 @@ export function AdvancedSettings({ identity, preferences, relays, onSetRelays, o
           />
         )
       )}
+      {otherHeartwoods && signingMode === 'bunker' && <OtherHeartwoodsCard {...otherHeartwoods} />}
 
       {/* Remote Signer */}
       <div className="card section">

@@ -9,6 +9,7 @@ import { computeAge } from '../lib/date-utils';
 import { KeypairBadge } from '../components/KeypairBadge';
 import type { AuthSelection } from './ApproveAuth';
 import { buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
+import { endsConnectRequest, handoffReach, handoffWarning } from '../lib/heartwood-handoff';
 
 interface Props {
   request: NostrConnectRequest;
@@ -31,7 +32,9 @@ interface Props {
    * sendConnectResponse. Should reject on network/send failure so the
    * component can surface the retry state.
    */
-  onApprove: (selection: AuthSelection, options: { askToSign: boolean }) => Promise<void>;
+  onApprove: (selection: AuthSelection, options: { askToSign: boolean; viaHeartwood?: boolean }) => Promise<void>;
+  /** Whether the app can be handed to the Heartwood holding this key (an operator key for it is on this phone). */
+  canHandOffToHeartwood?: (pubkey: string) => boolean;
   onDeny: () => void;
   /** The user's explicit pick for THIS request, held by App (survives a lock remount). */
   userChoice?: { selection: AuthSelection | null };
@@ -39,6 +42,8 @@ interface Props {
   /** Listed guardian slots whose route to the paired signer is not back yet. */
   waitingGuardianPubkeys?: readonly string[];
 }
+
+type SignMode = 'heartwood' | 'auto' | 'ask';
 
 export function ApproveConnect({
   request,
@@ -55,6 +60,7 @@ export function ApproveConnect({
   userChoice,
   onUserChoice,
   waitingGuardianPubkeys,
+  canHandOffToHeartwood,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -143,6 +149,7 @@ export function ApproveConnect({
     setSelection,
     selectionWaiting,
     isWaitingPubkey,
+    chosenGuardianMissing,
     missingChosenOption,
     missingChosenCopy,
   } = useApprovalPickerChoice<AuthSelection>({
@@ -160,10 +167,31 @@ export function ApproveConnect({
     waitingGuardianPubkeys,
   });
   const [showNpConfirm, setShowNpConfirm] = useState(false);
-  const [status, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error'>('pending');
+  // 'closed': failed in a way that answered the request (the Heartwood already
+  // told the app something), so it can't be tried again, only closed.
+  const [status, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error' | 'closed'>('pending');
   // Crypto (nip44 / nip04) stays automatic either way; this only decides
   // whether sign_event asks each time.
-  const [askToSign, setAskToSign] = useState(false);
+  const [signMode, setSignMode] = useState<SignMode | null>(null);
+  const selectedPubkey = selection?.source !== 'guardian' ? null
+    : selection.keypairType === 'natural-person' ? identity.naturalPerson.publicKey
+      : selection.keypairType === 'persona' ? identity.persona.publicKey
+        : selection.keypairType;
+  // A chosen persona no longer on the list (deleted while this was open) is never handed off.
+  const handOffOffered = !!selectedPubkey && !chosenGuardianMissing && !!canHandOffToHeartwood?.(selectedPubkey);
+  // The Heartwood can only list the kinds it signs, never ask about one, so an
+  // app whose grant reaches what this phone would ask about is warned about.
+  const reach = useMemo(() => handoffReach(request.permissions), [request.permissions]);
+  const reachWarning = handoffWarning(reach);
+  // Straight to the Heartwood is the default where it is offered and asks for
+  // nothing this phone would ask about; otherwise the phone stays the default.
+  const mode: SignMode = signMode === 'heartwood' && !handOffOffered ? 'auto'
+    : (signMode ?? (handOffOffered && reach.kind === 'safe' ? 'heartwood' : 'auto'));
+  const askToSign = mode === 'ask';
+  // Handing the app to the Heartwood doesn't use this phone's signing link, so
+  // a key whose route is only coming back doesn't hold Approve. A choice that
+  // has dropped off the list still does.
+  const waitBlocksApprove = selectionWaiting && !(mode === 'heartwood' && handOffOffered && !chosenGuardianMissing);
   const [error, setError] = useState<string | null>(null);
 
   const isGuardianSelected = (keypairType: string) =>
@@ -177,14 +205,14 @@ export function ApproveConnect({
     && !showNpConfirm;
 
   async function handleApprove() {
-    if (!selection || status === 'sending' || selectionWaiting) return;
+    if (!selection || status === 'sending' || waitBlocksApprove) return;
     setStatus('sending');
     setError(null);
     try {
-      await onApprove(selection, { askToSign });
+      await onApprove(selection, { askToSign, viaHeartwood: mode === 'heartwood' });
       setStatus('sent');
     } catch (e) {
-      setStatus('error');
+      setStatus(endsConnectRequest(e) ? 'closed' : 'error');
       setError(e instanceof Error ? e.message : 'Failed to connect — please try again');
     }
   }
@@ -201,7 +229,7 @@ export function ApproveConnect({
       <div className="card section">
         <div className="section-title">Connection details</div>
         {request.permissions && <p style={{ fontSize: '0.85rem', marginBottom: 12 }}>
-          Requested access: {request.permissions.join(', ')}. Online-play statements and deletions still need a separate approval.
+          Requested access: {request.permissions.join(', ')}.{mode === 'heartwood' ? '' : ' Online-play statements and deletions still need a separate approval.'}
         </p>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: '0.9rem' }}>
@@ -400,28 +428,52 @@ export function ApproveConnect({
       )}
 
       <div className="card section" role="radiogroup" aria-label="How this app signs">
+        {handOffOffered && (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
+            <input
+              type="radio"
+              name="connect-sign-mode"
+              checked={mode === 'heartwood'}
+              disabled={status === 'sending' || status === 'sent' || status === 'closed'}
+              onChange={() => setSignMode('heartwood')}
+            />
+            <span>
+              Straight to my Heartwood
+              <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
+              </span>
+              {mode === 'heartwood' && reachWarning && (
+                <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
+                  {reachWarning}
+                </span>
+              )}
+            </span>
+          </label>
+        )}
         <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
           <input
             type="radio"
             name="connect-sign-mode"
-            checked={!askToSign}
-            disabled={status === 'sending' || status === 'sent'}
-            onChange={() => setAskToSign(false)}
+            checked={mode === 'auto'}
+            disabled={status === 'sending' || status === 'sent' || status === 'closed'}
+            onChange={() => setSignMode('auto')}
           />
-          <span>Sign automatically for this app</span>
+          <span>{handOffOffered ? 'Through My Signet, automatically' : 'Sign automatically for this app'}</span>
         </label>
         <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
           <input
             type="radio"
             name="connect-sign-mode"
-            checked={askToSign}
-            disabled={status === 'sending' || status === 'sent'}
-            onChange={() => setAskToSign(true)}
+            checked={mode === 'ask'}
+            disabled={status === 'sending' || status === 'sent' || status === 'closed'}
+            onChange={() => setSignMode('ask')}
           />
-          <span>Ask me each time it signs</span>
+          <span>{handOffOffered ? 'Through My Signet, ask me each time it signs' : 'Ask me each time it signs'}</span>
         </label>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '8px 0 0' }}>
-          Encrypting and decrypting stay automatic either way.
+          {handOffOffered
+            ? 'Through My Signet, My Signet must stay open to answer. Encrypting and decrypting stay automatic.'
+            : 'Encrypting and decrypting stay automatic either way.'}
         </p>
       </div>
 
@@ -437,7 +489,7 @@ export function ApproveConnect({
         <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <button
             className="btn btn-primary"
-            disabled={!selection || npBlocked || selectionWaiting}
+            disabled={!selection || npBlocked || waitBlocksApprove}
             onClick={handleApprove}
           >
             {status === 'error' ? 'Try again' : 'Approve'}
@@ -445,6 +497,12 @@ export function ApproveConnect({
           <button className="btn btn-ghost" onClick={onDeny}>
             Deny
           </button>
+        </div>
+      )}
+
+      {status === 'closed' && (
+        <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button className="btn btn-primary" onClick={onDeny}>Close</button>
         </div>
       )}
 
