@@ -13,6 +13,7 @@
  * derived under one. The operator request is addressed to that master.
  */
 import {
+  listClients,
   listDeviceIdentities,
   nostrconnectV2,
   type DeviceIdentity,
@@ -232,7 +233,7 @@ export async function mintHandoff(plan: HandoffPlan, params: {
     identity: persona,
     label,
     policy: handoffPolicy(persona, params.request.permissions),
-  }, { targetHex: holder.targetHex })).catch((e: unknown) => {
+  }, { targetHex: holder.targetHex })).catch(async (e: unknown) => {
     const where = { deviceHex: holder.client.deviceHex, targetHex: holder.targetHex, relay };
     const left = e as { message?: unknown; slotIndex?: unknown; secretFingerprint?: unknown };
     // The device minted a slot (and told the app) with rules it wasn't asked
@@ -240,6 +241,17 @@ export async function mintHandoff(plan: HandoffPlan, params: {
     if (left?.message === 'heartwood-mint-mismatch-unrevoked' && typeof left.slotIndex === 'number') {
       const secretFingerprint = typeof left.secretFingerprint === 'string' ? left.secretFingerprint : '';
       throw new HandoffKeptError({ slotIndex: left.slotIndex, secretFingerprint, ...where }, HANDOFF_MISMATCH_KEPT_COPY);
+    }
+    // No answer: the device may still have minted the slot and told the app.
+    // Look before the request is given back; a slot carrying the app's key is kept.
+    const said = typeof left?.message === 'string' ? left.message : '';
+    if (/^timeout waiting for device/.test(said) || said === 'transport closed') {
+      let found: DeviceClientSlot | undefined;
+      try {
+        const slots = await lock(holder.client, () => listClients(holder.client, { targetHex: holder.targetHex, strict: true }));
+        found = slots.find(s => clientKeyInUse([s], params.request.clientPubkey));
+      } catch { /* can't tell: reported as the failure it was */ }
+      if (found) throw new HandoffKeptError({ slotIndex: found.slotIndex, secretFingerprint: found.secretFingerprint, ...where }, HANDOFF_UNCERTAIN_KEPT_COPY);
     }
     throw new HeartwoodCopyError(heartwoodMgmtErrorCopy(e));
   });
@@ -346,6 +358,8 @@ export function missingOperatorError(stored: readonly string[] | null, deviceHex
   if (stored && !stored.some(s => s.toLowerCase() === d)) return new HandoffUnmanagedError();
   return new HeartwoodCopyError(HANDOFF_STILL_CONNECTING_COPY);
 }
+
+export const HANDOFF_UNCERTAIN_KEPT_COPY = "Your Heartwood didn't confirm, but it now lists this app, so it may be paired. It's in Where you're known, where you can disconnect it.";
 
 export const HANDOFF_MISMATCH_KEPT_COPY = "Your Heartwood paired the app with rules this phone didn't ask for, and didn't confirm removing it. The app may still be on your Heartwood: disconnect it in Where you're known, or remove it in Sapwood.";
 

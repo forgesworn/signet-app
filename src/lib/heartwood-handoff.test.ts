@@ -28,6 +28,7 @@ import {
   mintHandoff,
   missingOperatorError,
   HandoffUnmanagedError,
+  HANDOFF_UNCERTAIN_KEPT_COPY,
   HANDOFF_STILL_CONNECTING_COPY,
   type HandoffPlan,
   type HandoffResult,
@@ -504,5 +505,48 @@ describe('missingOperatorError: unmanaged only when the stored keys say so', () 
   it('a stored key whose link is not up yet, or keys that cannot be read: try again', () => {
     expect(missingOperatorError(['E'.repeat(64)], dev).message).toBe(HANDOFF_STILL_CONNECTING_COPY);
     expect(missingOperatorError(null, dev)).not.toBeInstanceOf(HandoffUnmanagedError);
+  });
+});
+
+describe('a mint that got no answer: look before giving the request back', () => {
+  const m0 = 'f'.repeat(64);
+  const app = 'c'.repeat(64);
+  const request = { clientPubkey: app, relayUrl: 'wss://relay.primal.net', relayUrls: ['wss://relay.primal.net'], secret: 's3cret', appName: 'KithMoot' };
+  const row = (over: Record<string, unknown>) => ({
+    slot_index: 8, secret_fingerprint: 'fp8', auto_approve: true, signing_approved: true, strict_permissions: true,
+    current_pubkey: null, authorized_pubkeys: [], allowed_kinds: [], allowed_methods: [], ...over,
+  });
+  function plan(onList: () => Promise<unknown>, mintError: Error = new Error('timeout waiting for device (nostrconnect_v2)')) {
+    const request = vi.fn(async (method: string, _p?: unknown, opts?: { targetHex?: string }) => {
+      if (method === 'nostrconnect_v2') throw mintError;
+      if (method === 'list_clients') { expect(opts).toEqual({ targetHex: m0 }); return onList(); }
+      throw new Error(`unexpected ${method}`);
+    });
+    return {
+      request,
+      plan: { holder: { client: { deviceHex: 'e'.repeat(64), relays: [], request } as unknown as HeartwoodMgmtClient, targetHex: m0 }, relay: 'wss://relay.primal.net', persona: m0 },
+    };
+  }
+
+  it('the app listed on the device: kept as a record that can be disconnected, and the outcome called uncertain', async () => {
+    const p = plan(async () => ({ clients: [row({ current_pubkey: app })] }));
+    const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HandoffKeptError);
+    expect((err as HandoffKeptError).slot).toEqual({ slotIndex: 8, secretFingerprint: 'fp8', deviceHex: 'e'.repeat(64), targetHex: m0, relay: 'wss://relay.primal.net' });
+    expect((err as Error).message).toBe(HANDOFF_UNCERTAIN_KEPT_COPY);
+  });
+
+  it('not listed, or the listing fails: the request is given back with the no-answer copy', async () => {
+    for (const onList of [async () => ({ clients: [row({ current_pubkey: 'd'.repeat(64) })] }), async () => { throw new Error('timeout waiting for device (list_clients)'); }]) {
+      const err = await mintHandoff(plan(onList).plan, { request }).then(() => null, (e: unknown) => e);
+      expect(err).not.toBeInstanceOf(HandoffKeptError);
+      expect((err as Error).message).toMatch(/didn't answer/);
+    }
+  });
+
+  it('a device that answered with an error is not looked for', async () => {
+    const p = plan(async () => ({ clients: [] }), new HeartwoodDeviceError('slot table full', 'nostrconnect_v2'));
+    await expect(mintHandoff(p.plan, { request })).rejects.toThrow(/slot table full/);
+    expect(p.request.mock.calls.some(c => c[0] === 'list_clients')).toBe(false);
   });
 });
