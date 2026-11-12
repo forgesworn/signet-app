@@ -8244,10 +8244,11 @@ function AppContent() {
       // store: the in-memory list is empty until the unlock load lands. Every
       // check that changes nothing (the Heartwood, the relay, a Cancel) runs
       // before that revoke.
+      // A slot kept from an earlier pairing is filed under the identity it serves.
       const recordFor = (slot: KeptHandoffSlot): HeartwoodHandoffRecord => ({
         clientPubkey: clientHex,
         appName: connectRequest.appName,
-        persona: personaHex,
+        persona: slot.persona ?? personaHex,
         deviceHex: slot.deviceHex,
         targetHex: slot.targetHex,
         slotIndex: slot.slotIndex,
@@ -8274,7 +8275,7 @@ function AppContent() {
         } catch { /* no usable app URL */ }
         void recordKnownPlace({
           placeKey: `nc:${record.clientPubkey}`,
-          pubkey: personaHex,
+          pubkey: record.persona,
           kind: 'nip46',
           name: connectRequest.appName,
           ...(handoffOrigin ? { origin: handoffOrigin } : {}),

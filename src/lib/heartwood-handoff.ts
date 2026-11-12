@@ -251,15 +251,25 @@ export async function mintHandoff(plan: HandoffPlan, params: {
     if (said === 'transport closed') {
       throw new HandoffKeptError({ secretFingerprint: '', ...where }, HANDOFF_LOCKED_KEPT_COPY);
     }
-    // No answer: the device may still have minted the slot and told the app.
-    // Look before the request is given back; a slot carrying the app's key is kept.
-    if (/^timeout waiting for device/.test(said)) {
+    // No answer to the mint itself: the device may still have minted the slot
+    // and told the app. Look before the request is given back; a slot carrying
+    // the app's key is kept. (No answer to the challenge before it means
+    // nothing was sent, so there is nothing to look for.)
+    if (said === 'timeout waiting for device (nostrconnect_v2)') {
       let found: DeviceClientSlot | undefined;
       try {
         const slots = await lock(holder.client, () => listClients(holder.client, { targetHex: holder.targetHex, strict: true }));
         found = slots.find(s => clientKeyInUse([s], params.request.clientPubkey));
       } catch { /* can't tell: reported as the failure it was */ }
-      if (found) throw new HandoffKeptError({ slotIndex: found.slotIndex, secretFingerprint: found.secretFingerprint, ...where }, HANDOFF_UNCERTAIN_KEPT_COPY);
+      if (found) {
+        const slot = { slotIndex: found.slotIndex, secretFingerprint: found.secretFingerprint, ...where };
+        // A slot serving this persona is most likely the one just asked for.
+        // One serving another identity, or saying none, may be an earlier
+        // pairing of the app (the mint may never have arrived): it is kept
+        // under its own identity, and called what it may be.
+        if (found.boundIdentity === persona.toLowerCase()) throw new HandoffKeptError(slot, HANDOFF_UNCERTAIN_KEPT_COPY);
+        throw new HandoffKeptError({ ...slot, ...(found.boundIdentity ? { persona: found.boundIdentity } : {}) }, HANDOFF_EARLIER_KEPT_COPY);
+      }
     }
     throw new HeartwoodCopyError(heartwoodMgmtErrorCopy(e));
   });
@@ -387,6 +397,8 @@ export const HANDOFF_LOCKED_KEPT_COPY = "This phone locked before your Heartwood
 
 export const HANDOFF_UNCERTAIN_KEPT_COPY = "Your Heartwood didn't confirm, but it now lists this app, so it may be paired. It's in Where you're known, where you can disconnect it.";
 
+export const HANDOFF_EARLIER_KEPT_COPY = "Your Heartwood didn't confirm this pairing, but an earlier pairing of this app is on it. It's in Where you're known, where you can disconnect it.";
+
 export const HANDOFF_MISMATCH_KEPT_COPY = "Your Heartwood paired the app with rules this phone didn't ask for, and didn't confirm removing it. The app may still be on your Heartwood: disconnect it in Where you're known, or remove it in Sapwood.";
 
 /** Where a slot the device may still hold sits, so a record of it can be kept. */
@@ -398,6 +410,8 @@ export interface KeptHandoffSlot {
   deviceHex: string;
   targetHex: string;
   relay: string;
+  /** The identity the slot serves, when it isn't the persona just chosen (an earlier pairing). */
+  persona?: string;
 }
 
 /** The device may hold a slot for the app (and may have told the app): keep a record of it so Disconnect can reach it. */

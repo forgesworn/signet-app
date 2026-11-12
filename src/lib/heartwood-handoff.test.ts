@@ -30,6 +30,7 @@ import {
   HandoffUnmanagedError,
   HANDOFF_UNCERTAIN_KEPT_COPY,
   HANDOFF_LOCKED_KEPT_COPY,
+  HANDOFF_EARLIER_KEPT_COPY,
   HANDOFF_STILL_CONNECTING_COPY,
   type HandoffPlan,
   type HandoffResult,
@@ -566,7 +567,7 @@ describe('a mint that got no answer: look before giving the request back', () =>
   }
 
   it('the app listed on the device: kept as a record that can be disconnected, and the outcome called uncertain', async () => {
-    const p = plan(async () => ({ clients: [row({ current_pubkey: app })] }));
+    const p = plan(async () => ({ clients: [row({ current_pubkey: app, bound_identity: m0 })] }));
     const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(HandoffKeptError);
     expect((err as HandoffKeptError).slot).toEqual({ slotIndex: 8, secretFingerprint: 'fp8', deviceHex: 'e'.repeat(64), targetHex: m0, relay: 'wss://relay.primal.net' });
@@ -579,6 +580,31 @@ describe('a mint that got no answer: look before giving the request back', () =>
       expect(err).not.toBeInstanceOf(HandoffKeptError);
       expect((err as Error).message).toMatch(/didn't answer/);
     }
+  });
+
+  it('listed under another identity: kept under that identity, and called an earlier pairing', async () => {
+    const other = 'b'.repeat(64);
+    const p = plan(async () => ({ clients: [row({ authorized_pubkeys: [app], bound_identity: other })] }));
+    const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HandoffKeptError);
+    expect((err as HandoffKeptError).slot).toEqual({ slotIndex: 8, secretFingerprint: 'fp8', deviceHex: 'e'.repeat(64), targetHex: m0, relay: 'wss://relay.primal.net', persona: other });
+    expect((err as Error).message).toBe(HANDOFF_EARLIER_KEPT_COPY);
+  });
+
+  it('listed with no identity: called an earlier pairing, filed under the persona chosen', async () => {
+    const p = plan(async () => ({ clients: [row({ current_pubkey: app })] }));
+    const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HandoffKeptError);
+    expect((err as HandoffKeptError).slot.persona).toBeUndefined();
+    expect((err as Error).message).toBe(HANDOFF_EARLIER_KEPT_COPY);
+  });
+
+  it('no answer to the challenge: nothing was sent, so nothing is looked for', async () => {
+    const p = plan(async () => ({ clients: [row({ current_pubkey: app, bound_identity: m0 })] }), new Error('timeout waiting for device (get_management_challenge)'));
+    const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
+    expect(err).not.toBeInstanceOf(HandoffKeptError);
+    expect((err as Error).message).toMatch(/didn't answer/);
+    expect(p.request.mock.calls.some(c => c[0] === 'list_clients')).toBe(false);
   });
 
   it('the link closed before the device answered (the phone locked): kept with no slot, without a listing', async () => {
