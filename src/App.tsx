@@ -147,6 +147,7 @@ import type { EscalationNotice } from './lib/escalation-fetch';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
 import { isNativeApp, SignetNative } from './lib/native';
+import { phoneDependence } from './lib/phone-dependence';
 import { referrerPackageFor } from './lib/launch-referrer';
 import { deriveSignInChannel, deriveSigner } from './lib/known-place-channel';
 import { buildSignInKnownPlace, recordKnownPlace } from './lib/known-places-record';
@@ -5995,6 +5996,29 @@ function AppContent() {
     // phase: beat as soon as the socket opens, so the service shows
     // "serving" without a 20 s lag after unlock.
   }, [backgroundServing, encryptionKey, bunkerServePubkeysCsv, bunkerServeRelayUrl, bunkerServeStatus.phase]);
+
+  // What, if anything, needs this phone to stay open. Tells the native service
+  // whether closing My Signet should warn (and what to say), and puts one line
+  // under the Always on button. A coarse clock is fine: recency is measured in days.
+  const phoneDependenceSummary = useMemo(() => phoneDependence({
+    install: isPairedChild ? 'child' : 'owner',
+    nowS: Math.floor(Date.now() / 1000),
+    connectedClients,
+    handedOffClientPubkeys: heartwoodHandoffs.map(h => h.clientPubkey),
+    nip55Grants: nip55.grants,
+    dependants,
+  }), [isPairedChild, connectedClients, heartwoodHandoffs, nip55.grants, dependants]);
+  const lastPhoneDependenceRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Never send a summary built from a list that has not loaded: a premature
+    // `needed: false` would quietly stop the service.
+    if (!isNativeApp() || !encryptionKey || prefsLoading || connectedClientsLoading || dependantsLoading) return;
+    const { needed, title, text } = phoneDependenceSummary;
+    const next = JSON.stringify({ needed, title, text });
+    if (lastPhoneDependenceRef.current === next) return;
+    lastPhoneDependenceRef.current = next;
+    void SignetNative.setPhoneDependence({ needed, title, text }).catch(() => {});
+  }, [encryptionKey, prefsLoading, connectedClientsLoading, dependantsLoading, phoneDependenceSummary]);
 
   // Native: on app resume, kick the serve socket if it isn't open — Android
   // can kill a socket without delivering onclose to the WebView.
@@ -15179,6 +15203,7 @@ function AppContent() {
           isNative={isNativeApp()}
           backgroundServing={backgroundServing}
           onSetBackgroundServing={handleSetBackgroundServing}
+          alwaysOnNote={encryptionKey && !prefsLoading && !connectedClientsLoading && !dependantsLoading ? phoneDependenceSummary.bunkerLine : ''}
           escalationNotices={escalations.notices}
           onDismissEscalation={escalations.dismiss}
           resolveEscalationOwner={resolveEscalationOwner}
