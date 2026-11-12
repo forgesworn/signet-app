@@ -255,6 +255,34 @@ describe('KnownPlacesCard', () => {
     expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
   });
 
+  it('a sign-in site that signs on the Heartwood says so, needs no phone, offers Disconnect and no Sign automatically', async () => {
+    const site = place('kithmoot');
+    const { a } = setup({ places: [site], ctxFor: () => ({ heartwoodSignIn: true, signedBy: 'heartwood' }) });
+    expand('kithmoot');
+    expect(screen.getByText('Needs My Signet').nextSibling?.textContent).toBe('No, it talks to your Heartwood directly');
+    expect(screen.getByText('Signed by').nextSibling?.textContent).toMatch(/Heartwood/);
+    expect(screen.queryByRole('button', { name: /Sign automatically/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(screen.getByText(/stop signing on your Heartwood/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
+    expect(a.disconnect).toHaveBeenCalledWith(site);
+  });
+
+  it('Forget on a Heartwood sign-in says it takes the site off the Heartwood too', () => {
+    setup({ places: [place('kithmoot')], ctxFor: () => ({ heartwoodSignIn: true, signedBy: 'heartwood' }) });
+    expand('kithmoot');
+    fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+    expect(screen.getByText(/Takes this site off your Heartwood/)).toBeTruthy();
+  });
+
+  it('an ordinary sign-in site has no Disconnect and no Needs My Signet line', () => {
+    setup({ places: [place('plain')] });
+    expand('plain');
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+    expect(screen.queryByText('Needs My Signet')).toBeNull();
+  });
+
   it('says why a Revoke on Heartwood failed', async () => {
     const { a } = setup({ heartwoodClients: [{ fingerprint: 'ff00', label: 'Bark', boundIdentity: 'Alice', policySummary: 'Asks on the device' }] });
     a.revokeOnHeartwood.mockRejectedValue(new Error('failed to publish to any relay'));

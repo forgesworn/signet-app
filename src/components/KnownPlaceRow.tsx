@@ -27,6 +27,8 @@ export interface KnownPlaceCtx {
   lastSeenAt?: number;
   /** nip46: the app was handed to a Heartwood, which signs for it; the phone has no ask setting for it. */
   heartwoodHeld?: boolean;
+  /** sign-in: the site was given a link straight to the Heartwood, which signs for it; this phone is not needed. */
+  heartwoodSignIn?: boolean;
   /** What actually signs for this place's key, read live; wins over what was recorded at approval. */
   signedBy?: KeyHome;
 }
@@ -42,6 +44,9 @@ export interface KnownPlaceActions {
   /** An app handed to a Heartwood whose Disconnect failed: drop all its records and its row, here only. */
   forgetHandoffHere?(place: KnownPlace): void | Promise<void>;
 }
+
+/** Disconnecting a site that signs on the Heartwood. */
+export const SIGN_IN_DISCONNECT_COPY = "This site will stop signing on your Heartwood. It stays signed in until you sign out there.";
 
 export const FORGET_HANDOFF_HERE_COPY = 'Removes this app from this phone only. It may still sign on your Heartwood: remove it there in Sapwood.';
 
@@ -138,7 +143,8 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const isAuto = place.kind === 'nip46' ? !ctx.loading && !ctx.askToSign : !!grant?.allowAlways;
   // No auto action until the client list has loaded; and a NIP-55 row acts only on a grant pinned to ITS identity.
   const canAuto = (place.kind === 'nip46' && !ctx.loading && !ctx.heartwoodHeld) || (place.kind === 'nip55' && grant !== null);
-  const canDisconnect = place.kind === 'nip46' || (place.kind === 'nip55' && !ctx.nip55OtherIdentity);
+  const heartwoodSignIn = place.kind === 'sign-in' && !!ctx.heartwoodSignIn;
+  const canDisconnect = place.kind === 'nip46' || (place.kind === 'nip55' && !ctx.nip55OtherIdentity) || heartwoodSignIn;
   const openable = canOpenPlace(place, isNativeApp());
   const channelSentence = CHANNEL_SENTENCE[place.channel];
 
@@ -160,7 +166,8 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const signedBy = place.kind === 'nip55' ? ctx.signedBy : ctx.signedBy ?? RECORDED_SIGNER[place.signer];
   const needsSignet = place.kind === 'nip46'
     ? (heartwoodHeld ? NEEDS_SIGNET_NO : NEEDS_SIGNET_YES_NOSTR_CONNECT)
-    : place.kind === 'nip55' ? NEEDS_SIGNET_YES_PHONE_APP : '';
+    : place.kind === 'nip55' ? NEEDS_SIGNET_YES_PHONE_APP
+    : heartwoodSignIn ? NEEDS_SIGNET_NO : '';
 
   let otherLine: ReactNode = null;
   if (place.kind === 'nip55' && ctx.nip55OtherIdentity) otherLine = PAIRED_TO_OTHER_IDENTITY_COPY;
@@ -207,6 +214,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             )}
             {place.kind === 'nip46' && ctx.askToSign && <div><dt>Signing</dt><dd>{ASK_EACH_TIME_SUMMARY}</dd></div>}
             {place.kind === 'nip46' && ctx.heartwoodHeld && <div><dt>Signing</dt><dd>{HEARTWOOD_HELD_SIGNING}</dd></div>}
+            {heartwoodSignIn && <div><dt>Signing</dt><dd>{HEARTWOOD_HELD_SIGNING}</dd></div>}
             {grant?.denyAlways && <div><dt>Signing</dt><dd>Refused every time</dd></div>}
             <div><dt>First seen</dt><dd>{dateOf(place.firstAt)}</dd></div>
             <div><dt>Last used</dt><dd>{relativeTime(last, now)}</dd></div>
@@ -240,8 +248,11 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
           {confirm ? (
             <div className="kp-confirm" role="group" aria-label="Confirm">
               <p>{confirm === 'forget'
-                ? 'Removes this from your phone. The site still has your account; sign out there too.'
+                ? (heartwoodSignIn
+                  ? 'Takes this site off your Heartwood and removes it from your phone. The site still has your account; sign out there too.'
+                  : 'Removes this from your phone. The site still has your account; sign out there too.')
                 : confirm === 'forget-here' ? FORGET_HANDOFF_HERE_COPY
+                : place.kind === 'sign-in' ? SIGN_IN_DISCONNECT_COPY
                 : 'This app will have to pair again.'}</p>
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}
                 onClick={() => void run(async () => {
