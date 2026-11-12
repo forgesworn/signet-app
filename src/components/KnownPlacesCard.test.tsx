@@ -360,6 +360,12 @@ describe('KnownPlacesCard', () => {
     expect([nc, app, held, site].map(p => facts(p.placeKey)).join('')).not.toMatch(/Approved on/);
   });
 
+  it('omits Signed by for a phone app whose signer is not known live, whatever was recorded', () => {
+    setup({ places: [place('app', { kind: 'nip55', channel: 'nip55', origin: undefined, nativePackage: 'org.x', signer: 'local' })], ctxFor: () => ({}) });
+    expand('app');
+    expect(document.querySelector(`[data-kp-row="app:${PK}"]`)!.textContent).not.toMatch(/Signed by/);
+  });
+
   it('falls back to the signer recorded at approval when nothing live is known', () => {
     setup({ places: [place('rec', { signer: 'local' })] });
     expand('rec');

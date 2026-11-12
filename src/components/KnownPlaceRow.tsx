@@ -156,7 +156,8 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   };
   const canForgetHere = heartwoodHeld && disconnectFailed && !!actions.forgetHandoffHere;
 
-  const signedBy = ctx.signedBy ?? RECORDED_SIGNER[place.signer];
+  // A phone-app row's recorded signer is always 'local' whoever signs, so it is never a fallback there.
+  const signedBy = place.kind === 'nip55' ? ctx.signedBy : ctx.signedBy ?? RECORDED_SIGNER[place.signer];
   const needsSignet = place.kind === 'nip46'
     ? (heartwoodHeld ? NEEDS_SIGNET_NO : NEEDS_SIGNET_YES_NOSTR_CONNECT)
     : place.kind === 'nip55' ? NEEDS_SIGNET_YES_PHONE_APP : '';

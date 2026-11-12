@@ -9,6 +9,7 @@
 import type { SignetIdentity } from '../types';
 
 export type KeyHome = 'heartwood' | 'phone' | 'remote-signer' | 'extension';
+// 'remote-signer' stays for places that recorded it; this function never returns it.
 
 export function keyHomeFor(
   pubkey: string,
@@ -22,6 +23,7 @@ export function keyHomeFor(
   if (!slot) return undefined;
   if (o.signingMode === 'nip07') return 'extension';
   if (slot.privateKey) return 'phone';
-  if (o.signingMode === 'bunker') return o.routerPresent ? 'heartwood' : 'remote-signer';
+  // No router yet: the capabilities probe may still be running, so say nothing rather than guess.
+  if (o.signingMode === 'bunker' && o.routerPresent) return 'heartwood';
   return undefined;
 }

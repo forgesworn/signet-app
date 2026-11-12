@@ -72,6 +72,13 @@ describe('badgesFor', () => {
     ]);
   });
 
+  it('lets the live signer decide, and never trusts the recorded one for a phone app', () => {
+    expect(badgesFor(place({ signer: 'local' }), { now: NOW, signedBy: 'heartwood' }).map(b => b.kind)).toEqual(['heartwood']);
+    expect(badgesFor(place({ signer: 'heartwood' }), { now: NOW, signedBy: 'phone' })).toEqual([]);
+    expect(badgesFor(place({ kind: 'nip55', channel: 'nip55', signer: 'heartwood' }), { now: NOW })).toEqual([]);
+    expect(badgesFor(place({ kind: 'nip55', channel: 'nip55', signer: 'local' }), { now: NOW, signedBy: 'heartwood' }).map(b => b.kind)).toEqual(['heartwood']);
+  });
+
   it('words the shared badge for handle, picture or both', () => {
     expect(badgesFor(place({ shared: { handle: true } }), { now: NOW })[0].label).toBe('Shared handle');
     expect(badgesFor(place({ shared: { picture: true } }), { now: NOW })[0].label).toBe('Shared picture');

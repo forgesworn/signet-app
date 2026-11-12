@@ -30,10 +30,10 @@ describe('keyHomeFor', () => {
     for (const pk of [NP, EXTRA, PRO]) expect(keyHomeFor(pk.toUpperCase(), { identity: id, signingMode: 'local', routerPresent: false })).toBe('phone');
   });
 
-  it('is the Heartwood for a stripped slot in bunker mode with a router, else a remote signer', () => {
+  it('is the Heartwood for a stripped slot in bunker mode with a router, and unknown while there is none', () => {
     const id = identity();
     expect(keyHomeFor(EXTRA, { identity: id, signingMode: 'bunker', routerPresent: true })).toBe('heartwood');
-    expect(keyHomeFor(EXTRA, { identity: id, signingMode: 'bunker', routerPresent: false })).toBe('remote-signer');
+    expect(keyHomeFor(EXTRA, { identity: id, signingMode: 'bunker', routerPresent: false })).toBeUndefined();
   });
 
   it('is the extension in nip07 mode', () => {

@@ -59,7 +59,7 @@ export function badgesFor(place: KnownPlace, ctx: BadgeContext): Badge[] {
     (place.kind === 'nip55' && ctx.nip55Grant?.allowAlways === true));
   if (signsAutomatically) badges.push({ kind: 'auto', label: 'Signs automatically' });
 
-  if ((ctx.signedBy ?? place.signer) === 'heartwood') badges.push({ kind: 'heartwood', label: 'Signed by your Heartwood' });
+  if ((place.kind === 'nip55' ? ctx.signedBy : ctx.signedBy ?? place.signer) === 'heartwood') badges.push({ kind: 'heartwood', label: 'Signed by your Heartwood' });
 
   if (place.channel === 'other-device') badges.push({ kind: 'other-device', label: 'Another device' });
 
