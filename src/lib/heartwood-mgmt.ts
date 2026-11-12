@@ -153,6 +153,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * An error the device itself sent back, as opposed to a timeout or a relay
+ * that would not take the request. The message is the device's own text,
+ * unchanged, so callers that match on it keep working.
+ */
+export class HeartwoodDeviceError extends Error {
+  readonly method: string;
+  constructor(message: string, method: string) {
+    super(message);
+    this.name = 'HeartwoodDeviceError';
+    this.method = method;
+  }
+}
+
 export class HeartwoodMgmtClient {
   readonly operatorPub: string;
   readonly deviceHex: string;
@@ -358,11 +372,11 @@ export class HeartwoodMgmtClient {
     const p = this.removePending(parsed.id);
     if (!p) return; // unknown / already-settled id — ignore
     if (typeof parsed.error === 'string') {
-      p.reject(new Error(parsed.error));
+      p.reject(new HeartwoodDeviceError(parsed.error, p.method));
       return;
     }
     if ('error' in parsed && parsed.error !== undefined && parsed.error !== null) {
-      p.reject(new Error(`device error (${p.method})`));
+      p.reject(new HeartwoodDeviceError(`device error (${p.method})`, p.method));
       return;
     }
     p.resolve(isRecord(parsed.result) ? parsed.result : {});

@@ -12,6 +12,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import { v2 as nip44 } from 'nostr-tools/nip44';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import {
+  HeartwoodDeviceError,
   HeartwoodMgmtClient,
   MGMT_KIND,
   type MgmtTransport,
@@ -349,6 +350,7 @@ describe('HeartwoodMgmtClient request/reply', () => {
     const c = d.client();
     c.start();
     await expect(c.request('list_clients')).rejects.toThrow('no such slot: 7');
+    await expect(c.request('list_clients')).rejects.toBeInstanceOf(HeartwoodDeviceError);
     c.stop();
   });
 

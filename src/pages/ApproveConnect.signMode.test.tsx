@@ -29,6 +29,7 @@ const identity = {
 function renderPage(
   onApprove = vi.fn((_s: unknown, _o: { askToSign: boolean; viaHeartwood?: boolean }) => Promise.resolve()),
   canHandOffToHeartwood?: (pk: string) => boolean,
+  waitingGuardianPubkeys?: string[],
 ) {
   render(
     <ApproveConnect
@@ -40,6 +41,7 @@ function renderPage(
       onApprove={onApprove}
       onDeny={vi.fn()}
       canHandOffToHeartwood={canHandOffToHeartwood}
+      waitingGuardianPubkeys={waitingGuardianPubkeys}
     />,
   );
   return onApprove;
@@ -84,5 +86,21 @@ describe('ApproveConnect sign-mode control', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
     expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: true, viaHeartwood: false });
+  });
+
+  it('a key whose phone route is still coming back can go straight to the Heartwood', async () => {
+    const onApprove = renderPage(undefined, () => true, [PERSONA]);
+    expect(screen.getByText('Waiting for your Heartwood…')).toBeTruthy();
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(false);
+    fireEvent.click(approve);
+    await waitFor(() => expect(onApprove).toHaveBeenCalled());
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: false, viaHeartwood: true });
+  });
+
+  it('the same waiting key holds Approve again once Through My Signet is chosen', () => {
+    renderPage(undefined, () => true, [PERSONA]);
+    fireEvent.click(screen.getByLabelText('Through My Signet, automatically'));
+    expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

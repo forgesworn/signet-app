@@ -20,6 +20,7 @@ import {
   type NostrconnectMintResult,
 } from './heartwood-mgmt';
 import type { SlotPolicyUpdate } from './heartwood-mgmt-types';
+import { heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
 import type { NostrConnectRequest } from './nip46';
 
 /** What a handed-off app may ask the device for. Every kind; no button. */
@@ -90,6 +91,9 @@ export async function findHeartwoodHolder(
   cache: Map<HeartwoodMgmtClient, DeviceIdentity[]> = new Map(),
 ): Promise<HandoffHolder | null> {
   let unanswered = 0;
+  // What the failed lookups said: a device that answered with an error (or a
+  // relay that took nothing) is reported as that, not as "didn't answer".
+  let telling: unknown = null;
   for (const client of clients) {
     let ids = cache.get(client);
     // One retry: the device answers one management request at a time, so a
@@ -98,19 +102,24 @@ export async function findHeartwoodHolder(
       try {
         ids = await listDeviceIdentities(client);
         cache.set(client, ids);
-      } catch { /* try again, then move on */ }
+      } catch (e) {
+        if (isDeviceAnswerOrUnreachable(e)) telling = e;
+      }
     }
     if (!ids) { unanswered++; continue; }
     const target = holderTarget(ids, pubkey);
     if (target) return { client, targetHex: target };
   }
-  if (unanswered > 0) throw new HandoffNoAnswerError();
+  if (unanswered > 0) throw new HandoffNoAnswerError(telling);
   return null;
 }
 
+export const HANDOFF_NO_ANSWER_COPY = "Your Heartwood didn't answer. Check it's on and online, then try again, or choose Through My Signet.";
+
+/** No Heartwood could say whether it holds the persona. Says why when the device or relay did. */
 export class HandoffNoAnswerError extends Error {
-  constructor() {
-    super("Your Heartwood didn't answer. Check it's on and online, then try again, or choose Through My Signet.");
+  constructor(cause?: unknown) {
+    super(cause ? `${heartwoodMgmtErrorCopy(cause)} Or choose Through My Signet.` : HANDOFF_NO_ANSWER_COPY);
     this.name = 'HandoffNoAnswerError';
   }
 }
@@ -163,7 +172,7 @@ export async function handOffNostrConnect(params: {
     identity: persona,
     label,
     policy: handoffPolicy(persona, params.request.permissions),
-  }, { targetHex: holder.targetHex }));
+  }, { targetHex: holder.targetHex })).catch((e: unknown) => { throw new Error(heartwoodMgmtErrorCopy(e)); });
   return { ...minted, deviceHex: holder.client.deviceHex, targetHex: holder.targetHex, relay };
 }
 

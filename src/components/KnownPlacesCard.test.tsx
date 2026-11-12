@@ -175,6 +175,27 @@ describe('KnownPlacesCard', () => {
     await settle();
   });
 
+  it('says why a Disconnect failed', async () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined });
+    const { a } = setup({ places: [nc] });
+    a.disconnect.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+    expand('nc');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
+    expect(screen.getByRole('alert').textContent).toBe("Your Heartwood didn't answer. Check it's on and online, then try again.");
+  });
+
+  it('says why a Revoke on Heartwood failed', async () => {
+    const { a } = setup({ heartwoodClients: [{ fingerprint: 'ff00', label: 'Bark', boundIdentity: 'Alice', policySummary: 'Asks on the device' }] });
+    a.revokeOnHeartwood.mockRejectedValue(new Error('failed to publish to any relay'));
+    fireEvent.click(screen.getByRole('button', { name: /Bark/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke on Heartwood' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    await settle();
+    expect(screen.getByRole('alert').textContent).toMatch(/couldn't reach your Heartwood's relays/);
+  });
+
   it('hides the Heartwood group without data and says where those apps are managed', () => {
     setup({ places: [place('alpha')], heartwoodClients: null });
     expect(screen.queryByRole('region', { name: 'On your Heartwood' })).toBeNull();

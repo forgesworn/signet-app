@@ -3,9 +3,12 @@ import type { NostrEvent, NostrFilter } from 'signet-protocol';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { v2 as nip44 } from 'nostr-tools/nip44';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { HeartwoodMgmtClient, MGMT_KIND, type MgmtTransport } from './heartwood-mgmt';
+import { HeartwoodDeviceError, HeartwoodMgmtClient, MGMT_KIND, type MgmtTransport } from './heartwood-mgmt';
 import {
   HANDOFF_METHODS,
+  HANDOFF_NO_ANSWER_COPY,
+  HandoffNoAnswerError,
+  findHeartwoodHolder,
   HandoffNotSavedError,
   HandoffStrandedError,
   HandoffUnavailableError,
@@ -218,5 +221,38 @@ describe('settleHandoff', () => {
     const h = harness({ persist: 'fail', undo: 'fail' });
     await expect(settleHandoff({ cancelled: false, ...h.p })).rejects.toBeInstanceOf(HandoffStrandedError);
     expect(h.tracked).toBe(true);
+  });
+});
+
+describe('findHeartwoodHolder when a device does not list its identities', () => {
+  function failing(err: () => Error) {
+    const request = vi.fn(async () => { throw err(); });
+    return { deviceHex: hex(), relays: ['wss://relay.ditto.pub'], request } as unknown as HeartwoodMgmtClient & { request: typeof request };
+  }
+  function holding(master: string) {
+    const request = vi.fn(async () => ({ identities: [{ kind: 'master', slot: 0, npub_hex: master }] }));
+    return { deviceHex: master, relays: ['wss://relay.ditto.pub'], request } as unknown as HeartwoodMgmtClient;
+  }
+
+  it("says what the device replied, not that it didn't answer", async () => {
+    const c = failing(() => new HeartwoodDeviceError('device low on memory; state unchanged, retry shortly', 'list_identities'));
+    const err = await findHeartwoodHolder([c], hex()).catch(e => e);
+    expect(err).toBeInstanceOf(HandoffNoAnswerError);
+    expect(err.message).toMatch(/short of memory/);
+    expect(err.message).toMatch(/Through My Signet/);
+    expect(err.message).not.toMatch(/didn't answer/);
+    expect(c.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("a silent device still reads as not answering", async () => {
+    const c = failing(() => new Error('timeout waiting for device (list_identities)'));
+    await expect(findHeartwoodHolder([c], hex())).rejects.toThrow(HANDOFF_NO_ANSWER_COPY);
+  });
+
+  it('another Heartwood that holds the key still wins', async () => {
+    const m = hex();
+    const bad = failing(() => new HeartwoodDeviceError('device low on memory', 'list_identities'));
+    const good = holding(m);
+    await expect(findHeartwoodHolder([bad, good], m)).resolves.toMatchObject({ client: good, targetHex: m });
   });
 });

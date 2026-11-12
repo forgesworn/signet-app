@@ -177,6 +177,10 @@ export function ApproveConnect({
   // Straight to the Heartwood is the default wherever it is offered.
   const mode: SignMode = signMode === 'heartwood' && !handOffOffered ? 'auto' : (signMode ?? (handOffOffered ? 'heartwood' : 'auto'));
   const askToSign = mode === 'ask';
+  // Handing the app to the Heartwood doesn't use this phone's signing link, so
+  // a key whose route is only coming back doesn't hold Approve. A choice that
+  // has dropped off the list still does.
+  const waitBlocksApprove = selectionWaiting && !(mode === 'heartwood' && handOffOffered && !missingChosenOption);
   const [error, setError] = useState<string | null>(null);
 
   const isGuardianSelected = (keypairType: string) =>
@@ -190,7 +194,7 @@ export function ApproveConnect({
     && !showNpConfirm;
 
   async function handleApprove() {
-    if (!selection || status === 'sending' || selectionWaiting) return;
+    if (!selection || status === 'sending' || waitBlocksApprove) return;
     setStatus('sending');
     setError(null);
     try {
@@ -469,7 +473,7 @@ export function ApproveConnect({
         <div className="section" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <button
             className="btn btn-primary"
-            disabled={!selection || npBlocked || selectionWaiting}
+            disabled={!selection || npBlocked || waitBlocksApprove}
             onClick={handleApprove}
           >
             {status === 'error' ? 'Try again' : 'Approve'}

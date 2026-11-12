@@ -5,6 +5,7 @@ import { placeLabel, placeTint, relativeTime, hostnameOf } from '../lib/known-pl
 import { KnownPlaceBadgeGlyph } from './KnownPlaceBadgeGlyph';
 import { canOpenPlace } from '../lib/known-place-open';
 import { isNativeApp } from '../lib/native';
+import { heartwoodMgmtErrorCopy } from '../lib/heartwood-mgmt-error-copy';
 
 export type KnownPlaceIdentityType = 'persona' | 'natural-person' | 'extra' | 'dependant' | 'bot';
 
@@ -114,7 +115,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const run = async (fn: () => void | Promise<void>) => {
     if (busy) return;
     setBusy(true); setError('');
-    try { await fn(); } catch { setError('That did not work. Try again.'); } finally { setBusy(false); }
+    try { await fn(); } catch (e) { setError(heartwoodMgmtErrorCopy(e)); } finally { setBusy(false); }
   };
 
   const approvedOn = place.signer === 'local' ? 'this phone'
@@ -277,7 +278,7 @@ export function HeartwoodRow({ fingerprint, label, boundIdentity, policySummary,
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}
                 onClick={async () => {
                   setBusy(true); setError('');
-                  try { await onRevoke(fingerprint); setConfirm(false); } catch { setError('That did not work. Try again.'); } finally { setBusy(false); }
+                  try { await onRevoke(fingerprint); setConfirm(false); } catch (e) { setError(heartwoodMgmtErrorCopy(e)); } finally { setBusy(false); }
                 }}>Revoke</button>
               <button type="button" className="btn btn-ghost kp-btn" onClick={() => setConfirm(false)}>Cancel</button>
             </div>

@@ -290,6 +290,7 @@ import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
 import { handOffNostrConnect, handoffAllowedFor, settleHandoff } from './lib/heartwood-handoff';
+import { heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { loadHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
 import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
@@ -4510,7 +4511,8 @@ function AppContent() {
   const revokeHeartwoodHandoff = useCallback(async (rec: HeartwoodHandoffRecord, key?: string) => {
     const k = key ?? encryptionKeyRef.current;
     if (!k) throw new Error('Unlock My Signet first.');
-    await revokeHandoffOnDevice(rec);
+    // Said in plain words wherever it surfaces: Disconnect, or an approval that revokes first.
+    try { await revokeHandoffOnDevice(rec); } catch (e) { throw new Error(heartwoodMgmtErrorCopy(e)); }
     showHandoffs(await updateHeartwoodHandoffs(k, list => list.filter(h => h.clientPubkey !== rec.clientPubkey)));
   }, [revokeHandoffOnDevice, showHandoffs]);
 
