@@ -3,7 +3,7 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.26.0
 - Personas: "Add a key from my Heartwood" adds a key that lives on your Heartwood, such as an old nsec imported there, as a persona. My Signet signs as it through the Heartwood and never holds the key
 - Nostr Connect: when you approve an app you can choose "Straight to my Heartwood". The Heartwood that holds the persona takes the app over and signs for it directly, so My Signet can be closed
 - That is the default for apps that ask only for everyday signing. For an app that could change your profile, delete posts or pair other devices, the phone stays the default, and choosing the Heartwood shows what it would sign without a press
