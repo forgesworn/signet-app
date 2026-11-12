@@ -492,6 +492,19 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect((await db.loadHeartwoodHandoffs(PASSPHRASE)).map(h => h.clientPubkey[0])).toEqual(['b', 'c']);
   }, TIMEOUT);
 
+  it('updateExtraHeartwoodOperators changes what is stored, one writer at a time', async () => {
+    const db = await freshDb();
+    const op = (d: string) => ({ ...cred, deviceHex: d.repeat(64) });
+    await db.saveExtraHeartwoodOperators([op('a')], PASSPHRASE);
+    const [one, two] = await Promise.all([
+      db.updateExtraHeartwoodOperators(PASSPHRASE, l => [...l, op('b')]),
+      db.updateExtraHeartwoodOperators(PASSPHRASE, l => l.filter(c => c.deviceHex !== 'a'.repeat(64))),
+    ]);
+    expect(one.map(c => c.deviceHex[0])).toEqual(['a', 'b']);
+    expect(two.map(c => c.deviceHex[0])).toEqual(['b']);
+    expect((await db.readExtraHeartwoodOperators(PASSPHRASE)).map(c => c.deviceHex[0])).toEqual(['b']);
+  }, TIMEOUT);
+
   it('readHeartwoodHandoffs waits for a write already queued, and the row check needs no key', async () => {
     const db = await freshDb();
     const rec = (c: string) => ({ clientPubkey: c.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),

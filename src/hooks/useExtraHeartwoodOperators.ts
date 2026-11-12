@@ -7,7 +7,7 @@
  * zeroized on lock, like the primary.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { loadExtraHeartwoodOperators, saveExtraHeartwoodOperators } from '../lib/db';
+import { readExtraHeartwoodOperators, updateExtraHeartwoodOperators } from '../lib/db';
 import type { HeartwoodOperatorCredential } from '../lib/heartwood-operator';
 import { HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { resolveImportInput, resolvePhraseInput } from '../lib/heartwood-operator-import';
@@ -27,7 +27,12 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
   /** The primary operator's device; importing it here is refused (it has its own card). */
   primaryDeviceHex?: string | null;
 }): UseExtraHeartwoodOperatorsReturn {
-  const [credentials, setCredentials] = useState<HeartwoodOperatorCredential[]>([]);
+  const [credentials, setCredentialsState] = useState<HeartwoodOperatorCredential[]>([]);
+  const credentialsRef = useRef<HeartwoodOperatorCredential[]>([]);
+  const setCredentials = useCallback((next: HeartwoodOperatorCredential[]) => {
+    credentialsRef.current = next;
+    setCredentialsState(next);
+  }, []);
   const [clients, setClients] = useState<HeartwoodMgmtClient[]>([]);
   const clientsRef = useRef<HeartwoodMgmtClient[]>([]);
   const genRef = useRef(0);
@@ -56,13 +61,14 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
     const gen = ++genRef.current;
     if (!enabled || !encryptionKey) { stopAll(); setCredentials([]); return; }
     let cancelled = false;
-    loadExtraHeartwoodOperators(encryptionKey).then(creds => {
+    // In turn with add/forget, so this never lands over a newer import.
+    readExtraHeartwoodOperators(encryptionKey).then(creds => {
       if (cancelled || genRef.current !== gen) return;
       setCredentials(creds);
       activate(creds);
     }).catch(() => { /* nothing stored */ });
     return () => { cancelled = true; };
-  }, [enabled, encryptionKey, activate, stopAll]);
+  }, [enabled, encryptionKey, activate, stopAll, setCredentials]);
 
   useEffect(() => () => stopAll(), [stopAll]);
 
@@ -72,10 +78,11 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
     if (primaryDeviceHex && device === primaryDeviceHex.toLowerCase()) {
       return { error: 'That is the Heartwood this phone is already paired with. Its key goes in the card above.' };
     }
-    const next = [...credentials.filter(c => c.deviceHex.toLowerCase() !== device), cred];
     const gen = genRef.current;
+    let next: HeartwoodOperatorCredential[];
     try {
-      await saveExtraHeartwoodOperators(next, encryptionKey);
+      // Against what is stored: the in-memory list is empty until the unlock load lands.
+      next = await updateExtraHeartwoodOperators(encryptionKey, stored => [...stored.filter(c => c.deviceHex.toLowerCase() !== device), cred]);
     } catch (e) {
       return { error: e instanceof Error ? e.message : 'Could not save the operator key.' };
     }
@@ -85,7 +92,7 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
     setCredentials(next);
     activate(next);
     return { imported: true };
-  }, [enabled, encryptionKey, primaryDeviceHex, credentials, activate]);
+  }, [enabled, encryptionKey, primaryDeviceHex, activate, setCredentials]);
 
   const importLink = useCallback(async (text: string, pin?: string): Promise<OperatorImportOutcome> => {
     const r = resolveImportInput(text, pin);
@@ -102,13 +109,19 @@ export function useExtraHeartwoodOperators({ encryptionKey, enabled, primaryDevi
 
   const forget = useCallback(async (deviceHex: string) => {
     if (!encryptionKey) return;
-    const next = credentials.filter(c => c.deviceHex.toLowerCase() !== deviceHex.toLowerCase());
+    const device = deviceHex.toLowerCase();
+    const others = (list: HeartwoodOperatorCredential[]) => list.filter(c => c.deviceHex.toLowerCase() !== device);
     const gen = genRef.current;
-    try { await saveExtraHeartwoodOperators(next, encryptionKey); } catch { /* state dropped regardless */ }
+    let next: HeartwoodOperatorCredential[];
+    try {
+      next = await updateExtraHeartwoodOperators(encryptionKey, others);
+    } catch {
+      next = others(credentialsRef.current); // dropped from this session regardless
+    }
     if (genRef.current !== gen) return;
     setCredentials(next);
     activate(next);
-  }, [encryptionKey, credentials, activate]);
+  }, [encryptionKey, activate, setCredentials]);
 
   return { credentials, clients, importLink, importPhrase, forget };
 }

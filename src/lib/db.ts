@@ -2553,6 +2553,34 @@ export async function saveExtraHeartwoodOperators(
   await db.put('identity', { id: EXTRA_HEARTWOOD_OPERATORS_KEY, secret: encrypted });
 }
 
+let extraOperatorWrites: Promise<unknown> = Promise.resolve();
+
+/**
+ * Load → change → save the other-Heartwood operator keys, one writer at a
+ * time, against what is stored rather than an in-memory copy (which is empty
+ * until the unlock load lands, so an import straight after unlock would
+ * otherwise save over the keys already there). Resolves to the saved list.
+ */
+export function updateExtraHeartwoodOperators(
+  encryptionKey: string,
+  change: (creds: HeartwoodOperatorCredential[]) => HeartwoodOperatorCredential[],
+): Promise<HeartwoodOperatorCredential[]> {
+  const run = extraOperatorWrites.then(async () => {
+    const next = change(await loadExtraHeartwoodOperators(encryptionKey));
+    await saveExtraHeartwoodOperators(next, encryptionKey);
+    return next;
+  });
+  extraOperatorWrites = run.catch(() => undefined);
+  return run;
+}
+
+/** The stored other-Heartwood keys, read in turn with the writes above, so the unlock load never lands over a newer import. */
+export function readExtraHeartwoodOperators(encryptionKey: string): Promise<HeartwoodOperatorCredential[]> {
+  const run = extraOperatorWrites.then(() => loadExtraHeartwoodOperators(encryptionKey));
+  extraOperatorWrites = run.catch(() => undefined);
+  return run;
+}
+
 // Apps handed to a Heartwood (`lib/heartwood-handoff.ts`): the device answers
 // them directly, so the phone's own NIP-46 server must stay silent for them,
 // and Disconnect revokes the slot on the device. Encrypted like the rest.
