@@ -218,7 +218,7 @@ describe('KnownPlacesCard', () => {
     expect(a.forgetHandoffHere).toHaveBeenCalledWith(nc);
   });
 
-  it('a Heartwood that only did not answer offers no Forget on this phone', async () => {
+  it('any failed Disconnect of a Heartwood app offers Forget on this phone, beside Disconnect', async () => {
     const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'heartwood' });
     const { a } = setup({ places: [nc], ctxFor: () => ({ heartwoodHeld: true }) });
     a.disconnect.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
@@ -226,7 +226,32 @@ describe('KnownPlacesCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     await settle();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/didn't answer/);
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+    expect(screen.getByText(/It may still sign on your Heartwood: remove it there in Sapwood\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+    await settle();
+    expect(a.forgetHandoffHere).toHaveBeenCalledWith(nc);
+  });
+
+  it('only a failed Disconnect offers it, and only for an app handed to a Heartwood', async () => {
+    const hw = place('hw', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'heartwood' });
+    const { a } = setup({ places: [hw], ctxFor: () => ({ heartwoodHeld: true }) });
+    a.pin.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+    expand('hw');
+    fireEvent.click(screen.getByRole('button', { name: 'Pin' }));
+    await settle();
+    expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
+    cleanup();
+
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined });
+    const b = setup({ places: [nc] }).a;
+    b.disconnect.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+    expand('nc');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
     expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
   });
 

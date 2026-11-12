@@ -289,7 +289,7 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { HandoffKeptError, handoffsForClient, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
+import { HandoffKeptError, handoffsForClient, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, revokeEveryHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
 import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -4836,24 +4836,22 @@ function AppContent() {
           // An earlier phone pairing of this app goes first (inert while the hand-off stands),
           // so revoking the device slot can't wake it up again.
           await disconnectClient(clientOf(place));
-          for (const rec of held.records) await revokeHeartwoodHandoff(rec, held.key ?? undefined);
+          // Every record is tried; each one that goes is dropped. If any is
+          // left, this throws and the row offers Forget on this phone.
+          await revokeEveryHandoff(held.records, rec => revokeHeartwoodHandoff(rec, held.key ?? undefined));
         } else if (place.kind === 'nip46') await disconnectClient(clientOf(place));
         // Pubkey-scoped: a grant pinned to another identity is left alone.
         else if (place.kind === 'nip55' && place.nativePackage) nip55.forget(place.nativePackage, place.pubkey);
         await knownPlaces.forget(place.id);
       },
       forgetHandoffHere: async place => {
-        // Only for a Heartwood this phone can't manage at all: a record on one
-        // it can manage is disconnected properly, so its slot doesn't outlive it.
+        // Offered once a Disconnect on the row has failed (the Heartwood can't
+        // be managed from here, or won't answer, or no longer holds the master
+        // the app was handed to). Every record the app still has goes, with its
+        // row; the confirm says it may still sign on the Heartwood (Sapwood).
         const k = encryptionKeyRef.current;
         if (!k) throw new Error('Unlock My Signet first.');
         const held = await heldHandoffsFor(clientOf(place), async () => k);
-        const stored = await storedOperatorDevices();
-        if (!stored) throw new Error('Unlock My Signet first.');
-        const live = handoffClientsRef.current.map(c => c.deviceHex);
-        if (held.records.some(r => live.includes(r.deviceHex) || stored.some(d => d.toLowerCase() === r.deviceHex))) {
-          throw new HeartwoodCopyError('This phone can manage that Heartwood now. Use Disconnect instead.');
-        }
         // An earlier phone pairing goes too, as Disconnect does, so it can't wake up.
         await disconnectClient(clientOf(place));
         const gone = (h: HeartwoodHandoffRecord) => held.records.some(r => sameHandoff(r, h));
@@ -4869,7 +4867,7 @@ function AppContent() {
         await refreshHeartwoodSlots();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, heldHandoffsFor, storedOperatorDevices, showStoredHandoffs]);
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, heldHandoffsFor, showStoredHandoffs]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;

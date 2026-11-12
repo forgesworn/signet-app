@@ -453,6 +453,26 @@ export async function revokeHandoffSlot(p: {
   for (const s of holding) await p.revoke({ slotIndex: s.slotIndex, secretFingerprint: s.secretFingerprint });
 }
 
+/**
+ * Disconnect every record of one app, carrying on past one that fails (each
+ * `revoke` drops its own record once it is gone). Throws the first failure
+ * once all were tried: the app's row then offers Forget on this phone.
+ */
+export async function revokeEveryHandoff(
+  records: readonly HeartwoodHandoffRecord[],
+  revoke: (rec: HeartwoodHandoffRecord) => Promise<void>,
+): Promise<void> {
+  let failure: { error: unknown } | null = null;
+  for (const rec of records) {
+    try {
+      await revoke(rec);
+    } catch (e) {
+      failure ??= { error: e };
+    }
+  }
+  if (failure) throw failure.error;
+}
+
 type HandoffRef = Pick<HeartwoodHandoffRecord, 'clientPubkey' | 'deviceHex' | 'targetHex' | 'slotIndex' | 'secretFingerprint'>;
 
 /** The same slot on the same Heartwood for the same app. */

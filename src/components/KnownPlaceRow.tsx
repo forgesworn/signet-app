@@ -36,7 +36,7 @@ export interface KnownPlaceActions {
   forget(place: KnownPlace): void | Promise<void>;
   disconnect(place: KnownPlace): void | Promise<void>;
   revokeOnHeartwood(fingerprint: string): void | Promise<void>;
-  /** An app handed to a Heartwood this phone can't manage: drop its record and row here only. */
+  /** An app handed to a Heartwood whose Disconnect failed: drop all its records and its row, here only. */
   forgetHandoffHere?(place: KnownPlace): void | Promise<void>;
 }
 
@@ -105,8 +105,9 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const [confirm, setConfirm] = useState<'forget' | 'disconnect' | 'forget-here' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  // Set when an action found this app's Heartwood can't be managed from this phone.
-  const [unmanaged, setUnmanaged] = useState(false);
+  // Set once a Disconnect of an app handed to a Heartwood has failed, for any
+  // reason (or an action found that Heartwood can't be managed from here).
+  const [disconnectFailed, setDisconnectFailed] = useState(false);
 
   const label = placeLabel(place);
   const primary = badges[0] ?? null;
@@ -118,15 +119,19 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const openable = canOpenPlace(place, isNativeApp());
   const channelSentence = CHANNEL_SENTENCE[place.channel];
 
-  const run = async (fn: () => void | Promise<void>) => {
+  const heartwoodHeld = place.kind === 'nip46' && !!ctx.heartwoodHeld;
+  const run = async (fn: () => void | Promise<void>, opts: { disconnecting?: boolean } = {}) => {
     if (busy) return;
     setBusy(true); setError('');
     try { await fn(); } catch (e) {
       setError(heartwoodMgmtErrorCopy(e));
-      if ((e as { unmanaged?: unknown } | null)?.unmanaged === true) { setUnmanaged(true); setConfirm(null); }
+      // A Heartwood app whose Disconnect failed can still be forgotten here.
+      if (heartwoodHeld && (opts.disconnecting || (e as { unmanaged?: unknown } | null)?.unmanaged === true)) {
+        setDisconnectFailed(true); setConfirm(null);
+      }
     } finally { setBusy(false); }
   };
-  const canForgetHere = place.kind === 'nip46' && !!ctx.heartwoodHeld && unmanaged && !!actions.forgetHandoffHere;
+  const canForgetHere = heartwoodHeld && disconnectFailed && !!actions.forgetHandoffHere;
 
   const approvedOn = place.signer === 'local' ? 'this phone'
     : place.signer === 'heartwood' ? 'your Heartwood'
@@ -219,7 +224,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
                     : confirm === 'forget-here' ? actions.forgetHandoffHere?.(place)
                     : actions.disconnect(place));
                   setConfirm(null);
-                })}>
+                }, { disconnecting: confirm === 'disconnect' })}>
                 {confirm === 'forget' ? 'Forget' : confirm === 'forget-here' ? 'Forget on this phone' : 'Disconnect'}
               </button>
               <button type="button" className="btn btn-ghost kp-btn" onClick={() => setConfirm(null)}>Cancel</button>

@@ -20,6 +20,7 @@ import {
   handoffsForClient,
   mergeHandoffs,
   revokeHandoffSlot,
+  revokeEveryHandoff,
   runHandoffApproval,
   HANDOFF_PRIOR_REMOVED_COPY,
   HANDOFF_MISMATCH_KEPT_COPY,
@@ -405,6 +406,30 @@ describe('revokeHandoffSlot: only the device list proves an app is gone', () => 
     const h = io({ list: async () => [row({ currentPubkey: hex() })] });
     await expect(revokeHandoffSlot({ ...h.p, slot: { secretFingerprint: '' } })).resolves.toBeUndefined();
     expect(h.revoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('revokeEveryHandoff: one record that will not go does not hold up the rest', () => {
+  const rec = (c: string, d: string) => ({ clientPubkey: 'a'.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: d.repeat(64),
+    targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: c.repeat(8), relay: 'wss://r.example', createdAt: 1 });
+
+  it('tries every record and throws the first failure once all were tried', async () => {
+    const tried: string[] = [];
+    const unmanaged = new HandoffUnmanagedError();
+    const records = [rec('aa', 'e'), rec('bb', 'f'), rec('cc', 'e')];
+    const err = await revokeEveryHandoff(records, async r => {
+      tried.push(r.secretFingerprint.slice(0, 2));
+      if (r.deviceHex === 'e'.repeat(64) && r.secretFingerprint.startsWith('aa')) throw unmanaged;
+      if (r.secretFingerprint.startsWith('cc')) throw new Error('timeout waiting for device (revoke_client)');
+    }).then(() => null, (e: unknown) => e);
+    expect(tried).toEqual(['aa', 'bb', 'cc']);
+    expect(err).toBe(unmanaged);
+  });
+
+  it('resolves when every record went', async () => {
+    const revoke = vi.fn(async () => {});
+    await expect(revokeEveryHandoff([rec('aa', 'e'), rec('bb', 'f')], revoke)).resolves.toBeUndefined();
+    expect(revoke).toHaveBeenCalledTimes(2);
   });
 });
 
