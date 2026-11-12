@@ -22,6 +22,10 @@ import {
   revokeHandoffSlot,
   runHandoffApproval,
   HANDOFF_PRIOR_REMOVED_COPY,
+  HANDOFF_MISMATCH_KEPT_COPY,
+  HandoffKeptError,
+  endsConnectRequest,
+  mintHandoff,
   type HandoffPlan,
   type HandoffResult,
   sameHandoff,
@@ -439,5 +443,48 @@ describe('runHandoffApproval: nothing is revoked for a check that could fail fir
   it('with no earlier hand-off a failed mint reads as itself', async () => {
     const h = io({ priors: [], mint: async () => { throw new Error('That did not work. Try again.'); } });
     await expect(runHandoffApproval(h.p)).rejects.toThrow(/^That did not work. Try again.$/);
+  });
+});
+
+describe('a mint the device may still hold is kept, never retried blind', () => {
+  const m0 = 'f'.repeat(64);
+  const request = { clientPubkey: 'c'.repeat(64), relayUrl: 'wss://relay.primal.net', relayUrls: ['wss://relay.primal.net'], secret: 's3cret', appName: 'KithMoot' };
+  const plan = (request: (m: string) => Promise<unknown>) => ({
+    holder: { client: { deviceHex: m0, relays: ['wss://relay.primal.net'], request: vi.fn(request) } as unknown as HeartwoodMgmtClient, targetHex: m0 },
+    relay: 'wss://relay.primal.net',
+    persona: m0,
+  });
+
+  it('a mismatched mint the device would not undo keeps its slot and fingerprint', async () => {
+    const p = plan(async (method) => {
+      if (method === 'nostrconnect_v2') return { slot_index: 6, secret_fingerprint: 'AB12', identity: 'd'.repeat(64), policy_version: 2, allowed_methods: [], allowed_kinds: [], auto_approve: true };
+      throw new HeartwoodDeviceError('boom', 'revoke_client');
+    });
+    const err = await mintHandoff(p, { request }).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HandoffKeptError);
+    expect((err as HandoffKeptError).slot).toEqual({ slotIndex: 6, secretFingerprint: 'ab12', deviceHex: m0, targetHex: m0, relay: 'wss://relay.primal.net' });
+    expect((err as Error).message).toBe(HANDOFF_MISMATCH_KEPT_COPY);
+    expect(endsConnectRequest(err)).toBe(true);
+  });
+
+  it('the request stays answered: no unclaim, no "scan again" rewrite', async () => {
+    const log: string[] = [];
+    const kept = new HandoffKeptError({ slotIndex: 1, secretFingerprint: '', deviceHex: m0, targetHex: m0, relay: 'wss://r' }, 'kept');
+    const p = plan(async () => ({}));
+    await expect(runHandoffApproval({
+      priors: [{ clientPubkey: 'c'.repeat(64), appName: 'A', persona: m0, deviceHex: m0, targetHex: m0, slotIndex: 0, secretFingerprint: 'aa', relay: 'wss://r', createdAt: 1 }],
+      prepare: async () => p, claim: () => true, unclaim: () => { log.push('unclaim'); },
+      revokePrior: async () => {}, mint: async () => { throw kept; },
+    })).rejects.toBe(kept);
+    expect(log).toEqual([]);
+  });
+
+  it('only errors that answered the request close it', () => {
+    expect(endsConnectRequest(new HandoffNotSavedError())).toBe(true);
+    expect(endsConnectRequest(new HandoffStrandedError())).toBe(true);
+    expect(endsConnectRequest(new HandoffUnavailableError())).toBe(false);
+    expect(endsConnectRequest(new Error('x'))).toBe(false);
+    expect(new HandoffNotSavedError().message).toMatch(/Scan the app's code again/);
+    expect(new HandoffStrandedError().message).toMatch(/Sapwood, then scan the app's code again/);
   });
 });

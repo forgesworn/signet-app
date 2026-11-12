@@ -21,7 +21,7 @@ import {
 } from './heartwood-mgmt';
 import type { DeviceClientSlot, SlotPolicyUpdate } from './heartwood-mgmt-types';
 import { clientKeyInUse, isNoSuchSlotError, isStaleClientSlotMessage } from './child-device-pairing';
-import { MGMT_GENERIC_COPY, heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
+import { HeartwoodCopyError, MGMT_GENERIC_COPY, heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
 import type { NostrConnectRequest } from './nip46';
 import type { HeartwoodHandoffRecord } from './db';
 
@@ -159,7 +159,7 @@ export async function findHeartwoodHolder(
 export const HANDOFF_NO_ANSWER_COPY = "Your Heartwood didn't answer. Check it's on and online, then try again, or choose Through My Signet.";
 
 /** No Heartwood could say whether it holds the persona. Says why when the device or relay did. */
-export class HandoffNoAnswerError extends Error {
+export class HandoffNoAnswerError extends HeartwoodCopyError {
   constructor(cause?: unknown) {
     super(cause ? `${heartwoodMgmtErrorCopy(cause)} Or choose Through My Signet.` : HANDOFF_NO_ANSWER_COPY);
     this.name = 'HandoffNoAnswerError';
@@ -174,7 +174,7 @@ export function pickHandoffRelay(appRelays: readonly string[], deviceRelays: rea
   return usable.find(r => served.has(norm(r))) ?? usable[0] ?? null;
 }
 
-export class HandoffUnavailableError extends Error {
+export class HandoffUnavailableError extends HeartwoodCopyError {
   constructor() {
     super("None of the Heartwoods this phone manages holds this persona. Add that Heartwood's operator key in Advanced settings, or choose Through My Signet.");
     this.name = 'HandoffUnavailableError';
@@ -232,7 +232,17 @@ export async function mintHandoff(plan: HandoffPlan, params: {
     identity: persona,
     label,
     policy: handoffPolicy(persona, params.request.permissions),
-  }, { targetHex: holder.targetHex })).catch((e: unknown) => { throw new Error(heartwoodMgmtErrorCopy(e)); });
+  }, { targetHex: holder.targetHex })).catch((e: unknown) => {
+    const where = { deviceHex: holder.client.deviceHex, targetHex: holder.targetHex, relay };
+    const left = e as { message?: unknown; slotIndex?: unknown; secretFingerprint?: unknown };
+    // The device minted a slot (and told the app) with rules it wasn't asked
+    // for, and didn't confirm removing it: keep a record so it can be reached.
+    if (left?.message === 'heartwood-mint-mismatch-unrevoked' && typeof left.slotIndex === 'number') {
+      const secretFingerprint = typeof left.secretFingerprint === 'string' ? left.secretFingerprint : '';
+      throw new HandoffKeptError({ slotIndex: left.slotIndex, secretFingerprint, ...where }, HANDOFF_MISMATCH_KEPT_COPY);
+    }
+    throw new HeartwoodCopyError(heartwoodMgmtErrorCopy(e));
+  });
   return { ...minted, deviceHex: holder.client.deviceHex, targetHex: holder.targetHex, relay };
 }
 
@@ -280,23 +290,56 @@ export async function runHandoffApproval(io: {
   try {
     return { status: 'minted', handed: await io.mint(plan) };
   } catch (e) {
+    // The device may already have told the app it is paired: the request stays answered.
+    if (e instanceof HandoffKeptError) throw e;
     io.unclaim();
     if (io.priors.length === 0) throw e;
-    throw new Error(`${e instanceof Error ? e.message : MGMT_GENERIC_COPY} ${HANDOFF_PRIOR_REMOVED_COPY}`);
+    throw new HeartwoodCopyError(`${e instanceof Error ? e.message : MGMT_GENERIC_COPY} ${HANDOFF_PRIOR_REMOVED_COPY}`);
   }
 }
 
-export class HandoffNotSavedError extends Error {
+/**
+ * An error after which this connect request is answered and can't be tried
+ * again: the device already told the app something. The screen offers only
+ * Close, and the copy says what to do instead.
+ */
+export function endsConnectRequest(e: unknown): boolean {
+  return e instanceof HandoffNotSavedError || e instanceof HandoffStrandedError || e instanceof HandoffKeptError;
+}
+
+export class HandoffNotSavedError extends HeartwoodCopyError {
   constructor() {
-    super("This phone couldn't save the pairing, so it was undone on your Heartwood. Try again.");
+    super("This phone couldn't save the pairing, so it was undone on your Heartwood. Scan the app's code again to pair it.");
     this.name = 'HandoffNotSavedError';
   }
 }
 
-export class HandoffStrandedError extends Error {
+export class HandoffStrandedError extends HeartwoodCopyError {
   constructor() {
-    super("This phone couldn't save the pairing, and your Heartwood didn't confirm undoing it. Remove the app from your Heartwood in Sapwood.");
+    super("This phone couldn't save the pairing, and your Heartwood didn't confirm undoing it. Remove the app from your Heartwood in Sapwood, then scan the app's code again.");
     this.name = 'HandoffStrandedError';
+  }
+}
+
+export const HANDOFF_MISMATCH_KEPT_COPY = "Your Heartwood paired the app with rules this phone didn't ask for, and didn't confirm removing it. The app may still be on your Heartwood: disconnect it in Where you're known, or remove it in Sapwood.";
+
+/** Where a slot the device may still hold sits, so a record of it can be kept. */
+export interface KeptHandoffSlot {
+  slotIndex: number;
+  /** Empty when the device didn't give one; the revoke then finds the slot by the app's key. */
+  secretFingerprint: string;
+  deviceHex: string;
+  targetHex: string;
+  relay: string;
+}
+
+/** The device may hold a slot for the app (and may have told the app): keep a record of it so Disconnect can reach it. */
+export class HandoffKeptError extends HeartwoodCopyError {
+  readonly slot: KeptHandoffSlot;
+  constructor(slot: KeptHandoffSlot, message: string) {
+    super(message);
+    this.name = 'HandoffKeptError';
+    this.slot = slot;
   }
 }
 

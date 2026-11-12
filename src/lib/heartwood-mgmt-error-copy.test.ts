@@ -8,6 +8,7 @@ import {
   MGMT_LOW_MEMORY_COPY,
   MGMT_NO_ANSWER_COPY,
   MGMT_UNREACHABLE_COPY,
+  HeartwoodCopyError,
   heartwoodMgmtErrorCopy,
   isDeviceAnswerOrUnreachable,
 } from './heartwood-mgmt-error-copy';
@@ -62,5 +63,26 @@ describe('isDeviceAnswerOrUnreachable', () => {
     expect(isDeviceAnswerOrUnreachable(new HeartwoodDeviceError('x', 'm'))).toBe(true);
     expect(isDeviceAnswerOrUnreachable(new Error('failed to publish to any relay'))).toBe(true);
     expect(isDeviceAnswerOrUnreachable(new Error('timeout waiting for device (list_identities)'))).toBe(false);
+  });
+});
+
+describe('copy is mapped once', () => {
+  it('a message already in plain words passes through, brackets, quotes and all', () => {
+    const once = heartwoodMgmtErrorCopy(new HeartwoodDeviceError('failed to publish (slot_table) {x}', 'revoke_client'));
+    expect(once).toBe('Your Heartwood replied: "failed to publish (slot_table) {x}".');
+    expect(heartwoodMgmtErrorCopy(new HeartwoodCopyError(once))).toBe(once);
+  });
+
+  it("a device's double quotes are dropped, so the quoted text can't be closed early", () => {
+    expect(heartwoodMgmtErrorCopy(new HeartwoodDeviceError('said "no" twice', 'm'))).toBe('Your Heartwood replied: "said no twice".');
+  });
+
+  it('a long device text is cut by character, never through a surrogate pair', () => {
+    const text = `${'a'.repeat(DEVICE_TEXT_MAX - 2)}😀😀😀`;
+    const out = heartwoodMgmtErrorCopy(new HeartwoodDeviceError(text, 'm'));
+    const quoted = out.slice('Your Heartwood replied: "'.length, -'".'.length);
+    expect(Array.from(quoted)).toHaveLength(DEVICE_TEXT_MAX);
+    expect(quoted.endsWith('😀…')).toBe(true);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(quoted)).toBe(false);
   });
 });

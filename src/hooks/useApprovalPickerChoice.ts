@@ -81,6 +81,8 @@ export function useApprovalPickerChoice<S extends GuardianOrDependantSelection>(
     /** Approve must stay disabled while true. */
     selectionWaiting,
     isWaitingPubkey,
+    /** The user's chosen guardian slot is not on the offered list (gone, or its route lapsed). */
+    chosenGuardianMissing,
     missingChosenOption,
     /** Copy for the missing chosen row. */
     missingChosenCopy: missingLapsed ? CHOSEN_UNAVAILABLE_COPY : WAITING_FOR_SIGNER_COPY,

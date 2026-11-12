@@ -289,8 +289,8 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { handoffsForClient, mergeHandoffs, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
-import { heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
+import { HandoffKeptError, handoffsForClient, mergeHandoffs, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
+import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
 import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
@@ -4554,7 +4554,8 @@ function AppContent() {
     const k = key ?? encryptionKeyRef.current;
     if (!k) throw new Error('Unlock My Signet first.');
     // Said in plain words wherever it surfaces: Disconnect, or an approval that revokes first.
-    try { await revokeHandoffOnDevice(rec); } catch (e) { throw new Error(heartwoodMgmtErrorCopy(e)); }
+    // Put in plain words once, here; the row shows it as it is.
+    try { await revokeHandoffOnDevice(rec); } catch (e) { throw e instanceof HeartwoodCopyError ? e : new HeartwoodCopyError(heartwoodMgmtErrorCopy(e)); }
     // The device call is done before the write, never inside it: the writes queue behind one another.
     unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => !sameHandoff(h, rec));
     showStoredHandoffs(await updateHeartwoodHandoffs(k, list => list.filter(h => !sameHandoff(h, rec))));
@@ -8215,66 +8216,89 @@ function AppContent() {
       // store: the in-memory list is empty until the unlock load lands. Every
       // check that changes nothing (the Heartwood, the relay, a Cancel) runs
       // before that revoke.
-      const priors = (await heldHandoffsFor(clientHex, async () => key)).records;
-      const approval = await runHandoffApproval({
-        priors,
-        prepare: () => prepareHandoff({ request: connectRequest, personaHex, clients: handoffClientsRef.current }),
-        claim: () => connectStillPending() && connectSettlementRef.current.claimDelivery(connectKey),
-        unclaim: () => connectSettlementRef.current.unclaimDelivery(connectKey),
-        revokePrior: prior => revokeHeartwoodHandoff(prior, key),
-        mint: plan => mintHandoff(plan, { request: connectRequest, withLock: withOperatorLock }),
+      const recordFor = (slot: KeptHandoffSlot): HeartwoodHandoffRecord => ({
+        clientPubkey: clientHex,
+        appName: connectRequest.appName,
+        persona: personaHex,
+        deviceHex: slot.deviceHex,
+        targetHex: slot.targetHex,
+        slotIndex: slot.slotIndex,
+        secretFingerprint: slot.secretFingerprint,
+        relay: slot.relay,
+        createdAt: Math.floor(Date.now() / 1000),
       });
+      // From the moment the device holds it, this phone ignores the app.
+      const track = (record: HeartwoodHandoffRecord) => {
+        unsavedHandoffsRef.current = [...unsavedHandoffsRef.current, record];
+        showHandoffs([...heartwoodHandoffsRef.current.filter(h => !sameHandoff(h, record)), record]);
+      };
+      const persist = async (record: HeartwoodHandoffRecord) => {
+        const stored = await updateHeartwoodHandoffs(key, list => [...list.filter(h => !sameHandoff(h, record)), record]);
+        unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => h !== record);
+        showStoredHandoffs(stored);
+      };
+      // Its row in Where you're known is how it is disconnected later.
+      const recordPlace = (record: HeartwoodHandoffRecord) => {
+        let handoffOrigin: string | undefined;
+        try {
+          const u = new URL(connectRequest.appUrl ?? '');
+          if (u.protocol === 'https:' || u.protocol === 'http:') handoffOrigin = u.origin;
+        } catch { /* no usable app URL */ }
+        void recordKnownPlace({
+          placeKey: `nc:${record.clientPubkey}`,
+          pubkey: personaHex,
+          kind: 'nip46',
+          name: connectRequest.appName,
+          ...(handoffOrigin ? { origin: handoffOrigin } : {}),
+          channel: 'nip46',
+          signer: 'heartwood',
+          shared: {},
+        });
+      };
+      const priors = (await heldHandoffsFor(clientHex, async () => key)).records;
+      let approval: Awaited<ReturnType<typeof runHandoffApproval>>;
+      try {
+        approval = await runHandoffApproval({
+          priors,
+          prepare: () => prepareHandoff({ request: connectRequest, personaHex, clients: handoffClientsRef.current }),
+          claim: () => connectStillPending() && connectSettlementRef.current.claimDelivery(connectKey),
+          unclaim: () => connectSettlementRef.current.unclaimDelivery(connectKey),
+          revokePrior: prior => revokeHeartwoodHandoff(prior, key),
+          mint: plan => mintHandoff(plan, { request: connectRequest, withLock: withOperatorLock }),
+        });
+      } catch (e) {
+        if (e instanceof HandoffKeptError) {
+          // The device may hold a slot for the app and may already have told
+          // it: the request stays answered, and a record is kept (saved when it
+          // can be) so Disconnect can reach the slot.
+          connectSettlementRef.current.finishDelivery(connectKey);
+          const kept = recordFor(e.slot);
+          track(kept);
+          try { await persist(kept); } catch { /* held for this session */ }
+          recordPlace(kept);
+        }
+        throw e;
+      }
       if (approval.status === 'withdrawn') return;
       const handed = approval.handed;
       // True ⇒ the user cancelled while the device was minting (the screen has gone).
       const cancelled = connectSettlementRef.current.finishDelivery(connectKey);
-      const record: HeartwoodHandoffRecord = {
-        clientPubkey: clientHex,
-        appName: connectRequest.appName,
-        persona: personaHex,
-        deviceHex: handed.deviceHex,
-        targetHex: handed.targetHex,
-        slotIndex: handed.slotIndex,
-        secretFingerprint: handed.secretFingerprint,
-        relay: handed.relay,
-        createdAt: Math.floor(Date.now() / 1000),
-      };
+      const record = recordFor(handed);
       const settled = await settleHandoff({
         cancelled,
-        track: () => {
-          unsavedHandoffsRef.current = [...unsavedHandoffsRef.current, record];
-          showHandoffs([...heartwoodHandoffsRef.current.filter(h => !sameHandoff(h, record)), record]);
-        },
+        track: () => track(record),
         untrack: () => {
           unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => h !== record);
           showHandoffs(heartwoodHandoffsRef.current.filter(h => h !== record));
         },
-        persist: async () => {
-          const stored = await updateHeartwoodHandoffs(key, list => [...list.filter(h => !sameHandoff(h, record)), record]);
-          unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => h !== record);
-          showStoredHandoffs(stored);
-        },
+        persist: () => persist(record),
         undo: () => revokeHandoffOnDevice(record),
       });
       if (settled === 'undone') return;
       // The device answers this app now: an earlier "Through My Signet" pairing
       // of it goes (inert meanwhile, since this phone ignores a handed-off app).
       try { await disconnectClient(clientHex); } catch { /* Disconnect clears it too */ }
-      let handoffOrigin: string | undefined;
-      try {
-        const u = new URL(connectRequest.appUrl ?? '');
-        if (u.protocol === 'https:' || u.protocol === 'http:') handoffOrigin = u.origin;
-      } catch { /* no usable app URL */ }
-      void recordKnownPlace({
-        placeKey: `nc:${record.clientPubkey}`,
-        pubkey: personaHex,
-        kind: 'nip46',
-        name: connectRequest.appName,
-        ...(handoffOrigin ? { origin: handoffOrigin } : {}),
-        channel: 'nip46',
-        signer: 'heartwood',
-        shared: {},
-      });
+      recordPlace(record);
       // Cancelled, but the device didn't confirm undoing it: it stays listed so Disconnect can reach it.
       if (settled === 'cancelled-kept') return;
       const callback = pendingConnectCallback;

@@ -4,6 +4,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import { ApproveConnect } from './ApproveConnect';
 import type { SignetIdentity } from '../types';
 import type { NostrConnectRequest } from '../lib/nip46';
+import { HandoffNotSavedError } from '../lib/heartwood-handoff';
 
 afterEach(cleanup);
 
@@ -31,6 +32,7 @@ function renderPage(
   canHandOffToHeartwood?: (pk: string) => boolean,
   waitingGuardianPubkeys?: string[],
   req: NostrConnectRequest = request,
+  extra: Partial<React.ComponentProps<typeof ApproveConnect>> = {},
 ) {
   render(
     <ApproveConnect
@@ -43,6 +45,7 @@ function renderPage(
       onDeny={vi.fn()}
       canHandOffToHeartwood={canHandOffToHeartwood}
       waitingGuardianPubkeys={waitingGuardianPubkeys}
+      {...extra}
     />,
   );
   return onApprove;
@@ -127,5 +130,37 @@ describe('ApproveConnect sign-mode control', () => {
     fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
     expect(screen.getByRole('note').textContent).toBe('Your Heartwood will sign deletions for this app, without a press.');
     expect(screen.queryByText(/deletions still need a separate approval/)).toBeNull();
+  });
+});
+
+describe('after a failure that answered the request', () => {
+  it('offers Close, not Try again, and Close dismisses', async () => {
+    const onDeny = vi.fn();
+    renderPage(vi.fn(() => Promise.reject(new HandoffNotSavedError())), () => true, undefined, scoped, { onDeny });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(screen.getByText(/Scan the app's code again/)).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onDeny).toHaveBeenCalledTimes(1);
+  });
+
+  it('an ordinary failure can still be tried again', async () => {
+    renderPage(vi.fn(() => Promise.reject(new Error("Your Heartwood didn't answer."))), () => true, undefined, scoped);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy());
+  });
+});
+
+describe('a chosen persona deleted while the screen is open', () => {
+  it('gets no hand-off and no way past the wait', () => {
+    const gone = 'c'.repeat(64);
+    const onApprove = renderPage(undefined, () => true, undefined, scoped, {
+      userChoice: { selection: { source: 'guardian', keypairType: gone } },
+    });
+    expect(screen.queryByLabelText(/Straight to my Heartwood/)).toBeNull();
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(onApprove).not.toHaveBeenCalled();
   });
 });

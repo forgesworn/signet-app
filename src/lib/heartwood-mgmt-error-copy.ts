@@ -18,16 +18,32 @@ export const MGMT_LOW_MEMORY_COPY = 'Your Heartwood is short of memory. Wait a m
 export const MGMT_CHANGED_COPY = 'Your Heartwood changed while this was being sent. Try again.';
 export const MGMT_LINK_CLOSED_COPY = "This phone's link to your Heartwood closed. Try again.";
 
+/**
+ * A message already put in words for people. The mapper below passes it
+ * through untouched, so copy is never mapped twice (a device's quoted text
+ * with brackets in it would otherwise fall to the generic line, or text that
+ * mentions "failed to publish" would read as a relay problem).
+ */
+export class HeartwoodCopyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HeartwoodCopyError';
+  }
+}
+
 /** Longest piece of a device's own error text shown. */
 export const DEVICE_TEXT_MAX = 120;
 
-/** Control and bidi characters out, whitespace collapsed, capped. */
+/** Control and bidi characters and double quotes out, whitespace collapsed, capped by code point. */
 function cleanDeviceText(raw: string): string {
   const flat = raw
     .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g, ' ')
+    .replace(/"/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return flat.length > DEVICE_TEXT_MAX ? `${flat.slice(0, DEVICE_TEXT_MAX - 1)}…` : flat;
+  // Code points, so a cut never splits a surrogate pair.
+  const chars = Array.from(flat);
+  return chars.length > DEVICE_TEXT_MAX ? `${chars.slice(0, DEVICE_TEXT_MAX - 1).join('')}…` : flat;
 }
 
 /** A sentence our own code wrote for people: capital first, full stop last, no code-ish marks. */
@@ -36,6 +52,7 @@ function writtenForPeople(raw: string): boolean {
 }
 
 export function heartwoodMgmtErrorCopy(e: unknown): string {
+  if (e instanceof HeartwoodCopyError) return e.message;
   const raw = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
   const m = raw.toLowerCase();
   if (/low on memory|out of memory/.test(m)) return MGMT_LOW_MEMORY_COPY;

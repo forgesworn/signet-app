@@ -976,13 +976,14 @@ describe('nostrconnectV2 / revokeClient / revokeClientIdentity', () => {
   });
 
   it('throws heartwood-mint-mismatch-unrevoked with slotIndex when the revoke fails or has no fingerprint', async () => {
-    for (const echoOver of [{ identity: 'd'.repeat(64) }, { identity: 'd'.repeat(64), secret_fingerprint: '' }]) {
+    for (const [echoOver, fp] of [[{ identity: 'd'.repeat(64) }, 'fp4'], [{ identity: 'd'.repeat(64), secret_fingerprint: '' }, '']] as const) {
       const d = makeFakeDevice({ handler: (r) => (r.method === 'nostrconnect_v2' ? { result: echo(echoOver) } : r.method === 'revoke_client' ? { error: 'boom' } : undefined) });
       const c = d.client();
       c.start();
-      const err = await nostrconnectV2(c, req()).catch((e: unknown) => e) as Error & { slotIndex?: number };
+      const err = await nostrconnectV2(c, req()).catch((e: unknown) => e) as Error & { slotIndex?: number; secretFingerprint?: string };
       expect(err.message).toBe('heartwood-mint-mismatch-unrevoked');
       expect(err.slotIndex).toBe(4);
+      expect(err.secretFingerprint).toBe(fp);
       c.stop();
     }
   });

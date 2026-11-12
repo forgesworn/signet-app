@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { KnownPlacesCard, KnownPlacesDependantCard, type KnownPlacesCardProps } from './KnownPlacesCard';
 import type { KnownPlace } from '../types/known-places';
+import { HeartwoodCopyError } from '../lib/heartwood-mgmt-error-copy';
 
 const native = vi.hoisted(() => ({ value: true }));
 vi.mock('../lib/native', () => ({ isNativeApp: () => native.value }));
@@ -184,6 +185,18 @@ describe('KnownPlacesCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     await settle();
     expect(screen.getByRole('alert').textContent).toBe("Your Heartwood didn't answer. Check it's on and online, then try again.");
+  });
+
+  it('shows copy already put in plain words as it is, not mapped a second time', async () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined });
+    const { a } = setup({ places: [nc] });
+    const copy = 'Your Heartwood replied: "failed to publish (slot_table)".';
+    a.disconnect.mockRejectedValue(new HeartwoodCopyError(copy));
+    expand('nc');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
+    expect(screen.getByRole('alert').textContent).toBe(copy);
   });
 
   it('says why a Revoke on Heartwood failed', async () => {
