@@ -8328,6 +8328,9 @@ function AppContent() {
           const kept = recordFor(e.slot);
           track(kept);
           try { await persist(kept); } catch { /* held for this session */ }
+          // As on success: an earlier "Through My Signet" pairing goes, so it
+          // can't wake up (and sign) if this record is dropped later.
+          try { await disconnectClient(clientHex); } catch { /* Disconnect clears it too */ }
           recordPlace(kept);
         }
         throw e;
