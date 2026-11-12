@@ -33,6 +33,12 @@ interface Props {
   isPairedChild?: boolean;
   /** Paired straight to the Heartwood: the wait is an ask on the guardian's phone. */
   childDirect?: boolean;
+  /**
+   * The site can be given a link straight to the Heartwood that holds this
+   * identity's key. The quick approve keeps its behaviour; this only adds a
+   * way to the full picker, where the choice is made.
+   */
+  heartwoodLinkOffered?: boolean;
 }
 
 const VALID_AGE_RANGES = ['0-3', '4-7', '8-12', '13-17', '18+'];
@@ -66,6 +72,7 @@ export function ApprovalOverlay({
   onDeny,
   isPairedChild = false,
   childDirect = false,
+  heartwoodLinkOffered = false,
 }: Props) {
   // Local approving flag — App.tsx owns the actual signEvent lifecycle but
   // doesn't surface a loading state down to the overlay. Tracking it here
@@ -220,6 +227,16 @@ export function ApprovalOverlay({
               </button>
             )}
           </div>
+        )}
+        {heartwoodLinkOffered && !approving && activeAllowed && !npCeilingBlocks && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={onOpenFullPicker}
+            style={{ width: '100%', marginTop: 8, fontSize: '0.85rem' }}
+          >
+            Let it sign on my Heartwood…
+          </button>
         )}
       </div>
     </div>
