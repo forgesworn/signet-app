@@ -3,6 +3,13 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## 0.26.0
+- Personas: "Add a key from my Heartwood" adds a key that lives on your Heartwood, such as an old nsec imported there, as a persona. My Signet signs as it through the Heartwood and never holds the key
+- Nostr Connect: when you approve an app you can choose "Straight to my Heartwood". The Heartwood that holds the persona takes the app over and signs for it directly, so My Signet can be closed
+- That is the default for apps that ask only for everyday signing. For an app that could change your profile, delete posts or pair other devices, the phone stays the default, and choosing the Heartwood shows what it would sign without a press
+- Where you're known: an app handed to your Heartwood shows "By your Heartwood, without asking this phone". Disconnect removes it from the Heartwood, and if this phone can't reach that Heartwood, "Forget on this phone" clears it here
+- Advanced settings takes operator keys for other Heartwoods, so an app can be handed to a persona on any of them
+
 ## 0.25.4
 - Getting started: "Connect a remote signer" now opens the camera so you can scan the bunker QR from your phone or Heartwood. Pasting the connection still works
 - Android: the back gesture now steps back through the first-run screens (restoring, connecting a signer, pairing with a guardian's phone, choosing a PIN) instead of doing nothing
