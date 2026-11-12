@@ -303,7 +303,9 @@ import {
   SIGN_IN_LINK_NO_ANSWER_COPY,
   SIGN_IN_LINK_UNSUPPORTED_COPY,
   SignInLinkUnmanagedError,
+  ackStateAfterLock,
   assertSignedByLinkPersona,
+  failedAckCarriesLink,
   findSignInHolder,
   isConfirmedSignInLink,
   reconcileSignInLinks,
@@ -1388,7 +1390,7 @@ function AppContent() {
   type RelayAuthAckState =
     | { status: 'approved'; siteName: string; postUrl?: string; variant?: 'app-permission'; byGuardian?: boolean }
     | { status: 'denied'; siteName: string; variant?: 'app-permission'; byGuardian?: boolean }
-    | { status: 'failed'; /** The answer being retried holds a bunker link (a bearer secret): cleared on lock. */ carriesLink?: boolean; relayHost: string; requestedRelay?: string; requestedRelays?: string[]; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
+    | { status: 'failed'; /** The answer being retried holds a Straight-to-my-Heartwood link (a bearer secret): cleared on lock. */ carriesLink?: boolean; relayHost: string; requestedRelay?: string; requestedRelays?: string[]; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
   const [relayAuthAckState, setRelayAuthAckState] = useState<RelayAuthAckState | null>(null);
 
   // Transient confirmation chip rendered on a dependant's card after the user
@@ -4642,12 +4644,6 @@ function AppContent() {
     // A write that lands after a lock must not put the records back on screen.
     if (encryptionKeyRef.current) setHeartwoodSignInLinks(saved);
   }, []);
-  /** Whether this phone holds an operator key for a link's Heartwood at all, running or not. Unreadable counts as yes. */
-  const hasSignInLinkOperator = useCallback(async (rec: HeartwoodSignInLinkRecord): Promise<boolean> => {
-    if (handoffClientsRef.current.some(c => c.deviceHex === rec.deviceHex)) return true;
-    const stored = await storedOperatorDevices();
-    return stored === null || stored.some(d => d.toLowerCase() === rec.deviceHex.toLowerCase());
-  }, [storedOperatorDevices]);
   /** The I/O of one Straight-to-my-Heartwood sign-in (the order it runs in is `runSignInLinkApproval`'s). */
   const buildSignInLinkIo = useCallback((req: { origin: string; appName: string; persona: string }, key: string): SignInLinkIo => {
     let holderClient: HeartwoodMgmtClient | null = null;
@@ -4670,17 +4666,15 @@ function AppContent() {
         try { status = await mgmtGetStatus(needClient()); } catch { /* unverified */ }
         if (!signInLinkSupported(status)) throw new HeartwoodCopyError(SIGN_IN_LINK_UNSUPPORTED_COPY);
       },
-      listRecords: () => readHeartwoodSignInLinks(key),
       putRecord: rec => changeSignInLinks(key, list => [...list.filter(r => r.label !== rec.label), rec]),
       dropRecord: rec => changeSignInLinks(key, list => list.filter(r => r.label !== rec.label)),
-      hasOperator: hasSignInLinkOperator,
       revokeRecord: revokeSignInLinkOnDevice,
       mint: (holder, label, policy) => {
         const client = needClient();
         return withOperatorLock(client, () => mgmtCreateClientV2(client, { label, identity: req.persona, policy }, { targetHex: holder.targetHex }));
       },
     };
-  }, [changeSignInLinks, revokeSignInLinkOnDevice, hasSignInLinkOperator]);
+  }, [changeSignInLinks, revokeSignInLinkOnDevice]);
   /** Whether "Straight to my Heartwood" can be offered, or honoured, for this identity on this request. */
   const signInLinkOfferedFor = useCallback((
     pubkey: string,
@@ -5133,9 +5127,11 @@ function AppContent() {
         if (!client || !slot) throw new Error('The Heartwood app is no longer listed.');
         await withOperatorLock(client, () => mgmtRevokeClient(client, { slotIndex: slot.slotIndex, secretFingerprint: slot.secretFingerprint }));
         await refreshHeartwoodSlots();
+        // A sign-in place whose slot was just revoked here loses its record and its Heartwood facts.
+        await reconcileSignInLinksNow();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, revokeSignInLinksOfPlace, signInLinksOfPlace, changeSignInLinks, heldHandoffsFor, showStoredHandoffs]);
+  }, [reconcileSignInLinksNow, knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, revokeSignInLinksOfPlace, signInLinksOfPlace, changeSignInLinks, heldHandoffsFor, showStoredHandoffs]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
@@ -5434,9 +5430,9 @@ function AppContent() {
         setSignerStatus(null);
         backendsIdentityId.current = null;
       }
-      // A failed sign-in answer waiting to be retried holds the response, and with it any bunker link
-      // (a bearer secret): it does not outlive the lock.
-      setRelayAuthAckState(prev => (prev?.status === 'failed' && prev.carriesLink ? null : prev));
+      // A failed sign-in answer waiting to be retried holds the response, and with it a Straight link
+      // (a bearer secret): it does not outlive the lock. Any other failed delivery is left as it was.
+      setRelayAuthAckState(ackStateAfterLock);
       // Drop the memoised sync-cache AES keys (family-bunker §11.1.10). The
       // encrypted rows stay in IDB — only the derived key is forgotten, so a
       // locked device can't read the cached sync plaintexts.
@@ -9783,7 +9779,7 @@ function AppContent() {
               primaryRelay: userRelay ? relayHostLabel(userRelay) : undefined,
               failureReason: realErr || consumerRelays.map(r => getRelayDeliveryStatus(r)?.reason).find(Boolean),
               siteName: capturedSiteName,
-              ...(capturedResponse.bunkerUri ? { carriesLink: true } : {}),
+              ...failedAckCarriesLink({ straightLink: !!signInLinkIo, bunkerUri: capturedResponse.bunkerUri }),
               retry: doPublish,
             });
             navigateReplace('relay-auth-ack');

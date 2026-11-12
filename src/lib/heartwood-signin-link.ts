@@ -208,17 +208,6 @@ export function checkSignInLinkEcho(reply: CreateClientV2Reply, expected: { pers
   return { ok: true, slotIndex: reply.slotIndex, secretFingerprint: reply.secretFingerprint, bunkerUri: reply.bunkerUri };
 }
 
-/**
- * The earlier links of one site, any identity on any master: the SDK holds one
- * client key per site, and a key moved onto a new slot on the same master
- * unbinds the old one, which would be left live with its grant. The record
- * being made now is left out.
- */
-export function signInLinksToRevoke(records: readonly HeartwoodSignInLinkRecord[], origin: string, exceptLabel: string): HeartwoodSignInLinkRecord[] {
-  const o = origin.toLowerCase();
-  return records.filter(r => r.origin.toLowerCase() === o && r.label !== exceptLabel);
-}
-
 /** A link record whose slot the device has confirmed (not one still waiting for the mint's answer). */
 export function isConfirmedSignInLink(r: HeartwoodSignInLinkRecord): boolean {
   return r.secretFingerprint.length > 0 && r.slotIndex !== undefined;
@@ -289,14 +278,10 @@ export interface SignInLinkIo {
   findHolder: () => Promise<{ deviceHex: string; targetHex: string }>;
   /** Throws when the device has definitely said it can't mint this. */
   ensureCapable: (holder: { deviceHex: string; targetHex: string }) => Promise<void>;
-  /** The stored records (never an in-memory copy). */
-  listRecords: () => Promise<HeartwoodSignInLinkRecord[]>;
   /** Save or replace the record with this label. */
   putRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
   /** Remove the record with this label from the store. */
   dropRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
-  /** Whether this phone holds an operator key for the record's Heartwood at all (running or not). False: nothing here can reach it. */
-  hasOperator: (rec: HeartwoodSignInLinkRecord) => Promise<boolean>;
   /** {@link revokeSignInLinkSlot} on the right operator client; throws unless the slot is gone. */
   revokeRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
   mint: (holder: { deviceHex: string; targetHex: string }, label: string, policy: SlotPolicyUpdate) => Promise<CreateClientV2Reply>;
@@ -312,10 +297,10 @@ async function quietly(task: Promise<unknown>): Promise<void> {
  *
  * 1. find the holder (and that it can mint this);
  * 2. save a pending record BEFORE anything changes on the device;
- * 3. revoke the site's earlier links (a failure stops here: nothing is minted);
- * 4. mint;
- * 5. check the answer is the slot that was asked for, else revoke it (by label) and throw;
- * 6. record the slot's index and fingerprint.
+ * 3. mint (earlier links of the same site are left alone: several browsers
+ *    may each hold one, and the reconcile reaps any that nothing uses);
+ * 4. check the answer is the slot that was asked for, else revoke it (by label) and throw;
+ * 5. record the slot's index and fingerprint.
  *
  * A record is dropped only once the slot is confirmed gone. A mint that got no
  * answer may still have made a slot: the record stays unless the device's own
@@ -333,23 +318,6 @@ export async function runSignInLinkApproval(io: SignInLinkIo): Promise<{ record:
     label, secretFingerprint: '', createdAt: io.now(),
   };
   await io.putRecord(pending);
-
-  try {
-    for (const prior of signInLinksToRevoke(await io.listRecords(), origin, label)) {
-      if (!(await io.hasOperator(prior))) {
-        // Nothing on this phone can reach that Heartwood: the record can't be acted on, so it must not stop this sign-in.
-        await quietly(io.dropRecord(prior));
-        continue;
-      }
-      await io.revokeRecord(prior);
-      // Gone from the device; a record left behind would only be dead weight.
-      await quietly(io.dropRecord(prior));
-    }
-  } catch (e) {
-    // Nothing was minted, so the pending record stands for nothing.
-    await quietly(io.dropRecord(pending));
-    throw e instanceof HeartwoodCopyError ? e : new HeartwoodCopyError(heartwoodMgmtErrorCopy(e));
-  }
 
   const policy = signInLinkPolicy(persona);
   let reply: CreateClientV2Reply;
@@ -499,4 +467,20 @@ export async function reconcileSignInLinks(records: readonly HeartwoodSignInLink
     }
   }
   return out;
+}
+
+/** The part of a failed-delivery ack state that decides whether it survives a lock. */
+export interface FailedAckLinkMark { status: string; carriesLink?: boolean }
+
+/** A failed answer being retried holds the response, so a Straight link (a bearer secret) is marked; nothing else is. */
+export function failedAckCarriesLink(p: { straightLink: boolean; bunkerUri: string | undefined }): { carriesLink?: true } {
+  return p.straightLink && p.bunkerUri ? { carriesLink: true } : {};
+}
+
+/**
+ * What the ack state becomes when the app locks: only a failed answer that carries a Straight link is
+ * dropped; every other state, including another sign-in's failed delivery, is returned untouched.
+ */
+export function ackStateAfterLock<T extends FailedAckLinkMark>(prev: T | null): T | null {
+  return prev && prev.status === 'failed' && prev.carriesLink ? null : prev;
 }
