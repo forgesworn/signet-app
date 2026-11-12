@@ -64,6 +64,7 @@ export const CAP_CLIENT_POLICY_FLAGS = 'client_policy_flags_v1';
 export const CAP_RESOLVE_APPROVAL = 'resolve_approval_v1';
 export const CAP_PAIRING_IDENTITY = 'pairing_identity_v1';
 export const CAP_MUTATION_CHALLENGE = 'mutation_challenge_v1';
+export const CAP_CLIENT_POLICY_V2 = 'client_policy_v2';
 
 /** Methods a strict (v2 exact) slot may list — `TOFU_SAFE_METHODS` in firmware. */
 export const TOFU_SAFE_METHODS: readonly string[] = [

@@ -24,6 +24,7 @@ import {
   updateClientPolicy,
   updateClientEscalate,
   nostrconnectV2,
+  createClientV2,
   revokeClient,
   revokeClientIdentity,
   clearClientIdentities,
@@ -1081,5 +1082,78 @@ describe('canRevokeClient', () => {
     expect(canRevokeClient(st(null))).toBeNull();
     expect(canRevokeClient(st([]))).toBe(false);
     expect(canRevokeClient(st(['mutation_challenge_v1']))).toBe(true);
+  });
+});
+
+// ─── create_client_v2 (a sign-in link) ──────────────────────────────────────
+
+describe('createClientV2', () => {
+  const persona = 'b'.repeat(64);
+  const req = () => ({
+    label: 'mysignet:kithmoot.com:0123abcd',
+    identity: persona,
+    policy: { ...policy, allowedMethods: ['get_public_key', 'sign_event'], allowedKinds: [] as number[], autoApprove: true, boundIdentity: persona },
+  });
+  const reply = (over: Record<string, unknown> = {}) => ({
+    slot_index: 5, label: 'mysignet:kithmoot.com:0123abcd', secret_fingerprint: 'FP5', npub_hex: persona.toUpperCase(),
+    bunker_uri: `bunker://${persona}?relay=wss%3A%2F%2Fhw.example&secret=${'9'.repeat(64)}`, signing_approved: true,
+    policy_version: 2, allowed_methods: ['sign_event', 'get_public_key'], allowed_kinds: [], auto_approve: true, ...over,
+  });
+
+  it('sends create_client_v2 with identity and a nested policy, as a mutation', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'create_client_v2' ? { result: reply() } : undefined) });
+    const c = d.client();
+    c.start();
+    const out = await createClientV2(c, req());
+    const sent = d.seen.find(s => s.method === 'create_client_v2')!;
+    expect(sent.mutationChallenge).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.params).toEqual({
+      label: 'mysignet:kithmoot.com:0123abcd',
+      identity: persona,
+      policy: {
+        allowed_methods: ['get_public_key', 'sign_event'], allowed_kinds: [], auto_approve: true,
+        escalate: policy.escalate, petition_on_deny: policy.petitionOnDeny, audit_child_wrap: policy.auditChildWrap,
+        bound_identity: persona,
+      },
+    });
+    expect(out).toMatchObject({
+      slotIndex: 5, secretFingerprint: 'fp5', label: 'mysignet:kithmoot.com:0123abcd', npubHex: persona,
+      policyVersion: 2, allowedMethods: ['sign_event', 'get_public_key'], allowedKinds: [], autoApprove: true,
+    });
+    expect(out.bunkerUri.startsWith(`bunker://${persona}?`)).toBe(true);
+    c.stop();
+  });
+
+  it('addresses the master that holds the identity when given a target', async () => {
+    const d = makeFakeDevice();
+    const c = d.client();
+    c.start();
+    const spy = vi.spyOn(c, 'request').mockResolvedValue(reply());
+    await createClientV2(c, req(), { targetHex: 'a'.repeat(64) });
+    expect(spy).toHaveBeenCalledWith('create_client_v2', expect.objectContaining({ identity: persona }), { targetHex: 'a'.repeat(64) });
+    c.stop();
+  });
+
+  it('reads a malformed reply as missing fields rather than throwing, so the caller can revoke by what it can see', async () => {
+    const d = makeFakeDevice({ handler: (r) => (r.method === 'create_client_v2' ? { result: { slot_index: 'x', bunker_uri: 7, allowed_kinds: ['a'] } } : undefined) });
+    const c = d.client();
+    c.start();
+    const out = await createClientV2(c, req());
+    expect(out).toEqual({
+      slotIndex: null, secretFingerprint: '', label: '', npubHex: '', bunkerUri: '', policyVersion: null,
+      allowedMethods: null, allowedKinds: null, autoApprove: null,
+    });
+    c.stop();
+  });
+
+  it('refuses bad input before anything is sent', async () => {
+    const d = makeFakeDevice();
+    const c = d.client();
+    c.start();
+    await expect(createClientV2(c, { ...req(), identity: 'nope' })).rejects.toThrow(/identity must be 64 hex/);
+    await expect(createClientV2(c, { ...req(), label: '' })).rejects.toThrow(/label is required/);
+    await expect(createClientV2(c, { ...req(), policy: { ...req().policy, boundIdentity: 'c'.repeat(64) } })).rejects.toThrow(/boundIdentity must equal identity/);
+    expect(d.seen).toHaveLength(0);
+    c.stop();
   });
 });
