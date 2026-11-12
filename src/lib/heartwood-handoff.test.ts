@@ -217,7 +217,11 @@ describe('handoffReach: what the Heartwood would sign that this phone asks about
       'Your Heartwood will sign anything this app asks, without a press, including profile changes, deletions and pairing other devices.');
     expect(handoffWarning({ kind: 'wide', covers: [5] })).toBe('Your Heartwood will sign deletions for this app, without a press.');
     expect(handoffWarning({ kind: 'wide', covers: [30078, 0, 24133] })).toBe(
-      'Your Heartwood will sign profile changes, pairing other devices and family permissions for Kinterest for this app, without a press.');
+      'Your Heartwood will sign profile changes, pairing other devices and app data for this app, without a press. Kinterest also uses app data for family permissions.');
+    expect(handoffWarning({ kind: 'wide', covers: [30078] })).toBe(
+      'Your Heartwood will sign app data for this app, without a press. Kinterest also uses app data for family permissions.');
+    expect(handoffWarning({ kind: 'wide', covers: [30078, 5, 30420] })).toBe(
+      'Your Heartwood will sign deletions, standing app permissions and app data for this app, without a press. Kinterest also uses app data for family permissions.');
     expect(handoffWarning({ kind: 'wide', covers: [...HANDOFF_ALWAYS_ASK_KINDS] })).not.toMatch(/\d/);
   });
 });

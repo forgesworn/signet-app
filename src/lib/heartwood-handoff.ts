@@ -63,8 +63,12 @@ const ALWAYS_ASK_WORDS: ReadonlyArray<readonly [number, string]> = [
   [5, 'deletions'],
   [24133, 'pairing other devices'],
   [30420, 'standing app permissions'],
-  [30078, 'family permissions for Kinterest'],
+  // Plain NIP-78 app data (app settings, mostly): named as such, with
+  // Kinterest's use of it said after the list so it doesn't garble it.
+  [30078, 'app data'],
 ];
+
+const APP_DATA_NOTE = ' Kinterest also uses app data for family permissions.';
 
 /** What a wide hand-off lets the Heartwood sign with no press, in plain words. Null when safe. */
 export function handoffWarning(reach: HandoffReach): string | null {
@@ -75,7 +79,7 @@ export function handoffWarning(reach: HandoffReach): string | null {
   const covers = reach.covers;
   const words = ALWAYS_ASK_WORDS.filter(([k]) => covers.includes(k)).map(([, w]) => w);
   const list = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0];
-  return `Your Heartwood will sign ${list} for this app, without a press.`;
+  return `Your Heartwood will sign ${list} for this app, without a press.${covers.includes(30078) ? APP_DATA_NOTE : ''}`;
 }
 
 /**
