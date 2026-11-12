@@ -297,17 +297,23 @@ import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt
 import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { readHeartwoodSignInLinks, updateHeartwoodSignInLinks, type HeartwoodSignInLinkRecord } from './lib/db';
 import {
+  SIGNIN_LINK_RECONCILE_DELAY_MS,
+  SIGN_IN_LINK_CANT_CARRY_COPY,
   SIGN_IN_LINK_NOT_OFFERED_COPY,
   SIGN_IN_LINK_NO_ANSWER_COPY,
   SIGN_IN_LINK_UNSUPPORTED_COPY,
-  abandonSignInLink,
+  SignInLinkUnmanagedError,
+  assertSignedByLinkPersona,
   findSignInHolder,
   isConfirmedSignInLink,
+  reconcileSignInLinks,
   revokeSignInLinkSlot,
   runSignInLinkApproval,
+  settleSignInLink,
   signInLinkLabel,
   signInLinkOffered,
   signInLinkSupported,
+  signInRequestCanCarryLink,
   type SignInLinkIo,
 } from './lib/heartwood-signin-link';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -1382,7 +1388,7 @@ function AppContent() {
   type RelayAuthAckState =
     | { status: 'approved'; siteName: string; postUrl?: string; variant?: 'app-permission'; byGuardian?: boolean }
     | { status: 'denied'; siteName: string; variant?: 'app-permission'; byGuardian?: boolean }
-    | { status: 'failed'; relayHost: string; requestedRelay?: string; requestedRelays?: string[]; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
+    | { status: 'failed'; /** The answer being retried holds a bunker link (a bearer secret): cleared on lock. */ carriesLink?: boolean; relayHost: string; requestedRelay?: string; requestedRelays?: string[]; primaryRelay?: string; failureReason?: string; siteName?: string; variant?: 'app-permission'; retry: () => Promise<void> };
   const [relayAuthAckState, setRelayAuthAckState] = useState<RelayAuthAckState | null>(null);
 
   // Transient confirmation chip rendered on a dependant's card after the user
@@ -4613,7 +4619,12 @@ function AppContent() {
   /** Revoke a sign-in link's slot on its Heartwood; throws (keep the record) unless it is gone. */
   const revokeSignInLinkOnDevice = useCallback(async (rec: HeartwoodSignInLinkRecord) => {
     const client = handoffClientsRef.current.find(c => c.deviceHex === rec.deviceHex);
-    if (!client) throw missingOperatorError(await storedOperatorDevices(), rec.deviceHex);
+    if (!client) {
+      const stored = await storedOperatorDevices();
+      // No operator key for that Heartwood on this phone: Forget on this phone is the way out.
+      if (stored && !stored.some(d => d.toLowerCase() === rec.deviceHex.toLowerCase())) throw new SignInLinkUnmanagedError();
+      throw missingOperatorError(stored, rec.deviceHex);
+    }
     const target = { targetHex: rec.targetHex };
     try {
       await withOperatorLock(client, () => revokeSignInLinkSlot({
@@ -4627,8 +4638,16 @@ function AppContent() {
   }, [storedOperatorDevices]);
   /** One writer at a time against the store, then the in-memory list follows it. The device is never called inside. */
   const changeSignInLinks = useCallback(async (key: string, change: (list: HeartwoodSignInLinkRecord[]) => HeartwoodSignInLinkRecord[]) => {
-    setHeartwoodSignInLinks(await updateHeartwoodSignInLinks(key, change));
+    const saved = await updateHeartwoodSignInLinks(key, change);
+    // A write that lands after a lock must not put the records back on screen.
+    if (encryptionKeyRef.current) setHeartwoodSignInLinks(saved);
   }, []);
+  /** Whether this phone holds an operator key for a link's Heartwood at all, running or not. Unreadable counts as yes. */
+  const hasSignInLinkOperator = useCallback(async (rec: HeartwoodSignInLinkRecord): Promise<boolean> => {
+    if (handoffClientsRef.current.some(c => c.deviceHex === rec.deviceHex)) return true;
+    const stored = await storedOperatorDevices();
+    return stored === null || stored.some(d => d.toLowerCase() === rec.deviceHex.toLowerCase());
+  }, [storedOperatorDevices]);
   /** The I/O of one Straight-to-my-Heartwood sign-in (the order it runs in is `runSignInLinkApproval`'s). */
   const buildSignInLinkIo = useCallback((req: { origin: string; appName: string; persona: string }, key: string): SignInLinkIo => {
     let holderClient: HeartwoodMgmtClient | null = null;
@@ -4654,15 +4673,22 @@ function AppContent() {
       listRecords: () => readHeartwoodSignInLinks(key),
       putRecord: rec => changeSignInLinks(key, list => [...list.filter(r => r.label !== rec.label), rec]),
       dropRecord: rec => changeSignInLinks(key, list => list.filter(r => r.label !== rec.label)),
+      hasOperator: hasSignInLinkOperator,
       revokeRecord: revokeSignInLinkOnDevice,
       mint: (holder, label, policy) => {
         const client = needClient();
         return withOperatorLock(client, () => mgmtCreateClientV2(client, { label, identity: req.persona, policy }, { targetHex: holder.targetHex }));
       },
     };
-  }, [changeSignInLinks, revokeSignInLinkOnDevice]);
+  }, [changeSignInLinks, revokeSignInLinkOnDevice, hasSignInLinkOperator]);
   /** Whether "Straight to my Heartwood" can be offered, or honoured, for this identity on this request. */
-  const signInLinkOfferedFor = useCallback((pubkey: string, selectionSource: 'guardian' | 'dependant' | undefined, combinedPermission: boolean): boolean => signInLinkOffered({
+  const signInLinkOfferedFor = useCallback((
+    pubkey: string,
+    selectionSource: 'guardian' | 'dependant' | undefined,
+    selectionKeypairType: string | undefined,
+    combinedPermission: boolean,
+    request: { relay?: string; sessionPubkey?: string; callbackUrl?: string },
+  ): boolean => signInLinkOffered({
     signingMode: preferences.signingMode,
     isPairedChild: preferences.signingMode === 'paired-child',
     childDirect,
@@ -4671,6 +4697,8 @@ function AppContent() {
     importedPersona: isImportedGuardianPersona(identity, pubkey),
     hasOperatorClient: handoffClients.length > 0,
     combinedPermission,
+    selectionKeypairType,
+    requestCanCarryLink: signInRequestCanCarryLink(request),
   }), [preferences.signingMode, childDirect, activeDependant, identity, handoffClients.length]);
   /** The sign-in links of one place (one site, one identity), stored order. */
   const signInLinksOfPlace = useCallback(async (place: { origin?: string; pubkey: string }): Promise<{ key: string; links: HeartwoodSignInLinkRecord[] }> => {
@@ -4694,6 +4722,92 @@ function AppContent() {
     }
     if (failure) throw failure.error;
   }, [signInLinksOfPlace, revokeSignInLinkOnDevice, changeSignInLinks]);
+
+  // One reconcile pass at a time (see `reconcileSignInLinks`): a request that comes in mid-pass queues
+  // ONE follow-up. The pass reads and drops through the same serialised store writer as everything else.
+  const signInReconcileRunning = useRef(false);
+  const signInReconcileQueued = useRef(false);
+  const reconcileSignInLinksNow = useCallback(async () => {
+    if (signInReconcileRunning.current) { signInReconcileQueued.current = true; return; }
+    signInReconcileRunning.current = true;
+    try {
+      do {
+        signInReconcileQueued.current = false;
+        const key = encryptionKeyRef.current;
+        if (!key) break;
+        const records = await readHeartwoodSignInLinks(key);
+        if (records.length === 0) continue;
+        const clientFor = (deviceHex: string) => handoffClientsRef.current.find(c => c.deviceHex === deviceHex);
+        await reconcileSignInLinks(records, {
+          nowMs: () => Date.now(),
+          listSlots: async t => {
+            const client = clientFor(t.deviceHex);
+            if (!client) return null;
+            return withOperatorLock(client, () => mgmtListClients(client, { targetHex: t.targetHex, strict: true }));
+          },
+          revokeSlot: async (t, slot) => {
+            const client = clientFor(t.deviceHex);
+            if (!client) throw new Error('no operator client');
+            await withOperatorLock(client, () => mgmtRevokeClient(client, slot, { targetHex: t.targetHex }));
+          },
+          dropRecord: async rec => {
+            if (encryptionKeyRef.current !== key) throw new Error('locked');
+            await changeSignInLinks(key, list => list.filter(l => l.label !== rec.label));
+          },
+        });
+      } while (signInReconcileQueued.current && encryptionKeyRef.current);
+    } catch { /* a pass never throws out; the next one looks again */ }
+    finally { signInReconcileRunning.current = false; }
+  }, [changeSignInLinks]);
+  // Once per unlock for each Heartwood whose operator client is up (a second one that comes up later gets its own pass).
+  const signInReconciled = useRef<{ key: string | null; devices: Set<string> }>({ key: null, devices: new Set() });
+  useEffect(() => {
+    const seen = signInReconciled.current;
+    if (!encryptionKey) { seen.key = null; seen.devices = new Set(); return; }
+    if (seen.key !== encryptionKey) { seen.key = encryptionKey; seen.devices = new Set(); }
+    const fresh = handoffClients.filter(c => !seen.devices.has(c.deviceHex));
+    if (fresh.length === 0) return;
+    for (const c of fresh) seen.devices.add(c.deviceHex);
+    void reconcileSignInLinksNow();
+  }, [encryptionKey, handoffClients, reconcileSignInLinksNow]);
+  // And once, a little after the unbound window, for each link handed over while unlocked. Cleared on lock.
+  const signInReconcileTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const armSignInLinkReconcile = useCallback(() => {
+    if (!encryptionKeyRef.current) return;
+    const timer = setTimeout(() => {
+      signInReconcileTimers.current.delete(timer);
+      void reconcileSignInLinksNow();
+    }, SIGNIN_LINK_RECONCILE_DELAY_MS);
+    signInReconcileTimers.current.add(timer);
+  }, [reconcileSignInLinksNow]);
+  useEffect(() => {
+    if (encryptionKey) return;
+    for (const timer of signInReconcileTimers.current) clearTimeout(timer);
+    signInReconcileTimers.current.clear();
+  }, [encryptionKey]);
+  useEffect(() => () => {
+    for (const timer of signInReconcileTimers.current) clearTimeout(timer);
+    signInReconcileTimers.current.clear();
+  }, []);
+  /** Deleting a persona: take its sign-in links off the Heartwood if it will, drop the records either way. Never throws, never blocks. */
+  const releaseSignInLinksOfPersona = useCallback(async (persona: string) => {
+    const key = encryptionKeyRef.current;
+    if (!key) return;
+    try {
+      const links = (await readHeartwoodSignInLinks(key)).filter(l => l.persona === persona.toLowerCase());
+      for (const rec of links) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            revokeSignInLinkOnDevice(rec),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 8_000); }),
+          ]);
+        } catch { /* best effort: the persona goes whether or not its links could be undone */ }
+        finally { if (timer) clearTimeout(timer); }
+      }
+      if (links.length > 0) await changeSignInLinks(key, list => list.filter(l => !links.some(x => x.label === l.label)));
+    } catch { /* never blocks the delete */ }
+  }, [revokeSignInLinkOnDevice, changeSignInLinks]);
 
   // One-hold pairing (spec A1b, A8-A11): is this phone's pairing an owner
   // pairing, and in which style. Gated on the Heartwood listing the bundle
@@ -4906,9 +5020,11 @@ function AppContent() {
       return { askToSign: !!client?.askToSign, lastSeenAt: client?.lastSeenAt, signedBy, appLabel, appIcon };
     }
     // A site that signs straight on the Heartwood: the device answers it, not this phone.
-    if (place.kind === 'sign-in' && place.origin && heartwoodSignInLinks.some(l => isConfirmedSignInLink(l)
-      && l.origin.toLowerCase() === place.origin!.toLowerCase() && l.persona === place.pubkey.toLowerCase())) {
-      return { heartwoodSignIn: true, signedBy: 'heartwood', appLabel, appIcon };
+    if (place.kind === 'sign-in' && place.origin) {
+      const mine = heartwoodSignInLinks.filter(l => l.origin.toLowerCase() === place.origin!.toLowerCase() && l.persona === place.pubkey.toLowerCase());
+      if (mine.some(l => isConfirmedSignInLink(l))) return { heartwoodSignIn: true, signInLinkRecords: true, signedBy: 'heartwood', appLabel, appIcon };
+      // Only a pending record (a mint that never answered): not shown as held, but Forget can have to deal with it.
+      if (mine.length > 0) return { signInLinkRecords: true, appLabel, appIcon };
     }
     if (place.kind === 'nip55') {
       // A grant is pinned to one identity; a row for another identity gets no say over it.
@@ -4927,6 +5043,15 @@ function AppContent() {
   }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion, heartwoodHandoffs, heartwoodSignInLinks, identity, preferences.signingMode, bunkerRouter]);
   const knownPlaceActions = useMemo<KnownPlaceActions>(() => {
     const clientOf = (place: KnownPlace) => place.placeKey.startsWith('nc:') ? place.placeKey.slice(3) : '';
+    // Every delete is awaited; one that fails reaches the row's error line, none is left running.
+    const forgetPlaceRows = async (place: KnownPlace) => {
+      const origin = place.origin;
+      const results = await Promise.allSettled([
+        knownPlaces.forget(place.id),
+        ...(origin ? [setOriginPinned(origin, false)] : []),
+      ]);
+      if (results.some(r => r.status === 'rejected')) throw new Error('Could not forget every record of this place.');
+    };
     return {
       pin: async (id, pinned) => {
         const place = knownPlaces.places.find(p => p.id === id);
@@ -4957,13 +5082,15 @@ function AppContent() {
         // A site that signs on the Heartwood is taken off it first: forgetting the row alone would
         // leave a live slot with nothing in the app that can reach it. A failure stops here, row intact.
         if (place.kind === 'sign-in') await revokeSignInLinksOfPlace(place);
-        // Every delete is awaited; one that fails reaches the row's error line, none is left running.
-        const origin = place.origin;
-        const results = await Promise.allSettled([
-          knownPlaces.forget(place.id),
-          ...(origin ? [setOriginPinned(origin, false)] : []),
-        ]);
-        if (results.some(r => r.status === 'rejected')) throw new Error('Could not forget every record of this place.');
+        await forgetPlaceRows(place);
+      },
+      forgetSignInLinksHere: async (place, forgetPlace) => {
+        // Offered once a Forget or Disconnect on a sign-in row has failed to take its link off the
+        // Heartwood (no operator key, no answer, wiped). The records go from this phone only; the
+        // confirm says the link may still be on the Heartwood (Sapwood). A Forget takes the place too.
+        const { key, links } = await signInLinksOfPlace(place);
+        await changeSignInLinks(key, list => list.filter(l => !links.some(x => x.label === l.label)));
+        if (forgetPlace) await forgetPlaceRows(place);
       },
       disconnect: async place => {
         // A site that signs on the Heartwood: take its slot off the device. The site stays a place
@@ -5008,7 +5135,7 @@ function AppContent() {
         await refreshHeartwoodSlots();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, revokeSignInLinksOfPlace, heldHandoffsFor, showStoredHandoffs]);
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, revokeSignInLinksOfPlace, signInLinksOfPlace, changeSignInLinks, heldHandoffsFor, showStoredHandoffs]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
@@ -5307,6 +5434,9 @@ function AppContent() {
         setSignerStatus(null);
         backendsIdentityId.current = null;
       }
+      // A failed sign-in answer waiting to be retried holds the response, and with it any bunker link
+      // (a bearer secret): it does not outlive the lock.
+      setRelayAuthAckState(prev => (prev?.status === 'failed' && prev.carriesLink ? null : prev));
       // Drop the memoised sync-cache AES keys (family-bunker §11.1.10). The
       // encrypted rows stay in IDB — only the derived key is forgotten, so a
       // locked device can't read the cached sync plaintexts.
@@ -9049,13 +9179,10 @@ function AppContent() {
     let signInLinkDelivered = false;
     if (signOnHeartwood) {
       const linkPubkey = resolveSelectedPubkey(selection, identity, dependants);
-      if (!linkPubkey || !signInLinkOfferedFor(linkPubkey, selection.source, !!combinedPermission)) {
-        throw new HeartwoodCopyError(SIGN_IN_LINK_NOT_OFFERED_COPY);
-      }
-      // A callback-less, same-device answer travels by BroadcastChannel and has no
-      // place for a link: refuse before anything is minted.
-      if (!(request.relay && request.sessionPubkey) && !request.callbackUrl) {
-        throw new HeartwoodCopyError("This sign-in can't carry a link to your Heartwood. Choose the other option.");
+      // Never the real identity, never a request with nowhere to put a link (a callback-less,
+      // same-device answer travels by BroadcastChannel): refused before anything is minted.
+      if (!linkPubkey || !signInLinkOfferedFor(linkPubkey, selection.source, selection.keypairType, !!combinedPermission, request)) {
+        throw new HeartwoodCopyError(signInRequestCanCarryLink(request) ? SIGN_IN_LINK_NOT_OFFERED_COPY : SIGN_IN_LINK_CANT_CARRY_COPY);
       }
       const linkKey = encryptionKeyRef.current;
       if (!linkKey) throw new Error('Unlock My Signet first.');
@@ -9447,6 +9574,8 @@ function AppContent() {
           // Straight to my Heartwood: the device mints the link, after the challenge is signed
           // and only while the request is still open. Nothing else hands a link here.
           if (!authDeliveryStillOpen(request)) return;
+          // Only the identity the link is for may have signed the challenge.
+          assertSignedByLinkPersona(authEvent.pubkey, signInLinkIo.request.persona);
           const minted = await runSignInLinkApproval(signInLinkIo);
           mintedSignInLink = minted.record;
           remoteBunkerUri = minted.bunkerUri;
@@ -9460,10 +9589,11 @@ function AppContent() {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
           // signer — no dependence on this app (a phone) staying open, which is
-          // what made the bunker-server passthrough flaky cross-device. Safe
-          // because the bunker gates every signature with a per-sign approval on
-          // the device: the consumer can request a signature but cannot produce
-          // one without the user physically approving it on the bunker.
+          // what made the bunker-server passthrough flaky cross-device. The link
+          // is an auto-approve slot (`signInLinkPolicy`): only the FIRST sign
+          // needs a hold on the device, then the site signs without a press.
+          // That is why Straight is opt-in, and why a slot nobody binds is
+          // revoked by `reconcileSignInLinks`.
           bunkerUri = handoff.uri;
         } else if (handoff.kind === 'in-page') {
           // A handoff must point to a live listener for the approved persona.
@@ -9653,6 +9783,7 @@ function AppContent() {
               primaryRelay: userRelay ? relayHostLabel(userRelay) : undefined,
               failureReason: realErr || consumerRelays.map(r => getRelayDeliveryStatus(r)?.reason).find(Boolean),
               siteName: capturedSiteName,
+              ...(capturedResponse.bunkerUri ? { carriesLink: true } : {}),
               retry: doPublish,
             });
             navigateReplace('relay-auth-ack');
@@ -9700,6 +9831,7 @@ function AppContent() {
         if (signInLinkIo) {
           // Straight to my Heartwood (see the relay path): minted only while the request is still open.
           if (!authDeliveryStillOpen(request)) return;
+          assertSignedByLinkPersona(authEvent.pubkey, signInLinkIo.request.persona);
           const minted = await runSignInLinkApproval(signInLinkIo);
           mintedSignInLink = minted.record;
           remoteBunkerUri = minted.bunkerUri;
@@ -9710,8 +9842,10 @@ function AppContent() {
         if (sameTabHandoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
-          // signer instead of through this app's NIP-46 server. Safe because the
-          // bunker gates every signature with a per-sign device approval. Mirror
+          // signer instead of through this app's NIP-46 server. The slot is
+          // auto-approve: only the first sign needs a hold on the device.
+          // On this path the link also travels in the callback query string, so
+          // an unbound slot is revoked by the reconcile. Mirror
           // of the relay/QR path — keep the two in lockstep. This URI outlives
           // the redirect, so it's the only bunker handoff valid on the same-tab
           // path.
@@ -9843,9 +9977,15 @@ function AppContent() {
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
       // A link minted for a sign-in that was never delivered would sit live on the
       // Heartwood with nobody holding its secret: take it down (the record stays if it can't be).
-      if (signInLinkIo && mintedSignInLink && !signInLinkDelivered) void abandonSignInLink(signInLinkIo, mintedSignInLink);
+      if (signInLinkIo && mintedSignInLink) {
+        // Delivered ⇒ kept (and looked at again once the unbound window has passed, which also
+        // cleans up a link whose publish then failed: nobody binds it). Else abandoned, never throwing.
+        void settleSignInLink(signInLinkIo, { minted: mintedSignInLink, delivered: signInLinkDelivered }).then(fate => {
+          if (fate === 'keep') armSignInLinkReconcile();
+        });
+      }
     }
-  }, [signInLinkOfferedFor, buildSignInLinkIo, pendingAuthRequest, identity, dependants, activeDependant, childDirect, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
+  }, [signInLinkOfferedFor, buildSignInLinkIo, armSignInLinkReconcile, pendingAuthRequest, identity, dependants, activeDependant, childDirect, recordOriginSignIn, urlAuthSiteName, signerStatus, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, backends, navigateReplace, consumerHint, consumerWarnings, consumerDisplayName, pendingPostUrl, requestFreshAuth, requestAuth, encryptionKey, loadFreshDependants, alignCarouselToApprovedSelection, resolveBunkerHandoffUri, authResponseCredentialForSigner, authSelectionLabel, bunkerServerEnabled, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, acquireApprovalRoute, routedApprovalUnavailableMessage, assertApprovalStillPending, authDeliveryStillOpen, claimAuthDelivery, clearNostrConnectTransientRouteByToken]);
 
   // One answer per request: starts the in-flight approval synchronously so a
   // Deny/Back tapped while signing is a no-op, refuses a request that has
@@ -12823,6 +12963,8 @@ function AppContent() {
               finally { if (ownedDelete) deleteBackend.destroy(); }
             }
           }
+          // Any link a site holds on a Heartwood for it comes off first, best effort: it never blocks the delete.
+          await releaseSignInLinksOfPersona(pubkey);
           if (depPubkey) {
             await removeDependantExtraPersona(depPubkey, pubkey);
           } else {
@@ -13914,7 +14056,7 @@ function AppContent() {
       onApprove: handleApproveAuthGuarded,
       // Straight to my Heartwood: offered (never defaulted) where the owner's own identity is held by a
       // Heartwood this phone manages. The combined online-play sign-in keeps its own answer.
-      canSignOnHeartwood: (pk: string) => signInLinkOfferedFor(pk, 'guardian', false),
+      canSignOnHeartwood: (pk: string, keypairType: string) => signInLinkOfferedFor(pk, 'guardian', keypairType, false, pendingAuthRequest),
       bunkerServerOn: bunkerServerEnabled,
       onDeny: handleDenyAuth,
       initialError: pickerInitialError ?? undefined,
@@ -15323,7 +15465,13 @@ function AppContent() {
               childDirect={childDirect}
               heartwoodLinkOffered={!overlayIdentity.isDependant
                 && !!overlayIdentity.publicKey
-                && signInLinkOfferedFor(overlayIdentity.publicKey, pendingAuthSelection?.source ?? 'guardian', !!signInAppPermissionsRef.current.get(pendingAuthRequest))}
+                && signInLinkOfferedFor(
+                  overlayIdentity.publicKey,
+                  pendingAuthSelection?.source ?? 'guardian',
+                  pendingAuthSelection?.keypairType ?? (overlayIdentity.type === 'Natural Person' ? 'natural-person' : 'persona'),
+                  !!signInAppPermissionsRef.current.get(pendingAuthRequest),
+                  pendingAuthRequest,
+                )}
             />
           );
         })()}

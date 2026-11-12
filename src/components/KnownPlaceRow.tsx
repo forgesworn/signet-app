@@ -7,6 +7,7 @@ import { canOpenPlace } from '../lib/known-place-open';
 import { isNativeApp } from '../lib/native';
 import { heartwoodMgmtErrorCopy } from '../lib/heartwood-mgmt-error-copy';
 import type { KeyHome } from '../lib/key-home';
+import { SIGN_IN_LINK_FORGET_HERE_COPY } from '../lib/heartwood-signin-link';
 
 export type KnownPlaceIdentityType = 'persona' | 'natural-person' | 'extra' | 'dependant' | 'bot';
 
@@ -29,6 +30,8 @@ export interface KnownPlaceCtx {
   heartwoodHeld?: boolean;
   /** sign-in: the site was given a link straight to the Heartwood, which signs for it; this phone is not needed. */
   heartwoodSignIn?: boolean;
+  /** sign-in: this phone holds link records for the place (even one still waiting for the mint's answer), so a failed Forget or Disconnect has a way out. */
+  signInLinkRecords?: boolean;
   /** What actually signs for this place's key, read live; wins over what was recorded at approval. */
   signedBy?: KeyHome;
 }
@@ -43,6 +46,11 @@ export interface KnownPlaceActions {
   revokeOnHeartwood(fingerprint: string): void | Promise<void>;
   /** An app handed to a Heartwood whose Disconnect failed: drop all its records and its row, here only. */
   forgetHandoffHere?(place: KnownPlace): void | Promise<void>;
+  /**
+   * A sign-in place whose link could not be taken off the Heartwood: drop its link records here,
+   * and the place itself when `forgetPlace` (the failed action was Forget).
+   */
+  forgetSignInLinksHere?(place: KnownPlace, forgetPlace: boolean): void | Promise<void>;
 }
 
 /** Disconnecting a site that signs on the Heartwood. */
@@ -136,6 +144,8 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   // Set once a Disconnect of an app handed to a Heartwood has failed, for any
   // reason (or an action found that Heartwood can't be managed from here).
   const [disconnectFailed, setDisconnectFailed] = useState(false);
+  // Same for a sign-in place's link: which action failed to take it off the Heartwood.
+  const [linkFailed, setLinkFailed] = useState<'forget' | 'disconnect' | null>(null);
 
   const label = placeLabel(place);
   const primary = badges[0] ?? null;
@@ -149,18 +159,23 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const channelSentence = CHANNEL_SENTENCE[place.channel];
 
   const heartwoodHeld = place.kind === 'nip46' && !!ctx.heartwoodHeld;
-  const run = async (fn: () => void | Promise<void>, opts: { disconnecting?: boolean } = {}) => {
+  const hasLinkRecords = place.kind === 'sign-in' && !!ctx.signInLinkRecords;
+  const run = async (fn: () => void | Promise<void>, opts: { disconnecting?: boolean; forgetting?: boolean } = {}) => {
     if (busy) return;
     setBusy(true); setError('');
     try { await fn(); } catch (e) {
       setError(heartwoodMgmtErrorCopy(e));
+      if (hasLinkRecords && (opts.disconnecting || opts.forgetting)) {
+        setLinkFailed(opts.forgetting ? 'forget' : 'disconnect'); setConfirm(null);
+      }
       // A Heartwood app whose Disconnect failed can still be forgotten here.
       if (heartwoodHeld && (opts.disconnecting || (e as { unmanaged?: unknown } | null)?.unmanaged === true)) {
         setDisconnectFailed(true); setConfirm(null);
       }
     } finally { setBusy(false); }
   };
-  const canForgetHere = heartwoodHeld && disconnectFailed && !!actions.forgetHandoffHere;
+  const canForgetHere = (heartwoodHeld && disconnectFailed && !!actions.forgetHandoffHere)
+    || (hasLinkRecords && linkFailed !== null && !!actions.forgetSignInLinksHere);
 
   // A phone-app row's recorded signer is always 'local' whoever signs, so it is never a fallback there.
   const signedBy = place.kind === 'nip55' ? ctx.signedBy : ctx.signedBy ?? RECORDED_SIGNER[place.signer];
@@ -251,16 +266,16 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
                 ? (heartwoodSignIn
                   ? 'Takes this site off your Heartwood and removes it from your phone. The site still has your account; sign out there too.'
                   : 'Removes this from your phone. The site still has your account; sign out there too.')
-                : confirm === 'forget-here' ? FORGET_HANDOFF_HERE_COPY
+                : confirm === 'forget-here' ? (place.kind === 'sign-in' ? SIGN_IN_LINK_FORGET_HERE_COPY : FORGET_HANDOFF_HERE_COPY)
                 : place.kind === 'sign-in' ? SIGN_IN_DISCONNECT_COPY
                 : 'This app will have to pair again.'}</p>
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}
                 onClick={() => void run(async () => {
                   await (confirm === 'forget' ? actions.forget(place)
-                    : confirm === 'forget-here' ? actions.forgetHandoffHere?.(place)
+                    : confirm === 'forget-here' ? (place.kind === 'sign-in' ? actions.forgetSignInLinksHere?.(place, linkFailed === 'forget') : actions.forgetHandoffHere?.(place))
                     : actions.disconnect(place));
                   setConfirm(null);
-                }, { disconnecting: confirm === 'disconnect' })}>
+                }, { disconnecting: confirm === 'disconnect', forgetting: confirm === 'forget' })}>
                 {confirm === 'forget' ? 'Forget' : confirm === 'forget-here' ? 'Forget on this phone' : 'Disconnect'}
               </button>
               <button type="button" className="btn btn-ghost kp-btn" onClick={() => setConfirm(null)}>Cancel</button>

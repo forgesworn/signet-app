@@ -6,6 +6,7 @@ import type { SignetIdentity } from '../types';
 import type { AuthRequest } from '../lib/qr-router';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 import { handoffWarning } from '../lib/heartwood-handoff';
+import { signInLinkUnverifiedOriginCopy } from '../lib/heartwood-signin-link';
 
 /**
  * "How {site} signs": the straight-to-Heartwood choice is offered only when the
@@ -15,7 +16,7 @@ import { handoffWarning } from '../lib/heartwood-handoff';
 
 afterEach(cleanup);
 
-const request: AuthRequest = {
+const base: AuthRequest = {
   type: 'signet-auth-request',
   relays: [],
   requestId: 'f'.repeat(32),
@@ -23,6 +24,12 @@ const request: AuthRequest = {
   origin: 'https://kithmoot.com',
   timestamp: Date.now(),
 };
+// How a request arrives decides what can be offered: a redirect callback is held to the origin;
+// a relay/QR request names its own; a bare same-device request has nowhere to put a link.
+const redirectRequest = { ...base, callbackUrl: 'https://kithmoot.com/cb' } as AuthRequest;
+const relayRequest = { ...base, relay: 'wss://relay.example', sessionPubkey: 'd'.repeat(64) } as AuthRequest;
+const bareRequest = base;
+const request = redirectRequest;
 
 const PERSONA = 'b'.repeat(64);
 const identity = {
@@ -66,7 +73,7 @@ describe('ApproveAuth — straight to my Heartwood', () => {
   it('shows no choice when the app says it cannot be given for this pubkey', () => {
     const can = vi.fn(() => false);
     renderPage({ canSignOnHeartwood: can });
-    expect(can).toHaveBeenCalledWith(PERSONA);
+    expect(can).toHaveBeenCalledWith(PERSONA, 'persona');
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
@@ -81,8 +88,8 @@ describe('ApproveAuth — straight to my Heartwood', () => {
     expect(screen.getByText(/kithmoot\.com signs with your Heartwood directly, and My Signet can be closed\. The first time it signs, your Heartwood asks you to hold its button down once\./)).toBeTruthy();
   });
 
-  it('names the second option Through My Signet when the in-page Bunker is on', () => {
-    renderPage({ canSignOnHeartwood: () => true, bunkerServerOn: true });
+  it('names the second option Through My Signet when the in-page Bunker is on, on a relay request', () => {
+    renderPage({ request: relayRequest, canSignOnHeartwood: () => true, bunkerServerOn: true });
     const second = screen.getByLabelText(/Through My Signet/) as HTMLInputElement;
     expect(second.checked).toBe(true);
     expect(screen.getByText('My Signet has to stay open to answer.')).toBeTruthy();
@@ -117,5 +124,42 @@ describe('ApproveAuth — straight to my Heartwood', () => {
     const appPermission = { v: 1, permission: 'online-play' } as unknown as SignInAppPermission;
     renderPage({ canSignOnHeartwood: () => true, appPermission });
     expect(screen.queryByRole('radiogroup', { name: /signs/ })).toBeNull();
+  });
+});
+
+describe('ApproveAuth — straight to my Heartwood: where the request came from', () => {
+  it('on a redirect request the second option is always Sign in only, even with the in-page Bunker on', () => {
+    renderPage({ request: redirectRequest, canSignOnHeartwood: () => true, bunkerServerOn: true });
+    expect(screen.getByLabelText(/Sign in only/)).toBeTruthy();
+    expect(screen.queryByText(/Through My Signet/)).toBeNull();
+  });
+
+  it('is never offered for a request with nowhere to put a link (no callback, no relay)', () => {
+    const can = vi.fn(() => true);
+    renderPage({ request: bareRequest, canSignOnHeartwood: can });
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+  });
+
+  it('is never offered for the real identity, and the app is not even asked', () => {
+    const can = vi.fn(() => true);
+    const active = { ...identity, naturalPersonActive: true, naturalPerson: { ...identity.naturalPerson, displayName: 'Real Name' } } as unknown as SignetIdentity;
+    renderPage({ canSignOnHeartwood: can, identity: active, requireNpConfirmation: false, consumerHint: { allow: ['natural-person'] }, defaultSelection: { source: 'guardian', keypairType: 'natural-person' } });
+    expect(screen.getAllByText(/Real Name/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(can).not.toHaveBeenCalled();
+  });
+
+  it('says the origin is unverified under Straight on a relay/QR request, whether or not Straight is selected', () => {
+    renderPage({ request: relayRequest, canSignOnHeartwood: () => true });
+    const copy = signInLinkUnverifiedOriginCopy('kithmoot.com');
+    expect(copy).toBe("My Signet can't confirm this request came from kithmoot.com. Choose this only if you started signing in on kithmoot.com yourself.");
+    expect(screen.getByText(copy)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    expect(screen.getByText(copy)).toBeTruthy();
+  });
+
+  it('does not say it on a redirect request, where the callback is held to the origin', () => {
+    renderPage({ request: redirectRequest, canSignOnHeartwood: () => true });
+    expect(screen.queryByText(/can't confirm this request came from/)).toBeNull();
   });
 });

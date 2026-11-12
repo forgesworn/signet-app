@@ -19,6 +19,7 @@ import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmS
 import { SignInOnlinePlay } from '../components/SignInOnlinePlay';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 import { handoffWarning } from '../lib/heartwood-handoff';
+import { signInLinkUnverifiedOriginCopy, signInRequestCanCarryLink, signInRequestIsRelay, type SignInRequestShape } from '../lib/heartwood-signin-link';
 
 /**
  * Resolve the display name for SharePreview. Returns `'(anonymous)'` when a
@@ -96,7 +97,7 @@ interface Props {
    * Heartwood, a child's phone, a dependant). The choice is offered, never the
    * default, and not on the combined online-play sign-in.
    */
-  canSignOnHeartwood?: (pubkey: string) => boolean;
+  canSignOnHeartwood?: (pubkey: string, keypairType: string) => boolean;
   /** The in-page Bunker is on: it names the other option ("Through My Signet") rather than "Sign in only". */
   bunkerServerOn?: boolean;
   /**
@@ -363,8 +364,16 @@ export function ApproveAuth({
   // Straight to the Heartwood: only for the owner's own identity the device holds, and
   // never on the combined online-play sign-in. A choice made for one identity does not
   // follow the user to one it is not offered for.
-  const selectedGuardianPubkey = selection?.source === 'guardian' ? resolveSelectedPubkey(selection, identity, dependants) : null;
-  const heartwoodOffered = !appPermission && !!selectedGuardianPubkey && !!canSignOnHeartwood?.(selectedGuardianPubkey);
+  // The real identity is never handed over, and a request with nowhere to put a link can't be offered it.
+  const requestShape = request as SignInRequestShape;
+  const selectedGuardianPubkey = selection?.source === 'guardian' && selection.keypairType !== 'natural-person'
+    ? resolveSelectedPubkey(selection, identity, dependants) : null;
+  const heartwoodOffered = !appPermission && signInRequestCanCarryLink(requestShape)
+    && !!selectedGuardianPubkey && !!selection && !!canSignOnHeartwood?.(selectedGuardianPubkey, selection.keypairType);
+  // A relay or QR request names its own origin and nothing proves it; a redirect callback is held to the origin.
+  const relayRequest = signInRequestIsRelay(requestShape);
+  // The in-page Bunker only answers for a relay request: the redirect path never uses it.
+  const throughMySignet = bunkerServerOn && relayRequest;
   const signOnHeartwood = heartwoodOffered && signChoice === 'heartwood';
 
   const isGuardianSelected = (keypairType: string) =>
@@ -887,6 +896,11 @@ export function ApproveAuth({
               <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                 {originDisplay} signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
               </span>
+              {relayRequest && (
+                <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>
+                  {signInLinkUnverifiedOriginCopy(originDisplay)}
+                </span>
+              )}
               {signChoice === 'heartwood' && (
                 <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
                   {handoffWarning({ kind: 'wide', covers: 'everything' })}
@@ -903,9 +917,9 @@ export function ApproveAuth({
               onChange={() => setSignChoice('default')}
             />
             <span>
-              {bunkerServerOn ? 'Through My Signet' : 'Sign in only'}
+              {throughMySignet ? 'Through My Signet' : 'Sign in only'}
               <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                {bunkerServerOn
+                {throughMySignet
                   ? 'My Signet has to stay open to answer.'
                   : `${originDisplay} learns who you are but can't sign anything for you.`}
               </span>

@@ -21,7 +21,7 @@ function place(key: string, over: Partial<KnownPlace> = {}): KnownPlace {
 }
 const actions = () => ({
   pin: vi.fn(), setAlias: vi.fn(), setAuto: vi.fn(), open: vi.fn(), forget: vi.fn(), disconnect: vi.fn(), revokeOnHeartwood: vi.fn(),
-  forgetHandoffHere: vi.fn(),
+  forgetHandoffHere: vi.fn(), forgetSignInLinksHere: vi.fn(),
 });
 
 function setup(over: Partial<KnownPlacesCardProps> = {}) {
@@ -274,6 +274,80 @@ describe('KnownPlacesCard', () => {
     expand('kithmoot');
     fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
     expect(screen.getByText(/Takes this site off your Heartwood/)).toBeTruthy();
+  });
+
+  describe('a sign-in site whose link could not be taken off the Heartwood', () => {
+    const NOTE = /The link may still be on your Heartwood\. You can remove it in Sapwood\./;
+    const withLink = { heartwoodSignIn: true, signInLinkRecords: true, signedBy: 'heartwood' as const };
+
+    it('a failed Disconnect offers Forget on this phone, which drops the records only', async () => {
+      const site = place('kithmoot');
+      const { a } = setup({ places: [site], ctxFor: () => withLink });
+      a.disconnect.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+      expand('kithmoot');
+      expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      await settle();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      expect(screen.getByText(NOTE)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      await settle();
+      expect(a.forgetSignInLinksHere).toHaveBeenCalledWith(site, false);
+      expect(a.forgetHandoffHere).not.toHaveBeenCalled();
+    });
+
+    it('a failed Forget offers it too, and asks for the place to go as well', async () => {
+      const site = place('kithmoot');
+      const { a } = setup({ places: [site], ctxFor: () => withLink });
+      a.forget.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+      expand('kithmoot');
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      await settle();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      expect(screen.getByText(NOTE)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      await settle();
+      expect(a.forgetSignInLinksHere).toHaveBeenCalledWith(site, true);
+    });
+
+    it('a site with only a pending record (not shown as held) gets the same way out from Forget', async () => {
+      const site = place('kithmoot');
+      const { a } = setup({ places: [site], ctxFor: () => ({ signInLinkRecords: true }) });
+      a.forget.mockRejectedValue(new HeartwoodCopyError("Your Heartwood didn't answer."));
+      expand('kithmoot');
+      expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      await settle();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      await settle();
+      expect(a.forgetSignInLinksHere).toHaveBeenCalledWith(site, true);
+    });
+
+    it('an ordinary sign-in site (no link records) never offers it, even when Forget fails', async () => {
+      const { a } = setup({ places: [place('plain')] });
+      a.forget.mockRejectedValue(new Error('Could not forget every record of this place.'));
+      expand('plain');
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      await settle();
+      expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
+    });
+
+    it('a Heartwood with no operator key on this phone says how to get out (unmanaged copy)', async () => {
+      const { SignInLinkUnmanagedError } = await import('../lib/heartwood-signin-link');
+      const { a } = setup({ places: [place('kithmoot')], ctxFor: () => withLink });
+      a.disconnect.mockRejectedValue(new SignInLinkUnmanagedError());
+      expand('kithmoot');
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      await settle();
+      expect(screen.getByRole('alert').textContent).toMatch(/Forget on this phone/);
+      expect(screen.getByRole('button', { name: 'Forget on this phone' })).toBeTruthy();
+    });
   });
 
   it('an ordinary sign-in site has no Disconnect and no Needs My Signet line', () => {

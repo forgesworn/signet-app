@@ -11,7 +11,18 @@ import {
   SIGN_IN_LINK_NOT_SAVED_COPY,
   SIGN_IN_LINK_NOT_SAVED_KEPT_COPY,
   SIGN_IN_LINK_NO_ANSWER_COPY,
+  SIGN_IN_LINK_UNAVAILABLE_COPY,
+  SIGN_IN_LINK_SIGNER_MISMATCH_COPY,
+  SIGNIN_LINK_UNBOUND_TTL_MS,
   abandonSignInLink,
+  assertSignedByLinkPersona,
+  isUnboundSlot,
+  reconcileSignInLinks,
+  settleSignInLink,
+  signInLinkFate,
+  signInRequestCanCarryLink,
+  signInRequestIsRelay,
+  type ReconcileIo,
   checkSignInLinkEcho,
   findSignInHolder,
   isConfirmedSignInLink,
@@ -36,6 +47,7 @@ const ORIGIN = 'https://kithmoot.com';
 const eligible: SignInLinkEligibility = {
   signingMode: 'bunker', isPairedChild: false, childDirect: false, hasActiveDependant: false,
   selectionSource: 'guardian', importedPersona: false, hasOperatorClient: true, combinedPermission: false,
+  selectionKeypairType: 'persona', requestCanCarryLink: true,
 };
 
 describe('signInLinkOffered', () => {
@@ -53,6 +65,8 @@ describe('signInLinkOffered', () => {
     ['imported persona', { importedPersona: true }],
     ['no operator client', { hasOperatorClient: false }],
     ['combined app-permission sign-in', { combinedPermission: true }],
+    ['the real identity', { selectionKeypairType: 'natural-person' }],
+    ['a request with nowhere to put a link', { requestCanCarryLink: false }],
   ])('is not offered: %s', (_name, over) => {
     expect(signInLinkOffered({ ...eligible, ...over })).toBe(false);
   });
@@ -119,6 +133,7 @@ describe('parseBunkerLink', () => {
 });
 
 const policy = signInLinkPolicy(PERSONA);
+const LABEL = 'mysignet:kithmoot.com:0123abcd';
 const goodReply = (over: Partial<CreateClientV2Reply> = {}): CreateClientV2Reply => ({
   slotIndex: 4,
   secretFingerprint: 'fp4',
@@ -134,7 +149,7 @@ const goodReply = (over: Partial<CreateClientV2Reply> = {}): CreateClientV2Reply
 
 describe('checkSignInLinkEcho', () => {
   it('accepts the slot that was asked for, in any order of methods', () => {
-    const r = checkSignInLinkEcho(goodReply(), { persona: PERSONA, policy });
+    const r = checkSignInLinkEcho(goodReply(), { persona: PERSONA, policy, label: LABEL });
     expect(r).toMatchObject({ ok: true, slotIndex: 4, secretFingerprint: 'fp4' });
   });
   it.each<[string, Partial<CreateClientV2Reply>]>([
@@ -155,19 +170,26 @@ describe('checkSignInLinkEcho', () => {
     ['no kinds echoed', { allowedKinds: null }],
     ['auto_approve off', { autoApprove: false }],
     ['no auto_approve', { autoApprove: null }],
+    ['a label that is not the one asked for', { label: 'mysignet:kithmoot.com:ffffffff' }],
+    ['no label', { label: '' }],
+    ['a link over 8192 characters', { bunkerUri: `bunker://${PERSONA}?relay=wss%3A%2F%2Fhw.example&secret=${SECRET}&pad=${'x'.repeat(8200)}` }],
+    ['a plaintext relay', { bunkerUri: `bunker://${PERSONA}?relay=ws%3A%2F%2Fhw.example&secret=${SECRET}` }],
+    ['one plaintext relay among good ones', { bunkerUri: `bunker://${PERSONA}?relay=wss%3A%2F%2Fa.example&relay=ws%3A%2F%2Fb.example&secret=${SECRET}` }],
+    ['a relay that is not a websocket', { bunkerUri: `bunker://${PERSONA}?relay=https%3A%2F%2Fa.example&secret=${SECRET}` }],
   ])('refuses %s', (_name, over) => {
-    expect(checkSignInLinkEcho(goodReply(over), { persona: PERSONA, policy }).ok).toBe(false);
+    expect(checkSignInLinkEcho(goodReply(over), { persona: PERSONA, policy, label: LABEL }).ok).toBe(false);
   });
-  it('names the slot for a revoke when the reply gave one, and not when it did not', () => {
-    const wrongIdentity = checkSignInLinkEcho(goodReply({ npubHex: OTHER }), { persona: PERSONA, policy });
-    expect(wrongIdentity).toMatchObject({ ok: false, slot: { slotIndex: 4, secretFingerprint: 'fp4' } });
-    const noSlot = checkSignInLinkEcho(goodReply({ slotIndex: null }), { persona: PERSONA, policy });
-    expect(noSlot).toMatchObject({ ok: false, slot: null });
-    const noFp = checkSignInLinkEcho(goodReply({ secretFingerprint: '' }), { persona: PERSONA, policy });
-    expect(noFp).toMatchObject({ ok: false, slot: null });
+  it('accepts loopback ws:// relays and links with no relay, as the app does elsewhere', () => {
+    expect(checkSignInLinkEcho(goodReply({ bunkerUri: `bunker://${PERSONA}?relay=ws%3A%2F%2Flocalhost%3A7777&relay=ws%3A%2F%2F127.0.0.1&secret=${SECRET}` }), { persona: PERSONA, policy, label: LABEL }).ok).toBe(true);
+    expect(checkSignInLinkEcho(goodReply({ bunkerUri: `bunker://${PERSONA}?secret=${SECRET}` }), { persona: PERSONA, policy, label: LABEL }).ok).toBe(true);
+  });
+  it('never names a slot in a refusal: the caller finds it by the label it chose', () => {
+    const wrongIdentity = checkSignInLinkEcho(goodReply({ npubHex: OTHER }), { persona: PERSONA, policy, label: LABEL });
+    expect(wrongIdentity).toEqual({ ok: false, reason: 'npub_hex' });
+    expect(Object.keys(wrongIdentity)).not.toContain('slot');
   });
   it('never puts the link in the verdict of a refusal', () => {
-    const r = checkSignInLinkEcho(goodReply({ npubHex: OTHER }), { persona: PERSONA, policy });
+    const r = checkSignInLinkEcho(goodReply({ npubHex: OTHER }), { persona: PERSONA, policy, label: LABEL });
     expect(JSON.stringify(r)).not.toContain(SECRET);
   });
 });
@@ -274,15 +296,18 @@ describe('findSignInHolder / signInHolderError', () => {
     expect(holder.targetHex).toBe('a'.repeat(64));
     expect(holder.client).toBe(c);
   });
-  it('says the Heartwood did not answer, in the sign-in wording, when no one holds it', async () => {
+  it('says no managed Heartwood holds it, not "didn\'t answer", when every device answered and none does', async () => {
     const c = clientWith([id('master', 0, 'a'.repeat(64))]);
-    await expect(findSignInHolder({ clients: [c], persona: PERSONA })).rejects.toThrow(SIGN_IN_LINK_NO_ANSWER_COPY);
+    await expect(findSignInHolder({ clients: [c], persona: PERSONA })).rejects.toThrow(SIGN_IN_LINK_UNAVAILABLE_COPY);
+    expect(SIGN_IN_LINK_UNAVAILABLE_COPY).not.toMatch(/didn't answer/);
+    expect(SIGN_IN_LINK_UNAVAILABLE_COPY).not.toMatch(/Through My Signet/);
   });
   it('says it when no device answered, without pointing at Through My Signet', async () => {
     const c = clientWith(new Error('timeout waiting for device (list_identities)'));
     let err: unknown;
     try { await findSignInHolder({ clients: [c], persona: PERSONA }); } catch (e) { err = e; }
     expect(err).toBeInstanceOf(HeartwoodCopyError);
+    expect((err as Error).message).toMatch(/didn't answer/);
     expect((err as Error).message).not.toMatch(/Through My Signet/);
   });
   it('keeps a device-specific reason and swaps only the other option', () => {
@@ -297,6 +322,8 @@ interface Rig {
   log: string[];
   store: HeartwoodSignInLinkRecord[];
   device: DeviceClientSlot[];
+  /** Devices (by deviceHex) this phone has no operator key for. */
+  noOperator: Set<string>;
   failure: { mint?: Error; putAt?: number; revokeIf?: (r: HeartwoodSignInLinkRecord) => Error | null; list?: Error; holder?: Error; capable?: Error; reply?: Partial<CreateClientV2Reply>; mintLands?: boolean };
 }
 
@@ -305,6 +332,7 @@ function rig(seed: HeartwoodSignInLinkRecord[] = []): Rig {
   const store = [...seed];
   const device: DeviceClientSlot[] = seed.filter(isConfirmedSignInLink).map(r => slotRow({ slotIndex: r.slotIndex!, label: r.label, secretFingerprint: r.secretFingerprint }));
   const failure: Rig['failure'] = {};
+  const noOperator = new Set<string>();
   let puts = 0;
   let next = 10;
   const io: SignInLinkIo = {
@@ -322,6 +350,7 @@ function rig(seed: HeartwoodSignInLinkRecord[] = []): Rig {
       if (at >= 0) store[at] = { ...r }; else store.push({ ...r });
     },
     dropRecord: async r => { log.push(`drop ${r.label.slice(-8)}`); const at = store.findIndex(x => x.label === r.label); if (at >= 0) store.splice(at, 1); },
+    hasOperator: async r => !noOperator.has(r.deviceHex),
     revokeRecord: async r => {
       log.push(`revoke ${r.label.slice(-8)}`);
       const err = failure.revokeIf?.(r);
@@ -341,7 +370,7 @@ function rig(seed: HeartwoodSignInLinkRecord[] = []): Rig {
       return goodReply({ slotIndex, secretFingerprint: 'fpnew', label, ...failure.reply });
     },
   };
-  return { io, log, store, device, failure };
+  return { io, log, store, device, failure, noOperator };
 }
 
 describe('runSignInLinkApproval', () => {
@@ -421,6 +450,8 @@ describe('runSignInLinkApproval', () => {
     ['a widened grant', { allowedMethods: [...policy.allowedMethods, 'nip04_encrypt'] }],
     ['an old policy version', { policyVersion: 1 }],
     ['a link with no secret', { bunkerUri: `bunker://${PERSONA}?relay=wss%3A%2F%2Fhw.example` }],
+    ['a reply about another label', { label: 'mysignet:kithmoot.com:ffffffff' }],
+    ['a plaintext relay in the link', { bunkerUri: `bunker://${PERSONA}?relay=ws%3A%2F%2Fhw.example&secret=${SECRET}` }],
   ])('revokes the slot it just made, drops the record and throws on %s', async (_n, reply) => {
     const r = rig();
     r.failure.reply = reply;
@@ -433,10 +464,11 @@ describe('runSignInLinkApproval', () => {
   it('keeps the record, and says so, when a mismatched slot can not be revoked', async () => {
     const r = rig();
     r.failure.reply = { npubHex: OTHER };
-    r.failure.revokeIf = x => (x.slotIndex === 10 ? new Error('timeout waiting for device (revoke_client)') : null);
+    r.failure.revokeIf = x => (x.label.endsWith('cafef00d') ? new Error('timeout waiting for device (revoke_client)') : null);
     await expect(runSignInLinkApproval(r.io)).rejects.toThrow(SIGN_IN_LINK_MISMATCH_KEPT_COPY);
     expect(r.store).toHaveLength(1);
-    expect(r.store[0]).toMatchObject({ label: 'mysignet:kithmoot.com:cafef00d', slotIndex: 10 });
+    // Kept as a pending record (no slot named): the reconcile finds it by its label.
+    expect(r.store[0]).toMatchObject({ label: 'mysignet:kithmoot.com:cafef00d', secretFingerprint: '' });
   });
 
   it('finds a mismatched slot by label when the reply named none', async () => {
@@ -507,5 +539,272 @@ describe('abandonSignInLink', () => {
     const log: string[] = [];
     await abandonSignInLink({ revokeRecord: async () => { throw new Error('no answer'); }, dropRecord: async () => { log.push('drop'); } }, rec());
     expect(log).toEqual([]);
+  });
+});
+
+// ─── S4: a record nothing on this phone can reach does not stop a sign-in ───
+
+describe('runSignInLinkApproval — earlier links on a Heartwood this phone has no operator for', () => {
+  const GONE = '7'.repeat(64);
+  it('drops that record without a revoke, and the sign-in goes on to mint', async () => {
+    const r = rig([rec({ label: 'mysignet:kithmoot.com:aaaaaaaa', deviceHex: GONE })]);
+    r.noOperator.add(GONE);
+    const out = await runSignInLinkApproval(r.io);
+    expect(r.log).not.toContain('revoke aaaaaaaa');
+    expect(r.log).toContain('drop aaaaaaaa');
+    expect(r.log).toContain('mint');
+    expect(r.store.map(x => x.label)).toEqual([out.record.label]);
+  });
+  it('still stops the sign-in when the device has an operator but does not answer', async () => {
+    const r = rig([rec({ label: 'mysignet:kithmoot.com:aaaaaaaa' })]);
+    r.failure.revokeIf = () => new Error('timeout waiting for device (revoke_client)');
+    await expect(runSignInLinkApproval(r.io)).rejects.toBeInstanceOf(HeartwoodCopyError);
+    expect(r.log).not.toContain('mint');
+    expect(r.store.map(x => x.label)).toEqual(['mysignet:kithmoot.com:aaaaaaaa']);
+  });
+});
+
+// ─── S6: the same flow with the REAL revoke, over a fake device list ────────
+
+describe('runSignInLinkApproval — through the real revokeSignInLinkSlot', () => {
+  function wired(seed: HeartwoodSignInLinkRecord[] = [], extraDevice: DeviceClientSlot[] = []) {
+    const r = rig(seed);
+    r.device.push(...extraDevice);
+    r.io.revokeRecord = async rec => {
+      r.log.push(`revoke ${rec.label.slice(-8)}`);
+      await revokeSignInLinkSlot({
+        rec,
+        revoke: async slot => {
+          const at = r.device.findIndex(s => s.slotIndex === slot.slotIndex && s.secretFingerprint === slot.secretFingerprint);
+          if (at < 0) throw new Error(`no such slot: ${slot.slotIndex}`);
+          r.log.push(`device-revoke ${slot.slotIndex}`);
+          r.device.splice(at, 1);
+        },
+        listClients: async () => { r.log.push('device-list'); return r.device.map(s => ({ ...s })); },
+      });
+    };
+    return r;
+  }
+
+  it('revokes an earlier link that has moved to another index, by its label', async () => {
+    const r = wired([rec({ label: 'mysignet:kithmoot.com:aaaaaaaa', slotIndex: 1, secretFingerprint: 'fp1' })]);
+    // The device now has that slot at index 6, not 1.
+    r.device.splice(0, r.device.length, slotRow({ slotIndex: 6, label: 'mysignet:kithmoot.com:aaaaaaaa', secretFingerprint: 'fp6' }));
+    await runSignInLinkApproval(r.io);
+    expect(r.log).toContain('device-list');
+    expect(r.log).toContain('device-revoke 6');
+    expect(r.device.map(s => s.label)).toEqual(['mysignet:kithmoot.com:cafef00d']);
+  });
+
+  it('a reply that names ANOTHER real slot revokes only the labelled one, and leaves that slot alone', async () => {
+    const other = slotRow({ slotIndex: 3, label: 'mysignet:other.example:99999999', secretFingerprint: 'fp3' });
+    const r = wired([], [other]);
+    r.failure.reply = { slotIndex: 3, secretFingerprint: 'fp3', npubHex: OTHER };
+    await expect(runSignInLinkApproval(r.io)).rejects.toThrow(SIGN_IN_LINK_MISMATCH_COPY);
+    expect(r.device.map(s => s.slotIndex)).toEqual([3]);
+    expect(r.store).toEqual([]);
+  });
+});
+
+// ─── Request shape, signer pin ──────────────────────────────────────────────
+
+describe('signInRequestIsRelay / signInRequestCanCarryLink', () => {
+  it('a relay request needs the relay and the session key', () => {
+    expect(signInRequestIsRelay({ relay: 'wss://r', sessionPubkey: 'a'.repeat(64) })).toBe(true);
+    expect(signInRequestIsRelay({ relay: 'wss://r' })).toBe(false);
+    expect(signInRequestIsRelay({ callbackUrl: 'https://x/cb' })).toBe(false);
+  });
+  it('can carry a link by relay or by redirect callback, and never on a bare BroadcastChannel request', () => {
+    expect(signInRequestCanCarryLink({ relay: 'wss://r', sessionPubkey: 'a'.repeat(64) })).toBe(true);
+    expect(signInRequestCanCarryLink({ callbackUrl: 'https://x/cb' })).toBe(true);
+    expect(signInRequestCanCarryLink({})).toBe(false);
+    expect(signInRequestCanCarryLink({ relay: 'wss://r' })).toBe(false);
+  });
+});
+
+describe('assertSignedByLinkPersona', () => {
+  it('passes for the identity the link is for, in any case', () => {
+    expect(() => assertSignedByLinkPersona(PERSONA.toUpperCase(), PERSONA)).not.toThrow();
+  });
+  it('throws, so nothing is minted, when another key signed', () => {
+    expect(() => assertSignedByLinkPersona(OTHER, PERSONA)).toThrow(SIGN_IN_LINK_SIGNER_MISMATCH_COPY);
+  });
+});
+
+// ─── S6: keep or abandon ────────────────────────────────────────────────────
+
+describe('signInLinkFate / settleSignInLink', () => {
+  it('nothing minted: nothing to do', () => {
+    expect(signInLinkFate({ minted: null, delivered: false })).toBe('none');
+    expect(signInLinkFate({ minted: null, delivered: true })).toBe('none');
+  });
+  it('minted and delivered: kept; minted and not delivered: abandoned', () => {
+    expect(signInLinkFate({ minted: rec(), delivered: true })).toBe('keep');
+    expect(signInLinkFate({ minted: rec(), delivered: false })).toBe('abandon');
+  });
+  it('abandons only what was never delivered (revoke, then drop), and never throws', async () => {
+    const log: string[] = [];
+    const io = { revokeRecord: async () => { log.push('revoke'); }, dropRecord: async () => { log.push('drop'); } };
+    expect(await settleSignInLink(io, { minted: rec(), delivered: true })).toBe('keep');
+    expect(log).toEqual([]);
+    expect(await settleSignInLink(io, { minted: rec(), delivered: false })).toBe('abandon');
+    expect(log).toEqual(['revoke', 'drop']);
+    const failing = { revokeRecord: async () => { throw new Error('no answer'); }, dropRecord: async () => { log.push('drop2'); } };
+    await expect(settleSignInLink(failing, { minted: rec(), delivered: false })).resolves.toBe('abandon');
+    expect(log).not.toContain('drop2');
+  });
+});
+
+// ─── S2/S3/N10: reconcile ───────────────────────────────────────────────────
+
+describe('isUnboundSlot', () => {
+  it('is unbound only with no current key and none authorised', () => {
+    expect(isUnboundSlot(slotRow({}))).toBe(true);
+    expect(isUnboundSlot(slotRow({ currentPubkey: 'k'.repeat(64) }))).toBe(false);
+    expect(isUnboundSlot(slotRow({ authorizedPubkeys: ['k'.repeat(64)] }))).toBe(false);
+  });
+});
+
+describe('reconcileSignInLinks', () => {
+  const NOW_MS = 100_000_000;
+  const oldAt = Math.floor((NOW_MS - SIGNIN_LINK_UNBOUND_TTL_MS) / 1000) - 1;
+  const youngAt = Math.floor((NOW_MS - SIGNIN_LINK_UNBOUND_TTL_MS) / 1000) + 60;
+  const target = (r: HeartwoodSignInLinkRecord) => `${r.deviceHex}:${r.targetHex}`;
+
+  function recon(lists: Record<string, DeviceClientSlot[] | null | Error>) {
+    const log: string[] = [];
+    const listCalls: string[] = [];
+    const io: ReconcileIo & { failRevoke?: (slotIndex: number) => boolean } = {
+      nowMs: () => NOW_MS,
+      listSlots: async t => {
+        const key = `${t.deviceHex}:${t.targetHex}`;
+        listCalls.push(key);
+        const v = lists[key];
+        if (v instanceof Error) throw v;
+        return v ?? null;
+      },
+      revokeSlot: async (_t, slot) => {
+        if (io.failRevoke?.(slot.slotIndex)) throw new Error('timeout waiting for device (revoke_client)');
+        log.push(`revoke ${slot.slotIndex}`);
+      },
+      dropRecord: async r => { log.push(`drop ${r.label.slice(-8)}`); },
+    };
+    return { io, log, listCalls };
+  }
+  const R = (over: Partial<HeartwoodSignInLinkRecord>) => rec({ createdAt: oldAt, ...over });
+  const T = target(rec());
+  const slotFor = (r: HeartwoodSignInLinkRecord, over: Partial<DeviceClientSlot> = {}) =>
+    slotRow({ slotIndex: r.slotIndex ?? 5, label: r.label, secretFingerprint: r.secretFingerprint || 'fpx', ...over });
+
+  it('drops a confirmed record whose slot is not on the device', async () => {
+    const a = R({ label: 'mysignet:kithmoot.com:aaaaaaaa' });
+    const { io, log } = recon({ [T]: [] });
+    expect(await reconcileSignInLinks([a], io)).toEqual({ dropped: 1, revoked: 0, skipped: 0 });
+    expect(log).toEqual(['drop aaaaaaaa']);
+  });
+
+  it('drops it even when young: a slot that is not there is not there', async () => {
+    const a = R({ createdAt: youngAt });
+    const { io, log } = recon({ [T]: [] });
+    await reconcileSignInLinks([a], io);
+    expect(log).toEqual([`drop ${a.label.slice(-8)}`]);
+  });
+
+  it('revokes an unbound slot older than the TTL, then drops the record', async () => {
+    const a = R({});
+    const { io, log } = recon({ [T]: [slotFor(a)] });
+    expect(await reconcileSignInLinks([a], io)).toEqual({ dropped: 1, revoked: 1, skipped: 0 });
+    expect(log).toEqual([`revoke ${a.slotIndex}`, `drop ${a.label.slice(-8)}`]);
+  });
+
+  it('leaves an unbound slot alone while it is younger than the TTL', async () => {
+    const a = R({ createdAt: youngAt });
+    const { io, log } = recon({ [T]: [slotFor(a)] });
+    expect(await reconcileSignInLinks([a], io)).toEqual({ dropped: 0, revoked: 0, skipped: 1 });
+    expect(log).toEqual([]);
+  });
+
+  it('leaves a bound slot alone however old it is (current key, or an authorised one)', async () => {
+    const a = R({ label: 'mysignet:kithmoot.com:aaaaaaaa', slotIndex: 1, secretFingerprint: 'fp1' });
+    const b = R({ label: 'mysignet:kithmoot.com:bbbbbbbb', slotIndex: 2, secretFingerprint: 'fp2' });
+    const { io, log } = recon({ [T]: [slotFor(a, { currentPubkey: 'k'.repeat(64) }), slotFor(b, { authorizedPubkeys: ['k'.repeat(64)] })] });
+    expect(await reconcileSignInLinks([a, b], io)).toEqual({ dropped: 0, revoked: 0, skipped: 2 });
+    expect(log).toEqual([]);
+  });
+
+  it('finds the slot by label when it has moved index, and revokes it where it is now', async () => {
+    const a = R({ slotIndex: 1, secretFingerprint: 'fp1' });
+    const { io, log } = recon({ [T]: [slotRow({ slotIndex: 9, label: a.label, secretFingerprint: 'fp9' })] });
+    await reconcileSignInLinks([a], io);
+    expect(log).toEqual(['revoke 9', `drop ${a.label.slice(-8)}`]);
+  });
+
+  it('does not confuse another slot at the same index with the record', async () => {
+    const a = R({ slotIndex: 1, secretFingerprint: 'fp1' });
+    const { io, log } = recon({ [T]: [slotRow({ slotIndex: 1, label: 'someone-else', secretFingerprint: 'other' })] });
+    await reconcileSignInLinks([a], io);
+    expect(log).toEqual([`drop ${a.label.slice(-8)}`]);
+  });
+
+  describe('a pending record (the mint never answered)', () => {
+    const pending = (over: Partial<HeartwoodSignInLinkRecord> = {}) => R({ slotIndex: undefined, secretFingerprint: '', ...over });
+    it('younger than the TTL is a mint in flight: untouched', async () => {
+      const p = pending({ createdAt: youngAt });
+      const { io, log } = recon({ [T]: [] });
+      expect(await reconcileSignInLinks([p], io)).toEqual({ dropped: 0, revoked: 0, skipped: 1 });
+      expect(log).toEqual([]);
+    });
+    it('older, with no slot by its label: dropped', async () => {
+      const p = pending();
+      const { io, log } = recon({ [T]: [slotRow({ slotIndex: 2, label: 'other' })] });
+      await reconcileSignInLinks([p], io);
+      expect(log).toEqual([`drop ${p.label.slice(-8)}`]);
+    });
+    it('older, found by label and unbound: revoked, then dropped', async () => {
+      const p = pending();
+      const { io, log } = recon({ [T]: [slotRow({ slotIndex: 4, label: p.label, secretFingerprint: 'fp4' })] });
+      await reconcileSignInLinks([p], io);
+      expect(log).toEqual(['revoke 4', `drop ${p.label.slice(-8)}`]);
+    });
+    it('older, found by label and bound: kept', async () => {
+      const p = pending();
+      const { io, log } = recon({ [T]: [slotRow({ slotIndex: 4, label: p.label, currentPubkey: 'k'.repeat(64) })] });
+      await reconcileSignInLinks([p], io);
+      expect(log).toEqual([]);
+    });
+  });
+
+  it('leaves a target with no operator client on this phone alone (and still does the others)', async () => {
+    const away = R({ label: 'mysignet:kithmoot.com:aaaaaaaa', deviceHex: '1'.repeat(64) });
+    const here = R({ label: 'mysignet:kithmoot.com:bbbbbbbb' });
+    const { io, log } = recon({ [target(away)]: null, [T]: [] });
+    expect(await reconcileSignInLinks([away, here], io)).toEqual({ dropped: 1, revoked: 0, skipped: 1 });
+    expect(log).toEqual(['drop bbbbbbbb']);
+  });
+
+  it('leaves a target that does not answer alone, and never throws', async () => {
+    const away = R({ label: 'mysignet:kithmoot.com:aaaaaaaa', deviceHex: '1'.repeat(64) });
+    const here = R({ label: 'mysignet:kithmoot.com:bbbbbbbb' });
+    const { io, log } = recon({ [target(away)]: new Error('timeout waiting for device (list_clients)'), [T]: [] });
+    await expect(reconcileSignInLinks([away, here], io)).resolves.toEqual({ dropped: 1, revoked: 0, skipped: 1 });
+    expect(log).toEqual(['drop bbbbbbbb']);
+  });
+
+  it('asks each target once per pass', async () => {
+    const a = R({ label: 'mysignet:kithmoot.com:aaaaaaaa', slotIndex: 1, secretFingerprint: 'fp1' });
+    const b = R({ label: 'mysignet:kithmoot.com:bbbbbbbb', slotIndex: 2, secretFingerprint: 'fp2' });
+    const c = R({ label: 'mysignet:kithmoot.com:cccccccc', slotIndex: 3, secretFingerprint: 'fp3', targetHex: '2'.repeat(64) });
+    const { io, listCalls } = recon({ [T]: [], [target(c)]: [] });
+    await reconcileSignInLinks([a, b, c], io);
+    expect(listCalls.sort()).toEqual([T, target(c)].sort());
+  });
+
+  it('keeps a record whose revoke failed for the next pass, and carries on with the rest', async () => {
+    const a = R({ label: 'mysignet:kithmoot.com:aaaaaaaa', slotIndex: 1, secretFingerprint: 'fp1' });
+    const b = R({ label: 'mysignet:kithmoot.com:bbbbbbbb', slotIndex: 2, secretFingerprint: 'fp2' });
+    const { io, log } = recon({ [T]: [slotFor(a), slotFor(b)] });
+    io.failRevoke = i => i === 1;
+    expect(await reconcileSignInLinks([a, b], io)).toEqual({ dropped: 1, revoked: 1, skipped: 1 });
+    expect(log).toEqual(['revoke 2', 'drop bbbbbbbb']);
   });
 });

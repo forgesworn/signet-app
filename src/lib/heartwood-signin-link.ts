@@ -22,6 +22,7 @@ import type { CreateClientV2Reply, DeviceIdentity, HeartwoodMgmtClient } from '.
 import { handoffPolicy, findHeartwoodHolder, HandoffNoAnswerError, HANDOFF_NO_ANSWER_COPY, type HandoffHolder } from './heartwood-handoff';
 import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './heartwood-mgmt-error-copy';
 import { isNoSuchSlotError, isStaleClientSlotMessage } from './child-device-pairing';
+import { isValidRelayUrl } from './relay-url';
 import type { HeartwoodSignInLinkRecord } from './db';
 
 /** Longest label this phone asks for. The firmware stores a label as given and sets no smaller limit that could be found. */
@@ -31,6 +32,31 @@ const SUFFIX_LEN = 8;
 
 export const SIGN_IN_LINK_NO_ANSWER_COPY = "Your Heartwood didn't answer. Check it's on and online, then try again, or choose the other option.";
 export const SIGN_IN_LINK_UNSUPPORTED_COPY = "This Heartwood's software can't give a site a direct link yet. Update it, or choose the other option.";
+/** None of the managed Heartwoods holds the identity (every one answered): not a "didn't answer". */
+export const SIGN_IN_LINK_UNAVAILABLE_COPY = "None of the Heartwoods this phone manages holds this identity. Add that Heartwood's operator key in Advanced settings, or choose the other option.";
+export const SIGN_IN_LINK_SIGNER_MISMATCH_COPY = "This sign-in was signed by a different key than the one chosen, so no link was made. Try again, or choose the other option.";
+export const SIGN_IN_LINK_NO_OPERATOR_COPY = "This phone no longer has the operator key for the Heartwood this site signs on. Add it in Advanced settings, or choose Forget on this phone and remove the link in Sapwood.";
+export const SIGN_IN_LINK_CANT_CARRY_COPY = "This sign-in can't carry a link to your Heartwood. Choose the other option.";
+/** The note under the Straight option when the request arrived by relay or QR, where nothing proves where it came from. */
+export function signInLinkUnverifiedOriginCopy(host: string): string {
+  return `My Signet can't confirm this request came from ${host}. Choose this only if you started signing in on ${host} yourself.`;
+}
+/** What Forget on this phone says once a link's slot could not be taken off the Heartwood. */
+export const SIGN_IN_LINK_FORGET_HERE_COPY = 'The link may still be on your Heartwood. You can remove it in Sapwood.';
+/** A pending or unbound link older than this is taken off the device by the next reconcile pass. */
+export const SIGNIN_LINK_UNBOUND_TTL_MS = 10 * 60 * 1000;
+/** How long after a hand-over the app looks again at the slot it made. */
+export const SIGNIN_LINK_RECONCILE_DELAY_MS = SIGNIN_LINK_UNBOUND_TTL_MS + 30_000;
+
+/** A revoke that can't be attempted: this phone holds no operator key for the link's Heartwood. */
+export class SignInLinkUnmanagedError extends HeartwoodCopyError {
+  readonly unmanaged = true;
+  constructor() {
+    super(SIGN_IN_LINK_NO_OPERATOR_COPY);
+    this.name = 'SignInLinkUnmanagedError';
+  }
+}
+
 export const SIGN_IN_LINK_NOT_OFFERED_COPY = "Straight to my Heartwood isn't available for this identity. Choose the other option.";
 export const SIGN_IN_LINK_MISMATCH_COPY = "Your Heartwood answered with a link this phone didn't ask for, so it wasn't used. Try again, or choose the other option.";
 export const SIGN_IN_LINK_MISMATCH_KEPT_COPY = "Your Heartwood answered with a link this phone didn't ask for, and didn't confirm removing it. It's in Where you're known, where you can disconnect it, or remove it in Sapwood.";
@@ -50,6 +76,28 @@ export interface SignInLinkEligibility {
   hasOperatorClient: boolean;
   /** The combined app-permission sign-in keeps its own answer. */
   combinedPermission: boolean;
+  /** The picked identity's kind; the real identity (`natural-person`) is never handed over. */
+  selectionKeypairType: string | undefined;
+  /** The request has somewhere to put a link: the relay path or a redirect callback. */
+  requestCanCarryLink: boolean;
+}
+
+/** The parts of a sign-in request that say how it travels. */
+export interface SignInRequestShape { relay?: string; sessionPubkey?: string; callbackUrl?: string }
+
+/** Arrived by relay or QR (cross-device): nothing about it proves where it came from. */
+export function signInRequestIsRelay(r: SignInRequestShape): boolean {
+  return !!(r.relay && r.sessionPubkey);
+}
+
+/** A link can only be sent by relay or to a redirect callback; a same-device BroadcastChannel answer has no place for it. */
+export function signInRequestCanCarryLink(r: SignInRequestShape): boolean {
+  return signInRequestIsRelay(r) || !!r.callbackUrl;
+}
+
+/** The key that signed the challenge must be the identity the link is for; anything else mints nothing. */
+export function assertSignedByLinkPersona(signerPubkey: string, persona: string): void {
+  if (signerPubkey.toLowerCase() !== persona.toLowerCase()) throw new HeartwoodCopyError(SIGN_IN_LINK_SIGNER_MISMATCH_COPY);
 }
 
 export function signInLinkOffered(i: SignInLinkEligibility): boolean {
@@ -60,7 +108,9 @@ export function signInLinkOffered(i: SignInLinkEligibility): boolean {
     && i.selectionSource === 'guardian'
     && !i.importedPersona
     && i.hasOperatorClient
-    && !i.combinedPermission;
+    && !i.combinedPermission
+    && i.selectionKeypairType !== 'natural-person'
+    && i.requestCanCarryLink;
 }
 
 /** The device can mint this only if it has not definitely said otherwise (a truncated status is unverified: try). */
@@ -112,30 +162,46 @@ function sameSet<T>(a: readonly T[], b: readonly T[]): boolean {
   return x.size === y.size && [...x].every(v => y.has(v));
 }
 
+/** The longest link the redirect callback will carry (`buildAuthCallbackUrl` drops anything over this). */
+export const SIGN_IN_LINK_URI_MAX = 8192;
+
 export type SignInLinkEcho =
   | { ok: true; slotIndex: number; secretFingerprint: string; bunkerUri: string }
-  /** `slot` is what the reply let the phone name for a revoke; null means find it by its label. */
-  | { ok: false; reason: string; slot: { slotIndex: number; secretFingerprint: string } | null };
+  /** Never names a slot: on any mismatch the phone finds the slot by the label it chose. */
+  | { ok: false; reason: string };
+
+/** Every `relay` in the link must be one this app would open itself (`wss://`, or loopback `ws://`). */
+function relaysAreSecure(uri: string): boolean {
+  const q = uri.indexOf('?');
+  if (q < 0) return true;
+  try {
+    return new URLSearchParams(uri.slice(q + 1)).getAll('relay').every(isValidRelayUrl);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The security core: the device's answer is the slot that was asked for or it
  * is not used. The identity must match in BOTH `npub_hex` and the link's own
- * pubkey, so a link to some other identity can never reach a site.
+ * pubkey, so a link to some other identity can never reach a site. The label
+ * must be the one asked for too: a reply about some other slot is not trusted,
+ * and the caller revokes by label, never by the slot the reply names.
  */
-export function checkSignInLinkEcho(reply: CreateClientV2Reply, expected: { persona: string; policy: SlotPolicyUpdate }): SignInLinkEcho {
+export function checkSignInLinkEcho(reply: CreateClientV2Reply, expected: { persona: string; policy: SlotPolicyUpdate; label: string }): SignInLinkEcho {
   const persona = expected.persona.toLowerCase();
-  const slot = reply.slotIndex !== null && reply.secretFingerprint.length > 0
-    ? { slotIndex: reply.slotIndex, secretFingerprint: reply.secretFingerprint }
-    : null;
-  const bad = (reason: string): SignInLinkEcho => ({ ok: false, reason, slot });
+  const bad = (reason: string): SignInLinkEcho => ({ ok: false, reason });
   if (reply.slotIndex === null || !Number.isInteger(reply.slotIndex)) return bad('slot_index');
   if (reply.secretFingerprint.length === 0) return bad('secret_fingerprint');
+  if (reply.label !== expected.label) return bad('label');
   if (reply.policyVersion !== 2) return bad('policy_version');
   if (reply.npubHex !== persona) return bad('npub_hex');
+  if (reply.bunkerUri.length > SIGN_IN_LINK_URI_MAX) return bad('bunker_uri length');
   const link = parseBunkerLink(reply.bunkerUri);
   if (!link) return bad('bunker_uri');
   if (link.pubkey !== persona) return bad('bunker_uri identity');
   if (!link.hasSecret) return bad('bunker_uri secret');
+  if (!relaysAreSecure(reply.bunkerUri)) return bad('bunker_uri relay');
   if (reply.allowedMethods === null || !sameSet(reply.allowedMethods, expected.policy.allowedMethods)) return bad('allowed_methods');
   if (reply.allowedKinds === null || !sameSet(reply.allowedKinds, expected.policy.allowedKinds)) return bad('allowed_kinds');
   if (reply.autoApprove !== expected.policy.autoApprove) return bad('auto_approve');
@@ -200,7 +266,8 @@ export async function findSignInHolder(params: {
   } catch (e) {
     throw signInHolderError(e);
   }
-  if (!holder) throw new HeartwoodCopyError(SIGN_IN_LINK_NO_ANSWER_COPY);
+  // Every device answered and none holds it: say that, not "didn't answer".
+  if (!holder) throw new HeartwoodCopyError(SIGN_IN_LINK_UNAVAILABLE_COPY);
   return holder;
 }
 
@@ -228,6 +295,8 @@ export interface SignInLinkIo {
   putRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
   /** Remove the record with this label from the store. */
   dropRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
+  /** Whether this phone holds an operator key for the record's Heartwood at all (running or not). False: nothing here can reach it. */
+  hasOperator: (rec: HeartwoodSignInLinkRecord) => Promise<boolean>;
   /** {@link revokeSignInLinkSlot} on the right operator client; throws unless the slot is gone. */
   revokeRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
   mint: (holder: { deviceHex: string; targetHex: string }, label: string, policy: SlotPolicyUpdate) => Promise<CreateClientV2Reply>;
@@ -245,7 +314,7 @@ async function quietly(task: Promise<unknown>): Promise<void> {
  * 2. save a pending record BEFORE anything changes on the device;
  * 3. revoke the site's earlier links (a failure stops here: nothing is minted);
  * 4. mint;
- * 5. check the answer is the slot that was asked for, else revoke it and throw;
+ * 5. check the answer is the slot that was asked for, else revoke it (by label) and throw;
  * 6. record the slot's index and fingerprint.
  *
  * A record is dropped only once the slot is confirmed gone. A mint that got no
@@ -267,6 +336,11 @@ export async function runSignInLinkApproval(io: SignInLinkIo): Promise<{ record:
 
   try {
     for (const prior of signInLinksToRevoke(await io.listRecords(), origin, label)) {
+      if (!(await io.hasOperator(prior))) {
+        // Nothing on this phone can reach that Heartwood: the record can't be acted on, so it must not stop this sign-in.
+        await quietly(io.dropRecord(prior));
+        continue;
+      }
       await io.revokeRecord(prior);
       // Gone from the device; a record left behind would only be dead weight.
       await quietly(io.dropRecord(prior));
@@ -289,14 +363,14 @@ export async function runSignInLinkApproval(io: SignInLinkIo): Promise<{ record:
     throw e instanceof HeartwoodCopyError ? e : new HeartwoodCopyError(heartwoodMgmtErrorCopy(e));
   }
 
-  const echo = checkSignInLinkEcho(reply, { persona, policy });
+  const echo = checkSignInLinkEcho(reply, { persona, policy, label });
   if (!echo.ok) {
-    const named = echo.slot ? { ...pending, ...echo.slot } : pending;
-    if (echo.slot) await quietly(io.putRecord(named));
+    // Whatever the reply named, the slot is found by the label this phone chose
+    // (a reply about some other slot must not get that slot revoked).
     let removed = false;
-    try { await io.revokeRecord(named); removed = true; } catch { /* kept below */ }
+    try { await io.revokeRecord(pending); removed = true; } catch { /* kept below */ }
     if (removed) {
-      await quietly(io.dropRecord(named));
+      await quietly(io.dropRecord(pending));
       throw new HeartwoodCopyError(SIGN_IN_LINK_MISMATCH_COPY);
     }
     throw new HeartwoodCopyError(SIGN_IN_LINK_MISMATCH_KEPT_COPY);
@@ -330,4 +404,99 @@ export async function abandonSignInLink(io: Pick<SignInLinkIo, 'revokeRecord' | 
     return;
   }
   await quietly(io.dropRecord(record));
+}
+
+/** What becomes of a minted link once the approval has run. */
+export type SignInLinkFate = 'none' | 'keep' | 'abandon';
+
+/**
+ * A link minted for a sign-in that was never delivered (Deny, withdrawn, a
+ * failure) is abandoned; one whose delivery was claimed is kept (a delivery
+ * that then fails to publish is cleaned up by the reconcile: nobody binds it).
+ */
+export function signInLinkFate(p: { minted: HeartwoodSignInLinkRecord | null; delivered: boolean }): SignInLinkFate {
+  if (!p.minted) return 'none';
+  return p.delivered ? 'keep' : 'abandon';
+}
+
+/** Apply {@link signInLinkFate}: abandon what was never delivered. Never throws. */
+export async function settleSignInLink(
+  io: Pick<SignInLinkIo, 'revokeRecord' | 'dropRecord'>,
+  p: { minted: HeartwoodSignInLinkRecord | null; delivered: boolean },
+): Promise<SignInLinkFate> {
+  const fate = signInLinkFate(p);
+  if (fate === 'abandon' && p.minted) await abandonSignInLink(io, p.minted);
+  return fate;
+}
+
+/** A slot nobody has bound: no current key and none authorised. */
+export function isUnboundSlot(slot: Pick<DeviceClientSlot, 'currentPubkey' | 'authorizedPubkeys'>): boolean {
+  return slot.currentPubkey === null && slot.authorizedPubkeys.length === 0;
+}
+
+export interface ReconcileIo {
+  nowMs: () => number;
+  /**
+   * The slots of one Heartwood master, strictly read. Null when this phone has
+   * no operator client for it; a throw means it did not answer. Either leaves
+   * that target's records alone this pass.
+   */
+  listSlots: (target: { deviceHex: string; targetHex: string }) => Promise<DeviceClientSlot[] | null>;
+  revokeSlot: (target: { deviceHex: string; targetHex: string }, slot: { slotIndex: number; secretFingerprint: string }) => Promise<void>;
+  dropRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
+}
+
+export interface ReconcileResult { dropped: number; revoked: number; skipped: number }
+
+/**
+ * Bring the stored links in line with what the Heartwoods say. For each record,
+ * with one `list_clients` per target per pass:
+ * - its slot (by index and fingerprint, else by label) is not on the device: drop the record;
+ * - the slot was never bound and the record is older than {@link SIGNIN_LINK_UNBOUND_TTL_MS}:
+ *   revoke it, then drop the record (a slot nobody connected to is a grant with no owner);
+ * - a pending record (the mint never answered) older than the TTL is found by label
+ *   and treated the same, or dropped when there is no such slot; a younger one is a
+ *   mint still in flight and is left alone;
+ * - a target this phone has no operator for, or that does not answer, is left alone.
+ * Never throws; a record whose revoke fails stays for the next pass.
+ */
+export async function reconcileSignInLinks(records: readonly HeartwoodSignInLinkRecord[], io: ReconcileIo): Promise<ReconcileResult> {
+  const out: ReconcileResult = { dropped: 0, revoked: 0, skipped: 0 };
+  const lists = new Map<string, DeviceClientSlot[] | null>();
+  const now = io.nowMs();
+  for (const rec of records) {
+    try {
+      const target = { deviceHex: rec.deviceHex, targetHex: rec.targetHex };
+      const key = `${rec.deviceHex}:${rec.targetHex}`;
+      if (!lists.has(key)) {
+        try { lists.set(key, await io.listSlots(target)); } catch { lists.set(key, null); }
+      }
+      const slots = lists.get(key) ?? null;
+      if (slots === null) { out.skipped++; continue; }
+      const confirmed = isConfirmedSignInLink(rec);
+      const ageMs = now - rec.createdAt * 1000;
+      const old = ageMs >= SIGNIN_LINK_UNBOUND_TTL_MS;
+      // A pending record may be a mint still on its way: not before the TTL.
+      if (!confirmed && !old) { out.skipped++; continue; }
+      const slot = (confirmed
+        ? slots.find(s => s.slotIndex === rec.slotIndex && s.secretFingerprint === rec.secretFingerprint)
+        : undefined) ?? slots.find(s => s.label === rec.label);
+      if (!slot) {
+        await io.dropRecord(rec);
+        out.dropped++;
+        continue;
+      }
+      if (old && isUnboundSlot(slot)) {
+        await io.revokeSlot(target, { slotIndex: slot.slotIndex, secretFingerprint: slot.secretFingerprint });
+        out.revoked++;
+        await io.dropRecord(rec);
+        out.dropped++;
+        continue;
+      }
+      out.skipped++;
+    } catch {
+      out.skipped++;
+    }
+  }
+  return out;
 }
