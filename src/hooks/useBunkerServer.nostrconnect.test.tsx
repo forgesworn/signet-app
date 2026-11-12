@@ -296,6 +296,22 @@ describe('an app handed to a Heartwood, before the stored list has loaded', () =
     expect(ws.published).toHaveLength(0);
   });
 
+  it('a load replaced while it was awaited: asks again of the list loaded now', async () => {
+    // Load A answers "not handed off" (its list was dropped by a lock); by
+    // then load B has landed and holds the app.
+    const loadA = deferred();
+    let calls = 0;
+    const h = renderOwnerServer(undefined, { isHandedOffClient: () => (++calls === 1 ? loadA.promise : true) });
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const clientSk = generateSecretKey();
+    await act(async () => { ws.deliver(getPubkey(clientSk, h.ownerBackend.activePublicKeyHex, 'early')); });
+    await new Promise(r => setTimeout(r, 20));
+    await act(async () => { loadA.resolve(false); });
+    await new Promise(r => setTimeout(r, 20));
+    expect(calls).toBe(2);
+    expect(ws.published).toHaveLength(0);
+  });
+
   it('answers once the list says the app is not handed off', async () => {
     const loading = deferred();
     const h = renderOwnerServer(undefined, { isHandedOffClient: () => loading.promise });

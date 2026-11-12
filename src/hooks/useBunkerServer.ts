@@ -752,7 +752,13 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // here (an approval prompt, a "not connected") would race the device's.
     // Right after unlock the list is still loading: wait for it, never answer
     // meanwhile (a leftover allow-always pairing would even be signed for).
-    const handedOff = route.dependantId ? false : isHandedOffClientRef.current?.(author);
+    // A wait can outlast the load it was for (a lock and re-unlock meanwhile),
+    // so once it lands the question is asked again of what is loaded now.
+    let handedOff = route.dependantId ? false : isHandedOffClientRef.current?.(author);
+    for (let asked = 0; asked < 3 && handedOff instanceof Promise; asked++) {
+      await handedOff;
+      handedOff = isHandedOffClientRef.current?.(author);
+    }
     if (handedOff && await handedOff) return;
 
     // Verify envelope signature — a relay can serve forged events.
