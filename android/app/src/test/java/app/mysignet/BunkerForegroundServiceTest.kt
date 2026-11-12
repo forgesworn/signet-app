@@ -230,6 +230,18 @@ class BunkerForegroundServiceTest {
         assertNotNull(fallback())
     }
 
+    @Test fun `closing the page with no service running posts the alert but no ongoing notification`() {
+        // After a quiet stop `enabled` is still set and no service is behind it.
+        BunkerForegroundService.start(context, "pubkey", relay)
+        BunkerForegroundService.setDependence(context, true, "Signet stopped signing", "Kid can't reach Signet until you open and unlock it.")
+        BunkerForegroundService.pageClosed(context)
+        shadowOf(Looper.getMainLooper()).idle()
+        val all = notifications()
+        assertEquals(1, all.size)
+        assertEquals("Signet stopped signing", postedText(all[0], Notification.EXTRA_TITLE))
+        assertEquals(0, all[0].flags and Notification.FLAG_ONGOING_EVENT)
+    }
+
     @Test fun `absent dependence prefs behave as needed`() {
         BunkerForegroundService.start(context, "pubkey", relay)
         createService()

@@ -212,7 +212,9 @@ class BunkerForegroundService : Service() {
                 standbyShown.set(false)
                 unlockAlerted.set(true)
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                nm.notify(NOTIF_FGS_ID, fgsNotification(context, FgsState.NOT_SIGNING))
+                // The ongoing notification belongs to a running service. After a quiet stop
+                // `enabled` is still set with none behind it, and nothing would clear this.
+                if (liveService != null) nm.notify(NOTIF_FGS_ID, fgsNotification(context, FgsState.NOT_SIGNING))
                 postUnlockAlert(context)
             }
             refreshLiveService()
