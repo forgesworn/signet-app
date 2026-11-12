@@ -157,6 +157,28 @@ describe('useNip55Server', () => {
     expect(result.current.grants['dev.unknown']).toBeUndefined();
   });
 
+  it('notes when an allowed-always app was last served, at most once an hour', async () => {
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
+    let t = 10_000_000;
+    const { result } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey, now: () => t }));
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(result.current.grants['dev.forgesworn.kithmoot'].lastUsedAt).toBe(10_000_000);
+    expect(JSON.parse(localStorage.getItem('signet.nip55.grants')!)['dev.forgesworn.kithmoot'].lastUsedAt).toBe(10_000_000);
+    t += 59 * 60 * 1000;
+    await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+    expect(result.current.grants['dev.forgesworn.kithmoot'].lastUsedAt).toBe(10_000_000);
+    t += 2 * 60 * 1000;
+    await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+    expect(result.current.grants['dev.forgesworn.kithmoot'].lastUsedAt).toBe(t);
+    // Changing the setting keeps it.
+    act(() => { result.current.setAllowAlways('dev.forgesworn.kithmoot', false, pubkey); });
+    expect(result.current.grants['dev.forgesworn.kithmoot'].lastUsedAt).toBe(t);
+  });
+
   it('setAllowAlways and forget leave a grant pinned to another identity unchanged', () => {
     const other = 'b'.repeat(64);
     localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey: other, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
