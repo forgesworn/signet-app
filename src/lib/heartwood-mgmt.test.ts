@@ -681,6 +681,27 @@ describe('listClients / parseDeviceClientSlot', () => {
     c.stop();
   });
 
+  it('strict: a reply that cannot be fully read throws, and targetHex addresses another master', async () => {
+    const target = 'a'.repeat(64);
+    const bad = makeFakeDevice({ handler: () => ({ result: { clients: [goodRow(), { ...goodRow(), slot_index: 'x' }] } }) });
+    const c1 = bad.client();
+    c1.start();
+    await expect(listClients(c1, { strict: true })).rejects.toThrow(/could not read/);
+    c1.stop();
+    const none = makeFakeDevice({ handler: () => ({ result: {} }) });
+    const c2 = none.client();
+    c2.start();
+    await expect(listClients(c2, { strict: true })).rejects.toThrow(/no client list/);
+    c2.stop();
+    const good = makeFakeDevice({ handler: () => ({ result: { clients: [goodRow()] } }) });
+    const c3 = good.client();
+    c3.start();
+    const spy = vi.spyOn(c3, 'request').mockResolvedValue({ clients: [goodRow()] });
+    expect(await listClients(c3, { targetHex: target, strict: true })).toHaveLength(1);
+    expect(spy).toHaveBeenCalledWith('list_clients', {}, { targetHex: target });
+    c3.stop();
+  });
+
   it('non-array clients ⇒ []', async () => {
     const d = makeFakeDevice({ handler: () => ({ result: { clients: 'nope' } }) });
     const c = d.client();

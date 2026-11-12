@@ -17,6 +17,7 @@ import {
   handoffScope,
   handoffsForClient,
   mergeHandoffs,
+  revokeHandoffSlot,
   sameHandoff,
   holderTarget,
   pickHandoffRelay,
@@ -25,6 +26,7 @@ import {
 import { buildOwnerPersonaRoutes } from './persona-bunker-routes';
 import { buildSlotBunkerUri } from './bunker-router';
 import type { DecryptingSigningBackend } from './signing-backend';
+import type { DeviceClientSlot } from './heartwood-mgmt-types';
 
 const hex = () => bytesToHex(generateSecretKey());
 
@@ -280,5 +282,78 @@ describe('the hand-off list this phone holds', () => {
     expect(handoffsForClient(list, 'A'.repeat(64)).map(h => h.slotIndex)).toEqual([1, 3]);
     expect(sameHandoff(rec('a', 1), rec('a', 3))).toBe(false);
     expect(sameHandoff(rec('a', 1), { ...rec('a', 1), secretFingerprint: 'AB'.repeat(8) })).toBe(true);
+  });
+});
+
+describe('revokeHandoffSlot: only the device list proves an app is gone', () => {
+  const app = hex();
+  const slot = { slotIndex: 3, secretFingerprint: 'ab'.repeat(8) };
+  const row = (over: Partial<DeviceClientSlot>): DeviceClientSlot => ({
+    slotIndex: 0, label: 'x', secretFingerprint: 'cd'.repeat(8), autoApprove: true, signingApproved: true, strictPermissions: true,
+    currentPubkey: null, authorizedPubkeys: [], allowedKinds: [], allowedMethods: [], escalate: false, petitionOnDeny: false,
+    auditChildWrap: false, boundIdentity: null, ...over,
+  });
+  function io(opts: { revoke?: (s: { slotIndex: number }) => Promise<void>; list?: () => Promise<DeviceClientSlot[]> } = {}) {
+    const revoke = vi.fn(opts.revoke ?? (async () => {}));
+    const listClients = vi.fn(opts.list ?? (async () => []));
+    return { revoke, listClients, p: { clientPubkey: app, slot, revoke, listClients } };
+  }
+  const noSuchSlot = () => new HeartwoodDeviceError('no such slot: 3', 'revoke_client');
+  const stale = () => new HeartwoodDeviceError('stale_client_slot: slot credential changed', 'revoke_client');
+
+  it('a confirmed revoke needs no listing', async () => {
+    const h = io();
+    await revokeHandoffSlot(h.p);
+    expect(h.revoke).toHaveBeenCalledTimes(1);
+    expect(h.listClients).not.toHaveBeenCalled();
+  });
+
+  it('any other failure keeps the record, without a listing', async () => {
+    const h = io({ revoke: async () => { throw new Error('timeout waiting for device (revoke_client)'); } });
+    await expect(revokeHandoffSlot(h.p)).rejects.toThrow(/timeout/);
+    expect(h.listClients).not.toHaveBeenCalled();
+  });
+
+  it('the exact messages only: a device text merely mentioning them keeps the record', async () => {
+    const h = io({ revoke: async () => { throw new HeartwoodDeviceError('refused: no such slot: 3 (busy)', 'revoke_client'); } });
+    await expect(revokeHandoffSlot(h.p)).rejects.toThrow(/busy/);
+    expect(h.listClients).not.toHaveBeenCalled();
+  });
+
+  it('"no such slot" and the app on no slot: gone', async () => {
+    const h = io({ revoke: async () => { throw noSuchSlot(); }, list: async () => [row({ currentPubkey: hex() })] });
+    await expect(revokeHandoffSlot(h.p)).resolves.toBeUndefined();
+    expect(h.revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('"stale_client_slot" with the app under another index: that slot is revoked once', async () => {
+    const calls: number[] = [];
+    const h = io({
+      revoke: async s => { calls.push(s.slotIndex); if (s.slotIndex === 3) throw stale(); },
+      list: async () => [row({ slotIndex: 7, secretFingerprint: 'ef'.repeat(8), authorizedPubkeys: [app] })],
+    });
+    await revokeHandoffSlot(h.p);
+    expect(calls).toEqual([3, 7]);
+    expect(h.revoke.mock.calls[1][0]).toEqual({ slotIndex: 7, secretFingerprint: 'ef'.repeat(8) });
+  });
+
+  it('the app still listed and its slot will not go: throws, so the record is kept', async () => {
+    const h = io({
+      revoke: async () => { throw stale(); },
+      list: async () => [row({ slotIndex: 7, currentPubkey: app.toUpperCase() })],
+    });
+    await expect(revokeHandoffSlot(h.p)).rejects.toThrow(/stale_client_slot/);
+    expect(h.revoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('a listing that fails keeps the record', async () => {
+    const h = io({ revoke: async () => { throw noSuchSlot(); }, list: async () => { throw new Error('list_clients reply had no client list'); } });
+    await expect(revokeHandoffSlot(h.p)).rejects.toThrow(/no client list/);
+  });
+
+  it('a record with no fingerprint is found by the app key', async () => {
+    const h = io({ list: async () => [row({ slotIndex: 9, secretFingerprint: '12'.repeat(8), currentPubkey: app })] });
+    await revokeHandoffSlot({ ...h.p, slot: { slotIndex: 9, secretFingerprint: '' } });
+    expect(h.revoke.mock.calls).toEqual([[{ slotIndex: 9, secretFingerprint: '12'.repeat(8) }]]);
   });
 });

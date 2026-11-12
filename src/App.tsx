@@ -289,7 +289,7 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { handOffNostrConnect, handoffAllowedFor, handoffsForClient, mergeHandoffs, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
+import { handOffNostrConnect, handoffAllowedFor, handoffsForClient, mergeHandoffs, revokeHandoffSlot, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
 import { heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -4535,16 +4535,19 @@ function AppContent() {
     const stored = await readHeartwoodHandoffs(key);
     return { records: handoffsForClient(mergeHandoffs(stored, unsavedHandoffsRef.current), clientPubkey), key };
   }, []);
-  /** Revoke a handed-off app's slot on its Heartwood. A slot already gone counts as revoked. */
+  /** Revoke a handed-off app's slot on its Heartwood; throws (keep the record) unless it is gone. */
   const revokeHandoffOnDevice = useCallback(async (rec: HeartwoodHandoffRecord) => {
     const client = handoffClientsRef.current.find(c => c.deviceHex === rec.deviceHex);
     if (!client) throw new Error("This Heartwood's operator key isn't on this phone. Add it in Advanced settings, then try again.");
-    try {
-      await withOperatorLock(client, () => mgmtRevokeClient(client, { slotIndex: rec.slotIndex, secretFingerprint: rec.secretFingerprint }, { targetHex: rec.targetHex }));
-    } catch (e) {
-      // Already gone on the device (removed in Sapwood): just drop the record.
-      if (!/no such slot|stale_client_slot/i.test(e instanceof Error ? e.message : String(e))) throw e;
-    }
+    // A slot already gone (removed in Sapwood) counts only once the device's
+    // client list confirms the app isn't on it under another index.
+    const target = { targetHex: rec.targetHex };
+    await withOperatorLock(client, () => revokeHandoffSlot({
+      clientPubkey: rec.clientPubkey,
+      slot: { slotIndex: rec.slotIndex, secretFingerprint: rec.secretFingerprint },
+      revoke: slot => mgmtRevokeClient(client, slot, target),
+      listClients: () => mgmtListClients(client, { ...target, strict: true }),
+    }));
   }, []);
   /** Disconnect an app handed to a Heartwood: revoke its slot on the device, then drop the record. */
   const revokeHeartwoodHandoff = useCallback(async (rec: HeartwoodHandoffRecord, key?: string) => {

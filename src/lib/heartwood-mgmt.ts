@@ -477,14 +477,25 @@ export function parseDeviceClientSlot(row: unknown): DeviceClientSlot | undefine
 }
 
 /** `list_clients` → `{ clients: [...] }`, snake_case → camelCase, malformed
- *  rows dropped. */
-export async function listClients(c: HeartwoodMgmtClient): Promise<DeviceClientSlot[]> {
-  const r = await c.request('list_clients');
-  if (!Array.isArray(r.clients)) return [];
+ *  rows dropped. `targetHex` lists another master's slots on the device.
+ *  `strict`: a reply that can't be fully read (no list, or a row that doesn't
+ *  parse) throws instead, for callers that must not read a gap as "absent". */
+export async function listClients(
+  c: HeartwoodMgmtClient,
+  opts?: { targetHex?: string; strict?: boolean },
+): Promise<DeviceClientSlot[]> {
+  const r = opts?.targetHex
+    ? await c.request('list_clients', {}, { targetHex: opts.targetHex })
+    : await c.request('list_clients');
+  if (!Array.isArray(r.clients)) {
+    if (opts?.strict) throw new Error('list_clients reply had no client list');
+    return [];
+  }
   const out: DeviceClientSlot[] = [];
   for (const row of r.clients) {
     const slot = parseDeviceClientSlot(row);
     if (slot) out.push(slot);
+    else if (opts?.strict) throw new Error('list_clients reply had a row this phone could not read');
   }
   return out;
 }

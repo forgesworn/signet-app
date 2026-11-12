@@ -19,7 +19,8 @@ import {
   type HeartwoodMgmtClient,
   type NostrconnectMintResult,
 } from './heartwood-mgmt';
-import type { SlotPolicyUpdate } from './heartwood-mgmt-types';
+import type { DeviceClientSlot, SlotPolicyUpdate } from './heartwood-mgmt-types';
+import { clientKeyInUse, isNoSuchSlotError, isStaleClientSlotMessage } from './child-device-pairing';
 import { heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
 import type { NostrConnectRequest } from './nip46';
 import type { HeartwoodHandoffRecord } from './db';
@@ -189,6 +190,35 @@ export class HandoffStrandedError extends Error {
     super("This phone couldn't save the pairing, and your Heartwood didn't confirm undoing it. Remove the app from your Heartwood in Sapwood.");
     this.name = 'HandoffStrandedError';
   }
+}
+
+/**
+ * Revoke a handed-off app's slot on its Heartwood. Resolves once the app is
+ * gone from the device; throws (so the caller keeps the record) otherwise.
+ *
+ * The device's `no such slot: <n>` or `stale_client_slot` is not proof the
+ * app is gone: its slot may sit under another index. The device's client list
+ * decides. No slot carries the app's key ⇒ gone. One does ⇒ that slot is
+ * revoked, once. A listing that fails or can't be fully read throws. A record
+ * with no fingerprint goes straight to the listing.
+ */
+export async function revokeHandoffSlot(p: {
+  clientPubkey: string;
+  slot: { slotIndex: number; secretFingerprint: string };
+  revoke: (slot: { slotIndex: number; secretFingerprint: string }) => Promise<void>;
+  /** The holding master's slots; must throw rather than return a partial list. */
+  listClients: () => Promise<DeviceClientSlot[]>;
+}): Promise<void> {
+  if (p.slot.secretFingerprint) {
+    try {
+      await p.revoke(p.slot);
+      return;
+    } catch (e) {
+      if (!isNoSuchSlotError(e) && !isStaleClientSlotMessage(e)) throw e;
+    }
+  }
+  const holding = (await p.listClients()).filter(s => clientKeyInUse([s], p.clientPubkey));
+  for (const s of holding) await p.revoke({ slotIndex: s.slotIndex, secretFingerprint: s.secretFingerprint });
 }
 
 type HandoffRef = Pick<HeartwoodHandoffRecord, 'clientPubkey' | 'deviceHex' | 'targetHex' | 'slotIndex' | 'secretFingerprint'>;
