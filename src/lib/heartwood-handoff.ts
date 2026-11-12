@@ -343,7 +343,7 @@ export const HANDOFF_STILL_CONNECTING_COPY = 'This phone is still connecting to 
 export class HandoffUnmanagedError extends HeartwoodCopyError {
   readonly unmanaged = true;
   constructor() {
-    super("This phone no longer has the operator key for the Heartwood this app was handed to. Add it in Advanced settings, or choose Forget on this phone on the app's row and remove the app in Sapwood.");
+    super("This phone no longer has the operator key for the Heartwood this app was handed to. Add it in Advanced settings. Or, on the app's row in Where you're known, choose Disconnect and then Forget on this phone, and remove the app in Sapwood.");
     this.name = 'HandoffUnmanagedError';
   }
 }
