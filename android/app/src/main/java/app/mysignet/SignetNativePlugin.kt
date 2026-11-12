@@ -437,6 +437,17 @@ class SignetNativePlugin : Plugin() {
     }
 
     @PluginMethod
+    fun setPhoneDependence(call: PluginCall) {
+        BunkerForegroundService.setDependence(
+            context,
+            call.getBoolean("needed") ?: true,
+            call.getString("title") ?: "",
+            call.getString("text") ?: ""
+        )
+        call.resolve()
+    }
+
+    @PluginMethod
     fun serviceHeartbeat(call: PluginCall) {
         BunkerForegroundService.heartbeat(
             context,

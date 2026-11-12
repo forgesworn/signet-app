@@ -14,7 +14,8 @@ class BootReceiver : BroadcastReceiver() {
                 // (a no-op if the radio is not on yet; the next app start retries).
                 HandshakeName.restoreLater(context)
                 val prefs = context.getSharedPreferences("signet_bunker_service", Context.MODE_PRIVATE)
-                if (prefs.getBoolean("enabled", false)) {
+                // Nothing to start for when nothing depends on this phone (absent means it does).
+                if (prefs.getBoolean("enabled", false) && prefs.getBoolean("dependNeeded", true)) {
                     val pubkeys = prefs.getString("pubkeysCsv", "") ?: ""
                     val relay = prefs.getString("relayUrl", "") ?: ""
                     if (relay.isNotEmpty()) BunkerForegroundService.start(context, pubkeys, relay, fromBoot = true)

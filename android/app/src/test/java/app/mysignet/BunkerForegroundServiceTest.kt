@@ -4,7 +4,10 @@ import android.app.Application
 import android.app.job.JobInfo
 import android.app.job.JobParameters
 import android.app.job.JobScheduler
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Looper
 import android.os.PowerManager
@@ -52,6 +55,9 @@ class BunkerForegroundServiceTest {
     private fun fallback(): JobInfo? = context.getSystemService(JobScheduler::class.java)
         .getPendingJob(BunkerFallbackJobService.JOB_ID)
     private fun advance(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
+    private fun notifications() = shadowOf(context.getSystemService(NotificationManager::class.java)).allNotifications
+    private fun postedText(n: Notification, key: String): String? = n.extras.getCharSequence(key)?.toString()
+    private fun enabled() = context.getSharedPreferences(BunkerForegroundService.PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
     private fun beat() {
         BunkerForegroundService.heartbeat(context, "pubkey", relay)
         shadowOf(Looper.getMainLooper()).idle()
@@ -187,5 +193,109 @@ class BunkerForegroundServiceTest {
         createService()
         assertFalse(job.get().onStartJob(params))
         job.destroy()
+    }
+
+    @Test fun `closing the page when nothing needs the phone is quiet and keeps always on chosen`() {
+        BunkerForegroundService.start(context, "pubkey", relay)
+        BunkerForegroundService.setDependence(context, false, "", "")
+        createService()
+        beat()
+        BunkerForegroundService.pageClosed(context)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(notifications().isEmpty())
+        assertTrue(enabled())
+        assertNull(fallback())
+        assertNotNull(shadowOf(context).nextStoppedService)
+        // Robolectric does not run onDestroy for stopService; the system would.
+        controller!!.destroy()
+        controller = null
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(wakeLock().isHeld)
+        assertTrue(notifications().isEmpty())
+    }
+
+    @Test fun `closing the page when something needs the phone alerts with the stored copy`() {
+        BunkerForegroundService.start(context, "pubkey", relay)
+        BunkerForegroundService.setDependence(context, true, "Signet stopped signing", "Amethyst can't reach Signet until you open and unlock it.")
+        createService()
+        beat()
+        BunkerForegroundService.pageClosed(context)
+        shadowOf(Looper.getMainLooper()).idle()
+        val all = notifications()
+        val alert = all.single { postedText(it, Notification.EXTRA_TITLE) == "Signet stopped signing" }
+        assertEquals("Amethyst can't reach Signet until you open and unlock it.", postedText(alert, Notification.EXTRA_TEXT))
+        val ongoing = all.single { postedText(it, Notification.EXTRA_TITLE) == "Signet isn't signing right now" }
+        assertEquals("Amethyst can't reach Signet until you open and unlock it.", postedText(ongoing, Notification.EXTRA_TEXT))
+        assertTrue(enabled())
+        assertNotNull(fallback())
+    }
+
+    @Test fun `absent dependence prefs behave as needed`() {
+        BunkerForegroundService.start(context, "pubkey", relay)
+        createService()
+        beat()
+        BunkerForegroundService.pageClosed(context)
+        shadowOf(Looper.getMainLooper()).idle()
+        val alert = notifications().single { postedText(it, Notification.EXTRA_TITLE) == "Signet isn't signing" }
+        assertEquals("Tap to open and unlock Signet so it can sign again.", postedText(alert, Notification.EXTRA_TEXT))
+        assertNotNull(fallback())
+    }
+
+    @Test fun `a stale heartbeat with nothing needing the phone posts no alert and schedules no job`() {
+        BunkerForegroundService.start(context, "pubkey", relay)
+        BunkerForegroundService.setDependence(context, false, "", "")
+        createService()
+        beat()
+        advance(90_000)
+        assertFalse(wakeLock().isHeld)
+        assertNull(fallback())
+        val all = notifications()
+        assertEquals(1, all.size)
+        assertEquals("Signet is on standby", postedText(all[0], Notification.EXTRA_TITLE))
+        assertEquals("Nothing needs it right now", postedText(all[0], Notification.EXTRA_TEXT))
+        assertFalse(shadowOf(controller!!.get()).isStoppedBySelf)
+        beat()
+        assertTrue(wakeLock().isHeld)
+        assertEquals("Signet bunker is serving", postedText(notifications().single(), Notification.EXTRA_TITLE))
+    }
+
+    @Test fun `a restart with no page and nothing needing the phone stops itself quietly`() {
+        context.getSharedPreferences(BunkerForegroundService.PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("enabled", true).putBoolean("dependNeeded", false)
+            .putString("pubkeysCsv", "pubkey").putString("relayUrl", relay).commit()
+        createService()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(shadowOf(controller!!.get()).isStoppedBySelf)
+        assertTrue(notifications().isEmpty())
+        assertNull(fallback())
+        assertTrue(enabled())
+    }
+
+    @Test fun `flipping to not needed while the alert is up clears it`() {
+        BunkerForegroundService.start(context, "pubkey", relay)
+        createService()
+        beat()
+        BunkerForegroundService.pageClosed(context)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNotNull(fallback())
+        assertEquals(2, notifications().size)
+        BunkerForegroundService.setDependence(context, false, "", "")
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(fallback())
+        assertTrue(notifications().none { postedText(it, Notification.EXTRA_TITLE) == "Signet isn't signing" })
+    }
+
+    @Test fun `boot starts the service only when something needs the phone`() {
+        val prefs = context.getSharedPreferences(BunkerForegroundService.PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("enabled", true).putString("pubkeysCsv", "pubkey").putString("relayUrl", relay)
+            .putBoolean("dependNeeded", false).commit()
+        BootReceiver().onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
+        assertNull(shadowOf(context).nextStartedService)
+        prefs.edit().putBoolean("dependNeeded", true).commit()
+        BootReceiver().onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
+        assertNotNull(shadowOf(context).nextStartedService)
+        prefs.edit().remove("dependNeeded").commit()
+        BootReceiver().onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
+        assertNotNull(shadowOf(context).nextStartedService)
     }
 }
