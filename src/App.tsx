@@ -4562,8 +4562,8 @@ function AppContent() {
   const revokeHeartwoodHandoff = useCallback(async (rec: HeartwoodHandoffRecord, key?: string) => {
     const k = key ?? encryptionKeyRef.current;
     if (!k) throw new Error('Unlock My Signet first.');
-    // Said in plain words wherever it surfaces: Disconnect, or an approval that revokes first.
-    // Put in plain words once, here; the row shows it as it is.
+    // Put in plain words once, here, wherever it surfaces (Disconnect, or an
+    // approval that revokes first); the row shows it as it is.
     try { await revokeHandoffOnDevice(rec); } catch (e) { throw e instanceof HeartwoodCopyError ? e : new HeartwoodCopyError(heartwoodMgmtErrorCopy(e)); }
     // The device call is done before the write, never inside it: the writes queue behind one another.
     unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => !sameHandoff(h, rec));
