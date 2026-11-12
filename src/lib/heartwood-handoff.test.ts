@@ -18,6 +18,10 @@ import {
   handoffsForClient,
   mergeHandoffs,
   revokeHandoffSlot,
+  runHandoffApproval,
+  HANDOFF_PRIOR_REMOVED_COPY,
+  type HandoffPlan,
+  type HandoffResult,
   sameHandoff,
   holderTarget,
   pickHandoffRelay,
@@ -355,5 +359,62 @@ describe('revokeHandoffSlot: only the device list proves an app is gone', () => 
     const h = io({ list: async () => [row({ slotIndex: 9, secretFingerprint: '12'.repeat(8), currentPubkey: app })] });
     await revokeHandoffSlot({ ...h.p, slot: { slotIndex: 9, secretFingerprint: '' } });
     expect(h.revoke.mock.calls).toEqual([[{ slotIndex: 9, secretFingerprint: '12'.repeat(8) }]]);
+  });
+});
+
+describe('runHandoffApproval: nothing is revoked for a check that could fail first', () => {
+  const prior = { clientPubkey: 'a'.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+    targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 };
+  const plan = { relay: 'wss://r.example', persona: 'd'.repeat(64) } as unknown as HandoffPlan;
+  const handed = { slotIndex: 5 } as unknown as HandoffResult;
+  function io(o: { prepare?: () => Promise<HandoffPlan>; claim?: boolean; revoke?: () => Promise<void>; mint?: () => Promise<HandoffResult>; priors?: typeof prior[] } = {}) {
+    const log: string[] = [];
+    return {
+      log,
+      p: {
+        priors: o.priors ?? [prior],
+        prepare: async () => { log.push('prepare'); return (o.prepare ?? (async () => plan))(); },
+        claim: () => { log.push('claim'); return o.claim ?? true; },
+        unclaim: () => { log.push('unclaim'); },
+        revokePrior: async () => { log.push('revoke'); await (o.revoke ?? (async () => {}))(); },
+        mint: async () => { log.push('mint'); return (o.mint ?? (async () => handed))(); },
+      },
+    };
+  }
+
+  it('finds the Heartwood and claims the request before the earlier hand-off is revoked', async () => {
+    const h = io();
+    expect(await runHandoffApproval(h.p)).toEqual({ status: 'minted', handed });
+    expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'mint']);
+  });
+
+  it('a Heartwood that cannot take it leaves the earlier hand-off alone', async () => {
+    const h = io({ prepare: async () => { throw new HandoffUnavailableError(); } });
+    await expect(runHandoffApproval(h.p)).rejects.toBeInstanceOf(HandoffUnavailableError);
+    expect(h.log).toEqual(['prepare']);
+  });
+
+  it('a request cancelled meanwhile changes nothing', async () => {
+    const h = io({ claim: false });
+    expect(await runHandoffApproval(h.p)).toEqual({ status: 'withdrawn' });
+    expect(h.log).toEqual(['prepare', 'claim']);
+  });
+
+  it('a revoke that fails mints nothing and gives the request back', async () => {
+    const h = io({ revoke: async () => { throw new Error("Your Heartwood didn't answer."); } });
+    await expect(runHandoffApproval(h.p)).rejects.toThrow(/didn't answer/);
+    expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'unclaim']);
+  });
+
+  it('a mint that fails after the revoke says the app was removed and to scan its code again', async () => {
+    const h = io({ mint: async () => { throw new Error("Your Heartwood didn't answer."); } });
+    const err = await runHandoffApproval(h.p).then(() => null, (e: Error) => e);
+    expect(err?.message).toBe(`Your Heartwood didn't answer. ${HANDOFF_PRIOR_REMOVED_COPY}`);
+    expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'mint', 'unclaim']);
+  });
+
+  it('with no earlier hand-off a failed mint reads as itself', async () => {
+    const h = io({ priors: [], mint: async () => { throw new Error('That did not work. Try again.'); } });
+    await expect(runHandoffApproval(h.p)).rejects.toThrow(/^That did not work. Try again.$/);
   });
 });

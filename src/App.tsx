@@ -289,7 +289,7 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { handOffNostrConnect, handoffAllowedFor, handoffsForClient, mergeHandoffs, revokeHandoffSlot, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
+import { handoffAllowedFor, handoffsForClient, mergeHandoffs, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
 import { heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -8212,17 +8212,20 @@ function AppContent() {
       const clientHex = connectRequest.clientPubkey.toLowerCase();
       // One record per app: an earlier hand-off of this app (to any Heartwood)
       // is revoked first. If it can't be, nothing new is minted. Read from the
-      // store: the in-memory list is empty until the unlock load lands.
+      // store: the in-memory list is empty until the unlock load lands. Every
+      // check that changes nothing (the Heartwood, the relay, a Cancel) runs
+      // before that revoke.
       const priors = (await heldHandoffsFor(clientHex, async () => key)).records;
-      for (const prior of priors) await revokeHeartwoodHandoff(prior, key);
-      if (!connectStillPending() || !connectSettlementRef.current.claimDelivery(connectKey)) return;
-      let handed: Awaited<ReturnType<typeof handOffNostrConnect>>;
-      try {
-        handed = await handOffNostrConnect({ request: connectRequest, personaHex, clients: handoffClientsRef.current, withLock: withOperatorLock });
-      } catch (e) {
-        connectSettlementRef.current.unclaimDelivery(connectKey);
-        throw e;
-      }
+      const approval = await runHandoffApproval({
+        priors,
+        prepare: () => prepareHandoff({ request: connectRequest, personaHex, clients: handoffClientsRef.current }),
+        claim: () => connectStillPending() && connectSettlementRef.current.claimDelivery(connectKey),
+        unclaim: () => connectSettlementRef.current.unclaimDelivery(connectKey),
+        revokePrior: prior => revokeHeartwoodHandoff(prior, key),
+        mint: plan => mintHandoff(plan, { request: connectRequest, withLock: withOperatorLock }),
+      });
+      if (approval.status === 'withdrawn') return;
+      const handed = approval.handed;
       // True ⇒ the user cancelled while the device was minting (the screen has gone).
       const cancelled = connectSettlementRef.current.finishDelivery(connectKey);
       const record: HeartwoodHandoffRecord = {
@@ -8295,15 +8298,15 @@ function AppContent() {
     }
 
     // Signing through this phone from now on: an earlier hand-off of this app
-    // to a Heartwood is revoked first, or this phone would keep ignoring the
-    // app while the device kept answering it. If it can't be, nothing is paired.
-    // Read from the store: the in-memory list is empty until the unlock load lands.
+    // to a Heartwood is revoked before the connect reply, or this phone would
+    // keep ignoring the app while the device kept answering it. If it can't
+    // be, nothing is paired. Read from the store: the in-memory list is empty
+    // until the unlock load lands.
     let authKey: string | null = encryptionKey;
     const priorHandoffs = await heldHandoffsFor(connectRequest.clientPubkey, async () => {
       authKey = authKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
       return authKey;
     });
-    for (const prior of priorHandoffs.records) await revokeHeartwoodHandoff(prior, priorHandoffs.key ?? authKey ?? undefined);
 
     let selectedBackend: SigningBackend;
     let tempBackend: LocalSigningBackend | null = null;
@@ -8427,6 +8430,15 @@ function AppContent() {
       const relayOpenTimeoutMs = relayCandidates.length > 1
         ? NOSTRCONNECT_MULTI_RELAY_OPEN_TIMEOUT_MS
         : NOSTRCONNECT_SINGLE_RELAY_OPEN_TIMEOUT_MS;
+
+      // The earlier hand-off goes only once nothing above can still refuse
+      // this pairing, and only while the request is still open. A revoke once
+      // started runs to the end; if it fails, nothing is paired.
+      if (priorHandoffs.records.length > 0) {
+        if (relayCandidates.length === 0) throw new Error('Could not complete NostrConnect pairing. Tried 0 relays: no valid relay candidates');
+        if (!connectStillOpen()) return;
+        for (const prior of priorHandoffs.records) await revokeHeartwoodHandoff(prior, priorHandoffs.key ?? authKey ?? undefined);
+      }
 
       // Every outward effect (route, listener, persisted pairing, connect
       // response) is gated on the one-answer guard; a Cancel during any of

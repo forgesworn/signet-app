@@ -21,7 +21,7 @@ import {
 } from './heartwood-mgmt';
 import type { DeviceClientSlot, SlotPolicyUpdate } from './heartwood-mgmt-types';
 import { clientKeyInUse, isNoSuchSlotError, isStaleClientSlotMessage } from './child-device-pairing';
-import { heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
+import { MGMT_GENERIC_COPY, heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
 import type { NostrConnectRequest } from './nip46';
 import type { HeartwoodHandoffRecord } from './db';
 
@@ -147,16 +147,24 @@ export interface HandoffResult extends NostrconnectMintResult {
   relay: string;
 }
 
-/** Ask the device holding `personaHex` to accept `request` directly. */
-export async function handOffNostrConnect(params: {
+/** Where a hand-off will go, worked out before anything changes. */
+export interface HandoffPlan {
+  holder: HandoffHolder;
+  relay: string;
+  persona: string;
+}
+
+/**
+ * The read-only half of a hand-off: which Heartwood holds the persona, and
+ * which of the app's relays it answers on. Changes nothing anywhere, so it runs
+ * before an earlier hand-off of the app is revoked.
+ */
+export async function prepareHandoff(params: {
   request: NostrConnectRequest;
   personaHex: string;
   clients: readonly HeartwoodMgmtClient[];
   cache?: Map<HeartwoodMgmtClient, DeviceIdentity[]>;
-  now?: () => number;
-  /** Serialises with other operator work on the same client (the family policy push). */
-  withLock?: <T>(client: object, task: () => Promise<T>) => Promise<T>;
-}): Promise<HandoffResult> {
+}): Promise<HandoffPlan> {
   const persona = params.personaHex.toLowerCase();
   if (!handoffAllowedFor(params.request.permissions)) throw new Error('This app asks to sign deletions, so My Signet asks you each time. Choose Through My Signet.');
   const holder = await findHeartwoodHolder(params.clients, persona, params.cache);
@@ -164,6 +172,17 @@ export async function handOffNostrConnect(params: {
   const appRelays = params.request.relayUrls?.length ? params.request.relayUrls : [params.request.relayUrl];
   const relay = pickHandoffRelay(appRelays, holder.client.relays);
   if (!relay) throw new Error('The app gave no wss:// relay to answer on.');
+  return { holder, relay, persona };
+}
+
+/** Ask the planned Heartwood to accept `request` directly. */
+export async function mintHandoff(plan: HandoffPlan, params: {
+  request: NostrConnectRequest;
+  now?: () => number;
+  /** Serialises with other operator work on the same client (the family policy push). */
+  withLock?: <T>(client: object, task: () => Promise<T>) => Promise<T>;
+}): Promise<HandoffResult> {
+  const { holder, relay, persona } = plan;
   const label = `mysignet:${(params.request.appName || 'app').replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) || 'app'}`;
   const lock = params.withLock ?? (<T,>(_c: object, task: () => Promise<T>) => task());
   const minted = await lock(holder.client, () => nostrconnectV2(holder.client, {
@@ -176,6 +195,56 @@ export async function handOffNostrConnect(params: {
     policy: handoffPolicy(persona, params.request.permissions),
   }, { targetHex: holder.targetHex })).catch((e: unknown) => { throw new Error(heartwoodMgmtErrorCopy(e)); });
   return { ...minted, deviceHex: holder.client.deviceHex, targetHex: holder.targetHex, relay };
+}
+
+/** Ask the device holding `personaHex` to accept `request` directly. */
+export async function handOffNostrConnect(params: {
+  request: NostrConnectRequest;
+  personaHex: string;
+  clients: readonly HeartwoodMgmtClient[];
+  cache?: Map<HeartwoodMgmtClient, DeviceIdentity[]>;
+  now?: () => number;
+  withLock?: <T>(client: object, task: () => Promise<T>) => Promise<T>;
+}): Promise<HandoffResult> {
+  return mintHandoff(await prepareHandoff(params), params);
+}
+
+export const HANDOFF_PRIOR_REMOVED_COPY = "This app's earlier pairing was removed from your Heartwood. Scan the app's code again to pair it.";
+
+/**
+ * A hand-off approval, in an order that never leaves the app worse off for a
+ * check that could have failed first. Finding the Heartwood and the relay,
+ * then the claim on the request (which a Cancel takes from it), all run before
+ * an earlier hand-off of the app is revoked; nothing awaits between the claim
+ * and the revoke starting, and a revoke once started is not abandoned. A
+ * failed revoke mints nothing and gives the claim back. A mint that fails
+ * after a revoke leaves the app on neither signer, and the error says so.
+ */
+export async function runHandoffApproval(io: {
+  /** Earlier hand-offs of this app, from the store. */
+  priors: readonly HeartwoodHandoffRecord[];
+  prepare: () => Promise<HandoffPlan>;
+  /** False when the request was cancelled or replaced: nothing is changed. */
+  claim: () => boolean;
+  unclaim: () => void;
+  revokePrior: (rec: HeartwoodHandoffRecord) => Promise<void>;
+  mint: (plan: HandoffPlan) => Promise<HandoffResult>;
+}): Promise<{ status: 'withdrawn' } | { status: 'minted'; handed: HandoffResult }> {
+  const plan = await io.prepare();
+  if (!io.claim()) return { status: 'withdrawn' };
+  try {
+    for (const prior of io.priors) await io.revokePrior(prior);
+  } catch (e) {
+    io.unclaim();
+    throw e;
+  }
+  try {
+    return { status: 'minted', handed: await io.mint(plan) };
+  } catch (e) {
+    io.unclaim();
+    if (io.priors.length === 0) throw e;
+    throw new Error(`${e instanceof Error ? e.message : MGMT_GENERIC_COPY} ${HANDOFF_PRIOR_REMOVED_COPY}`);
+  }
 }
 
 export class HandoffNotSavedError extends Error {
