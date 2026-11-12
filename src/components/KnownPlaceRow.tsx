@@ -36,7 +36,11 @@ export interface KnownPlaceActions {
   forget(place: KnownPlace): void | Promise<void>;
   disconnect(place: KnownPlace): void | Promise<void>;
   revokeOnHeartwood(fingerprint: string): void | Promise<void>;
+  /** An app handed to a Heartwood this phone can't manage: drop its record and row here only. */
+  forgetHandoffHere?(place: KnownPlace): void | Promise<void>;
 }
+
+export const FORGET_HANDOFF_HERE_COPY = 'Removes this app from this phone only. It may still sign on your Heartwood: remove it there in Sapwood.';
 
 export const ASK_EACH_TIME_SUMMARY = 'Encrypts and decrypts for this app without asking; signing asks each time.';
 
@@ -98,9 +102,11 @@ interface RowProps {
 export function KnownPlaceRow({ place, ctx, identityName, identityType, last, now, badges, expanded, onToggle, actions }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  const [confirm, setConfirm] = useState<'forget' | 'disconnect' | null>(null);
+  const [confirm, setConfirm] = useState<'forget' | 'disconnect' | 'forget-here' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Set when an action found this app's Heartwood can't be managed from this phone.
+  const [unmanaged, setUnmanaged] = useState(false);
 
   const label = placeLabel(place);
   const primary = badges[0] ?? null;
@@ -115,8 +121,12 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   const run = async (fn: () => void | Promise<void>) => {
     if (busy) return;
     setBusy(true); setError('');
-    try { await fn(); } catch (e) { setError(heartwoodMgmtErrorCopy(e)); } finally { setBusy(false); }
+    try { await fn(); } catch (e) {
+      setError(heartwoodMgmtErrorCopy(e));
+      if ((e as { unmanaged?: unknown } | null)?.unmanaged === true) { setUnmanaged(true); setConfirm(null); }
+    } finally { setBusy(false); }
   };
+  const canForgetHere = place.kind === 'nip46' && !!ctx.heartwoodHeld && unmanaged && !!actions.forgetHandoffHere;
 
   const approvedOn = place.signer === 'local' ? 'this phone'
     : place.signer === 'heartwood' ? 'your Heartwood'
@@ -201,10 +211,16 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             <div className="kp-confirm" role="group" aria-label="Confirm">
               <p>{confirm === 'forget'
                 ? 'Removes this from your phone. The site still has your account; sign out there too.'
+                : confirm === 'forget-here' ? FORGET_HANDOFF_HERE_COPY
                 : 'This app will have to pair again.'}</p>
               <button type="button" className="btn btn-danger kp-btn" disabled={busy}
-                onClick={() => void run(async () => { await (confirm === 'forget' ? actions.forget(place) : actions.disconnect(place)); setConfirm(null); })}>
-                {confirm === 'forget' ? 'Forget' : 'Disconnect'}
+                onClick={() => void run(async () => {
+                  await (confirm === 'forget' ? actions.forget(place)
+                    : confirm === 'forget-here' ? actions.forgetHandoffHere?.(place)
+                    : actions.disconnect(place));
+                  setConfirm(null);
+                })}>
+                {confirm === 'forget' ? 'Forget' : confirm === 'forget-here' ? 'Forget on this phone' : 'Disconnect'}
               </button>
               <button type="button" className="btn btn-ghost kp-btn" onClick={() => setConfirm(null)}>Cancel</button>
             </div>
@@ -227,6 +243,9 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
               )}
               {canDisconnect && (
                 <button type="button" className="btn btn-ghost kp-btn kp-btn--danger" onClick={() => setConfirm('disconnect')}>Disconnect</button>
+              )}
+              {canForgetHere && (
+                <button type="button" className="btn btn-ghost kp-btn kp-btn--danger" onClick={() => setConfirm('forget-here')}>Forget on this phone</button>
               )}
             </div>
           )}

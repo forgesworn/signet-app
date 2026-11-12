@@ -26,6 +26,9 @@ import {
   HandoffKeptError,
   endsConnectRequest,
   mintHandoff,
+  missingOperatorError,
+  HandoffUnmanagedError,
+  HANDOFF_STILL_CONNECTING_COPY,
   type HandoffPlan,
   type HandoffResult,
   sameHandoff,
@@ -486,5 +489,20 @@ describe('a mint the device may still hold is kept, never retried blind', () => 
     expect(endsConnectRequest(new Error('x'))).toBe(false);
     expect(new HandoffNotSavedError().message).toMatch(/Scan the app's code again/);
     expect(new HandoffStrandedError().message).toMatch(/Sapwood, then scan the app's code again/);
+  });
+});
+
+describe('missingOperatorError: unmanaged only when the stored keys say so', () => {
+  const dev = 'e'.repeat(64);
+  it('no stored key for the device: unmanaged, with Forget on this phone and the Sapwood hint', () => {
+    const e = missingOperatorError(['a'.repeat(64)], dev);
+    expect(e).toBeInstanceOf(HandoffUnmanagedError);
+    expect((e as HandoffUnmanagedError).unmanaged).toBe(true);
+    expect(e.message).toMatch(/Forget on this phone/);
+    expect(e.message).toMatch(/Sapwood/);
+  });
+  it('a stored key whose link is not up yet, or keys that cannot be read: try again', () => {
+    expect(missingOperatorError(['E'.repeat(64)], dev).message).toBe(HANDOFF_STILL_CONNECTING_COPY);
+    expect(missingOperatorError(null, dev)).not.toBeInstanceOf(HandoffUnmanagedError);
   });
 });

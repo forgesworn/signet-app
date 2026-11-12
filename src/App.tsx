@@ -289,9 +289,9 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { HandoffKeptError, handoffsForClient, mergeHandoffs, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
+import { HandoffKeptError, handoffsForClient, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
 import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
-import { hasHeartwoodHandoffsRow, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
+import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
 import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
@@ -4535,10 +4535,19 @@ function AppContent() {
     const stored = await readHeartwoodHandoffs(key);
     return { records: handoffsForClient(mergeHandoffs(stored, unsavedHandoffsRef.current), clientPubkey), key };
   }, []);
+  /** Devices this phone stores an operator key for (primary and others); null while locked or unreadable. */
+  const storedOperatorDevices = useCallback(async (): Promise<string[] | null> => {
+    const k = encryptionKeyRef.current;
+    if (!k) return null;
+    try {
+      const [primary, extras] = await Promise.all([loadHeartwoodOperator(k), loadExtraHeartwoodOperators(k)]);
+      return [...(primary ? [primary.deviceHex] : []), ...extras.map(c => c.deviceHex)];
+    } catch { return null; }
+  }, []);
   /** Revoke a handed-off app's slot on its Heartwood; throws (keep the record) unless it is gone. */
   const revokeHandoffOnDevice = useCallback(async (rec: HeartwoodHandoffRecord) => {
     const client = handoffClientsRef.current.find(c => c.deviceHex === rec.deviceHex);
-    if (!client) throw new Error("This Heartwood's operator key isn't on this phone. Add it in Advanced settings, then try again.");
+    if (!client) throw missingOperatorError(await storedOperatorDevices(), rec.deviceHex);
     // A slot already gone (removed in Sapwood) counts only once the device's
     // client list confirms the app isn't on it under another index.
     const target = { targetHex: rec.targetHex };
@@ -4548,7 +4557,7 @@ function AppContent() {
       revoke: slot => mgmtRevokeClient(client, slot, target),
       listClients: () => mgmtListClients(client, { ...target, strict: true }),
     }));
-  }, []);
+  }, [storedOperatorDevices]);
   /** Disconnect an app handed to a Heartwood: revoke its slot on the device, then drop the record. */
   const revokeHeartwoodHandoff = useCallback(async (rec: HeartwoodHandoffRecord, key?: string) => {
     const k = key ?? encryptionKeyRef.current;
@@ -4833,6 +4842,25 @@ function AppContent() {
         else if (place.kind === 'nip55' && place.nativePackage) nip55.forget(place.nativePackage, place.pubkey);
         await knownPlaces.forget(place.id);
       },
+      forgetHandoffHere: async place => {
+        // Only for a Heartwood this phone can't manage at all: a record on one
+        // it can manage is disconnected properly, so its slot doesn't outlive it.
+        const k = encryptionKeyRef.current;
+        if (!k) throw new Error('Unlock My Signet first.');
+        const held = await heldHandoffsFor(clientOf(place), async () => k);
+        const stored = await storedOperatorDevices();
+        if (!stored) throw new Error('Unlock My Signet first.');
+        const live = handoffClientsRef.current.map(c => c.deviceHex);
+        if (held.records.some(r => live.includes(r.deviceHex) || stored.some(d => d.toLowerCase() === r.deviceHex))) {
+          throw new HeartwoodCopyError('This phone can manage that Heartwood now. Use Disconnect instead.');
+        }
+        // An earlier phone pairing goes too, as Disconnect does, so it can't wake up.
+        await disconnectClient(clientOf(place));
+        const gone = (h: HeartwoodHandoffRecord) => held.records.some(r => sameHandoff(r, h));
+        unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => !gone(h));
+        showStoredHandoffs(await updateHeartwoodHandoffs(k, list => list.filter(h => !gone(h))));
+        await knownPlaces.forget(place.id);
+      },
       revokeOnHeartwood: async fingerprint => {
         const client = operatorForPlaces;
         const slot = heartwoodSlots?.find(s => s.secretFingerprint === fingerprint);
@@ -4841,7 +4869,7 @@ function AppContent() {
         await refreshHeartwoodSlots();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, heldHandoffsFor]);
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, heldHandoffsFor, storedOperatorDevices, showStoredHandoffs]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;

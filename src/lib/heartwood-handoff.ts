@@ -321,6 +321,32 @@ export class HandoffStrandedError extends HeartwoodCopyError {
   }
 }
 
+export const HANDOFF_STILL_CONNECTING_COPY = 'This phone is still connecting to that Heartwood. Try again in a moment.';
+
+/**
+ * The Heartwood an app was handed to is one this phone holds no operator key
+ * for (forgotten, signer disconnected, device reset). Its record can't be
+ * revoked from here, so the app's row offers Forget on this phone.
+ */
+export class HandoffUnmanagedError extends HeartwoodCopyError {
+  readonly unmanaged = true;
+  constructor() {
+    super("This phone no longer has the operator key for the Heartwood this app was handed to. Add it in Advanced settings, or choose Forget on this phone on the app's row and remove the app in Sapwood.");
+    this.name = 'HandoffUnmanagedError';
+  }
+}
+
+/**
+ * Why there is no operator client for a hand-off's Heartwood. Only the stored
+ * keys can say it is unmanaged: with no client yet the keys may still be
+ * loading, or the link still opening. `stored` is null when they can't be read.
+ */
+export function missingOperatorError(stored: readonly string[] | null, deviceHex: string): HeartwoodCopyError {
+  const d = deviceHex.toLowerCase();
+  if (stored && !stored.some(s => s.toLowerCase() === d)) return new HandoffUnmanagedError();
+  return new HeartwoodCopyError(HANDOFF_STILL_CONNECTING_COPY);
+}
+
 export const HANDOFF_MISMATCH_KEPT_COPY = "Your Heartwood paired the app with rules this phone didn't ask for, and didn't confirm removing it. The app may still be on your Heartwood: disconnect it in Where you're known, or remove it in Sapwood.";
 
 /** Where a slot the device may still hold sits, so a record of it can be kept. */

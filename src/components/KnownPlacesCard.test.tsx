@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { KnownPlacesCard, KnownPlacesDependantCard, type KnownPlacesCardProps } from './KnownPlacesCard';
 import type { KnownPlace } from '../types/known-places';
 import { HeartwoodCopyError } from '../lib/heartwood-mgmt-error-copy';
+import { HandoffUnmanagedError } from '../lib/heartwood-handoff';
 
 const native = vi.hoisted(() => ({ value: true }));
 vi.mock('../lib/native', () => ({ isNativeApp: () => native.value }));
@@ -20,6 +21,7 @@ function place(key: string, over: Partial<KnownPlace> = {}): KnownPlace {
 }
 const actions = () => ({
   pin: vi.fn(), setAlias: vi.fn(), setAuto: vi.fn(), open: vi.fn(), forget: vi.fn(), disconnect: vi.fn(), revokeOnHeartwood: vi.fn(),
+  forgetHandoffHere: vi.fn(),
 });
 
 function setup(over: Partial<KnownPlacesCardProps> = {}) {
@@ -197,6 +199,35 @@ describe('KnownPlacesCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     await settle();
     expect(screen.getByRole('alert').textContent).toBe(copy);
+  });
+
+  it('an app on a Heartwood this phone cannot manage can be forgotten here, with the Sapwood hint', async () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'heartwood' });
+    const { a } = setup({ places: [nc], ctxFor: () => ({ heartwoodHeld: true }) });
+    expand('nc');
+    expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
+    a.disconnect.mockRejectedValue(new HandoffUnmanagedError());
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
+    expect(screen.getByRole('alert').textContent).toMatch(/Forget on this phone.*Sapwood/);
+    fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+    expect(screen.getByText(/It may still sign on your Heartwood: remove it there in Sapwood\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+    await settle();
+    expect(a.forgetHandoffHere).toHaveBeenCalledWith(nc);
+  });
+
+  it('a Heartwood that only did not answer offers no Forget on this phone', async () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'heartwood' });
+    const { a } = setup({ places: [nc], ctxFor: () => ({ heartwoodHeld: true }) });
+    a.disconnect.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+    expand('nc');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
   });
 
   it('says why a Revoke on Heartwood failed', async () => {
