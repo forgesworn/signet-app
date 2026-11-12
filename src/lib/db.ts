@@ -427,6 +427,7 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
     r.id !== HEARTWOOD_OPERATOR_KEY &&
     r.id !== EXTRA_HEARTWOOD_OPERATORS_KEY &&
     r.id !== HEARTWOOD_HANDOFFS_KEY &&
+    r.id !== HEARTWOOD_SIGNIN_LINKS_KEY &&
     r.id !== UPLOADER_SECRET_KEY &&
     r.id !== HEARTWOOD_VAULT_PUBKEYS_KEY &&
     r.id !== KEEPS_KEY &&
@@ -641,6 +642,7 @@ export async function cleanupUnencryptedIdentities(): Promise<number> {
     if (identity.id === HEARTWOOD_OPERATOR_KEY) continue;
     if (identity.id === EXTRA_HEARTWOOD_OPERATORS_KEY) continue;
     if (identity.id === HEARTWOOD_HANDOFFS_KEY) continue;
+    if (identity.id === HEARTWOOD_SIGNIN_LINKS_KEY) continue;
     if (identity.id === UPLOADER_SECRET_KEY) continue;
     if (identity.id === HEARTWOOD_VAULT_PUBKEYS_KEY) continue;
     if (identity.id === KEEPS_KEY) continue;
@@ -2662,6 +2664,93 @@ export async function loadHeartwoodHandoffs(encryptionKey: string): Promise<Hear
   try {
     const parsed: unknown = JSON.parse(await decryptSecret(record.secret, encryptionKey));
     return Array.isArray(parsed) ? parsed.filter(isHandoffRecord) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Sign-in links (`lib/heartwood-signin-link.ts`): a Heartwood slot minted for
+// one site's "Sign in with Signet", so the site signs on the device directly.
+// Kept only so the slot can be revoked (a later sign-in from the same site, or
+// Disconnect) and the place shown as held by the Heartwood. The slot's secret
+// is never stored, only its fingerprint. Not a `HeartwoodHandoffRecord`: there
+// is no client key, and a record without one would leak into the hand-off
+// lookups. Encrypted like the rest.
+const HEARTWOOD_SIGNIN_LINKS_KEY = 'heartwoodSignInLinks';
+
+export interface HeartwoodSignInLinkRecord {
+  origin: string;
+  appName: string;
+  /** The identity the slot serves (hex64, lowercase). */
+  persona: string;
+  deviceHex: string;
+  /** The master the operator requests for this slot are addressed to. */
+  targetHex: string;
+  /** Unique on the device (random suffix): the slot is found again by it. */
+  label: string;
+  /** Unknown until the device has answered the mint. */
+  slotIndex?: number;
+  /** Empty until the device has answered the mint. */
+  secretFingerprint: string;
+  createdAt: number;
+}
+
+function isSignInLinkRecord(v: unknown): v is HeartwoodSignInLinkRecord {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.origin === 'string' && typeof r.appName === 'string' && typeof r.persona === 'string'
+    && typeof r.deviceHex === 'string' && typeof r.targetHex === 'string' && typeof r.label === 'string' && r.label.length > 0
+    && (r.slotIndex === undefined || (typeof r.slotIndex === 'number' && Number.isInteger(r.slotIndex) && r.slotIndex >= 0))
+    && typeof r.secretFingerprint === 'string' && typeof r.createdAt === 'number';
+}
+
+export async function saveHeartwoodSignInLinks(records: HeartwoodSignInLinkRecord[], encryptionKey: string): Promise<void> {
+  const db = await getDB();
+  if (records.length === 0) { await db.delete('identity', HEARTWOOD_SIGNIN_LINKS_KEY); return; }
+  const encrypted = await encryptSecret(JSON.stringify(records), encryptionKey);
+  await db.put('identity', { id: HEARTWOOD_SIGNIN_LINKS_KEY, secret: encrypted });
+}
+
+let signInLinkWrites: Promise<unknown> = Promise.resolve();
+
+/**
+ * Load → change → save the sign-in link records, one writer at a time,
+ * against what is stored (never an in-memory copy). Resolves to the saved list.
+ * A device call is never made inside `change`: the writes queue behind one another.
+ */
+export function updateHeartwoodSignInLinks(
+  encryptionKey: string,
+  change: (records: HeartwoodSignInLinkRecord[]) => HeartwoodSignInLinkRecord[],
+): Promise<HeartwoodSignInLinkRecord[]> {
+  const run = signInLinkWrites.then(async () => {
+    const next = change(await loadHeartwoodSignInLinks(encryptionKey));
+    await saveHeartwoodSignInLinks(next, encryptionKey);
+    return next;
+  });
+  signInLinkWrites = run.catch(() => undefined);
+  return run;
+}
+
+/** The stored records, read in turn with the writes above, so a read never lands over a newer write. */
+export function readHeartwoodSignInLinks(encryptionKey: string): Promise<HeartwoodSignInLinkRecord[]> {
+  const run = signInLinkWrites.then(() => loadHeartwoodSignInLinks(encryptionKey));
+  signInLinkWrites = run.catch(() => undefined);
+  return run;
+}
+
+/** Whether any sign-in link record is stored at all. Needs no key, so a phone with none never asks for one. */
+export async function hasHeartwoodSignInLinksRow(): Promise<boolean> {
+  const db = await getDB();
+  return !!(await db.get('identity', HEARTWOOD_SIGNIN_LINKS_KEY));
+}
+
+export async function loadHeartwoodSignInLinks(encryptionKey: string): Promise<HeartwoodSignInLinkRecord[]> {
+  const db = await getDB();
+  const record = await db.get('identity', HEARTWOOD_SIGNIN_LINKS_KEY);
+  if (!record || !record.secret) return [];
+  try {
+    const parsed: unknown = JSON.parse(await decryptSecret(record.secret, encryptionKey));
+    return Array.isArray(parsed) ? parsed.filter(isSignInLinkRecord) : [];
   } catch {
     return [];
   }
