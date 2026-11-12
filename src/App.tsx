@@ -8293,26 +8293,16 @@ function AppContent() {
       };
       const priors = (await heldHandoffsFor(clientHex, async () => key)).records;
       // A Cancel after the claim found the request already answered, so it
-      // only dismissed the screen: the "denied" it would have sent is sent
-      // here, unless a newer request owns the screen by now.
+      // only dismissed the screen. The revoke may end minutes later: by then
+      // the user is elsewhere, so this takes them nowhere (no callback
+      // redirect, no return to the calling app). The app simply gets no ACK.
       const endCancelled = () => {
         connectSettlementRef.current.finishDelivery(connectKey);
-        const current = pendingConnectRequestRef.current;
-        if (current && current !== connectRequest) return;
-        const cameByIntent = connectCameByIntentRef.current;
+        if (pendingConnectRequestRef.current !== connectRequest) return;
         connectCameByIntentRef.current = false;
-        if (current) {
-          setPendingConnectRequest(null);
-          setPendingConnectSelection(null);
-          setPendingConnectCallback(null);
-          navigateReplace('home');
-        }
-        if (cameByIntent) {
-          void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
-          return;
-        }
-        const callback = pendingConnectCallback;
-        if (callback) window.location.href = buildCallbackRedirect(callback, 'denied');
+        setPendingConnectRequest(null);
+        setPendingConnectSelection(null);
+        setPendingConnectCallback(null);
       };
       let approval: Awaited<ReturnType<typeof runHandoffApproval>>;
       try {

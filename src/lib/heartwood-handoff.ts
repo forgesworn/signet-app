@@ -309,8 +309,8 @@ export function priorRemovedMessage(e: unknown): string {
  * an earlier hand-off of the app is revoked; nothing awaits between the claim
  * and the revoke starting, and a revoke once started is not abandoned. A
  * Cancel that lands during the revoke stops it there: nothing is minted, and
- * the request ends as cancelled (`endCancelled`, which still owes the app its
- * "denied"). A failed revoke mints nothing and gives the claim back. A mint
+ * the request ends as cancelled (`endCancelled`; it stays answered, and the
+ * app gets no ACK). A failed revoke mints nothing and gives the claim back. A mint
  * that fails after a revoke leaves the app on neither signer, and the error
  * says so.
  */
@@ -323,7 +323,7 @@ export async function runHandoffApproval(io: {
   unclaim: () => void;
   /** A Cancel landed after the claim (so it sent nothing itself). Only looks. */
   cancelRequested: () => boolean;
-  /** End the claimed request as a Cancel would have: it stays answered. */
+  /** End the claimed request as cancelled: it stays answered. Takes the user nowhere. */
   endCancelled: () => void;
   revokePrior: (rec: HeartwoodHandoffRecord) => Promise<void>;
   mint: (plan: HandoffPlan) => Promise<HandoffResult>;
