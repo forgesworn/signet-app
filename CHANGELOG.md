@@ -3,6 +3,10 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+- Always on: closing My Signet only warns you when something needs it (an app that signs through it, or your children), and names them. Otherwise it closes quietly
+- Where you're known: "Approved on" is replaced by "Signed by" and "Needs My Signet", so you can see which apps keep working with My Signet closed
+
 ## 0.26.0
 - Personas: "Add a key from my Heartwood" adds a key that lives on your Heartwood, such as an old nsec imported there, as a persona. My Signet signs as it through the Heartwood and never holds the key
 - Nostr Connect: when you approve an app you can choose "Straight to my Heartwood". The Heartwood that holds the persona takes the app over and signs for it directly, so My Signet can be closed
