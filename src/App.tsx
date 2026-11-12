@@ -420,6 +420,8 @@ import { resolveStayAwakeOnUnlock, mergeRestoredStayAwake, shouldRearmAlwaysOn, 
  * these few minutes, as it is for a stay-awake window.
  */
 const PHONE_APPS_WINDOW_MS = 5 * 60 * 1000;
+/** How long a phone-dependence summary must hold before the native service is told. */
+const PHONE_DEPENDENCE_SETTLE_MS = 2000;
 import { useConnectedClients } from './hooks/useConnectedClients';
 import { useOriginPolicies } from './hooks/useOriginPolicies';
 import { useOwnBadge } from './hooks/useOwnBadge';
@@ -6015,16 +6017,24 @@ function AppContent() {
     dependants,
   }), [isPairedChild, connectedClients, heartwoodHandoffs, nip55.grants, dependants]);
   const lastPhoneDependenceRef = useRef<string | null>(null);
+  const identityLoaded = !!identity;
   useEffect(() => {
     // Never send a summary built from a list that has not loaded: a premature
-    // `needed: false` would quietly stop the service.
-    if (!isNativeApp() || !encryptionKey || prefsLoading || connectedClientsLoading || dependantsLoading) return;
+    // `needed: false` would quietly stop the service. The dependants list reports
+    // loaded (and empty) before the identity it belongs to exists, so that counts too.
+    if (!isNativeApp() || !encryptionKey || !identityLoaded || prefsLoading || connectedClientsLoading || dependantsLoading) return;
     const { needed, title, text } = phoneDependenceSummary;
     const next = JSON.stringify({ needed, title, text });
     if (lastPhoneDependenceRef.current === next) return;
-    lastPhoneDependenceRef.current = next;
-    void SignetNative.setPhoneDependence({ needed, title, text }).catch(() => {});
-  }, [encryptionKey, prefsLoading, connectedClientsLoading, dependantsLoading, phoneDependenceSummary]);
+    // Only a value that has held for a moment is sent; a transient one is dropped
+    // by the cleanup when the inputs change again.
+    const t = setTimeout(() => {
+      if (lastPhoneDependenceRef.current === next) return;
+      lastPhoneDependenceRef.current = next;
+      void SignetNative.setPhoneDependence({ needed, title, text }).catch(() => {});
+    }, PHONE_DEPENDENCE_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [encryptionKey, identityLoaded, prefsLoading, connectedClientsLoading, dependantsLoading, phoneDependenceSummary]);
 
   // Native: on app resume, kick the serve socket if it isn't open — Android
   // can kill a socket without delivering onclose to the WebView.
@@ -15209,7 +15219,7 @@ function AppContent() {
           isNative={isNativeApp()}
           backgroundServing={backgroundServing}
           onSetBackgroundServing={handleSetBackgroundServing}
-          alwaysOnNote={encryptionKey && !prefsLoading && !connectedClientsLoading && !dependantsLoading ? phoneDependenceSummary.bunkerLine : ''}
+          alwaysOnNote={encryptionKey && identity && !prefsLoading && !connectedClientsLoading && !dependantsLoading ? phoneDependenceSummary.bunkerLine : ''}
           escalationNotices={escalations.notices}
           onDismissEscalation={escalations.dismiss}
           resolveEscalationOwner={resolveEscalationOwner}
