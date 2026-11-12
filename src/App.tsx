@@ -289,7 +289,7 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { handoffAllowedFor, handoffsForClient, mergeHandoffs, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
+import { handoffsForClient, mergeHandoffs, mintHandoff, prepareHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
 import { heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -13745,7 +13745,6 @@ function AppContent() {
           onUserChoice={(selection) => setConnectPickerChoice({ key: connectRequestKey, selection })}
           waitingGuardianPubkeys={waitingGuardianPubkeys}
           canHandOffToHeartwood={preferences.signingMode === 'bunker' && handoffClients.length > 0 && !activeDependant
-            && handoffAllowedFor(pendingConnectRequest?.permissions)
             ? (pk) => !isImportedGuardianPersona(identity, pk)
             : undefined}
         />

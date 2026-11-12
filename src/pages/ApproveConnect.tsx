@@ -9,6 +9,7 @@ import { computeAge } from '../lib/date-utils';
 import { KeypairBadge } from '../components/KeypairBadge';
 import type { AuthSelection } from './ApproveAuth';
 import { buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
+import { handoffReach, handoffWarning } from '../lib/heartwood-handoff';
 
 interface Props {
   request: NostrConnectRequest;
@@ -174,8 +175,14 @@ export function ApproveConnect({
       : selection.keypairType === 'persona' ? identity.persona.publicKey
         : selection.keypairType;
   const handOffOffered = !!selectedPubkey && !!canHandOffToHeartwood?.(selectedPubkey);
-  // Straight to the Heartwood is the default wherever it is offered.
-  const mode: SignMode = signMode === 'heartwood' && !handOffOffered ? 'auto' : (signMode ?? (handOffOffered ? 'heartwood' : 'auto'));
+  // The Heartwood can only list the kinds it signs, never ask about one, so an
+  // app whose grant reaches what this phone would ask about is warned about.
+  const reach = useMemo(() => handoffReach(request.permissions), [request.permissions]);
+  const reachWarning = handoffWarning(reach);
+  // Straight to the Heartwood is the default where it is offered and asks for
+  // nothing this phone would ask about; otherwise the phone stays the default.
+  const mode: SignMode = signMode === 'heartwood' && !handOffOffered ? 'auto'
+    : (signMode ?? (handOffOffered && reach.kind === 'safe' ? 'heartwood' : 'auto'));
   const askToSign = mode === 'ask';
   // Handing the app to the Heartwood doesn't use this phone's signing link, so
   // a key whose route is only coming back doesn't hold Approve. A choice that
@@ -218,7 +225,7 @@ export function ApproveConnect({
       <div className="card section">
         <div className="section-title">Connection details</div>
         {request.permissions && <p style={{ fontSize: '0.85rem', marginBottom: 12 }}>
-          Requested access: {request.permissions.join(', ')}. Online-play statements and deletions still need a separate approval.
+          Requested access: {request.permissions.join(', ')}.{mode === 'heartwood' ? '' : ' Online-play statements and deletions still need a separate approval.'}
         </p>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: '0.9rem' }}>
@@ -431,6 +438,11 @@ export function ApproveConnect({
               <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                 The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
               </span>
+              {mode === 'heartwood' && reachWarning && (
+                <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
+                  {reachWarning}
+                </span>
+              )}
             </span>
           </label>
         )}

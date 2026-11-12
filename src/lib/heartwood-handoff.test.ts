@@ -13,7 +13,9 @@ import {
   HandoffStrandedError,
   HandoffUnavailableError,
   handOffNostrConnect,
-  handoffAllowedFor,
+  handoffReach,
+  handoffWarning,
+  HANDOFF_ALWAYS_ASK_KINDS,
   handoffScope,
   handoffsForClient,
   mergeHandoffs,
@@ -127,12 +129,12 @@ describe('handOffNostrConnect', () => {
     });
   });
 
-  it('refuses an invitation that asks to sign deletions, before asking any device', async () => {
+  it('an invitation that asks to sign deletions can still be handed off, granted only what it asked', async () => {
     const m0 = hex();
     const b = fakeClient(m0, [{ kind: 'master', slot: 0, npub_hex: m0 }]);
-    await expect(handOffNostrConnect({ request: { ...request, permissions: ['sign_event:5'] }, personaHex: m0, clients: [b] }))
-      .rejects.toThrow(/deletions/);
-    expect(b.request).not.toHaveBeenCalled();
+    await handOffNostrConnect({ request: { ...request, permissions: ['sign_event:5', 'sign_event:1'] }, personaHex: m0, clients: [b] });
+    const [, params] = b.request.mock.calls.find(c => c[0] === 'nostrconnect_v2')!;
+    expect((params as { policy: Record<string, unknown> }).policy).toMatchObject({ allowed_kinds: [1, 5] });
   });
 
   it('says so when no Heartwood on this phone holds the key', async () => {
@@ -180,10 +182,31 @@ describe('handoffScope', () => {
     // nip04 is not served by a hand-off, scoped or not.
     expect(handoffScope(['nip04_encrypt', 'get_public_key'])).toEqual({ methods: ['get_public_key'], kinds: [] });
   });
-  it('a scope with kind-5 signing is not handed off', () => {
-    expect(handoffAllowedFor(undefined)).toBe(true);
-    expect(handoffAllowedFor(['sign_event:1'])).toBe(true);
-    expect(handoffAllowedFor(['sign_event:1', 'sign_event:5'])).toBe(false);
+});
+
+describe('handoffReach: what the Heartwood would sign that this phone asks about', () => {
+  it('safe: a list with no plain sign_event and none of the always-ask kinds', () => {
+    expect(handoffReach(['sign_event:1', 'sign_event:7', 'nip44_encrypt'])).toEqual({ kind: 'safe' });
+    expect(handoffReach(['nip44_decrypt'])).toEqual({ kind: 'safe' });
+  });
+  it('every kind: no list, or plain sign_event', () => {
+    expect(handoffReach(undefined)).toEqual({ kind: 'wide', covers: 'everything' });
+    expect(handoffReach(['sign_event', 'sign_event:1'])).toEqual({ kind: 'wide', covers: 'everything' });
+  });
+  it('a list naming always-ask kinds covers just those', () => {
+    expect(handoffReach(['sign_event:1', 'sign_event:5', 'sign_event:31000'])).toEqual({ kind: 'wide', covers: [5, 31000] });
+    for (const k of HANDOFF_ALWAYS_ASK_KINDS) expect(handoffReach([`sign_event:${k}`]).kind).toBe('wide');
+    // Kinterest family authorisations are kind 30078, told apart only by a d tag the device can't see.
+    expect(HANDOFF_ALWAYS_ASK_KINDS).toContain(30078);
+  });
+  it('says in plain words what the Heartwood will sign with no press', () => {
+    expect(handoffWarning({ kind: 'safe' })).toBeNull();
+    expect(handoffWarning({ kind: 'wide', covers: 'everything' })).toBe(
+      'Your Heartwood will sign anything this app asks, without a press, including profile changes, deletions and pairing other devices.');
+    expect(handoffWarning({ kind: 'wide', covers: [5] })).toBe('Your Heartwood will sign deletions for this app, without a press.');
+    expect(handoffWarning({ kind: 'wide', covers: [30078, 0, 24133] })).toBe(
+      'Your Heartwood will sign profile changes, pairing other devices and family permissions for Kinterest for this app, without a press.');
+    expect(handoffWarning({ kind: 'wide', covers: [...HANDOFF_ALWAYS_ASK_KINDS] })).not.toMatch(/\d/);
   });
 });
 

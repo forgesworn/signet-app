@@ -30,10 +30,11 @@ function renderPage(
   onApprove = vi.fn((_s: unknown, _o: { askToSign: boolean; viaHeartwood?: boolean }) => Promise.resolve()),
   canHandOffToHeartwood?: (pk: string) => boolean,
   waitingGuardianPubkeys?: string[],
+  req: NostrConnectRequest = request,
 ) {
   render(
     <ApproveConnect
-      request={request}
+      request={req}
       identity={identity}
       canSwitchGuardianPersona={true}
       availableGuardianPubkeys={[PERSONA]}
@@ -46,6 +47,8 @@ function renderPage(
   );
   return onApprove;
 }
+
+const scoped: NostrConnectRequest = { ...request, permissions: ['sign_event:1', 'nip44_encrypt'] };
 
 describe('ApproveConnect sign-mode control', () => {
   it('offers both options with automatic selected by default, and the crypto line', () => {
@@ -72,8 +75,9 @@ describe('ApproveConnect sign-mode control', () => {
     expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: true, viaHeartwood: false });
   });
 
-  it('with a Heartwood that holds the key, defaults to Straight to my Heartwood', async () => {
-    const onApprove = renderPage(undefined, (pk) => pk === PERSONA);
+  it('with a Heartwood that holds the key, defaults to Straight to my Heartwood for an app that asks for nothing the phone asks about', async () => {
+    const onApprove = renderPage(undefined, (pk) => pk === PERSONA, undefined, scoped);
+    expect(screen.queryByRole('note')).toBeNull();
     expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
@@ -89,7 +93,7 @@ describe('ApproveConnect sign-mode control', () => {
   });
 
   it('a key whose phone route is still coming back can go straight to the Heartwood', async () => {
-    const onApprove = renderPage(undefined, () => true, [PERSONA]);
+    const onApprove = renderPage(undefined, () => true, [PERSONA], scoped);
     expect(screen.getByText('Waiting for your Heartwood…')).toBeTruthy();
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(false);
@@ -99,8 +103,29 @@ describe('ApproveConnect sign-mode control', () => {
   });
 
   it('the same waiting key holds Approve again once Through My Signet is chosen', () => {
-    renderPage(undefined, () => true, [PERSONA]);
+    renderPage(undefined, () => true, [PERSONA], scoped);
     fireEvent.click(screen.getByLabelText('Through My Signet, automatically'));
     expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('an app with no permission list is still offered the Heartwood, but My Signet stays the default', async () => {
+    const onApprove = renderPage(undefined, () => true);
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('Through My Signet, automatically') as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole('note')).toBeNull();
+    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    expect(screen.getByRole('note').textContent).toBe(
+      'Your Heartwood will sign anything this app asks, without a press, including profile changes, deletions and pairing other devices.');
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: false, viaHeartwood: true });
+  });
+
+  it('an app that lists deletions is warned about just those, and the phone-side line goes', () => {
+    renderPage(undefined, () => true, undefined, { ...request, permissions: ['sign_event:1', 'sign_event:5'] });
+    expect(screen.getByText(/deletions still need a separate approval/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    expect(screen.getByRole('note').textContent).toBe('Your Heartwood will sign deletions for this app, without a press.');
+    expect(screen.queryByText(/deletions still need a separate approval/)).toBeNull();
   });
 });

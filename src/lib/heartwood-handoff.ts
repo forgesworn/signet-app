@@ -29,12 +29,52 @@ import type { HeartwoodHandoffRecord } from './db';
 export const HANDOFF_METHODS: readonly string[] = ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'];
 
 /**
- * Whether an invitation can go straight to the Heartwood. One whose scope asks
- * to sign deletions (kind 5) cannot: this phone asks before every deletion for
- * a scoped app, and the device would sign them without asking.
+ * Kinds this phone asks about every time, even for an app allowed to sign
+ * automatically (`useBunkerServer` `sensitiveForAllowAlways`,
+ * `scope-inference.ts`): 0 and 31000 (profile and name changes), 5
+ * (deletions, for a scoped app), 24133 (pairing devices), 30420 (standing app
+ * permissions) and Kinterest family authorisations
+ * (`kinterest-authority.ts`). Those are matched by their `d` tag, which the
+ * device can't see, and `parseKinterestRequest` only accepts kind 30078, so
+ * any 30078 grant covers them. A hand-off's device grant can only list
+ * allowed kinds (an empty list is every kind), and the device then signs
+ * them with no press.
  */
-export function handoffAllowedFor(permissions: readonly string[] | undefined): boolean {
-  return !permissions?.includes('sign_event:5');
+export const HANDOFF_ALWAYS_ASK_KINDS: readonly number[] = [0, 5, 24133, 30078, 30420, 31000];
+
+/**
+ * How far a hand-off reaches past what this phone would ask about. 'safe':
+ * the app sent a permission list, without plain `sign_event`, naming none of
+ * the always-ask kinds. Otherwise 'wide': every kind when it sent no list or
+ * plain `sign_event`, else the always-ask kinds it listed.
+ */
+export type HandoffReach = { kind: 'safe' } | { kind: 'wide'; covers: 'everything' | number[] };
+
+export function handoffReach(permissions: readonly string[] | undefined): HandoffReach {
+  if (permissions === undefined || permissions.includes('sign_event')) return { kind: 'wide', covers: 'everything' };
+  const listed = HANDOFF_ALWAYS_ASK_KINDS.filter(k => permissions.includes(`sign_event:${k}`));
+  return listed.length === 0 ? { kind: 'safe' } : { kind: 'wide', covers: listed };
+}
+
+const ALWAYS_ASK_WORDS: ReadonlyArray<readonly [number, string]> = [
+  [0, 'profile changes'],
+  [31000, 'name changes'],
+  [5, 'deletions'],
+  [24133, 'pairing other devices'],
+  [30420, 'standing app permissions'],
+  [30078, 'family permissions for Kinterest'],
+];
+
+/** What a wide hand-off lets the Heartwood sign with no press, in plain words. Null when safe. */
+export function handoffWarning(reach: HandoffReach): string | null {
+  if (reach.kind === 'safe') return null;
+  if (reach.covers === 'everything') {
+    return 'Your Heartwood will sign anything this app asks, without a press, including profile changes, deletions and pairing other devices.';
+  }
+  const covers = reach.covers;
+  const words = ALWAYS_ASK_WORDS.filter(([k]) => covers.includes(k)).map(([, w]) => w);
+  const list = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0];
+  return `Your Heartwood will sign ${list} for this app, without a press.`;
 }
 
 /**
@@ -166,7 +206,6 @@ export async function prepareHandoff(params: {
   cache?: Map<HeartwoodMgmtClient, DeviceIdentity[]>;
 }): Promise<HandoffPlan> {
   const persona = params.personaHex.toLowerCase();
-  if (!handoffAllowedFor(params.request.permissions)) throw new Error('This app asks to sign deletions, so My Signet asks you each time. Choose Through My Signet.');
   const holder = await findHeartwoodHolder(params.clients, persona, params.cache);
   if (!holder) throw new HandoffUnavailableError();
   const appRelays = params.request.relayUrls?.length ? params.request.relayUrls : [params.request.relayUrl];
