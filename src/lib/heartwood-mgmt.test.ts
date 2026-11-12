@@ -540,6 +540,31 @@ describe('HeartwoodMgmtClient request/reply', () => {
     expect(d.unsubscribed).toBe(1);
   });
 
+  it('stop() names the request it cut off in flight; one still queued, or made after, is bare', async () => {
+    const d = makeFakeDevice({ handler: (req) => (req.method === 'nostrconnect_v2' ? null : undefined) });
+    const c = d.client();
+    c.start();
+    const mint = c.request('nostrconnect_v2', {}).catch(e => (e as Error).message);
+    await vi.waitFor(() => expect(d.seen.some(s => s.method === 'nostrconnect_v2')).toBe(true));
+    const queued = c.request('revoke_client', {}).catch(e => (e as Error).message);
+    c.stop();
+    expect(await mint).toBe('transport closed (nostrconnect_v2)');
+    expect(await queued).toBe('transport closed');
+    expect(d.seen.some(s => s.method === 'revoke_client')).toBe(false);
+    expect(await c.request('nostrconnect_v2', {}).catch(e => (e as Error).message)).toBe('transport closed');
+  });
+
+  it('a mutation stopped during its challenge is named by the challenge: the mutation was never sent', async () => {
+    const d = makeFakeDevice({ handler: (req) => (req.method === 'get_management_challenge' ? null : undefined) });
+    const c = d.client();
+    c.start();
+    const mint = c.request('nostrconnect_v2', {}).catch(e => (e as Error).message);
+    await vi.waitFor(() => expect(d.seen.some(s => s.method === 'get_management_challenge')).toBe(true));
+    c.stop();
+    expect(await mint).toBe('transport closed (get_management_challenge)');
+    expect(d.seen.some(s => s.method === 'nostrconnect_v2')).toBe(false);
+  });
+
   it('stop() zeroizes the operator sk and conversation key', () => {
     const d = makeFakeDevice();
     const c = d.client();
@@ -560,7 +585,7 @@ describe('HeartwoodMgmtClient request/reply', () => {
     const id = d.seen[0].id;
     const sub = d.subs[0];
     c.stop();
-    expect(await p).toBe('transport closed');
+    expect(await p).toBe('transport closed (get_status)');
     // Deliver straight to the captured callback (the transport has already
     // dropped it) — must not throw.
     expect(() => sub.onEvent(finalizeEvent({

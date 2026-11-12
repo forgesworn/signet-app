@@ -247,13 +247,15 @@ export async function mintHandoff(plan: HandoffPlan, params: {
       throw new HandoffKeptError({ slotIndex: left.slotIndex, secretFingerprint, ...where }, HANDOFF_MISMATCH_KEPT_COPY);
     }
     const said = typeof left?.message === 'string' ? left.message : '';
-    // This client was stopped (the phone locked, or the link restarted) before
-    // the device answered, so nothing can be listed on it now. The device may
-    // have minted the slot and told the app: keep a record with no slot, which
-    // Disconnect (or the app's next pairing) finds by the app's key, and drops
-    // when the device lists none.
-    if (said === 'transport closed') {
-      throw new HandoffKeptError({ secretFingerprint: '', ...where }, HANDOFF_LOCKED_KEPT_COPY);
+    // This client was stopped (the phone locked, or the link restarted) after
+    // the mint was sent and before the device answered, so nothing can be
+    // listed on it now. The device may have minted the slot and told the app:
+    // keep a record with no slot, which Disconnect (or the app's next pairing)
+    // finds by the app's key, and drops when the device lists none. A stop
+    // before the mint was sent (still queued, or during its challenge) says so
+    // by its message, and is given back below like any other failure.
+    if (said === 'transport closed (nostrconnect_v2)') {
+      throw new HandoffKeptError({ secretFingerprint: '', ...where }, HANDOFF_LINK_DROPPED_KEPT_COPY);
     }
     // No answer to the mint itself: the device may still have minted the slot
     // and told the app. Look before the request is given back; a slot carrying
@@ -403,7 +405,7 @@ export function missingOperatorError(stored: readonly string[] | null, deviceHex
   return new HeartwoodCopyError(HANDOFF_STILL_CONNECTING_COPY);
 }
 
-export const HANDOFF_LOCKED_KEPT_COPY = "This phone locked before your Heartwood answered, so the app may be paired. Check the app, or scan its code again.";
+export const HANDOFF_LINK_DROPPED_KEPT_COPY = "The link to your Heartwood dropped before it answered. The app may be paired: check the app, or scan its code again.";
 
 export const HANDOFF_UNCERTAIN_KEPT_COPY = "Your Heartwood didn't confirm, but it now lists this app, so it may be paired. It's in Where you're known, where you can disconnect it.";
 

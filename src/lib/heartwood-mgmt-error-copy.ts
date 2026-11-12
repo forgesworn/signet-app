@@ -63,7 +63,7 @@ export function heartwoodMgmtErrorCopy(e: unknown): string {
   }
   if (/^timeout waiting for device/.test(m)) return MGMT_NO_ANSWER_COPY;
   if (/failed to publish/.test(m)) return MGMT_UNREACHABLE_COPY;
-  if (m === 'transport closed' || m === 'not started') return MGMT_LINK_CLOSED_COPY;
+  if (/^transport closed( \([a-z0-9_]+\))?$/.test(m) || m === 'not started') return MGMT_LINK_CLOSED_COPY;
   if (writtenForPeople(raw)) return raw.trim();
   return MGMT_GENERIC_COPY;
 }

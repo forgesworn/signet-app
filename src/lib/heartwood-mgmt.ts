@@ -217,12 +217,19 @@ export class HeartwoodMgmtClient {
   }
 
   /** Close the subscription, reject every in-flight request, and zeroize the
-   *  operator key material. The client is unusable afterwards. */
+   *  operator key material. The client is unusable afterwards.
+   *
+   *  A request in flight (its publish has started, so the device may have
+   *  acted on it) is rejected with `transport closed (<method>)`. One still
+   *  queued, or made after this, gets the bare `transport closed`: nothing of
+   *  it was sent. */
   stop(): void {
     if (this.closed) return;
     this.closed = true;
-    const err = new Error('transport closed');
-    for (const id of [...this.pending.keys()]) this.removePending(id)?.reject(err);
+    for (const id of [...this.pending.keys()]) {
+      const p = this.removePending(id);
+      p?.reject(new Error(`transport closed (${p.method})`));
+    }
     try { this.unsubscribe?.(); } catch { /* already gone */ }
     this.unsubscribe = null;
     this.sk.fill(0);

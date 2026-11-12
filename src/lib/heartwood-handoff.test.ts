@@ -31,7 +31,7 @@ import {
   missingOperatorError,
   HandoffUnmanagedError,
   HANDOFF_UNCERTAIN_KEPT_COPY,
-  HANDOFF_LOCKED_KEPT_COPY,
+  HANDOFF_LINK_DROPPED_KEPT_COPY,
   HANDOFF_EARLIER_KEPT_COPY,
   HANDOFF_STILL_CONNECTING_COPY,
   type HandoffPlan,
@@ -41,6 +41,7 @@ import {
   pickHandoffRelay,
   settleHandoff,
 } from './heartwood-handoff';
+import { MGMT_LINK_CLOSED_COPY } from './heartwood-mgmt-error-copy';
 import { buildOwnerPersonaRoutes } from './persona-bunker-routes';
 import { buildSlotBunkerUri } from './bunker-router';
 import type { DecryptingSigningBackend } from './signing-backend';
@@ -645,14 +646,33 @@ describe('a mint that got no answer: look before giving the request back', () =>
     expect(p.request.mock.calls.some(c => c[0] === 'list_clients')).toBe(false);
   });
 
-  it('the link closed before the device answered (the phone locked): kept with no slot, without a listing', async () => {
-    const p = plan(async () => ({ clients: [] }), new Error('transport closed'));
+  it('the link closed after the mint was sent, before the device answered: kept with no slot, without a listing', async () => {
+    const p = plan(async () => ({ clients: [] }), new Error('transport closed (nostrconnect_v2)'));
     const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(HandoffKeptError);
     expect((err as HandoffKeptError).slot).toEqual({ secretFingerprint: '', deviceHex: 'e'.repeat(64), targetHex: m0, relay: 'wss://relay.primal.net' });
-    expect((err as Error).message).toBe(HANDOFF_LOCKED_KEPT_COPY);
+    expect((err as Error).message).toBe(HANDOFF_LINK_DROPPED_KEPT_COPY);
+    expect(HANDOFF_LINK_DROPPED_KEPT_COPY).not.toMatch(/locked/);
     expect(endsConnectRequest(err)).toBe(true);
     expect(p.request.mock.calls.some(c => c[0] === 'list_clients')).toBe(false);
+  });
+
+  it('the link closed before the mint was sent (queued, or during its challenge): nothing kept, the request given back', async () => {
+    for (const said of ['transport closed', 'transport closed (get_management_challenge)']) {
+      const p = plan(async () => ({ clients: [row({ current_pubkey: app, bound_identity: m0 })] }), new Error(said));
+      const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
+      expect(err).not.toBeInstanceOf(HandoffKeptError);
+      expect(endsConnectRequest(err)).toBe(false);
+      expect((err as Error).message).toBe(MGMT_LINK_CLOSED_COPY);
+      expect(p.request.mock.calls.some(c => c[0] === 'list_clients')).toBe(false);
+      const log: string[] = [];
+      await expect(runHandoffApproval({
+        priors: [], prepare: async () => p.plan, claim: () => true, unclaim: () => { log.push('unclaim'); },
+        cancelRequested: () => false, endCancelled: () => {}, revokePrior: async () => {},
+        mint: plan => mintHandoff(plan, { request }),
+      })).rejects.toThrow(MGMT_LINK_CLOSED_COPY);
+      expect(log).toEqual(['unclaim']);
+    }
   });
 
   it('a device that answered with an error is not looked for', async () => {

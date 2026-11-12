@@ -34,6 +34,8 @@ describe('heartwoodMgmtErrorCopy', () => {
 
   it('a closed link says so', () => {
     expect(heartwoodMgmtErrorCopy(new Error('transport closed'))).toBe(MGMT_LINK_CLOSED_COPY);
+    expect(heartwoodMgmtErrorCopy(new Error('transport closed (nostrconnect_v2)'))).toBe(MGMT_LINK_CLOSED_COPY);
+    expect(heartwoodMgmtErrorCopy(new Error('transport closed (get_management_challenge)'))).toBe(MGMT_LINK_CLOSED_COPY);
     expect(heartwoodMgmtErrorCopy(new Error('not started'))).toBe(MGMT_LINK_CLOSED_COPY);
   });
 
