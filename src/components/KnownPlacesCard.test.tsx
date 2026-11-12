@@ -275,6 +275,8 @@ describe('KnownPlacesCard', () => {
     const { a } = setup({ heartwoodClients: [{ fingerprint: 'ff00', label: 'Bark', boundIdentity: 'Alice', policySummary: 'Asks on the device' }] });
     expect(screen.queryByText(/managed in Sapwood/)).toBeNull();
     expand('Bark');
+    expect(screen.getByText('No, it talks to your Heartwood directly')).toBeDefined();
+    expect(screen.getByTitle('Signed by your Heartwood')).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Revoke on Heartwood' }));
     expect(screen.getByText('Removes this app from the device.')).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
@@ -330,6 +332,38 @@ describe('KnownPlacesCard', () => {
     expand('nc');
     expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically/ })).toBeNull();
     expect(screen.getByText('By your Heartwood, without asking this phone')).toBeTruthy();
+  });
+
+  it('shows who signs and whether My Signet must be open, never "Approved on"', () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'local' });
+    const app = place('app', { kind: 'nip55', channel: 'nip55', origin: undefined, nativePackage: 'org.x', signer: 'local' });
+    const held = place('held', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'unknown' });
+    const site = place('site', { signer: 'unknown' });
+    const ctxs: Record<string, object> = {
+      nc: { signedBy: 'heartwood' }, app: { signedBy: 'heartwood' }, held: { heartwoodHeld: true, signedBy: 'heartwood' }, site: {},
+    };
+    setup({ places: [nc, app, held, site], ctxFor: p => ctxs[p.placeKey] });
+    const facts = (name: string) => {
+      expand(name);
+      const row = document.querySelector(`[data-kp-row="${name}:${PK}"]`) as HTMLElement;
+      const text = row.textContent ?? '';
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(name) }));
+      return text;
+    };
+    expect(facts('nc')).toMatch(/Signed byYour Heartwood/);
+    expect(facts('nc')).toMatch(/Needs My SignetYes, its requests go through My Signet/);
+    expect(facts('app')).toMatch(/Signed byYour Heartwood/);
+    expect(facts('app')).toMatch(/Needs My SignetYes, it asks My Signet on this phone/);
+    expect(facts('held')).toMatch(/Needs My SignetNo, it talks to your Heartwood directly/);
+    const siteText = facts('site');
+    expect(siteText).not.toMatch(/Signed by|Needs My Signet/);
+    expect([nc, app, held, site].map(p => facts(p.placeKey)).join('')).not.toMatch(/Approved on/);
+  });
+
+  it('falls back to the signer recorded at approval when nothing live is known', () => {
+    setup({ places: [place('rec', { signer: 'local' })] });
+    expand('rec');
+    expect(document.querySelector(`[data-kp-row="rec:${PK}"]`)!.textContent).toMatch(/Signed byThis phone/);
   });
 
   it('opens a phone-app place only on native', () => {

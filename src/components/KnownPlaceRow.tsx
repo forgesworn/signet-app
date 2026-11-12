@@ -6,6 +6,7 @@ import { KnownPlaceBadgeGlyph } from './KnownPlaceBadgeGlyph';
 import { canOpenPlace } from '../lib/known-place-open';
 import { isNativeApp } from '../lib/native';
 import { heartwoodMgmtErrorCopy } from '../lib/heartwood-mgmt-error-copy';
+import type { KeyHome } from '../lib/key-home';
 
 export type KnownPlaceIdentityType = 'persona' | 'natural-person' | 'extra' | 'dependant' | 'bot';
 
@@ -26,6 +27,8 @@ export interface KnownPlaceCtx {
   lastSeenAt?: number;
   /** nip46: the app was handed to a Heartwood, which signs for it; the phone has no ask setting for it. */
   heartwoodHeld?: boolean;
+  /** What actually signs for this place's key, read live; wins over what was recorded at approval. */
+  signedBy?: KeyHome;
 }
 
 export interface KnownPlaceActions {
@@ -70,6 +73,26 @@ const CHANNEL_SENTENCE: Record<KnownPlaceChannel, string> = {
   nip55: 'Asks this phone to sign, from an app on it',
   unknown: '',
 };
+
+const SIGNED_BY_WORDS: Record<KeyHome, string> = {
+  heartwood: 'Your Heartwood',
+  phone: 'This phone',
+  'remote-signer': 'Your remote signer',
+  extension: 'A browser extension',
+};
+
+/** What a place recorded at approval; `unknown` says nothing. */
+const RECORDED_SIGNER: Record<KnownPlace['signer'], KeyHome | undefined> = {
+  local: 'phone',
+  heartwood: 'heartwood',
+  'remote-signer': 'remote-signer',
+  extension: 'extension',
+  unknown: undefined,
+};
+
+export const NEEDS_SIGNET_NO = 'No, it talks to your Heartwood directly';
+export const NEEDS_SIGNET_YES_NOSTR_CONNECT = 'Yes, its requests go through My Signet';
+export const NEEDS_SIGNET_YES_PHONE_APP = 'Yes, it asks My Signet on this phone';
 
 export const HEARTWOOD_HELD_SIGNING = 'By your Heartwood, without asking this phone';
 
@@ -133,10 +156,10 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
   };
   const canForgetHere = heartwoodHeld && disconnectFailed && !!actions.forgetHandoffHere;
 
-  const approvedOn = place.signer === 'local' ? 'this phone'
-    : place.signer === 'heartwood' ? 'your Heartwood'
-    : place.signer === 'remote-signer' ? 'a remote signer'
-    : place.signer === 'extension' ? 'a browser extension' : '';
+  const signedBy = ctx.signedBy ?? RECORDED_SIGNER[place.signer];
+  const needsSignet = place.kind === 'nip46'
+    ? (heartwoodHeld ? NEEDS_SIGNET_NO : NEEDS_SIGNET_YES_NOSTR_CONNECT)
+    : place.kind === 'nip55' ? NEEDS_SIGNET_YES_PHONE_APP : '';
 
   let otherLine: ReactNode = null;
   if (place.kind === 'nip55' && ctx.nip55OtherIdentity) otherLine = PAIRED_TO_OTHER_IDENTITY_COPY;
@@ -176,7 +199,8 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
               </dd>
             </div>
             {channelSentence && <div><dt>How</dt><dd>{channelSentence}</dd></div>}
-            {approvedOn && <div><dt>Approved on</dt><dd>{approvedOn}</dd></div>}
+            {signedBy && <div><dt>Signed by</dt><dd>{SIGNED_BY_WORDS[signedBy]}</dd></div>}
+            {needsSignet && <div><dt>Needs My Signet</dt><dd>{needsSignet}</dd></div>}
             {(place.shared.handle || place.shared.picture) && (
               <div><dt>Shared</dt><dd>{[place.shared.handle && 'Your handle', place.shared.picture && 'Your picture'].filter(Boolean).join(' and ')}</dd></div>
             )}
@@ -287,12 +311,13 @@ export function HeartwoodRow({ fingerprint, label, boundIdentity, policySummary,
           <span className="kp-row-name">{label}</span>
           <span className="kp-row-summary">{boundIdentity} · {policySummary}</span>
         </span>
-        <span className="kp-row-badge" title="Approved on Heartwood"><KnownPlaceBadgeGlyph badge={{ kind: 'heartwood', label: 'Approved on Heartwood' }} /></span>
+        <span className="kp-row-badge" title="Signed by your Heartwood"><KnownPlaceBadgeGlyph badge={{ kind: 'heartwood', label: 'Signed by your Heartwood' }} /></span>
       </button>
       {expanded && (
         <div className="kp-panel">
           <dl className="kp-facts">
             <div><dt>How</dt><dd>Paired straight to your Heartwood</dd></div>
+            <div><dt>Needs My Signet</dt><dd>{NEEDS_SIGNET_NO}</dd></div>
             <div><dt>Identity</dt><dd>{boundIdentity}</dd></div>
             <div><dt>Rules</dt><dd>{policySummary}</dd></div>
           </dl>

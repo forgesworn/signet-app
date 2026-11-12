@@ -148,6 +148,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
 import { isNativeApp, SignetNative } from './lib/native';
 import { phoneDependence } from './lib/phone-dependence';
+import { keyHomeFor } from './lib/key-home';
 import { referrerPackageFor } from './lib/launch-referrer';
 import { deriveSignInChannel, deriveSigner } from './lib/known-place-channel';
 import { buildSignInKnownPlace, recordKnownPlace } from './lib/known-places-record';
@@ -4778,13 +4779,17 @@ function AppContent() {
     // place is the site, so it keeps its own tile and name, not the browser's.
     const appLabel = place.channel === 'browser' ? undefined : app?.label ?? undefined;
     const appIcon = place.channel === 'browser' ? null : app?.icon ?? null;
+    // What signs for the place's key now, not what was recorded when it was approved.
+    const signedBy = place.kind === 'nip46' || place.kind === 'nip55'
+      ? keyHomeFor(place.pubkey, { identity, signingMode: preferences.signingMode, routerPresent: !!bunkerRouter })
+      : undefined;
     if (place.kind === 'nip46') {
       // Handed to a Heartwood: the device signs for it, so the phone's ask setting doesn't apply.
-      if (heartwoodHandoffs.some(h => `nc:${h.clientPubkey}` === place.placeKey)) return { heartwoodHeld: true, appLabel, appIcon };
+      if (heartwoodHandoffs.some(h => `nc:${h.clientPubkey}` === place.placeKey)) return { heartwoodHeld: true, signedBy: 'heartwood', appLabel, appIcon };
       // Until the paired clients have loaded, whether this one asks is unknown: say nothing.
-      if (connectedClientsLoading) return { askToSign: undefined, loading: true, appLabel, appIcon };
+      if (connectedClientsLoading) return { askToSign: undefined, loading: true, signedBy, appLabel, appIcon };
       const client = connectedClients.find(c => `nc:${c.clientPubkey}` === place.placeKey);
-      return { askToSign: !!client?.askToSign, lastSeenAt: client?.lastSeenAt, appLabel, appIcon };
+      return { askToSign: !!client?.askToSign, lastSeenAt: client?.lastSeenAt, signedBy, appLabel, appIcon };
     }
     if (place.kind === 'nip55') {
       // A grant is pinned to one identity; a row for another identity gets no say over it.
@@ -4793,13 +4798,14 @@ function AppContent() {
       return {
         nip55Grant: grant && mine ? { allowAlways: grant.allowAlways, denyAlways: grant.denyAlways } : null,
         nip55OtherIdentity: !!grant && !mine,
+        signedBy,
         appLabel,
         appIcon,
       };
     }
     return { appLabel, appIcon };
     // placeIconVersion: an app label that has just landed must reach the rows.
-  }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion, heartwoodHandoffs]);
+  }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion, heartwoodHandoffs, identity, preferences.signingMode, bunkerRouter]);
   const knownPlaceActions = useMemo<KnownPlaceActions>(() => {
     const clientOf = (place: KnownPlace) => place.placeKey.startsWith('nc:') ? place.placeKey.slice(3) : '';
     return {
@@ -14823,7 +14829,7 @@ function AppContent() {
           if (!encryptionKey || resolved.isDependant) return [];
           return knownPlacesFor(resolved.publicKey).map(place => {
             const ctx = knownPlaceCtx(place);
-            const badge = primaryBadge(badgesFor(place, { askToSign: ctx.askToSign, nip55Grant: ctx.nip55Grant, loading: ctx.loading, now: Math.floor(Date.now() / 1000) }));
+            const badge = primaryBadge(badgesFor(place, { askToSign: ctx.askToSign, nip55Grant: ctx.nip55Grant, loading: ctx.loading, signedBy: ctx.signedBy, now: Math.floor(Date.now() / 1000) }));
             return { place, badge, iconUrl: ctx.appIcon ?? null };
           });
         }}
