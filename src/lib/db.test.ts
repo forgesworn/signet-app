@@ -505,6 +505,16 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect((await db.readExtraHeartwoodOperators(PASSPHRASE)).map(c => c.deviceHex[0])).toEqual(['b']);
   }, TIMEOUT);
 
+  it('a hand-off kept with no slot index (the phone locked mid-mint) survives a save and load', async () => {
+    const db = await freshDb();
+    const kept = { clientPubkey: 'c'.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), slotIndex: undefined, secretFingerprint: '', relay: 'wss://r.example', createdAt: 1 };
+    await db.saveHeartwoodHandoffs([kept], PASSPHRASE);
+    const [loaded] = await db.loadHeartwoodHandoffs(PASSPHRASE);
+    expect(loaded).toMatchObject({ clientPubkey: 'c'.repeat(64), secretFingerprint: '' });
+    expect(loaded.slotIndex).toBeUndefined();
+  }, TIMEOUT);
+
   it('readHeartwoodHandoffs waits for a write already queued, and the row check needs no key', async () => {
     const db = await freshDb();
     const rec = (c: string) => ({ clientPubkey: c.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),

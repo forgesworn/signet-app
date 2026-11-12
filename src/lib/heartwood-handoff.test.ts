@@ -29,6 +29,7 @@ import {
   missingOperatorError,
   HandoffUnmanagedError,
   HANDOFF_UNCERTAIN_KEPT_COPY,
+  HANDOFF_LOCKED_KEPT_COPY,
   HANDOFF_STILL_CONNECTING_COPY,
   type HandoffPlan,
   type HandoffResult,
@@ -391,6 +392,19 @@ describe('revokeHandoffSlot: only the device list proves an app is gone', () => 
     await revokeHandoffSlot({ ...h.p, slot: { slotIndex: 9, secretFingerprint: '' } });
     expect(h.revoke.mock.calls).toEqual([[{ slotIndex: 9, secretFingerprint: '12'.repeat(8) }]]);
   });
+
+  it('a record kept with no slot (the phone locked mid-mint): a slot holding the app is revoked', async () => {
+    const h = io({ list: async () => [row({ slotIndex: 4, secretFingerprint: '34'.repeat(8), authorizedPubkeys: [app] })] });
+    await revokeHandoffSlot({ ...h.p, slot: { secretFingerprint: '' } });
+    expect(h.listClients).toHaveBeenCalledTimes(1);
+    expect(h.revoke.mock.calls).toEqual([[{ slotIndex: 4, secretFingerprint: '34'.repeat(8) }]]);
+  });
+
+  it('a record kept with no slot, and the app on no slot: gone, with nothing revoked', async () => {
+    const h = io({ list: async () => [row({ currentPubkey: hex() })] });
+    await expect(revokeHandoffSlot({ ...h.p, slot: { secretFingerprint: '' } })).resolves.toBeUndefined();
+    expect(h.revoke).not.toHaveBeenCalled();
+  });
 });
 
 describe('runHandoffApproval: nothing is revoked for a check that could fail first', () => {
@@ -565,6 +579,16 @@ describe('a mint that got no answer: look before giving the request back', () =>
       expect(err).not.toBeInstanceOf(HandoffKeptError);
       expect((err as Error).message).toMatch(/didn't answer/);
     }
+  });
+
+  it('the link closed before the device answered (the phone locked): kept with no slot, without a listing', async () => {
+    const p = plan(async () => ({ clients: [] }), new Error('transport closed'));
+    const err = await mintHandoff(p.plan, { request }).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(HandoffKeptError);
+    expect((err as HandoffKeptError).slot).toEqual({ secretFingerprint: '', deviceHex: 'e'.repeat(64), targetHex: m0, relay: 'wss://relay.primal.net' });
+    expect((err as Error).message).toBe(HANDOFF_LOCKED_KEPT_COPY);
+    expect(endsConnectRequest(err)).toBe(true);
+    expect(p.request.mock.calls.some(c => c[0] === 'list_clients')).toBe(false);
   });
 
   it('a device that answered with an error is not looked for', async () => {

@@ -2592,7 +2592,11 @@ export interface HeartwoodHandoffRecord {
   persona: string;
   deviceHex: string;
   targetHex: string;
-  slotIndex: number;
+  /**
+   * Unknown when the phone locked before the device answered the mint (the
+   * fingerprint is then empty too): the revoke finds the slot by the app's key.
+   */
+  slotIndex?: number;
   secretFingerprint: string;
   relay: string;
   createdAt: number;
@@ -2602,7 +2606,8 @@ function isHandoffRecord(v: unknown): v is HeartwoodHandoffRecord {
   if (!v || typeof v !== 'object') return false;
   const r = v as Record<string, unknown>;
   return typeof r.clientPubkey === 'string' && typeof r.persona === 'string' && typeof r.deviceHex === 'string'
-    && typeof r.targetHex === 'string' && typeof r.slotIndex === 'number' && typeof r.secretFingerprint === 'string'
+    && typeof r.targetHex === 'string' && (r.slotIndex === undefined || typeof r.slotIndex === 'number')
+    && typeof r.secretFingerprint === 'string'
     && typeof r.relay === 'string' && typeof r.createdAt === 'number' && typeof r.appName === 'string';
 }
 

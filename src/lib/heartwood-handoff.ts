@@ -242,10 +242,18 @@ export async function mintHandoff(plan: HandoffPlan, params: {
       const secretFingerprint = typeof left.secretFingerprint === 'string' ? left.secretFingerprint : '';
       throw new HandoffKeptError({ slotIndex: left.slotIndex, secretFingerprint, ...where }, HANDOFF_MISMATCH_KEPT_COPY);
     }
+    const said = typeof left?.message === 'string' ? left.message : '';
+    // This client was stopped (the phone locked, or the link restarted) before
+    // the device answered, so nothing can be listed on it now. The device may
+    // have minted the slot and told the app: keep a record with no slot, which
+    // Disconnect (or the app's next pairing) finds by the app's key, and drops
+    // when the device lists none.
+    if (said === 'transport closed') {
+      throw new HandoffKeptError({ secretFingerprint: '', ...where }, HANDOFF_LOCKED_KEPT_COPY);
+    }
     // No answer: the device may still have minted the slot and told the app.
     // Look before the request is given back; a slot carrying the app's key is kept.
-    const said = typeof left?.message === 'string' ? left.message : '';
-    if (/^timeout waiting for device/.test(said) || said === 'transport closed') {
+    if (/^timeout waiting for device/.test(said)) {
       let found: DeviceClientSlot | undefined;
       try {
         const slots = await lock(holder.client, () => listClients(holder.client, { targetHex: holder.targetHex, strict: true }));
@@ -375,13 +383,16 @@ export function missingOperatorError(stored: readonly string[] | null, deviceHex
   return new HeartwoodCopyError(HANDOFF_STILL_CONNECTING_COPY);
 }
 
+export const HANDOFF_LOCKED_KEPT_COPY = "This phone locked before your Heartwood answered, so the app may be paired. Check the app, or scan its code again.";
+
 export const HANDOFF_UNCERTAIN_KEPT_COPY = "Your Heartwood didn't confirm, but it now lists this app, so it may be paired. It's in Where you're known, where you can disconnect it.";
 
 export const HANDOFF_MISMATCH_KEPT_COPY = "Your Heartwood paired the app with rules this phone didn't ask for, and didn't confirm removing it. The app may still be on your Heartwood: disconnect it in Where you're known, or remove it in Sapwood.";
 
 /** Where a slot the device may still hold sits, so a record of it can be kept. */
 export interface KeptHandoffSlot {
-  slotIndex: number;
+  /** Unknown when the device never answered and nothing could be listed. */
+  slotIndex?: number;
   /** Empty when the device didn't give one; the revoke then finds the slot by the app's key. */
   secretFingerprint: string;
   deviceHex: string;
@@ -407,18 +418,18 @@ export class HandoffKeptError extends HeartwoodCopyError {
  * app is gone: its slot may sit under another index. The device's client list
  * decides. No slot carries the app's key ⇒ gone. One does ⇒ that slot is
  * revoked, once. A listing that fails or can't be fully read throws. A record
- * with no fingerprint goes straight to the listing.
+ * with no fingerprint (or no slot index) goes straight to the listing.
  */
 export async function revokeHandoffSlot(p: {
   clientPubkey: string;
-  slot: { slotIndex: number; secretFingerprint: string };
+  slot: { slotIndex?: number; secretFingerprint: string };
   revoke: (slot: { slotIndex: number; secretFingerprint: string }) => Promise<void>;
   /** The holding master's slots; must throw rather than return a partial list. */
   listClients: () => Promise<DeviceClientSlot[]>;
 }): Promise<void> {
-  if (p.slot.secretFingerprint) {
+  if (p.slot.secretFingerprint && p.slot.slotIndex !== undefined) {
     try {
-      await p.revoke(p.slot);
+      await p.revoke({ slotIndex: p.slot.slotIndex, secretFingerprint: p.slot.secretFingerprint });
       return;
     } catch (e) {
       if (!isNoSuchSlotError(e) && !isStaleClientSlotMessage(e)) throw e;
