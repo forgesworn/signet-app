@@ -398,7 +398,7 @@ describe('runHandoffApproval: nothing is revoked for a check that could fail fir
     targetHex: 'd'.repeat(64), slotIndex: 2, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 };
   const plan = { relay: 'wss://r.example', persona: 'd'.repeat(64) } as unknown as HandoffPlan;
   const handed = { slotIndex: 5 } as unknown as HandoffResult;
-  function io(o: { prepare?: () => Promise<HandoffPlan>; claim?: boolean; revoke?: () => Promise<void>; mint?: () => Promise<HandoffResult>; priors?: typeof prior[] } = {}) {
+  function io(o: { prepare?: () => Promise<HandoffPlan>; claim?: boolean; revoke?: () => Promise<void>; mint?: () => Promise<HandoffResult>; priors?: typeof prior[]; cancelled?: () => boolean } = {}) {
     const log: string[] = [];
     return {
       log,
@@ -407,6 +407,8 @@ describe('runHandoffApproval: nothing is revoked for a check that could fail fir
         prepare: async () => { log.push('prepare'); return (o.prepare ?? (async () => plan))(); },
         claim: () => { log.push('claim'); return o.claim ?? true; },
         unclaim: () => { log.push('unclaim'); },
+        cancelRequested: () => (o.cancelled ?? (() => false))(),
+        endCancelled: () => { log.push('end-cancelled'); },
         revokePrior: async () => { log.push('revoke'); await (o.revoke ?? (async () => {}))(); },
         mint: async () => { log.push('mint'); return (o.mint ?? (async () => handed))(); },
       },
@@ -429,6 +431,26 @@ describe('runHandoffApproval: nothing is revoked for a check that could fail fir
     const h = io({ claim: false });
     expect(await runHandoffApproval(h.p)).toEqual({ status: 'withdrawn' });
     expect(h.log).toEqual(['prepare', 'claim']);
+  });
+
+  it('a Cancel during the revoke stops the mint: the request ends cancelled and stays answered', async () => {
+    let cancelled = false;
+    const h = io({ revoke: async () => { cancelled = true; }, cancelled: () => cancelled });
+    expect(await runHandoffApproval(h.p)).toEqual({ status: 'withdrawn' });
+    expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'end-cancelled']);
+  });
+
+  it('a Cancel during a revoke that then fails ends cancelled too, with nothing minted or given back', async () => {
+    let cancelled = false;
+    const h = io({ revoke: async () => { cancelled = true; throw new Error("Your Heartwood didn't answer."); }, cancelled: () => cancelled });
+    expect(await runHandoffApproval(h.p)).toEqual({ status: 'withdrawn' });
+    expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'end-cancelled']);
+  });
+
+  it('no Cancel: the mint goes ahead and nothing is ended early', async () => {
+    const h = io({ cancelled: () => false });
+    expect(await runHandoffApproval(h.p)).toEqual({ status: 'minted', handed });
+    expect(h.log).not.toContain('end-cancelled');
   });
 
   it('a revoke that fails mints nothing and gives the request back', async () => {
@@ -478,6 +500,7 @@ describe('a mint the device may still hold is kept, never retried blind', () => 
     await expect(runHandoffApproval({
       priors: [{ clientPubkey: 'c'.repeat(64), appName: 'A', persona: m0, deviceHex: m0, targetHex: m0, slotIndex: 0, secretFingerprint: 'aa', relay: 'wss://r', createdAt: 1 }],
       prepare: async () => p, claim: () => true, unclaim: () => { log.push('unclaim'); },
+      cancelRequested: () => false, endCancelled: () => { log.push('end-cancelled'); },
       revokePrior: async () => {}, mint: async () => { throw kept; },
     })).rejects.toBe(kept);
     expect(log).toEqual([]);

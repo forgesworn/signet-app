@@ -8284,6 +8284,28 @@ function AppContent() {
         });
       };
       const priors = (await heldHandoffsFor(clientHex, async () => key)).records;
+      // A Cancel after the claim found the request already answered, so it
+      // only dismissed the screen: the "denied" it would have sent is sent
+      // here, unless a newer request owns the screen by now.
+      const endCancelled = () => {
+        connectSettlementRef.current.finishDelivery(connectKey);
+        const current = pendingConnectRequestRef.current;
+        if (current && current !== connectRequest) return;
+        const cameByIntent = connectCameByIntentRef.current;
+        connectCameByIntentRef.current = false;
+        if (current) {
+          setPendingConnectRequest(null);
+          setPendingConnectSelection(null);
+          setPendingConnectCallback(null);
+          navigateReplace('home');
+        }
+        if (cameByIntent) {
+          void SignetNative.returnToPreviousApp().catch(() => { /* nothing behind us */ });
+          return;
+        }
+        const callback = pendingConnectCallback;
+        if (callback) window.location.href = buildCallbackRedirect(callback, 'denied');
+      };
       let approval: Awaited<ReturnType<typeof runHandoffApproval>>;
       try {
         approval = await runHandoffApproval({
@@ -8291,6 +8313,8 @@ function AppContent() {
           prepare: () => prepareHandoff({ request: connectRequest, personaHex, clients: handoffClientsRef.current }),
           claim: () => connectStillPending() && connectSettlementRef.current.claimDelivery(connectKey),
           unclaim: () => connectSettlementRef.current.unclaimDelivery(connectKey),
+          cancelRequested: () => connectSettlementRef.current.isCancelRequested(connectKey),
+          endCancelled,
           revokePrior: prior => revokeHeartwoodHandoff(prior, key),
           mint: plan => mintHandoff(plan, { request: connectRequest, withLock: withOperatorLock }),
         });

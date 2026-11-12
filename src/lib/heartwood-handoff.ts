@@ -278,8 +278,11 @@ export const HANDOFF_PRIOR_REMOVED_COPY = "This app's earlier pairing was remove
  * then the claim on the request (which a Cancel takes from it), all run before
  * an earlier hand-off of the app is revoked; nothing awaits between the claim
  * and the revoke starting, and a revoke once started is not abandoned. A
- * failed revoke mints nothing and gives the claim back. A mint that fails
- * after a revoke leaves the app on neither signer, and the error says so.
+ * Cancel that lands during the revoke stops it there: nothing is minted, and
+ * the request ends as cancelled (`endCancelled`, which still owes the app its
+ * "denied"). A failed revoke mints nothing and gives the claim back. A mint
+ * that fails after a revoke leaves the app on neither signer, and the error
+ * says so.
  */
 export async function runHandoffApproval(io: {
   /** Earlier hand-offs of this app, from the store. */
@@ -288,17 +291,30 @@ export async function runHandoffApproval(io: {
   /** False when the request was cancelled or replaced: nothing is changed. */
   claim: () => boolean;
   unclaim: () => void;
+  /** A Cancel landed after the claim (so it sent nothing itself). Only looks. */
+  cancelRequested: () => boolean;
+  /** End the claimed request as a Cancel would have: it stays answered. */
+  endCancelled: () => void;
   revokePrior: (rec: HeartwoodHandoffRecord) => Promise<void>;
   mint: (plan: HandoffPlan) => Promise<HandoffResult>;
 }): Promise<{ status: 'withdrawn' } | { status: 'minted'; handed: HandoffResult }> {
   const plan = await io.prepare();
   if (!io.claim()) return { status: 'withdrawn' };
+  const cancelledMeanwhile = () => {
+    if (!io.cancelRequested()) return false;
+    io.endCancelled();
+    return true;
+  };
   try {
     for (const prior of io.priors) await io.revokePrior(prior);
   } catch (e) {
+    // Cancelled while the revoke ran: nothing more is tried, and the request
+    // ends as the Cancel asked (nobody is left to read the error).
+    if (cancelledMeanwhile()) return { status: 'withdrawn' };
     io.unclaim();
     throw e;
   }
+  if (cancelledMeanwhile()) return { status: 'withdrawn' };
   try {
     return { status: 'minted', handed: await io.mint(plan) };
   } catch (e) {
