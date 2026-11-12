@@ -88,7 +88,10 @@ function grantIsFor(grant: Nip55Grants[string], pubkey: string): boolean {
   return !!pubkey && grant.pubkey.toLowerCase() === pubkey.toLowerCase();
 }
 
-export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = () => Date.now(), gate }: Options) {
+/** A stable default clock: a fresh function each render would re-register the native listeners. */
+const defaultNow = () => Date.now();
+
+export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = defaultNow, gate }: Options) {
   const keyExpiredRef = useRef(keyExpired);
   keyExpiredRef.current = keyExpired;
   const onKeyExpiredRef = useRef(onKeyExpired);

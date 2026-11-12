@@ -157,6 +157,17 @@ describe('useNip55Server', () => {
     expect(result.current.grants['dev.unknown']).toBeUndefined();
   });
 
+  it('registers the native listeners once across re-renders when no clock is passed', async () => {
+    const { rerender } = renderHook(() => useNip55Server({ enabled: true, routes: [route], locked: false, activePubkey: pubkey }));
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    pendingFromShell.mockClear();
+    rerender();
+    rerender();
+    await new Promise(r => setTimeout(r, 20));
+    expect(listeners.nip55Request.length).toBe(1);
+    expect(pendingFromShell).not.toHaveBeenCalled();
+  });
+
   it('notes when an allowed-always app was last served, at most once an hour', async () => {
     localStorage.setItem('signet.nip55.grants', JSON.stringify({ 'dev.forgesworn.kithmoot': { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } }));
     let t = 10_000_000;
