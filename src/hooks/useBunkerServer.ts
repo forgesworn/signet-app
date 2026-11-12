@@ -406,8 +406,12 @@ interface Options {
    * serving is always active (back-compat).
    */
   isOwnerServingActive?: () => boolean;
-  /** Apps handed to a Heartwood: the device answers them, so this server stays silent. */
-  isHandedOffClient?: (clientPubkey: string) => boolean;
+  /**
+   * Apps handed to a Heartwood: the device answers them, so this server stays
+   * silent. May answer later (a promise) while the stored list is still
+   * loading; the request waits for it rather than being answered meanwhile.
+   */
+  isHandedOffClient?: (clientPubkey: string) => boolean | Promise<boolean>;
 }
 
 /**
@@ -746,7 +750,10 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
 
     // An app handed to a Heartwood is the device's to answer. Any reply from
     // here (an approval prompt, a "not connected") would race the device's.
-    if (!route.dependantId && isHandedOffClientRef.current?.(author)) return;
+    // Right after unlock the list is still loading: wait for it, never answer
+    // meanwhile (a leftover allow-always pairing would even be signed for).
+    const handedOff = route.dependantId ? false : isHandedOffClientRef.current?.(author);
+    if (handedOff && await handedOff) return;
 
     // Verify envelope signature — a relay can serve forged events.
     if (!verifyEvent(event as unknown as NTEvent)) return;

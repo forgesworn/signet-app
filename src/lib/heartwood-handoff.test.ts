@@ -15,6 +15,9 @@ import {
   handOffNostrConnect,
   handoffAllowedFor,
   handoffScope,
+  handoffsForClient,
+  mergeHandoffs,
+  sameHandoff,
   holderTarget,
   pickHandoffRelay,
   settleHandoff,
@@ -254,5 +257,28 @@ describe('findHeartwoodHolder when a device does not list its identities', () =>
     const bad = failing(() => new HeartwoodDeviceError('device low on memory', 'list_identities'));
     const good = holding(m);
     await expect(findHeartwoodHolder([bad, good], m)).resolves.toMatchObject({ client: good, targetHex: m });
+  });
+});
+
+describe('the hand-off list this phone holds', () => {
+  const rec = (c: string, slotIndex = 2) => ({ clientPubkey: c.repeat(64), appName: 'App', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+    targetHex: 'd'.repeat(64), slotIndex, secretFingerprint: 'ab'.repeat(8), relay: 'wss://r.example', createdAt: 1 });
+
+  it('a refresh from the store keeps records tracked but not saved, and adds no duplicate', () => {
+    const saved = rec('a');
+    const beingSaved = rec('b');
+    expect(mergeHandoffs([saved], [beingSaved]).map(h => h.clientPubkey[0])).toEqual(['a', 'b']);
+    expect(mergeHandoffs([saved, beingSaved], [{ ...beingSaved }])).toHaveLength(2);
+  });
+
+  it('a record dropped from the store and not tracked stays dropped', () => {
+    expect(mergeHandoffs([], [])).toEqual([]);
+  });
+
+  it('one app may hold more than one record; each one is found', () => {
+    const list = [rec('a', 1), rec('b'), rec('a', 3)];
+    expect(handoffsForClient(list, 'A'.repeat(64)).map(h => h.slotIndex)).toEqual([1, 3]);
+    expect(sameHandoff(rec('a', 1), rec('a', 3))).toBe(false);
+    expect(sameHandoff(rec('a', 1), { ...rec('a', 1), secretFingerprint: 'AB'.repeat(8) })).toBe(true);
   });
 });

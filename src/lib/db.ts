@@ -2605,6 +2605,23 @@ export function updateHeartwoodHandoffs(
   return run;
 }
 
+/**
+ * The stored hand-off records, read in turn with the writes above, so a read
+ * never lands after (and over) a newer write. For decisions that must not use
+ * the in-memory copy, which is empty until the unlock load lands.
+ */
+export function readHeartwoodHandoffs(encryptionKey: string): Promise<HeartwoodHandoffRecord[]> {
+  const run = handoffWrites.then(() => loadHeartwoodHandoffs(encryptionKey));
+  handoffWrites = run.catch(() => undefined);
+  return run;
+}
+
+/** Whether any hand-off record is stored at all. Needs no key, so a phone with none never asks for one. */
+export async function hasHeartwoodHandoffsRow(): Promise<boolean> {
+  const db = await getDB();
+  return !!(await db.get('identity', HEARTWOOD_HANDOFFS_KEY));
+}
+
 export async function loadHeartwoodHandoffs(encryptionKey: string): Promise<HeartwoodHandoffRecord[]> {
   const db = await getDB();
   const record = await db.get('identity', HEARTWOOD_HANDOFFS_KEY);

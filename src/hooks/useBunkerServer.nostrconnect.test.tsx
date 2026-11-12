@@ -274,6 +274,42 @@ describe('native approvals completed in another view', () => {
   });
 });
 
+describe('an app handed to a Heartwood, before the stored list has loaded', () => {
+  function deferred() {
+    let resolve!: (v: boolean) => void;
+    const promise = new Promise<boolean>(r => { resolve = r; });
+    return { promise, resolve };
+  }
+  const getPubkey = (clientSk: Uint8Array, target: string, id: string) =>
+    buildClientRequest({ clientSk, targetPubkey: target, id, method: 'get_public_key', params: [] });
+
+  it('waits for the list and stays silent for a handed-off app', async () => {
+    const loading = deferred();
+    const h = renderOwnerServer(undefined, { isHandedOffClient: () => loading.promise });
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const clientSk = generateSecretKey();
+    await act(async () => { ws.deliver(getPubkey(clientSk, h.ownerBackend.activePublicKeyHex, 'early')); });
+    await new Promise(r => setTimeout(r, 20));
+    expect(ws.published).toHaveLength(0);
+    await act(async () => { loading.resolve(true); });
+    await new Promise(r => setTimeout(r, 20));
+    expect(ws.published).toHaveLength(0);
+  });
+
+  it('answers once the list says the app is not handed off', async () => {
+    const loading = deferred();
+    const h = renderOwnerServer(undefined, { isHandedOffClient: () => loading.promise });
+    const ws = await waitForOpenRelay(h.ownerBackend.activePublicKeyHex, h.relayUrl);
+    const clientSk = generateSecretKey();
+    await act(async () => { ws.deliver(getPubkey(clientSk, h.ownerBackend.activePublicKeyHex, 'early')); });
+    await new Promise(r => setTimeout(r, 20));
+    expect(ws.published).toHaveLength(0);
+    await act(async () => { loading.resolve(false); });
+    await waitFor(() => expect(ws.published).toHaveLength(1));
+    expect(decryptServerResponse(clientSk, ws.published[0]).id).toBe('early');
+  });
+});
+
 describe('useBunkerServer NostrConnect integration', () => {
   it('listens on the requested relay and answers the immediate get_public_key follow-up', async () => {
     const { ownerBackend, relayUrl, unmount } = renderOwnerServer();

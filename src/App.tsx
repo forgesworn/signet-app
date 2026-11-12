@@ -289,9 +289,9 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { handOffNostrConnect, handoffAllowedFor, settleHandoff } from './lib/heartwood-handoff';
+import { handOffNostrConnect, handoffAllowedFor, handoffsForClient, mergeHandoffs, sameHandoff, settleHandoff } from './lib/heartwood-handoff';
 import { heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
-import { loadHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
+import { hasHeartwoodHandoffsRow, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
 import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
@@ -3961,15 +3961,38 @@ function AppContent() {
   const [heartwoodHandoffs, setHeartwoodHandoffs] = useState<HeartwoodHandoffRecord[]>([]);
   const heartwoodHandoffsRef = useRef(heartwoodHandoffs);
   heartwoodHandoffsRef.current = heartwoodHandoffs;
+  // Tracked but not saved: a hand-off still being saved, or one whose save
+  // failed and is held for this session. Every refresh from the store keeps them.
+  const unsavedHandoffsRef = useRef<HeartwoodHandoffRecord[]>([]);
+  // The unlock load: until it lands the in-memory list is empty, so the NIP-46
+  // server waits on it, and decisions read the store instead.
+  const handoffsLoadRef = useRef<{ done: boolean; ready: Promise<void> }>({ done: true, ready: Promise.resolve() });
   useEffect(() => {
-    if (!encryptionKey) { setHeartwoodHandoffs([]); return; }
+    if (!encryptionKey) {
+      heartwoodHandoffsRef.current = [];
+      setHeartwoodHandoffs([]);
+      handoffsLoadRef.current = { done: true, ready: Promise.resolve() };
+      return;
+    }
     let cancelled = false;
-    loadHeartwoodHandoffs(encryptionKey).then(r => { if (!cancelled) setHeartwoodHandoffs(r); }).catch(() => { /* none stored */ });
+    const load = { done: false, ready: Promise.resolve() };
+    // Read in turn with the writes, so it never lands over a newer list.
+    load.ready = readHeartwoodHandoffs(encryptionKey).then(r => {
+      if (cancelled) return;
+      const next = mergeHandoffs(r, unsavedHandoffsRef.current);
+      heartwoodHandoffsRef.current = next;
+      setHeartwoodHandoffs(next);
+    }).catch(() => { /* none stored */ }).finally(() => { load.done = true; });
+    handoffsLoadRef.current = load;
     return () => { cancelled = true; };
   }, [encryptionKey]);
 
   const { pendingApproval: bunkerPendingApproval, pendingApprovals: bunkerPendingApprovals, approveOnce: bunkerApproveOnce, approveAlways: bunkerApproveAlways, deny: bunkerDeny, serveStatus: bunkerServeStatus } = useBunkerServer({
-    isHandedOffClient: (pk) => heartwoodHandoffsRef.current.some(h => h.clientPubkey === pk.toLowerCase()),
+    isHandedOffClient: (pk) => {
+      const held = () => heartwoodHandoffsRef.current.some(h => h.clientPubkey === pk.toLowerCase());
+      const load = handoffsLoadRef.current;
+      return load.done ? held() : load.ready.then(held);
+    },
     // Subscription live when dependant routes exist (guardian approval must
     // work whenever the app is open) OR while an owner serve session is armed.
     // Owner-route requests are gated per-request via isOwnerServingActive.
@@ -4496,6 +4519,22 @@ function AppContent() {
     heartwoodHandoffsRef.current = next;
     setHeartwoodHandoffs(next);
   }, []);
+  /** Refresh memory from the stored list, keeping records tracked but not saved. */
+  const showStoredHandoffs = useCallback((stored: HeartwoodHandoffRecord[]) => {
+    showHandoffs(mergeHandoffs(stored, unsavedHandoffsRef.current));
+  }, [showHandoffs]);
+  /**
+   * The records held for one app, from the store (never the in-memory list,
+   * which is empty until the unlock load lands) plus any tracked but not saved.
+   * With nothing stored, no key is asked for.
+   */
+  const heldHandoffsFor = useCallback(async (clientPubkey: string, getKey: () => Promise<string | null>) => {
+    if (!(await hasHeartwoodHandoffsRow())) return { records: handoffsForClient(unsavedHandoffsRef.current, clientPubkey), key: null };
+    const key = await getKey();
+    if (!key) throw new Error('Authentication required');
+    const stored = await readHeartwoodHandoffs(key);
+    return { records: handoffsForClient(mergeHandoffs(stored, unsavedHandoffsRef.current), clientPubkey), key };
+  }, []);
   /** Revoke a handed-off app's slot on its Heartwood. A slot already gone counts as revoked. */
   const revokeHandoffOnDevice = useCallback(async (rec: HeartwoodHandoffRecord) => {
     const client = handoffClientsRef.current.find(c => c.deviceHex === rec.deviceHex);
@@ -4513,8 +4552,10 @@ function AppContent() {
     if (!k) throw new Error('Unlock My Signet first.');
     // Said in plain words wherever it surfaces: Disconnect, or an approval that revokes first.
     try { await revokeHandoffOnDevice(rec); } catch (e) { throw new Error(heartwoodMgmtErrorCopy(e)); }
-    showHandoffs(await updateHeartwoodHandoffs(k, list => list.filter(h => h.clientPubkey !== rec.clientPubkey)));
-  }, [revokeHandoffOnDevice, showHandoffs]);
+    // The device call is done before the write, never inside it: the writes queue behind one another.
+    unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => !sameHandoff(h, rec));
+    showStoredHandoffs(await updateHeartwoodHandoffs(k, list => list.filter(h => !sameHandoff(h, rec))));
+  }, [revokeHandoffOnDevice, showStoredHandoffs]);
 
   // One-hold pairing (spec A1b, A8-A11): is this phone's pairing an owner
   // pairing, and in which style. Gated on the Heartwood listing the bundle
@@ -4774,14 +4815,15 @@ function AppContent() {
         if (results.some(r => r.status === 'rejected')) throw new Error('Could not forget every record of this place.');
       },
       disconnect: async place => {
-        const handoff = place.kind === 'nip46'
-          ? heartwoodHandoffsRef.current.find(h => h.clientPubkey === clientOf(place).toLowerCase())
-          : undefined;
-        if (handoff) {
+        // From the store: the in-memory list is empty until the unlock load lands.
+        const held = place.kind === 'nip46'
+          ? await heldHandoffsFor(clientOf(place), async () => encryptionKeyRef.current)
+          : null;
+        if (held && held.records.length > 0) {
           // An earlier phone pairing of this app goes first (inert while the hand-off stands),
           // so revoking the device slot can't wake it up again.
           await disconnectClient(clientOf(place));
-          await revokeHeartwoodHandoff(handoff);
+          for (const rec of held.records) await revokeHeartwoodHandoff(rec, held.key ?? undefined);
         } else if (place.kind === 'nip46') await disconnectClient(clientOf(place));
         // Pubkey-scoped: a grant pinned to another identity is left alone.
         else if (place.kind === 'nip55' && place.nativePackage) nip55.forget(place.nativePackage, place.pubkey);
@@ -4795,7 +4837,7 @@ function AppContent() {
         await refreshHeartwoodSlots();
       },
     };
-  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff]);
+  }, [knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, heldHandoffsFor]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
@@ -8166,9 +8208,10 @@ function AppContent() {
       if (!key) throw new Error('Authentication required');
       const clientHex = connectRequest.clientPubkey.toLowerCase();
       // One record per app: an earlier hand-off of this app (to any Heartwood)
-      // is revoked first. If it can't be, nothing new is minted.
-      const prior = heartwoodHandoffsRef.current.find(h => h.clientPubkey === clientHex);
-      if (prior) await revokeHeartwoodHandoff(prior, key);
+      // is revoked first. If it can't be, nothing new is minted. Read from the
+      // store: the in-memory list is empty until the unlock load lands.
+      const priors = (await heldHandoffsFor(clientHex, async () => key)).records;
+      for (const prior of priors) await revokeHeartwoodHandoff(prior, key);
       if (!connectStillPending() || !connectSettlementRef.current.claimDelivery(connectKey)) return;
       let handed: Awaited<ReturnType<typeof handOffNostrConnect>>;
       try {
@@ -8192,10 +8235,18 @@ function AppContent() {
       };
       const settled = await settleHandoff({
         cancelled,
-        track: () => showHandoffs([...heartwoodHandoffsRef.current.filter(h => h.clientPubkey !== clientHex), record]),
-        untrack: () => showHandoffs(heartwoodHandoffsRef.current.filter(h => h !== record)),
+        track: () => {
+          unsavedHandoffsRef.current = [...unsavedHandoffsRef.current, record];
+          showHandoffs([...heartwoodHandoffsRef.current.filter(h => !sameHandoff(h, record)), record]);
+        },
+        untrack: () => {
+          unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => h !== record);
+          showHandoffs(heartwoodHandoffsRef.current.filter(h => h !== record));
+        },
         persist: async () => {
-          showHandoffs(await updateHeartwoodHandoffs(key, list => [...list.filter(h => h.clientPubkey !== clientHex), record]));
+          const stored = await updateHeartwoodHandoffs(key, list => [...list.filter(h => !sameHandoff(h, record)), record]);
+          unsavedHandoffsRef.current = unsavedHandoffsRef.current.filter(h => h !== record);
+          showStoredHandoffs(stored);
         },
         undo: () => revokeHandoffOnDevice(record),
       });
@@ -8243,12 +8294,13 @@ function AppContent() {
     // Signing through this phone from now on: an earlier hand-off of this app
     // to a Heartwood is revoked first, or this phone would keep ignoring the
     // app while the device kept answering it. If it can't be, nothing is paired.
-    const priorHandoff = heartwoodHandoffsRef.current.find(h => h.clientPubkey === connectRequest.clientPubkey.toLowerCase());
-    if (priorHandoff) {
-      const key = encryptionKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
-      if (!key) throw new Error('Authentication required');
-      await revokeHeartwoodHandoff(priorHandoff, key);
-    }
+    // Read from the store: the in-memory list is empty until the unlock load lands.
+    let authKey: string | null = encryptionKey;
+    const priorHandoffs = await heldHandoffsFor(connectRequest.clientPubkey, async () => {
+      authKey = authKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
+      return authKey;
+    });
+    for (const prior of priorHandoffs.records) await revokeHeartwoodHandoff(prior, priorHandoffs.key ?? authKey ?? undefined);
 
     let selectedBackend: SigningBackend;
     let tempBackend: LocalSigningBackend | null = null;
@@ -8338,7 +8390,7 @@ function AppContent() {
           // while this connect approval was open, `identity` may be public-only
           // or simply stale while the freshly-unlocked identity is still being
           // rebuilt. Re-acquire auth and fresh-decrypt before failing.
-          const key = encryptionKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
+          const key = authKey || await requestAuth({ purpose: 'review-request', request: 'connection', siteName: connectRequest.appName });
           if (!key) {
             throw new Error(deviceHeld ? routedApprovalUnavailableMessage() : 'Authentication required');
           }
@@ -8475,7 +8527,7 @@ function AppContent() {
     } finally {
       if (tempBackend && !tempBackendRetainedForRoute) tempBackend.destroy();
     }
-  }, [childDirect, pendingConnectRequest, pendingConnectCallback, identity, dependants, activeDependant, backends, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, signerStatus, navigateReplace, requestFreshAuth, requestAuth, encryptionKey, alignCarouselToApprovedSelection, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, routedApprovalUnavailableMessage, acquireApprovalRoute, clearNostrConnectTransientRouteByToken, setPendingConnectRequest, revokeHeartwoodHandoff, revokeHandoffOnDevice, showHandoffs, disconnectClient]);
+  }, [childDirect, pendingConnectRequest, pendingConnectCallback, identity, dependants, activeDependant, backends, bunkerBackend, bunkerRouter, npBunkerBackend, nip07Backend, signerStatus, navigateReplace, requestFreshAuth, requestAuth, encryptionKey, alignCarouselToApprovedSelection, armNostrConnectServe, installNostrConnectTransientRoute, preferences.signingMode, waitForApprovalRoute, routedApprovalUnavailableMessage, acquireApprovalRoute, clearNostrConnectTransientRouteByToken, setPendingConnectRequest, revokeHeartwoodHandoff, revokeHandoffOnDevice, showHandoffs, showStoredHandoffs, heldHandoffsFor, disconnectClient]);
 
   // One answer per connect request, as for sign-in: starts the in-flight
   // approval synchronously, dismisses a request already answered, and reopens

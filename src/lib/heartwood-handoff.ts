@@ -22,6 +22,7 @@ import {
 import type { SlotPolicyUpdate } from './heartwood-mgmt-types';
 import { heartwoodMgmtErrorCopy, isDeviceAnswerOrUnreachable } from './heartwood-mgmt-error-copy';
 import type { NostrConnectRequest } from './nip46';
+import type { HeartwoodHandoffRecord } from './db';
 
 /** What a handed-off app may ask the device for. Every kind; no button. */
 export const HANDOFF_METHODS: readonly string[] = ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt'];
@@ -188,6 +189,30 @@ export class HandoffStrandedError extends Error {
     super("This phone couldn't save the pairing, and your Heartwood didn't confirm undoing it. Remove the app from your Heartwood in Sapwood.");
     this.name = 'HandoffStrandedError';
   }
+}
+
+type HandoffRef = Pick<HeartwoodHandoffRecord, 'clientPubkey' | 'deviceHex' | 'targetHex' | 'slotIndex' | 'secretFingerprint'>;
+
+/** The same slot on the same Heartwood for the same app. */
+export function sameHandoff(a: HandoffRef, b: HandoffRef): boolean {
+  return a.clientPubkey === b.clientPubkey && a.deviceHex === b.deviceHex && a.targetHex === b.targetHex
+    && a.slotIndex === b.slotIndex && a.secretFingerprint.toLowerCase() === b.secretFingerprint.toLowerCase();
+}
+
+/**
+ * What the phone holds: the stored records plus those tracked but not saved
+ * (still being saved, or held for this session after a save failed). A
+ * refresh from the store must not drop those, or this phone would start
+ * answering an app the Heartwood answers.
+ */
+export function mergeHandoffs(stored: readonly HeartwoodHandoffRecord[], unsaved: readonly HeartwoodHandoffRecord[]): HeartwoodHandoffRecord[] {
+  return [...stored, ...unsaved.filter(u => !stored.some(s => sameHandoff(s, u)))];
+}
+
+/** Every record for one app (normally one). */
+export function handoffsForClient(records: readonly HeartwoodHandoffRecord[], clientPubkey: string): HeartwoodHandoffRecord[] {
+  const c = clientPubkey.toLowerCase();
+  return records.filter(h => h.clientPubkey === c);
 }
 
 /**
