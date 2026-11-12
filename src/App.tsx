@@ -289,7 +289,7 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { HandoffKeptError, handoffsForClient, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, revokeEveryHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
+import { HandoffKeptError, handoffsForClient, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, priorRemovedMessage, revokeEveryHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
 import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -8517,6 +8517,10 @@ function AppContent() {
         if (!connectStillOpen()) return;
         for (const prior of priorHandoffs.records) await revokeHeartwoodHandoff(prior, priorHandoffs.key ?? authKey ?? undefined);
       }
+      // Past this point an earlier hand-off is gone: a pairing that fails now
+      // leaves the app on neither signer, and the error says so.
+      const priorsRemoved = priorHandoffs.records.length > 0;
+      const failedPairing = (e: unknown) => (priorsRemoved ? new Error(priorRemovedMessage(e)) : e);
 
       // Every outward effect (route, listener, persisted pairing, connect
       // response) is gated on the one-answer guard; a Cancel during any of
@@ -8560,13 +8564,13 @@ function AppContent() {
         send: (relayUrl, beforePublish) => sendConnectResponse(connectRequest, selectedBackend, relayUrl, async () => {
           if (!beforePublish()) throw new ConnectWithdrawnError();
         }),
-      });
+      }).catch((e: unknown) => { throw failedPairing(e); });
 
       if (delivery.status === 'withdrawn' || delivery.status === 'cancelled') return;
       if (delivery.status === 'failed') {
         const relayFailures = delivery.failures;
         const attempts = relayFailures.length > 0 ? relayFailures.join(' | ') : 'no valid relay candidates';
-        throw new Error(`Could not complete NostrConnect pairing. Tried ${relayFailures.length} relay${relayFailures.length === 1 ? '' : 's'}: ${attempts}`);
+        throw failedPairing(new Error(`Could not complete NostrConnect pairing. Tried ${relayFailures.length} relay${relayFailures.length === 1 ? '' : 's'}: ${attempts}`));
       }
 
       // Connected: the route now serves the new pairing, so a later Cancel

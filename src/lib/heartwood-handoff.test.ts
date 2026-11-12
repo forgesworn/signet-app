@@ -23,6 +23,7 @@ import {
   revokeEveryHandoff,
   runHandoffApproval,
   HANDOFF_PRIOR_REMOVED_COPY,
+  priorRemovedMessage,
   HANDOFF_MISMATCH_KEPT_COPY,
   HandoffKeptError,
   endsConnectRequest,
@@ -499,11 +500,19 @@ describe('runHandoffApproval: nothing is revoked for a check that could fail fir
     expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'unclaim']);
   });
 
-  it('a mint that fails after the revoke says the app was removed and to scan its code again', async () => {
+  it('a mint that fails after the revoke says the app was removed, and to try again (the request is open)', async () => {
     const h = io({ mint: async () => { throw new Error("Your Heartwood didn't answer."); } });
     const err = await runHandoffApproval(h.p).then(() => null, (e: Error) => e);
     expect(err?.message).toBe(`Your Heartwood didn't answer. ${HANDOFF_PRIOR_REMOVED_COPY}`);
+    expect(HANDOFF_PRIOR_REMOVED_COPY).toMatch(/Try again/);
+    expect(HANDOFF_PRIOR_REMOVED_COPY).not.toMatch(/[Ss]can/);
     expect(h.log).toEqual(['prepare', 'claim', 'revoke', 'mint', 'unclaim']);
+  });
+
+  it('a phone pairing that fails after the revoke says the same', () => {
+    expect(priorRemovedMessage(new Error('Could not complete NostrConnect pairing. Tried 1 relay: wss://r: refused')))
+      .toBe(`Could not complete NostrConnect pairing. Tried 1 relay: wss://r: refused ${HANDOFF_PRIOR_REMOVED_COPY}`);
+    expect(priorRemovedMessage('odd')).toMatch(new RegExp(`${HANDOFF_PRIOR_REMOVED_COPY.replace(/[.]/g, '\\.')}$`));
   });
 
   it('with no earlier hand-off a failed mint reads as itself', async () => {

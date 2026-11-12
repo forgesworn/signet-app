@@ -288,7 +288,13 @@ export async function handOffNostrConnect(params: {
   return mintHandoff(await prepareHandoff(params), params);
 }
 
-export const HANDOFF_PRIOR_REMOVED_COPY = "This app's earlier pairing was removed from your Heartwood. Scan the app's code again to pair it.";
+/** Shown while the request is still open, so Try again pairs it. */
+export const HANDOFF_PRIOR_REMOVED_COPY = "This app's earlier pairing was removed from your Heartwood. Try again to pair it.";
+
+/** A pairing that failed after the app's earlier hand-off was revoked: say the app is on neither signer now. */
+export function priorRemovedMessage(e: unknown): string {
+  return `${e instanceof Error ? e.message : MGMT_GENERIC_COPY} ${HANDOFF_PRIOR_REMOVED_COPY}`;
+}
 
 /**
  * A hand-off approval, in an order that never leaves the app worse off for a
@@ -340,7 +346,7 @@ export async function runHandoffApproval(io: {
     if (e instanceof HandoffKeptError) throw e;
     io.unclaim();
     if (io.priors.length === 0) throw e;
-    throw new HeartwoodCopyError(`${e instanceof Error ? e.message : MGMT_GENERIC_COPY} ${HANDOFF_PRIOR_REMOVED_COPY}`);
+    throw new HeartwoodCopyError(priorRemovedMessage(e));
   }
 }
 
