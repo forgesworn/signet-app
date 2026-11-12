@@ -289,7 +289,7 @@ import { PairedChildSwitcher } from './pages/PairedChildSwitcher';
 import { Roster } from './pages/Roster';
 import { getActivePubkey, getActiveDisplayName, signAuthChallenge, encodeNpub, hexToBytes, validateMnemonic, isValidHexKey } from './lib/signet';
 import { bindHeartwoodKey, parseHeartwoodKeyUri } from './lib/heartwood-key-persona';
-import { HandoffKeptError, handoffsForClient, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, priorRemovedMessage, revokeEveryHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
+import { HandoffKeptError, handoffsForClient, keptHandoffCopy, mergeHandoffs, missingOperatorError, mintHandoff, prepareHandoff, priorRemovedMessage, revokeEveryHandoff, revokeHandoffSlot, runHandoffApproval, sameHandoff, settleHandoff, type KeptHandoffSlot } from './lib/heartwood-handoff';
 import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt-error-copy';
 import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -917,6 +917,15 @@ function AppContent() {
   const [pendingBotContacts, setPendingBotContacts] = useState<string>();
   const botInventory = useBotInventory(preferences.signingMode === 'paired-child' ? null : identity?.naturalPerson.publicKey ?? null, encryptionKey, botsVersion);
   const carousel = useCarousel(identity, dependants, botInventory);
+  // The identities whose cards list places in Where you're known (owner rows;
+  // a dependant's card lists none). Read when a hand-off record is kept.
+  const placeCardPubkeys = useMemo<ReadonlySet<string>>(() => new Set(carousel.rows
+    .filter(r => r.type !== 'add')
+    .map(r => resolveActiveIdentity(r))
+    .filter(x => !x.isDependant && !!x.publicKey)
+    .map(x => x.publicKey.toLowerCase())), [carousel.rows]);
+  const placeCardPubkeysRef = useRef(placeCardPubkeys);
+  placeCardPubkeysRef.current = placeCardPubkeys;
   // Refs so the __TEST__ harness (registered once) always accesses fresh values
   const identityRef = useRef(identity);
   identityRef.current = identity;
@@ -8330,6 +8339,10 @@ function AppContent() {
           // can't wake up (and sign) if this record is dropped later.
           try { await disconnectClient(clientHex); } catch { /* Disconnect clears it too */ }
           recordPlace(kept);
+          // Its row shows only on one of this phone's identity cards; if it
+          // has none, the copy points to Sapwood or a re-scan instead.
+          const copy = keptHandoffCopy(e.message, kept.persona, placeCardPubkeysRef.current);
+          if (copy !== e.message) throw new HandoffKeptError(e.slot, copy);
         }
         throw e;
       }

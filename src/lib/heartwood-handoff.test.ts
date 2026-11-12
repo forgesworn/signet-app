@@ -33,6 +33,8 @@ import {
   HANDOFF_UNCERTAIN_KEPT_COPY,
   HANDOFF_LINK_DROPPED_KEPT_COPY,
   HANDOFF_EARLIER_KEPT_COPY,
+  HANDOFF_ELSEWHERE_KEPT_COPY,
+  keptHandoffCopy,
   HANDOFF_STILL_CONNECTING_COPY,
   type HandoffPlan,
   type HandoffResult,
@@ -567,6 +569,26 @@ describe('a mint the device may still hold is kept, never retried blind', () => 
     expect(endsConnectRequest(new Error('x'))).toBe(false);
     expect(new HandoffNotSavedError().message).toMatch(/Scan the app's code again/);
     expect(new HandoffStrandedError().message).toMatch(/Sapwood, then scan the app's code again/);
+  });
+});
+
+describe('keptHandoffCopy: Where you\'re known only when the identity has a card there', () => {
+  const card = 'a'.repeat(64);
+  const cards = new Set([card]);
+  it('an identity with a card keeps the copy that points to its row', () => {
+    for (const m of [HANDOFF_UNCERTAIN_KEPT_COPY, HANDOFF_EARLIER_KEPT_COPY, HANDOFF_MISMATCH_KEPT_COPY]) {
+      expect(keptHandoffCopy(m, card.toUpperCase(), cards)).toBe(m);
+    }
+  });
+  it('an identity with no card points to Sapwood or a re-scan instead', () => {
+    for (const m of [HANDOFF_UNCERTAIN_KEPT_COPY, HANDOFF_EARLIER_KEPT_COPY, HANDOFF_MISMATCH_KEPT_COPY]) {
+      expect(keptHandoffCopy(m, 'b'.repeat(64), cards)).toBe(HANDOFF_ELSEWHERE_KEPT_COPY);
+    }
+    expect(HANDOFF_ELSEWHERE_KEPT_COPY).not.toMatch(/Where you're known/);
+    expect(HANDOFF_ELSEWHERE_KEPT_COPY).toMatch(/another identity.*Sapwood.*scan/);
+  });
+  it('a copy that names no row is left as it is', () => {
+    expect(keptHandoffCopy(HANDOFF_LINK_DROPPED_KEPT_COPY, 'b'.repeat(64), cards)).toBe(HANDOFF_LINK_DROPPED_KEPT_COPY);
   });
 });
 

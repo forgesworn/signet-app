@@ -436,6 +436,22 @@ export class HandoffKeptError extends HeartwoodCopyError {
   }
 }
 
+export const HANDOFF_ELSEWHERE_KEPT_COPY = "Your Heartwood didn't confirm this pairing. The app may be on your Heartwood under another identity: remove it there in Sapwood, or scan the app's code again.";
+
+/** Kept copies that point to the app's row in Where you're known. */
+const ROW_KEPT_COPIES: ReadonlySet<string> = new Set([HANDOFF_UNCERTAIN_KEPT_COPY, HANDOFF_EARLIER_KEPT_COPY, HANDOFF_MISMATCH_KEPT_COPY]);
+
+/**
+ * The copy for a kept record filed under `identity`. Where you're known lists
+ * places on this phone's identity cards only (not a dependant's, a dormant or
+ * hidden identity's, or one this phone doesn't hold), so a copy pointing there
+ * is swapped for one that points to Sapwood when `identity` has no card.
+ */
+export function keptHandoffCopy(message: string, identity: string, cards: ReadonlySet<string>): string {
+  if (cards.has(identity.toLowerCase()) || !ROW_KEPT_COPIES.has(message)) return message;
+  return HANDOFF_ELSEWHERE_KEPT_COPY;
+}
+
 /**
  * Revoke a handed-off app's slot on its Heartwood. Resolves once the app is
  * gone from the device; throws (so the caller keeps the record) otherwise.
