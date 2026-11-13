@@ -133,7 +133,7 @@ import { useEscalations } from './hooks/useEscalations';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
-import { resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, updateClientEscalate as mgmtUpdateClientEscalate, revokeClientIdentity as mgmtRevokeClientIdentity, revokeClient as mgmtRevokeClient, canRevokeClient } from './lib/heartwood-mgmt';
+import { getStatus as mgmtGetStatus, getNetworkConfig as mgmtGetNetworkConfig, resolveApproval as mgmtResolveApproval, listClients as mgmtListClients, updateClientPolicy as mgmtUpdateClientPolicy, updateClientEscalate as mgmtUpdateClientEscalate, revokeClientIdentity as mgmtRevokeClientIdentity, revokeClient as mgmtRevokeClient, canRevokeClient } from './lib/heartwood-mgmt';
 import type { DeviceClientSlot } from './lib/heartwood-mgmt-types';
 import { awayApprovalBlocked, ownAppSlots, setAwayApproval } from './lib/away-approval';
 import type { AwayApprovalListProps } from './components/AwayApprovalList';
@@ -294,6 +294,8 @@ import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt
 import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
 import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
+import { recoverSignerLink, newRecoveryGuard, type RecoveryGuard, type OperatorChannel } from './lib/signer-relay-recovery';
+import { createBunkerProbe } from './lib/signer-relay-probe';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
@@ -7952,6 +7954,78 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [signerStatus, preferences.signingMode, encryptionKey]);
 
+  // Owner-mode signer link gone deaf: the Heartwood stopped listening on the
+  // relays the link was paired on. Once per unlock (and once more after a
+  // manual Retry that ends 'unavailable' again) probe the candidate relays,
+  // and if the Heartwood answers on any, rewrite ONLY the link's relay params
+  // and reconnect, with no tap. All logic lives in `signer-relay-recovery.ts`.
+  const recoveryGuardRef = useRef<RecoveryGuard>(newRecoveryGuard());
+  const recoveryAbortRef = useRef<AbortController | null>(null);
+  const heartwoodOperatorRef = useRef(heartwoodOperator);
+  heartwoodOperatorRef.current = heartwoodOperator;
+  useEffect(() => {
+    if (encryptionKey) return;
+    // Locked: abort any recovery in flight, forget the once-per-unlock flag.
+    recoveryAbortRef.current?.abort();
+    recoveryAbortRef.current = null;
+    recoveryGuardRef.current = newRecoveryGuard();
+  }, [encryptionKey]);
+  useEffect(() => {
+    if (signerStatus !== 'unavailable') return;
+    if (preferences.signingMode !== 'bunker') return;
+    if (!encryptionKey) return;
+    if (!preferences.bunkerUri?.startsWith('bunker://')) return;
+    const key = encryptionKey;
+    const ctl = (recoveryAbortRef.current ??= new AbortController());
+    // Wait up to 10 s for the operator client to come up; never block longer.
+    const getOperator = (signal: AbortSignal) => new Promise<OperatorChannel | null>((resolve) => {
+      const started = Date.now();
+      const poll = () => {
+        const op = heartwoodOperatorRef.current;
+        if (signal.aborted) return resolve(null);
+        if (!op.loading && !op.credential) return resolve(null);
+        if (op.client && op.credential) {
+          const client = op.client;
+          return resolve({
+            deviceHex: op.credential.deviceHex,
+            credentialRelays: op.credential.relays,
+            getStatus: () => mgmtGetStatus(client, { timeoutMs: 8_000 }),
+            getNetworkConfig: () => mgmtGetNetworkConfig(client, { timeoutMs: 8_000 }),
+          });
+        }
+        if (Date.now() - started >= 10_000) return resolve(null);
+        setTimeout(poll, 250);
+      };
+      poll();
+    });
+    void recoverSignerLink({
+      signingMode: preferences.signingMode,
+      signerStatus,
+      startKey: key,
+      currentKey: () => encryptionKeyRef.current,
+      signal: ctl.signal,
+      loadPreferences: () => getPreferences(key),
+      loadClientSecret: () => loadBunkerSecret(key),
+      getOperator,
+      defaultRelays: () => defaultRelays().map(r => r.url),
+      probeOne: createBunkerProbe,
+      saveBunkerUri: async (uri, k) => {
+        // Read-modify-write from IndexedDB, never from React state.
+        const fresh = await getPreferences(k);
+        if (encryptionKeyRef.current !== k) throw new Error('locked');
+        await savePreferences({ ...fresh, bunkerUri: uri }, k);
+      },
+      reloadPreferences,
+      retry: () => retryConnectRef.current(),
+    }, recoveryGuardRef.current);
+  }, [signerStatus, preferences.signingMode, preferences.bunkerUri, encryptionKey, reloadPreferences]);
+  // The banner's Retry re-arms the recovery; never while one is running.
+  const handleManualRetryConnect = useCallback(() => {
+    if (recoveryGuardRef.current.running) return;
+    recoveryGuardRef.current.done = false;
+    void retryConnectRef.current();
+  }, []);
+
   const handleApproveVerification = useCallback(() => {
     if (!pendingVerifyRequest) return;
     const credToUse = pickCredential(credentials, pendingVerifyRequest, Math.floor(Date.now() / 1000));
@@ -11044,7 +11118,7 @@ function AppContent() {
     ) : (
       <div style={{ background: 'var(--danger-light)', padding: '8px 16px', textAlign: 'center', fontSize: 14, color: 'var(--danger)' }}>
         Signer unavailable
-        <button onClick={handleRetryConnect} className="btn btn-ghost" style={{ marginLeft: 8, fontSize: 14, padding: '2px 8px' }}>
+        <button onClick={handleManualRetryConnect} className="btn btn-ghost" style={{ marginLeft: 8, fontSize: 14, padding: '2px 8px' }}>
           Retry
         </button>
       </div>
