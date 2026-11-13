@@ -17,7 +17,10 @@
  */
 import { isValidRelayUrl } from './relay-url';
 
-export const MAX_CANDIDATES = 8;
+export const MAX_CANDIDATES = 10;
+/** At most this many candidates from any one source, so a long operator
+ *  credential can't crowd out the link's own relays or the defaults. */
+export const MAX_PER_SOURCE = 3;
 export const MAX_LINK_RELAYS = 5;
 export const PROBE_TIMEOUT_MS = 8_000;
 export const OPERATOR_QUERY_TIMEOUT_MS = 8_000;
@@ -123,6 +126,8 @@ export function sameRelayList(a: readonly string[], b: readonly string[]): boole
 export interface CandidateSources {
   /** Operator-reported relays, already gated on the device matching the link. */
   operatorReported: readonly string[];
+  /** The operator credential's relays, already gated on the device matching
+   *  the link (the same rule as `operatorReported`). */
   operatorCredential: readonly string[];
   link: readonly string[];
   /** `preferences.relayUrl` and `preferences.relays`. */
@@ -131,13 +136,18 @@ export interface CandidateSources {
   defaults: readonly string[];
 }
 
+/** Sources in order: operator-reported, the link's current relays, the
+ *  operator credential's, the user's, the defaults. At most `MAX_PER_SOURCE`
+ *  from each (validated, normalised, deduped), then deduped across sources
+ *  and capped at `MAX_CANDIDATES`. */
 export function collectCandidates(s: CandidateSources): string[] {
+  const take = (list: readonly string[]) => dedupe(normaliseAll(list)).slice(0, MAX_PER_SOURCE);
   const all = [
-    ...normaliseAll(s.operatorReported),
-    ...normaliseAll(s.operatorCredential),
-    ...normaliseAll(s.link),
-    ...normaliseAll(s.userRelays),
-    ...normaliseAll(s.defaults),
+    ...take(s.operatorReported),
+    ...take(s.link),
+    ...take(s.operatorCredential),
+    ...take(s.userRelays),
+    ...take(s.defaults),
   ];
   return dedupe(all).slice(0, MAX_CANDIDATES);
 }
@@ -234,23 +244,36 @@ export function newRecoveryGuard(): RecoveryGuard {
 
 export interface RecoverIo {
   signingMode: string | undefined;
-  signerStatus: 'connected' | 'connecting' | 'unavailable' | null;
+  /** The LIVE signer status (a ref read, not a render-time snapshot). */
+  getSignerStatus: () => 'connected' | 'connecting' | 'unavailable' | null;
   /** The unlock key the recovery starts with; null while locked. */
   startKey: string | null;
   /** The unlock key right now (null once locked). */
   currentKey: () => string | null;
+  /** Bumped on every lock and unlock. A recovery belongs to ONE generation. */
+  unlockGeneration: () => number;
   signal: AbortSignal;
-  /** Fresh from IndexedDB, decrypted with `startKey`. */
-  loadPreferences: () => Promise<{ bunkerUri?: string; relayUrl?: string; relays?: ReadonlyArray<{ url: string; enabled?: boolean }> }>;
+  /** ONE raw read of the stored preferences: `prefs.bunkerUri` decrypted with
+   *  `startKey`, `rawBunkerUri` exactly as stored (the compare-and-swap key). */
+  loadPreferences: () => Promise<{
+    prefs: { bunkerUri?: string; relayUrl?: string; relays?: ReadonlyArray<{ url: string; enabled?: boolean }> };
+    rawBunkerUri: string | undefined;
+  }>;
   loadClientSecret: () => Promise<string | null>;
   /** The operator channel, waiting up to 10 s for its client; null when none. */
   getOperator: (signal: AbortSignal) => Promise<OperatorChannel | null>;
   defaultRelays: () => string[];
   probeOne: (clientSecretHex: string, master: string) => ProbeOne;
-  /** Read-modify-write of the stored link; the caller has checked the key. */
-  saveBunkerUri: (uri: string, key: string) => Promise<void>;
+  /** Encrypt the new URI with the unlock key (PBKDF2 can't run inside an IDB
+   *  transaction, so it is done before the swap). */
+  encryptUri: (uri: string, key: string) => Promise<string>;
+  /** ONE compare-and-swap: replace the stored ciphertext only if it still
+   *  equals `expectedCiphertext` and the mode is still bunker. */
+  swapBunkerUri: (expectedCiphertext: string, newCiphertext: string) => Promise<boolean>;
   reloadPreferences: (key: string) => Promise<void>;
   retry: () => Promise<void>;
+  /** Told when a real run starts and ends (drives the banner copy). */
+  onRunning?: (running: boolean) => void;
 }
 
 export type RecoverOutcome =
@@ -262,58 +285,107 @@ export type RecoverOutcome =
   | 'aborted'
   | 'recovered';
 
+// A generic (non-Heartwood) bunker is accepted as is: the probe leans on a
+// Heartwood fact (an authorised client's `get_public_key` is auto-approved).
+// A bunker that prompts for it, refuses it or stays silent simply does not
+// answer, so nothing is written. It fails safe.
 export async function recoverSignerLink(io: RecoverIo, guard: RecoveryGuard): Promise<RecoverOutcome> {
-  if (io.signingMode !== 'bunker' || io.signerStatus !== 'unavailable' || !io.startKey) return 'skipped';
+  if (io.signingMode !== 'bunker' || io.getSignerStatus() !== 'unavailable' || !io.startKey) return 'skipped';
   if (guard.running || guard.done) return 'skipped';
   guard.running = true;
   guard.done = true;
+  io.onRunning?.(true);
   const key = io.startKey;
-  const stillCurrent = () => io.currentKey() === key && !io.signal.aborted;
+  const startGen = io.unlockGeneration();
+  // Still THIS unlock's failed reconnect: same key and unlock generation, not
+  // aborted, and the signer is STILL unavailable (a manual retry or another
+  // path may have connected it meanwhile).
+  const live = () =>
+    io.currentKey() === key
+    && io.unlockGeneration() === startGen
+    && !io.signal.aborted
+    && io.getSignerStatus() === 'unavailable';
   let secret: string | null = null;
   try {
-    const prefs = await io.loadPreferences();
-    if (!stillCurrent()) return 'aborted';
+    const stored = await io.loadPreferences();
+    if (!live()) return 'aborted';
+    const prefs = stored.prefs;
+    const rawUri = stored.rawBunkerUri;
     const link = parseLink(prefs.bunkerUri);
-    if (!link || !prefs.bunkerUri) return 'no-link';
+    if (!link || !prefs.bunkerUri || !rawUri) return 'no-link';
     secret = await io.loadClientSecret();
     if (!secret) return 'no-link';
-    if (!stillCurrent()) return 'aborted';
-
-    const op = await io.getOperator(io.signal).catch(() => null);
-    if (!stillCurrent()) return 'aborted';
-    const operatorReported = await resolveOperatorReported(op, link.master);
-    if (!stillCurrent()) return 'aborted';
+    if (!live()) return 'aborted';
 
     const userRelays = [
       ...(prefs.relayUrl ? [prefs.relayUrl] : []),
       ...(prefs.relays ?? []).filter(r => r.enabled !== false).map(r => r.url),
     ];
-    const candidates = collectCandidates({
-      operatorReported,
-      operatorCredential: op?.credentialRelays ?? [],
-      link: link.relays,
-      userRelays,
-      defaults: io.defaultRelays(),
-    });
-    if (candidates.length === 0) return 'none-answered';
+    const defaults = io.defaultRelays();
+    const probeOne = io.probeOne(secret, link.master);
 
-    const answering = await probeRelays(candidates, link.master, io.probeOne(secret, link.master), io.signal);
-    if (!stillCurrent()) return 'aborted';
+    const probed = new Set<string>();
+    const answered = new Set<string>();
+    const settling: Promise<void>[] = [];
+    const launch = (relays: readonly string[]) => {
+      const fresh = relays.filter(r => !probed.has(r));
+      if (fresh.length === 0) return;
+      fresh.forEach(r => probed.add(r));
+      settling.push(probeRelays(fresh, link.master, probeOne, io.signal)
+        .then(a => { a.forEach(r => answered.add(r)); }));
+    };
+
+    // The non-operator candidates start AT ONCE, in parallel with the
+    // operator read (which can cost its whole deadline when that channel is
+    // deaf too).
+    const first = collectCandidates({ operatorReported: [], operatorCredential: [], link: link.relays, userRelays, defaults });
+    launch(first);
+    let order = first;
+    try {
+      const op = await io.getOperator(io.signal).catch(() => null);
+      if (live()) {
+        const reported = await resolveOperatorReported(op, link.master);
+        if (live()) {
+          // The credential's relays follow the same device rule as the
+          // operator-reported ones.
+          const credentialRelays = op && op.deviceHex.toLowerCase() === link.master ? op.credentialRelays : [];
+          order = collectCandidates({
+            operatorReported: reported,
+            operatorCredential: credentialRelays,
+            link: link.relays,
+            userRelays,
+            defaults,
+          });
+          launch(order);
+        }
+      }
+    } catch { /* operator trouble never blocks the probes already running */ }
+    // The run ends when every started probe has settled.
+    await Promise.all(settling);
+    if (!live()) return 'aborted';
+
+    const answering = dedupe([...order, ...first]).filter(r => answered.has(r));
     if (answering.length === 0) return 'none-answered';
 
     const next = composeNewRelays(answering, link.relays);
-    if (sameRelayList(next, link.relays)) return 'unchanged';
+    if (sameRelayList(next, link.relays)) {
+      // The device answered on the link's own relays: the unlock failure was
+      // transient. Nothing to write; one retry reconnects.
+      await io.retry();
+      return 'unchanged';
+    }
 
     // Never write a link the reconnect would fail to parse.
     const newUri = rewriteBunkerRelays(prefs.bunkerUri, next);
     if (!linkRoundTrips(newUri, link.master, next)) return 'unusable';
 
-    // Right before writing: still the unlock this recovery started with?
-    if (!stillCurrent()) return 'aborted';
-    await io.saveBunkerUri(newUri, key);
-    if (!stillCurrent()) return 'aborted';
+    const ciphertext = await io.encryptUri(newUri, key);
+    // Right before writing: still this unlock, still unavailable?
+    if (!live()) return 'aborted';
+    if (!(await io.swapBunkerUri(rawUri, ciphertext))) return 'aborted';
+    if (!live()) return 'aborted';
     await io.reloadPreferences(key);
-    if (!stillCurrent()) return 'aborted';
+    if (!live()) return 'aborted';
     await io.retry();
     return 'recovered';
   } catch {
@@ -321,5 +393,6 @@ export async function recoverSignerLink(io: RecoverIo, guard: RecoveryGuard): Pr
   } finally {
     secret = null;
     guard.running = false;
+    io.onRunning?.(false);
   }
 }

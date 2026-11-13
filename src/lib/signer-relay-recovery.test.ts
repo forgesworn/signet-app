@@ -29,7 +29,7 @@ describe('normaliseRelay', () => {
 
 describe('collectCandidates', () => {
   const base = { operatorReported: [], operatorCredential: [], link: [], userRelays: [], defaults: [] };
-  it('orders the sources and dedupes', () => {
+  it('orders the sources (operator-reported, link, credential, user, defaults) and dedupes', () => {
     const out = collectCandidates({
       operatorReported: ['wss://a.example'],
       operatorCredential: ['wss://b.example', 'wss://a.example/'],
@@ -37,16 +37,30 @@ describe('collectCandidates', () => {
       userRelays: ['wss://d.example', 'wss://C.example'],
       defaults: ['wss://e.example'],
     });
-    expect(out).toEqual(['wss://a.example', 'wss://b.example', 'wss://c.example', 'wss://d.example', 'wss://e.example']);
+    expect(out).toEqual(['wss://a.example', 'wss://c.example', 'wss://b.example', 'wss://d.example', 'wss://e.example']);
   });
   it('drops invalid entries', () => {
     expect(collectCandidates({ ...base, link: ['ws://evil.example', 'nope', 'wss://ok.example'] })).toEqual(['wss://ok.example']);
   });
-  it('caps at 8', () => {
-    const many = Array.from({ length: 12 }, (_, i) => `wss://r${i}.example`);
-    const out = collectCandidates({ ...base, defaults: many });
-    expect(out).toHaveLength(8);
-    expect(out[7]).toBe('wss://r7.example');
+  it('takes at most 3 from each source, so a long credential cannot crowd out the rest', () => {
+    const many = (p: string) => Array.from({ length: 8 }, (_, i) => `wss://${p}${i}.example`);
+    const out = collectCandidates({
+      operatorReported: many('op'), operatorCredential: many('cred'),
+      link: ['wss://link0.example'], userRelays: [], defaults: ['wss://ditto.example'],
+    });
+    expect(out.filter(r => r.includes('//op'))).toHaveLength(3);
+    expect(out.filter(r => r.includes('//cred'))).toHaveLength(3);
+    expect(out).toContain('wss://link0.example');
+    expect(out).toContain('wss://ditto.example');
+  });
+  it('caps the total at 10', () => {
+    const many = (p: string) => Array.from({ length: 3 }, (_, i) => `wss://${p}${i}.example`);
+    const out = collectCandidates({
+      operatorReported: many('a'), link: many('b'), operatorCredential: many('c'), userRelays: many('d'), defaults: many('e'),
+    });
+    expect(out).toHaveLength(10);
+    expect(out[9]).toBe('wss://d0.example');
+    expect(out).not.toContain('wss://e2.example');
   });
 });
 
@@ -193,48 +207,71 @@ describe('probeRelays', () => {
 
 describe('recoverSignerLink', () => {
   const OLD = ['wss://primal.example', 'wss://trotters.example'];
+  const CLIENT_SECRET = 'c'.repeat(64);
+  const RAW_OLD = 'RAW-CIPHERTEXT-OLD';
   let calls: string[];
-  let saved: Array<{ uri: string; key: string }>;
+  let swaps: Array<{ expected: string; next: string }>;
+  let encrypted: string[];
   let guard: RecoveryGuard;
   let key: string | null;
+  let gen: number;
+  let status: 'connected' | 'connecting' | 'unavailable' | null;
   let ctl: AbortController;
+  let probeArgs: Array<{ secret: string; master: string }>;
 
   function makeIo(over: Partial<RecoverIo> = {}, answering: string[] = ['wss://ditto.example']): RecoverIo {
     return {
       signingMode: 'bunker',
-      signerStatus: 'unavailable',
+      getSignerStatus: () => status,
       startKey: 'KEY1',
       currentKey: () => key,
+      unlockGeneration: () => gen,
       signal: ctl.signal,
-      loadPreferences: async () => ({ bunkerUri: uriWith(OLD), relayUrl: 'wss://primal.example', relays: [{ url: 'wss://user.example', enabled: true }, { url: 'wss://off.example', enabled: false }] }),
-      loadClientSecret: async () => 'c'.repeat(64),
+      loadPreferences: async () => ({
+        rawBunkerUri: RAW_OLD,
+        prefs: { bunkerUri: uriWith(OLD), relayUrl: 'wss://primal.example', relays: [{ url: 'wss://user.example', enabled: true }, { url: 'wss://off.example', enabled: false }] },
+      }),
+      loadClientSecret: async () => CLIENT_SECRET,
       getOperator: async () => null,
       defaultRelays: () => ['wss://ditto.example', 'wss://damus.example'],
-      probeOne: () => async (relay) => {
+      probeOne: (secret, master) => async (relay) => {
+        probeArgs.push({ secret, master });
         calls.push(`probe:${relay}`);
         if (answering.includes(relay)) return MASTER;
         throw new Error('silent');
       },
-      saveBunkerUri: async (uri, k) => { calls.push('save'); saved.push({ uri, key: k }); },
+      encryptUri: async (uri, k) => { encrypted.push(uri); return `ENC(${k}):${uri}`; },
+      swapBunkerUri: async (expected, next) => { calls.push('save'); swaps.push({ expected, next }); return true; },
       reloadPreferences: async () => { calls.push('reload'); },
       retry: async () => { calls.push('retry'); },
       ...over,
     };
   }
+  const written = () => (swaps[0]?.next ?? '').replace(/^ENC\(KEY1\):/, '');
 
-  beforeEach(() => { calls = []; saved = []; guard = newRecoveryGuard(); key = 'KEY1'; ctl = new AbortController(); });
+  beforeEach(() => {
+    calls = []; swaps = []; encrypted = []; probeArgs = []; guard = newRecoveryGuard();
+    key = 'KEY1'; gen = 1; status = 'unavailable'; ctl = new AbortController();
+  });
 
   it('writes, reloads, then retries when a relay answers', async () => {
     const out = await recoverSignerLink(makeIo(), guard);
     expect(out).toBe('recovered');
     expect(calls.filter(c => !c.startsWith('probe'))).toEqual(['save', 'reload', 'retry']);
-    expect(saved).toHaveLength(1);
-    expect(saved[0].key).toBe('KEY1');
-    expect(parseLink(saved[0].uri)?.relays).toEqual(['wss://ditto.example', 'wss://primal.example', 'wss://trotters.example']);
-    expect(saved[0].uri).toContain(`secret=${encodeURIComponent(SECRET)}`);
+    expect(swaps).toHaveLength(1);
+    expect(swaps[0].expected).toBe(RAW_OLD);
+    expect(swaps[0].next.startsWith('ENC(KEY1):')).toBe(true);
+    expect(parseLink(written())?.relays).toEqual(['wss://ditto.example', 'wss://primal.example', 'wss://trotters.example']);
+    expect(written()).toContain(`secret=${encodeURIComponent(SECRET)}`);
   });
 
-  it('probes disabled-relay settings out but includes the link, user and default relays', async () => {
+  it('asks every probe with the STORED client secret and the link\'s master', async () => {
+    await recoverSignerLink(makeIo(), guard);
+    expect(probeArgs.length).toBeGreaterThan(0);
+    expect(probeArgs.every(a => a.secret === CLIENT_SECRET && a.master === MASTER)).toBe(true);
+  });
+
+  it('probes the link, user and default relays but not disabled ones', async () => {
     await recoverSignerLink(makeIo(), guard);
     const probed = calls.filter(c => c.startsWith('probe:')).map(c => c.slice(6));
     expect(probed).toEqual(expect.arrayContaining(['wss://primal.example', 'wss://trotters.example', 'wss://user.example', 'wss://ditto.example', 'wss://damus.example']));
@@ -243,13 +280,21 @@ describe('recoverSignerLink', () => {
 
   it('does not write when nothing answers', async () => {
     expect(await recoverSignerLink(makeIo({}, []), guard)).toBe('none-answered');
-    expect(saved).toHaveLength(0);
+    expect(swaps).toHaveLength(0);
     expect(calls).not.toContain('retry');
   });
 
-  it('does not write when the relay set is unchanged', async () => {
+  it('does not write when the relay set is unchanged, but retries once', async () => {
     expect(await recoverSignerLink(makeIo({}, OLD), guard)).toBe('unchanged');
-    expect(saved).toHaveLength(0);
+    expect(swaps).toHaveLength(0);
+    expect(calls.filter(c => c === 'retry')).toHaveLength(1);
+    expect(calls).not.toContain('reload');
+  });
+
+  it('does not retry an unchanged link once the status is no longer unavailable', async () => {
+    const io = makeIo({ probeOne: () => async (r) => { status = 'connected'; if (OLD.includes(r)) return MASTER; throw new Error('x'); } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(calls).not.toContain('retry');
   });
 
   it('does not write when the unlock key changed mid-way', async () => {
@@ -257,26 +302,101 @@ describe('recoverSignerLink', () => {
       probeOne: () => async (relay) => { key = null; if (relay === 'wss://ditto.example') return MASTER; throw new Error('x'); },
     });
     expect(await recoverSignerLink(io, guard)).toBe('aborted');
-    expect(saved).toHaveLength(0);
+    expect(swaps).toHaveLength(0);
+    expect(calls).not.toContain('retry');
+  });
+
+  it('does not write or retry when the status turns connected mid-run', async () => {
+    const io = makeIo({ probeOne: () => async (r) => { status = 'connected'; if (r === 'wss://ditto.example') return MASTER; throw new Error('x'); } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(swaps).toHaveLength(0);
+    expect(calls).not.toContain('retry');
+  });
+
+  it('does not write or retry when the status flips just before the save (during the encrypt)', async () => {
+    const io = makeIo({ encryptUri: async (uri) => { status = 'connecting'; return uri; } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(swaps).toHaveLength(0);
+    expect(calls).not.toContain('retry');
+  });
+
+  it('does not retry when the status turns connected right after the save', async () => {
+    const io = makeIo({ swapBunkerUri: async () => { calls.push('save'); status = 'connected'; return true; } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(calls).not.toContain('retry');
+  });
+
+  it('does not write when the unlock generation moved on (lock then unlock)', async () => {
+    const io = makeIo({ probeOne: () => async (r) => { gen++; if (r === 'wss://ditto.example') return MASTER; throw new Error('x'); } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(swaps).toHaveLength(0);
     expect(calls).not.toContain('retry');
   });
 
   it('does not retry when locked right after the save', async () => {
-    const io = makeIo({ saveBunkerUri: async () => { calls.push('save'); key = null; } });
+    const io = makeIo({ swapBunkerUri: async () => { calls.push('save'); key = null; return true; } });
     expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(calls).not.toContain('retry');
+  });
+
+  it('does not reload or retry when the compare-and-swap refuses (re-paired, disconnected)', async () => {
+    const io = makeIo({ swapBunkerUri: async () => { calls.push('save'); return false; } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(calls).not.toContain('reload');
     expect(calls).not.toContain('retry');
   });
 
   it('does not write after an abort', async () => {
     const io = makeIo({ probeOne: () => async (r) => { ctl.abort(); return r === 'wss://ditto.example' ? MASTER : (() => { throw new Error('x'); })(); } });
     expect(await recoverSignerLink(io, guard)).toBe('aborted');
-    expect(saved).toHaveLength(0);
+    expect(swaps).toHaveLength(0);
   });
 
   it('does not write a link the reconnect parser would reject', async () => {
-    const io = makeIo({ loadPreferences: async () => ({ bunkerUri: `bunker://${MASTER}?relay=${encodeURIComponent(OLD[0])}&secret=a*b` }) });
+    const io = makeIo({ loadPreferences: async () => ({ rawBunkerUri: RAW_OLD, prefs: { bunkerUri: `bunker://${MASTER}?relay=${encodeURIComponent(OLD[0])}&secret=a*b` } }) });
     expect(await recoverSignerLink(io, guard)).toBe('unusable');
-    expect(saved).toHaveLength(0);
+    expect(swaps).toHaveLength(0);
+  });
+
+  it('starts the non-operator probes at once, while the operator read is still pending', async () => {
+    let releaseOp: (o: OperatorChannel | null) => void = () => {};
+    const io = makeIo({ getOperator: () => new Promise(r => { releaseOp = r; }) });
+    const run = recoverSignerLink(io, guard);
+    await vi.waitFor(() => expect(calls.filter(c => c.startsWith('probe:')).length).toBeGreaterThanOrEqual(4));
+    expect(calls).not.toContain('save');
+    releaseOp(null);
+    expect(await run).toBe('recovered');
+  });
+
+  it('probes operator-reported relays that arrive later, not the ones already probed', async () => {
+    const op: OperatorChannel = {
+      deviceHex: MASTER, credentialRelays: [],
+      getStatus: async () => ({ relaysLive: ['wss://live.example', 'wss://ditto.example'] }),
+      getNetworkConfig: async () => ({ relays: [], trial: false }),
+    };
+    const out = await recoverSignerLink(makeIo({ getOperator: async () => op }, ['wss://live.example']), guard);
+    expect(out).toBe('recovered');
+    const probed = calls.filter(c => c.startsWith('probe:')).map(c => c.slice(6));
+    expect(probed.filter(r => r === 'wss://ditto.example')).toHaveLength(1);
+    expect(probed).toContain('wss://live.example');
+    expect(parseLink(written())?.relays[0]).toBe('wss://live.example');
+  });
+
+  it('uses the operator credential relays only when the operator device is the link master', async () => {
+    const op = (deviceHex: string): OperatorChannel => ({
+      deviceHex, credentialRelays: ['wss://cred.example'],
+      getStatus: async () => ({ relaysLive: ['wss://live.example'] }),
+      getNetworkConfig: async () => ({ relays: ['wss://cfg.example'], trial: false }),
+    });
+    await recoverSignerLink(makeIo({ getOperator: async () => op('b'.repeat(64)) }, []), guard);
+    let probed = calls.filter(c => c.startsWith('probe:')).map(c => c.slice(6));
+    expect(probed).not.toContain('wss://cred.example');
+    expect(probed).not.toContain('wss://live.example');
+    expect(probed).not.toContain('wss://cfg.example');
+    calls.length = 0; guard = newRecoveryGuard();
+    await recoverSignerLink(makeIo({ getOperator: async () => op(MASTER) }, []), guard);
+    probed = calls.filter(c => c.startsWith('probe:')).map(c => c.slice(6));
+    expect(probed).toEqual(expect.arrayContaining(['wss://cred.example', 'wss://live.example']));
   });
 
   it('uses an operator-reported relay when the device matches', async () => {
@@ -287,7 +407,7 @@ describe('recoverSignerLink', () => {
     };
     const out = await recoverSignerLink(makeIo({ getOperator: async () => op }, ['wss://live.example']), guard);
     expect(out).toBe('recovered');
-    expect(parseLink(saved[0].uri)?.relays[0]).toBe('wss://live.example');
+    expect(parseLink(written())?.relays[0]).toBe('wss://live.example');
   });
 
   it.each(['paired-child', 'local', 'nip07', undefined])('never runs for signing mode %s', async (mode) => {
@@ -296,14 +416,17 @@ describe('recoverSignerLink', () => {
   });
 
   it('never runs unless the signer is unavailable and the app is unlocked', async () => {
-    expect(await recoverSignerLink(makeIo({ signerStatus: 'connecting' }), guard)).toBe('skipped');
-    expect(await recoverSignerLink(makeIo({ signerStatus: 'connected' }), guard)).toBe('skipped');
+    status = 'connecting';
+    expect(await recoverSignerLink(makeIo(), guard)).toBe('skipped');
+    status = 'connected';
+    expect(await recoverSignerLink(makeIo(), guard)).toBe('skipped');
+    status = 'unavailable';
     expect(await recoverSignerLink(makeIo({ startKey: null }), guard)).toBe('skipped');
     expect(calls).toEqual([]);
   });
 
   it('skips a stored link that is not bunker://', async () => {
-    const io = makeIo({ loadPreferences: async () => ({ bunkerUri: 'nostrconnect://x' }) });
+    const io = makeIo({ loadPreferences: async () => ({ rawBunkerUri: RAW_OLD, prefs: { bunkerUri: 'nostrconnect://x' } }) });
     expect(await recoverSignerLink(io, guard)).toBe('no-link');
     expect(calls).toEqual([]);
   });
@@ -315,6 +438,14 @@ describe('recoverSignerLink', () => {
     expect(calls.length).toBe(before);
     guard.done = false; // what the banner's Retry does
     expect(await recoverSignerLink(makeIo({}, []), guard)).toBe('none-answered');
+  });
+
+  it('tells the caller when a real run starts and ends, not for a skip', async () => {
+    const seen: boolean[] = [];
+    await recoverSignerLink(makeIo({ signingMode: 'local', onRunning: v => seen.push(v) }), guard);
+    expect(seen).toEqual([]);
+    await recoverSignerLink(makeIo({ onRunning: v => seen.push(v) }, []), guard);
+    expect(seen).toEqual([true, false]);
   });
 
   it('never runs two at once, including through its own retry', async () => {

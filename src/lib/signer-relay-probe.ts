@@ -48,7 +48,7 @@ export function createBunkerProbe(clientSecretHex: string, masterHex: string): P
           authors: [masterHex],
           '#p': [clientPub],
           limit: 0,
-        }, Math.min(RELAY_READY_CAP_MS, 3_000));
+        }, RELAY_READY_CAP_MS);
         if (signal.aborted) throw new Error('aborted');
         return await signer.getPublicKey();
       })();
