@@ -122,7 +122,8 @@ export function signInLinkSupported(status: DeviceStatus | null): boolean {
 /**
  * Whether "Straight to my Heartwood" is the pre-selected sign-in choice where it is offered. With
  * several managed Heartwoods the holder is found at approval, so it stays pre-selected; with one, it
- * is not pre-selected only when that device's status definitely lacks what a link needs (unknown = pre-select).
+ * is not pre-selected only when the primary operator's status definitely lacks what a link needs
+ * (unknown = pre-select, which includes a lone client that is an extra, whose status is not consulted).
  */
 export function signInLinkByDefault(operatorClientCount: number, primaryStatus: DeviceStatus | null): boolean {
   return operatorClientCount > 1 || signInLinkSupported(primaryStatus);

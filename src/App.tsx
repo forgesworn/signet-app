@@ -1299,6 +1299,8 @@ function AppContent() {
   // ApproveAuth, because a lock unmounts the page (identity state clears) and
   // the remount must come back on the identity the user chose.
   const [authPickerChoice, setAuthPickerChoice] = useState<{ key: string; selection: AuthSelection | null } | null>(null);
+  // The sign-in's "Straight to my Heartwood" / other pick, per request, so a lock/unlock remount keeps it.
+  const [authSignChoice, setAuthSignChoice] = useState<{ key: string; choice: 'heartwood' | 'other' } | null>(null);
   // A chosen device-held slot shows "waiting" while its route comes back;
   // once this bounded wait lapses Approve is re-enabled so the approval's own
   // bounded wait can end in the honest unavailable copy instead of a
@@ -4696,7 +4698,7 @@ function AppContent() {
     requestCanCarryLink: signInRequestCanCarryLink(request),
   }), [preferences.signingMode, childDirect, activeDependant, identity, handoffClients.length]);
   /** "Straight to my Heartwood" is the pre-selected sign-in choice wherever it is offered. */
-  const signInLinkDefault = signInLinkByDefault(handoffClients.length, heartwoodOperator.status ?? null);
+  const signInLinkDefault = signInLinkByDefault(handoffClients.length, heartwoodOperator.status);
   /** The sign-in links of one place (one site, one identity), stored order. */
   const signInLinksOfPlace = useCallback(async (place: { origin?: string; pubkey: string }): Promise<{ key: string; links: HeartwoodSignInLinkRecord[] }> => {
     const key = encryptionKeyRef.current;
@@ -6401,7 +6403,10 @@ function AppContent() {
 
   // A picker choice belongs to one request; drop it once that request is gone.
   useEffect(() => {
-    if (!pendingAuthRequest) setAuthPickerChoice(null);
+    if (!pendingAuthRequest) {
+      setAuthPickerChoice(null);
+      setAuthSignChoice(null);
+    }
   }, [pendingAuthRequest]);
   useEffect(() => {
     if (!pendingConnectRequest) setConnectPickerChoice(null);
@@ -9169,7 +9174,7 @@ function AppContent() {
     const request = pendingAuthRequest;
     const combinedPermission = signInAppPermissionsRef.current.get(request);
 
-    // "Straight to my Heartwood" was chosen on purpose: if it can't be honoured
+    // "Straight to my Heartwood" was the effective choice: if it can't be honoured
     // here, say so. It is never quietly turned into a sign-in with no link.
     let signInLinkIo: SignInLinkIo | null = null;
     // The link this approval minted, until its delivery is claimed: anything that
@@ -14086,6 +14091,8 @@ function AppContent() {
             externallyApproving={authApprovalInFlightKey === approveAuthRequestKey}
             userChoice={authPickerChoice?.key === approveAuthRequestKey ? { selection: authPickerChoice.selection } : undefined}
             onUserChoice={(selection) => setAuthPickerChoice({ key: approveAuthRequestKey, selection })}
+            signChoice={authSignChoice?.key === approveAuthRequestKey ? authSignChoice.choice : null}
+            onSignChoice={(choice) => setAuthSignChoice({ key: approveAuthRequestKey, choice })}
             waitingGuardianPubkeys={waitingGuardianPubkeys}
           />
         </Layout>

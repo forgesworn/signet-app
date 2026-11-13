@@ -164,6 +164,87 @@ describe('ApproveAuth — straight to my Heartwood', () => {
   });
 });
 
+describe('ApproveAuth — straight to my Heartwood: the choice survives a remount of the same request', () => {
+  const props = { request, hasCredentialForSelection: () => false, identity, canSwitchGuardianPersona: true, consumerHint: null, requireNpConfirmation: true, onDeny: vi.fn(), canSignOnHeartwood: () => true };
+
+  it('a "Sign in only" pick is kept across an unmount/remount, even with an initialError, and approves with no fourth argument', async () => {
+    let held: 'heartwood' | 'other' | null = null;
+    const first = render(<ApproveAuth {...props} onApprove={vi.fn(async () => {})} onSignChoice={(c) => { held = c; }} />);
+    fireEvent.click(screen.getByLabelText(/Sign in only/));
+    expect(held).toBe('other');
+    first.unmount();
+    const onApprove = vi.fn(async () => {});
+    render(<ApproveAuth {...props} onApprove={onApprove} signChoice={held} onSignChoice={() => {}} initialError="The sign failed." />);
+    expect((screen.getByLabelText(/Sign in only/) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByText(WARNING)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('a "Straight" pick is kept across a remount when heartwoodByDefault is false', async () => {
+    let held: 'heartwood' | 'other' | null = null;
+    const first = render(<ApproveAuth {...props} heartwoodByDefault={false} onApprove={vi.fn(async () => {})} onSignChoice={(c) => { held = c; }} />);
+    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    expect(held).toBe('heartwood');
+    first.unmount();
+    const onApprove = vi.fn(async () => {});
+    render(<ApproveAuth {...props} heartwoodByDefault={false} onApprove={onApprove} signChoice={held} onSignChoice={() => {}} initialError="The sign failed." />);
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: 'persona' }, true, undefined, true);
+  });
+});
+
+describe('ApproveAuth — straight to my Heartwood: nothing offered sends no fourth argument', () => {
+  const EXTRA = 'e'.repeat(64);
+  const withExtra = {
+    ...identity,
+    extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Tree Extra', derivationName: 'persona-1' }],
+  } as unknown as SignetIdentity;
+
+  it('with no canSignOnHeartwood, approving sends exactly two arguments', async () => {
+    const onApprove = renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('with canSignOnHeartwood returning false, approving sends exactly two arguments', async () => {
+    const onApprove = renderPage({ canSignOnHeartwood: () => false });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('switching to an identity where it is not offered hides the group and sends no fourth argument; switching back restores Straight', async () => {
+    const onApprove = renderPage({ identity: withExtra, canSignOnHeartwood: (pk: string) => pk === PERSONA });
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
+    const rowFor = (name: string) => screen.getAllByText(name)
+      .map(el => el.closest('button'))
+      .find((b): b is HTMLButtonElement => !!b && b.textContent !== 'Approve')!;
+    fireEvent.click(rowFor('Tree Extra'));
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0]).toHaveLength(2);
+    expect((onApprove.mock.calls[0] as unknown[])[0]).toEqual({ source: 'guardian', keypairType: EXTRA });
+  });
+
+  it('switching back to the identity where it is offered shows Straight checked again', () => {
+    renderPage({ identity: withExtra, canSignOnHeartwood: (pk: string) => pk === PERSONA });
+    const rowFor = (name: string) => screen.getAllByText(name)
+      .map(el => el.closest('button'))
+      .find((b): b is HTMLButtonElement => !!b && b.textContent !== 'Approve')!;
+    fireEvent.click(rowFor('Tree Extra'));
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    fireEvent.click(rowFor('Tree Persona'));
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
+  });
+});
+
 describe('ApproveAuth — straight to my Heartwood: where the request came from', () => {
   it('on a redirect request the second option is always Sign in only, even with the in-page Bunker on', () => {
     renderPage({ request: redirectRequest, canSignOnHeartwood: () => true, bunkerServerOn: true });

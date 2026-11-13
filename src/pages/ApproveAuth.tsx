@@ -137,6 +137,14 @@ interface Props {
   /** Called when the user picks (or clears) an identity. */
   onUserChoice?: (selection: AuthSelection | null) => void;
   /**
+   * The user's explicit pick between "Straight to my Heartwood" and the other
+   * option for THIS request, held by App so it survives a lock/unlock remount
+   * (the same way `userChoice` does). Absent ⇒ this page keeps the pick itself.
+   */
+  signChoice?: 'heartwood' | 'other' | null;
+  /** Called when the user picks a sign option. */
+  onSignChoice?: (choice: 'heartwood' | 'other') => void;
+  /**
    * Guardian slot pubkeys that are listed but not signable yet — their key is
    * on the paired signer and its route is not back (locked, reconnecting,
    * probing). Shown as waiting; Approve stays disabled while one is selected.
@@ -219,6 +227,8 @@ export function ApproveAuth({
   externallyApproving = false,
   userChoice,
   onUserChoice,
+  signChoice: signChoiceProp,
+  onSignChoice,
   waitingGuardianPubkeys,
   isPairedChild = false,
   childDirect = false,
@@ -226,7 +236,11 @@ export function ApproveAuth({
   const [includeOnlinePlay, setIncludeOnlinePlay] = useState(true);
   // null = the user hasn't touched the radio, so the effective choice follows `heartwoodByDefault`
   // (which may arrive after mount) until they pick.
-  const [signChoice, setSignChoice] = useState<'heartwood' | 'other' | null>(null);
+  const [signChoice, setSignChoiceState] = useState<'heartwood' | 'other' | null>(signChoiceProp ?? null);
+  const setSignChoice = (c: 'heartwood' | 'other') => {
+    setSignChoiceState(c);
+    onSignChoice?.(c);
+  };
   const effectiveSignChoice = signChoice ?? (heartwoodByDefault ? 'heartwood' : 'other');
   const login = isLoginRequest(request);
   const originDisplay = safeOrigin(request.origin);
@@ -357,7 +371,7 @@ export function ApproveAuth({
     if (shownRequestKey.current === requestKey) return;
     shownRequestKey.current = requestKey;
     setError(null);
-    setSignChoice(null);
+    setSignChoiceState(null);
   }, [requestKey]);
   useEffect(() => {
     if (!initialError) return;
