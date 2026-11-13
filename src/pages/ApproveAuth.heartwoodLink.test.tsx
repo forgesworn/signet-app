@@ -10,8 +10,8 @@ import { signInLinkUnverifiedOriginCopy } from '../lib/heartwood-signin-link';
 
 /**
  * "How {site} signs": the straight-to-Heartwood choice is offered only when the
- * app says it can be, is never the default, warns while selected, and reaches
- * onApprove only when chosen.
+ * app says it can be, is pre-selected (unless `heartwoodByDefault` is false), warns while
+ * selected, and reaches onApprove whenever it is the effective choice.
  */
 
 afterEach(cleanup);
@@ -77,47 +77,84 @@ describe('ApproveAuth — straight to my Heartwood', () => {
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
-  it('shows the group when offered, with the second option the default (Sign in only, Bunker off)', () => {
+  it('shows the group when offered, with Straight pre-selected and the warning showing', () => {
     renderPage({ canSignOnHeartwood: () => true });
     expect(screen.getByRole('radiogroup', { name: 'How kithmoot.com signs' })).toBeTruthy();
     const straight = screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement;
     const second = screen.getByLabelText(/Sign in only/) as HTMLInputElement;
-    expect(straight.checked).toBe(false);
-    expect(second.checked).toBe(true);
+    expect(straight.checked).toBe(true);
+    expect(second.checked).toBe(false);
+    expect(screen.getByText(WARNING)).toBeTruthy();
     expect(screen.getByText("kithmoot.com learns who you are but can't sign anything for you.")).toBeTruthy();
     expect(screen.getByText(/kithmoot\.com signs with your Heartwood directly, and My Signet can be closed\. The first time it signs, your Heartwood asks you to hold its button down once\./)).toBeTruthy();
+  });
+
+  it('with heartwoodByDefault false the second option is checked and there is no warning', () => {
+    renderPage({ canSignOnHeartwood: () => true, heartwoodByDefault: false });
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText(/Sign in only/) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByText(WARNING)).toBeNull();
+  });
+
+  it('a heartwoodByDefault that changes after mount applies until the user picks', () => {
+    const onApprove = vi.fn(async () => {});
+    const props = { request, hasCredentialForSelection: () => false, identity, canSwitchGuardianPersona: true, consumerHint: null, requireNpConfirmation: true, onApprove, onDeny: vi.fn(), canSignOnHeartwood: () => true };
+    const { rerender } = render(<ApproveAuth {...props} heartwoodByDefault={false} />);
+    expect((screen.getByLabelText(/Sign in only/) as HTMLInputElement).checked).toBe(true);
+    rerender(<ApproveAuth {...props} heartwoodByDefault={true} />);
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByLabelText(/Sign in only/));
+    rerender(<ApproveAuth {...props} heartwoodByDefault={true} />);
+    expect((screen.getByLabelText(/Sign in only/) as HTMLInputElement).checked).toBe(true);
   });
 
   it('names the second option Through My Signet when the in-page Bunker is on, on a relay request', () => {
     renderPage({ request: relayRequest, canSignOnHeartwood: () => true, bunkerServerOn: true });
     const second = screen.getByLabelText(/Through My Signet/) as HTMLInputElement;
-    expect(second.checked).toBe(true);
+    expect(second.checked).toBe(false);
     expect(screen.getByText('My Signet has to stay open to answer.')).toBeTruthy();
     expect(screen.queryByText(/Sign in only/)).toBeNull();
   });
 
   it('shows the warning only while Straight is selected', () => {
     renderPage({ canSignOnHeartwood: () => true });
-    expect(screen.queryByText(WARNING)).toBeNull();
-    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
     expect(screen.getByText(WARNING)).toBeTruthy();
     fireEvent.click(screen.getByLabelText(/Sign in only/));
     expect(screen.queryByText(WARNING)).toBeNull();
+    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    expect(screen.getByText(WARNING)).toBeTruthy();
   });
 
-  it('approves exactly as before by default (no fourth argument)', async () => {
+  it('approving untouched sends signOnHeartwood: true', async () => {
     const onApprove = renderPage({ canSignOnHeartwood: () => true });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: 'persona' }, true, undefined, true);
+  });
+
+  it('picking the other option approves exactly as before (no fourth argument)', async () => {
+    const onApprove = renderPage({ canSignOnHeartwood: () => true });
+    fireEvent.click(screen.getByLabelText(/Sign in only/));
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
     expect(onApprove.mock.calls[0]).toHaveLength(2);
   });
 
-  it('passes the choice to onApprove when Straight is selected', async () => {
-    const onApprove = renderPage({ canSignOnHeartwood: () => true });
-    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+  it('with heartwoodByDefault false, approving untouched sends no fourth argument', async () => {
+    const onApprove = renderPage({ canSignOnHeartwood: () => true, heartwoodByDefault: false });
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
-    expect(onApprove).toHaveBeenCalledWith({ source: 'guardian', keypairType: 'persona' }, true, undefined, true);
+    expect(onApprove.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('a new request resets a pick back to the default', () => {
+    const onApprove = vi.fn(async () => {});
+    const props = { hasCredentialForSelection: () => false, identity, canSwitchGuardianPersona: true, consumerHint: null, requireNpConfirmation: true, onApprove, onDeny: vi.fn(), canSignOnHeartwood: () => true };
+    const { rerender } = render(<ApproveAuth {...props} request={request} />);
+    fireEvent.click(screen.getByLabelText(/Sign in only/));
+    expect((screen.getByLabelText(/Sign in only/) as HTMLInputElement).checked).toBe(true);
+    rerender(<ApproveAuth {...props} request={{ ...request, requestId: 'e'.repeat(32), challenge: 'd'.repeat(64) } as AuthRequest} />);
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
   });
 
   it('is not offered on the combined online-play sign-in', () => {
@@ -152,9 +189,9 @@ describe('ApproveAuth — straight to my Heartwood: where the request came from'
   it('says the origin is unverified under Straight on a relay/QR request, whether or not Straight is selected', () => {
     renderPage({ request: relayRequest, canSignOnHeartwood: () => true });
     const copy = signInLinkUnverifiedOriginCopy('kithmoot.com');
-    expect(copy).toBe("My Signet can't confirm this request came from kithmoot.com. Choose this only if you started signing in on kithmoot.com yourself.");
+    expect(copy).toBe("My Signet can't confirm this request came from kithmoot.com. Use this only if you started signing in on kithmoot.com yourself.");
     expect(screen.getByText(copy)).toBeTruthy();
-    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    fireEvent.click(screen.getByLabelText(/Sign in only/));
     expect(screen.getByText(copy)).toBeTruthy();
   });
 

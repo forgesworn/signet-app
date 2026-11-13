@@ -86,18 +86,25 @@ interface Props {
   appPermission?: SignInAppPermission;
   appPermissionName?: string;
   /**
-   * `signOnHeartwood` is passed only when the user chose "Straight to my
-   * Heartwood"; every other approval is the same call it always was.
+   * `signOnHeartwood` is passed only when "Straight to my Heartwood" is the
+   * effective choice (pre-selected or picked); every other approval is the same call it always was.
    */
   onApprove: (selection: AuthSelection, shareHandle: boolean, includeOnlinePlay?: boolean, signOnHeartwood?: boolean) => Promise<void> | void;
   onDeny: () => void;
   /**
    * Whether the site can be given a link straight to the Heartwood that holds
    * this identity's key, for this pubkey. Absent when it never can (not on a
-   * Heartwood, a child's phone, a dependant). The choice is offered, never the
-   * default, and not on the combined online-play sign-in.
+   * Heartwood, a child's phone, a dependant). Where it is offered it is the
+   * pre-selected choice (see `heartwoodByDefault`), and never on the combined
+   * online-play sign-in.
    */
   canSignOnHeartwood?: (pubkey: string, keypairType: string) => boolean;
+  /**
+   * Whether "Straight to my Heartwood" is pre-selected where it is offered
+   * (false when the one managed Heartwood definitely can't mint the link).
+   * Default true. The user's own pick always wins over it.
+   */
+  heartwoodByDefault?: boolean;
   /** The in-page Bunker is on: it names the other option ("Through My Signet") rather than "Sign in only". */
   bunkerServerOn?: boolean;
   /**
@@ -202,6 +209,7 @@ export function ApproveAuth({
   onActivateRealIdentity,
   onApprove,
   canSignOnHeartwood,
+  heartwoodByDefault = true,
   bunkerServerOn = false,
   appPermission,
   appPermissionName,
@@ -216,8 +224,10 @@ export function ApproveAuth({
   childDirect = false,
 }: Props) {
   const [includeOnlinePlay, setIncludeOnlinePlay] = useState(true);
-  // 'default' is today's behaviour; 'heartwood' is only ever chosen on purpose.
-  const [signChoice, setSignChoice] = useState<'default' | 'heartwood'>('default');
+  // null = the user hasn't touched the radio, so the effective choice follows `heartwoodByDefault`
+  // (which may arrive after mount) until they pick.
+  const [signChoice, setSignChoice] = useState<'heartwood' | 'other' | null>(null);
+  const effectiveSignChoice = signChoice ?? (heartwoodByDefault ? 'heartwood' : 'other');
   const login = isLoginRequest(request);
   const originDisplay = safeOrigin(request.origin);
   const ageRange = login && typeof request.requiredAgeRange === 'string' && VALID_AGE_RANGES.includes(request.requiredAgeRange)
@@ -347,7 +357,7 @@ export function ApproveAuth({
     if (shownRequestKey.current === requestKey) return;
     shownRequestKey.current = requestKey;
     setError(null);
-    setSignChoice('default');
+    setSignChoice(null);
   }, [requestKey]);
   useEffect(() => {
     if (!initialError) return;
@@ -362,8 +372,8 @@ export function ApproveAuth({
   const hasCredential = hasCredentialForSelection(selection);
 
   // Straight to the Heartwood: only for the owner's own identity the device holds, and
-  // never on the combined online-play sign-in. A choice made for one identity does not
-  // follow the user to one it is not offered for.
+  // never on the combined online-play sign-in. Where offered it is pre-selected; a choice
+  // made for one identity does not follow the user to one it is not offered for.
   // The real identity is never handed over, and a request with nowhere to put a link can't be offered it.
   const requestShape = request as SignInRequestShape;
   const selectedGuardianPubkey = selection?.source === 'guardian' && selection.keypairType !== 'natural-person'
@@ -374,7 +384,7 @@ export function ApproveAuth({
   const relayRequest = signInRequestIsRelay(requestShape);
   // The in-page Bunker only answers for a relay request: the redirect path never uses it.
   const throughMySignet = bunkerServerOn && relayRequest;
-  const signOnHeartwood = heartwoodOffered && signChoice === 'heartwood';
+  const signOnHeartwood = heartwoodOffered && effectiveSignChoice === 'heartwood';
 
   const isGuardianSelected = (keypairType: string) =>
     selection?.source === 'guardian' && selection.keypairType === keypairType;
@@ -887,7 +897,7 @@ export function ApproveAuth({
             <input
               type="radio"
               name="sign-in-sign-mode"
-              checked={signChoice === 'heartwood'}
+              checked={effectiveSignChoice === 'heartwood'}
               disabled={approving}
               onChange={() => setSignChoice('heartwood')}
             />
@@ -901,7 +911,7 @@ export function ApproveAuth({
                   {signInLinkUnverifiedOriginCopy(originDisplay)}
                 </span>
               )}
-              {signChoice === 'heartwood' && (
+              {effectiveSignChoice === 'heartwood' && (
                 <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
                   {handoffWarning({ kind: 'wide', covers: 'everything' })}
                 </span>
@@ -912,9 +922,9 @@ export function ApproveAuth({
             <input
               type="radio"
               name="sign-in-sign-mode"
-              checked={signChoice === 'default'}
+              checked={effectiveSignChoice === 'other'}
               disabled={approving}
-              onChange={() => setSignChoice('default')}
+              onChange={() => setSignChoice('other')}
             />
             <span>
               {throughMySignet ? 'Through My Signet' : 'Sign in only'}

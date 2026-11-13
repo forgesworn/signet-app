@@ -39,7 +39,7 @@ export const SIGN_IN_LINK_NO_OPERATOR_COPY = "This phone no longer has the opera
 export const SIGN_IN_LINK_CANT_CARRY_COPY = "This sign-in can't carry a link to your Heartwood. Choose the other option.";
 /** The note under the Straight option when the request arrived by relay or QR, where nothing proves where it came from. */
 export function signInLinkUnverifiedOriginCopy(host: string): string {
-  return `My Signet can't confirm this request came from ${host}. Choose this only if you started signing in on ${host} yourself.`;
+  return `My Signet can't confirm this request came from ${host}. Use this only if you started signing in on ${host} yourself.`;
 }
 /** What Forget on this phone says once a link's slot could not be taken off the Heartwood. */
 export const SIGN_IN_LINK_FORGET_HERE_COPY = 'The link may still be on your Heartwood. You can remove it in Sapwood.';
@@ -117,6 +117,15 @@ export function signInLinkOffered(i: SignInLinkEligibility): boolean {
 export function signInLinkSupported(status: DeviceStatus | null): boolean {
   if (!status) return true;
   return hasCapability(status, CAP_CLIENT_POLICY_V2) !== false && hasCapability(status, CAP_PAIRING_IDENTITY) !== false;
+}
+
+/**
+ * Whether "Straight to my Heartwood" is the pre-selected sign-in choice where it is offered. With
+ * several managed Heartwoods the holder is found at approval, so it stays pre-selected; with one, it
+ * is not pre-selected only when that device's status definitely lacks what a link needs (unknown = pre-select).
+ */
+export function signInLinkByDefault(operatorClientCount: number, primaryStatus: DeviceStatus | null): boolean {
+  return operatorClientCount > 1 || signInLinkSupported(primaryStatus);
 }
 
 function randomSuffix(): string {

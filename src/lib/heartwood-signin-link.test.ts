@@ -36,6 +36,8 @@ import {
   signInLinkOffered,
   signInLinkPolicy,
   signInLinkSupported,
+  signInLinkByDefault,
+  signInLinkUnverifiedOriginCopy,
   type SignInLinkEligibility,
   type SignInLinkIo,
 } from './heartwood-signin-link';
@@ -86,6 +88,31 @@ describe('signInLinkSupported', () => {
     expect(signInLinkSupported(status(['client_policy_v2']))).toBe(false);
     expect(signInLinkSupported(status(['pairing_identity_v1']))).toBe(false);
     expect(signInLinkSupported(status([]))).toBe(false);
+  });
+});
+
+describe('signInLinkByDefault', () => {
+  const status = (capabilities: string[] | null): DeviceStatus => ({ capabilities, masterNpubHex: 'a'.repeat(64), truncated: capabilities === null });
+  it('pre-selects with several Heartwoods whatever the primary says', () => {
+    expect(signInLinkByDefault(2, status([]))).toBe(true);
+    expect(signInLinkByDefault(3, null)).toBe(true);
+  });
+  it('pre-selects for a lone Heartwood whose status is unknown or supports it', () => {
+    expect(signInLinkByDefault(1, null)).toBe(true);
+    expect(signInLinkByDefault(1, status(null))).toBe(true);
+    expect(signInLinkByDefault(1, status(['client_policy_v2', 'pairing_identity_v1']))).toBe(true);
+    expect(signInLinkByDefault(0, null)).toBe(true);
+  });
+  it('does not pre-select for a lone Heartwood that definitely lacks either capability', () => {
+    expect(signInLinkByDefault(1, status(['client_policy_v2']))).toBe(false);
+    expect(signInLinkByDefault(1, status(['pairing_identity_v1']))).toBe(false);
+    expect(signInLinkByDefault(1, status([]))).toBe(false);
+  });
+});
+
+describe('signInLinkUnverifiedOriginCopy', () => {
+  it('says to use the pre-selected option only when the user started signing in on the site', () => {
+    expect(signInLinkUnverifiedOriginCopy('kithmoot.com')).toBe("My Signet can't confirm this request came from kithmoot.com. Use this only if you started signing in on kithmoot.com yourself.");
   });
 });
 

@@ -43,11 +43,27 @@ describe('ApprovalOverlay — let it sign on my Heartwood', () => {
     expect(screen.queryByText(/sign on my Heartwood/)).toBeNull();
   });
 
-  it('adds one secondary link to the full picker when offered, and Approve still approves as before', () => {
+  it('when offered and pre-selected, the primary button is Continue, opens the full picker and never approves; no secondary link', () => {
     const { onOpenFullPicker, onApprove } = renderOverlay({ heartwoodLinkOffered: true });
+    expect(screen.queryByText('Let it sign on my Heartwood…')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(onOpenFullPicker).toHaveBeenCalledTimes(1);
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  it('when offered but not pre-selected, adds one secondary link to the full picker and Approve still approves as before', () => {
+    const { onOpenFullPicker, onApprove } = renderOverlay({ heartwoodLinkOffered: true, heartwoodByDefault: false });
     fireEvent.click(screen.getByText('Let it sign on my Heartwood…'));
     expect(onOpenFullPicker).toHaveBeenCalledTimes(1);
     expect(onApprove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(onApprove).toHaveBeenCalledTimes(1);
+  });
+
+  it('not offered: unchanged even with the default flag on', () => {
+    const { onApprove } = renderOverlay({ heartwoodByDefault: true });
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(onApprove).toHaveBeenCalledTimes(1);
   });

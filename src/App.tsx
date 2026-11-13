@@ -315,6 +315,7 @@ import {
   signInLinkLabel,
   signInLinkOffered,
   signInLinkSupported,
+  signInLinkByDefault,
   signInRequestCanCarryLink,
   type SignInLinkIo,
 } from './lib/heartwood-signin-link';
@@ -4694,6 +4695,8 @@ function AppContent() {
     selectionKeypairType,
     requestCanCarryLink: signInRequestCanCarryLink(request),
   }), [preferences.signingMode, childDirect, activeDependant, identity, handoffClients.length]);
+  /** "Straight to my Heartwood" is the pre-selected sign-in choice wherever it is offered. */
+  const signInLinkDefault = signInLinkByDefault(handoffClients.length, heartwoodOperator.status ?? null);
   /** The sign-in links of one place (one site, one identity), stored order. */
   const signInLinksOfPlace = useCallback(async (place: { origin?: string; pubkey: string }): Promise<{ key: string; links: HeartwoodSignInLinkRecord[] }> => {
     const key = encryptionKeyRef.current;
@@ -9588,7 +9591,8 @@ function AppContent() {
           // what made the bunker-server passthrough flaky cross-device. The link
           // is an auto-approve slot (`signInLinkPolicy`): only the FIRST sign
           // needs a hold on the device, then the site signs without a press.
-          // That is why Straight is opt-in, and why a slot nobody binds is
+          // That is why Straight asks for a full-screen approval (never a quick
+          // one) even though it is pre-selected, and why a slot nobody binds is
           // revoked by `reconcileSignInLinks`.
           bunkerUri = handoff.uri;
         } else if (handoff.kind === 'in-page') {
@@ -14050,9 +14054,10 @@ function AppContent() {
         return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
       },
       onApprove: handleApproveAuthGuarded,
-      // Straight to my Heartwood: offered (never defaulted) where the owner's own identity is held by a
+      // Straight to my Heartwood: offered, and pre-selected, where the owner's own identity is held by a
       // Heartwood this phone manages. The combined online-play sign-in keeps its own answer.
       canSignOnHeartwood: (pk: string, keypairType: string) => signInLinkOfferedFor(pk, 'guardian', keypairType, false, pendingAuthRequest),
+      heartwoodByDefault: signInLinkDefault,
       bunkerServerOn: bunkerServerEnabled,
       onDeny: handleDenyAuth,
       initialError: pickerInitialError ?? undefined,
@@ -15459,6 +15464,7 @@ function AppContent() {
               onDeny={handleDenyAuth}
               isPairedChild={isPairedChild}
               childDirect={childDirect}
+              heartwoodByDefault={signInLinkDefault}
               heartwoodLinkOffered={!overlayIdentity.isDependant
                 && !!overlayIdentity.publicKey
                 && signInLinkOfferedFor(
