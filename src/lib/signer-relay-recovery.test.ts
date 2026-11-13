@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   normaliseRelay, parseLink, rewriteBunkerRelays, composeNewRelays, collectCandidates,
-  resolveOperatorReported, probeRelays, recoverSignerLink, newRecoveryGuard,
+  resolveOperatorReported, linkRoundTrips, probeRelays, recoverSignerLink, newRecoveryGuard,
   type RecoverIo, type OperatorChannel, type RecoveryGuard,
 } from './signer-relay-recovery';
 
@@ -66,10 +66,8 @@ describe('resolveOperatorReported', () => {
     expect(await resolveOperatorReported(op({ deviceHex: MASTER.toUpperCase() }), MASTER)).toEqual(['wss://cfg.example']);
   });
   it('prefers relays_live over the configured list', async () => {
-    const cfg = vi.fn(async () => ({ relays: ['wss://cfg.example'], trial: false }));
-    const out = await resolveOperatorReported(op({ getStatus: async () => ({ relaysLive: ['wss://live.example'] }), getNetworkConfig: cfg }), MASTER);
+    const out = await resolveOperatorReported(op({ getStatus: async () => ({ relaysLive: ['wss://live.example'] }) }), MASTER);
     expect(out).toEqual(['wss://live.example']);
-    expect(cfg).not.toHaveBeenCalled();
   });
   it('falls back to the configured list when status has no relays_live or errors', async () => {
     expect(await resolveOperatorReported(op(), MASTER)).toEqual(['wss://cfg.example']);
@@ -90,7 +88,7 @@ describe('resolveOperatorReported', () => {
     try {
       const never = () => new Promise<never>(() => {});
       const p = resolveOperatorReported(op({ getStatus: never, getNetworkConfig: never }), MASTER, 8000);
-      await vi.advanceTimersByTimeAsync(16_100);
+      await vi.advanceTimersByTimeAsync(8_100); // one shared deadline, not two in a row
       expect(await p).toEqual([]);
     } finally { vi.useRealTimers(); }
   });
@@ -113,6 +111,20 @@ describe('parseLink / rewriteBunkerRelays', () => {
   it('keeps unknown pairs verbatim and in order', () => {
     const uri = `bunker://${MASTER}?foo=1%2B&relay=wss%3A%2F%2Fold.example&secret=a%20b&bar=`;
     expect(rewriteBunkerRelays(uri, ['wss://n.example'])).toBe(`bunker://${MASTER}?relay=wss%3A%2F%2Fn.example&foo=1%2B&secret=a%20b&bar=`);
+  });
+});
+
+describe('relay params and round trip', () => {
+  it('percent-encodes ! ~ * \' ( ) so the reconnect parser accepts the link', () => {
+    const relay = "wss://r.example/a(b)!~*'c";
+    const out = rewriteBunkerRelays(uriWith(['wss://old.example']), [relay]);
+    expect(out).not.toMatch(/[!~*'()]/);
+    expect(linkRoundTrips(out, MASTER, [relay])).toBe(true);
+  });
+  it('refuses a link the reconnect parser would reject', () => {
+    expect(linkRoundTrips(`bunker://${MASTER}?relay=wss%3A%2F%2Fa.example&secret=a*b`, MASTER, ['wss://a.example'])).toBe(false);
+    expect(linkRoundTrips(uriWith(['wss://a.example']), MASTER, ['wss://other.example'])).toBe(false);
+    expect(linkRoundTrips(uriWith(['wss://a.example']), 'b'.repeat(64), ['wss://a.example'])).toBe(false);
   });
 });
 
@@ -258,6 +270,12 @@ describe('recoverSignerLink', () => {
   it('does not write after an abort', async () => {
     const io = makeIo({ probeOne: () => async (r) => { ctl.abort(); return r === 'wss://ditto.example' ? MASTER : (() => { throw new Error('x'); })(); } });
     expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(saved).toHaveLength(0);
+  });
+
+  it('does not write a link the reconnect parser would reject', async () => {
+    const io = makeIo({ loadPreferences: async () => ({ bunkerUri: `bunker://${MASTER}?relay=${encodeURIComponent(OLD[0])}&secret=a*b` }) });
+    expect(await recoverSignerLink(io, guard)).toBe('unusable');
     expect(saved).toHaveLength(0);
   });
 

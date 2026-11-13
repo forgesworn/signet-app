@@ -7974,7 +7974,8 @@ function AppContent() {
     if (signerStatus !== 'unavailable') return;
     if (preferences.signingMode !== 'bunker') return;
     if (!encryptionKey) return;
-    if (!preferences.bunkerUri?.startsWith('bunker://')) return;
+    // The stored link is re-read (and checked to be a bunker:// URI) from
+    // IndexedDB with the key inside recoverSignerLink, not from React state.
     const key = encryptionKey;
     const ctl = (recoveryAbortRef.current ??= new AbortController());
     // Wait up to 10 s for the operator client to come up; never block longer.
@@ -8018,7 +8019,7 @@ function AppContent() {
       reloadPreferences,
       retry: () => retryConnectRef.current(),
     }, recoveryGuardRef.current);
-  }, [signerStatus, preferences.signingMode, preferences.bunkerUri, encryptionKey, reloadPreferences]);
+  }, [signerStatus, preferences.signingMode, encryptionKey, reloadPreferences]);
   // The banner's Retry re-arms the recovery; never while one is running.
   const handleManualRetryConnect = useCallback(() => {
     if (recoveryGuardRef.current.running) return;

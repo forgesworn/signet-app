@@ -76,13 +76,30 @@ export function parseLink(uri: string | undefined | null): ParsedLink | null {
   return { master, relays: dedupe(relays) };
 }
 
+/** `encodeURIComponent` leaves `! ~ * ' ( )` bare, but nostr-tools' bunker
+ *  regex (`[?\/\w:.=&%-]*`) rejects them, so they are percent-encoded too. */
+function encodeRelayParam(relay: string): string {
+  return encodeURIComponent(relay).replace(/[!~*'()]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/** The shape nostr-tools' `parseBunkerInput` accepts for a `bunker://` URI. */
+const BUNKER_URI_SHAPE = /^bunker:\/\/([0-9a-f]{64})\??([?\/\w:.=&%-]*)$/;
+
+/** True when `uri` is one the reconnect will parse back to this master and
+ *  exactly these relays (in order). Never write a link that fails this. */
+export function linkRoundTrips(uri: string, master: string, relays: readonly string[]): boolean {
+  if (!BUNKER_URI_SHAPE.test(uri)) return false;
+  const back = parseLink(uri);
+  return !!back && back.master === master && sameRelayList(back.relays, relays);
+}
+
 /** Replace ONLY the `relay=` pairs: the pubkey and every other pair
  *  (including `secret`) stay byte-identical. The new relays go first. */
 export function rewriteBunkerRelays(uri: string, relays: readonly string[]): string {
   const q = uri.indexOf('?');
   const base = q < 0 ? uri : uri.slice(0, q);
   const kept = q < 0 ? [] : uri.slice(q + 1).split('&').filter(p => !p.startsWith('relay='));
-  const fresh = relays.map(r => `relay=${encodeURIComponent(r)}`);
+  const fresh = relays.map(r => `relay=${encodeRelayParam(r)}`);
   return `${base}?${[...fresh, ...kept].join('&')}`;
 }
 
@@ -153,15 +170,14 @@ export async function resolveOperatorReported(
   timeoutMs: number = OPERATOR_QUERY_TIMEOUT_MS,
 ): Promise<string[]> {
   if (!op || op.deviceHex.toLowerCase() !== master.toLowerCase()) return [];
-  try {
-    const status = await withTimeout(op.getStatus(), timeoutMs);
-    if (status.relaysLive && status.relaysLive.length > 0) return [...status.relaysLive];
-  } catch { /* fall through to the configured list */ }
-  try {
-    const cfg = await withTimeout(op.getNetworkConfig(), timeoutMs);
-    if (!cfg.trial) return [...cfg.relays];
-  } catch { /* silent */ }
-  return [];
+  // Both reads start together under ONE deadline, so a deaf operator channel
+  // costs `timeoutMs`, not twice that. `relays_live` still wins.
+  const status = withTimeout(op.getStatus(), timeoutMs).catch(() => null);
+  const config = withTimeout(op.getNetworkConfig(), timeoutMs).catch(() => null);
+  const s = await status;
+  if (s?.relaysLive && s.relaysLive.length > 0) return [...s.relaysLive];
+  const cfg = await config;
+  return cfg && !cfg.trial ? [...cfg.relays] : [];
 }
 
 // ─── Probe orchestration ────────────────────────────────────────────────────
@@ -242,6 +258,7 @@ export type RecoverOutcome =
   | 'no-link'
   | 'none-answered'
   | 'unchanged'
+  | 'unusable'
   | 'aborted'
   | 'recovered';
 
@@ -287,9 +304,13 @@ export async function recoverSignerLink(io: RecoverIo, guard: RecoveryGuard): Pr
     const next = composeNewRelays(answering, link.relays);
     if (sameRelayList(next, link.relays)) return 'unchanged';
 
+    // Never write a link the reconnect would fail to parse.
+    const newUri = rewriteBunkerRelays(prefs.bunkerUri, next);
+    if (!linkRoundTrips(newUri, link.master, next)) return 'unusable';
+
     // Right before writing: still the unlock this recovery started with?
     if (!stillCurrent()) return 'aborted';
-    await io.saveBunkerUri(rewriteBunkerRelays(prefs.bunkerUri, next), key);
+    await io.saveBunkerUri(newUri, key);
     if (!stillCurrent()) return 'aborted';
     await io.reloadPreferences(key);
     if (!stillCurrent()) return 'aborted';

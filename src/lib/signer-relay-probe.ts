@@ -38,7 +38,10 @@ export function createBunkerProbe(clientSecretHex: string, masterHex: string): P
     try {
       const work = (async () => {
         const clientPub = getPublicKey(sk);
-        signer = BunkerSigner.fromBunker(sk, { pubkey: masterHex, relays: [relay], secret: null }, { pool });
+        signer = BunkerSigner.fromBunker(sk, { pubkey: masterHex, relays: [relay], secret: null }, {
+          pool,
+          onauth() { /* an auth_url prompt needs no action here */ },
+        });
         // The reply subscription must be live before the request goes out.
         await waitForReplySubscription(pool, [relay], {
           kinds: [24133],
