@@ -10,6 +10,7 @@ import { KeypairBadge } from '../components/KeypairBadge';
 import type { AuthSelection } from './ApproveAuth';
 import { buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
 import { endsConnectRequest, handoffReach, handoffWarning } from '../lib/heartwood-handoff';
+import { SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
 
 interface Props {
   request: NostrConnectRequest;
@@ -35,6 +36,12 @@ interface Props {
   onApprove: (selection: AuthSelection, options: { askToSign: boolean; viaHeartwood?: boolean }) => Promise<void>;
   /** Whether the app can be handed to the Heartwood holding this key (an operator key for it is on this phone). */
   canHandOffToHeartwood?: (pubkey: string) => boolean;
+  /**
+   * True where the hand-off would be offered except that this phone holds no
+   * operator key for the Heartwood. The option is then shown greyed out with
+   * the reason, never honoured.
+   */
+  heartwoodNeedsUpdate?: (pubkey: string) => boolean;
   onDeny: () => void;
   /** The user's explicit pick for THIS request, held by App (survives a lock remount). */
   userChoice?: { selection: AuthSelection | null };
@@ -61,6 +68,7 @@ export function ApproveConnect({
   onUserChoice,
   waitingGuardianPubkeys,
   canHandOffToHeartwood,
+  heartwoodNeedsUpdate,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -179,6 +187,8 @@ export function ApproveConnect({
         : selection.keypairType;
   // A chosen persona no longer on the list (deleted while this was open) is never handed off.
   const handOffOffered = !!selectedPubkey && !chosenGuardianMissing && !!canHandOffToHeartwood?.(selectedPubkey);
+  const handOffShownDisabled = !handOffOffered && !!selectedPubkey && !chosenGuardianMissing && !!heartwoodNeedsUpdate?.(selectedPubkey);
+  const handOffWording = handOffOffered || handOffShownDisabled;
   // The Heartwood can only list the kinds it signs, never ask about one, so an
   // app whose grant reaches what this phone would ask about is warned about.
   const reach = useMemo(() => handoffReach(request.permissions), [request.permissions]);
@@ -428,21 +438,28 @@ export function ApproveConnect({
       )}
 
       <div className="card section" role="radiogroup" aria-label="How this app signs">
-        {handOffOffered && (
+        {(handOffOffered || handOffShownDisabled) && (
           <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
             <input
               type="radio"
               name="connect-sign-mode"
               checked={mode === 'heartwood'}
-              disabled={status === 'sending' || status === 'sent' || status === 'closed'}
+              disabled={handOffShownDisabled || status === 'sending' || status === 'sent' || status === 'closed'}
               onChange={() => setSignMode('heartwood')}
             />
             <span>
               Straight to my Heartwood
-              <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
-              </span>
-              {mode === 'heartwood' && reachWarning && (
+              {handOffShownDisabled && (
+                <span data-testid="connect-straight-needs-update" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {SIGN_IN_LINK_NEEDS_UPDATE_COPY}
+                </span>
+              )}
+              {handOffOffered && (
+                <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  The app signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
+                </span>
+              )}
+              {handOffOffered && mode === 'heartwood' && reachWarning && (
                 <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
                   {reachWarning}
                 </span>
@@ -458,7 +475,7 @@ export function ApproveConnect({
             disabled={status === 'sending' || status === 'sent' || status === 'closed'}
             onChange={() => setSignMode('auto')}
           />
-          <span>{handOffOffered ? 'Through My Signet, automatically' : 'Sign automatically for this app'}</span>
+          <span>{handOffWording ? 'Through My Signet, automatically' : 'Sign automatically for this app'}</span>
         </label>
         <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
           <input
@@ -468,10 +485,10 @@ export function ApproveConnect({
             disabled={status === 'sending' || status === 'sent' || status === 'closed'}
             onChange={() => setSignMode('ask')}
           />
-          <span>{handOffOffered ? 'Through My Signet, ask me each time it signs' : 'Ask me each time it signs'}</span>
+          <span>{handOffWording ? 'Through My Signet, ask me each time it signs' : 'Ask me each time it signs'}</span>
         </label>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '8px 0 0' }}>
-          {handOffOffered
+          {handOffWording
             ? 'Through My Signet, My Signet must stay open to answer. Encrypting and decrypting stay automatic.'
             : 'Encrypting and decrypting stay automatic either way.'}
         </p>

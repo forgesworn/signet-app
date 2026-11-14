@@ -5,6 +5,7 @@ import { ApproveConnect } from './ApproveConnect';
 import type { SignetIdentity } from '../types';
 import type { NostrConnectRequest } from '../lib/nip46';
 import { HandoffNotSavedError } from '../lib/heartwood-handoff';
+import { SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
 
 afterEach(cleanup);
 
@@ -162,5 +163,39 @@ describe('a chosen persona deleted while the screen is open', () => {
     expect(approve.disabled).toBe(true);
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
+  });
+});
+
+describe('ApproveConnect — straight to my Heartwood shown greyed out (no operator key)', () => {
+  const needsUpdate = (pk: string) => pk === PERSONA;
+
+  it('shows the reason, with Straight disabled and unchecked and automatic checked', () => {
+    renderPage(undefined, undefined, undefined, scoped, { heartwoodNeedsUpdate: needsUpdate });
+    const straight = screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement;
+    expect(straight.disabled).toBe(true);
+    expect(straight.checked).toBe(false);
+    expect(screen.getByTestId('connect-straight-needs-update').textContent).toBe(SIGN_IN_LINK_NEEDS_UPDATE_COPY);
+    expect(screen.queryByText(/signs with your Heartwood directly/)).toBeNull();
+    expect((screen.getByLabelText('Through My Signet, automatically') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/Through My Signet, My Signet must stay open to answer/)).toBeTruthy();
+  });
+
+  it('approves without viaHeartwood: true', async () => {
+    const onApprove = renderPage(undefined, undefined, undefined, scoped, { heartwoodNeedsUpdate: needsUpdate });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0][1]).toEqual({ askToSign: false, viaHeartwood: false });
+  });
+
+  it('shows no Straight option when the app says no update is needed', () => {
+    renderPage(undefined, undefined, undefined, scoped, { heartwoodNeedsUpdate: () => false });
+    expect(screen.queryByLabelText(/Straight to my Heartwood/)).toBeNull();
+    expect(screen.getByLabelText('Sign automatically for this app')).toBeTruthy();
+  });
+
+  it('when the hand-off is offered, the offered layout wins', () => {
+    renderPage(undefined, (pk) => pk === PERSONA, undefined, scoped, { heartwoodNeedsUpdate: needsUpdate });
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByTestId('connect-straight-needs-update')).toBeNull();
   });
 });

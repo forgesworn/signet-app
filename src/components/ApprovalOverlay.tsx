@@ -3,6 +3,7 @@ import type { ResolvedIdentity } from '../lib/carousel-utils';
 import type { AuthRequest, LoginRequest } from '../lib/qr-router';
 import type { ConsumerHint, KeypairToken } from '../types';
 import { shortNpub } from '../lib/signet';
+import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY } from '../lib/heartwood-signin-link';
 import { SharePreview } from './SharePreview';
 import { PairedChildApprovalWaiting } from './PairedChildApprovalWaiting';
 
@@ -41,6 +42,12 @@ interface Props {
    * approve keeps its behaviour and a secondary link leads to the picker.
    */
   heartwoodLinkOffered?: boolean;
+  /**
+   * "Straight to my Heartwood" would be offered except that this phone holds no
+   * operator key for the Heartwood: a non-interactive line says why. Never
+   * changes what Approve does.
+   */
+  heartwoodNeedsUpdate?: boolean;
   /** "Straight to my Heartwood" is pre-selected where offered. Default true. */
   heartwoodByDefault?: boolean;
 }
@@ -77,6 +84,7 @@ export function ApprovalOverlay({
   isPairedChild = false,
   childDirect = false,
   heartwoodLinkOffered = false,
+  heartwoodNeedsUpdate = false,
   heartwoodByDefault = true,
 }: Props) {
   // Local approving flag — App.tsx owns the actual signEvent lifecycle but
@@ -244,6 +252,14 @@ export function ApprovalOverlay({
           >
             Let it sign on my Heartwood…
           </button>
+        )}
+        {heartwoodNeedsUpdate && !heartwoodLinkOffered && !approving && activeAllowed && !npCeilingBlocks && (
+          <div
+            data-testid="overlay-straight-needs-update"
+            style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'center' }}
+          >
+            {SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY}
+          </div>
         )}
       </div>
     </div>
