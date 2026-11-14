@@ -734,6 +734,65 @@ export async function nostrconnectV2(
   return { slotIndex, secretFingerprint: fingerprint, label: req.label, boundIdentity: echoedIdentity };
 }
 
+/** What `create_client_v2` answered, read as loosely as the wire allows. The caller's
+ *  echo check (`checkSignInLinkEcho`) decides whether it is the slot that was asked for;
+ *  until then nothing here is trusted. `bunkerUri` holds the slot's secret: it is
+ *  never logged, stored or shown. */
+export interface CreateClientV2Reply {
+  slotIndex: number | null;
+  secretFingerprint: string;
+  label: string;
+  npubHex: string;
+  bunkerUri: string;
+  policyVersion: number | null;
+  allowedMethods: string[] | null;
+  allowedKinds: number[] | null;
+  autoApprove: boolean | null;
+}
+
+export interface CreateClientV2Request {
+  /** Fresh and unique on the device: the slot is found again by it. */
+  label: string;
+  /** The master or persona the slot is addressed to (hex64). */
+  identity: string;
+  /** `boundIdentity` must equal `identity`. */
+  policy: SlotPolicyUpdate;
+}
+
+/** `create_client_v2` — mint a slot (and its secret) addressed to one identity, as
+ *  Sapwood's "Connect an app" does. The device answers with a `bunker://` link
+ *  for the app to connect with; the slot binds to whichever key first presents
+ *  its secret. Sent once. The reply is returned UNVERIFIED (see above). */
+export async function createClientV2(
+  c: HeartwoodMgmtClient,
+  req: CreateClientV2Request,
+  opts?: { targetHex?: string },
+): Promise<CreateClientV2Reply> {
+  const identity = (req.identity ?? '').toLowerCase();
+  if (!HEX64.test(identity)) throw new Error('identity must be 64 hex chars');
+  if (typeof req.label !== 'string' || req.label.length === 0) throw new Error('label is required');
+  if ((req.policy.boundIdentity ?? '').toLowerCase() !== identity) {
+    throw new Error('policy.boundIdentity must equal identity');
+  }
+  const r = await c.request('create_client_v2', {
+    label: req.label,
+    identity,
+    policy: policyWireFields(req.policy),
+  }, opts?.targetHex ? { targetHex: opts.targetHex } : undefined);
+  const slotIndex = r.slot_index;
+  return {
+    slotIndex: typeof slotIndex === 'number' && Number.isInteger(slotIndex) && slotIndex >= 0 && slotIndex <= 255 ? slotIndex : null,
+    secretFingerprint: typeof r.secret_fingerprint === 'string' ? r.secret_fingerprint.toLowerCase() : '',
+    label: typeof r.label === 'string' ? r.label : '',
+    npubHex: typeof r.npub_hex === 'string' ? r.npub_hex.toLowerCase() : '',
+    bunkerUri: typeof r.bunker_uri === 'string' ? r.bunker_uri : '',
+    policyVersion: typeof r.policy_version === 'number' ? r.policy_version : null,
+    allowedMethods: isStringArray(r.allowed_methods) ? [...r.allowed_methods] : null,
+    allowedKinds: isKindArray(r.allowed_kinds) ? [...r.allowed_kinds] : null,
+    autoApprove: typeof r.auto_approve === 'boolean' ? r.auto_approve : null,
+  };
+}
+
 /** `revoke_client` — hard-revoke a whole slot (the phone). */
 export async function revokeClient(
   c: HeartwoodMgmtClient,

@@ -8,6 +8,7 @@
  */
 
 import type { KnownPlace } from '../types/known-places';
+import type { KeyHome } from './key-home';
 
 export type BadgeKind =
   | 'expires-soon'
@@ -27,6 +28,8 @@ export interface BadgeContext {
   nip55Grant?: { allowAlways: boolean; denyAlways: boolean } | null;
   /** The paired-client list has not loaded yet: whether a client signs automatically is unknown, so claim nothing. */
   loading?: boolean;
+  /** What actually signs for the place's key, read live; wins over the signer recorded at approval. */
+  signedBy?: KeyHome;
   /** Unix seconds when this place's access ends, if it ends. */
   expiresAt?: number;
   /** Unix seconds. */
@@ -56,7 +59,7 @@ export function badgesFor(place: KnownPlace, ctx: BadgeContext): Badge[] {
     (place.kind === 'nip55' && ctx.nip55Grant?.allowAlways === true));
   if (signsAutomatically) badges.push({ kind: 'auto', label: 'Signs automatically' });
 
-  if (place.signer === 'heartwood') badges.push({ kind: 'heartwood', label: 'Approved on Heartwood' });
+  if ((place.kind === 'nip55' ? ctx.signedBy : ctx.signedBy ?? place.signer) === 'heartwood') badges.push({ kind: 'heartwood', label: 'Signed by your Heartwood' });
 
   if (place.channel === 'other-device') badges.push({ kind: 'other-device', label: 'Another device' });
 

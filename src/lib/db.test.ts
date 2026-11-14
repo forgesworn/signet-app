@@ -492,6 +492,57 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect((await db.loadHeartwoodHandoffs(PASSPHRASE)).map(h => h.clientPubkey[0])).toEqual(['b', 'c']);
   }, TIMEOUT);
 
+  it('sign-in link records round-trip encrypted, are not identities, survive the cleanup, and the purge clears them', async () => {
+    const db = await freshDb();
+    const identity = makeIdentity();
+    await db.saveIdentityEncrypted(identity, PASSPHRASE);
+    const link = { origin: 'https://kithmoot.com', appName: 'KithMoot', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'f'.repeat(64), label: 'mysignet:kithmoot.com:0123abcd', slotIndex: 3, secretFingerprint: 'ab'.repeat(8), createdAt: 1 };
+    expect(await db.hasHeartwoodSignInLinksRow()).toBe(false);
+    await db.saveHeartwoodSignInLinks([link], PASSPHRASE);
+    expect(await db.hasHeartwoodSignInLinksRow()).toBe(true);
+    expect((await db.getAllIdentities()).map(i => i.id)).toEqual([identity.id]);
+    expect(await db.cleanupUnencryptedIdentities()).toBe(0);
+    expect(await db.loadHeartwoodSignInLinks(PASSPHRASE)).toEqual([link]);
+    // Encrypted at rest: no field is readable from the stored row.
+    const raw = await rawOpen();
+    expect(JSON.stringify(await raw.get('identity', 'heartwoodSignInLinks'))).not.toContain('kithmoot');
+    raw.close();
+    await db.purgeAllUserData();
+    expect(await db.loadHeartwoodSignInLinks(PASSPHRASE)).toEqual([]);
+    expect(await db.hasHeartwoodSignInLinksRow()).toBe(false);
+  }, TIMEOUT);
+
+  it('sign-in link validator drops malformed rows and keeps one with no slot yet', async () => {
+    const db = await freshDb();
+    const ok = { origin: 'https://a.example', appName: 'A', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'f'.repeat(64), label: 'mysignet:a.example:00000000', secretFingerprint: '', createdAt: 1 };
+    await db.saveHeartwoodSignInLinks([
+      ok,
+      { ...ok, label: '' },
+      { ...ok, slotIndex: -1 },
+      { ...ok, slotIndex: 1.5 },
+      { ...ok, origin: 7 as unknown as string },
+    ], PASSPHRASE);
+    const loaded = await db.loadHeartwoodSignInLinks(PASSPHRASE);
+    expect(loaded).toEqual([ok]);
+    expect(loaded[0].slotIndex).toBeUndefined();
+  }, TIMEOUT);
+
+  it('updateHeartwoodSignInLinks: concurrent writers both land, against what is stored', async () => {
+    const db = await freshDb();
+    const rec = (c: string) => ({ origin: `https://${c}.example`, appName: 'A', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'f'.repeat(64), label: `mysignet:${c}:00000000`, slotIndex: 2, secretFingerprint: 'ab', createdAt: 1 });
+    await db.saveHeartwoodSignInLinks([rec('a')], PASSPHRASE);
+    const [one, two] = await Promise.all([
+      db.updateHeartwoodSignInLinks(PASSPHRASE, l => [...l, rec('b')]),
+      db.updateHeartwoodSignInLinks(PASSPHRASE, l => [...l.filter(h => !h.label.includes(':a:')), rec('c')]),
+    ]);
+    expect(one.map(h => h.label)).toEqual(['mysignet:a:00000000', 'mysignet:b:00000000']);
+    expect(two.map(h => h.label)).toEqual(['mysignet:b:00000000', 'mysignet:c:00000000']);
+    expect((await db.readHeartwoodSignInLinks(PASSPHRASE)).map(h => h.label[9])).toEqual(['b', 'c']);
+  }, TIMEOUT);
+
   it('updateExtraHeartwoodOperators changes what is stored, one writer at a time', async () => {
     const db = await freshDb();
     const op = (d: string) => ({ ...cred, deviceHex: d.repeat(64) });

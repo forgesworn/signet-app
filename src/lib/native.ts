@@ -74,6 +74,8 @@ export interface SignetNativePlugin {
   returnToPreviousApp(): Promise<void>;
   /** Liveness ping: JS bunker is serving; also refreshes fallback-poll config. */
   serviceHeartbeat(opts: { pubkeysCsv: string; relayUrl: string }): Promise<void>;
+  /** What, if anything, depends on this phone. Drives the swipe-away alert and the standby state. */
+  setPhoneDependence(opts: { needed: boolean; title: string; text: string }): Promise<void>;
   isBatteryExempt(): Promise<{ exempt: boolean }>;
   requestBatteryExemption(): Promise<void>;
   requestCameraPermission(): Promise<{ granted: boolean }>;

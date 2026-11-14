@@ -21,7 +21,7 @@ function place(key: string, over: Partial<KnownPlace> = {}): KnownPlace {
 }
 const actions = () => ({
   pin: vi.fn(), setAlias: vi.fn(), setAuto: vi.fn(), open: vi.fn(), forget: vi.fn(), disconnect: vi.fn(), revokeOnHeartwood: vi.fn(),
-  forgetHandoffHere: vi.fn(),
+  forgetHandoffHere: vi.fn(), forgetSignInLinksHere: vi.fn(),
 });
 
 function setup(over: Partial<KnownPlacesCardProps> = {}) {
@@ -255,6 +255,108 @@ describe('KnownPlacesCard', () => {
     expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
   });
 
+  it('a sign-in site that signs on the Heartwood says so, needs no phone, offers Disconnect and no Sign automatically', async () => {
+    const site = place('kithmoot');
+    const { a } = setup({ places: [site], ctxFor: () => ({ heartwoodSignIn: true, signedBy: 'heartwood' }) });
+    expand('kithmoot');
+    expect(screen.getByText('Needs My Signet').nextSibling?.textContent).toBe('No, it talks to your Heartwood directly');
+    expect(screen.getByText('Signed by').nextSibling?.textContent).toMatch(/Heartwood/);
+    expect(screen.queryByRole('button', { name: /Sign automatically/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(screen.getByText(/stop signing on your Heartwood/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await settle();
+    expect(a.disconnect).toHaveBeenCalledWith(site);
+  });
+
+  it('Forget on a Heartwood sign-in says it takes the site off the Heartwood too', () => {
+    setup({ places: [place('kithmoot')], ctxFor: () => ({ heartwoodSignIn: true, signedBy: 'heartwood' }) });
+    expand('kithmoot');
+    fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+    expect(screen.getByText(/Takes this site off your Heartwood/)).toBeTruthy();
+  });
+
+  describe('a sign-in site whose link could not be taken off the Heartwood', () => {
+    const NOTE = /The link may still be on your Heartwood\. You can remove it in Sapwood\./;
+    const withLink = { heartwoodSignIn: true, signInLinkRecords: true, signedBy: 'heartwood' as const };
+
+    it('a failed Disconnect offers Forget on this phone, which drops the records only', async () => {
+      const site = place('kithmoot');
+      const { a } = setup({ places: [site], ctxFor: () => withLink });
+      a.disconnect.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+      expand('kithmoot');
+      expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      await settle();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      expect(screen.getByText(NOTE)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      await settle();
+      expect(a.forgetSignInLinksHere).toHaveBeenCalledWith(site, false);
+      expect(a.forgetHandoffHere).not.toHaveBeenCalled();
+    });
+
+    it('a failed Forget offers it too, and asks for the place to go as well', async () => {
+      const site = place('kithmoot');
+      const { a } = setup({ places: [site], ctxFor: () => withLink });
+      a.forget.mockRejectedValue(new Error('timeout waiting for device (revoke_client)'));
+      expand('kithmoot');
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      await settle();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      expect(screen.getByText(NOTE)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      await settle();
+      expect(a.forgetSignInLinksHere).toHaveBeenCalledWith(site, true);
+    });
+
+    it('a site with only a pending record (not shown as held) gets the same way out from Forget', async () => {
+      const site = place('kithmoot');
+      const { a } = setup({ places: [site], ctxFor: () => ({ signInLinkRecords: true }) });
+      a.forget.mockRejectedValue(new HeartwoodCopyError("Your Heartwood didn't answer."));
+      expand('kithmoot');
+      expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      await settle();
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget on this phone' }));
+      await settle();
+      expect(a.forgetSignInLinksHere).toHaveBeenCalledWith(site, true);
+    });
+
+    it('an ordinary sign-in site (no link records) never offers it, even when Forget fails', async () => {
+      const { a } = setup({ places: [place('plain')] });
+      a.forget.mockRejectedValue(new Error('Could not forget every record of this place.'));
+      expand('plain');
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Forget' }));
+      await settle();
+      expect(screen.queryByRole('button', { name: 'Forget on this phone' })).toBeNull();
+    });
+
+    it('a Heartwood with no operator key on this phone says how to get out (unmanaged copy)', async () => {
+      const { SignInLinkUnmanagedError } = await import('../lib/heartwood-signin-link');
+      const { a } = setup({ places: [place('kithmoot')], ctxFor: () => withLink });
+      a.disconnect.mockRejectedValue(new SignInLinkUnmanagedError());
+      expand('kithmoot');
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      await settle();
+      expect(screen.getByRole('alert').textContent).toMatch(/Forget on this phone/);
+      expect(screen.getByRole('button', { name: 'Forget on this phone' })).toBeTruthy();
+    });
+  });
+
+  it('an ordinary sign-in site has no Disconnect and no Needs My Signet line', () => {
+    setup({ places: [place('plain')] });
+    expand('plain');
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+    expect(screen.queryByText('Needs My Signet')).toBeNull();
+  });
+
   it('says why a Revoke on Heartwood failed', async () => {
     const { a } = setup({ heartwoodClients: [{ fingerprint: 'ff00', label: 'Bark', boundIdentity: 'Alice', policySummary: 'Asks on the device' }] });
     a.revokeOnHeartwood.mockRejectedValue(new Error('failed to publish to any relay'));
@@ -275,6 +377,8 @@ describe('KnownPlacesCard', () => {
     const { a } = setup({ heartwoodClients: [{ fingerprint: 'ff00', label: 'Bark', boundIdentity: 'Alice', policySummary: 'Asks on the device' }] });
     expect(screen.queryByText(/managed in Sapwood/)).toBeNull();
     expand('Bark');
+    expect(screen.getByText('No, it talks to your Heartwood directly')).toBeDefined();
+    expect(screen.getByTitle('Signed by your Heartwood')).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Revoke on Heartwood' }));
     expect(screen.getByText('Removes this app from the device.')).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
@@ -330,6 +434,44 @@ describe('KnownPlacesCard', () => {
     expand('nc');
     expect(screen.queryByRole('button', { name: /signing automatically|Sign automatically/ })).toBeNull();
     expect(screen.getByText('By your Heartwood, without asking this phone')).toBeTruthy();
+  });
+
+  it('shows who signs and whether My Signet must be open, never "Approved on"', () => {
+    const nc = place('nc', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'local' });
+    const app = place('app', { kind: 'nip55', channel: 'nip55', origin: undefined, nativePackage: 'org.x', signer: 'local' });
+    const held = place('held', { kind: 'nip46', channel: 'nip46', origin: undefined, signer: 'unknown' });
+    const site = place('site', { signer: 'unknown' });
+    const ctxs: Record<string, object> = {
+      nc: { signedBy: 'heartwood' }, app: { signedBy: 'heartwood' }, held: { heartwoodHeld: true, signedBy: 'heartwood' }, site: {},
+    };
+    setup({ places: [nc, app, held, site], ctxFor: p => ctxs[p.placeKey] });
+    const facts = (name: string) => {
+      expand(name);
+      const row = document.querySelector(`[data-kp-row="${name}:${PK}"]`) as HTMLElement;
+      const text = row.textContent ?? '';
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(name) }));
+      return text;
+    };
+    expect(facts('nc')).toMatch(/Signed byYour Heartwood/);
+    expect(facts('nc')).toMatch(/Needs My SignetYes, its requests go through My Signet/);
+    expect(facts('app')).toMatch(/Signed byYour Heartwood/);
+    expect(facts('app')).toMatch(/Needs My SignetYes, it asks My Signet on this phone/);
+    expect(facts('held')).toMatch(/Needs My SignetNo, it talks to your Heartwood directly/);
+    const siteText = facts('site');
+    expect(siteText).not.toMatch(/Signed by|Needs My Signet/);
+    expect([nc, app, held, site].map(p => facts(p.placeKey)).join('')).not.toMatch(/Approved on/);
+  });
+
+  it('omits Signed by for a phone app whose signer is not known live, whatever was recorded', () => {
+    setup({ places: [place('app', { kind: 'nip55', channel: 'nip55', origin: undefined, nativePackage: 'org.x', signer: 'local' })], ctxFor: () => ({}) });
+    expand('app');
+    expect(document.querySelector(`[data-kp-row="app:${PK}"]`)!.textContent).not.toMatch(/Signed by/);
+  });
+
+  it('falls back to the signer recorded at approval when nothing live is known', () => {
+    setup({ places: [place('rec', { signer: 'local' })] });
+    expand('rec');
+    expect(document.querySelector(`[data-kp-row="rec:${PK}"]`)!.textContent).toMatch(/Signed byThis phone/);
   });
 
   it('opens a phone-app place only on native', () => {

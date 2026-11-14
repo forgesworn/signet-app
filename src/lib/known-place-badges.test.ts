@@ -65,11 +65,18 @@ describe('badgesFor', () => {
 
   it('marks Heartwood-approved and other-device places', () => {
     expect(badgesFor(place({ signer: 'heartwood' }), { now: NOW })).toEqual([
-      { kind: 'heartwood', label: 'Approved on Heartwood' },
+      { kind: 'heartwood', label: 'Signed by your Heartwood' },
     ]);
     expect(badgesFor(place({ channel: 'other-device' }), { now: NOW })).toEqual([
       { kind: 'other-device', label: 'Another device' },
     ]);
+  });
+
+  it('lets the live signer decide, and never trusts the recorded one for a phone app', () => {
+    expect(badgesFor(place({ signer: 'local' }), { now: NOW, signedBy: 'heartwood' }).map(b => b.kind)).toEqual(['heartwood']);
+    expect(badgesFor(place({ signer: 'heartwood' }), { now: NOW, signedBy: 'phone' })).toEqual([]);
+    expect(badgesFor(place({ kind: 'nip55', channel: 'nip55', signer: 'heartwood' }), { now: NOW })).toEqual([]);
+    expect(badgesFor(place({ kind: 'nip55', channel: 'nip55', signer: 'local' }), { now: NOW, signedBy: 'heartwood' }).map(b => b.kind)).toEqual(['heartwood']);
   });
 
   it('words the shared badge for handle, picture or both', () => {

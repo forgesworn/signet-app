@@ -75,6 +75,8 @@ interface Props {
   alwaysOnWanted: boolean;
   /** Arm/disarm native always-on background serving. */
   onSetBackgroundServing: (on: boolean) => Promise<void>;
+  /** What, if anything, needs this phone to stay open; small text under the Always on button. Empty renders nothing. */
+  alwaysOnNote?: string;
   /** "Family asks" / "Waiting for approval" — parked-approval + petition notices (C4/C5). Absent/empty renders no section. */
   escalationNotices?: EscalationNotice[];
   /** Local-only hide of a notice row. */
@@ -111,7 +113,7 @@ export function BunkerPanel({
   stayAwakeUntil, onArmStayAwake, onCloseStayAwake, wakeLockSupported,
   pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
   hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
-  isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing,
+  isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing, alwaysOnNote,
   escalationNotices, onDismissEscalation, resolveEscalationOwner,
   onEscalationVerdict, verdictAvailability = 'no-operator-key',
   childAsks, childAskAlwaysAvailable, childAskStandingAvailable, onChildAskDecide,
@@ -282,6 +284,11 @@ export function BunkerPanel({
           : needsReactivating ? 'Always on — tap to switch back on'
           : 'Always on (background)'}
       </button>
+      {alwaysOnNote && (
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, textAlign: 'center' }}>
+          {alwaysOnNote}
+        </div>
+      )}
       {locked && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4, textAlign: 'center' }}>
           You'll be asked to unlock first.

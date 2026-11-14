@@ -192,6 +192,18 @@ describe('grants', () => {
   });
 });
 
+describe('lastUsedAt', () => {
+  it('is kept when valid, and grants without it still load', () => {
+    saveNip55Grants({ 'app.one': { pubkey: A, allowAlways: true, denyAlways: false, grantedAt: 5, lastUsedAt: 99 } });
+    expect(loadNip55Grants()['app.one'].lastUsedAt).toBe(99);
+    localStorage.setItem('signet.nip55.grants', JSON.stringify({ a: { pubkey: A, grantedAt: 1, lastUsedAt: 'soon' }, b: { pubkey: B, grantedAt: 1 } }));
+    const loaded = loadNip55Grants();
+    expect(loaded.a.lastUsedAt).toBeUndefined();
+    expect(loaded.b).toEqual({ pubkey: B, allowAlways: false, denyAlways: false, grantedAt: 1 });
+    saveNip55Grants({});
+  });
+});
+
 describe('defaultNip55Pubkey', () => {
   const C = 'c'.repeat(64);
   const grant = (pubkey: string) => ({ pubkey, allowAlways: false, denyAlways: false, grantedAt: 0 });

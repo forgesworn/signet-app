@@ -68,11 +68,19 @@ export interface Nip55Grant {
   /** Refuse without asking. */
   denyAlways: boolean;
   grantedAt: number;
+  /**
+   * When a request from this app was last executed under the grant (ms, as
+   * `grantedAt`). Written at most once an hour; absent on older grants.
+   */
+  lastUsedAt?: number;
   /** The app's name as the phone showed it when the person decided; absent for grants made before it was recorded. */
   label?: string;
 }
 
 export type Nip55Grants = Record<string, Nip55Grant>;
+
+/** How often a grant's `lastUsedAt` is rewritten. */
+export const NIP55_LAST_USED_THROTTLE_MS = 60 * 60 * 1000;
 
 export const NIP55_GRANTS_KEY = 'signet.nip55.grants';
 
@@ -182,6 +190,7 @@ export function loadNip55Grants(storage: Pick<Storage, 'getItem'> = localStorage
       const pubkey = pubkeyHexFrom(typeof g.pubkey === 'string' ? g.pubkey : null);
       if (!pubkey) continue;
       out[pkg] = { pubkey, allowAlways: g.allowAlways === true, denyAlways: g.denyAlways === true, grantedAt: typeof g.grantedAt === 'number' ? g.grantedAt : 0 };
+      if (typeof g.lastUsedAt === 'number' && Number.isFinite(g.lastUsedAt) && g.lastUsedAt > 0) out[pkg].lastUsedAt = g.lastUsedAt;
       if (typeof g.label === 'string' && g.label.trim()) out[pkg].label = g.label.trim().slice(0, 40);
     }
     return out;

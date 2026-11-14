@@ -18,6 +18,8 @@ import { PairedChildApprovalWaiting } from '../components/PairedChildApprovalWai
 import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmSection';
 import { SignInOnlinePlay } from '../components/SignInOnlinePlay';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
+import { handoffWarning } from '../lib/heartwood-handoff';
+import { signInLinkUnverifiedOriginCopy, signInRequestCanCarryLink, signInRequestIsRelay, type SignInRequestShape } from '../lib/heartwood-signin-link';
 
 /**
  * Resolve the display name for SharePreview. Returns `'(anonymous)'` when a
@@ -83,8 +85,28 @@ interface Props {
   onActivateRealIdentity?: () => void;
   appPermission?: SignInAppPermission;
   appPermissionName?: string;
-  onApprove: (selection: AuthSelection, shareHandle: boolean, includeOnlinePlay?: boolean) => Promise<void> | void;
+  /**
+   * `signOnHeartwood` is passed only when "Straight to my Heartwood" is the
+   * effective choice (pre-selected or picked); every other approval is the same call it always was.
+   */
+  onApprove: (selection: AuthSelection, shareHandle: boolean, includeOnlinePlay?: boolean, signOnHeartwood?: boolean) => Promise<void> | void;
   onDeny: () => void;
+  /**
+   * Whether the site can be given a link straight to the Heartwood that holds
+   * this identity's key, for this pubkey. Absent when it never can (not on a
+   * Heartwood, a child's phone, a dependant). Where it is offered it is the
+   * pre-selected choice (see `heartwoodByDefault`), and never on the combined
+   * online-play sign-in.
+   */
+  canSignOnHeartwood?: (pubkey: string, keypairType: string) => boolean;
+  /**
+   * Whether "Straight to my Heartwood" is pre-selected where it is offered
+   * (false when the one managed Heartwood definitely can't mint the link).
+   * Default true. The user's own pick always wins over it.
+   */
+  heartwoodByDefault?: boolean;
+  /** The in-page Bunker is on: it names the other option ("Through My Signet") rather than "Sign in only". */
+  bunkerServerOn?: boolean;
   /**
    * Pre-populated error banner, used when an upstream handler (e.g. the
    * carousel-overlay quick-approve path) routes to this picker after
@@ -114,6 +136,14 @@ interface Props {
   userChoice?: { selection: AuthSelection | null };
   /** Called when the user picks (or clears) an identity. */
   onUserChoice?: (selection: AuthSelection | null) => void;
+  /**
+   * The user's explicit pick between "Straight to my Heartwood" and the other
+   * option for THIS request, held by App so it survives a lock/unlock remount
+   * (the same way `userChoice` does). Absent ⇒ this page keeps the pick itself.
+   */
+  signChoice?: 'heartwood' | 'other' | null;
+  /** Called when the user picks a sign option. */
+  onSignChoice?: (choice: 'heartwood' | 'other') => void;
   /**
    * Guardian slot pubkeys that are listed but not signable yet — their key is
    * on the paired signer and its route is not back (locked, reconnecting,
@@ -186,6 +216,9 @@ export function ApproveAuth({
   onAddPersona,
   onActivateRealIdentity,
   onApprove,
+  canSignOnHeartwood,
+  heartwoodByDefault = true,
+  bunkerServerOn = false,
   appPermission,
   appPermissionName,
   onDeny,
@@ -194,11 +227,21 @@ export function ApproveAuth({
   externallyApproving = false,
   userChoice,
   onUserChoice,
+  signChoice: signChoiceProp,
+  onSignChoice,
   waitingGuardianPubkeys,
   isPairedChild = false,
   childDirect = false,
 }: Props) {
   const [includeOnlinePlay, setIncludeOnlinePlay] = useState(true);
+  // null = the user hasn't touched the radio, so the effective choice follows `heartwoodByDefault`
+  // (which may arrive after mount) until they pick.
+  const [signChoice, setSignChoiceState] = useState<'heartwood' | 'other' | null>(signChoiceProp ?? null);
+  const setSignChoice = (c: 'heartwood' | 'other') => {
+    setSignChoiceState(c);
+    onSignChoice?.(c);
+  };
+  const effectiveSignChoice = signChoice ?? (heartwoodByDefault ? 'heartwood' : 'other');
   const login = isLoginRequest(request);
   const originDisplay = safeOrigin(request.origin);
   const ageRange = login && typeof request.requiredAgeRange === 'string' && VALID_AGE_RANGES.includes(request.requiredAgeRange)
@@ -328,6 +371,7 @@ export function ApproveAuth({
     if (shownRequestKey.current === requestKey) return;
     shownRequestKey.current = requestKey;
     setError(null);
+    setSignChoiceState(null);
   }, [requestKey]);
   useEffect(() => {
     if (!initialError) return;
@@ -340,6 +384,21 @@ export function ApproveAuth({
 
   const needsCredential = login && ageRange !== null;
   const hasCredential = hasCredentialForSelection(selection);
+
+  // Straight to the Heartwood: only for the owner's own identity the device holds, and
+  // never on the combined online-play sign-in. Where offered it is pre-selected; a choice
+  // made for one identity does not follow the user to one it is not offered for.
+  // The real identity is never handed over, and a request with nowhere to put a link can't be offered it.
+  const requestShape = request as SignInRequestShape;
+  const selectedGuardianPubkey = selection?.source === 'guardian' && selection.keypairType !== 'natural-person'
+    ? resolveSelectedPubkey(selection, identity, dependants) : null;
+  const heartwoodOffered = !appPermission && signInRequestCanCarryLink(requestShape)
+    && !!selectedGuardianPubkey && !!selection && !!canSignOnHeartwood?.(selectedGuardianPubkey, selection.keypairType);
+  // A relay or QR request names its own origin and nothing proves it; a redirect callback is held to the origin.
+  const relayRequest = signInRequestIsRelay(requestShape);
+  // The in-page Bunker only answers for a relay request: the redirect path never uses it.
+  const throughMySignet = bunkerServerOn && relayRequest;
+  const signOnHeartwood = heartwoodOffered && effectiveSignChoice === 'heartwood';
 
   const isGuardianSelected = (keypairType: string) =>
     selection?.source === 'guardian' && selection.keypairType === keypairType;
@@ -845,6 +904,54 @@ export function ApproveAuth({
         })()}
       </div>
 
+      {heartwoodOffered && (
+        <div className="card section" role="radiogroup" aria-label={`How ${originDisplay} signs`}>
+          <div className="section-title">How {originDisplay} signs</div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
+            <input
+              type="radio"
+              name="sign-in-sign-mode"
+              checked={effectiveSignChoice === 'heartwood'}
+              disabled={approving}
+              onChange={() => setSignChoice('heartwood')}
+            />
+            <span>
+              Straight to my Heartwood
+              <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                {originDisplay} signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
+              </span>
+              {relayRequest && (
+                <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>
+                  {signInLinkUnverifiedOriginCopy(originDisplay)}
+                </span>
+              )}
+              {effectiveSignChoice === 'heartwood' && (
+                <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
+                  {handoffWarning({ kind: 'wide', covers: 'everything' })}
+                </span>
+              )}
+            </span>
+          </label>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <input
+              type="radio"
+              name="sign-in-sign-mode"
+              checked={effectiveSignChoice === 'other'}
+              disabled={approving}
+              onChange={() => setSignChoice('other')}
+            />
+            <span>
+              {throughMySignet ? 'Through My Signet' : 'Sign in only'}
+              <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                {throughMySignet
+                  ? 'My Signet has to stay open to answer.'
+                  : `${originDisplay} learns who you are but can't sign anything for you.`}
+              </span>
+            </span>
+          </label>
+        </div>
+      )}
+
       {appPermission && (
         <SignInOnlinePlay request={appPermission} appName={appPermissionName || originDisplay}
           personaName={resolveDisplayNameForPreview(selection, identity, dependants) || 'your persona'}
@@ -881,6 +988,7 @@ export function ApproveAuth({
                 setError(null);
                 try {
                   if (appPermission) await onApprove(selection, shareHandle, includeOnlinePlay);
+                  else if (signOnHeartwood) await onApprove(selection, shareHandle, undefined, true);
                   else await onApprove(selection, shareHandle);
                 } catch (e) {
                   setApproving(false);

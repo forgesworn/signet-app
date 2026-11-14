@@ -33,6 +33,16 @@ interface Props {
   isPairedChild?: boolean;
   /** Paired straight to the Heartwood: the wait is an ask on the guardian's phone. */
   childDirect?: boolean;
+  /**
+   * The site can be given a link straight to the Heartwood that holds this
+   * identity's key. When it is also pre-selected (`heartwoodByDefault`) the
+   * primary button opens the full picker instead of quick-approving, so a
+   * link is never minted without that screen's warning; otherwise the quick
+   * approve keeps its behaviour and a secondary link leads to the picker.
+   */
+  heartwoodLinkOffered?: boolean;
+  /** "Straight to my Heartwood" is pre-selected where offered. Default true. */
+  heartwoodByDefault?: boolean;
 }
 
 const VALID_AGE_RANGES = ['0-3', '4-7', '8-12', '13-17', '18+'];
@@ -66,6 +76,8 @@ export function ApprovalOverlay({
   onDeny,
   isPairedChild = false,
   childDirect = false,
+  heartwoodLinkOffered = false,
+  heartwoodByDefault = true,
 }: Props) {
   // Local approving flag — App.tsx owns the actual signEvent lifecycle but
   // doesn't surface a loading state down to the overlay. Tracking it here
@@ -98,6 +110,8 @@ export function ApprovalOverlay({
   // NP-ceiling blocks one-tap approve from the overlay — user must confirm
   // via the full picker (which has the inline confirmation UI).
   const npCeilingBlocks = activeToken === 'natural-person' && requireNpConfirmation;
+  // Straight to my Heartwood is pre-selected: the quick path must never mint a wide link, so go to the full screen.
+  const straightByDefault = heartwoodLinkOffered && heartwoodByDefault && activeAllowed && !npCeilingBlocks;
 
   const caption = consumerHint?.reason
     ?? (hintFilters
@@ -206,9 +220,9 @@ export function ApprovalOverlay({
         ) : (
           <div className="approval-actions">
             <button className="approval-btn-deny" onClick={onDeny} disabled={approving}>Deny</button>
-            {!activeAllowed || npCeilingBlocks ? (
+            {!activeAllowed || npCeilingBlocks || straightByDefault ? (
               <button className="approval-btn-approve" onClick={onOpenFullPicker} disabled={approving}>
-                {!activeAllowed ? 'Choose identity' : 'Confirm'}
+                {!activeAllowed ? 'Choose identity' : npCeilingBlocks ? 'Confirm' : 'Continue'}
               </button>
             ) : (
               <button
@@ -220,6 +234,16 @@ export function ApprovalOverlay({
               </button>
             )}
           </div>
+        )}
+        {heartwoodLinkOffered && !straightByDefault && !approving && activeAllowed && !npCeilingBlocks && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={onOpenFullPicker}
+            style={{ width: '100%', marginTop: 8, fontSize: '0.85rem' }}
+          >
+            Let it sign on my Heartwood…
+          </button>
         )}
       </div>
     </div>

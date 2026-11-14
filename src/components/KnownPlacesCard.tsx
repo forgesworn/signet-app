@@ -102,7 +102,7 @@ export function KnownPlacesCard({
             identityType={identityType}
             last={e.last}
             now={now}
-            badges={badgesFor(e.place, { askToSign: e.ctx.askToSign, nip55Grant: e.ctx.nip55Grant, loading: e.ctx.loading, now })}
+            badges={badgesFor(e.place, { askToSign: e.ctx.askToSign, nip55Grant: e.ctx.nip55Grant, loading: e.ctx.loading, signedBy: e.ctx.signedBy, now })}
             expanded={expandedId === e.place.id}
             onToggle={() => toggle(e.place.id)}
             actions={actions}

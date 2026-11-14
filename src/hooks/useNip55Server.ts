@@ -14,7 +14,7 @@ import type { UnsignedEvent } from 'signet-protocol';
 import { describeEventTemplate } from '../lib/nip46-server';
 import { isNativeApp, SignetNative, type Nip55Response } from '../lib/native';
 import {
-  defaultNip55Pubkey, describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
+  NIP55_LAST_USED_THROTTLE_MS, defaultNip55Pubkey, describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
   type NativeNip55Request, type Nip55Grant, type Nip55Grants, type Nip55Method, type Nip55Plan, type ParsedNip55,
 } from '../lib/nip55';
 import type { BunkerRoute } from './useBunkerServer';
@@ -88,7 +88,10 @@ function grantIsFor(grant: Nip55Grants[string], pubkey: string): boolean {
   return !!pubkey && grant.pubkey.toLowerCase() === pubkey.toLowerCase();
 }
 
-export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = () => Date.now(), gate }: Options) {
+/** A stable default clock: a fresh function each render would re-register the native listeners. */
+const defaultNow = () => Date.now();
+
+export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = defaultNow, gate }: Options) {
   const keyExpiredRef = useRef(keyExpired);
   keyExpiredRef.current = keyExpired;
   const onKeyExpiredRef = useRef(onKeyExpired);
@@ -120,6 +123,26 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // answer is on its way, step back so the caller is what the person sees.
     if (cameByIntent) { try { await SignetNative.returnToPreviousApp(); } catch { /* not native, or nothing behind us */ } }
   }, []);
+
+  /**
+   * A request from `pkg` is being executed under its grant: note when, at most
+   * once an hour (the check reads the ref, so the hot path does no storage work
+   * until a write is due). The write goes through the functional updater so it
+   * lands on whatever grant is newest, never on a stale copy.
+   */
+  const touchLastUsed = useCallback((pkg: string, pubkey: string) => {
+    const grant = grantsRef.current[pkg];
+    if (!grant || !grantIsFor(grant, pubkey)) return;
+    const at = now();
+    if (grant.lastUsedAt !== undefined && at - grant.lastUsedAt < NIP55_LAST_USED_THROTTLE_MS) return;
+    setGrants(g => {
+      const cur = g[pkg];
+      if (!cur || !grantIsFor(cur, pubkey)) return g;
+      const next = { ...g, [pkg]: { ...cur, lastUsedAt: at } };
+      saveNip55Grants(next);
+      return next;
+    });
+  }, [now]);
 
   /** Signs, encrypts or decrypts with the route that holds `pubkey`, and answers. */
   const execute = useCallback(async (raw: NativeNip55Request, parsed: ParsedNip55, pubkey: string) => {
@@ -153,6 +176,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // and before anything is called.
     if (parsed.method === 'nip04_decrypt' && !backend.nip04Decrypt) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
     onServedRef.current?.();
+    if (raw.callerPackage) touchLastUsed(raw.callerPackage, pubkey);
     try {
       switch (parsed.method) {
         case 'get_public_key':
@@ -176,7 +200,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     } catch {
       await respond({ id: raw.id, status: 'rejected' }, byIntent);
     }
-  }, [respond]);
+  }, [respond, touchLastUsed]);
 
   /**
    * `planNip55`, except that on a gated (child-direct) install a sign / NIP-44
@@ -343,7 +367,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) {
       const prior = grantsRef.current[item.raw.callerPackage];
-      remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? prior?.label });
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), ...(prior?.lastUsedAt !== undefined && prior.pubkey === key ? { lastUsedAt: prior.lastUsedAt } : {}), label: item.raw.callerLabel ?? prior?.label });
       noteKnownPlace(item.raw, key);
     }
     void execute(item.raw, item.parsed, key);
@@ -355,7 +379,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const key = approvedKey(item, pubkey);
     if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) {
-      remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
+      const prior = grantsRef.current[item.raw.callerPackage];
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), ...(prior?.lastUsedAt !== undefined && prior.pubkey === key ? { lastUsedAt: prior.lastUsedAt } : {}), label: item.raw.callerLabel ?? prior?.label });
       noteKnownPlace(item.raw, key);
     }
     void execute(item.raw, item.parsed, key);
@@ -369,7 +394,11 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   const denyAlways = useCallback((handle: number) => {
     const item = take(handle);
     if (!item) return;
-    if (item.raw.callerPackage) remember(item.raw.callerPackage, { pubkey: item.pubkey ?? activeRef.current ?? '0'.repeat(64), allowAlways: false, denyAlways: true, grantedAt: now(), label: item.raw.callerLabel ?? grantsRef.current[item.raw.callerPackage]?.label });
+    if (item.raw.callerPackage) {
+      const prior = grantsRef.current[item.raw.callerPackage];
+      const key = item.pubkey ?? activeRef.current ?? '0'.repeat(64);
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: false, denyAlways: true, grantedAt: now(), ...(prior?.lastUsedAt !== undefined && prior.pubkey === key ? { lastUsedAt: prior.lastUsedAt } : {}), label: item.raw.callerLabel ?? prior?.label });
+    }
     void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
   }, [take, remember, respond, now]);
 

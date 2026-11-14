@@ -45,6 +45,20 @@ class BunkerForegroundService : Service() {
         @Volatile private var temporaryUntilMs: Long = 0
         @Volatile private var lastHeartbeatMs: Long = -1
         private val unlockAlerted = AtomicBoolean(false)
+        /** The quiet "on standby" ongoing notification is the one showing. */
+        private val standbyShown = AtomicBoolean(false)
+        /**
+         * A page has run since this process started (cleared when the page closes).
+         * A sticky restart or a boot has none, which is what lets a not-needed
+         * service stop itself instead of idling.
+         */
+        @Volatile private var pageAlive = false
+
+        private const val KEY_NEEDED = "dependNeeded"
+        private const val KEY_TITLE = "dependTitle"
+        private const val KEY_TEXT = "dependText"
+        private const val DEFAULT_TITLE = "Signet isn't signing"
+        private const val DEFAULT_TEXT = "Tap to open and unlock Signet so it can sign again."
         @Volatile private var liveService: BunkerForegroundService? = null
 
         private fun refreshLiveService() {
@@ -61,6 +75,7 @@ class BunkerForegroundService : Service() {
         fun start(context: Context, pubkeys: String, relay: String, fromBoot: Boolean = false) {
             temporaryUntilMs = 0
             lastHeartbeatMs = if (fromBoot) -1 else SystemClock.elapsedRealtime()
+            if (!fromBoot) pageAlive = true
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putBoolean("enabled", true)
                 .putString("pubkeysCsv", pubkeys)
@@ -88,16 +103,19 @@ class BunkerForegroundService : Service() {
         fun stop(context: Context) {
             temporaryUntilMs = 0
             lastHeartbeatMs = -1
+            pageAlive = false
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putBoolean("enabled", false).apply()
             BunkerFallbackJobService.cancel(context)
             unlockAlerted.set(false)
+            standbyShown.set(false)
             (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_UNLOCK_ID)
             context.stopService(Intent(context, BunkerForegroundService::class.java))
         }
 
         fun heartbeat(context: Context, pubkeys: String, relay: String) {
             lastHeartbeatMs = SystemClock.elapsedRealtime()
+            pageAlive = true
             // Keep the boot receiver's copy current: the set the service was
             // started with can predate the serve routes, and after a reboot
             // the fallback poll has only what is stored here.
@@ -114,6 +132,54 @@ class BunkerForegroundService : Service() {
 
         private fun isPersistent(context: Context): Boolean =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
+
+        private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+        /** Whether anything depends on this phone. Absent (upgrade, nothing stored yet) means yes. */
+        internal fun isDependenceNeeded(context: Context): Boolean = prefs(context).getBoolean(KEY_NEEDED, true)
+
+        private fun dependTitle(context: Context): String =
+            prefs(context).getString(KEY_TITLE, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_TITLE
+
+        private fun dependText(context: Context): String =
+            prefs(context).getString(KEY_TEXT, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_TEXT
+
+        /**
+         * The page tells the service whether anything depends on this phone and
+         * what to say if it stops. Absent means needed.
+         */
+        @JvmStatic fun setDependence(context: Context, needed: Boolean, title: String, text: String) {
+            prefs(context).edit()
+                .putBoolean(KEY_NEEDED, needed)
+                .putString(KEY_TITLE, title)
+                .putString(KEY_TEXT, text)
+                .apply()
+            // The call only comes from a running page.
+            pageAlive = true
+            if (!isPersistent(context)) return
+            if (!needed) {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                nm.cancel(NOTIF_UNLOCK_ID)
+                BunkerFallbackJobService.cancel(context)
+                unlockAlerted.set(false)
+            }
+            refreshLiveService()
+        }
+
+        /**
+         * Stop without a word. `enabled` stays set: Always on is still the user's
+         * choice and the page re-arms it on the next unlock.
+         */
+        private fun quietStopState(context: Context) {
+            lastHeartbeatMs = -1
+            temporaryUntilMs = 0
+            unlockAlerted.set(false)
+            standbyShown.set(false)
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(NOTIF_UNLOCK_ID)
+            nm.cancel(NOTIF_FGS_ID)
+            BunkerFallbackJobService.cancel(context)
+        }
 
         private fun heartbeatRemainingMs(): Long {
             val at = lastHeartbeatMs
@@ -133,11 +199,23 @@ class BunkerForegroundService : Service() {
         @JvmStatic fun pageClosed(context: Context) {
             lastHeartbeatMs = -1
             temporaryUntilMs = 0
+            pageAlive = false
             if (isPersistent(context)) {
+                if (!isDependenceNeeded(context)) {
+                    // Nothing depends on this phone: close without a notification.
+                    // No refreshLiveService() here: it would queue a refresh on the
+                    // service being stopped, which would post the ongoing one again.
+                    quietStopState(context)
+                    context.stopService(Intent(context, BunkerForegroundService::class.java))
+                    return
+                }
+                standbyShown.set(false)
                 unlockAlerted.set(true)
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                nm.notify(NOTIF_FGS_ID, fgsNotification(context, serving = false))
-                postUnlockAlert(context, "Signet stopped signing for your family", "Tap to turn it back on")
+                // The ongoing notification belongs to a running service. After a quiet stop
+                // `enabled` is still set with none behind it, and nothing would clear this.
+                if (liveService != null) nm.notify(NOTIF_FGS_ID, fgsNotification(context, FgsState.NOT_SIGNING))
+                postUnlockAlert(context)
             }
             refreshLiveService()
         }
@@ -147,8 +225,17 @@ class BunkerForegroundService : Service() {
         /** Ongoing notification + unlock alert for the current state. */
         private fun showServingState(context: Context, serving: Boolean) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIF_FGS_ID, fgsNotification(context, serving))
+            nm.notify(NOTIF_FGS_ID, fgsNotification(context, if (serving) FgsState.SERVING else FgsState.NOT_SIGNING))
             if (serving) nm.cancel(NOTIF_UNLOCK_ID) else postUnlockAlert(context)
+        }
+
+        private enum class FgsState { SERVING, NOT_SIGNING, STANDBY }
+
+        /** The ongoing notification's state for the persistent/heartbeat/dependence combination. */
+        private fun currentFgsState(context: Context): FgsState = when {
+            !isPersistent(context) || heartbeatFresh() -> FgsState.SERVING
+            isDependenceNeeded(context) -> FgsState.NOT_SIGNING
+            else -> FgsState.STANDBY
         }
 
         private fun launchIntent(context: Context): PendingIntent = PendingIntent.getActivity(
@@ -176,7 +263,7 @@ class BunkerForegroundService : Service() {
             "A child or connected app is waiting for your approval", privateOnLockscreen = true,
         )
 
-        private fun fgsNotification(context: Context, serving: Boolean): Notification {
+        private fun fgsNotification(context: Context, state: FgsState): Notification {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             ensureChannel(nm, CHANNEL_FGS, "Bunker serving", NotificationManager.IMPORTANCE_LOW,
                 "Keeps the Signet bunker reachable while the screen is off", privateOnLockscreen = false)
@@ -185,20 +272,21 @@ class BunkerForegroundService : Service() {
                 .setSmallIcon(R.drawable.ic_stat_signet)
                 .setContentIntent(launchIntent(context))
                 .setOngoing(true)
-            if (serving || !isPersistent(context)) {
-                builder.setContentTitle("Signet bunker is serving")
+            when (state) {
+                FgsState.SERVING -> builder.setContentTitle("Signet bunker is serving")
                     .setContentText("Signing requests are handled while Signet is closed")
-            } else {
-                builder.setContentTitle("Signet isn't signing right now")
-                    .setContentText("Tap to open and unlock Signet so it can sign for your family again")
+                FgsState.NOT_SIGNING -> builder.setContentTitle("Signet isn't signing right now")
+                    .setContentText(dependText(context))
+                FgsState.STANDBY -> builder.setContentTitle("Signet is on standby")
+                    .setContentText("Nothing needs it right now")
             }
             return builder.build()
         }
 
         private fun postUnlockAlert(
             context: Context,
-            title: String = "Signet isn't signing",
-            text: String = "Tap to open and unlock Signet so it can sign for your family again",
+            title: String = dependTitle(context),
+            text: String = dependText(context),
         ) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             ensureAlertsChannel(nm)
@@ -251,14 +339,33 @@ class BunkerForegroundService : Service() {
             wakeLock.acquire(remaining)
             mainHandler.postDelayed(leaseExpired, remaining)
             BunkerFallbackJobService.cancel(this)
-            if (persistent && unlockAlerted.compareAndSet(true, false)) {
-                showServingState(this, serving = true)
+            if (persistent) {
+                val wasAlerted = unlockAlerted.compareAndSet(true, false)
+                val wasStandby = standbyShown.compareAndSet(true, false)
+                if (wasAlerted || wasStandby) showServingState(this, serving = true)
             }
         } else {
             if (wakeLock.isHeld) wakeLock.release()
             if (persistent) {
-                if (unlockAlerted.compareAndSet(false, true)) showServingState(this, serving = false)
-                BunkerFallbackJobService.schedule(this)
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (isDependenceNeeded(this)) {
+                    standbyShown.set(false)
+                    if (unlockAlerted.compareAndSet(false, true)) showServingState(this, serving = false)
+                    else nm.notify(NOTIF_FGS_ID, fgsNotification(this, FgsState.NOT_SIGNING))
+                    BunkerFallbackJobService.schedule(this)
+                } else if (pageAlive) {
+                    // Page running but locked or its socket down, and nothing needs it:
+                    // no alert and no fallback checks; the page heartbeats again on its own.
+                    unlockAlerted.set(false)
+                    nm.cancel(NOTIF_UNLOCK_ID)
+                    BunkerFallbackJobService.cancel(this)
+                    standbyShown.set(true)
+                    nm.notify(NOTIF_FGS_ID, fgsNotification(this, FgsState.STANDBY))
+                } else {
+                    // Sticky restart or boot with nothing depending on this phone.
+                    quietStopState(this)
+                    stopSelf()
+                }
             } else {
                 BunkerFallbackJobService.cancel(this)
                 stopSelf()
@@ -268,7 +375,7 @@ class BunkerForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIF_FGS_ID, fgsNotification(this, heartbeatFresh()))
+        startForeground(NOTIF_FGS_ID, fgsNotification(this, currentFgsState(this)))
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "signet:bunker").apply {
             // Heartbeats extend one lease; they must not accumulate acquisitions.
