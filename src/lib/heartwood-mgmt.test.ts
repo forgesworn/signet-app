@@ -17,6 +17,7 @@ import {
   MGMT_KIND,
   type MgmtTransport,
   getStatus,
+  getNetworkConfig,
   hasCapability,
   canRevokeClient,
   listClients,
@@ -642,6 +643,45 @@ describe('getStatus / hasCapability', () => {
     const c = d.client();
     c.start();
     expect((await getStatus(c)).capabilities).toEqual(['a', 'b']);
+    c.stop();
+  });
+
+  it('reads relays_live (strings only) and leaves it absent when missing or empty', async () => {
+    const live = makeFakeDevice({ handler: () => ({ result: { master_npub_hex: 'cd'.repeat(32), relays_live: ['wss://a.example', 3, 'wss://b.example'] } }) });
+    const c1 = live.client();
+    c1.start();
+    expect((await getStatus(c1)).relaysLive).toEqual(['wss://a.example', 'wss://b.example']);
+    c1.stop();
+    const none = makeFakeDevice({ handler: () => ({ result: { master_npub_hex: 'cd'.repeat(32), relays_live: [] } }) });
+    const c2 = none.client();
+    c2.start();
+    expect((await getStatus(c2)).relaysLive).toBeUndefined();
+    c2.stop();
+  });
+});
+
+describe('getNetworkConfig', () => {
+  it('returns the configured relays in order and trial=false', async () => {
+    const d = makeFakeDevice({ handler: () => ({ result: { revision: 1, active: { relays: ['wss://a.example', 'wss://b.example', 7] }, trial: null } }) });
+    const c = d.client();
+    c.start();
+    expect(await getNetworkConfig(c)).toEqual({ relays: ['wss://a.example', 'wss://b.example'], trial: false });
+    c.stop();
+  });
+
+  it('flags a live trial', async () => {
+    const d = makeFakeDevice({ handler: () => ({ result: { active: { relays: ['wss://a.example'] }, trial: { ssid: 'x' } } }) });
+    const c = d.client();
+    c.start();
+    expect((await getNetworkConfig(c)).trial).toBe(true);
+    c.stop();
+  });
+
+  it('throws on a device error reply', async () => {
+    const d = makeFakeDevice({ handler: () => ({ error: 'not device operator' }) });
+    const c = d.client();
+    c.start();
+    await expect(getNetworkConfig(c)).rejects.toThrow('not device operator');
     c.stop();
   });
 });

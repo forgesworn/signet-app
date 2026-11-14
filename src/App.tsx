@@ -294,6 +294,7 @@ import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './lib/heartwood-mgmt
 import { hasHeartwoodHandoffsRow, loadExtraHeartwoodOperators, loadHeartwoodOperator, readHeartwoodHandoffs, updateHeartwoodHandoffs, type HeartwoodHandoffRecord } from './lib/db';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
 import type { HeartwoodMgmtClient } from './lib/heartwood-mgmt';
+import { useSignerLinkRecovery } from './hooks/useSignerLinkRecovery';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
@@ -1399,6 +1400,11 @@ function AppContent() {
   // guards against an out-of-order/stale probe reviving a router after a
   // newer create (or a lock) has already superseded it.
   const bunkerRouterGenRef = useRef(0);
+  // Bumped by every lock and every new signer attempt (unlock reconnect, Retry,
+  // connect, disconnect). A reconnect's late .then/.catch acts only if its
+  // attempt is still current, so a destroyed or superseded one never sets a
+  // status over a newer one.
+  const signerAttemptGenRef = useRef(0);
   // Where per-persona routing stands on the current pairing, so a slot with
   // no local key can say "signer not answering yet — retrying" instead of
   // "no local signing key". Null when no probe applies (locked, no bunker).
@@ -5169,10 +5175,14 @@ function AppContent() {
         return null;
       });
       setRouterProbeState(null);
+      // A lock ends every signer attempt: a reconnect still in flight must not
+      // set a status afterwards, and the status itself is always cleared, so
+      // the next unlock never sees a stale value.
+      signerAttemptGenRef.current++;
+      setSignerStatus(null);
       if (bunkerBackend) {
         bunkerBackend.destroy();
         setBunkerBackend(null);
-        setSignerStatus(null);
         backendsIdentityId.current = null;
       }
       // Drop the memoised sync-cache AES keys (family-bunker §11.1.10). The
@@ -5323,7 +5333,12 @@ function AppContent() {
     // IndexedDB but doesn't update the usePreferences hook state). M1: pass
     // encryptionKey (guaranteed non-null by the guard above) so bunkerUri
     // decrypts to a usable URI rather than staying ciphertext.
+    // Claim the signer attempt BEFORE the first await: a lock (which bumps
+    // the generation) during the ~1 s preferences decrypt must supersede this
+    // continuation, so it never builds a backend or sets a status while locked.
+    const attemptGen = ++signerAttemptGenRef.current;
     void getPreferences(encryptionKey).then(prefs => {
+      if (attemptGen !== signerAttemptGenRef.current) return;
       // Guard again after async — identity or key may have changed
       if (backendsIdentityId.current === targetId) return;
 
@@ -5375,7 +5390,9 @@ function AppContent() {
 
         // Bunker mode: reconnect in background
         setSignerStatus('connecting');
+        const attemptIsCurrent = () => signerAttemptGenRef.current === attemptGen;
         loadBunkerSecret(encryptionKey).then(clientSecret => {
+          if (!attemptIsCurrent()) return;
           if (!clientSecret || !prefs.bunkerUri) {
             setSignerStatus(null);
             return;
@@ -5386,6 +5403,7 @@ function AppContent() {
           // allowed-pubkey set on every reopen (see BunkerSigningBackend.reconnect).
           bunker.reconnect(prefs.bunkerUri, 30_000, undefined, true)
             .then(() => {
+              if (!attemptIsCurrent()) return;
               setSignerStatus('connected');
               // Probe for Heartwood per-slot routing (auto-approved; generic
               // bunkers fail the probe and stay NP-only). Capture the
@@ -5394,8 +5412,8 @@ function AppContent() {
               // discard its result instead of reviving a superseded router.
               startRouterProbe(bunker, clientSecret);
             })
-            .catch(() => setSignerStatus('unavailable'));
-        }).catch(() => setSignerStatus(null));
+            .catch(() => { if (attemptIsCurrent()) setSignerStatus('unavailable'); });
+        }).catch(() => { if (attemptIsCurrent()) setSignerStatus(null); });
         return;
       }
 
@@ -6739,6 +6757,7 @@ function AppContent() {
         // record is used — bump the generation so an in-flight probe for the
         // old client cannot install itself afterwards.
         bunkerRouterGenRef.current++;
+        signerAttemptGenRef.current++; // supersede any signer attempt still in flight
         setBunkerRouter((prev) => { prev?.destroy(); return null; });
         setRouterProbeState(null);
         if (bunkerBackend) {
@@ -6935,6 +6954,7 @@ function AppContent() {
     // earlier create() probe may still be in flight and must not install
     // a router superseded by this connect.
     bunkerRouterGenRef.current++;
+    signerAttemptGenRef.current++; // supersede any signer attempt still in flight
     if (bunkerRouter) {
       bunkerRouter.destroy();
       setBunkerRouter(null);
@@ -7327,6 +7347,7 @@ function AppContent() {
         // earlier create() probe may still be in flight and must not install
         // a router superseded by this connect.
         bunkerRouterGenRef.current++;
+        signerAttemptGenRef.current++; // supersede any signer attempt still in flight
         if (bunkerRouter) {
           bunkerRouter.destroy();
           setBunkerRouter(null);
@@ -7381,6 +7402,7 @@ function AppContent() {
     // still be in flight (bunkerRouter still null) and must not install a
     // router after this explicit disconnect.
     bunkerRouterGenRef.current++;
+    signerAttemptGenRef.current++; // supersede any signer attempt still in flight
     if (bunkerRouter) {
       bunkerRouter.destroy();
       setBunkerRouter(null);
@@ -7827,7 +7849,12 @@ function AppContent() {
     if (!encryptionKey) return;
     // M1: pass the key so prefs.bunkerUri decrypts to a usable URI for the
     // reconnect calls below (bunker.reconnect(prefs.bunkerUri, ...)).
+    // This retry is the current signer attempt from its first statement: the
+    // unlock reconnect it replaces (or a lock) must not set a status over it,
+    // even during the preferences decrypt below.
+    const retryGen = ++signerAttemptGenRef.current;
     const prefs = await getPreferences(encryptionKey);
+    if (signerAttemptGenRef.current !== retryGen) return;
 
     // Paired-child install — credentials live in PairedChildRecord, not
     // loadBunkerSecret + prefs.bunkerUri. Branch early before the
@@ -7880,6 +7907,7 @@ function AppContent() {
     if (!prefs.bunkerUri) return;
     setSignerStatus('connecting');
     const clientSecret = await loadBunkerSecret(encryptionKey);
+    if (signerAttemptGenRef.current !== retryGen) return;
     if (!clientSecret || !prefs.bunkerUri) {
       setSignerStatus(null);
       return;
@@ -7900,6 +7928,7 @@ function AppContent() {
       // resendConnect: re-authorise this client into the Heartwood slot's
       // allowed-pubkey set on every reopen (see BunkerSigningBackend.reconnect).
       await bunker.reconnect(prefs.bunkerUri, 30_000, undefined, true);
+      if (signerAttemptGenRef.current !== retryGen) return;
       setSignerStatus('connected');
       // Probe for Heartwood per-slot routing (auto-approved; generic
       // bunkers fail the probe and stay NP-only). Capture the generation
@@ -7907,7 +7936,7 @@ function AppContent() {
       // its result instead of reviving a superseded router.
       startRouterProbe(bunker, clientSecret);
     } catch {
-      setSignerStatus('unavailable');
+      if (signerAttemptGenRef.current === retryGen) setSignerStatus('unavailable');
     }
   }, [encryptionKey, bunkerBackend, bunkerRouter]);
 
@@ -7951,6 +7980,19 @@ function AppContent() {
     }, delay);
     return () => clearTimeout(timer);
   }, [signerStatus, preferences.signingMode, encryptionKey]);
+
+  // Owner-mode signer link gone deaf: once per unlock (and once more after a
+  // manual Retry that ends 'unavailable' again) find the Heartwood on the
+  // candidate relays and reconnect with no tap. All glue lives in the hook;
+  // the logic in `signer-relay-recovery.ts`.
+  const { searching: signerSearching, onManualRetry: handleManualRetryConnect } = useSignerLinkRecovery({
+    signerStatus,
+    signingMode: preferences.signingMode,
+    encryptionKey,
+    operator: heartwoodOperator,
+    reloadPreferences,
+    retryConnect: () => retryConnectRef.current(),
+  });
 
   const handleApproveVerification = useCallback(() => {
     if (!pendingVerifyRequest) return;
@@ -11043,8 +11085,8 @@ function AppContent() {
       </div>
     ) : (
       <div style={{ background: 'var(--danger-light)', padding: '8px 16px', textAlign: 'center', fontSize: 14, color: 'var(--danger)' }}>
-        Signer unavailable
-        <button onClick={handleRetryConnect} className="btn btn-ghost" style={{ marginLeft: 8, fontSize: 14, padding: '2px 8px' }}>
+        {signerSearching ? 'Looking for your Heartwood on your other relays…' : 'Signer unavailable'}
+        <button onClick={handleManualRetryConnect} disabled={signerSearching} className="btn btn-ghost" style={{ marginLeft: 8, fontSize: 14, padding: '2px 8px' }}>
           Retry
         </button>
       </div>

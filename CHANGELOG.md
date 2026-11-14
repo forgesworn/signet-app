@@ -3,6 +3,9 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+- Heartwood: when your Heartwood stops listening on the relays My Signet paired on (for example after you reorder relays in Sapwood), My Signet finds it on your other relays and reconnects by itself, instead of staying "Signer unavailable"
+
 ## 0.26.0
 - Personas: "Add a key from my Heartwood" adds a key that lives on your Heartwood, such as an old nsec imported there, as a persona. My Signet signs as it through the Heartwood and never holds the key
 - Nostr Connect: when you approve an app you can choose "Straight to my Heartwood". The Heartwood that holds the persona takes the app over and signs for it directly, so My Signet can be closed
