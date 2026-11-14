@@ -126,6 +126,9 @@ export function useSignerLinkRecovery(args: UseSignerLinkRecoveryArgs): UseSigne
     abortRef.current?.abort();
     abortRef.current = null;
     guardRef.current = newRecoveryGuard();
+    // A run from before this lock may outlive it (parked in its retry) and its
+    // own end is ignored below, so the lock itself clears the flag.
+    setSearching(false);
   }, [encryptionKey]);
 
   useEffect(() => { statusGenRef.current = genRef.current; }, [signerStatus]);
@@ -143,6 +146,9 @@ export function useSignerLinkRecovery(args: UseSignerLinkRecoveryArgs): UseSigne
     if (statusGenRef.current !== genRef.current) return;
     if (!abortRef.current || abortRef.current.signal.aborted) abortRef.current = new AbortController();
     const key = encryptionKey;
+    // Tag the run with ITS guard: a run from an earlier unlock that finishes
+    // late must not clear (or set) the current run's "searching" state.
+    const guard = guardRef.current;
     void recoverSignerLink({
       signingMode,
       getSignerStatus: () => statusRef.current,
@@ -159,8 +165,8 @@ export function useSignerLinkRecovery(args: UseSignerLinkRecoveryArgs): UseSigne
       swapBunkerUri: swapBunkerUriIfUnchanged,
       reloadPreferences: (k) => reloadRef.current(k),
       retry: () => retryRef.current(),
-      onRunning: setSearching,
-    }, guardRef.current);
+      onRunning: (running) => { if (guardRef.current === guard) setSearching(running); },
+    }, guard);
   }, [signerStatus, signingMode, encryptionKey]);
 
   const onManualRetry = useCallback(() => {

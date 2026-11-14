@@ -327,8 +327,11 @@ export async function recoverSignerLink(io: RecoverIo, guard: RecoveryGuard): Pr
     const probed = new Set<string>();
     const answered = new Set<string>();
     const settling: Promise<void>[] = [];
+    // The whole run probes at most MAX_CANDIDATES relays: each probe tells one
+    // more relay that this client key talks to this master. `relays` is in
+    // priority order, so a full budget drops the tail.
     const launch = (relays: readonly string[]) => {
-      const fresh = relays.filter(r => !probed.has(r));
+      const fresh = relays.filter(r => !probed.has(r)).slice(0, Math.max(0, MAX_CANDIDATES - probed.size));
       if (fresh.length === 0) return;
       fresh.forEach(r => probed.add(r));
       settling.push(probeRelays(fresh, link.master, probeOne, io.signal)
@@ -383,7 +386,10 @@ export async function recoverSignerLink(io: RecoverIo, guard: RecoveryGuard): Pr
     // Right before writing: still this unlock, still unavailable?
     if (!live()) return 'aborted';
     if (!(await io.swapBunkerUri(rawUri, ciphertext))) return 'aborted';
-    if (!live()) return 'aborted';
+    // The new link is stored: keep React state in step with it whenever this
+    // is still the same unlock key, even if the signer status moved on. Only
+    // the retry needs the full live() check.
+    if (io.currentKey() !== key) return 'aborted';
     await io.reloadPreferences(key);
     if (!live()) return 'aborted';
     await io.retry();

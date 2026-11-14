@@ -799,8 +799,13 @@ describe('swapBunkerUriIfUnchanged (signer-link recovery compare-and-swap)', () 
 
   it('refuses once signingMode is no longer bunker (Disconnect)', async () => {
     const { db, rawBunkerUri, next } = await seed();
-    await db.savePreferences({ ...(await db.getPreferences(KEY)), signingMode: 'local' }, KEY);
+    // A KEY-LESS save changes only the mode: the stored ciphertext stays
+    // byte-identical, so the refusal below can only come from the mode check
+    // (a keyed save re-encrypts the link and would refuse on the compare).
+    await db.savePreferences({ ...(await db.getPreferences()), signingMode: 'local' });
     const before = await rawRecord();
+    expect(before.signingMode).toBe('local');
+    expect(before.bunkerUri).toBe(rawBunkerUri);
     expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, next)).toBe(false);
     expect(await rawRecord()).toEqual(before);
   }, TIMEOUT);

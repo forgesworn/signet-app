@@ -410,6 +410,68 @@ describe('recoverSignerLink', () => {
     expect(parseLink(written())?.relays[0]).toBe('wss://live.example');
   });
 
+  describe('the probe budget and the first wave', () => {
+    const rel = (p: string, n: number) => Array.from({ length: n }, (_, i) => `wss://${p}${i + 1}.example`);
+    const NINE = {
+      loadPreferences: async () => ({
+        rawBunkerUri: RAW_OLD,
+        prefs: { bunkerUri: uriWith(rel('l', 3)), relayUrl: 'wss://u1.example', relays: [{ url: 'wss://u2.example' }, { url: 'wss://u3.example' }] },
+      }),
+      defaultRelays: () => rel('d', 3),
+    };
+    const op = (reported: string[], credential: string[]): OperatorChannel => ({
+      deviceHex: MASTER, credentialRelays: credential,
+      getStatus: async () => ({ relaysLive: reported }),
+      getNetworkConfig: async () => ({ relays: [], trial: false }),
+    });
+    const probedOf = () => calls.filter(c => c.startsWith('probe:')).map(c => c.slice(6));
+
+    it('keeps a first-wave relay that answered even when the second-wave list dropped it', async () => {
+      // reported 3 + link 3 + credential 3 + user 1 fill the 10 slots, so the
+      // defaults (and ditto) fall out of the second-wave list.
+      const io = makeIo({
+        loadPreferences: async () => ({ rawBunkerUri: RAW_OLD, prefs: { bunkerUri: uriWith(rel('l', 3)), relayUrl: 'wss://u1.example' } }),
+        defaultRelays: () => ['wss://ditto.example', 'wss://d2.example', 'wss://d3.example'],
+        getOperator: async () => op(rel('r', 3), rel('c', 3)),
+      }, ['wss://ditto.example']);
+      expect(await recoverSignerLink(io, guard)).toBe('recovered');
+      expect(parseLink(written())?.relays).toContain('wss://ditto.example');
+      expect(parseLink(written())?.relays[0]).toBe('wss://ditto.example');
+    });
+
+    it('probes at most 10 relays in the whole run, operator-reported before credential ones', async () => {
+      const io = makeIo({ ...NINE, getOperator: async () => op(rel('r', 2), rel('c', 3)) }, ['wss://r1.example']);
+      expect(await recoverSignerLink(io, guard)).toBe('recovered');
+      const probed = probedOf();
+      expect(new Set(probed).size).toBe(probed.length);
+      expect(probed).toHaveLength(10);
+      expect(probed).toContain('wss://r1.example');
+      expect(probed).not.toContain('wss://r2.example');
+      expect(probed.some(r => r.startsWith('wss://c'))).toBe(false);
+    });
+
+    it('spends the one free slot on a credential relay when the device reported none', async () => {
+      const io = makeIo({ ...NINE, getOperator: async () => op([], rel('c', 3)) }, []);
+      expect(await recoverSignerLink(io, guard)).toBe('none-answered');
+      const probed = probedOf();
+      expect(probed).toHaveLength(10);
+      expect(probed).toContain('wss://c1.example');
+      expect(probed).not.toContain('wss://c2.example');
+    });
+  });
+
+  it('reloads the preferences after a swap even when the status moved on, but does not retry', async () => {
+    const io = makeIo({ swapBunkerUri: async () => { calls.push('save'); status = 'connected'; return true; } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(calls.filter(c => !c.startsWith('probe'))).toEqual(['save', 'reload']);
+  });
+
+  it('does not reload after a swap once the key is gone', async () => {
+    const io = makeIo({ swapBunkerUri: async () => { calls.push('save'); key = null; return true; } });
+    expect(await recoverSignerLink(io, guard)).toBe('aborted');
+    expect(calls).not.toContain('reload');
+  });
+
   it.each(['paired-child', 'local', 'nip07', undefined])('never runs for signing mode %s', async (mode) => {
     expect(await recoverSignerLink(makeIo({ signingMode: mode }), guard)).toBe('skipped');
     expect(calls).toEqual([]);

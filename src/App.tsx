@@ -5333,7 +5333,12 @@ function AppContent() {
     // IndexedDB but doesn't update the usePreferences hook state). M1: pass
     // encryptionKey (guaranteed non-null by the guard above) so bunkerUri
     // decrypts to a usable URI rather than staying ciphertext.
+    // Claim the signer attempt BEFORE the first await: a lock (which bumps
+    // the generation) during the ~1 s preferences decrypt must supersede this
+    // continuation, so it never builds a backend or sets a status while locked.
+    const attemptGen = ++signerAttemptGenRef.current;
     void getPreferences(encryptionKey).then(prefs => {
+      if (attemptGen !== signerAttemptGenRef.current) return;
       // Guard again after async — identity or key may have changed
       if (backendsIdentityId.current === targetId) return;
 
@@ -5385,7 +5390,6 @@ function AppContent() {
 
         // Bunker mode: reconnect in background
         setSignerStatus('connecting');
-        const attemptGen = ++signerAttemptGenRef.current;
         const attemptIsCurrent = () => signerAttemptGenRef.current === attemptGen;
         loadBunkerSecret(encryptionKey).then(clientSecret => {
           if (!attemptIsCurrent()) return;
@@ -7845,7 +7849,12 @@ function AppContent() {
     if (!encryptionKey) return;
     // M1: pass the key so prefs.bunkerUri decrypts to a usable URI for the
     // reconnect calls below (bunker.reconnect(prefs.bunkerUri, ...)).
+    // This retry is the current signer attempt from its first statement: the
+    // unlock reconnect it replaces (or a lock) must not set a status over it,
+    // even during the preferences decrypt below.
+    const retryGen = ++signerAttemptGenRef.current;
     const prefs = await getPreferences(encryptionKey);
+    if (signerAttemptGenRef.current !== retryGen) return;
 
     // Paired-child install — credentials live in PairedChildRecord, not
     // loadBunkerSecret + prefs.bunkerUri. Branch early before the
@@ -7896,9 +7905,6 @@ function AppContent() {
 
     // Heartwood bunker path.
     if (!prefs.bunkerUri) return;
-    // This retry is the current signer attempt; the unlock reconnect it
-    // replaces (or a lock) must not set a status over it.
-    const retryGen = ++signerAttemptGenRef.current;
     setSignerStatus('connecting');
     const clientSecret = await loadBunkerSecret(encryptionKey);
     if (signerAttemptGenRef.current !== retryGen) return;

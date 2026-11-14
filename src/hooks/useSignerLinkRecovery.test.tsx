@@ -270,6 +270,27 @@ describe('useSignerLinkRecovery', () => {
     });
   });
 
+  it('a run from an earlier unlock finishing late does not clear the current run\'s searching state', async () => {
+    let releaseOldRetry: () => void = () => {};
+    retry.mockImplementationOnce(() => new Promise<void>(r => { releaseOldRetry = r; }));
+    const h = mount({ status: 'unavailable', key: 'K1' });
+    await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(1)); // parked in its retry
+    h.rerender({ status: null, key: null }); // lock: the parked retry is not abortable
+    await flush();
+    expect(h.result.current.searching).toBe(false);
+    hang();
+    h.rerender({ status: null, key: 'K2' });
+    h.rerender({ status: 'connecting', key: 'K2' });
+    h.rerender({ status: 'unavailable', key: 'K2' });
+    await vi.waitFor(() => expect(h.result.current.searching).toBe(true));
+    releaseOldRetry(); // the old run ends now
+    await flush();
+    expect(h.result.current.searching).toBe(true);
+    // and the Retry stays correctly ignored while the new run is going
+    act(() => h.result.current.onManualRetry());
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
   it('reports searching while a run is going, then not', async () => {
     const releases: Array<(v: string) => void> = [];
     m.probeImpl = async () => new Promise<string>(res => { releases.push(res); });
