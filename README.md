@@ -238,7 +238,7 @@ Runtime dependencies, from `package.json`:
 - `spoken-token`: Time-rotating spoken verification words (declared directly; `src/` does not import it, and `vite.config.ts` pre-bundles it)
 - `@noble/curves` + `@noble/hashes` + `@noble/ciphers`: Cryptographic primitives
 - `idb`: IndexedDB wrapper
-- `qrcode` + `html5-qrcode` + `jsqr`: QR generation and scanning
+- `@forgesworn/qr`: QR generation; `html5-qrcode` + `jsqr`: QR scanning
 - `@capacitor/core`, `@capacitor/app`, `@capacitor/local-notifications`, `@capacitor/android`: Android shell, app lifecycle and local notifications
 - `@fontsource-variable/inter`, `@fontsource-variable/playfair-display`, `@fontsource-variable/geist-mono`: Bundled fonts
 
