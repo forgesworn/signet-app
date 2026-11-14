@@ -3,7 +3,7 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.27.0
 - Always on: closing My Signet only warns you when something needs it (an app that signs through it, or your children), and names them. Otherwise it closes quietly
 - Where you're known: "Approved on" is replaced by "Signed by" and "Needs My Signet", so you can see which apps keep working with My Signet closed
 - Sign in with Signet: when the identity's key is on your Heartwood, the site now signs straight on your Heartwood by default, so My Signet doesn't have to stay open. You can still choose the other option on the approval screen
