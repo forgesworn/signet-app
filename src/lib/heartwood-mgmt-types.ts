@@ -56,7 +56,18 @@ export interface DeviceStatus {
   masterNpubHex: string;
   version?: string;
   slots?: number;
+  /** `get_status.relays_live`: the relays the device is actually listening on
+   *  (primary first). Absent on a truncated status and for a delegated operator. */
+  relaysLive?: string[];
   truncated: boolean;
+}
+
+/** Parsed `get_network_config` (device operator only). */
+export interface DeviceNetworkConfig {
+  /** `active.relays`: the CONFIGURED, ordered list (first = primary). */
+  relays: string[];
+  /** True while a network trial is live; `active` is then not proof of the current route. */
+  trial: boolean;
 }
 
 /** `get_status.capabilities` entries the app feature-detects on. */

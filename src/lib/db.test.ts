@@ -804,6 +804,82 @@ function makeCredential(overrides: Partial<StoredCredential> & { id: string }): 
   };
 }
 
+describe('swapBunkerUriIfUnchanged (signer-link recovery compare-and-swap)', () => {
+  const KEY = 'test-encryption-key-min-8';
+  const URI_A = 'bunker://' + 'a'.repeat(64) + '?relay=wss%3A%2F%2Fold.example&secret=deadbeef00112233';
+  const URI_B = 'bunker://' + 'a'.repeat(64) + '?relay=wss%3A%2F%2Fnew.example&secret=deadbeef00112233';
+
+  async function rawRecord() {
+    const { openDB } = await import('idb');
+    const raw = await openDB('my-signet');
+    const record = await raw.get('preferences', 'current');
+    raw.close();
+    return record;
+  }
+
+  async function seed(over: Record<string, unknown> = {}) {
+    const db = await freshDb();
+    await db.savePreferences({ id: 'current', theme: 'dark', signingMode: 'bunker', bunkerUri: URI_A, relayUrl: 'wss://x.example', ...over } as never, KEY);
+    const { prefs, rawBunkerUri } = await db.getPreferencesWithRawBunkerUri(KEY);
+    const next = await db.encryptSecret(URI_B, KEY);
+    return { db, prefs, rawBunkerUri: rawBunkerUri!, next };
+  }
+
+  it('reads the raw ciphertext and the decrypted URI from one record', async () => {
+    const { prefs, rawBunkerUri } = await seed();
+    expect(prefs.bunkerUri).toBe(URI_A);
+    expect(rawBunkerUri).not.toBe(URI_A);
+    expect(rawBunkerUri.startsWith('bunker://')).toBe(false);
+    expect((await rawRecord()).bunkerUri).toBe(rawBunkerUri);
+  }, TIMEOUT);
+
+  it('swaps when the stored link is unchanged', async () => {
+    const { db, rawBunkerUri, next } = await seed();
+    expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, next)).toBe(true);
+    expect((await db.getPreferences(KEY)).bunkerUri).toBe(URI_B);
+  }, TIMEOUT);
+
+  it('refuses when the link changed meanwhile (re-pair)', async () => {
+    const { db, rawBunkerUri, next } = await seed();
+    await db.savePreferences({ ...(await db.getPreferences(KEY)), bunkerUri: URI_A.replace('old.example', 'repaired.example') }, KEY);
+    const before = await rawRecord();
+    expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, next)).toBe(false);
+    expect(await rawRecord()).toEqual(before);
+    expect((await db.getPreferences(KEY)).bunkerUri).toContain('repaired.example');
+  }, TIMEOUT);
+
+  it('refuses once signingMode is no longer bunker (Disconnect)', async () => {
+    const { db, rawBunkerUri, next } = await seed();
+    // A KEY-LESS save changes only the mode: the stored ciphertext stays
+    // byte-identical, so the refusal below can only come from the mode check
+    // (a keyed save re-encrypts the link and would refuse on the compare).
+    await db.savePreferences({ ...(await db.getPreferences()), signingMode: 'local' });
+    const before = await rawRecord();
+    expect(before.signingMode).toBe('local');
+    expect(before.bunkerUri).toBe(rawBunkerUri);
+    expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, next)).toBe(false);
+    expect(await rawRecord()).toEqual(before);
+  }, TIMEOUT);
+
+  it('refuses after the link was cleared, and on plaintext or non-string input', async () => {
+    const { db, rawBunkerUri, next } = await seed();
+    expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, URI_B)).toBe(false); // plaintext never written
+    expect((await rawRecord()).bunkerUri).toBe(rawBunkerUri);
+    await db.savePreferences({ ...(await db.getPreferences(KEY)), signingMode: 'local', bunkerUri: undefined });
+    expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, next)).toBe(false);
+  }, TIMEOUT);
+
+  it('leaves every other field byte-identical, including portableSettingsUpdatedAt', async () => {
+    const { db, rawBunkerUri, next } = await seed();
+    const before = await rawRecord();
+    expect(before.portableSettingsUpdatedAt).toBeDefined();
+    expect(await db.swapBunkerUriIfUnchanged(rawBunkerUri, next)).toBe(true);
+    const after = await rawRecord();
+    expect(after.bunkerUri).toBe(next);
+    expect({ ...after, bunkerUri: undefined }).toEqual({ ...before, bunkerUri: undefined });
+  }, TIMEOUT);
+});
+
 describe('Document encryption at rest', () => {
   it('saves encrypted and loads decrypted with correct key', async () => {
     const db = await freshDb();

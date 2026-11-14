@@ -7,6 +7,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 - Always on: closing My Signet only warns you when something needs it (an app that signs through it, or your children), and names them. Otherwise it closes quietly
 - Where you're known: "Approved on" is replaced by "Signed by" and "Needs My Signet", so you can see which apps keep working with My Signet closed
 - Sign in with Signet: when the identity's key is on your Heartwood, the site now signs straight on your Heartwood by default, so My Signet doesn't have to stay open. You can still choose the other option on the approval screen
+- Heartwood: when your Heartwood stops listening on the relays My Signet paired on (for example after you reorder relays in Sapwood), My Signet finds it on your other relays and reconnects by itself, instead of staying "Signer unavailable"
 
 ## 0.26.0
 - Personas: "Add a key from my Heartwood" adds a key that lives on your Heartwood, such as an old nsec imported there, as a persona. My Signet signs as it through the Heartwood and never holds the key

@@ -1686,6 +1686,55 @@ export async function savePreferences(prefs: AppPreferences, encryptionKey?: str
 }
 
 /**
+ * Signer-link recovery, read half: the stored preferences with `bunkerUri`
+ * decrypted (as `getPreferences` does) PLUS the raw stored `bunkerUri`
+ * exactly as it sits on disk, both from ONE read of the record, so the raw
+ * value is the very one `prefs.bunkerUri` was decrypted from.
+ */
+export async function getPreferencesWithRawBunkerUri(
+  encryptionKey: string,
+): Promise<{ prefs: AppPreferences; rawBunkerUri: string | undefined }> {
+  const db = await getDB();
+  const raw = await db.get('preferences', 'current');
+  const prefs: AppPreferences = raw ? { ...raw } : { id: 'current', theme: DEFAULT_THEME };
+  const rawBunkerUri = typeof raw?.bunkerUri === 'string' ? raw.bunkerUri : undefined;
+  if (rawBunkerUri !== undefined && !rawBunkerUri.startsWith('bunker://')) {
+    try {
+      prefs.bunkerUri = await decryptSecret(rawBunkerUri, encryptionKey);
+    } catch {
+      prefs.bunkerUri = undefined;
+    }
+  }
+  return { prefs, rawBunkerUri };
+}
+
+/**
+ * Signer-link recovery, write half: ONE compare-and-swap of the stored
+ * `bunkerUri`. In a single readwrite transaction it re-reads the RAW record
+ * and replaces `bunkerUri` only if it is still exactly `expectedCiphertext`
+ * AND `signingMode` is still `'bunker'` (so a re-pair, a migration or a
+ * Disconnect that landed meanwhile wins). Every other field is carried over
+ * byte-for-byte from the raw record: no decrypt, no
+ * `portableSettingsUpdatedAt` stamp, no revert of a concurrent settings write.
+ * `newCiphertext` must already be encrypted (PBKDF2 can't run inside an IDB
+ * transaction); a plaintext `bunker://` value is refused. True when written.
+ */
+export async function swapBunkerUriIfUnchanged(expectedCiphertext: string, newCiphertext: string): Promise<boolean> {
+  if (typeof expectedCiphertext !== 'string' || typeof newCiphertext !== 'string') return false;
+  if (newCiphertext.startsWith('bunker://')) return false;
+  const db = await getDB();
+  const tx = db.transaction('preferences', 'readwrite');
+  const raw = await tx.store.get('current');
+  if (!raw || raw.bunkerUri !== expectedCiphertext || raw.signingMode !== 'bunker') {
+    await tx.done;
+    return false;
+  }
+  await tx.store.put({ ...raw, bunkerUri: newCiphertext });
+  await tx.done;
+  return true;
+}
+
+/**
  * One-shot migration (M1): move a legacy cleartext `AppPreferences.bunkerUri`
  * (written before this fix shipped) into encrypted storage. No-op if the
  * field is absent or already encrypted (doesn't start with `bunker://`).

@@ -32,9 +32,9 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { v2 as nip44 } from 'nostr-tools/nip44';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { publishEvent, subscribeEvents } from './relay-service';
-import type { DeviceClientSlot, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
+import type { DeviceClientSlot, DeviceNetworkConfig, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
 
-export type { DeviceClientSlot, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
+export type { DeviceClientSlot, DeviceNetworkConfig, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
 export {
   CAP_CLIENT_POLICY_FLAGS,
   CAP_RESOLVE_APPROVAL,
@@ -394,8 +394,8 @@ export class HeartwoodMgmtClient {
 
 /** `get_status` → DeviceStatus. A `truncated: true` minimal status carries
  *  no capabilities array; that reads as UNKNOWN (`null`), not unsupported. */
-export async function getStatus(c: HeartwoodMgmtClient): Promise<DeviceStatus> {
-  const r = await c.request('get_status');
+export async function getStatus(c: HeartwoodMgmtClient, opts?: { timeoutMs?: number }): Promise<DeviceStatus> {
+  const r = await c.request('get_status', {}, opts);
   const truncated = r.truncated === true;
   const masterNpubHex = typeof r.master_npub_hex === 'string' ? r.master_npub_hex.toLowerCase() : '';
   let capabilities: string[] | null;
@@ -410,7 +410,22 @@ export async function getStatus(c: HeartwoodMgmtClient): Promise<DeviceStatus> {
   const status: DeviceStatus = { capabilities, masterNpubHex, truncated };
   if (typeof r.version === 'string') status.version = r.version;
   if (typeof r.slots === 'number' && Number.isFinite(r.slots)) status.slots = r.slots;
+  if (Array.isArray(r.relays_live)) {
+    const live = r.relays_live.filter((x): x is string => typeof x === 'string');
+    if (live.length > 0) status.relaysLive = live;
+  }
   return status;
+}
+
+/** `get_network_config` → the configured relay list and whether a trial is live.
+ *  Device operator only: a delegated operator gets an error reply (thrown). */
+export async function getNetworkConfig(c: HeartwoodMgmtClient, opts?: { timeoutMs?: number }): Promise<DeviceNetworkConfig> {
+  const r = await c.request('get_network_config', {}, opts);
+  const active = isRecord(r.active) ? r.active : null;
+  const relays = active && Array.isArray(active.relays)
+    ? active.relays.filter((x): x is string => typeof x === 'string')
+    : [];
+  return { relays, trial: r.trial !== undefined && r.trial !== null };
 }
 
 /** `null` = unknown (truncated status); otherwise a definite yes/no. */
