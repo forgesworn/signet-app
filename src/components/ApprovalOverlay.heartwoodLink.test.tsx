@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { AuthRequest } from '../lib/qr-router';
+import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY } from '../lib/heartwood-signin-link';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 
 afterEach(cleanup);
@@ -66,5 +67,29 @@ describe('ApprovalOverlay — let it sign on my Heartwood', () => {
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(onApprove).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ApprovalOverlay — straight to my Heartwood needs an update', () => {
+  it('shows a non-interactive line and leaves Approve as it was', () => {
+    const { onApprove, onOpenFullPicker } = renderOverlay({ heartwoodNeedsUpdate: true });
+    expect(screen.getByTestId('overlay-straight-needs-update').textContent).toBe(SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY);
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    expect(onOpenFullPicker).not.toHaveBeenCalled();
+  });
+
+  it('is hidden when the link is offered', () => {
+    renderOverlay({ heartwoodNeedsUpdate: true, heartwoodLinkOffered: true, heartwoodByDefault: false });
+    expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
+  });
+
+  it('is hidden when the prop is false or absent', () => {
+    renderOverlay({ heartwoodNeedsUpdate: false });
+    expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
+    cleanup();
+    renderOverlay();
+    expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
   });
 });

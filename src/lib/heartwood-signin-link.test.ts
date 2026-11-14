@@ -33,11 +33,14 @@ import {
   runSignInLinkApproval,
   signInHolderError,
   signInLinkLabel,
+  signInLinkNeedsUpdate,
   signInLinkOffered,
   signInLinkPolicy,
   signInLinkSupported,
   signInLinkByDefault,
   signInLinkUnverifiedOriginCopy,
+  SIGN_IN_LINK_NEEDS_UPDATE_COPY,
+  SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY,
   type SignInLinkEligibility,
   type SignInLinkIo,
 } from './heartwood-signin-link';
@@ -72,6 +75,36 @@ describe('signInLinkOffered', () => {
     ['a request with nowhere to put a link', { requestCanCarryLink: false }],
   ])('is not offered: %s', (_name, over) => {
     expect(signInLinkOffered({ ...eligible, ...over })).toBe(false);
+  });
+});
+
+describe('signInLinkNeedsUpdate', () => {
+  const noOperator = { ...eligible, hasOperatorClient: false };
+  it('is true when only the operator key is missing and the signer is a Heartwood', () => {
+    expect(signInLinkNeedsUpdate(noOperator, true)).toBe(true);
+  });
+  it('is false when an operator key is held (the option is offered instead)', () => {
+    expect(signInLinkNeedsUpdate(eligible, true)).toBe(false);
+  });
+  it('is false when the signer is not a Heartwood', () => {
+    expect(signInLinkNeedsUpdate(noOperator, false)).toBe(false);
+  });
+  it.each([
+    ['not bunker mode', { signingMode: 'local' }],
+    ['paired child', { isPairedChild: true }],
+    ['child direct', { childDirect: true }],
+    ['a dependant is active', { hasActiveDependant: true }],
+    ['a dependant is picked', { selectionSource: 'dependant' as const }],
+    ['imported persona', { importedPersona: true }],
+    ['combined app-permission sign-in', { combinedPermission: true }],
+    ['the real identity', { selectionKeypairType: 'natural-person' }],
+    ['a request with nowhere to put a link', { requestCanCarryLink: false }],
+  ])('is false: %s', (_name, over) => {
+    expect(signInLinkNeedsUpdate({ ...noOperator, ...over }, true)).toBe(false);
+  });
+  it('carries the agreed copy', () => {
+    expect(SIGN_IN_LINK_NEEDS_UPDATE_COPY).toBe('Your Heartwood needs a software update for this.');
+    expect(SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY).toBe('Straight to my Heartwood needs a software update on your Heartwood.');
   });
 });
 

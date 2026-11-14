@@ -19,7 +19,7 @@ import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmS
 import { SignInOnlinePlay } from '../components/SignInOnlinePlay';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 import { handoffWarning } from '../lib/heartwood-handoff';
-import { signInLinkUnverifiedOriginCopy, signInRequestCanCarryLink, signInRequestIsRelay, type SignInRequestShape } from '../lib/heartwood-signin-link';
+import { SIGN_IN_LINK_NEEDS_UPDATE_COPY, signInLinkUnverifiedOriginCopy, signInRequestCanCarryLink, signInRequestIsRelay, type SignInRequestShape } from '../lib/heartwood-signin-link';
 
 /**
  * Resolve the display name for SharePreview. Returns `'(anonymous)'` when a
@@ -99,6 +99,12 @@ interface Props {
    * online-play sign-in.
    */
   canSignOnHeartwood?: (pubkey: string, keypairType: string) => boolean;
+  /**
+   * True where "Straight to my Heartwood" would be offered except that this
+   * phone holds no operator key for the Heartwood. The option is then shown
+   * greyed out with the reason, never honoured.
+   */
+  heartwoodNeedsUpdate?: (pubkey: string, keypairType: string) => boolean;
   /**
    * Whether "Straight to my Heartwood" is pre-selected where it is offered
    * (false when the one managed Heartwood definitely can't mint the link).
@@ -217,6 +223,7 @@ export function ApproveAuth({
   onActivateRealIdentity,
   onApprove,
   canSignOnHeartwood,
+  heartwoodNeedsUpdate,
   heartwoodByDefault = true,
   bunkerServerOn = false,
   appPermission,
@@ -394,6 +401,11 @@ export function ApproveAuth({
     ? resolveSelectedPubkey(selection, identity, dependants) : null;
   const heartwoodOffered = !appPermission && signInRequestCanCarryLink(requestShape)
     && !!selectedGuardianPubkey && !!selection && !!canSignOnHeartwood?.(selectedGuardianPubkey, selection.keypairType);
+  // Shown greyed out, never honoured: only the operator key is missing.
+  const heartwoodShownDisabled = !heartwoodOffered && !appPermission && signInRequestCanCarryLink(requestShape)
+    && !!selectedGuardianPubkey && !!selection && !!heartwoodNeedsUpdate?.(selectedGuardianPubkey, selection.keypairType);
+  // What the radios display: a greyed-out Straight is never the checked one, whatever the default says.
+  const shownChoice = heartwoodOffered ? effectiveSignChoice : 'other';
   // A relay or QR request names its own origin and nothing proves it; a redirect callback is held to the origin.
   const relayRequest = signInRequestIsRelay(requestShape);
   // The in-page Bunker only answers for a relay request: the redirect path never uses it.
@@ -904,28 +916,35 @@ export function ApproveAuth({
         })()}
       </div>
 
-      {heartwoodOffered && (
+      {(heartwoodOffered || heartwoodShownDisabled) && (
         <div className="card section" role="radiogroup" aria-label={`How ${originDisplay} signs`}>
           <div className="section-title">How {originDisplay} signs</div>
           <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
             <input
               type="radio"
               name="sign-in-sign-mode"
-              checked={effectiveSignChoice === 'heartwood'}
-              disabled={approving}
+              checked={shownChoice === 'heartwood'}
+              disabled={approving || heartwoodShownDisabled}
               onChange={() => setSignChoice('heartwood')}
             />
             <span>
               Straight to my Heartwood
-              <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                {originDisplay} signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
-              </span>
-              {relayRequest && (
+              {heartwoodShownDisabled && (
+                <span data-testid="sign-in-straight-needs-update" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {SIGN_IN_LINK_NEEDS_UPDATE_COPY}
+                </span>
+              )}
+              {heartwoodOffered && (
+                <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {originDisplay} signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
+                </span>
+              )}
+              {heartwoodOffered && relayRequest && (
                 <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>
                   {signInLinkUnverifiedOriginCopy(originDisplay)}
                 </span>
               )}
-              {effectiveSignChoice === 'heartwood' && (
+              {heartwoodOffered && shownChoice === 'heartwood' && (
                 <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
                   {handoffWarning({ kind: 'wide', covers: 'everything' })}
                 </span>
@@ -936,7 +955,7 @@ export function ApproveAuth({
             <input
               type="radio"
               name="sign-in-sign-mode"
-              checked={effectiveSignChoice === 'other'}
+              checked={shownChoice === 'other'}
               disabled={approving}
               onChange={() => setSignChoice('other')}
             />

@@ -57,6 +57,11 @@ export class SignInLinkUnmanagedError extends HeartwoodCopyError {
   }
 }
 
+/** Under the greyed-out Straight option: everything for it holds except this phone has no operator key for the Heartwood. */
+export const SIGN_IN_LINK_NEEDS_UPDATE_COPY = 'Your Heartwood needs a software update for this.';
+/** The same, as one line under the approval overlay. */
+export const SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY = 'Straight to my Heartwood needs a software update on your Heartwood.';
+
 export const SIGN_IN_LINK_NOT_OFFERED_COPY = "Straight to my Heartwood isn't available for this identity. Choose the other option.";
 export const SIGN_IN_LINK_MISMATCH_COPY = "Your Heartwood answered with a link this phone didn't ask for, so it wasn't used. Try again, or choose the other option.";
 export const SIGN_IN_LINK_MISMATCH_KEPT_COPY = "Your Heartwood answered with a link this phone didn't ask for, and didn't confirm removing it. It's in Where you're known, where you can disconnect it, or remove it in Sapwood.";
@@ -111,6 +116,11 @@ export function signInLinkOffered(i: SignInLinkEligibility): boolean {
     && !i.combinedPermission
     && i.selectionKeypairType !== 'natural-person'
     && i.requestCanCarryLink;
+}
+
+/** Shown greyed out rather than hidden: everything for the offer holds except an operator key, and the signer is a Heartwood. */
+export function signInLinkNeedsUpdate(i: SignInLinkEligibility, heartwoodSigner: boolean): boolean {
+  return heartwoodSigner && !i.hasOperatorClient && signInLinkOffered({ ...i, hasOperatorClient: true });
 }
 
 /** The device can mint this only if it has not definitely said otherwise (a truncated status is unverified: try). */

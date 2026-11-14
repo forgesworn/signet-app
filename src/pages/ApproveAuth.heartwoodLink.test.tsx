@@ -6,7 +6,7 @@ import type { SignetIdentity } from '../types';
 import type { AuthRequest } from '../lib/qr-router';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 import { handoffWarning } from '../lib/heartwood-handoff';
-import { signInLinkUnverifiedOriginCopy } from '../lib/heartwood-signin-link';
+import { signInLinkUnverifiedOriginCopy, SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
 
 /**
  * "How {site} signs": the straight-to-Heartwood choice is offered only when the
@@ -279,5 +279,61 @@ describe('ApproveAuth — straight to my Heartwood: where the request came from'
   it('does not say it on a redirect request, where the callback is held to the origin', () => {
     renderPage({ request: redirectRequest, canSignOnHeartwood: () => true });
     expect(screen.queryByText(/can't confirm this request came from/)).toBeNull();
+  });
+});
+
+describe('ApproveAuth — straight to my Heartwood shown greyed out (no operator key)', () => {
+  it('shows only the reason, with Straight disabled and unchecked and the other option checked', () => {
+    const needs = vi.fn(() => true);
+    renderPage({ heartwoodNeedsUpdate: needs });
+    expect(needs).toHaveBeenCalledWith(PERSONA, 'persona');
+    expect(screen.getByRole('radiogroup', { name: 'How kithmoot.com signs' })).toBeTruthy();
+    const straight = screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement;
+    const second = screen.getByLabelText(/Sign in only/) as HTMLInputElement;
+    expect(straight.disabled).toBe(true);
+    expect(straight.checked).toBe(false);
+    expect(second.checked).toBe(true);
+    expect(screen.getByTestId('sign-in-straight-needs-update').textContent).toBe(SIGN_IN_LINK_NEEDS_UPDATE_COPY);
+    expect(screen.queryByText(WARNING)).toBeNull();
+    expect(screen.queryByText(/signs with your Heartwood directly/)).toBeNull();
+  });
+
+  it('shows no unverified-origin note on a relay request', () => {
+    renderPage({ request: relayRequest, heartwoodNeedsUpdate: () => true });
+    expect(screen.getByTestId('sign-in-straight-needs-update')).toBeTruthy();
+    expect(screen.queryByText(/can't confirm this request came from/)).toBeNull();
+  });
+
+  it('approving never signs on the Heartwood, even with the default on', async () => {
+    const onApprove = renderPage({ heartwoodNeedsUpdate: () => true, heartwoodByDefault: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
+    expect(onApprove.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('clicking the disabled Straight changes nothing', () => {
+    renderPage({ heartwoodNeedsUpdate: () => true });
+    fireEvent.click(screen.getByLabelText(/Straight to my Heartwood/));
+    expect((screen.getByLabelText(/Sign in only/) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('shows no group when the app says it does not need an update', () => {
+    renderPage({ heartwoodNeedsUpdate: () => false });
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+  });
+
+  it('shows no group on a request that cannot carry a link, or on the combined online-play sign-in', () => {
+    renderPage({ request: bareRequest, heartwoodNeedsUpdate: () => true });
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    cleanup();
+    const appPermission = { v: 1, permission: 'online-play' } as unknown as SignInAppPermission;
+    renderPage({ heartwoodNeedsUpdate: () => true, appPermission });
+    expect(screen.queryByRole('radiogroup', { name: /signs/ })).toBeNull();
+  });
+
+  it('when the offer holds, the offered layout wins over the greyed-out one', () => {
+    renderPage({ canSignOnHeartwood: () => true, heartwoodNeedsUpdate: () => true });
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByTestId('sign-in-straight-needs-update')).toBeNull();
   });
 });

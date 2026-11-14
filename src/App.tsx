@@ -313,10 +313,12 @@ import {
   runSignInLinkApproval,
   settleSignInLink,
   signInLinkLabel,
+  signInLinkNeedsUpdate,
   signInLinkOffered,
   signInLinkSupported,
   signInLinkByDefault,
   signInRequestCanCarryLink,
+  type SignInLinkEligibility,
   type SignInLinkIo,
 } from './lib/heartwood-signin-link';
 import { useExtraHeartwoodOperators } from './hooks/useExtraHeartwoodOperators';
@@ -4684,14 +4686,14 @@ function AppContent() {
       },
     };
   }, [changeSignInLinks, revokeSignInLinkOnDevice]);
-  /** Whether "Straight to my Heartwood" can be offered, or honoured, for this identity on this request. */
-  const signInLinkOfferedFor = useCallback((
+  /** The eligibility of "Straight to my Heartwood" for this identity on this request. */
+  const signInLinkEligibilityFor = useCallback((
     pubkey: string,
     selectionSource: 'guardian' | 'dependant' | undefined,
     selectionKeypairType: string | undefined,
     combinedPermission: boolean,
     request: { relay?: string; sessionPubkey?: string; callbackUrl?: string },
-  ): boolean => signInLinkOffered({
+  ): SignInLinkEligibility => ({
     signingMode: preferences.signingMode,
     isPairedChild: preferences.signingMode === 'paired-child',
     childDirect,
@@ -4703,6 +4705,22 @@ function AppContent() {
     selectionKeypairType,
     requestCanCarryLink: signInRequestCanCarryLink(request),
   }), [preferences.signingMode, childDirect, activeDependant, identity, handoffClients.length]);
+  /** Whether "Straight to my Heartwood" can be offered, or honoured, for this identity on this request. */
+  const signInLinkOfferedFor = useCallback((
+    pubkey: string,
+    selectionSource: 'guardian' | 'dependant' | undefined,
+    selectionKeypairType: string | undefined,
+    combinedPermission: boolean,
+    request: { relay?: string; sessionPubkey?: string; callbackUrl?: string },
+  ): boolean => signInLinkOffered(signInLinkEligibilityFor(pubkey, selectionSource, selectionKeypairType, combinedPermission, request)), [signInLinkEligibilityFor]);
+  /** Whether it is shown greyed out instead: only the operator key is missing and the signer is a Heartwood. Never honoured. */
+  const signInLinkNeedsUpdateFor = useCallback((
+    pubkey: string,
+    selectionSource: 'guardian' | 'dependant' | undefined,
+    selectionKeypairType: string | undefined,
+    combinedPermission: boolean,
+    request: { relay?: string; sessionPubkey?: string; callbackUrl?: string },
+  ): boolean => signInLinkNeedsUpdate(signInLinkEligibilityFor(pubkey, selectionSource, selectionKeypairType, combinedPermission, request), bunkerRouter !== null), [signInLinkEligibilityFor, bunkerRouter]);
   /** "Straight to my Heartwood" is the pre-selected sign-in choice wherever it is offered. */
   const signInLinkDefault = signInLinkByDefault(handoffClients.length, heartwoodOperator.status);
   /** The sign-in links of one place (one site, one identity), stored order. */
@@ -14104,6 +14122,7 @@ function AppContent() {
       // Straight to my Heartwood: offered, and pre-selected, where the owner's own identity is held by a
       // Heartwood this phone manages. The combined online-play sign-in keeps its own answer.
       canSignOnHeartwood: (pk: string, keypairType: string) => signInLinkOfferedFor(pk, 'guardian', keypairType, false, pendingAuthRequest),
+      heartwoodNeedsUpdate: (pk: string, keypairType: string) => signInLinkNeedsUpdateFor(pk, 'guardian', keypairType, false, pendingAuthRequest),
       heartwoodByDefault: signInLinkDefault,
       bunkerServerOn: bunkerServerEnabled,
       onDeny: handleDenyAuth,
@@ -14236,6 +14255,9 @@ function AppContent() {
           onUserChoice={(selection) => setConnectPickerChoice({ key: connectRequestKey, selection })}
           waitingGuardianPubkeys={waitingGuardianPubkeys}
           canHandOffToHeartwood={preferences.signingMode === 'bunker' && handoffClients.length > 0 && !activeDependant
+            ? (pk) => !isImportedGuardianPersona(identity, pk)
+            : undefined}
+          heartwoodNeedsUpdate={preferences.signingMode === 'bunker' && handoffClients.length === 0 && !activeDependant && bunkerRouter !== null
             ? (pk) => !isImportedGuardianPersona(identity, pk)
             : undefined}
         />
@@ -15517,6 +15539,15 @@ function AppContent() {
               heartwoodLinkOffered={!overlayIdentity.isDependant
                 && !!overlayIdentity.publicKey
                 && signInLinkOfferedFor(
+                  overlayIdentity.publicKey,
+                  pendingAuthSelection?.source ?? 'guardian',
+                  pendingAuthSelection?.keypairType ?? (overlayIdentity.type === 'Natural Person' ? 'natural-person' : 'persona'),
+                  !!signInAppPermissionsRef.current.get(pendingAuthRequest),
+                  pendingAuthRequest,
+                )}
+              heartwoodNeedsUpdate={!overlayIdentity.isDependant
+                && !!overlayIdentity.publicKey
+                && signInLinkNeedsUpdateFor(
                   overlayIdentity.publicKey,
                   pendingAuthSelection?.source ?? 'guardian',
                   pendingAuthSelection?.keypairType ?? (overlayIdentity.type === 'Natural Person' ? 'natural-person' : 'persona'),
