@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { createIdentityAndUnlock } from './fixtures';
 import { privateRelays } from './helpers/private-relays';
-import QRCode from 'qrcode';
+import { encode } from '@forgesworn/qr';
 import jsQR from 'jsqr';
 
 async function camera(context: Parameters<ReturnType<typeof privateRelays>['install']>[0]) {
@@ -64,7 +64,7 @@ async function readAllQRs(page: Page) {
   return images;
 }
 async function showFrames(page: Page, qrs: Awaited<ReturnType<typeof readAllQRs>>, second = false) {
-  const extra = QRCode.create('UNRELATED', { errorCorrectionLevel: 'M' });
+  const extra = encode('UNRELATED', { ecc: 'M' });
   await page.evaluate(({ qrs, extra }) => {
     const frame = (window as any).__cameraFrame as HTMLCanvasElement;
     const ctx = frame.getContext('2d')!;
@@ -82,7 +82,7 @@ async function showFrames(page: Page, qrs: Awaited<ReturnType<typeof readAllQRs>
     };
     let index = 0; draw(qrs[index]);
     if (qrs.length > 1) (window as any).__cameraPlayback = setInterval(() => { index = (index + 1) % qrs.length; draw(qrs[index]); }, 500);
-  }, { qrs, extra: second ? { size: extra.modules.size, data: Array.from(extra.modules.data) } : null });
+  }, { qrs, extra: second ? { size: extra.size, data: Array.from(extra.modules) } : null });
 }
 test('two real QR camera reads recover closed relays, auto-seal one signed exchange and save them as Kith', async ({ page, context, browser }) => {
   test.setTimeout(180000);

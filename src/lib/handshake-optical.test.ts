@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import QRCode from 'qrcode';
+import { encode } from '@forgesworn/qr';
 import jsQR from 'jsqr';
 import { createHandshakeFrameReader, decodeBase45, encodeBase45, handshakeFrames } from './handshake-optical';
 import { readSessionQR, sessionQR } from './handshake-reveal';
@@ -23,7 +23,7 @@ describe('base45', () => {
   it('keeps a session code coarse', () => {
     const code = sessionQR(card)!;
     expect(handshakeFrames(code)).toEqual([code]);
-    expect(QRCode.create(code, { errorCorrectionLevel: 'M' }).modules.size).toBeLessThanOrEqual(41);
+    expect(encode(code, { ecc: 'M' }).size).toBeLessThanOrEqual(41);
   });
 });
 describe('rotating coarse frames', () => {
@@ -32,7 +32,7 @@ describe('rotating coarse frames', () => {
     expect(frames.length).toBeGreaterThan(1);
     let restored: string | null = null;
     for (const frame of frames) {
-      expect(QRCode.create(frame).modules.size).toBeLessThanOrEqual(37);
+      expect(encode(frame, { ecc: 'M' }).size).toBeLessThanOrEqual(37);
       restored = read(frame, 0);
     }
     expect(restored).toBe(payload);
@@ -41,7 +41,7 @@ describe('rotating coarse frames', () => {
   it('assembles out of order with duplicates, verifying the full digest and retaining every relay', () => {
     const compact = sessionQR(large)!, frames = handshakeFrames(compact, true), read = createHandshakeFrameReader();
     expect(frames.length).toBeGreaterThan(1);
-    for (const frame of frames) expect(QRCode.create(frame).modules.size).toBeLessThanOrEqual(41);
+    for (const frame of frames) expect(encode(frame, { ecc: 'M' }).size).toBeLessThanOrEqual(41);
     const reversed = [...frames].reverse();
     expect(read(reversed[0], 0)).toBeNull(); expect(read(reversed[0], 1)).toBeNull();
     for (const frame of reversed.slice(1, -1)) expect(read(frame, 2)).toBeNull();
@@ -52,11 +52,11 @@ describe('rotating coarse frames', () => {
     const payload = sessionQR(large)!, read = createHandshakeFrameReader();
     let result: string | null = null;
     for (const frame of handshakeFrames(payload, true)) {
-      const qr = QRCode.create(frame).modules, size = (qr.size + 8) * 4;
+      const qr = encode(frame, { ecc: 'M' }), size = (qr.size + 8) * 4;
       const pixels = new Uint8ClampedArray(size * size * 4).fill(255);
       for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
         const mx = Math.floor(x / 4) - 4, my = Math.floor(y / 4) - 4;
-        if (mx >= 0 && my >= 0 && mx < qr.size && my < qr.size && qr.data[my * qr.size + mx]) {
+        if (mx >= 0 && my >= 0 && mx < qr.size && my < qr.size && qr.modules[my * qr.size + mx]) {
           const offset = (y * size + x) * 4; pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = 0;
         }
       }

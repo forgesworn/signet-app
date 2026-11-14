@@ -1,17 +1,17 @@
 // @vitest-environment node
 // Real-decoder check: the bundled zxing wasm reads a QR rendered from the
-// `qrcode` library, including an inverted one, and reports where it is.
+// `@forgesworn/qr` encoder, including an inverted one, and reports where it is.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
-import QRCode from 'qrcode';
+import { encode } from '@forgesworn/qr';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { QrFrame, ZxingRead } from './qr-decode-core';
 
 const require = createRequire(import.meta.url);
 
 function render(text: string, scale: number, invert: boolean): QrFrame {
-  const qr = QRCode.create(text, { errorCorrectionLevel: 'M' });
-  const n = qr.modules.size;
+  const qr = encode(text, { ecc: 'M' });
+  const n = qr.size;
   const quiet = 4;
   const side = (n + quiet * 2) * scale;
   const data = new Uint8ClampedArray(side * side * 4);
@@ -19,7 +19,7 @@ function render(text: string, scale: number, invert: boolean): QrFrame {
     for (let x = 0; x < side; x++) {
       const mx = Math.floor(x / scale) - quiet;
       const my = Math.floor(y / scale) - quiet;
-      const dark = mx >= 0 && my >= 0 && mx < n && my < n && qr.modules.get(my, mx) === 1;
+      const dark = mx >= 0 && my >= 0 && mx < n && my < n && qr.modules[my * n + mx] === 1;
       const v = dark !== invert ? 0 : 255;
       const i = (y * side + x) * 4;
       data[i] = data[i + 1] = data[i + 2] = v;
