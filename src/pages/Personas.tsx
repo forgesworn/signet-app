@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { HeartwoodKeyPersonaAdd } from '../components/HeartwoodKeyPersonaAdd';
+import { WrappedKeyRestore } from '../components/WrappedKeyBackup';
 import type { SignetIdentity, AppPreferences } from '../types';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
@@ -16,6 +17,7 @@ import type { FollowsHandlers } from '../lib/follows-import-flow';
    different host surface. */
 
 interface Props {
+  wrappedRestore?: React.ComponentProps<typeof WrappedKeyRestore>;
   identity: SignetIdentity;
   /**
    * Kept on the prop interface for Phase 2 transitional compatibility — the
@@ -94,6 +96,7 @@ type EditTarget = 'natural-person' | 'persona' | string;
  * ones, and import an existing Nostr account.
  */
 export function Personas({
+  wrappedRestore,
   identity,
   onAddPersona,
   onUpdateName,
@@ -466,6 +469,8 @@ export function Personas({
       <div className="block" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 12 }}>
         Each identity has its own public address (npub). Open an identity to use its card, or manage its profile, backup and visibility.
       </div>
+
+      {wrappedRestore && !pairedChildView && <WrappedKeyRestore {...wrappedRestore} />}
 
       {/* Always rendered: `resolveRealIdentityRow` covers the no-key (nsec
           import) shape itself, with copy that says why activation is absent,

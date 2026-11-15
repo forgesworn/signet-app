@@ -1,4 +1,5 @@
 import { decideChildRequest } from './lib/child-gate';
+import { createWrappedPersonaBackup, restoreWrappedPersonaBackup, verifyWrappedPersonaBackup } from './lib/wrapped-persona-backup';
 import { childRuleId } from './lib/child-rules';
 import { ContactHandshake } from './pages/ContactHandshake';
 import { handshakeDirect } from './lib/handshake-nearby';
@@ -967,6 +968,20 @@ function AppContent() {
   // PWA update refs (avoid stale closures in effects)
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
+  // Owner-only recovery operations recheck identity/unlock after each await.
+  async function authenticateWrappedBackup() {
+    const ownerId = identityRef.current?.id;
+    const key = await requestFreshAuth({purpose: 'reveal-recovery-words', scope: 'key'});
+    const owner = identityRef.current;
+    if (!key || encryptionKeyRef.current !== key || !owner || owner.id !== ownerId || !owner.mnemonic || owner.isChild) {
+      throw new Error('Unlock the owner Signet with local recovery words first.');
+    }
+    return {owner, key, checkCurrent: () => {
+      if (encryptionKeyRef.current !== key || identityRef.current?.id !== owner.id || identityRef.current?.mnemonic !== owner.mnemonic) {
+        throw new Error('Signet changed or locked during backup.');
+      }
+    }};
+  }
   if (!encryptionKey) phoneAppsLockPendingRef.current = false;
   const needRefreshRef = useRef(needRefresh);
   needRefreshRef.current = needRefresh;
@@ -12442,6 +12457,22 @@ function AppContent() {
               publicProfileSeed: { config: seed.config, state: seed.state, base: seed.base },
             } : undefined);
           }}
+          wrappedRestore={!isPairedChild && (preferences.signingMode ?? 'local') === 'local' && identity?.mnemonic ? {
+            onInspect: async record => {
+              const session = await authenticateWrappedBackup();
+              const restored = await restoreWrappedPersonaBackup(session.owner, record);
+              try { session.checkCurrent(); return restored.npub; }
+              finally { restored.privateKey.fill(0); }
+            },
+            onRestore: async (record, displayName, expectedNpub) => {
+              const session = await authenticateWrappedBackup();
+              const restored = await restoreWrappedPersonaBackup(session.owner, record, expectedNpub);
+              try {
+                session.checkCurrent();
+                return await addImportedPersona(restored.privateKey, displayName, session.key, {assertAuthorised: session.checkCurrent});
+              } finally { restored.privateKey.fill(0); }
+            },
+          } : undefined}
           onLookupExistingProfile={isPairedChild ? undefined : (pubkey) => fetchExistingProfile(pubkey, syncRelays.read)}
           onAddHeartwoodKey={!isPairedChild && preferences.signingMode === 'bunker' && bunkerRouter ? async (uri, displayName) => {
             const router = bunkerRouter;
@@ -13042,6 +13073,20 @@ function AppContent() {
           navigateBack();
         }}
         onShowImportedNsec={undefined /* no in-app reveal UI today; tracked for follow-up */}
+        onCreateWrappedBackup={!isPairedChild && !depPubkey && (preferences.signingMode ?? 'local') === 'local' && identity?.mnemonic ? async pubkey => {
+          const session = await authenticateWrappedBackup();
+          const slot = session.owner.extraPersonas?.find(p => p.publicKey === pubkey && p.imported);
+          if (!slot) throw new Error('Imported account not found.');
+          const record = await createWrappedPersonaBackup(session.owner, slot);
+          session.checkCurrent();
+          return record;
+        } : undefined}
+        onVerifyWrappedBackup={!isPairedChild && !depPubkey && (preferences.signingMode ?? 'local') === 'local' && identity?.mnemonic ? async (pubkey, record) => {
+          const session = await authenticateWrappedBackup();
+          const npub = await verifyWrappedPersonaBackup(session.owner, pubkey, record);
+          session.checkCurrent();
+          return npub;
+        } : undefined}
         // An imported extra persona's own raw-nsec recovery words (§W1). Fresh
         // auth first; the words are derived only after it, from the key held
         // on this device, and never on a paired-child install.

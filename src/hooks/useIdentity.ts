@@ -573,10 +573,12 @@ export function useIdentity(encryptionKey?: string | null) {
    * mnemonic restore; the user must back up the nsec separately).
    */
   const addImportedPersona = useCallback(async (
-    nsec: string,
+    nsec: string | Uint8Array,
     displayName: string,
     overrideEncryptionKey?: string,
     opts?: {
+      /** Recovery callers recheck owner/unlock immediately before persistence. */
+      assertAuthorised?: () => void;
       publicProfileSeed?: {
         config: import('../types').PublicProfileConfig;
         state: import('../types').PersonaPublicProfile;
@@ -592,7 +594,7 @@ export function useIdentity(encryptionKey?: string | null) {
     // Decode nsec → pubkey before touching IDB so we can collision-check.
     const { decodeNsec: dec, getPublicKey: gpk } = await import('../lib/signet');
     const { bytesToHex: btoh } = await import('@noble/hashes/utils.js');
-    const skBytes = dec(nsec);
+    const skBytes = typeof nsec === 'string' ? dec(nsec) : new Uint8Array(nsec);
     const privateKey = btoh(skBytes);
     skBytes.fill(0);
     const publicKey = gpk(privateKey);
@@ -638,6 +640,7 @@ export function useIdentity(encryptionKey?: string | null) {
       ...decrypted,
       extraPersonas: [...(decrypted.extraPersonas ?? []), newPersona],
     };
+    opts?.assertAuthorised?.();
     await db.saveIdentityEncrypted(updated, key);
     await loadAll();
     return { added: true, pubkey: publicKey };
