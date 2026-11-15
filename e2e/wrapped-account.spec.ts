@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { fromMnemonic } from 'nsec-tree';
+import { fromNsec } from 'nsec-tree/core';
 import { wrapNsec, unwrapNsec } from 'nsec-tree/wrapped';
 import { getPublicKey } from 'nostr-tools/pure';
 import { npubEncode } from 'nostr-tools/nip19';
@@ -19,6 +20,21 @@ test('restore an encrypted account, confirm its npub, export and check the saved
     const record = await wrapNsec(root, raw);
     await restoreIdentityAndUnlock(page, {name: 'Owner'});
     await navigateViaHarness(page, 'settings-personas');
+    const wrongRoot = fromNsec(new Uint8Array(32).fill(0x33));
+    let foreignRecord: string;
+    try { foreignRecord = await wrapNsec(wrongRoot, raw); }
+    finally { wrongRoot.destroy(); }
+    const damaged = Buffer.from(record.slice(6), 'base64url');
+    damaged[55] ^= 1;
+    for (const rejectedRecord of [foreignRecord, 'nstw1:' + damaged.toString('base64url')]) {
+      await page.getByLabel('Encrypted backup file', {exact: true}).setInputFiles({
+        name: 'rejected.nstw', mimeType: 'text/plain', buffer: Buffer.from(rejectedRecord),
+      });
+      await page.getByRole('button', {name: 'Check backup file', exact: true}).click();
+      await unlockWithPin(page);
+      await expect(page.getByRole('alert')).toHaveText(/could not be opened/);
+      await expect(page.getByRole('button', {name: 'Restore this account', exact: true})).toHaveCount(0);
+    }
     await page.getByLabel('Encrypted backup file', {exact: true}).setInputFiles({
       name: 'account.nstw', mimeType: 'text/plain', buffer: Buffer.from(record),
     });

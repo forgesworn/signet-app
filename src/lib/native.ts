@@ -14,6 +14,8 @@ export function isNativeApp(): boolean {
 }
 
 export interface SignetNativePlugin {
+  /** Owner-selected new document; contains only the encrypted wrapped-account record. */
+  saveWrappedBackup(opts: {record: string}): Promise<{saved: boolean}>;
   handshakeAwake(opts: { active: boolean }): Promise<void>;
   handshakeHaptic(opts: { beat: 'tick' | 'double' | 'thud' }): Promise<void>;
   /**

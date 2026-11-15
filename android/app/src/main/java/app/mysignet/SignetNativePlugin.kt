@@ -1,6 +1,7 @@
 package app.mysignet
 
 import android.Manifest
+import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
@@ -56,6 +57,46 @@ import javax.crypto.spec.GCMParameterSpec
     ]
 )
 class SignetNativePlugin : Plugin() {
+
+    private val savingWrappedBackup = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Save only a new, owner-selected encrypted file, with no storage permission or plaintext key. */
+    @PluginMethod
+    fun saveWrappedBackup(call: PluginCall) {
+        val record = call.getString("record")
+        if (record == null || !WrappedBackupDocument.validRecord(record)) {
+            call.reject("Invalid encrypted backup file"); return
+        }
+        if (!savingWrappedBackup.compareAndSet(false, true)) {
+            call.reject("A backup save is already open"); return
+        }
+        try {
+            startActivityForResult(call, WrappedBackupDocument.createIntent(), "saveWrappedBackupResult")
+        } catch (_: Exception) {
+            savingWrappedBackup.set(false)
+            call.reject("Cannot open the backup file picker")
+        }
+    }
+
+    @ActivityCallback
+    fun saveWrappedBackupResult(call: PluginCall?, result: ActivityResult) {
+        if (call == null) { savingWrappedBackup.set(false); return }
+        if (result.resultCode != Activity.RESULT_OK) {
+            savingWrappedBackup.set(false)
+            call.resolve(JSObject().put("saved", false)); return
+        }
+        // A document provider may be slow: keep its I/O off the activity thread.
+        bridge.execute {
+            try {
+                val uri = result.data?.data ?: throw java.io.IOException("No document destination")
+                val record = call.getString("record") ?: throw java.io.IOException("No encrypted record")
+                WrappedBackupDocument.write(context.contentResolver, uri, record)
+                call.resolve(JSObject().put("saved", true))
+            } catch (_: Exception) {
+                call.reject("Could not save and check the encrypted backup file")
+            } finally { savingWrappedBackup.set(false) }
+        }
+    }
 
     companion object {
         private const val KEY_ALIAS = "signet-biometric-unlock"

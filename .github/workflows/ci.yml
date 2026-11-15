@@ -52,6 +52,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install Chromium for wrapped-account recovery
+        run: npx playwright install --with-deps chromium
+
+      - name: Wrapped-account restore and backup browser regression
+        run: npx playwright test --project=mobile-chromium --workers=1 --reporter=line e2e/wrapped-account.spec.ts
+
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin

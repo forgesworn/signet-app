@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import {saveWrappedBackupFile} from '../lib/wrapped-backup-file';
 
 async function readRecord(file: File): Promise<string> {
   if (file.size > 1024) throw new Error('Backup file is too large.');
@@ -20,13 +21,7 @@ export function WrappedKeyExport({onCreate, onVerify}: {
     try {
       const record = await onCreate();
       if (!record) return;
-      const url = URL.createObjectURL(new Blob([record], {type: 'text/plain'}));
-      try {
-        const link = document.createElement('a');
-        link.href = url; link.download = 'imported-account.nstw';
-        document.body.appendChild(link);
-        try { link.click(); } finally { link.remove(); }
-      } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+      if (!await saveWrappedBackupFile(record)) return;
       setNote('Choose the saved file below to check it. Keep the file and your Signet recovery words.');
     } catch { setError('Could not create the encrypted backup. Unlock your Signet and try again.'); }
     finally { setBusy(false); }

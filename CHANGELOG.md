@@ -7,6 +7,10 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 - Sign in with Signet and Nostr Connect: "Straight to my Heartwood" now shows greyed out with the reason when your Heartwood can't take it yet, instead of being hidden
 
+## 0.28.0
+
+- Imported accounts: preview an encrypted backup file that restores the same account with your Signet recovery words. Download and check the saved file in Manage identity, or check and confirm a restore in Identities. Keep the account's separate backup while this feature is in preview.
+
 ## 0.27.0
 - Always on: closing My Signet only warns you when something needs it (an app that signs through it, or your children), and names them. Otherwise it closes quietly
 - Where you're known: "Approved on" is replaced by "Signed by" and "Needs My Signet", so you can see which apps keep working with My Signet closed
