@@ -15,7 +15,7 @@ export const RAW_NSEC_WORDS_CONFIRMED = 'Backed up.';
 
 /** Persona → Advanced, for an imported extra persona. */
 export const IMPORTED_PERSONA_NOTE =
-  'This persona was imported from an existing nsec, so your Signet’s recovery words won’t bring it back. It has its own 31 words instead. Imported personas stay on this device only and are not in the cross-device backup.';
+  'This persona was imported from an existing nsec, so your Signet’s recovery words alone won’t bring it back. It has its own 31 recovery words. Imported personas stay on this device only and are not in the automatic cross-device backup.';
 export const IMPORTED_PERSONA_SHOW_WORDS = 'Show its recovery words';
 
 /** An imported slot whose private key is not held here: nothing to show. */

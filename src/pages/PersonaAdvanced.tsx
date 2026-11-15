@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react';
 import { NpubRow } from '../components/NpubRow';
+import { WrappedKeyExport } from '../components/WrappedKeyBackup';
 import { RecoveryWordsGrid } from '../components/RecoveryWordsGrid';
 import { IMPORTED_KEY_NOT_HERE, IMPORTED_PERSONA_NOTE, IMPORTED_PERSONA_SHOW_WORDS } from '../lib/raw-nsec-backup-copy';
 import { Icon } from '../components/Icon';
@@ -45,6 +46,8 @@ export type SlotKind =
   | 'dep-extra';
 
 export interface PersonaAdvancedProps {
+  onCreateWrappedBackup?: (pubkey: string) => Promise<string | null>;
+  onVerifyWrappedBackup?: (pubkey: string, record: string) => Promise<string | null>;
   /** Slot target token: 'natural-person' | 'persona' | 'professional-persona' | extra-pubkey-hex */
   slotTarget: 'natural-person' | 'persona' | 'professional-persona' | string;
   /** Present for dep slots; absent for user's own slots. */
@@ -405,6 +408,13 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
             ? () => props.onRevealImportedKeyWords!(slot.publicKey, depPubkey)
             : undefined}
           onShowImportedNsec={props.onShowImportedNsec}
+        />
+      )}
+
+      {slot.imported && !depPubkey && props.onCreateWrappedBackup && props.onVerifyWrappedBackup && (
+        <WrappedKeyExport
+          onCreate={() => props.onCreateWrappedBackup!(slot.publicKey)}
+          onVerify={record => props.onVerifyWrappedBackup!(slot.publicKey, record)}
         />
       )}
 

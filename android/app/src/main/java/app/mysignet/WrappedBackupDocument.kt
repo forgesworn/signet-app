@@ -1,0 +1,36 @@
+package app.mysignet
+
+import android.content.ContentResolver
+import android.content.Intent
+import android.net.Uri
+import java.io.DataInputStream
+import java.io.IOException
+
+/** File transport for an encrypted envelope only; never receives an nsec or tree root. */
+internal object WrappedBackupDocument {
+    private val envelope = Regex("^nstw1:[A-Za-z0-9_-]{175}$")
+
+    fun validRecord(record: String): Boolean = record.length == 181 && envelope.matches(record)
+
+    fun createIntent(): Intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TITLE, "imported-account.nstw")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    }
+
+    /** The URI comes only from the system picker; read back at most the envelope plus one byte. */
+    fun write(resolver: ContentResolver, uri: Uri, record: String) {
+        require(validRecord(record)) { "Invalid encrypted backup file" }
+        require(uri.scheme == "content") { "Invalid document destination" }
+        val expected = record.toByteArray(Charsets.UTF_8)
+        val output = resolver.openOutputStream(uri, "wt") ?: throw IOException("Cannot open backup destination")
+        output.use { it.write(expected); it.flush() }
+        val input = resolver.openInputStream(uri) ?: throw IOException("Cannot check saved backup")
+        DataInputStream(input).use {
+            val saved = ByteArray(expected.size)
+            it.readFully(saved)
+            if (!saved.contentEquals(expected) || it.read() != -1) throw IOException("Saved backup differs")
+        }
+    }
+}
