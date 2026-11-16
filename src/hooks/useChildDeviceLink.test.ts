@@ -229,6 +229,26 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     expect(result.current.readyThisSession).toBe(true);
   });
 
+  it('like the real router, the bound persona is probed on the primary connection (same client key), extras on their routes', async () => {
+    const { t } = fakeTransport();
+    const seen: string[] = [];
+    const primary = {
+      activePublicKeyHex: PERSONA,
+      request: async () => PERSONA,
+      nip44Encrypt: async (recipient: string) => { seen.push(`primary:${recipient}`); return 'x'; },
+    };
+    const router = {
+      primaryClientPubkeyHex: clientPub,
+      primary,
+      // BunkerBackendRouter.backendFor: the primary's own pubkey gets the primary itself.
+      backendFor: (slot: string) => (slot === primary.activePublicKeyHex ? primary
+        : { nip44Encrypt: async (recipient: string) => { seen.push(`route:${slot}:${recipient}`); return 'x'; } }),
+    } as unknown as BunkerBackendRouter;
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, transport: t, onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(result.current.owed).toBe(0));
+    expect(seen).toEqual([`primary:${PERSONA}`, `route:${EXTRA}:${EXTRA}`]);
+  });
+
   it('a timed-out probe is waiting (owed, Try again), never ready', async () => {
     const { t } = fakeTransport();
     const fr = fakeRouter({ [PERSONA]: 'hold' });

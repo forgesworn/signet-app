@@ -19,10 +19,11 @@ describe('ChildIdentityApprovals (ready checklist)', () => {
     expect(deviceShortNpub(A)).toMatch(/^npub1[a-z0-9]{8}\.\.$/);
   });
 
-  it('offers Later on a pending child row and reports it; never on the guardian row', () => {
+  it('offers Later on a pending child row and reports it; never on the guardian row, which shows no npub', () => {
     const onDefer = vi.fn();
     render(<ChildIdentityApprovals rows={[row(A, 'Ally', 'waiting'), row(B, 'You', 'waiting', { who: 'guardian' })]} onDefer={onDefer} />);
     expect(screen.getAllByText(COPY.later)).toHaveLength(1);
+    expect(screen.queryByText(COPY.onHeartwood(deviceShortNpub(B)))).toBeNull();
     fireEvent.click(screen.getByText(COPY.later));
     expect(onDefer).toHaveBeenCalledWith(A);
   });

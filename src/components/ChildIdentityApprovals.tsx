@@ -26,7 +26,9 @@ export function ChildIdentityApprovals({ rows, onRetry, onDefer, hint }: Props) 
   return (
     <div data-testid="ready-checklist">
       {rows.map(r => {
-        const npub = deviceShortNpub(r.pubkey);
+        // Never for the guardian's own row: that key is the guardian's real
+        // identity, which may be dormant (its card heading already reads "natural-").
+        const npub = r.who === 'child' ? deviceShortNpub(r.pubkey) : '';
         return (
           <div key={`${r.who}:${r.pubkey}`} data-testid={`ready-row-${r.pubkey}`} style={{ padding: '6px 0' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>

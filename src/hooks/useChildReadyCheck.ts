@@ -184,7 +184,10 @@ export function useChildReadyCheck(o: UseChildReadyCheckOpts): ChildReadyCheck {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [pairingKey, personasKey, hasOperator, o.probeOnStart, runCheck, startDelayMs]);
 
-  const rows = useMemo(() => rowsFor(slots, npProbe) ?? [], [rowsFor, slots, npProbe, pairingKey, personasKey]); // eslint-disable-line react-hooks/exhaustive-deps -- rows read the latest dependant through depRef
+  // `rowsFor` reads the dependant and keys through refs; these keys say when they changed.
+  const guardianClientKey = (o.guardianClientPubkey ?? '').toLowerCase();
+  const rows = useMemo(() => rowsFor(slots, npProbe) ?? [], // eslint-disable-line react-hooks/exhaustive-deps
+    [rowsFor, slots, npProbe, pairingKey, personasKey, guardianClientKey, np]);
   const owed = owedPresses(rows);
 
   // Watch the child's presses land while something is owed.
