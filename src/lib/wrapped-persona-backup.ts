@@ -4,11 +4,11 @@ import { encodeNpub } from 'nsec-tree/encoding';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { getPublicKey } from 'nostr-tools/pure';
 
-type Owner = {mnemonic: string; naturalPerson: {publicKey: string}};
-type ImportedSlot = {privateKey: string; publicKey: string; imported?: boolean; heartwoodKey?: boolean};
+export type BackupOwner = {mnemonic: string; naturalPerson: {publicKey: string}};
+export type ImportedBackupSlot = {privateKey: string; publicKey: string; imported?: boolean; heartwoodKey?: boolean};
 
 /** Only an owner's verified local mnemonic root; never a remote/dependant fallback. */
-function ownerRoot(owner: Owner) {
+export function ownerRoot(owner: BackupOwner) {
   if (!owner.mnemonic) throw new Error('This needs your local Signet recovery words. Hardware backup is not available here.');
   const root = fromMnemonic(owner.mnemonic);
   try {
@@ -22,7 +22,7 @@ function ownerRoot(owner: Owner) {
   } catch (error) { root.destroy(); throw error; }
 }
 
-export async function createWrappedPersonaBackup(owner: Owner, slot: ImportedSlot): Promise<string> {
+export async function createWrappedPersonaBackup(owner: BackupOwner, slot: ImportedBackupSlot): Promise<string> {
   if (!slot.imported || slot.heartwoodKey || !/^[0-9a-f]{64}$/i.test(slot.privateKey)) {
     throw new Error('Only an imported key held on this device can use this backup.');
   }
@@ -38,14 +38,14 @@ export async function createWrappedPersonaBackup(owner: Owner, slot: ImportedSlo
   } finally { raw.fill(0); root.destroy(); }
 }
 
-export async function restoreWrappedPersonaBackup(owner: Owner, record: string, expectedNpub?: string) {
+export async function restoreWrappedPersonaBackup(owner: BackupOwner, record: string, expectedNpub?: string) {
   const root = ownerRoot(owner);
   try { return await unwrapNsec(root, record, expectedNpub); }
   finally { root.destroy(); }
 }
 
 /** Read-back of a user-selected file: authentication and exact-account check. */
-export async function verifyWrappedPersonaBackup(owner: Owner, publicKey: string, record: string): Promise<string> {
+export async function verifyWrappedPersonaBackup(owner: BackupOwner, publicKey: string, record: string): Promise<string> {
   const root = ownerRoot(owner);
   try {
     const restored = await unwrapNsec(root, record, encodeNpub(hexToBytes(publicKey)));

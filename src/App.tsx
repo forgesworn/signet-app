@@ -1,5 +1,6 @@
 import { decideChildRequest } from './lib/child-gate';
 import { createWrappedPersonaBackup, restoreWrappedPersonaBackup, verifyWrappedPersonaBackup } from './lib/wrapped-persona-backup';
+import {createAccountCollection, inspectAccountCollection, restoreAccountCollection} from './lib/wrapped-account-collection';
 import { childRuleId } from './lib/child-rules';
 import { ContactHandshake } from './pages/ContactHandshake';
 import { handshakeDirect } from './lib/handshake-nearby';
@@ -724,7 +725,7 @@ function AppContent() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -12457,6 +12458,38 @@ function AppContent() {
               publicProfileSeed: { config: seed.config, state: seed.state, base: seed.base },
             } : undefined);
           }}
+          collectionBackup={!isPairedChild && (preferences.signingMode ?? 'local') === 'local' && identity?.mnemonic ? {
+            accounts: (identity.extraPersonas ?? []).filter(p => p.imported && !p.heartwoodKey && p.privateKey)
+              .map(p => ({publicKey: p.publicKey, name: p.displayName})),
+            existingNpubs: [identity.naturalPerson, identity.persona, identity.professionalPersona, ...(identity.extraPersonas ?? [])]
+              .flatMap(p => p ? [encodeNpub(hexToBytes(p.publicKey))] : []),
+            onCreate: async publicKeys => {
+              const session = await authenticateWrappedBackup();
+              if (!publicKeys.length || new Set(publicKeys).size !== publicKeys.length) throw new Error('Choose the accounts to back up.');
+              const slots = publicKeys.map(pk => {
+                const slot = session.owner.extraPersonas?.find(p => p.publicKey === pk && p.imported && !p.heartwoodKey);
+                if (!slot) throw new Error('A selected imported account is no longer available.');
+                return slot;
+              });
+              const file = await createAccountCollection(session.owner, slots);
+              session.checkCurrent(); return file;
+            },
+            onInspect: async file => {
+              const session = await authenticateWrappedBackup();
+              const inventory = await inspectAccountCollection(session.owner, file);
+              session.checkCurrent(); return inventory;
+            },
+            onRestore: async (file, npubs, expectedHash) => {
+              const session = await authenticateWrappedBackup();
+              const inventory = await inspectAccountCollection(session.owner, file);
+              if (inventory.sha256 !== expectedHash) throw new Error('The collection changed. Open it again before restoring.');
+              const restored = await restoreAccountCollection(session.owner, file, npubs);
+              try {
+                session.checkCurrent();
+                await addImportedPersonas(restored, session.key, session.checkCurrent);
+              } finally { restored.forEach(a => a.privateKey.fill(0)); }
+            },
+          } : undefined}
           wrappedRestore={!isPairedChild && (preferences.signingMode ?? 'local') === 'local' && identity?.mnemonic ? {
             onInspect: async record => {
               const session = await authenticateWrappedBackup();
