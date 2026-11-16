@@ -18,6 +18,19 @@ const slots = Array.from({length: 10}, (_, i) => {
 });
 
 describe('root-backed account collection', () => {
+  it('fits and restores the maximum 100 accounts with the largest permitted escaped labels', async () => {
+    const maximum = Array.from({length: 100}, (_, i) => {
+      const privateKey = new Uint8Array(32).fill(i + 1);
+      return {displayName: '"'.repeat(100), privateKey: bytesToHex(privateKey), publicKey: getPublicKey(privateKey), imported: true};
+    });
+    const file = await createAccountCollection(owner, maximum);
+    expect(file.length).toBe(65_608);
+    const inventory = await inspectAccountCollection(ownerFor(), file);
+    const restored = await restoreAccountCollection(ownerFor(), file, inventory.accounts.map(a => a.npub));
+    try { expect(restored.map(a => bytesToHex(a.privateKey))).toEqual(maximum.map(s => s.privateKey)); }
+    finally { restored.forEach(a => a.privateKey.fill(0)); }
+  }, 120_000);
+
   it('recovers ten exact unrelated accounts in a fresh root and signs offline with every key', async () => {
     const file = await createAccountCollection(owner, slots);
     expect(new TextDecoder().decode(file.subarray(0, 8))).toBe('FSWNENC2');

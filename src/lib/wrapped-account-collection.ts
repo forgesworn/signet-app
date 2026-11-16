@@ -5,7 +5,7 @@ import {encodeNpub} from 'nsec-tree/encoding';
 import {hexToBytes, bytesToHex} from '@noble/hashes/utils.js';
 import {sha256} from '@noble/hashes/sha2.js';
 import {getPublicKey} from 'nostr-tools/pure';
-import {sealV3Frame, openV3Frame} from '@forgesworn/stash';
+import {seal as sealV3Frame, open as openV3Frame} from './vendor/stash/frame';
 import {ownerRoot, type BackupOwner, type ImportedBackupSlot} from './wrapped-persona-backup';
 
 export const COLLECTION_BYTES = 65_608;

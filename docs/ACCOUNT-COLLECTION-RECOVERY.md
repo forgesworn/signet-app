@@ -24,7 +24,8 @@ excluded. Existing single-account `.nstw` files still work separately.
 ## Collection v1
 
 The disk file is a standard binary **FSWNENC2** envelope, using Stash's existing
-codec at commit `0d9f5e1917a4d4d9dd3bfa661f4bf9f97823e102` (MIT). No new
+codec vendored from commit `0d9f5e1917a4d4d9dd3bfa661f4bf9f97823e102` (MIT; notice included under `public/licences/stash.txt`). Clean builds do not
+need access to Stash's repository. No new
 encryption algorithm or signer protocol is introduced. The input key is the
 raw private-key bytes of `derive(fromMnemonic(mnemonic),
 'signet/wrapped-account-collection/v1', 0)`. The fixed purpose, index, root

@@ -1,12 +1,13 @@
 import {isNativeApp, SignetNative} from './native';
-import {bytesToBase64} from '@forgesworn/stash';
 import {COLLECTION_BYTES, isAccountCollection} from './wrapped-account-collection';
 
 /** Binary FSWNENC2 on disk; the text prefix exists only across the native bridge. */
 export async function saveAccountCollectionFile(bytes: Uint8Array): Promise<boolean> {
   if (!isAccountCollection(bytes)) throw new Error('Invalid account collection file.');
   if (isNativeApp()) {
-    const record = 'nstc1:' + bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    const record = 'nstc1:' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     return (await SignetNative.saveWrappedBackup({record})).saved;
   }
   const owned = new Uint8Array(bytes);

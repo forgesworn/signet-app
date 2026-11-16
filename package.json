@@ -34,7 +34,6 @@
     "@forgesworn/qr": "^0.2.0",
     "@forgesworn/shamir-words": "^1.2.0",
     "@forgesworn/signet-contacts": "git+https://github.com/forgesworn/signet-contacts.git#83c7ccfe2afd5c2f710c96957fe05603d08ca2b2",
-    "@forgesworn/stash": "github:forgesworn/stash#0d9f5e1917a4d4d9dd3bfa661f4bf9f97823e102",
     "@forgesworn/tessera-kit": "^0.2.1",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
