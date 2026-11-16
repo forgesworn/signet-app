@@ -77,7 +77,12 @@ describe('App.tsx dependant-scope wiring', () => {
     // that ends the scope; the four removal paths call the wrapper.
     expect(app).toContain('removeDependant: removeDependantRecord,');
     expect(count(/\bremoveDependantRecord\(/g)).toBe(1);
-    expect(app).toMatch(/await removeDependantRecord\(dependantId\);\s*endDependantScope\(dependantId\);/);
+    // In a finally: the record is gone before the hook's follow-up steps, so
+    // a throw from one of them must still end the scope.
+    expect(app).toMatch(/try \{\s*await removeDependantRecord\(dependantId\);\s*\} finally \{\s*endDependantScope\(dependantId\);\s*\}/);
+    // The hand-off picker goes home: the page underneath belongs to the
+    // dependant being switched away from.
+    expect(app).toMatch(/onSwitch=\{\(depId\) => \{ handleEnterChildMode\(depId\); setShowHandoffPicker\(false\); navigateTo\('home'\); \}\}/);
     // The independence closure deletes the record before its sweep can fail.
     expect(app).toMatch(/endDependantScope\(dep\.id\);\s*\/\/ Sweep the existing signing\/approval state before returning\.\s*await finishClosure\(\);/);
     // A closure merged from another device's handover deletes the record too:

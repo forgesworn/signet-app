@@ -975,8 +975,13 @@ function AppContent() {
   // session (a sync may merge the record back; it must not become "Managing"
   // them again). The hook's own remover is not called anywhere else.
   const removeDependant = useCallback(async (dependantId: string) => {
-    await removeDependantRecord(dependantId);
-    endDependantScope(dependantId);
+    // finally: the record is deleted before the hook's follow-up steps, so a
+    // throw from one of those must still end the scope.
+    try {
+      await removeDependantRecord(dependantId);
+    } finally {
+      endDependantScope(dependantId);
+    }
   }, [removeDependantRecord, endDependantScope]);
   // The targets of the pages that carry one (src/lib/page-params.ts), read
   // from the entry on screen, never from state a later visit overwrites.
@@ -11838,7 +11843,9 @@ function AppContent() {
     <DependantSwitchPicker
       dependants={dependants}
       activeDependantId={activeDependant.id}
-      onSwitch={(depId) => { handleEnterChildMode(depId); setShowHandoffPicker(false); }}
+      // Home, not the page underneath: that page belongs to the dependant
+      // being switched away from, and would stay live under the new banner.
+      onSwitch={(depId) => { handleEnterChildMode(depId); setShowHandoffPicker(false); navigateTo('home'); }}
       onClose={() => setShowHandoffPicker(false)}
     />
   ) : null;
