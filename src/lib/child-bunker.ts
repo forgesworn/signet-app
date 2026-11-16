@@ -158,10 +158,25 @@ export function childAllowedPersonas<T extends { pubkey: string }>(
   rules: { personas?: string[] } | null | undefined,
   bound: string | null | undefined,
 ): T[] {
-  if (!rules?.personas) return list;
+  const allowed = childAllowedPersonaKeys(rules, bound);
+  return allowed ? list.filter(p => allowed.has(p.pubkey.toLowerCase())) : list;
+}
+
+/**
+ * A51, the same rule as a key set (lowercase): the rules payload's `personas`
+ * plus the bound persona; null when there is no list (every persona). The
+ * carousel builds a direct child's cards from this, so a card can never
+ * exist without a route.
+ */
+export function childAllowedPersonaKeys(
+  rules: { personas?: string[] } | null | undefined,
+  bound: string | null | undefined,
+): Set<string> | null {
+  if (!rules?.personas) return null;
   const allowed = new Set(rules.personas.map(p => p.toLowerCase()));
   const b = (bound || '').toLowerCase();
-  return list.filter(p => { const k = p.pubkey.toLowerCase(); return k === b || allowed.has(k); });
+  if (b) allowed.add(b);
+  return allowed;
 }
 
 /**

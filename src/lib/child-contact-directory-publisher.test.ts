@@ -30,6 +30,16 @@ it('omits dormant, hidden and removed persona slots', () => {
   dep.hiddenOnPairedDeviceKeys = [persona];
   expect(childDirectoryPersonas(dep)).toEqual(['7'.repeat(64)]);
 });
+it('A51: omits personas removed from a direct child\'s phone, never the bound one', () => {
+  // The child's directory hook refuses a view naming a persona it no longer
+  // has, so a removed persona left in this list would blank the whole directory.
+  const dep = scope().dependant;
+  dep.extraPersonas = [{ publicKey: '7'.repeat(64) }, { publicKey: '8'.repeat(64) }] as typeof dep.extraPersonas;
+  dep.hiddenOnPairedDeviceKeys = [persona];
+  dep.childDevice = { mode: 'heartwood-direct', slotLabel: 'x', secretFingerprint: 'ab', slotIndex: 1, clientPubkey: '9'.repeat(64),
+    boundPersona: persona, pairedAt: 1, removedPersonas: ['7'.repeat(64), persona] };
+  expect(childDirectoryPersonas(dep)).toEqual([persona, '8'.repeat(64)]);
+});
 it('sends an authenticated encrypted snapshot after fresh scope checks', async () => {
   const send = vi.fn(), readScope = vi.fn(async () => scope());
   await publishChildContactDirectory({ guardian, child, key, isCurrent: current, readScope,

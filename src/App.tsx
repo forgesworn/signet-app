@@ -401,7 +401,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, type ChildGateOutcome } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, type ChildGateOutcome } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -949,7 +949,16 @@ function AppContent() {
   const [botsChangeVersion, setBotsChangeVersion] = useState(0);
   const [pendingBotContacts, setPendingBotContacts] = useState<string>();
   const botInventory = useBotInventory(preferences.signingMode === 'paired-child' ? null : identity?.naturalPerson.publicKey ?? null, encryptionKey, botsVersion);
-  const carousel = useCarousel(identity, dependants, botInventory);
+  // A51 defence in depth: a direct child's cards come only from the personas
+  // its rules allow (routes are built from the same list). The rules are read
+  // further down (`childDeviceLink`), so they reach the carousel through this
+  // state, set by an effect there. Null = no filter.
+  const [childCarouselAllowCsv, setChildCarouselAllowCsv] = useState<string | null>(null);
+  const childCarouselAllowed = useMemo(
+    () => (childCarouselAllowCsv === null ? null : new Set(childCarouselAllowCsv.split(',').filter(Boolean))),
+    [childCarouselAllowCsv],
+  );
+  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed);
   // The identities whose cards list places in Where you're known (owner rows;
   // a dependant's card lists none). Read when a hand-off record is kept.
   const placeCardPubkeys = useMemo<ReadonlySet<string>>(() => new Set(carousel.rows
@@ -2332,6 +2341,10 @@ function AppContent() {
     () => childAllowedPersonas(childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey),
     [childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey],
   );
+  const childCarouselAllowNext = childDirect
+    ? (() => { const keys = childAllowedPersonaKeys(childDeviceLink.rules, pairedChildRecord?.personaPubkey); return keys ? [...keys].sort().join(',') : null; })()
+    : null;
+  useEffect(() => { setChildCarouselAllowCsv(childCarouselAllowNext); }, [childCarouselAllowNext]);
   // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
   const childBunkerPersonasCsv = childDirect
     ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childAllowedInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')
@@ -8435,7 +8448,7 @@ function AppContent() {
       // Guardian's persona/extras are separate rows in the parent ring, so
       // the landing card itself conveys the keypair — no ack chip needed.
       setRecentSignInAck(null);
-      carousel.commitPosition(findRowForGuardianKeypair(identity, selection.keypairType, botInventory), 0);
+      carousel.commitPosition(findRowForGuardianKeypair(identity, selection.keypairType, botInventory, childCarouselAllowed), 0);
       return;
     }
     if (carousel.childMode) {
@@ -8461,9 +8474,9 @@ function AppContent() {
       }
     }
     setRecentSignInAck(ackLabel ? { dependantId: selection.dependantId, label: ackLabel } : null);
-    const targetRow = findRowForDependant(identity, dependants, selection.dependantId, botInventory);
+    const targetRow = findRowForDependant(identity, dependants, selection.dependantId, botInventory, childCarouselAllowed);
     if (targetRow !== null) carousel.commitPosition(targetRow, 0);
-  }, [identity, dependants, botInventory, carousel.childMode, carousel.exitChildMode, carousel.commitPosition, setActiveDependantId]);
+  }, [identity, dependants, botInventory, childCarouselAllowed, carousel.childMode, carousel.exitChildMode, carousel.commitPosition, setActiveDependantId]);
 
   // Auto-clear the transient sign-in ack chip after a few seconds. Long enough
   // for the user to register the confirmation, short enough that it doesn't
@@ -12427,7 +12440,7 @@ function AppContent() {
           }}
           onOpenPersona={isPairedChild ? undefined : (target) => {
             carousel.exitChildMode();
-            carousel.commitPosition(findRowForGuardianKeypair(identity!, target, botInventory), 0);
+            carousel.commitPosition(findRowForGuardianKeypair(identity!, target, botInventory, childCarouselAllowed), 0);
             navigateTo('home');
           }}
           onSwitchPrimary={async (target) => {

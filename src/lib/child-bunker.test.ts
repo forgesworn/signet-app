@@ -5,7 +5,7 @@ import type { AppPreferences, SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -108,6 +108,16 @@ describe('A51: childAllowedPersonas', () => {
   it('keeps only the listed personas, and always the bound one', () => {
     expect(childAllowedPersonas(list, { personas: [NP] }, PERSONA).map(p => p.pubkey)).toEqual([PERSONA, NP]);
     expect(childAllowedPersonas(list, { personas: [] }, PERSONA.toUpperCase()).map(p => p.pubkey)).toEqual([PERSONA]);
+  });
+});
+
+describe('A51: childAllowedPersonaKeys (the carousel allow-list)', () => {
+  it('no payload or no list ⇒ no filter', () => {
+    expect(childAllowedPersonaKeys(null, PERSONA)).toBeNull();
+    expect(childAllowedPersonaKeys({}, PERSONA)).toBeNull();
+  });
+  it('the listed personas plus the bound one, lowercased', () => {
+    expect([...childAllowedPersonaKeys({ personas: [NP.toUpperCase()] }, PERSONA.toUpperCase())!].sort()).toEqual([PERSONA, NP].sort());
   });
 });
 

@@ -1,6 +1,7 @@
 import type { NostrEvent } from 'signet-protocol';
 import type { ChildSettings, ContactRecord, DependantIdentity } from '../types';
 import { isDependantNaturalPersonActive } from './identity-display';
+import { pairedDeviceAllows } from './paired-device-personas';
 import { updateEncryptedPrivateState } from './private-vault-store';
 import { projectChildContactDirectory, sealChildContactDirectory } from './child-contact-directory';
 import type { DecryptingSigningBackend } from './signing-backend';
@@ -13,14 +14,17 @@ export interface ChildDirectoryPublicationScope {
   settings?: ChildSettings;
   records: ContactRecord[];
 }
-/** Unlike owner list selection, delivery omits hidden and dormant slots. */
-export function childDirectoryPersonas(dep: Pick<DependantIdentity, 'persona' | 'extraPersonas' | 'naturalPerson' | 'naturalPersonActive' | 'hiddenOnPairedDeviceKeys'>): string[] {
-  const hidden = new Set(dep.hiddenOnPairedDeviceKeys ?? []);
+/** Unlike owner list selection, delivery omits hidden and dormant slots, and
+ * personas removed from a direct child's phone (A51) — the same rule as the
+ * persona inventory (`pairedDeviceAllows`). The child refuses a directory
+ * naming a persona it no longer has, so this list must not outlive the card. */
+export function childDirectoryPersonas(dep: Pick<DependantIdentity, 'persona' | 'extraPersonas' | 'naturalPerson' | 'naturalPersonActive' | 'hiddenOnPairedDeviceKeys' | 'childDevice'>): string[] {
+  const allows = pairedDeviceAllows(dep);
   return [...new Set([
-    dep.persona.publicKey,
-    ...(dep.extraPersonas ?? []).filter(p => !p.hidden).map(p => p.publicKey),
-    ...(isDependantNaturalPersonActive(dep) ? [dep.naturalPerson.publicKey] : []),
-  ].filter(p => p && !hidden.has(p)))].sort();
+    ...(allows(dep.persona.publicKey) ? [dep.persona.publicKey] : []),
+    ...(dep.extraPersonas ?? []).filter(p => allows(p.publicKey, p.hidden === true)).map(p => p.publicKey),
+    ...(isDependantNaturalPersonActive(dep) && allows(dep.naturalPerson.publicKey) ? [dep.naturalPerson.publicKey] : []),
+  ].filter(Boolean))].sort();
 }
 
 /**

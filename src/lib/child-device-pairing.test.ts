@@ -64,6 +64,18 @@ describe('child-device-pairing', () => {
     expect(replyPersonas(d).map(p => p.pubkey)).toEqual([PERSONA]);
   });
 
+  it('reply personas skip a soft-deleted extra, like the persona inventory does', () => {
+    const d = dep({ extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer', hidden: true } as never] });
+    expect(replyPersonas(d).map(p => p.pubkey)).toEqual([PERSONA]);
+  });
+
+  it('A51: the bound persona stays in the reply even when hidden from the paired device', () => {
+    const d = { ...paired(), hiddenOnPairedDeviceKeys: [PERSONA] };
+    expect(replyPersonas(d).map(p => p.pubkey)).toEqual([PERSONA]);
+    // First pairing: the reply is built before `childDevice` is saved.
+    expect(replyPersonas(dep({ hiddenOnPairedDeviceKeys: [PERSONA] })).map(p => p.pubkey)).toEqual([PERSONA]);
+  });
+
   it('A4 reconcile targets only our label + this client, never the old phone', () => {
     const L = 'signet:child-device:v2:0123456789abcdef';
     const ours = slot({ slotIndex: 3, label: L, currentPubkey: 'd'.repeat(64) });

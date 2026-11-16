@@ -51,6 +51,8 @@ export function useCarousel(
   identity: SignetIdentity | null,
   dependants: DependantIdentity[],
   bots: readonly BotMetadata[] = [],
+  /** A direct child's install: the personas its rules allow (`buildRows`). */
+  allowedPersonas: ReadonlySet<string> | null = null,
 ): CarouselState {
   // Start at the top of the ring — the persona row. Swiping up walks through
   // extra personas, the real identity (when activated) and dependants.
@@ -76,11 +78,11 @@ export function useCarousel(
     if (hasLandedRef.current) return;
     hasLandedRef.current = true;
     const keypair = resolveLandingKeypair(identity);
-    const targetRow = findRowForGuardianKeypair(identity, keypair, bots);
+    const targetRow = findRowForGuardianKeypair(identity, keypair, bots, allowedPersonas);
     if (targetRow !== TOP_ROW) {
       setRow(targetRow);
     }
-  }, [identity, bots]);
+  }, [identity, bots, allowedPersonas]);
 
   const childDependant: DependantIdentity | null = useMemo(
     () => childDependantId
@@ -97,8 +99,8 @@ export function useCarousel(
     if (childMode && childDependant) {
       return buildChildRows(childDependant);
     }
-    return buildRows(identity, dependants, bots);
-  }, [identity, dependants, childMode, childDependant, bots]);
+    return buildRows(identity, dependants, bots, allowedPersonas);
+  }, [identity, dependants, childMode, childDependant, bots, allowedPersonas]);
 
   // Clamp row if rows array shrunk (e.g. dependant removed)
   const safeRow = rows.length > 0 && row < rows.length ? row : 0;
@@ -140,9 +142,9 @@ export function useCarousel(
 
   const landOnPrimary = useCallback((next: SignetIdentity) => {
     const keypair = resolveLandingKeypair(next);
-    setRow(findRowForGuardianKeypair(next, keypair, bots));
+    setRow(findRowForGuardianKeypair(next, keypair, bots, allowedPersonas));
     setCol(0);
-  }, [bots]);
+  }, [bots, allowedPersonas]);
 
   return {
     row: safeRow,

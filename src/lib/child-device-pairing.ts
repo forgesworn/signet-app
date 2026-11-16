@@ -11,6 +11,7 @@ import type { ChildPairReply } from './child-pair-wire';
 import { CAP_NOSTRCONNECT_V2, hasCapability, listClients, revokeClient, type HeartwoodMgmtClient } from './heartwood-mgmt';
 import { resolveDependantRouteSlots } from './dependant-route-slots';
 import { isDependantNaturalPersonActive } from './identity-display';
+import { pairedDeviceAllows } from './paired-device-personas';
 import { isChildDirectSlot } from './policy-compiler';
 import { rulesFromLegacyGrants } from './child-rules';
 import type { RememberedGrant } from '../types/grants';
@@ -54,26 +55,25 @@ export function staticPairBlock(args: {
   return null;
 }
 
-/** Personas the child's phone may act as (reply `personas`, spec §4 step 4). */
+/** Personas the child's phone may act as (reply `personas`, spec §4 step 4).
+ *  Filtered by `pairedDeviceAllows` — the same rule as the persona inventory —
+ *  so removed (A51), hidden-from-device and soft-deleted personas are never
+ *  listed, and the bound persona always is. The first pairing's reply is
+ *  built before `childDevice` is saved, so the bound persona falls back to
+ *  the one the slot binds (A54). */
 export function replyPersonas(dep: DependantIdentity): ChildPairReply['personas'] {
-  const hidden = new Set((dep.hiddenOnPairedDeviceKeys ?? []).map(k => k.toLowerCase()));
-  // A51: personas removed from the phone (revoke_client_identity) — never the bound one.
-  const bound = (dep.childDevice?.boundPersona ?? '').toLowerCase();
-  const removed = new Set((dep.childDevice?.removedPersonas ?? []).map(k => k.toLowerCase()).filter(k => k !== bound));
+  const allows = pairedDeviceAllows(dep, dep.childDevice?.boundPersona ?? childDirectPersona(dep));
   const out: ChildPairReply['personas'] = [];
   const seen = new Set<string>();
-  const add = (pubkey: string | undefined, name: string, role: ChildPairReply['personas'][number]['role']) => {
+  const add = (pubkey: string | undefined, name: string, role: ChildPairReply['personas'][number]['role'], softDeleted = false) => {
     const p = (pubkey ?? '').toLowerCase();
-    if (!HEX64.test(p) || seen.has(p) || removed.has(p) || out.length >= 32) return;
+    if (!HEX64.test(p) || seen.has(p) || !allows(p, softDeleted) || out.length >= 32) return;
     seen.add(p);
     out.push({ pubkey: p, name: name || dep.displayName, role });
   };
   add(dep.persona?.publicKey, dep.persona?.displayName ?? '', 'persona');
   if (isDependantNaturalPersonActive(dep)) add(dep.naturalPerson?.publicKey, dep.naturalPerson?.displayName ?? '', 'natural-person');
-  for (const ep of dep.extraPersonas ?? []) {
-    if (hidden.has((ep.publicKey ?? '').toLowerCase())) continue;
-    add(ep.publicKey, ep.displayName ?? '', 'extra');
-  }
+  for (const ep of dep.extraPersonas ?? []) add(ep.publicKey, ep.displayName ?? '', 'extra', ep.hidden === true);
   return out;
 }
 

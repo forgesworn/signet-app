@@ -18,6 +18,7 @@ import type { DependantIdentity, PublicProfileConfig } from '../types';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { publishPersonaInventory, publicProfileToInventoryBlock } from '../lib/persona-inventory-sync';
 import { isDependantNaturalPersonActive } from '../lib/identity-display';
+import { pairedDeviceAllows } from '../lib/paired-device-personas';
 import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
@@ -135,6 +136,9 @@ function inventoryHashFor(dep: DependantIdentity): string {
       ),
     })),
     hidden: (dep.hiddenOnPairedDeviceKeys ?? []).slice().sort(),
+    // A51: "Remove from phone" must republish, and the bound persona is exempt from every filter.
+    removed: (dep.childDevice?.removedPersonas ?? []).slice().sort(),
+    bound: dep.childDevice?.boundPersona ?? '',
   });
 }
 
@@ -168,11 +172,14 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
         const endpoint = dep.bunkerEndpoint;
         // A still-encrypted rail key is not a key: skip until the record is decrypted.
         if (!endpoint || !/^[0-9a-f]{64}$/.test(endpoint.privateKey) || !endpoint.authorizedClientPubkey) continue;
-        const npVisible = isDependantNaturalPersonActive(dep) && !!dep.naturalPerson.publicKey;
-        const hiddenKeys = dep.hiddenOnPairedDeviceKeys ?? [];
-        const personaVisible = !!dep.persona.publicKey && !hiddenKeys.includes(dep.persona.publicKey);
-        const anyExtraVisible = (dep.extraPersonas ?? [])
-          .some(ep => !ep.hidden && !hiddenKeys.includes(ep.publicKey));
+        // One rule with the pairing reply / rules rail (`pairedDeviceAllows`):
+        // removed from the phone (A51), hidden from the paired device or
+        // soft-deleted ⇒ not sent; a direct pairing's bound persona always is.
+        const allows = pairedDeviceAllows(dep);
+        const npVisible = isDependantNaturalPersonActive(dep) && allows(dep.naturalPerson.publicKey);
+        const personaVisible = allows(dep.persona.publicKey);
+        const extraVisible = (ep: NonNullable<DependantIdentity['extraPersonas']>[number]) => allows(ep.publicKey, ep.hidden === true);
+        const anyExtraVisible = (dep.extraPersonas ?? []).some(extraVisible);
         // Nothing this child is allowed to see: real identity dormant, persona
         // absent or hidden from the paired device, no visible extras. The
         // payload would be empty, so publishing it costs a signature and a
@@ -198,7 +205,7 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
           extractConfigFromSlot(dep.persona),
           dep.persona.publicProfile?.enabled ?? false,
         );
-        const visiblePersona = dep.persona.publicKey && !hiddenKeys.includes(dep.persona.publicKey)
+        const visiblePersona = personaVisible
           ? {
               publicKey: dep.persona.publicKey,
               displayName: dep.persona.displayName,
@@ -208,7 +215,7 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
           : undefined;
 
         const visibleExtras = (dep.extraPersonas ?? [])
-          .filter(ep => !ep.hidden && !hiddenKeys.includes(ep.publicKey))
+          .filter(extraVisible)
           .map(ep => {
             const epProfile = publicProfileToInventoryBlock(
               extractConfigFromSlot(ep),
