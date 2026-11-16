@@ -2206,7 +2206,9 @@ function AppContent() {
     key: encryptionKey,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     sources: guardianChildRequestSources,
-    changeToken: JSON.stringify(dependants.map(dep => [dep.id, dep.bunkerEndpoint?.publicKey, dep.bunkerEndpoint?.authorizedClientPubkey, childDirectoryPersonas(dep)])),
+    // A56: a direct child asks on its rail relay; the listener restarts when that set changes.
+    extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
+    changeToken: JSON.stringify(dependants.map(dep => [dep.id, dep.bunkerEndpoint?.publicKey, dep.bunkerEndpoint?.authorizedClientPubkey, childDirectoryPersonas(dep), childRailRelay(dep)])),
     // Defined below, after the invite services they need; read at call time.
     expireStuck: (item, current) => guardianChildLifecycle.current.cancel(item, current),
     retryReplies: (source, current) => guardianChildLifecycle.current.retry(source, current),
