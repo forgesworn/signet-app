@@ -435,6 +435,7 @@ import { proModeBlockedReason, publishProNameOnly } from './lib/professional/pro
 import { PRO_ROSTER } from './lib/professional/kinds';
 import type { RosterMember } from './lib/professional/role-anchor';
 import { useNavigation } from './hooks/useNavigation';
+import { useDependantScope } from './hooks/useDependantScope';
 import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLock';
 import { BunkerPanel } from './components/BunkerPanel';
 import { isBarHiddenPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './lib/app-nav';
@@ -939,7 +940,14 @@ function AppContent() {
     nowMs: Date.now(),
     dependantCount: dependants.length,
   });
-  const [activeDependantId, setActiveDependantId] = useState<string | null>(null);
+  const [page, setPageState] = useState<Page>('home');
+  // A management page that borrows a dependant's id as its parameter gets the
+  // prior scope back on reaching home; `setPage` below is the wrapper that does
+  // it, so every navigation path goes through it (src/lib/dependant-scope.ts).
+  const {
+    activeDependantId, setActiveDependantId, borrowActiveDependantId,
+    keepActiveDependantId, forgetActiveDependantId, setPage,
+  } = useDependantScope(setPageState);
   const activeDependant = activeDependantId ? dependants.find(d => d.id === activeDependantId) ?? null : null;
 
 
@@ -986,7 +994,6 @@ function AppContent() {
   const needRefreshRef = useRef(needRefresh);
   needRefreshRef.current = needRefresh;
 
-  const [page, setPage] = useState<Page>('home');
   /** The page on screen, for callbacks that must not navigate away from somewhere else (M11). */
   const pageRef = useRef<Page>(page);
   pageRef.current = page;
@@ -13149,7 +13156,7 @@ function AppContent() {
           }
           await retractDepProfilesBeforePurge(dep);
           await removeDependant(depPubkey);
-          if (activeDependantId === depPubkey) setActiveDependantId(null);
+          forgetActiveDependantId(depPubkey);
           setPendingPersonaAdvancedTarget(null);
           navigateBack();
         } : undefined}
@@ -14449,7 +14456,7 @@ function AppContent() {
             return dep.id;
           }}
           onSwitchToDependant={(depId) => { setActiveDependantId(depId); navigateReplace('home'); }}
-          onPairDevice={(depId) => { setActiveDependantId(depId); navigateTo('pair-dependant-device'); }}
+          onPairDevice={(depId) => { borrowActiveDependantId(depId); navigateTo('pair-dependant-device'); }}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           onBack={() => navigateBack()}
@@ -14515,7 +14522,7 @@ function AppContent() {
           dependants={dependants}
           independenceArchives={independenceArchives}
           onSelect={(depId) => {
-            setActiveDependantId(depId);
+            borrowActiveDependantId(depId);
             navigateTo('settings');
           }}
           onAddDependant={() => navigateTo('add-dependant')}
@@ -14593,9 +14600,11 @@ function AppContent() {
         <ImportDependant
           onImportDependant={async ({ displayName, dateOfBirth, publicKey, mnemonic }) => {
             const dep = await importDependant(publicKey, displayName, dateOfBirth, mnemonic);
-            setActiveDependantId(dep.id);
+            // Borrowed: "Stay as me" just backs out, and must not leave the
+            // guardian scoped to the new dependant. "Switch to" keeps it.
+            borrowActiveDependantId(dep.id);
           }}
-          onSwitchToDependant={() => navigateReplace('home')}
+          onSwitchToDependant={() => { keepActiveDependantId(); navigateReplace('home'); }}
           onBack={() => navigateBack()}
         />
       </Layout>
@@ -15229,7 +15238,7 @@ function AppContent() {
         onHandshake={async (resolved, choose) => {
           const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
           if (!key || !resolved.publicKey) return;
-          setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
+          borrowActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
           setContactsIdentityChoice(resolved.publicKey);
           const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
           setPendingHandshake({ persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
@@ -15239,7 +15248,7 @@ function AppContent() {
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
             locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
-            onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
+            onManage={() => { borrowActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
           : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           placesCard={col === 3 ? knownPlacesColumn(row, resolveActiveIdentity(row)) : undefined}
@@ -15254,7 +15263,7 @@ function AppContent() {
                 routed: target => mode === 'nip07' ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
                   : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) }) });
           }}
-          onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); setActiveDependantId(null); navigateTo('bots'); }}
+          onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); borrowActiveDependantId(null); navigateTo('bots'); }}
           onHide={async () => {
             if (!encryptionKey) throw new Error('Unlock first');
             const root = identity.naturalPerson.publicKey;
@@ -15294,7 +15303,7 @@ function AppContent() {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
             if (!key || identityRef.current?.naturalPerson.publicKey !== owner) return;
-            setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
+            borrowActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
             setContactsOpenFollows(action === 'follows');
@@ -15314,10 +15323,12 @@ function AppContent() {
           // Must precede navigateTo — destination routes (e.g. 'settings',
           // 'transition-ceremony') read activeDependant synchronously on
           // render; React batches both state updates into the same flush.
-          if (opts?.dependantId) setActiveDependantId(opts.dependantId);
+          // Borrowed, not chosen: reaching home again puts back the scope
+          // from before (src/lib/dependant-scope.ts).
+          if (opts?.dependantId) borrowActiveDependantId(opts.dependantId);
           // An owner slot's Advanced page must not inherit a dependant scope
           // left over from an earlier visit (it hid the follows panel).
-          else if (p === 'persona-advanced' && opts?.slotTarget) setActiveDependantId(null);
+          else if (p === 'persona-advanced' && opts?.slotTarget) borrowActiveDependantId(null);
           if (opts?.slotTarget) {
             setPendingPersonaAdvancedTarget({
               slotTarget: opts.slotTarget,
@@ -15635,8 +15646,8 @@ function AppContent() {
               if (current.isDependant) {
                 const key = await requestAuth({ purpose: 'manage-family-contacts' });
                 if (!key) return;
-                setActiveDependantId(current.dependantId ?? null);
-              } else setActiveDependantId(null);
+                borrowActiveDependantId(current.dependantId ?? null);
+              } else borrowActiveDependantId(null);
               setContactsIdentityChoice(current.publicKey || null);
             }
             navigateTo(target);
