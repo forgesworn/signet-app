@@ -2,7 +2,8 @@
  * Child-side dependant-status subscriber + cache.
  *
  * Runs only in `paired-child` signingMode. Loads the PairedChildRecord,
- * extracts the endpoint pubkey from the stored bunker URI, builds a
+ * resolves the guardian's rail key (`guardianRailPubkey`: the bunker URI's
+ * endpoint on a legacy pairing, `railPubkey` on a child-direct one), builds a
  * LocalSigningBackend over the child's transport private key, fetches
  * the guardian-published NIP-44-encrypted status event, decrypts it,
  * and caches the result in IDB so the home surface can render dormant
@@ -18,10 +19,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AutonomyStage, DependantStatusRecord, PairedChildRecord } from '../types';
 import { LocalSigningBackend } from '../lib/signing-backend';
-import {
-  extractEndpointPubkey,
-  fetchDependantStatus,
-} from '../lib/dependant-status-sync';
+import { fetchDependantStatus } from '../lib/dependant-status-sync';
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import * as db from '../lib/db';
 
 interface Options {
@@ -105,7 +104,9 @@ export function useDependantStatus({ relayUrl, encryptionKey, dependantPubkey, e
     }
     const backend = backendRef.current;
 
-    const endpointPubkey = extractEndpointPubkey(record.bunkerUri);
+    // The guardian signs the status with the dependant's `bunkerEndpoint`
+    // (the rail key on a child-direct pairing, never the bunkerUri persona).
+    const endpointPubkey = guardianRailPubkey(record);
     if (!endpointPubkey) return;
 
     const sinceCreatedAt = cached?.updatedAt ?? undefined;

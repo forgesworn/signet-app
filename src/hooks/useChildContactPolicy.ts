@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { RelayClient, type NostrEvent } from 'signet-protocol';
 import { loadPairedChild } from '../lib/db';
 import { LocalSigningBackend } from '../lib/signing-backend';
-import { extractEndpointPubkey } from '../lib/dependant-status-sync';
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { CHILD_CONTACT_POLICY_TAG, openChildContactPolicy, type ChildContactPolicyView } from '../lib/child-contact-policy-wire';
 import { loadChildContactPolicyCache, saveChildContactPolicyCache } from '../lib/child-contact-policy-cache';
@@ -25,7 +25,8 @@ export function useChildContactPolicy(options: {
     void (async () => {
       const pair = await loadPairedChild(child, key);
       if (!active || !pair?.guardianPubkey) return;
-      const endpoint = extractEndpointPubkey(pair.bunkerUri);
+      // The guardian seals the policy with `dep.bunkerEndpoint` — the rail key on a direct pairing.
+      const endpoint = guardianRailPubkey(pair);
       if (!endpoint) return;
       const cached = await loadChildContactPolicyCache(pair, key);
       if (!active) return;

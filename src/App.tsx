@@ -21,7 +21,7 @@ import { resolveChildAskPersona, childDirectoryPersonas, publishChildContactDire
 import { ChildContactDirectory } from './components/ChildContactDirectory';
 import { ChildContactAsk } from './components/ChildContactAsk';
 import { useChildContactOutbox } from './hooks/useChildContactOutbox';
-import { extractEndpointPubkey } from './lib/dependant-status-sync';
+import { guardianRailPubkey } from './lib/paired-child-rail';
 import { sanitizeDisplayName } from './lib/text-sanitize';
 import { vaultPurpose } from 'signet-protocol/experimental';
 import { rotatePrivateVaultDataset } from './lib/private-vault-sync';
@@ -2422,7 +2422,8 @@ function AppContent() {
     const current = () => encryptionKeyRef.current === key && identityRef.current?.id === identity.id;
     const pair = await loadPairedChild(childId, key);
     if (!current() || !pair || pair.guardianPubkey !== guardian) throw new Error('Pairing details are not available yet.');
-    const endpoint = extractEndpointPubkey(pair.bunkerUri);
+    // The guardian opens requests with `dep.bunkerEndpoint` — the rail key on a direct pairing.
+    const endpoint = guardianRailPubkey(pair);
     if (!endpoint) throw new Error('Pairing details are not available yet.');
     const persona = childAskPersona?.pubkey;
     const personas = childDirectoryPersonas(identity);

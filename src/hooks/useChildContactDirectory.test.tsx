@@ -149,3 +149,17 @@ it('follows an in-session re-pair: new endpoint and client key are used once the
   await waitFor(() => expect(result.current).toEqual(fresh));
   unmount();
 });
+it('child-direct pairing: listens for the rail key, not the bound persona named in bunkerUri', async () => {
+  const bound = new LocalSigningBackend('06'.repeat(32));
+  vi.mocked(loadPairedChild).mockResolvedValue({ ...pair, mode: 'heartwood-direct' as const, railPubkey: endpoint.activePublicKeyHex,
+    personaPubkey: bound.activePublicKeyHex, bunkerUri: `bunker://${bound.activePublicKeyHex}?relay=wss%3A%2F%2Fhw.example` });
+  const { result, unmount } = renderHook(() => useChildContactDirectory(options));
+  await waitFor(() => expect(state.relays[0]?.receive).toBeDefined());
+  expect(state.relays[0].filters?.[0].authors).toEqual([endpoint.activePublicKeyHex]);
+  const expected = view();
+  await act(async () => { state.relays[0].receive!(await sealChildContactDirectory(expected, bound)); });
+  expect(saveChildContactDirectoryCache).not.toHaveBeenCalled();
+  await act(async () => { state.relays[0].receive!(await sealChildContactDirectory(expected, endpoint)); });
+  await waitFor(() => expect(result.current).toEqual(expected));
+  unmount();
+});

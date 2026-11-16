@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { RelayClient } from 'signet-protocol';
 import { loadPairedChild } from '../lib/db';
 import { LocalSigningBackend } from '../lib/signing-backend';
-import { extractEndpointPubkey } from '../lib/dependant-status-sync';
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { childContactReplyTransition, openChildContactReply, type ChildContactReply } from '../lib/child-contact-exchange';
 import type { ChildRequestScope } from '../lib/child-contact-requests';
@@ -59,7 +59,8 @@ export function useChildContactReplyInbox(options: {
     const current = () => active && latest.current === session;
     void (async () => {
       const pair = await loadPairedChild(child, key); if (!current() || !pair || pair.guardianPubkey !== guardian) return;
-      const endpoint = extractEndpointPubkey(pair.bunkerUri); if (!endpoint) return;
+      // The guardian signs replies with `dep.bunkerEndpoint` — the rail key on a direct pairing.
+      const endpoint = guardianRailPubkey(pair); if (!endpoint) return;
       const scope: ChildRequestScope = { guardian, child, endpoint, client: pair.clientKeypair.publicKey, personas: JSON.parse(personas) };
       const cached = await loadChildContactReplyReceipts(scope, key, current); if (current()) setReceipts(cached);
       backend = new LocalSigningBackend(pair.clientKeypair.privateKey);

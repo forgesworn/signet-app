@@ -104,3 +104,18 @@ it('follows an in-session re-pair: new endpoint and client key are used once the
   await waitFor(() => expect(result.current?.policy).toBe('kin-only'));
   unmount();
 });
+it('child-direct pairing: listens for the rail key, not the bound persona named in bunkerUri', async () => {
+  // On a direct dependant the guardian's `bunkerEndpoint` is the rail key; the
+  // record's bunkerUri names the Heartwood-bound persona instead.
+  const persona = new LocalSigningBackend('06'.repeat(32));
+  vi.mocked(loadPairedChild).mockResolvedValue({ ...pair, mode: 'heartwood-direct' as const, railPubkey: endpoint.activePublicKeyHex,
+    personaPubkey: persona.activePublicKeyHex, bunkerUri: `bunker://${persona.activePublicKeyHex}?relay=wss%3A%2F%2Fhw.example` });
+  const { result, unmount } = renderHook(() => useChildContactPolicy({ child, enabled: true, key: 'unlock-key', relayUrl: 'wss://relay.example' }));
+  await waitFor(() => expect(state.relays[0]?.receive).toBeDefined());
+  expect(state.relays[0].filters?.[0].authors).toEqual([endpoint.activePublicKeyHex]);
+  await act(async () => { state.relays[0].receive!(await sealChildContactPolicy(view(), persona)); });
+  expect(saveChildContactPolicyCache).not.toHaveBeenCalled();
+  await act(async () => { state.relays[0].receive!(await sealChildContactPolicy(view(), endpoint)); });
+  await waitFor(() => expect(result.current?.policy).toBe('kin-only'));
+  unmount();
+});

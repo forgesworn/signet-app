@@ -72,3 +72,22 @@ it('follows an in-session re-pair: re-reads the pairing when the pairing generat
   await waitFor(() => expect(hook.result.current.map(e => e.request.id)).toEqual(['b'.repeat(32)]));
   hook.unmount();
 });
+
+it('child-direct pairing: reads the outbox scoped to the rail key, not the bound persona named in bunkerUri', async () => {
+  // `endpoint` is the rail key here; the record's bunkerUri names the bound persona.
+  const bound = new LocalSigningBackend('08'.repeat(32));
+  await savePairedChild({ bunkerUri: `bunker://${bound.activePublicKeyHex}?relay=wss%3A%2F%2Fhw.example`,
+    clientKeypair: { publicKey: client.activePublicKeyHex, privateKey: '05'.repeat(32) },
+    dependantPubkey: childId, dependantName: 'Robin', pairedAt: now, hasPaired: true, guardianPubkey: guardian,
+    mode: 'heartwood-direct', railPubkey: endpoint.activePublicKeyHex, personaPubkey: bound.activePublicKeyHex,
+    hwRelays: ['wss://hw.example'], railRelay: 'wss://relay.example' }, key);
+  const requestFor = (s: ChildRequestScope, id: string): ChildContactRequest => ({ v: 1, id, guardian, endpoint: s.endpoint, client: s.client,
+    persona: s.personas[0], revision: 1, createdAt: now, expiresAt: now + 600,
+    invite: { v: 1, recipient: '6'.repeat(64), secret: '7'.repeat(64), relays: ['wss://invite.example/'] } });
+  const personaScope: ChildRequestScope = { ...scope, endpoint: bound.activePublicKeyHex };
+  await queueChildContactRequest({ scope, key, request: requestFor(scope, 'a'.repeat(32)), fingerprint: 'f'.repeat(64), now, isCurrent: () => true });
+  await queueChildContactRequest({ scope: personaScope, key, request: requestFor(personaScope, 'b'.repeat(32)), fingerprint: 'f'.repeat(64), now, isCurrent: () => true });
+  const hook = renderHook(() => useChildContactOutbox({ enabled: true, child: childId, key, guardian, personas: scope.personas, version: 0 }));
+  await waitFor(() => expect(hook.result.current.map(e => e.request.id)).toEqual(['a'.repeat(32)]));
+  hook.unmount();
+});

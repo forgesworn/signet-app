@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { RelayClient, type NostrEvent } from 'signet-protocol';
 import { loadPairedChild } from '../lib/db';
 import { LocalSigningBackend } from '../lib/signing-backend';
-import { extractEndpointPubkey } from '../lib/dependant-status-sync';
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { CHILD_CONTACT_DIRECTORY_TAG, childDirectoryVisible, openChildContactDirectory, type ChildContactDirectory } from '../lib/child-contact-directory';
 import { loadChildContactDirectoryCache, saveChildContactDirectoryCache } from '../lib/child-contact-directory-cache';
@@ -31,7 +31,8 @@ export function useChildContactDirectory(options: {
     void (async () => {
       const pair = await loadPairedChild(child, key);
       if (!current() || !pair?.guardianPubkey) return;
-      const endpoint = extractEndpointPubkey(pair.bunkerUri);
+      // The guardian seals the directory with `dep.bunkerEndpoint` — the rail key on a direct pairing.
+      const endpoint = guardianRailPubkey(pair);
       if (!endpoint) return;
       const cached = await loadChildContactDirectoryCache(pair, key, current);
       if (!current()) return;
