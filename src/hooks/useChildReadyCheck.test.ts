@@ -11,7 +11,8 @@ import { listClients, type HeartwoodMgmtClient } from '../lib/heartwood-mgmt';
 import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import type { ClientApproval, DeviceClientSlot } from '../lib/heartwood-mgmt-types';
 import type { DependantIdentity } from '../types';
-import { useChildReadyCheck, resetChildReadyCheckMemory, type UseChildReadyCheckOpts } from './useChildReadyCheck';
+import type { ChildReadyRecords } from '../lib/db';
+import { useGuardianReadyChecks, pairingKeyOf, type ChildReadyStore, type UseGuardianReadyChecksOpts } from './useChildReadyCheck';
 import { APPROVE_IDENTITY_PLAINTEXT } from './useChildDeviceLink';
 
 const mList = vi.mocked(listClients);
@@ -19,12 +20,15 @@ const NP = 'a'.repeat(64), PERSONA = 'b'.repeat(64);
 const CHILD = 'd'.repeat(64), GUARDIAN = 'e'.repeat(64), GNP = '1'.repeat(64), MASTER = '2'.repeat(64);
 const op = { isOpen: true } as unknown as HeartwoodMgmtClient;
 
-const dep: DependantIdentity = {
-  ...buildPersonaFirstDependant({ guardianPubkey: GNP, enteredName: 'Lily', derivationPath: 'dependant-2',
-    naturalPerson: { publicKey: NP, privateKey: '' }, persona: { publicKey: PERSONA, privateKey: '' }, createdAt: 1 }),
-  childDevice: { mode: 'heartwood-direct', slotLabel: 'signet:child-device:v2:x', secretFingerprint: 'ab', slotIndex: 6,
-    clientPubkey: CHILD, boundPersona: PERSONA, pairedAt: 1 },
-};
+function makeDep(over: Partial<DependantIdentity> = {}, pairedAt = Date.now()): DependantIdentity {
+  return {
+    ...buildPersonaFirstDependant({ guardianPubkey: GNP, enteredName: 'Lily', derivationPath: 'dependant-2',
+      naturalPerson: { publicKey: NP, privateKey: '' }, persona: { publicKey: PERSONA, privateKey: '' }, createdAt: 1 }),
+    childDevice: { mode: 'heartwood-direct', slotLabel: 'signet:child-device:v2:x', secretFingerprint: 'ab', slotIndex: 6,
+      clientPubkey: CHILD, boundPersona: PERSONA, pairedAt },
+    ...over,
+  };
+}
 function slot(over: Partial<DeviceClientSlot>): DeviceClientSlot {
   return { slotIndex: 0, label: '', secretFingerprint: 'x', autoApprove: true, signingApproved: true, strictPermissions: true, currentPubkey: null,
     authorizedPubkeys: [], allowedKinds: [], allowedMethods: [], escalate: false, petitionOnDeny: false, auditChildWrap: false, boundIdentity: null, ...over };
@@ -37,100 +41,184 @@ function device(child: string[] | undefined, guardian: string[] | undefined): De
     slot({ slotIndex: 1, secretFingerprint: 'g', currentPubkey: GUARDIAN, authorizedPubkeys: [GUARDIAN], boundIdentity: MASTER, ...(guardian ? { clientApprovals: [grant(GUARDIAN, guardian)] } : {}) }),
   ];
 }
-
-function opts(over: Partial<UseChildReadyCheckOpts> = {}): UseChildReadyCheckOpts {
-  return {
-    dependant: dep, operator: op, guardianNpPubkey: GNP, guardianClientPubkey: GUARDIAN, npBackend: null,
-    enabled: true, probeOnStart: false, startDelayMs: 0, pollMs: 20, pollForMs: 2_000, ...over,
+function memStore(initial: ChildReadyRecords = {}) {
+  let data: ChildReadyRecords = { ...initial };
+  const store: ChildReadyStore & { data(): ChildReadyRecords } = {
+    data: () => data,
+    load: vi.fn(async () => ({ ...data })),
+    update: vi.fn(async (fn) => { const n = fn({ ...data }); if (n) data = n; }),
   };
+  return store;
 }
 
-beforeEach(() => { mList.mockReset(); resetChildReadyCheckMemory(); });
+function opts(over: Partial<UseGuardianReadyChecksOpts> = {}): UseGuardianReadyChecksOpts {
+  return {
+    enabled: true, dependants: [makeDep()], operator: op, guardianNpPubkey: GNP, guardianClientPubkey: GUARDIAN, npBackend: null,
+    encryptionKey: 'k'.repeat(64), store: memStore(), startDelayMs: 0, pollMs: 20, pollForMs: 2_000, retryDelaysMs: [20, 20], ...over,
+  };
+}
+const wait = (ms: number) => act(async () => { await new Promise(r => setTimeout(r, ms)); });
 
-describe('useChildReadyCheck (guardian)', () => {
-  it('end of pairing: probes its own natural person once through the NP route, then trusts only the device', async () => {
+beforeEach(() => { mList.mockReset(); });
+
+describe('useGuardianReadyChecks (guardian, App-level)', () => {
+  it('a fresh pairing: probes its own natural person once through the NP route with no screen open, then trusts only the device', async () => {
     let state = device([], []);
     mList.mockImplementation(async () => state);
     const nip44Encrypt = vi.fn(async () => { state = device([], [GNP]); return 'x'; });
-    const { result } = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: { nip44Encrypt } })));
+    const dep = makeDep();
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt } })));
     await waitFor(() => expect(nip44Encrypt).toHaveBeenCalledTimes(1));
     expect(nip44Encrypt).toHaveBeenCalledWith(GNP, APPROVE_IDENTITY_PLAINTEXT);
-    await waitFor(() => expect(result.current.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'ready', verified: true }));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'ready' }));
     // The child's bound persona has had no press yet: still owed.
-    expect(result.current.rows[0]).toMatchObject({ pubkey: PERSONA, state: 'waiting' });
-    expect(result.current.owed).toBe(1);
+    expect(result.current.forDependant(dep.id)!.rows[0]).toMatchObject({ pubkey: PERSONA, state: 'waiting' });
+    expect(result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'owed', owed: 1 });
     // Its press lands (the child's phone probed it): the poll sees it.
     state = device([PERSONA], [GNP]);
-    await waitFor(() => expect(result.current.owed).toBe(0));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('ready'));
+    expect(nip44Encrypt).toHaveBeenCalledTimes(1);
+    expect(result.current.approvedByDep[dep.id]).toEqual([PERSONA]);
+  });
+
+  it('saves "owed" BEFORE the probe goes out, so leaving, a lock or a restart mid-probe keeps it owed', async () => {
+    mList.mockResolvedValue(device([PERSONA], []));
+    const store = memStore();
+    let release: () => void = () => {};
+    const nip44Encrypt = vi.fn(() => new Promise<string>((res) => { release = () => res('x'); }));
+    const dep = makeDep();
+    const first = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt }, store })));
+    await waitFor(() => expect(nip44Encrypt).toHaveBeenCalledTimes(1));
+    expect(store.data()[dep.id]).toMatchObject({ pairing: pairingKeyOf(dep), guardian: 'owed' });
+    // "Restart" with the press never made: a new instance, the device unreachable this time.
+    first.unmount();
+    release();
+    mList.mockReset();
+    mList.mockRejectedValue(new Error('offline'));
+    const second = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt }, store })));
+    await waitFor(() => expect(second.result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'owed', owed: 1 }));
+    expect(second.result.current.forDependant(dep.id)!.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'waiting' });
+    await wait(60);
+    // Once per pairing: not sent again on its own.
     expect(nip44Encrypt).toHaveBeenCalledTimes(1);
   });
 
-  it('no NP route: no probe, recorded as not confirmed (still owed), never as done', async () => {
+  it('no NP route: no probe, owed with Try again, saved as no-route', async () => {
     mList.mockResolvedValue(device([PERSONA], []));
-    const { result } = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: null })));
-    await waitFor(() => expect(result.current.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'waiting', failed: true }));
-    expect(result.current.owed).toBe(1);
+    const store = memStore();
+    const dep = makeDep();
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: null, store })));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'waiting', failed: true }));
+    expect(result.current.forDependant(dep.id)!.owed).toBe(1);
+    await waitFor(() => expect(store.data()[dep.id]?.guardian).toBe('no-route'));
   });
 
-  it('older firmware (no client_approvals): a probe answer is the fallback, marked unverified', async () => {
+  it('older firmware (no client_approvals): the probe still collects the press, but nothing is called Ready: unknown', async () => {
     mList.mockResolvedValue(device(undefined, undefined));
     const nip44Encrypt = vi.fn(async () => 'x');
-    const { result } = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: { nip44Encrypt } })));
-    await waitFor(() => expect(result.current.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'ready', verified: false }));
-    expect(result.current.owed).toBe(0);
-    expect(result.current.unverified).toBe(true);
+    const dep = makeDep();
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt } })));
+    await waitFor(() => expect(nip44Encrypt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'unknown' }));
+    expect(result.current.forDependant(dep.id)!.rows.every(r => r.state === 'unknown')).toBe(true);
+    // The child is not told anything it cannot know: no `approved`.
+    expect(result.current.approvedByDep[dep.id]).toBeUndefined();
   });
 
   it('a failed probe (timeout or refusal) stays owed', async () => {
     mList.mockResolvedValue(device([PERSONA], []));
     const nip44Encrypt = vi.fn(async () => { throw new Error('timed out'); });
-    const { result } = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: { nip44Encrypt } })));
-    await waitFor(() => expect(result.current.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'waiting', failed: true }));
-    expect(result.current.owed).toBe(1);
+    const dep = makeDep();
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt } })));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.rows.find(r => r.who === 'guardian')).toMatchObject({ state: 'waiting', failed: true }));
+    expect(result.current.forDependant(dep.id)!.owed).toBe(1);
   });
 
   it('already listed on the device: no probe at all', async () => {
     mList.mockResolvedValue(device([PERSONA], [GNP]));
     const nip44Encrypt = vi.fn(async () => 'x');
-    const { result } = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: { nip44Encrypt } })));
-    await waitFor(() => expect(result.current.checked).toBe(true));
-    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
+    const dep = makeDep();
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt } })));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('ready'));
+    await wait(30);
     expect(nip44Encrypt).not.toHaveBeenCalled();
-    expect(result.current.owed).toBe(0);
   });
 
-  it('elsewhere (Permissions): reads only; the probe is sent on Finish now', async () => {
+  it('an older pairing (outside the window): reads only; the probe is sent on Finish now', async () => {
     let state = device([PERSONA], []);
     mList.mockImplementation(async () => state);
     const nip44Encrypt = vi.fn(async () => { state = device([PERSONA], [GNP]); return 'x'; });
-    const { result } = renderHook(() => useChildReadyCheck(opts({ probeOnStart: false, npBackend: { nip44Encrypt } })));
-    await waitFor(() => expect(result.current.owed).toBe(1));
+    const dep = makeDep({}, 1);
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], npBackend: { nip44Encrypt } })));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.owed).toBe(1));
+    await wait(30);
     expect(nip44Encrypt).not.toHaveBeenCalled();
-    await act(async () => { await result.current.finishNow(); });
+    await act(async () => { await result.current.forDependant(dep.id)!.finishNow(); });
     expect(nip44Encrypt).toHaveBeenCalledTimes(1);
-    expect(result.current.owed).toBe(0);
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('ready'));
   });
 
-  it('the automatic probe runs once per pairing, not on every remount', async () => {
-    mList.mockResolvedValue(device([PERSONA], []));
-    const nip44Encrypt = vi.fn(async () => { throw new Error('timed out'); });
-    const first = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: { nip44Encrypt } })));
-    await waitFor(() => expect(nip44Encrypt).toHaveBeenCalledTimes(1));
-    first.unmount();
-    const second = renderHook(() => useChildReadyCheck(opts({ probeOnStart: true, npBackend: { nip44Encrypt } })));
-    await waitFor(() => expect(second.result.current.checked).toBe(true));
-    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
-    expect(nip44Encrypt).toHaveBeenCalledTimes(1);
-  });
-
-  it('disabled, or a device that cannot be read: no rows, no notice, nothing thrown', async () => {
+  it('a failed read is unknown (never Ready, never "child gone") and is retried with backoff', async () => {
     mList.mockRejectedValue(new Error('offline'));
-    const { result } = renderHook(() => useChildReadyCheck(opts()));
-    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
-    expect(result.current.rows).toEqual([]);
-    expect(result.current.checked).toBe(false);
-    const off = renderHook(() => useChildReadyCheck(opts({ enabled: false })));
-    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
-    expect(off.result.current.rows).toEqual([]);
+    const dep = makeDep({}, 1);
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep] })));
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'unknown' }));
+    expect(result.current.forDependant(dep.id)!.checked).toBe(true);
+    await waitFor(() => expect(mList.mock.calls.length).toBeGreaterThanOrEqual(3));
+    // Bounded: one first try plus the two listed retries, then quiet.
+    await wait(80);
+    expect(mList).toHaveBeenCalledTimes(3);
+  });
+
+  it('a reply with an empty or missing client list is unknown, not "child gone"', async () => {
+    const dep = makeDep({}, 1);
+    mList.mockResolvedValue([]);
+    const empty = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep] })));
+    await waitFor(() => expect(empty.result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'unknown' }));
+    empty.unmount();
+    mList.mockReset();
+    mList.mockRejectedValue(new Error('list_clients reply had no client list'));
+    const missing = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep] })));
+    await waitFor(() => expect(missing.result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'unknown' }));
+  });
+
+  it('a transient read failure keeps the last good reading for the child (no flapping `approved`)', async () => {
+    mList.mockResolvedValue(device([PERSONA], [GNP]));
+    const dep = makeDep({}, 1);
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], retryDelaysMs: [] })));
+    await waitFor(() => expect(result.current.approvedByDep[dep.id]).toEqual([PERSONA]));
+    mList.mockRejectedValue(new Error('offline'));
+    act(() => { result.current.watch(dep.id); });
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('unknown'));
+    expect(result.current.approvedByDep[dep.id]).toEqual([PERSONA]);
+  });
+
+  it('paused: no probe and no nag; the pause ending starts the check', async () => {
+    mList.mockResolvedValue(device([], []));
+    const nip44Encrypt = vi.fn(async () => 'x');
+    const paused = makeDep({ defaultSchedule: { paused: true } as DependantIdentity['defaultSchedule'] });
+    const { result, rerender } = renderHook((p: { dep: DependantIdentity }) => useGuardianReadyChecks(opts({ dependants: [p.dep], npBackend: { nip44Encrypt } })),
+      { initialProps: { dep: paused } });
+    await waitFor(() => expect(result.current.forDependant(paused.id)!.summary).toEqual({ kind: 'paused' }));
+    expect(result.current.forDependant(paused.id)!.owed).toBe(0);
+    await act(async () => { await result.current.forDependant(paused.id)!.finishNow(); });
+    await wait(30);
+    expect(nip44Encrypt).not.toHaveBeenCalled();
+    rerender({ dep: { ...paused, defaultSchedule: undefined } });
+    await waitFor(() => expect(nip44Encrypt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.forDependant(paused.id)!.summary.kind).toBe('owed'));
+  });
+
+  it('disabled or not a direct dependant: nothing', async () => {
+    mList.mockResolvedValue(device([PERSONA], [GNP]));
+    const dep = makeDep();
+    const off = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], enabled: false })));
+    await wait(30);
+    expect(off.result.current.forDependant(dep.id)).toBeNull();
+    expect(mList).not.toHaveBeenCalled();
+    const legacy = { ...dep, childDevice: undefined };
+    const leg = renderHook(() => useGuardianReadyChecks(opts({ dependants: [legacy] })));
+    await wait(30);
+    expect(leg.result.current.forDependant(dep.id)).toBeNull();
   });
 });

@@ -7,7 +7,7 @@ import { deviceShortNpub, type ReadyRow } from '../lib/child-ready-check';
 
 const A = 'aa'.repeat(32), B = 'bb'.repeat(32), C = 'cc'.repeat(32);
 const row = (pubkey: string, name: string, state: ReadyRow['state'], extra: Partial<ReadyRow> = {}): ReadyRow =>
-  ({ pubkey, name, who: 'child', state, verified: false, ...extra });
+  ({ pubkey, name, who: 'child', state, ...extra });
 
 describe('ChildIdentityApprovals (ready checklist)', () => {
   it('lists every identity as waiting for a press / ready / skipped, with the Heartwood card identity line', () => {
@@ -17,6 +17,13 @@ describe('ChildIdentityApprovals (ready checklist)', () => {
     expect(within(screen.getByTestId(`ready-row-${C}`)).getByText(COPY.state.skipped)).toBeTruthy();
     expect(screen.getByText(COPY.onHeartwood(deviceShortNpub(A)))).toBeTruthy();
     expect(deviceShortNpub(A)).toMatch(/^npub1[a-z0-9]{8}\.\.$/);
+  });
+
+  it('names the unknown and the cannot-remember rows, with no button on either', () => {
+    render(<ChildIdentityApprovals rows={[row(A, 'Ally', 'unknown'), row(B, 'Gamer', 'full')]} onRetry={() => {}} onDefer={() => {}} />);
+    expect(within(screen.getByTestId(`ready-row-${A}`)).getByText(COPY.state.unknown)).toBeTruthy();
+    expect(within(screen.getByTestId(`ready-row-${B}`)).getByText(COPY.state.full)).toBeTruthy();
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
   it('offers Later on a pending child row and reports it; never on the guardian row, which shows no npub', () => {

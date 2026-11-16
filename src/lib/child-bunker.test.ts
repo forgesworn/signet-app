@@ -5,7 +5,7 @@ import type { AppPreferences, SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, childSignerKind, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, childSignerKind, CHILD_CONNECT_STALL_MS, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -260,6 +260,15 @@ describe('childSignerKind', () => {
     expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: true })).toBe('heartwood-connecting');
     expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true })).toBe('heartwood');
     expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: false })).toBe('heartwood');
+  });
+
+  it('a direct install still not connected after a minute unlocked: the Heartwood cannot be reached; back to normal once it connects', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: true, stalled: true })).toBe('heartwood-unreachable');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true, stalled: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: false, stalled: true })).toBe('heartwood');
+    // A legacy phone-paired child never says it.
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, stalled: true })).toBe('guardian-phone');
+    expect(CHILD_CONNECT_STALL_MS).toBe(60_000);
   });
 
   it('a legacy phone-paired child keeps the old rule; a guardian never gets the child copy', () => {

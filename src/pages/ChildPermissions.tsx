@@ -14,7 +14,7 @@
  * Presentational: every effect is a callback the caller owns. One flow — the
  * mobile layout, framed on desktop by DesktopFrame.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AutonomyStage, DependantIdentity } from '../types';
 import type { ChildRule } from '../types/child-rules';
 import type { ConnectedChildApp } from '../lib/child-activity';
@@ -23,7 +23,7 @@ import type { ChildAskHistoryEntry } from '../hooks/useChildAsks';
 import type { ChildGateAskRecord } from '../hooks/useChildGate';
 import { useChildActivity } from '../hooks/useChildActivity';
 import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
-import { useChildReadyCheck, type ChildReadyCheckDeps } from '../hooks/useChildReadyCheck';
+import type { ChildReadyCheck } from '../hooks/useChildReadyCheck';
 import { ChildReadyNotice } from '../components/ChildReadyNotice';
 import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 import { childRulesPayloadFor } from '../hooks/useChildRulesPublisher';
@@ -387,25 +387,22 @@ export interface ChildPermissionsGuardianRouteProps {
   onOpenStage(): void;
   onSetAppPermissionSelfApproval?: (enabled: boolean) => Promise<void>;
   onUnpaired(): void;
-  /** The ready check's inputs (this phone's client key, its natural-person route). Absent: no ready notice. */
-  readyCheck?: ChildReadyCheckDeps;
+  /** The ready check for this dependant (App-level `useGuardianReadyChecks`). Absent: no ready notice. */
+  readiness?: ChildReadyCheck | null;
+  /** The page is showing the checklist: read the Heartwood now and watch for presses. */
+  onWatchReadiness?: () => void;
 }
 
 /** Guardian wiring: the rules payload the child would receive, the child's connected apps, and Unpair. */
 export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRouteProps) {
   const dep = p.dependant;
   const pairing = useChildDevicePairing({ ...p.pairing, dependant: dep });
-  // Not ready away from home: shown while any press is owed. Reads only; the
-  // natural-person probe is sent from here only on "Finish now".
-  const ready = useChildReadyCheck({
-    dependant: dep,
-    operator: p.pairing.operator,
-    guardianNpPubkey: p.pairing.guardianNpPubkey,
-    guardianClientPubkey: p.readyCheck?.guardianClientPubkey ?? null,
-    npBackend: p.readyCheck?.npBackend ?? null,
-    enabled: !!p.readyCheck,
-    probeOnStart: false,
-  });
+  // Not ready away from home (or cannot confirm): the App-level check reads
+  // the Heartwood; the natural-person probe is sent from here only on "Finish now".
+  const ready = p.readiness ?? null;
+  const watchRef = useRef(p.onWatchReadiness);
+  watchRef.current = p.onWatchReadiness;
+  useEffect(() => { watchRef.current?.(); }, [dep.id]);
   const { apps } = useChildActivity({ dependant: dep, relays: p.relays, encryptionKey: p.encryptionKey, deviceEntries: NO_DEVICE_ENTRIES });
   const nowMs = Date.now();
   const payload = p.childRules ? childRulesPayloadFor(dep, p.childRules, p.approvedOnce, nowMs) : null;
@@ -419,13 +416,17 @@ export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRoutePr
   const history = useMemo(() => p.history.filter(h => h.ask.dependantId.toLowerCase() === dep.id.toLowerCase()), [p.history, dep.id]);
   return (
     <>
-    <ChildReadyNotice
-      rows={ready.rows}
-      showReady={false}
-      onFinishNow={() => { void ready.finishNow(); }}
-      onRetry={() => { void ready.finishNow(); }}
-      {...(ready.rows.some(r => r.who === 'child' && r.state !== 'ready') ? { hint: CHILD_READY_COPY.childPressHint(dep.displayName) } : {})}
-    />
+    {ready ? (
+      <ChildReadyNotice
+        rows={ready.rows}
+        summary={ready.summary}
+        name={dep.displayName}
+        showReady={false}
+        onFinishNow={() => { void ready.finishNow(); }}
+        onRetry={() => { void ready.finishNow(); }}
+        {...(ready.rows.some(r => r.who === 'child' && (r.state === 'waiting' || r.state === 'skipped')) ? { hint: CHILD_READY_COPY.childPressHint(dep.displayName) } : {})}
+      />
+    ) : null}
     <ChildPermissions
       viewer="guardian"
       childName={dep.displayName}

@@ -14,7 +14,8 @@ import { buildPersonaFirstDependant } from '../lib/dependant-record';
 import type { DeviceClientSlot } from '../lib/heartwood-mgmt-types';
 import type { DependantIdentity } from '../types';
 import { CHILD_READY_COPY } from '../lib/child-ready-copy';
-import { resetChildReadyCheckMemory } from '../hooks/useChildReadyCheck';
+import { useGuardianReadyChecks, type ChildReadyStore } from '../hooks/useChildReadyCheck';
+import type { ChildReadyRecords } from '../lib/db';
 import { ChildPermissionsGuardianRoute, type ChildPermissionsGuardianRouteProps } from './ChildPermissions';
 
 const mList = vi.mocked(listClients);
@@ -37,20 +38,34 @@ function device(childIds: string[], guardianIds: string[]): DeviceClientSlot[] {
   ];
 }
 
+const op = { isOpen: true } as unknown as HeartwoodMgmtClient;
+function memStore(): ChildReadyStore {
+  let data: ChildReadyRecords = {};
+  return { load: async () => ({ ...data }), update: async (fn) => { const n = fn({ ...data }); if (n) data = n; } };
+}
+
 function renderRoute(nip44Encrypt = vi.fn(async () => 'x')) {
-  const props: ChildPermissionsGuardianRouteProps = {
+  const store = memStore();
+  const props: Omit<ChildPermissionsGuardianRouteProps, 'readiness' | 'onWatchReadiness'> = {
     dependant: dep, childRules: [], approvedOnce: [], relays: ['wss://r.example'], encryptionKey: 'k'.repeat(64),
     pairing: {
-      operator: { isOpen: true } as unknown as HeartwoodMgmtClient, operatorStatus: null, guardianNpPubkey: GNP,
+      operator: op, operatorStatus: null, guardianNpPubkey: GNP,
       railRelay: 'wss://r.example', hwRelays: [], encryptionKey: 'k'.repeat(64), grants: [], onDependantUpdated: async () => {},
     },
     history: [], onRevokeRule: async () => {}, onBlockApp: async () => {}, onRemovePersona: async () => {}, onOpenStage: () => {}, onUnpaired: () => {},
-    readyCheck: { guardianClientPubkey: GUARDIAN, npBackend: { nip44Encrypt } },
   };
-  return render(<ChildPermissionsGuardianRoute {...props} />);
+  // The App-level check, as App mounts it; the page only shows its result.
+  function Harness() {
+    const checks = useGuardianReadyChecks({
+      enabled: true, dependants: [dep], operator: op, guardianClientPubkey: GUARDIAN, guardianNpPubkey: GNP,
+      npBackend: { nip44Encrypt }, encryptionKey: 'k'.repeat(64), store, startDelayMs: 0, pollMs: 20, pollForMs: 500, retryDelaysMs: [],
+    });
+    return <ChildPermissionsGuardianRoute {...props} readiness={checks.forDependant(dep.id)} onWatchReadiness={() => checks.watch(dep.id)} />;
+  }
+  return render(<Harness />);
 }
 
-beforeEach(() => { mList.mockReset(); resetChildReadyCheckMemory(); });
+beforeEach(() => { mList.mockReset(); });
 
 describe('ChildPermissionsGuardianRoute — not ready away from home', () => {
   it('a press owed on either side shows the notice and the checklist on Finish now; no probe until then', async () => {
@@ -72,5 +87,16 @@ describe('ChildPermissionsGuardianRoute — not ready away from home', () => {
     await waitFor(() => expect(mList).toHaveBeenCalled());
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     expect(screen.queryByText(CHILD_READY_COPY.notReadyHeading)).toBeNull();
+    expect(screen.queryByText(CHILD_READY_COPY.ready)).toBeNull();
+  });
+
+  it('the device cannot be read: "Can\'t confirm from this phone", never Ready, no count, no Finish now', async () => {
+    mList.mockRejectedValue(new Error('offline'));
+    renderRoute();
+    expect(await screen.findByText(CHILD_READY_COPY.unknownHeading)).toBeTruthy();
+    expect(screen.getByText(CHILD_READY_COPY.unknownBody('Lily'))).toBeTruthy();
+    expect(screen.queryByText(CHILD_READY_COPY.ready)).toBeNull();
+    expect(screen.queryByText(/still needed/)).toBeNull();
+    expect(screen.queryByText(CHILD_READY_COPY.finishNow)).toBeNull();
   });
 });

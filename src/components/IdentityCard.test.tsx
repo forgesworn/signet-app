@@ -438,7 +438,7 @@ describe('IdentityCard — backdrop control', () => {
 });
 
 describe('IdentityCard — who signs for a paired child', () => {
-  const card = (kind: 'guardian-phone' | 'heartwood' | 'heartwood-connecting') =>
+  const card = (kind: 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable') =>
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant childSignerKind={kind} cachedGuardianName="Mum" />);
 
   it('a phone paired straight to the Heartwood whose router is down is connecting, never told to ask the guardian’s phone', () => {
@@ -447,6 +447,19 @@ describe('IdentityCard — who signs for a paired child', () => {
     expect(screen.getByText('Connecting to your family Heartwood…')).toBeTruthy();
     expect(screen.queryByText('This device is dormant.')).toBeNull();
     expect(screen.queryByText(/sign for you on their phone/)).toBeNull();
+  });
+
+  it('still connecting after a minute: says the Heartwood cannot be reached and whom to ask', () => {
+    card('heartwood-unreachable');
+    expect(screen.getByText('Can\'t reach your family Heartwood')).toBeTruthy();
+    expect(screen.getByText('If this keeps happening, ask Mum to check this phone\'s pairing.')).toBeTruthy();
+    expect(screen.queryByText('Connecting to your family Heartwood…')).toBeNull();
+    expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
+  });
+
+  it('a dependant card on the guardian\'s phone shows the ready notice it is given', () => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} readyNotice={<div data-testid="ready-notice">owed</div>} />);
+    expect(screen.getByTestId('ready-notice')).toBeTruthy();
   });
 
   it('a legacy phone-paired child is unchanged: dormant, ask the guardian', () => {

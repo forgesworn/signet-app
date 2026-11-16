@@ -2,9 +2,14 @@
  * Copy for the child-direct ready check: every Heartwood press a family will
  * ever need is collected during setup, at home, and both phones say plainly
  * when one is still owed. British English. Shown on the guardian's phone (end
- * of pairing, the child's Permissions page) and the child's phone (home,
- * banners, Permissions page).
+ * of pairing, the child's Permissions page, the dependant's settings and home
+ * card) and the child's phone (home, banners).
+ *
+ * The rule behind every line: never say Ready unless the Heartwood has
+ * confirmed it, never ask for a press that cannot be shown to be owed, and say
+ * so when this phone cannot tell.
  */
+import { HEARTWOOD_HOLD_TO_FINISH } from './local-key-only-copy';
 
 export const CHILD_READY_COPY = {
   notReadyHeading: 'Not ready away from home',
@@ -12,12 +17,25 @@ export const CHILD_READY_COPY = {
   doAtHome: 'Do this at home, with the Heartwood in reach.',
   finishNow: 'Finish now',
   ready: 'Ready to use away from home.',
-  pressAndHold: 'Press and hold the button on your Heartwood to finish.',
+  pressAndHold: HEARTWOOD_HOLD_TO_FINISH,
+  /** The Heartwood did not say what it has remembered (older firmware, or a reply this phone could not read). */
+  unknownHeading: 'Can\'t confirm from this phone',
+  unknownBody: (name: string) => `Your Heartwood didn't report what it has remembered. Check ${name}'s phone shows Ready, or update the Heartwood.`,
+  /** The slot already holds as many identities as the Heartwood can remember for it. */
+  fullHeading: 'Your Heartwood can\'t remember any more identities for this phone',
+  fullBody: (name: string) => `It will ask for a press each time ${name} uses this one.`,
+  /** A paused child's slot refuses everything, so nothing is asked of the Heartwood. */
+  paused: (name: string) => `Paused. Readiness will be checked when ${name} is unpaused.`,
+  /** The child's card after a minute without a connection to the Heartwood. */
+  unreachableHeading: 'Can\'t reach your family Heartwood',
+  unreachableBody: (guardianName: string) => `If this keeps happening, ask ${guardianName} to check this phone's pairing.`,
   /** Checklist row states. */
   state: {
     waiting: 'Waiting for a press',
     ready: 'Ready',
     skipped: 'Skipped',
+    unknown: 'Not confirmed',
+    full: 'Asks every time',
   },
   retry: 'Try again',
   later: 'Later',

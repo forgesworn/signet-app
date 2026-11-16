@@ -1,50 +1,78 @@
 /**
- * The ready-check notice (child-direct pairing), on both phones. While any
- * Heartwood press is still owed it stays put, says how many, and offers
- * "Finish now", which opens the checklist and asks again for what is owed.
- * Nothing owed: "Ready to use away from home." when `showReady`, else nothing.
+ * The ready-check notice (child-direct pairing), on both phones, chosen by
+ * `readySummary` alone:
+ *   owed     "Not ready away from home", how many presses, "Finish now"
+ *            (opens the checklist and asks again for what is owed);
+ *   full     the Heartwood cannot remember any more identities for this
+ *            phone: no press count, no "Finish now";
+ *   unknown  this phone cannot confirm: no "Ready", no count, no button;
+ *   paused   one line, no nag;
+ *   ready    "Ready to use away from home." only when `showReady`.
+ * `compact` drops the card frame, for a notice inside another card.
  */
 import { useState } from 'react';
-import type { ReadyRow } from '../lib/child-ready-check';
-import { owedPresses } from '../lib/child-ready-check';
+import type { ReadyRow, ReadySummary } from '../lib/child-ready-check';
 import { CHILD_READY_COPY as COPY } from '../lib/child-ready-copy';
 import { ChildIdentityApprovals } from './ChildIdentityApprovals';
 
 interface Props {
   rows: ReadyRow[];
-  /** Show the ready line once nothing is owed. */
+  summary: ReadySummary;
+  /** The child's name, for the full / unknown / paused lines. */
+  name: string;
+  /** Show the ready line once everything is confirmed. */
   showReady: boolean;
   /** Show the checklist without a tap (setup surfaces, or while a first probe runs). */
   open?: boolean;
+  compact?: boolean;
   onFinishNow(): void;
   onRetry?(pubkey: string): void;
   onDefer?(pubkey: string): void;
   hint?: string;
 }
 
-export function ChildReadyNotice({ rows, showReady, open, onFinishNow, onRetry, onDefer, hint }: Props) {
+const secondary = { color: 'var(--text-secondary)', fontSize: '0.85rem' } as const;
+
+export function ChildReadyNotice({ rows, summary, name, showReady, open, compact, onFinishNow, onRetry, onDefer, hint }: Props) {
   const [opened, setOpened] = useState(false);
-  if (rows.length === 0) return null;
-  const owed = owedPresses(rows);
-  if (owed === 0) {
-    return showReady ? (
-      <div className="card section" role="status" data-testid="ready-notice" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ fontWeight: 600 }}>{COPY.ready}</div>
-      </div>
-    ) : null;
-  }
-  const showList = open || opened || rows.some(r => r.probing);
+  if (summary.kind === 'empty') return null;
+  if (summary.kind === 'ready' && !showReady) return null;
+  const frame = compact
+    ? { className: 'card-ready-notice', style: { padding: '10px 12px', borderRadius: 'var(--radius)', background: 'var(--bg-card-alt)', border: '1px solid var(--border)', fontSize: '0.85rem', textAlign: 'left' as const } }
+    : { className: 'card section', style: { padding: 16, marginBottom: 12 } };
+  const list = (
+    <div style={{ marginBottom: 12 }}>
+      <ChildIdentityApprovals rows={rows} {...(onRetry ? { onRetry } : {})} {...(onDefer ? { onDefer } : {})} {...(hint ? { hint } : {})} />
+    </div>
+  );
+  // Inside a card that opens on a tap: keep taps on the notice to the notice.
+  const stop = compact ? { onClick: (e: { stopPropagation(): void }) => e.stopPropagation() } : {};
   return (
-    <div className="card section" role="status" data-testid="ready-notice" style={{ padding: 16, marginBottom: 12 }}>
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>{COPY.notReadyHeading}</div>
-      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 4 }}>{COPY.pressesOwed(owed)}</p>
-      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 12 }}>{COPY.doAtHome}</p>
-      {showList ? (
-        <div style={{ marginBottom: 12 }}>
-          <ChildIdentityApprovals rows={rows} {...(onRetry ? { onRetry } : {})} {...(onDefer ? { onDefer } : {})} {...(hint ? { hint } : {})} />
-        </div>
-      ) : null}
-      <button className="btn btn-primary btn-sm" onClick={() => { setOpened(true); onFinishNow(); }}>{COPY.finishNow}</button>
+    <div className={frame.className} role="status" data-testid="ready-notice" data-summary={summary.kind} style={frame.style} {...stop}>
+      {summary.kind === 'ready' ? (
+        <div style={{ fontWeight: 600 }}>{COPY.ready}</div>
+      ) : summary.kind === 'paused' ? (
+        <div style={secondary}>{COPY.paused(name)}</div>
+      ) : summary.kind === 'unknown' ? (
+        <>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>{COPY.unknownHeading}</div>
+          <p style={{ ...secondary, margin: 0 }}>{COPY.unknownBody(name)}</p>
+        </>
+      ) : summary.kind === 'full' ? (
+        <>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>{COPY.fullHeading}</div>
+          <p style={{ ...secondary, marginBottom: compact ? 0 : 12 }}>{COPY.fullBody(name)}</p>
+          {compact ? null : list}
+        </>
+      ) : (
+        <>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>{COPY.notReadyHeading}</div>
+          <p style={{ ...secondary, marginBottom: 4 }}>{COPY.pressesOwed(summary.owed)}</p>
+          <p style={{ ...secondary, marginBottom: 12 }}>{COPY.doAtHome}</p>
+          {open || opened || rows.some(r => r.probing) ? list : null}
+          <button className="btn btn-primary btn-sm" onClick={() => { setOpened(true); onFinishNow(); }}>{COPY.finishNow}</button>
+        </>
+      )}
     </div>
   );
 }

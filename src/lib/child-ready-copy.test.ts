@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CHILD_READY_COPY as COPY } from './child-ready-copy';
+import { HEARTWOOD_HOLD_TO_FINISH } from './local-key-only-copy';
 
 describe('CHILD_READY_COPY', () => {
   it('says the agreed words', () => {
@@ -8,7 +9,25 @@ describe('CHILD_READY_COPY', () => {
     expect(COPY.finishNow).toBe('Finish now');
     expect(COPY.ready).toBe('Ready to use away from home.');
     expect(COPY.pressAndHold).toBe('Press and hold the button on your Heartwood to finish.');
+    expect(COPY.pressAndHold).toBe(HEARTWOOD_HOLD_TO_FINISH);
     expect([COPY.state.waiting, COPY.state.ready, COPY.state.skipped]).toEqual(['Waiting for a press', 'Ready', 'Skipped']);
+  });
+
+  it('says plainly when this phone cannot confirm, when the slot is full, when paused and when unreachable', () => {
+    expect(COPY.unknownHeading).toBe('Can\'t confirm from this phone');
+    expect(COPY.unknownBody('Sky')).toBe('Your Heartwood didn\'t report what it has remembered. Check Sky\'s phone shows Ready, or update the Heartwood.');
+    expect(COPY.fullHeading).toBe('Your Heartwood can\'t remember any more identities for this phone');
+    expect(COPY.fullBody('Sky')).toBe('It will ask for a press each time Sky uses this one.');
+    expect(COPY.paused('Sky')).toBe('Paused. Readiness will be checked when Sky is unpaused.');
+    expect(COPY.unreachableHeading).toBe('Can\'t reach your family Heartwood');
+    expect(COPY.unreachableBody('Alex')).toBe('If this keeps happening, ask Alex to check this phone\'s pairing.');
+  });
+
+  it('never says Ready, a press count or Finish now in the unknown, full or paused lines', () => {
+    for (const line of [COPY.unknownHeading, COPY.fullHeading, COPY.fullBody('Sky'), COPY.paused('Sky')]) {
+      expect(line).not.toMatch(/presses? still needed|Finish now/);
+    }
+    expect(COPY.unknownHeading + COPY.fullHeading + COPY.paused('Sky')).not.toMatch(/Ready/);
   });
 
   it('counts presses in the singular and the plural', () => {

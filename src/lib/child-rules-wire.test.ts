@@ -51,6 +51,37 @@ describe('child rules wire', () => {
     await expect(buildChildRulesEvent(payload([rule()], { personas: Array(33).fill(PERSONA) }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
   });
 
+  it('ready check: carries the guardian\'s reading (`approved`), sorted and deduplicated; [] is not absent', async () => {
+    const B = 'b'.repeat(64);
+    const ev = await buildChildRulesEvent(payload([rule()], { approved: [PERSONA, B, PERSONA].sort().reverse() }), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(ev, CLIENT_SK, expectOk))!.approved).toEqual([PERSONA, B]);
+    const none = await buildChildRulesEvent(payload([rule()], { approved: [] }), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(none, CLIENT_SK, expectOk))!.approved).toEqual([]);
+    const bare = await buildChildRulesEvent(payload([rule()]), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(bare, CLIENT_SK, expectOk))!.approved).toBeUndefined();
+  });
+
+  it('ready check: a malformed `approved` is refused like `personas`', async () => {
+    await expect(buildChildRulesEvent(payload([rule()], { approved: ['A'.repeat(64)] }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
+    await expect(buildChildRulesEvent(payload([rule()], { approved: Array(33).fill(PERSONA) }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
+  });
+
+  it('a field this build does not know is ignored, not refused (how a released child reads `approved`)', async () => {
+    // Sealed by hand so the builder's own check cannot strip the extra field.
+    const { sealVaultPayload } = await import('./vault-envelope');
+    const { getConversationKey, encrypt } = await import('nostr-tools/nip44');
+    const body = { ...payload([rule()]), futureField: ['x'] };
+    const sealed = await sealVaultPayload(JSON.stringify(body), {
+      activePublicKeyHex: RAIL_PK,
+      nip44Encrypt: async (pub: string, text: string) => encrypt(text, getConversationKey(rail, pub)),
+    }, { recipientPubkey: CLIENT_PK });
+    const ev = finalizeEvent({ kind: 30078, created_at: 1_000_000, tags: [['d', CHILD_RULES_WIRE_D_TAG], ['p', CLIENT_PK]], content: sealed! }, rail) as unknown as NostrEvent;
+    const out = await openChildRulesEvent(ev, CLIENT_SK, expectOk);
+    expect(out).not.toBeNull();
+    expect(out!.rules).toHaveLength(1);
+    expect((out as unknown as Record<string, unknown>).futureField).toBeUndefined();
+  });
+
   it('drops rules of another dependant on build', async () => {
     const other = rule({ dependantId: 'e'.repeat(64) });
     const ev = await buildChildRulesEvent(payload([other, rule()]), RAIL_SK, CLIENT_PK, 1_000_000);

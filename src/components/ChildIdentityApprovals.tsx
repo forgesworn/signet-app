@@ -1,7 +1,8 @@
 /**
  * The ready-check checklist (child-direct pairing), on both phones: one row
- * per identity that needs a Heartwood press, each waiting for a press, ready
- * or skipped. Each row also shows the identity line the Heartwood card shows
+ * per identity that needs a Heartwood press, each waiting for a press, ready,
+ * skipped, not confirmed (this phone cannot tell) or asking every time (the
+ * Heartwood cannot remember it). Each row also shows the identity line the Heartwood card shows
  * (`npub1` + 8 characters), because every child persona reads "dependan" in
  * the card heading. A row waiting on the device says to press and hold; a
  * failed one offers "Try again", a pending one "Later", a skipped one

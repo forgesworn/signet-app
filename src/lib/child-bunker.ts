@@ -82,18 +82,26 @@ export function isDirectChildInstall(input: {
 }
 
 /** Who signs for a paired child, as its card says it. */
-export type ChildSignerKind = 'guardian-phone' | 'heartwood' | 'heartwood-connecting';
+export type ChildSignerKind = 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable';
+
+/** How long a direct child's card says "Connecting…" before it says the Heartwood cannot be reached. */
+export const CHILD_CONNECT_STALL_MS = 60_000;
 
 /**
  * The card's signer line on a paired child. A direct install (`direct`, from
  * how the phone was paired) always signs through the family Heartwood: while
- * its router is down it is "connecting", never "ask your guardian's phone".
- * A legacy phone-paired child keeps the old rule (Heartwood only while a
- * router answered the capabilities probe).
+ * its router is down it is "connecting", never "ask your guardian's phone",
+ * and once it has been down for `CHILD_CONNECT_STALL_MS` while unlocked
+ * (`stalled`) it says the Heartwood cannot be reached. A legacy phone-paired
+ * child keeps the old rule (Heartwood only while a router answered the
+ * capabilities probe).
  */
-export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean }): ChildSignerKind {
+export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean }): ChildSignerKind {
   if (input.signingMode !== 'paired-child') return 'guardian-phone';
-  if (input.direct) return input.routerUp || !input.unlocked ? 'heartwood' : 'heartwood-connecting';
+  if (input.direct) {
+    if (input.routerUp || !input.unlocked) return 'heartwood';
+    return input.stalled ? 'heartwood-unreachable' : 'heartwood-connecting';
+  }
   return input.routerUp ? 'heartwood' : 'guardian-phone';
 }
 

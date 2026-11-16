@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -8,7 +8,7 @@ import { buildChildRulesEvent, CHILD_RULES_WIRE_D_TAG, type ChildRulesPayload } 
 import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '../lib/db';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 import type { PairedChildRecord } from '../types';
-import { useChildDeviceLink, APPROVE_IDENTITY_PLAINTEXT, APPROVAL_CHANGED_RETRIES, type ChildLinkTransport } from './useChildDeviceLink';
+import { useChildDeviceLink, APPROVE_IDENTITY_PLAINTEXT, APPROVAL_CHANGED_RETRIES, UNPAUSE_SETTLE_MS, type ChildLinkTransport } from './useChildDeviceLink';
 import { buildUnpairedNotice, CHILD_UNPAIRED_D_TAG } from '../lib/child-activity';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 
@@ -313,6 +313,94 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, transport: t, onRecordUpdated: async () => {} }));
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('waiting');
+  });
+});
+
+describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `approved`)', () => {
+  const both = { [PERSONA]: 'approved', [EXTRA]: 'approved' } as const;
+  async function mount(rules: ChildRulesPayload | null, over: Partial<PairedChildRecord> = {}, behaviour: Record<string, 'ok' | 'fail' | 'hold'> = {}) {
+    if (rules) await saveChildRulesCache(DEP, rules, KEY);
+    const { t, subs } = fakeTransport();
+    const fr = fakeRouter(behaviour);
+    const h = renderHook(() => useChildDeviceLink({
+      record: record({ identityApprovals: { ...both }, ...over }), encryptionKey: KEY, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated: async () => {},
+    }));
+    if (rules) await waitFor(() => expect(h.result.current.rules?.updatedAt).toBe(rules.updatedAt));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    return { ...h, fr, subs };
+  }
+
+  it('a payload without `approved` (an older guardian, or one that cannot read the device): this phone\'s own answers stand', async () => {
+    const { result, fr } = await mount(payload(100));
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.summary).toEqual({ kind: 'ready' });
+    expect(result.current.owed).toBe(0);
+  });
+
+  it('a restored or cleared Heartwood: a saved "approved" the reading does not list is owed again, and Finish now works HERE', async () => {
+    const { result, fr } = await mount({ ...payload(100), approved: [PERSONA] });
+    // Not probed on its own (no card popping up away from home): owed, with Finish now.
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.rows.find(r => r.pubkey === EXTRA)).toMatchObject({ state: 'waiting' });
+    expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+    // The press came after the guardian's reading: counted until a newer reading says otherwise.
+    expect(result.current.summary).toEqual({ kind: 'ready' });
+  });
+
+  it('a newer payload still not listing it overrides an earlier probe', async () => {
+    const { result, fr, subs } = await mount({ ...payload(100), approved: [PERSONA] });
+    await act(async () => { await result.current.finishNow(); });
+    expect(result.current.summary.kind).toBe('ready');
+    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200), approved: [PERSONA] }, railPriv, clientPub, 1_800_000_000)); });
+    await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+    expect(fr.calls).toHaveLength(1);
+  });
+
+  it('listed by the guardian: ready even without a probe of its own', async () => {
+    const { result, fr } = await mount({ ...payload(100), approved: [EXTRA, PERSONA].sort() }, { identityApprovals: {} });
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.summary).toEqual({ kind: 'ready' });
+  });
+
+  it('a full slot (16 recorded, this persona absent): cannot remember, no press count, Finish now sends nothing', async () => {
+    const sixteen = Array.from({ length: 16 }, (_, i) => `c${i.toString(16).padStart(63, '0')}`).concat(PERSONA).slice(1).sort();
+    const { result, fr } = await mount({ ...payload(100), approved: sixteen });
+    expect(result.current.rows.find(r => r.pubkey === EXTRA)).toMatchObject({ state: 'full' });
+    expect(result.current.summary).toEqual({ kind: 'full' });
+    expect(result.current.owed).toBe(0);
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls).toHaveLength(0);
+  });
+});
+
+describe('useChildDeviceLink — paused', () => {
+  it('no probe while paused, nothing owed; probes start after the pause ends (and the settle delay)', async () => {
+    const pausedRules = { ...payload(100), defaultSchedule: { paused: true } as ChildRulesPayload['defaultSchedule'] };
+    await saveChildRulesCache(DEP, pausedRules, KEY);
+    const { t, subs } = fakeTransport();
+    const fr = fakeRouter({});
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(100));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.paused).toBe(true);
+    expect(result.current.summary).toEqual({ kind: 'paused' });
+    expect(result.current.owed).toBe(0);
+    await act(async () => { await result.current.finishNow(); });
+    await act(async () => { await result.current.retryApproval(EXTRA); });
+    expect(fr.calls).toHaveLength(0);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await act(async () => { subs[0].onEvent(await buildChildRulesEvent(payload(200), railPriv, clientPub, 1_800_000_000)); });
+      await waitFor(() => expect(result.current.paused).toBe(false));
+      expect(fr.calls).toHaveLength(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(UNPAUSE_SETTLE_MS + 50); });
+      await waitFor(() => expect(fr.calls.map(c => c.slot)).toEqual([PERSONA, EXTRA]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

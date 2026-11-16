@@ -274,7 +274,7 @@ import { VouchSomeone } from './pages/VouchSomeone';
 import { TransitionCeremony } from './pages/TransitionCeremony';
 import { PairDependantDevice } from './pages/PairDependantDevice';
 import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
-import type { ChildReadyCheckDeps } from './hooks/useChildReadyCheck';
+import { useGuardianReadyChecks } from './hooks/useChildReadyCheck';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
@@ -403,6 +403,8 @@ import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys,
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
+import { useChildConnectStall } from './hooks/useChildConnectStall';
+import { CHILD_READY_COPY } from './lib/child-ready-copy';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -1522,6 +1524,10 @@ function AppContent() {
   const [pairedChildRecord, setPairedChildRecord] = useState<import('./types').PairedChildRecord | null>(null);
   // A child's phone paired straight to the Heartwood (spec §8).
   const childDirect = isDirectChildInstall({ signingMode: preferences.signingMode, record: pairedChildRecord, identity });
+  // Its card says "Connecting…" while the router is down; after a minute
+  // unlocked without it, that the Heartwood cannot be reached. A lock or the
+  // connection coming up starts the minute again.
+  const childConnectStalled = useChildConnectStall(childDirect && !!encryptionKey && !bunkerRouter);
   // A26: slots nothing may address on this install (the dependant's dormant
   // real identity on a direct child). Every slot resolver below gets it, so no
   // router route is ever requested for it.
@@ -5226,13 +5232,28 @@ function AppContent() {
     );
   };
 
+  // The child-direct ready check, once for every direct dependant (not tied
+  // to any screen): reads the Heartwood, sends this phone's own natural-person
+  // probe after a pairing, keeps an owed press across a lock or a restart, and
+  // hands the child its reading through the rules payload (`approved`).
+  const guardianReady = useGuardianReadyChecks({
+    enabled: !!encryptionKey && !isPairedChild,
+    dependants,
+    operator: heartwoodOperator.client,
+    guardianClientPubkey: policyPush.guardianClientPubkey,
+    guardianNpPubkey: identity?.naturalPerson.publicKey ?? '',
+    npBackend: npBunkerBackend,
+    encryptionKey,
+  });
+
   // Guardian → child rules rail for every dependant whose own phone is
   // paired straight to the Heartwood (spec §5.2), on the rail relay.
   useChildRulesPublisher({
-    enabled: !!encryptionKey && !isPairedChild && approvedOnceKinds !== null,
+    enabled: !!encryptionKey && !isPairedChild && approvedOnceKinds !== null && guardianReady.loaded,
     dependants,
     childRules,
     approvedOnceKinds: approvedOnceKinds ?? undefined,
+    approvedByDep: guardianReady.approvedByDep,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
   });
 
@@ -11749,11 +11770,15 @@ function AppContent() {
   // Child-direct ready check: "Not ready away from home" while any Heartwood
   // press is owed (the checklist opens on its own while a first probe runs),
   // "Ready to use away from home" once this session's presses cleared it.
+  const childReadySummary = childDeviceLink.summary.kind;
   const childReadyVisible = childDirect && !childDeviceLink.unpaired && childDeviceLink.rows.length > 0
-    && (childDeviceLink.owed > 0 || childDeviceLink.readyThisSession);
+    && (childReadySummary === 'owed' || childReadySummary === 'full' || childReadySummary === 'paused'
+      || (childReadySummary === 'ready' && childDeviceLink.readyThisSession));
   const childReadyNotice = childReadyVisible ? (
     <ChildReadyNotice
       rows={childDeviceLink.rows}
+      summary={childDeviceLink.summary}
+      name={pairedChildRecord?.dependantName || identity?.persona?.displayName || ''}
       showReady={childDeviceLink.readyThisSession}
       open={childDeviceLink.personas.some(p => p.approval === 'waiting')}
       onFinishNow={() => { void childDeviceLink.finishNow(); }}
@@ -11761,6 +11786,24 @@ function AppContent() {
       onDefer={(pk) => childDeviceLink.deferApproval(pk)}
     />
   ) : null;
+  // Guardian's phone: the same check per direct dependant, on its settings
+  // page and its home card. Only what needs saying: never a bare "Ready" there.
+  const guardianReadyNotice = (dep: DependantIdentity, compact = false) => {
+    const r = guardianReady.forDependant(dep.id);
+    if (!r || r.summary.kind === 'empty' || r.summary.kind === 'ready') return null;
+    return (
+      <ChildReadyNotice
+        rows={r.rows}
+        summary={r.summary}
+        name={dep.displayName}
+        showReady={false}
+        compact={compact}
+        onFinishNow={() => { void r.finishNow(); }}
+        onRetry={() => { void r.finishNow(); }}
+        {...(r.rows.some(x => x.who === 'child' && (x.state === 'waiting' || x.state === 'skipped')) ? { hint: CHILD_READY_COPY.childPressHint(dep.displayName) } : {})}
+      />
+    );
+  };
   const childApprovalsBanner = (childDeviceLink.unpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
     <>
       {childDeviceLink.unpaired ? (
@@ -12130,6 +12173,7 @@ function AppContent() {
             onChangeAuditVisibility={handleUpdateAuditVisibility}
             onBeginCeremony={() => navigateTo('transition-ceremony')}
             onPairDevice={() => navigateTo('pair-dependant-device')}
+            readyNotice={isPairedChild ? null : guardianReadyNotice(activeDependant)}
             pairReadiness={resolveSettingsViewer(preferences.signingMode, carousel.childMode) === 'guardian' ? {
               signingMode: preferences.signingMode,
               signerStatus,
@@ -14822,7 +14866,7 @@ function AppContent() {
 
   // The child-direct pairing hook's options (spec §4, §9.4): the pairing page
   // and the Permissions page (Unpair) share them.
-  const childDirectPairingOpts = (): (Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void; readyCheck?: ChildReadyCheckDeps }) | undefined => (identity ? {
+  const childDirectPairingOpts = (): (Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void }) | undefined => (identity ? {
     operator: heartwoodOperator.client,
     operatorStatus: heartwoodOperator.status,
     operatorStatusError: heartwoodOperator.statusError,
@@ -14849,9 +14893,6 @@ function AppContent() {
     },
     clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
     onOpenOperatorImport: () => navigateTo('settings-advanced'),
-    // The ready check: this phone's client key and its natural-person route
-    // (never the master), so REMEMBER AS for the real identity happens at setup.
-    readyCheck: { guardianClientPubkey: policyPush.guardianClientPubkey, npBackend: npBunkerBackend },
   } : undefined);
 
   // Pair a device — guardian-side QR for phone-as-family-bunker
@@ -14893,7 +14934,10 @@ function AppContent() {
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
           signingMode={preferences.signingMode}
-          direct={childDirectPairingOpts()}
+          direct={(() => {
+            const d = childDirectPairingOpts();
+            return d ? { ...d, readiness: guardianReady.forDependant(activeDependant.id), onWatchReadiness: () => guardianReady.watch(activeDependant.id) } : undefined;
+          })()}
         />
       </Layout>
     );
@@ -14968,7 +15012,8 @@ function AppContent() {
               navigateTo('persona-advanced');
             }}
             onUnpaired={() => navigateBack()}
-            {...(pairingOpts.readyCheck ? { readyCheck: pairingOpts.readyCheck } : {})}
+            readiness={guardianReady.forDependant(dep.id)}
+            onWatchReadiness={() => guardianReady.watch(dep.id)}
           />
         )}
       </Layout>
@@ -15403,9 +15448,10 @@ function AppContent() {
         addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey })}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled })}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
+        readyNoticeFor={isPairedChild ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
         proAnchorActive={!!proAnchor}
         onProPillTap={() => navigateTo('pro-dashboard')}
         recentSignInAck={recentSignInAck}

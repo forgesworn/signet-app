@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import type { DependantIdentity, AutonomyStage, TrustedAppPairing, ContactCeilingTier } from '../types';
 import { TRUSTED_APP_PAIRING_CAP } from '../types';
 import { shortNpub } from '../lib/signet';
@@ -42,6 +42,8 @@ interface Props {
   onViewActivity?: () => void;
   /** Opens the Permissions page for a child's own phone paired straight to the Heartwood (spec §9.3). */
   onOpenPermissions?: () => void;
+  /** The child-direct ready check's notice for this dependant (guardian only); shown above Permissions. */
+  readyNotice?: ReactNode;
   /**
    * Audit-visibility override — kept on the interface (Phase 2 transitional).
    * The selector UI moved to PersonaAdvanced's DepSettingsBlock. Read-only here.
@@ -123,6 +125,7 @@ export function GuardianSettings({
   pairReadiness,
   onViewActivity,
   onOpenPermissions,
+  readyNotice,
   appPairings,
   onRevokeAppPairing,
   // Kept on the prop interface (Phase 2 transitional) — the Switch buttons
@@ -463,6 +466,8 @@ export function GuardianSettings({
           </button>
         </div>
       )}
+
+      {viewer === 'guardian' && activeDependant.childDevice?.mode === 'heartwood-direct' ? readyNotice : null}
 
       {/* Permissions — a child's own phone paired straight to the Heartwood
           (spec §9.3): rules, the Heartwood ceiling, the apps on the phone. */}

@@ -35,6 +35,15 @@ export interface ChildRulesPayload {
   disconnectedApps: string[];
   /** A51: personas the guardian allows on this phone. Absent (older payloads) ⇒ every inventory persona. */
   personas?: string[];
+  /**
+   * The guardian's reading of the Heartwood (ready check): the identities the
+   * device has recorded for THIS phone's client key, lowercase hex, sorted.
+   * Present only when the guardian read the device and it reported them; absent
+   * when it cannot tell (older firmware, no reading). Additive: a released
+   * child build ignores it. When present it wins over the child's own probe
+   * answers; when absent the child falls back to them.
+   */
+  approved?: string[];
   updatedAt: number;
 }
 
@@ -81,6 +90,11 @@ export function parseChildRuleRecord(raw: unknown): ChildRule | null {
   return out;
 }
 
+/** `approved`: at most `MAX_PERSONAS` strict lowercase hex64 keys (deduplicated on read). */
+export function isApprovedList(v: unknown): v is string[] {
+  return Array.isArray(v) && v.length <= MAX_PERSONAS && v.every(p => typeof p === 'string' && HEX64.test(p));
+}
+
 function checkPayload(raw: unknown): ChildRulesPayload | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
@@ -94,6 +108,7 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
     || !o.disconnectedApps.every(a => typeof a === 'string' && a.length > 0 && a.length <= MAX_ID)) return null;
   if (o.personas !== undefined && (!Array.isArray(o.personas) || o.personas.length > MAX_PERSONAS
     || !o.personas.every(p => typeof p === 'string' && HEX64.test(p)))) return null;
+  if (o.approved !== undefined && !isApprovedList(o.approved)) return null;
   const rules: ChildRule[] = [];
   for (const item of o.rules) {
     const rule = parseChildRuleRecord(item);
@@ -107,6 +122,7 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
     disconnectedApps: [...(o.disconnectedApps as string[])], updatedAt: o.updatedAt,
   };
   if (o.personas !== undefined) out.personas = [...new Set(o.personas as string[])];
+  if (o.approved !== undefined) out.approved = [...new Set(o.approved as string[])].sort();
   if (o.defaultSchedule !== undefined) {
     const s = parseScheduleValue(o.defaultSchedule);
     if (!s) return null; // a schedule we cannot read must not silently become "no schedule"

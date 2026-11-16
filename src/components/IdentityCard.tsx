@@ -1,5 +1,5 @@
 import { HandshakeButton } from './HandshakeButton';
-import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import type { CarouselRow } from '../types';
 import type { KnownPlace } from '../types/known-places';
 import type { Badge } from '../lib/known-place-badges';
@@ -17,6 +17,7 @@ import { useCarouselArrows } from './CarouselArrowContext';
 import { armPickerGrace } from '../lib/picker-grace';
 import type { ChildSignerKind } from '../lib/child-bunker';
 import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
+import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 
 /**
  * One place this identity is known (a signed-in site, a paired app), with the
@@ -49,7 +50,8 @@ export interface IdentityCardProps {
    * signer that answered the capabilities probe, so the kid's sign-ins are
    * served by the device rather than parked on a guardian's phone.
    * 'heartwood-connecting': a phone paired straight to the Heartwood whose
-   * connection is not up yet (it still never signs on a guardian's phone).
+   * connection is not up yet (it still never signs on a guardian's phone);
+   * 'heartwood-unreachable': still not up after a minute.
    */
   childSignerKind?: ChildSignerKind;
   /**
@@ -59,6 +61,8 @@ export interface IdentityCardProps {
   cachedGuardianName?: string;
   /** Pairing status for dependant rows. Undefined for non-dependants. */
   pairingStatus?: { paired: true } | { paired: false } | null;
+  /** Dependant rows on the guardian's phone: the child-direct ready check's notice (compact). */
+  readyNotice?: ReactNode;
   /** Optional resolved photo URL. When provided externally, overrides the
    *  internally-resolved per-persona avatar — used by tests / callers that
    *  want full control. When omitted, this component resolves the avatar
@@ -111,7 +115,7 @@ export interface IdentityCardProps {
 
 const BACKDROP_NOTE_MS = 4000;
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -524,6 +528,8 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </div>
         )}
 
+        {readyNotice}
+
         {childDormant && (
           <div
             className="card-dormant-notice"
@@ -538,10 +544,14 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              {childSignerKind === 'heartwood' || childSignerKind === 'heartwood-connecting' ? 'Your family Heartwood signs for you.' : 'This device is dormant.'}
+              {childSignerKind === 'heartwood-unreachable'
+                ? CHILD_READY_COPY.unreachableHeading
+                : childSignerKind === 'heartwood' || childSignerKind === 'heartwood-connecting' ? 'Your family Heartwood signs for you.' : 'This device is dormant.'}
             </div>
             <div style={{ opacity: 0.8 }}>
-              {childSignerKind === 'heartwood-connecting' ? (
+              {childSignerKind === 'heartwood-unreachable' ? (
+                <>{CHILD_READY_COPY.unreachableBody(guardianName)}</>
+              ) : childSignerKind === 'heartwood-connecting' ? (
                 <>{CHILD_SIDE_COPY.connectingHeartwood}</>
               ) : childSignerKind === 'heartwood' ? (
                 <>

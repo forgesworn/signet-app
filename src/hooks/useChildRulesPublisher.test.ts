@@ -88,6 +88,29 @@ describe('useChildRulesPublisher', () => {
     expect(published).toHaveLength(2); // the identical re-render never sent a third
   });
 
+  it('ready check: carries the reading as `approved`, republishes only when it changes, omits it when unknown', async () => {
+    const dep = directDep();
+    const open = async (i: number) => openChildRulesEvent(published[i].ev, bytesToHex(clientSk), { railPubkey: RAIL, dependantId: dep.id });
+    const { rerender } = renderHook((p: { approved?: Record<string, string[]> }) => useChildRulesPublisher({
+      enabled: true, dependants: [dep], childRules: [], relayUrl: RELAY, publish, ...(p.approved ? { approvedByDep: p.approved } : {}),
+    }), { initialProps: { approved: { [dep.id]: [] } as Record<string, string[]> | undefined } });
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    expect((await open(0))?.approved).toEqual([]);
+    rerender({ approved: { [dep.id]: [] } });
+    await flush(1100);
+    expect(published).toHaveLength(1); // the same reading again: no republish
+    rerender({ approved: { [dep.id]: [PERSONA] } });
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(2));
+    expect((await open(1))?.approved).toEqual([PERSONA]);
+    rerender({ approved: {} });
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(3));
+    expect((await open(2))?.approved).toBeUndefined();
+    expect(childRulesPayloadFor(dep, [], [], 1_000)).not.toHaveProperty('approved');
+  });
+
   it('skips phone-paired dependants and waits while rules load', async () => {
     const dep = directDep();
     const legacy = { ...directDep(), childDevice: undefined };
