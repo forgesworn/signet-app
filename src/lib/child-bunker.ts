@@ -81,6 +81,22 @@ export function isDirectChildInstall(input: {
   return input.identity?.primaryKeypair === 'persona';
 }
 
+/** Who signs for a paired child, as its card says it. */
+export type ChildSignerKind = 'guardian-phone' | 'heartwood' | 'heartwood-connecting';
+
+/**
+ * The card's signer line on a paired child. A direct install (`direct`, from
+ * how the phone was paired) always signs through the family Heartwood: while
+ * its router is down it is "connecting", never "ask your guardian's phone".
+ * A legacy phone-paired child keeps the old rule (Heartwood only while a
+ * router answered the capabilities probe).
+ */
+export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean }): ChildSignerKind {
+  if (input.signingMode !== 'paired-child') return 'guardian-phone';
+  if (input.direct) return input.routerUp || !input.unlocked ? 'heartwood' : 'heartwood-connecting';
+  return input.routerUp ? 'heartwood' : 'guardian-phone';
+}
+
 /**
  * A26: on a direct child install the dependant's real-identity slot is
  * dormant unless the guardian activated it — nothing may address it, so it

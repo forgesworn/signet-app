@@ -436,3 +436,23 @@ describe('IdentityCard — backdrop control', () => {
     expect(screen.getByRole('button', { name: 'Show my QR code' })).toBeDefined();
   });
 });
+
+describe('IdentityCard — who signs for a paired child', () => {
+  const card = (kind: 'guardian-phone' | 'heartwood' | 'heartwood-connecting') =>
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant childSignerKind={kind} cachedGuardianName="Mum" />);
+
+  it('a phone paired straight to the Heartwood whose router is down is connecting, never told to ask the guardian’s phone', () => {
+    card('heartwood-connecting');
+    expect(screen.getByText('Your family Heartwood signs for you.')).toBeTruthy();
+    expect(screen.getByText('Connecting to your family Heartwood…')).toBeTruthy();
+    expect(screen.queryByText('This device is dormant.')).toBeNull();
+    expect(screen.queryByText(/sign for you on their phone/)).toBeNull();
+  });
+
+  it('a legacy phone-paired child is unchanged: dormant, ask the guardian', () => {
+    card('guardian-phone');
+    expect(screen.getByText('This device is dormant.')).toBeTruthy();
+    expect(screen.getByText(/sign for you on their phone/)).toBeTruthy();
+    expect(screen.queryByText('Connecting to your family Heartwood…')).toBeNull();
+  });
+});

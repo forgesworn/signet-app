@@ -198,7 +198,7 @@ import { PairChildOnboarding, type DirectPairControl } from './pages/PairChildOn
 import { runChildDirectPairing, pairedChildSignerPubkey, awaitTapOffer, childTapDeps, type ChildTapChannel } from './lib/child-direct-pairing';
 import type { ChildPairOffer } from './lib/child-pair-wire';
 import { useChildDeviceLink } from './hooks/useChildDeviceLink';
-import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
+import { ChildReadyNotice } from './components/ChildReadyNotice';
 import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
@@ -274,6 +274,7 @@ import { VouchSomeone } from './pages/VouchSomeone';
 import { TransitionCeremony } from './pages/TransitionCeremony';
 import { PairDependantDevice } from './pages/PairDependantDevice';
 import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
+import type { ChildReadyCheckDeps } from './hooks/useChildReadyCheck';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
@@ -401,7 +402,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, type ChildGateOutcome } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -11745,8 +11746,22 @@ function AppContent() {
   // opening Security & Backup, so problems also show at the top of Settings.
   const settingsBackupWarning = privateVaultBanner && privateVaultWarning
     ? <div className="app-notices">{privateVaultBanner}</div> : null;
-  // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
-  const childApprovalsBanner = (childDeviceLink.unpaired || childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
+  // Child-direct ready check: "Not ready away from home" while any Heartwood
+  // press is owed (the checklist opens on its own while a first probe runs),
+  // "Ready to use away from home" once this session's presses cleared it.
+  const childReadyVisible = childDirect && !childDeviceLink.unpaired && childDeviceLink.rows.length > 0
+    && (childDeviceLink.owed > 0 || childDeviceLink.readyThisSession);
+  const childReadyNotice = childReadyVisible ? (
+    <ChildReadyNotice
+      rows={childDeviceLink.rows}
+      showReady={childDeviceLink.readyThisSession}
+      open={childDeviceLink.personas.some(p => p.approval === 'waiting')}
+      onFinishNow={() => { void childDeviceLink.finishNow(); }}
+      onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }}
+      onDefer={(pk) => childDeviceLink.deferApproval(pk)}
+    />
+  ) : null;
+  const childApprovalsBanner = (childDeviceLink.unpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
     <>
       {childDeviceLink.unpaired ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -11757,9 +11772,7 @@ function AppContent() {
       {childDirect && childTransportKeysUnreadable ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
       ) : null}
-      {!childDeviceLink.unpaired && childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
-        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} onDefer={(pk) => childDeviceLink.deferApproval(pk)} />
-      ) : null}
+      {childReadyNotice}
     </>
   ) : null;
   const topBanners = (updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
@@ -14809,7 +14822,7 @@ function AppContent() {
 
   // The child-direct pairing hook's options (spec §4, §9.4): the pairing page
   // and the Permissions page (Unpair) share them.
-  const childDirectPairingOpts = (): (Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void }) | undefined => (identity ? {
+  const childDirectPairingOpts = (): (Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void; readyCheck?: ChildReadyCheckDeps }) | undefined => (identity ? {
     operator: heartwoodOperator.client,
     operatorStatus: heartwoodOperator.status,
     operatorStatusError: heartwoodOperator.statusError,
@@ -14836,6 +14849,9 @@ function AppContent() {
     },
     clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
     onOpenOperatorImport: () => navigateTo('settings-advanced'),
+    // The ready check: this phone's client key and its natural-person route
+    // (never the master), so REMEMBER AS for the real identity happens at setup.
+    readyCheck: { guardianClientPubkey: policyPush.guardianClientPubkey, npBackend: npBunkerBackend },
   } : undefined);
 
   // Pair a device — guardian-side QR for phone-as-family-bunker
@@ -14952,6 +14968,7 @@ function AppContent() {
               navigateTo('persona-advanced');
             }}
             onUnpaired={() => navigateBack()}
+            {...(pairingOpts.readyCheck ? { readyCheck: pairingOpts.readyCheck } : {})}
           />
         )}
       </Layout>
@@ -15258,6 +15275,7 @@ function AppContent() {
             {notice.canUndo && <button className="btn btn-ghost" onClick={() => { void contactsV2.removeContact(contact.contactId).catch(() => {}); }}>Undo app connection</button>}
           </div> : null;
         })}
+      {isPairedChild ? childReadyNotice : null}
       <Carousel
         onHandshake={async (resolved, choose) => {
           const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
@@ -15385,7 +15403,7 @@ function AppContent() {
         addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={preferences.signingMode === 'paired-child' && bunkerRouter ? 'heartwood' : 'guardian-phone'}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey })}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
         proAnchorActive={!!proAnchor}

@@ -15,6 +15,8 @@ import { KnownPlacesStrip } from './KnownPlacesStrip';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
 import { armPickerGrace } from '../lib/picker-grace';
+import type { ChildSignerKind } from '../lib/child-bunker';
+import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
 
 /**
  * One place this identity is known (a signed-in site, a paired app), with the
@@ -46,8 +48,10 @@ export interface IdentityCardProps {
    * (family-bunker §11.1.7). 'heartwood' when the family runs a Heartwood
    * signer that answered the capabilities probe, so the kid's sign-ins are
    * served by the device rather than parked on a guardian's phone.
+   * 'heartwood-connecting': a phone paired straight to the Heartwood whose
+   * connection is not up yet (it still never signs on a guardian's phone).
    */
-  childSignerKind?: 'guardian-phone' | 'heartwood';
+  childSignerKind?: ChildSignerKind;
   /**
    * Guardian's display name, surfaced in the dormant copy. Falls back
    * to "your guardian" when the status-sync payload didn't include it.
@@ -534,10 +538,12 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              {childSignerKind === 'heartwood' ? 'Your family Heartwood signs for you.' : 'This device is dormant.'}
+              {childSignerKind === 'heartwood' || childSignerKind === 'heartwood-connecting' ? 'Your family Heartwood signs for you.' : 'This device is dormant.'}
             </div>
             <div style={{ opacity: 0.8 }}>
-              {childSignerKind === 'heartwood' ? (
+              {childSignerKind === 'heartwood-connecting' ? (
+                <>{CHILD_SIDE_COPY.connectingHeartwood}</>
+              ) : childSignerKind === 'heartwood' ? (
                 <>
                   Sign-ins from this device go to your family&rsquo;s Heartwood signer. Some may still need{' '}
                   <strong>{guardianName}</strong> to say yes.

@@ -7,12 +7,19 @@
  *             rail key, `#p` = our client key). The newest `updatedAt` wins;
  *             an older event is ignored. No cache and no live payload ⇒ null,
  *             which the gate treats as "ask for everything" (fail closed).
- *   personas  the identity-approvals ceremony: for every persona other than
- *             the bound one, `nip44_encrypt` AS that persona (to itself, a
- *             fixed plaintext) so the Heartwood shows ALLOW AS once. Runs one
- *             at a time, once per persona that has no recorded state, after
- *             the router is up — and again when a new persona appears.
- *             A failed persona waits for `retryApproval`.
+ *   personas  the identity-approvals ceremony (the child half of the ready
+ *             check, `child-ready-check.ts`): for every persona this phone may
+ *             use, the BOUND persona first, `nip44_encrypt` AS that persona
+ *             (to itself, a fixed plaintext) so the Heartwood asks REMEMBER AS
+ *             once, at setup. The bound persona needs it too: the firmware's
+ *             per-client consent gives a fresh slot no approval, not even for
+ *             its binding, so it is shown as waiting until its probe returns.
+ *             Runs one at a time, once per persona that has no recorded
+ *             state, after the router is up — and again when a new persona
+ *             appears (one added after pairing). A device that withdraws the
+ *             card because a slot changed (`approval_changed`) is asked again,
+ *             at most twice. A failed or timed-out persona waits for
+ *             `retryApproval` / `finishNow`; it is never "approved".
  *             "Later" (`deferApproval`): a persona may be put off. The choice is
  *             stored on the paired-child record (`identityApprovals`, so it
  *             survives a restart) and the ceremony counts as finished once every
@@ -35,6 +42,9 @@
  * A51: the rules payload's `personas` (when present) limits which personas
  * the ceremony runs for; the bound persona is always kept.
  *
+ * "Ready" here rests on the probe answer alone (the child's phone cannot read
+ * the device's records); the guardian's phone confirms it from `list_clients`.
+ *
  * A legacy phone pairing (`mode` absent / 'phone') does nothing here.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -47,8 +57,11 @@ import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '
 import { observeStampedCalls } from '../lib/signing-backend';
 import { childAllowedPersonas } from '../lib/child-bunker';
 import { subscribeEvents } from '../lib/relay-service';
+import { childReadyRows, isApprovalChanged, owedPresses, type ReadyRow } from '../lib/child-ready-check';
 
 export const APPROVE_IDENTITY_PLAINTEXT = 'signet:approve-identity:v1';
+/** Extra sends when the device withdrew a waiting card (`approval_changed`). */
+export const APPROVAL_CHANGED_RETRIES = 2;
 
 type Approval = 'approved' | 'waiting' | 'failed' | 'deferred';
 
@@ -86,6 +99,16 @@ export interface ChildDeviceLink {
   ensureApproved(persona: string): Promise<boolean>;
   /** Every persona is approved or deferred. */
   ceremonyFinished: boolean;
+  /** The checklist: one row per persona (bound first), waiting / ready / skipped. */
+  rows: ReadyRow[];
+  /** Presses still owed: every persona not approved (waiting, failed or put off). */
+  owed: number;
+  /** A probe is waiting on the Heartwood now. */
+  probing: boolean;
+  /** A probe succeeded in this session and nothing is owed now ("Ready to use away from home"). */
+  readyThisSession: boolean;
+  /** "Finish now": ask again for every owed persona (A43: candidates only), one at a time. */
+  finishNow(): Promise<void>;
   /** Set by the unpaired signal (Task 12). */
   unpaired: boolean;
 }
@@ -210,6 +233,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const attempted = useRef(new Set<string>());
   const queue = useRef<Promise<void>>(Promise.resolve());
   const inflight = useRef(new Map<string, Promise<boolean>>());
+  const [probingNow, setProbingNow] = useState<string | null>(null);
+  const [probedOk, setProbedOk] = useState(false);
   const recordKey = direct ? `${direct.id}:${clientPub}` : '';
 
   useEffect(() => {
@@ -218,6 +243,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     setApprovals(initial);
     attempted.current = new Set();
     inflight.current = new Map();
+    setProbedOk(false);
   }, [recordKey]);
 
   const allowedKey = rules?.personas ? rules.personas.join(',') : '*';
@@ -230,7 +256,9 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     for (const p of opts.inventoryPersonas ?? []) if (HEX64.test(p.pubkey)) out.set(p.pubkey, p.name);
     if (bound && !out.has(bound)) out.set(bound, direct.dependantName);
     for (const w of withheldKey ? withheldKey.split(',') : []) if (w !== bound) out.delete(w);
-    return childAllowedPersonas([...out].map(([pubkey, name]) => ({ pubkey, name })), rules, bound);
+    const allowed = childAllowedPersonas([...out].map(([pubkey, name]) => ({ pubkey, name })), rules, bound);
+    // The bound persona first: its press comes first, then each extra in turn.
+    return [...allowed.filter(p => p.pubkey === bound), ...allowed.filter(p => p.pubkey !== bound)];
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on content, not identity
   }, [recordKey, bound, invKey, direct?.personas, withheldKey, allowedKey]);
 
@@ -251,15 +279,28 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
       const backend = current ? r.backendFor(persona) : null;
       if (!backend) { setApproval(persona, 'failed'); return false; }
       setApproval(persona, 'waiting');
+      setProbingNow(persona);
       try {
-        await backend.nip44Encrypt(persona, APPROVE_IDENTITY_PLAINTEXT);
+        // Never published: a NIP-46 request to the Heartwood, and the answer is dropped.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await backend.nip44Encrypt(persona, APPROVE_IDENTITY_PLAINTEXT);
+            break;
+          } catch (err) {
+            if (attempt < APPROVAL_CHANGED_RETRIES && isApprovalChanged(err)) continue;
+            throw err;
+          }
+        }
         setApproval(persona, 'approved');
+        setProbedOk(true);
         return true;
       } catch {
         // "Later" pressed while the probe was in flight: keep the deferral.
         if (!force && approvalsRef.current[persona] === 'deferred') return false;
         setApproval(persona, 'failed');
         return false;
+      } finally {
+        setProbingNow(cur => (cur === persona ? null : cur));
       }
     });
     queue.current = run.then(() => {}, () => {});
@@ -275,7 +316,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   useEffect(() => {
     if (!router || !bound || !routerCurrent || !cacheRead) return;
     for (const { pubkey } of candidates) {
-      if (pubkey === bound || attempted.current.has(pubkey)) continue;
+      if (attempted.current.has(pubkey)) continue;
       const state = approvalsRef.current[pubkey];
       if (state === 'approved' || state === 'failed' || state === 'deferred') continue;
       attempted.current.add(pubkey);
@@ -288,19 +329,25 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
   const retryApproval = useCallback(async (persona: string) => {
-    if (!HEX64.test(persona) || persona === bound) return;
+    if (!HEX64.test(persona)) return;
     if (!candidatesRef.current.some(c => c.pubkey === persona)) return;
     attempted.current.add(persona);
     await approve(persona, true);
-  }, [approve, bound]);
+  }, [approve]);
+
+  const finishNow = useCallback(async () => {
+    const owedNow = candidatesRef.current.map(c => c.pubkey).filter(pk => approvalsRef.current[pk] !== 'approved');
+    // A probe already running for a persona is waited for, not repeated.
+    await Promise.all(owedNow.map(pk => inflight.current.get(pk) ?? retryApproval(pk)));
+  }, [retryApproval]);
 
   const deferApproval = useCallback((persona: string) => {
-    if (!HEX64.test(persona) || persona === bound) return;
+    if (!HEX64.test(persona)) return;
     if (!candidatesRef.current.some(c => c.pubkey === persona)) return;
     if (approvalsRef.current[persona] === 'approved') return;
     attempted.current.add(persona);
     setApproval(persona, 'deferred');
-  }, [bound, setApproval]);
+  }, [setApproval]);
 
   const ensureApproved = useCallback((persona: string): Promise<boolean> => {
     const p = (persona ?? '').toLowerCase();
@@ -311,11 +358,17 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     return approve(p, true);
   }, [approve]);
 
+  // The bound persona is waiting like any other until its own probe returns.
   const personas = useMemo(() => candidates.map(({ pubkey, name }) => ({
-    pubkey, name, approval: (pubkey === bound ? 'approved' : approvals[pubkey] ?? 'waiting') as Approval,
-  })), [candidates, approvals, bound]);
+    pubkey, name, approval: (approvals[pubkey] ?? 'waiting') as Approval,
+  })), [candidates, approvals]);
 
   const ceremonyFinished = personas.every(p => p.approval === 'approved' || p.approval === 'deferred');
+  const rows = useMemo(() => childReadyRows(personas, new Set(probingNow ? [probingNow] : [])), [personas, probingNow]);
+  const owed = owedPresses(rows);
 
-  return { rules, personas, retryApproval, deferApproval, ensureApproved, ceremonyFinished, unpaired };
+  return {
+    rules, personas, retryApproval, deferApproval, ensureApproved, ceremonyFinished, unpaired,
+    rows, owed, probing: probingNow !== null, readyThisSession: probedOk && personas.length > 0 && owed === 0, finishNow,
+  };
 }

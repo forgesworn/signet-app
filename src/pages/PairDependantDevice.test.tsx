@@ -18,6 +18,8 @@ import type { DependantIdentity } from '../types';
 import type { NostrEvent } from 'signet-protocol';
 import type { PairingTransport } from '../hooks/useChildDevicePairing';
 import { PairDependantDevice } from './PairDependantDevice';
+import type { ChildReadyCheckDeps } from '../hooks/useChildReadyCheck';
+import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 
 const mList = vi.mocked(listClients);
 const HW = 'wss://hw.example.com', RAIL = 'wss://rail.example.com';
@@ -37,7 +39,7 @@ class FakeTransport implements PairingTransport {
 }
 
 let t: FakeTransport;
-function renderPage(dep: DependantIdentity, over: { signingMode?: string; operator?: HeartwoodMgmtClient | null; onOpenOperatorImport?: () => void } = {}) {
+function renderPage(dep: DependantIdentity, over: { signingMode?: string; operator?: HeartwoodMgmtClient | null; onOpenOperatorImport?: () => void; readyCheck?: ChildReadyCheckDeps } = {}) {
   let current = dep;
   const props = {
     dependant: dep, relayUrl: RAIL, bunkerServerEnabled: false,
@@ -49,6 +51,7 @@ function renderPage(dep: DependantIdentity, over: { signingMode?: string; operat
       guardianNpPubkey: 'f'.repeat(64), railRelay: RAIL, hwRelays: [HW], encryptionKey: 'k'.repeat(64), grants: [],
       onDependantUpdated: vi.fn(async (d: DependantIdentity) => { current = d; }), transport: t,
       onOpenOperatorImport: over.onOpenOperatorImport,
+      ...(over.readyCheck ? { readyCheck: over.readyCheck } : {}),
     },
   };
   const r = render(<PairDependantDevice {...props} />);
@@ -107,5 +110,23 @@ describe('PairDependantDevice — child-direct', () => {
     expect(await screen.findByText(CHILD_DEVICE_COPY.pairedAlready('Lily'))).toBeTruthy();
     expect(screen.getByText(CHILD_DEVICE_COPY.unpair)).toBeTruthy();
     expect(screen.queryByTestId('qr')).toBeNull();
+  });
+
+  it('an already paired phone with a press still owed says so; the natural-person probe waits for Finish now', async () => {
+    const CHILD = 'a'.repeat(64);
+    const dep = { ...makeDep(), childDevice: { mode: 'heartwood-direct' as const, slotLabel: 'l', secretFingerprint: 'ab', slotIndex: 1,
+      clientPubkey: CHILD, boundPersona: '', pairedAt: 1 } };
+    dep.childDevice.boundPersona = dep.persona.publicKey;
+    mList.mockResolvedValue([{ slotIndex: 1, label: 'l', secretFingerprint: 'ab', autoApprove: true, signingApproved: true, strictPermissions: true,
+      currentPubkey: CHILD, authorizedPubkeys: [CHILD], allowedKinds: [1], allowedMethods: ['sign_event'], escalate: false, petitionOnDeny: false,
+      auditChildWrap: false, boundIdentity: dep.persona.publicKey, clientApprovals: [{ clientPubkey: CHILD, approvedIdentities: [], legacyIdentityTags: [] }] }]);
+    const nip44Encrypt = vi.fn(async () => 'x');
+    renderPage(dep, { readyCheck: { guardianClientPubkey: null, npBackend: { nip44Encrypt } } });
+    expect(await screen.findByText(CHILD_READY_COPY.notReadyHeading)).toBeTruthy();
+    // The bound persona, and this phone's own natural person (not on the device: not confirmed).
+    expect(screen.getByText(CHILD_READY_COPY.pressesOwed(2))).toBeTruthy();
+    expect(nip44Encrypt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText(CHILD_READY_COPY.finishNow));
+    await waitFor(() => expect(nip44Encrypt).toHaveBeenCalledWith('f'.repeat(64), 'signet:approve-identity:v1'));
   });
 });

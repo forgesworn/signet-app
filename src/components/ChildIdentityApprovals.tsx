@@ -1,50 +1,57 @@
 /**
- * Child phone, child-direct pairing: the per-persona "press ALLOW AS on the
- * Heartwood" checklist (spec §4 step 6). Each pending row can be put off
- * ("Later"); a deferred row is approved when the child first needs it, or on
- * "Approve now". Once every row is approved or deferred the ceremony is
- * finished and the card shrinks to the deferred rows only.
+ * The ready-check checklist (child-direct pairing), on both phones: one row
+ * per identity that needs a Heartwood press, each waiting for a press, ready
+ * or skipped. Each row also shows the identity line the Heartwood card shows
+ * (`npub1` + 8 characters), because every child persona reads "dependan" in
+ * the card heading. A row waiting on the device says to press and hold; a
+ * failed one offers "Try again", a pending one "Later", a skipped one
+ * "Approve now". The guardian's phone passes no `onDefer`.
  */
-import { CHILD_SIDE_COPY as KID } from '../lib/child-device-copy';
-
-type Approval = 'approved' | 'waiting' | 'failed' | 'deferred';
+import type { ReadyRow } from '../lib/child-ready-check';
+import { deviceShortNpub } from '../lib/child-ready-check';
+import { CHILD_READY_COPY as COPY } from '../lib/child-ready-copy';
 
 interface Props {
-  personas: { pubkey: string; name: string; approval: Approval }[];
-  onRetry(pubkey: string): void;
+  rows: ReadyRow[];
+  onRetry?(pubkey: string): void;
   onDefer?(pubkey: string): void;
+  /** One line under the list (the guardian's note on the child's presses). */
+  hint?: string;
 }
 
-export function ChildIdentityApprovals({ personas, onRetry, onDefer }: Props) {
-  if (personas.length === 0 || personas.every(p => p.approval === 'approved')) return null;
-  const finished = personas.every(p => p.approval === 'approved' || p.approval === 'deferred');
-  const rows = finished ? personas.filter(p => p.approval === 'deferred') : personas;
+const muted = { color: 'var(--text-muted)', fontSize: '0.85rem' } as const;
+
+export function ChildIdentityApprovals({ rows, onRetry, onDefer, hint }: Props) {
+  if (rows.length === 0) return null;
   return (
-    <div className="card section" style={{ padding: 16, marginBottom: 12 }}>
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>{finished ? KID.approvals.finishedHeading : KID.approvals.heading}</div>
-      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: 12 }}>{finished ? KID.approvals.finishedBody : KID.approvals.body}</p>
-      {rows.map(p => (
-        <div key={p.pubkey} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 0' }}>
-          <span>{p.name}</span>
-          {p.approval === 'deferred' ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{KID.approvals.deferred}</span>
-              <button className="btn btn-sm" onClick={() => onRetry(p.pubkey)}>{KID.approvals.approveNow}</button>
-            </span>
-          ) : p.approval === 'approved' ? (
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{KID.approvals.approved}</span>
-          ) : (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {p.approval === 'failed' ? (
-                <button className="btn btn-sm" onClick={() => onRetry(p.pubkey)}>{KID.approvals.retry}</button>
-              ) : (
-                <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{KID.approvals.waiting}</span>
-              )}
-              {onDefer ? <button className="btn btn-sm" onClick={() => onDefer(p.pubkey)}>{KID.approvals.later}</button> : null}
-            </span>
-          )}
-        </div>
-      ))}
+    <div data-testid="ready-checklist">
+      {rows.map(r => {
+        const npub = deviceShortNpub(r.pubkey);
+        return (
+          <div key={`${r.who}:${r.pubkey}`} data-testid={`ready-row-${r.pubkey}`} style={{ padding: '6px 0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <span style={{ minWidth: 0 }}>
+                <span>{r.name}</span>
+                {npub ? <span style={{ ...muted, display: 'block', fontSize: '0.75rem' }}>{COPY.onHeartwood(npub)}</span> : null}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                <span style={muted}>{COPY.state[r.state]}</span>
+                {r.state === 'skipped' && onRetry ? (
+                  <button className="btn btn-sm" onClick={() => onRetry(r.pubkey)}>{COPY.approveNow}</button>
+                ) : null}
+                {r.state === 'waiting' && r.failed && onRetry ? (
+                  <button className="btn btn-sm" onClick={() => onRetry(r.pubkey)}>{COPY.retry}</button>
+                ) : null}
+                {r.state === 'waiting' && onDefer && r.who === 'child' ? (
+                  <button className="btn btn-sm" onClick={() => onDefer(r.pubkey)}>{COPY.later}</button>
+                ) : null}
+              </span>
+            </div>
+            {r.probing ? <p role="status" style={{ ...muted, marginTop: 4 }}>{COPY.pressAndHold}</p> : null}
+          </div>
+        );
+      })}
+      {hint ? <p style={{ ...muted, marginTop: 8 }}>{hint}</p> : null}
     </div>
   );
 }

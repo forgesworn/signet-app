@@ -19,6 +19,9 @@ import { buildPairingURI, generatePairingSecret } from '../lib/pairing-uri';
 import { usesChildDirectPairing } from '../lib/child-device-pairing';
 import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
 import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
+import { useChildReadyCheck, type ChildReadyCheckDeps } from '../hooks/useChildReadyCheck';
+import { ChildReadyNotice } from '../components/ChildReadyNotice';
+import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 import { isNativeApp, SignetNative } from '../lib/native';
 import type { TapRadioReason } from '../lib/child-pair-tap';
 
@@ -60,7 +63,7 @@ interface Props {
   /** Guardian's signing mode — `'bunker'` + a tree-derived dependant takes the child-direct Heartwood flow. */
   signingMode?: string;
   /** Inputs for the child-direct flow (spec §4). Absent ⇒ legacy phone-served QR only. */
-  direct?: Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void };
+  direct?: Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void; readyCheck?: ChildReadyCheckDeps };
 }
 
 type Stage =
@@ -374,11 +377,34 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
   requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onBack: () => void;
 }) {
-  const { onOpenOperatorImport, ...opts } = direct;
+  const { onOpenOperatorImport, readyCheck, ...opts } = direct;
   const pairing = useChildDevicePairing({ ...opts, dependant });
   const { state } = pairing;
   const name = dependant.displayName;
   const alreadyPaired = dependant.childDevice?.mode === 'heartwood-direct';
+  // The ready check: at the end of THIS pairing (the saved slot is the new
+  // phone's), every press is collected while the family is at the device.
+  const pairedNow = state.phase === 'paired'
+    && (dependant.childDevice?.clientPubkey ?? '').toLowerCase() === state.clientPubkey.toLowerCase();
+  const ready = useChildReadyCheck({
+    dependant,
+    operator: opts.operator,
+    guardianNpPubkey: opts.guardianNpPubkey,
+    guardianClientPubkey: readyCheck?.guardianClientPubkey ?? null,
+    npBackend: readyCheck?.npBackend ?? null,
+    enabled: !!readyCheck && (pairedNow || (state.phase === 'idle' && alreadyPaired)),
+    probeOnStart: pairedNow,
+  });
+  const readyNotice = (
+    <ChildReadyNotice
+      rows={ready.rows}
+      showReady
+      open
+      onFinishNow={() => { void ready.finishNow(); }}
+      onRetry={() => { void ready.finishNow(); }}
+      {...(ready.rows.some(r => r.who === 'child' && r.state !== 'ready') ? { hint: CHILD_READY_COPY.childPressHint(name) } : {})}
+    />
+  );
   const [confirmUnpair, setConfirmUnpair] = useState(false);
   const [unpairError, setUnpairError] = useState<string | null>(null);
   const [unpairing, setUnpairing] = useState(false);
@@ -464,6 +490,7 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
       <div className="fade-in" style={pad}>
         <h2 style={{ marginBottom: 8 }}>{COPY.pairedHeading}</h2>
         <p style={{ ...muted, marginBottom: 20 }}>{COPY.pairedAlready(name)}</p>
+        {readyNotice}
         {unpairError && <p role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{unpairError}</p>}
         {!confirmUnpair ? (
           <>
@@ -589,6 +616,7 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
         <h2 style={{ marginBottom: 8 }}>{COPY.pairedHeading}</h2>
         <p style={{ ...muted, marginBottom: 12 }}>{COPY.pairedBody(name)}</p>
         {state.warning && <p role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{state.warning}</p>}
+        {readyNotice}
         <button className="btn btn-primary" onClick={onBack} style={{ width: '100%' }}>{COPY.done}</button>
       </div>
     );

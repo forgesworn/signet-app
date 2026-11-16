@@ -23,6 +23,9 @@ import type { ChildAskHistoryEntry } from '../hooks/useChildAsks';
 import type { ChildGateAskRecord } from '../hooks/useChildGate';
 import { useChildActivity } from '../hooks/useChildActivity';
 import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
+import { useChildReadyCheck, type ChildReadyCheckDeps } from '../hooks/useChildReadyCheck';
+import { ChildReadyNotice } from '../components/ChildReadyNotice';
+import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 import { childRulesPayloadFor } from '../hooks/useChildRulesPublisher';
 import { askTargetText } from '../components/ChildAskCard';
 import { ceilingTypeNames, isAppBlocked, permissionPersonas, ruleTypeName } from '../lib/child-permissions';
@@ -384,12 +387,25 @@ export interface ChildPermissionsGuardianRouteProps {
   onOpenStage(): void;
   onSetAppPermissionSelfApproval?: (enabled: boolean) => Promise<void>;
   onUnpaired(): void;
+  /** The ready check's inputs (this phone's client key, its natural-person route). Absent: no ready notice. */
+  readyCheck?: ChildReadyCheckDeps;
 }
 
 /** Guardian wiring: the rules payload the child would receive, the child's connected apps, and Unpair. */
 export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRouteProps) {
   const dep = p.dependant;
   const pairing = useChildDevicePairing({ ...p.pairing, dependant: dep });
+  // Not ready away from home: shown while any press is owed. Reads only; the
+  // natural-person probe is sent from here only on "Finish now".
+  const ready = useChildReadyCheck({
+    dependant: dep,
+    operator: p.pairing.operator,
+    guardianNpPubkey: p.pairing.guardianNpPubkey,
+    guardianClientPubkey: p.readyCheck?.guardianClientPubkey ?? null,
+    npBackend: p.readyCheck?.npBackend ?? null,
+    enabled: !!p.readyCheck,
+    probeOnStart: false,
+  });
   const { apps } = useChildActivity({ dependant: dep, relays: p.relays, encryptionKey: p.encryptionKey, deviceEntries: NO_DEVICE_ENTRIES });
   const nowMs = Date.now();
   const payload = p.childRules ? childRulesPayloadFor(dep, p.childRules, p.approvedOnce, nowMs) : null;
@@ -402,6 +418,14 @@ export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRoutePr
   }, [p.childRules, dep]);
   const history = useMemo(() => p.history.filter(h => h.ask.dependantId.toLowerCase() === dep.id.toLowerCase()), [p.history, dep.id]);
   return (
+    <>
+    <ChildReadyNotice
+      rows={ready.rows}
+      showReady={false}
+      onFinishNow={() => { void ready.finishNow(); }}
+      onRetry={() => { void ready.finishNow(); }}
+      {...(ready.rows.some(r => r.who === 'child' && r.state !== 'ready') ? { hint: CHILD_READY_COPY.childPressHint(dep.displayName) } : {})}
+    />
     <ChildPermissions
       viewer="guardian"
       childName={dep.displayName}
@@ -423,5 +447,6 @@ export function ChildPermissionsGuardianRoute(p: ChildPermissionsGuardianRoutePr
       onOpenStage={p.onOpenStage}
       onSetAppPermissionSelfApproval={p.onSetAppPermissionSelfApproval}
     />
+    </>
   );
 }

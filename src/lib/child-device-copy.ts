@@ -45,7 +45,7 @@ export const CHILD_DEVICE_COPY = {
   minting: 'Setting up the Heartwood slot…',
   pairedHeading: 'Paired',
   pairedBody: (name: string) =>
-    `${name}'s phone now signs through your Heartwood. On their phone, follow the steps to approve each persona — press ALLOW AS on the Heartwood when it asks.`,
+    `${name}'s phone now signs through your Heartwood. Stay by the Heartwood: it asks for one press for each identity below, so they all work away from home.`,
   pairedOldSlotWarning: 'The previous phone could not be removed from your Heartwood. Remove it in Sapwood.',
   abortedMismatch: 'Pairing stopped. The words did not match, so nothing was set up. The code has been cancelled — start again with a new one.',
   abortedTwoRequests: 'Pairing stopped. Two different phones answered this code, so nothing was set up. The code has been cancelled — start again with a new one.',
@@ -155,6 +155,8 @@ export const CHILD_SIDE_COPY = {
   /** §9.4: the guardian unpaired this phone (notice or the Heartwood refusing it). */
   unpaired: 'Your guardian has unpaired this phone',
   pairAgain: 'Pair again',
+  /** The card on a phone paired straight to the Heartwood while its connection is not up. */
+  connectingHeartwood: 'Connecting to your family Heartwood…',
   /** A45: the local app-connection keys will not decrypt; nothing was replaced. */
   transportKeysUnreadable: 'Your app connections could not be read on this phone, so apps cannot connect right now. Lock and unlock to try again.',
   /** A41: `?action=add-dependant` on a child's phone. */
@@ -163,19 +165,6 @@ export const CHILD_SIDE_COPY = {
   guardianManages: 'Your guardian looks after this for you, on their phone.',
   /** A40: nostrconnect:// on a direct child. */
   connectNotServed: 'This identity cannot connect apps on this phone right now. Check your Heartwood is connected, then try again.',
-  approvals: {
-    heading: 'Approve your identities on the Heartwood',
-    body: 'For each identity, your guardian presses ALLOW AS on the Heartwood once.',
-    approved: 'Approved',
-    waiting: 'Waiting for the Heartwood',
-    failed: 'Not approved yet',
-    retry: 'Try again',
-    later: 'Later',
-    deferred: 'Later — approve when needed',
-    approveNow: 'Approve now',
-    finishedHeading: 'Some identities are set for later',
-    finishedBody: 'Your guardian will be asked to press ALLOW AS on the Heartwood the first time you use one.',
-  },
 } as const;
 
 /** Guardian side of a child's fresh request (spec §7). */
