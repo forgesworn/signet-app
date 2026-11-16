@@ -193,6 +193,25 @@ describe('useGuardianReadyChecks (guardian, App-level)', () => {
     expect(result.current.approvedByDep[dep.id]).toEqual([PERSONA]);
   });
 
+  it('approvedAtByDep: when the device was read for the child, moving with every good reading; the saved time before any', async () => {
+    const dep = makeDep({}, 1);
+    const store = memStore({ [dep.id.toLowerCase()]: { pairing: pairingKeyOf(dep), guardian: 'confirmed', approved: [PERSONA], at: 1_700_000_000_000 } });
+    let release!: () => void;
+    mList.mockImplementationOnce(() => new Promise(r => { release = () => r(device([PERSONA], [GNP])); }));
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], store })));
+    // The saved reading and its time, until the device answers.
+    await waitFor(() => expect(result.current.approvedAtByDep[dep.id]).toBe(1_700_000_000_000));
+    const asked = Date.now();
+    await act(async () => { release(); });
+    await waitFor(() => expect(result.current.approvedAtByDep[dep.id]).toBeGreaterThanOrEqual(asked - 50));
+    const first = result.current.approvedAtByDep[dep.id];
+    expect(result.current.approvedByDep[dep.id]).toEqual([PERSONA]);
+    mList.mockResolvedValue(device([PERSONA], [GNP]));
+    await wait(5);
+    act(() => { result.current.watch(dep.id); });
+    await waitFor(() => expect(result.current.approvedAtByDep[dep.id]).toBeGreaterThan(first));
+  });
+
   it('paused: no probe and no nag; the pause ending starts the check', async () => {
     mList.mockResolvedValue(device([], []));
     const nip44Encrypt = vi.fn(async () => 'x');

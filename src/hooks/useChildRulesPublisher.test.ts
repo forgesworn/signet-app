@@ -9,7 +9,7 @@ import { childRuleId } from '../lib/child-rules';
 import type { ChildRule } from '../types/child-rules';
 import type { DependantIdentity } from '../types';
 import type { NostrEvent } from 'signet-protocol';
-import { childRulesPayloadFor, useChildRulesPublisher, CHILD_RULES_PUBLISH_DEBOUNCE_MS } from './useChildRulesPublisher';
+import { childRulesPayloadFor, useChildRulesPublisher, CHILD_RULES_PUBLISH_DEBOUNCE_MS, APPROVED_AT_REPUBLISH_MS } from './useChildRulesPublisher';
 
 const railSk = generateSecretKey(), clientSk = generateSecretKey();
 const RAIL = getPublicKey(railSk), CLIENT = getPublicKey(clientSk);
@@ -109,6 +109,41 @@ describe('useChildRulesPublisher', () => {
     await vi.waitFor(() => expect(published).toHaveLength(3));
     expect((await open(2))?.approved).toBeUndefined();
     expect(childRulesPayloadFor(dep, [], [], 1_000)).not.toHaveProperty('approved');
+  });
+
+  it('ready check: sends when the device was read (`approvedAt`) with the reading; the same reading read again is resent only once 2 minutes newer', async () => {
+    const dep = directDep();
+    const open = async (i: number) => openChildRulesEvent(published[i].ev, bytesToHex(clientSk), { railPubkey: RAIL, dependantId: dep.id });
+    const T = Date.now();
+    const { rerender } = renderHook((p: { at: number }) => useChildRulesPublisher({
+      enabled: true, dependants: [dep], childRules: [], relayUrl: RELAY, publish,
+      approvedByDep: { [dep.id]: [] }, approvedAtByDep: { [dep.id]: p.at },
+    }), { initialProps: { at: T - 1_000 } });
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    expect((await open(0))?.approvedAt).toBe(T - 1_000);
+    // Polling: the same answer read again 8 s later is not worth a publish.
+    await flush(8_000);
+    rerender({ at: Date.now() });
+    await flush(1100);
+    expect(published).toHaveLength(1);
+    // Read again 2 minutes after the time sent: sent with the new time (a full clear the child must hear of).
+    await flush(APPROVED_AT_REPUBLISH_MS);
+    const again = Date.now();
+    rerender({ at: again });
+    await flush(1100);
+    await vi.waitFor(() => expect(published).toHaveLength(2));
+    expect((await open(1))?.approvedAt).toBe(again);
+  });
+
+  it('ready check: `approvedAt` only with `approved`, never after the publish, never a non-time', () => {
+    const dep = directDep();
+    expect(childRulesPayloadFor(dep, [], [], 1_800_000_000_000, [PERSONA], 1_799_999_999_000)?.approvedAt).toBe(1_799_999_999_000);
+    // A reading stamped after `updatedAt` (a clock step) is sent as `updatedAt`.
+    expect(childRulesPayloadFor(dep, [], [], 1_800_000_000_000, [PERSONA], 1_800_000_000_500)?.approvedAt).toBe(1_800_000_000_000);
+    expect(childRulesPayloadFor(dep, [], [], 1_800_000_000_000, undefined, 1_799_999_999_000)).not.toHaveProperty('approvedAt');
+    expect(childRulesPayloadFor(dep, [], [], 1_800_000_000_000, [PERSONA], 0)).not.toHaveProperty('approvedAt');
+    expect(childRulesPayloadFor(dep, [], [], 1_800_000_000_000, [PERSONA])).not.toHaveProperty('approvedAt');
   });
 
   it('skips phone-paired dependants and waits while rules load', async () => {

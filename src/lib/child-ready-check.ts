@@ -17,8 +17,10 @@
  *                   `unknown` when the device did not report approvals, the
  *                   reply failed the strict parse, or the read failed.
  *   child phone     cannot read the device. The guardian's reading reaches it
- *                   in the rules payload (`approved`) and wins over the
- *                   child's own saved answers; without one, the child falls
+ *                   in the rules payload (`approved`, read at `approvedAt`)
+ *                   and wins over the child's own saved answers, except a
+ *                   press this phone made after that reading
+ *                   (`childPressStands`); without a reading, the child falls
  *                   back to its own probe answers.
  */
 import { npubEncode } from 'nostr-tools/nip19';
@@ -138,12 +140,45 @@ export function isApprovalChanged(err: unknown): boolean {
 }
 
 /**
+ * The two phones' clocks differ: a press completed up to this long BEFORE the
+ * guardian's reading (`approvedAt`) still counts as after it. The guardian
+ * reads the device again within its polling window, so a reading that just
+ * missed a press is followed by one that has it.
+ */
+export const PRESS_CLOCK_SKEW_MS = 120_000;
+
+/**
+ * Child's phone: whether this phone's own press (this session) still stands
+ * against the guardian's reading, which otherwise decides.
+ *
+ * With `approvedAt` (the latest time the guardian read the device that this
+ * phone has seen): the press stands when it completed after that reading
+ * (`PRESS_CLOCK_SKEW_MS` allowed for the clocks), until a reading taken after
+ * the press arrives. Without it (an older guardian build): the press stands
+ * while the reading has lost nothing it held at the time of the press
+ * (`atPress`); an empty reading followed by a full clear is missed there.
+ */
+export function childPressStands(input: {
+  /** This phone's clock, ms; undefined when no press succeeded this session. */
+  pressedAt: number | undefined;
+  /** The guardian's clock, ms; undefined when the payload carries none. */
+  approvedAt: number | undefined;
+  /** The reading (`approved`) when the press succeeded ([] when none). */
+  atPress: readonly string[] | undefined;
+  /** The reading now. */
+  approved: readonly string[];
+}): boolean {
+  if (input.approvedAt !== undefined) return input.pressedAt !== undefined && input.pressedAt >= input.approvedAt - PRESS_CLOCK_SKEW_MS;
+  return input.atPress !== undefined && input.atPress.every(id => input.approved.includes(id));
+}
+
+/**
  * Child's phone: one persona's state as shown. With the guardian's reading
  * (`approved`, from the newest rules payload): listed ⇒ approved; absent and
- * the slot full ⇒ full; absent but this phone's own probe succeeded after
- * that reading (`probedUnderCurrent`, the caller's rule) ⇒ approved;
- * otherwise owed, overriding a saved "approved". Without a reading: the saved
- * ceremony state, as before.
+ * the slot full ⇒ full; absent but this phone's own press still stands
+ * against the reading (`probedUnderCurrent`, from `childPressStands`) ⇒
+ * approved; otherwise owed, overriding a saved "approved". Without a reading:
+ * the saved ceremony state, as before.
  */
 export function childEffectiveApproval(input: {
   persona: string;

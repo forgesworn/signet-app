@@ -28,6 +28,19 @@ describe('child rules cache (encrypted identity-store row)', () => {
     expect(await db.loadChildRulesCache(DEP, KEY)).toBeNull();
   });
 
+  it('keeps a cached reading time with its reading; drops one that is malformed or without a reading', async () => {
+    const db = await import('./db');
+    const T = 1_800_000_000_000;
+    await db.saveChildRulesCache(DEP, { ...payload(T), approved: [PERSONA], approvedAt: T - 9 }, KEY);
+    expect((await db.loadChildRulesCache(DEP, KEY))?.approvedAt).toBe(T - 9);
+    for (const bad of [{ approvedAt: T - 9 }, { approved: [PERSONA], approvedAt: T + 9 }, { approved: [PERSONA], approvedAt: 5 }]) {
+      await db.saveChildRulesCache(DEP, { ...payload(T), ...bad }, KEY);
+      const back = await db.loadChildRulesCache(DEP, KEY);
+      expect(back?.updatedAt).toBe(T);
+      expect(back).not.toHaveProperty('approvedAt');
+    }
+  });
+
   it('a cached payload for another dependant is not returned', async () => {
     const db = await import('./db');
     await db.saveChildRulesCache(DEP, payload(5), KEY);

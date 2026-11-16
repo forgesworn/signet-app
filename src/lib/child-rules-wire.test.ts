@@ -66,6 +66,23 @@ describe('child rules wire', () => {
     await expect(buildChildRulesEvent(payload([rule()], { approved: Array(33).fill(PERSONA) }), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
   });
 
+  it('ready check: carries when the guardian read the device (`approvedAt`), only with `approved`, a strict ms time no later than updatedAt', async () => {
+    const T = 1_800_000_000_000;
+    const ok = await buildChildRulesEvent(payload([rule()], { approved: [PERSONA], approvedAt: T - 5, updatedAt: T }), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(ok, CLIENT_SK, expectOk))!.approvedAt).toBe(T - 5);
+    const at = await buildChildRulesEvent(payload([rule()], { approved: [], approvedAt: T, updatedAt: T }), RAIL_SK, CLIENT_PK, 1_000_000);
+    expect((await openChildRulesEvent(at, CLIENT_SK, expectOk))!.approvedAt).toBe(T);
+    for (const bad of [
+      { approvedAt: T - 5, updatedAt: T },                       // without `approved`
+      { approved: [PERSONA], approvedAt: T + 1, updatedAt: T },  // after the publish
+      { approved: [PERSONA], approvedAt: 1_000, updatedAt: T },  // seconds, or nonsense
+      { approved: [PERSONA], approvedAt: T - 0.5, updatedAt: T },
+      { approved: [PERSONA], approvedAt: '1800000000000' as unknown as number, updatedAt: T },
+    ]) {
+      await expect(buildChildRulesEvent(payload([rule()], bad), RAIL_SK, CLIENT_PK, 1_000_000)).rejects.toThrow();
+    }
+  });
+
   it('a field this build does not know is ignored, not refused (how a released child reads `approved`)', async () => {
     // Sealed by hand so the builder's own check cannot strip the extra field.
     const { sealVaultPayload } = await import('./vault-envelope');

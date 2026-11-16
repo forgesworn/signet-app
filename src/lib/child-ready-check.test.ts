@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildPersonaFirstDependant } from './dependant-record';
 import {
-  approvedForChild, childEffectiveApproval, childReadyRows, deviceShortNpub, expectedChildPersonas, guardianOutcomeOf, guardianReadyRows,
+  approvedForChild, childEffectiveApproval, childPressStands, childReadyRows, deviceShortNpub, PRESS_CLOCK_SKEW_MS, expectedChildPersonas, guardianOutcomeOf, guardianReadyRows,
   HEARTWOOD_SLOT_IDENTITY_CAP, identityApproved, isApprovalChanged, owedPresses, readySummary, slotGrantCount,
   type ChildApproval, type ReadyRow,
 } from './child-ready-check';
@@ -206,6 +206,46 @@ describe('childEffectiveApproval (the guardian\'s reading wins)', () => {
     const sixteen = Array.from({ length: 16 }, (_, i) => `f1${i.toString(16).padStart(62, '0')}`);
     expect(eff('approved', sixteen)).toBe('full');
     expect(eff('approved', sixteen, true)).toBe('full');
+  });
+});
+
+describe('childPressStands (this phone\'s press against the guardian\'s reading)', () => {
+  const T = 1_800_000_000_000, MIN = 60_000;
+  /** The persona's state as shown, after a press at `pressedAt` and the reading `approved` read at `approvedAt`. */
+  const shown = (pressedAt: number | undefined, approved: string[], approvedAt: number | undefined, atPress: string[] | undefined = []) =>
+    childEffectiveApproval({ persona: PERSONA, saved: pressedAt === undefined ? undefined : 'approved', approved,
+      probedUnderCurrent: childPressStands({ pressedAt, approvedAt, atPress, approved }) });
+
+  it('a press, then a stale reading (taken before it) without the identity: the press stands, confirmed', () => {
+    expect(shown(T, [], T - 10 * MIN)).toBe('approved');
+    expect(shown(T, [EXTRA], T - 10 * MIN)).toBe('approved');
+  });
+  it('a reading taken after the press without the identity: owed again', () => {
+    expect(shown(T, [], T + 10 * MIN)).toBe('waiting');
+    expect(shown(T, [EXTRA], T + 10 * MIN)).toBe('waiting');
+    // ... and listed: confirmed by the reading itself.
+    expect(shown(T, [PERSONA], T + 10 * MIN)).toBe('approved');
+  });
+  it('an empty reading, a press, then a full clear read later: owed (the old rule missed this)', () => {
+    expect(shown(T, [], T - 10 * MIN, [])).toBe('approved');
+    expect(shown(T, [], T + 10 * MIN, [])).toBe('waiting');
+    // The rule without a reading time (an older guardian build) still misses it.
+    expect(shown(T, [], undefined, [])).toBe('approved');
+  });
+  it('allows the two phones\' clocks to differ by up to 2 minutes', () => {
+    expect(PRESS_CLOCK_SKEW_MS).toBe(2 * MIN);
+    // A press up to 120 s BEFORE the reading counts as after it.
+    expect(shown(T, [], T + 2 * MIN)).toBe('approved');
+    expect(shown(T, [], T + 2 * MIN - 1)).toBe('approved');
+    expect(shown(T, [], T + 2 * MIN + 1)).toBe('waiting');
+  });
+  it('no press this session: the reading decides', () => {
+    expect(childPressStands({ pressedAt: undefined, approvedAt: T, atPress: undefined, approved: [] })).toBe(false);
+    expect(childPressStands({ pressedAt: undefined, approvedAt: undefined, atPress: undefined, approved: [] })).toBe(false);
+  });
+  it('without a reading time (an older guardian build): the press stands while the reading lost nothing it held at the press', () => {
+    expect(childPressStands({ pressedAt: T, approvedAt: undefined, atPress: [EXTRA], approved: [EXTRA] })).toBe(true);
+    expect(childPressStands({ pressedAt: T, approvedAt: undefined, atPress: [EXTRA], approved: [] })).toBe(false);
   });
 });
 

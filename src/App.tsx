@@ -5266,6 +5266,7 @@ function AppContent() {
     childRules,
     approvedOnceKinds: approvedOnceKinds ?? undefined,
     approvedByDep: guardianReady.approvedByDep,
+    approvedAtByDep: guardianReady.approvedAtByDep,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
   });
 

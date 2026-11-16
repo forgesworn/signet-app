@@ -44,7 +44,23 @@ export interface ChildRulesPayload {
    * answers; when absent the child falls back to them.
    */
   approved?: string[];
+  /**
+   * When the guardian READ the device for `approved` (unix ms, guardian's
+   * clock; not the publish time). Only with `approved`, never after
+   * `updatedAt`. The child's own press counts against the reading only when it
+   * came after this (`childPressStands`). Absent from older guardian builds:
+   * the child then keeps the older rule. Additive like `approved`.
+   */
+  approvedAt?: number;
   updatedAt: number;
+}
+
+/** No reading is older than this (2020-09-13): a smaller value is not a time in ms. */
+export const APPROVED_AT_MIN_MS = 1_600_000_000_000;
+
+/** `approvedAt`: a strict integer ms time from `APPROVED_AT_MIN_MS` up to the payload's `updatedAt`. */
+export function isApprovedAt(v: unknown, updatedAt: number): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= APPROVED_AT_MIN_MS && v <= updatedAt;
 }
 
 const posInt = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
@@ -109,6 +125,7 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
   if (o.personas !== undefined && (!Array.isArray(o.personas) || o.personas.length > MAX_PERSONAS
     || !o.personas.every(p => typeof p === 'string' && HEX64.test(p)))) return null;
   if (o.approved !== undefined && !isApprovedList(o.approved)) return null;
+  if (o.approvedAt !== undefined && (o.approved === undefined || !isApprovedAt(o.approvedAt, o.updatedAt))) return null;
   const rules: ChildRule[] = [];
   for (const item of o.rules) {
     const rule = parseChildRuleRecord(item);
@@ -123,6 +140,7 @@ function checkPayload(raw: unknown): ChildRulesPayload | null {
   };
   if (o.personas !== undefined) out.personas = [...new Set(o.personas as string[])];
   if (o.approved !== undefined) out.approved = [...new Set(o.approved as string[])].sort();
+  if (o.approvedAt !== undefined) out.approvedAt = o.approvedAt as number;
   if (o.defaultSchedule !== undefined) {
     const s = parseScheduleValue(o.defaultSchedule);
     if (!s) return null; // a schedule we cannot read must not silently become "no schedule"

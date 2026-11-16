@@ -3398,7 +3398,13 @@ export async function loadChildRulesCache(dependantPubkey: string, encryptionKey
       || !Array.isArray(p.ceilingKinds) || !Array.isArray(p.disconnectedApps) || !Number.isSafeInteger(p.updatedAt)) return null;
     // The ready check's reading: a malformed one is dropped (the child falls back to its own answers).
     if (p.approved !== undefined && !(Array.isArray(p.approved) && p.approved.length <= 32 && p.approved.every(x => typeof x === 'string' && /^[0-9a-f]{64}$/.test(x)))) {
-      const { approved: _drop, ...rest } = p; void _drop;
+      const { approved: _drop, approvedAt: _at, ...rest } = p; void _drop; void _at;
+      return rest;
+    }
+    // Its time, as the wire checks it (`isApprovedAt`): only with a reading, ms, never after `updatedAt`.
+    if (p.approvedAt !== undefined && (p.approved === undefined || typeof p.approvedAt !== 'number' || !Number.isSafeInteger(p.approvedAt)
+      || p.approvedAt < 1_600_000_000_000 || p.approvedAt > p.updatedAt)) {
+      const { approvedAt: _drop, ...rest } = p; void _drop;
       return rest;
     }
     return p;

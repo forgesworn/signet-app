@@ -93,6 +93,8 @@ export interface GuardianReadyChecks {
   watch(depId: string): void;
   /** The child's recorded identities per dependant id, for the rules payload (`approved`). Stable while unchanged. */
   approvedByDep: Readonly<Record<string, string[]>>;
+  /** When each of those was read from the device (ms, `approvedAt`); moves with every good reading. */
+  approvedAtByDep: Readonly<Record<string, number>>;
   /** Saved results have been read (or failed to): the rules publisher waits for this. */
   loaded: boolean;
 }
@@ -175,6 +177,8 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   // ── The device reading ───────────────────────────────────────────────────
   const [reading, setReading] = useState<DeviceClientSlot[] | null>(null);
   const readingRef = useRef<DeviceClientSlot[] | null>(null);
+  /** When the last good reading was asked of the device (ms, just before `list_clients` went out). */
+  const [readingAt, setReadingAt] = useState(0);
   const [lastFailed, setLastFailed] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [npProbe, setNpProbeState] = useState<NpProbeState>('none');
@@ -199,6 +203,7 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
     genRef.current++;
     readingRef.current = null;
     setReading(null);
+    setReadingAt(0);
     setLastFailed(false);
     setAttempted(false);
     setPollUntil(0);
@@ -251,15 +256,19 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
     if (!op) return Promise.resolve(null);
     const gen = genRef.current;
     const run = withOperatorLock(op, async () => {
+      // The reading's time is when it was asked for: a press completing while the
+      // answer is on its way may be missing from it, so it counts as after.
+      const at = Date.now();
       const out = await listClients(op, { strict: true });
       // No slot at all cannot be this family's device answering: say nothing about it.
       if (out.length === 0) throw new Error('list_clients reply had no slots');
-      return out;
+      return { out, at };
     }).then(
-      (out) => {
+      ({ out, at }) => {
         if (gen !== genRef.current) return null;
         readingRef.current = out;
         setReading(out);
+        setReadingAt(at);
         setLastFailed(false);
         setAttempted(true);
         retryIdx.current = 0;
@@ -451,12 +460,18 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
     };
   }, [direct, enabled, rowsFor, npProbe, attempted, finishFor]);
 
-  // For the rules payload: the last good reading (a failed read does not take it away), else the saved one.
-  const approvedJson = JSON.stringify(direct.map((dep) => {
-    const approved = reading ? approvedForChild(dep, reading) : recordFor(dep)?.approved;
-    return [dep.id, approved ?? null];
-  }).filter(([, a]) => a !== null));
+  // For the rules payload: the last good reading (a failed read does not take it away), else the saved one,
+  // each with the time it was read (the saved one's time is when it was saved, just after its read).
+  const readings = direct.map((dep) => {
+    const saved = recordFor(dep);
+    const approved = reading ? approvedForChild(dep, reading) : saved?.approved;
+    const at = reading ? readingAt : saved?.at;
+    return { id: dep.id, approved, at: approved && at ? at : undefined };
+  }).filter(r => r.approved !== undefined);
+  const approvedJson = JSON.stringify(readings.map(r => [r.id, r.approved]));
   const approvedByDep = useMemo(() => Object.fromEntries(JSON.parse(approvedJson) as [string, string[]][]), [approvedJson]);
+  const approvedAtJson = JSON.stringify(readings.filter(r => r.at !== undefined).map(r => [r.id, r.at]));
+  const approvedAtByDep = useMemo(() => Object.fromEntries(JSON.parse(approvedAtJson) as [string, number][]), [approvedAtJson]);
 
-  return { forDependant, watch, approvedByDep, loaded: !enabled || loaded };
+  return { forDependant, watch, approvedByDep, approvedAtByDep, loaded: !enabled || loaded };
 }

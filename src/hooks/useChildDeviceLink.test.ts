@@ -371,6 +371,55 @@ describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `ap
     expect(fr.calls.map(c => c.slot)).toEqual([EXTRA, PERSONA, EXTRA]);
   });
 
+  describe('with the time the guardian read the device (`approvedAt`)', () => {
+    const MIN = 60_000;
+    const send = async (subs: { onEvent: (e: NostrEvent) => void }[], p: ChildRulesPayload) => {
+      await act(async () => { subs[0].onEvent(await buildChildRulesEvent(p, railPriv, clientPub, 1_800_000_000)); });
+    };
+
+    it('a press after the reading stands through a rules edit that republishes that reading; a later reading without it is owed', async () => {
+      const now = Date.now();
+      const { result, fr, subs } = await mount({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+      await act(async () => { await result.current.finishNow(); });
+      expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+      expect(result.current.summary.kind).toBe('ready');
+      // A rules edit: the same (older) reading again.
+      await send(subs, { ...payload(now + 1_000, 'full-control'), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 1_000));
+      expect(result.current.summary.kind).toBe('ready');
+      // A reading taken after the press that does not list it.
+      await send(subs, { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+      // A newer payload carrying an OLDER reading time (another guardian phone) does not bring the press back.
+      await send(subs, { ...payload(now + 30 * MIN), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 30 * MIN));
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+      expect(fr.calls).toHaveLength(1);
+    });
+
+    it('an empty reading, presses, then a full clear read later: owed again', async () => {
+      const now = Date.now();
+      const { result, fr, subs } = await mount({ ...payload(now), approved: [], approvedAt: now - 10 * MIN });
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 2 });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      await send(subs, { ...payload(now + 20 * MIN), approved: [], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 2 }));
+      expect(fr.calls).toHaveLength(2);
+    });
+
+    it('a reading up to 2 minutes after the press (the phones\' clocks differ) leaves the press standing', async () => {
+      const now = Date.now();
+      const { result, subs } = await mount({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      await send(subs, { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: Date.now() + MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 20 * MIN));
+      expect(result.current.summary.kind).toBe('ready');
+    });
+  });
+
   it('listed by the guardian: ready even without a probe of its own', async () => {
     const { result, fr } = await mount({ ...payload(100), approved: [EXTRA, PERSONA].sort() }, { identityApprovals: {} });
     expect(fr.calls).toHaveLength(0);

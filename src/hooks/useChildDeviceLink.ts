@@ -48,9 +48,11 @@
  * holds as many as the Heartwood can remember, and owed otherwise, whatever
  * this phone saved (a restored or cleared Heartwood shows as "Not ready" here,
  * with "Finish now"). A probe of this phone's that succeeded this session
- * counts too while the reading has lost nothing it held at the time of the
- * press (the press came after the guardian's reading). Without `approved`,
- * this phone's own probe answers stand.
+ * counts too when it came after the guardian's reading (`approvedAt`, with
+ * `PRESS_CLOCK_SKEW_MS` for the clocks), until a reading taken after it
+ * arrives (`childPressStands`); from an older guardian build without
+ * `approvedAt`, while the reading has lost nothing it held at the time of the
+ * press. Without `approved`, this phone's own probe answers stand.
  *
  * Paused (`defaultSchedule.paused`): the slot refuses everything, so no probe
  * is sent and nothing is owed; probes resume `UNPAUSE_SETTLE_MS` after the
@@ -69,7 +71,7 @@ import { observeStampedCalls } from '../lib/signing-backend';
 import { childAllowedPersonas } from '../lib/child-bunker';
 import { subscribeEvents } from '../lib/relay-service';
 import {
-  childEffectiveApproval, childReadyRows, isApprovalChanged, owedPresses, readySummary,
+  childEffectiveApproval, childPressStands, childReadyRows, isApprovalChanged, owedPresses, readySummary,
   type ChildEffectiveApproval, type ReadyRow, type ReadySummary,
 } from '../lib/child-ready-check';
 
@@ -167,6 +169,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   // ── Rules ────────────────────────────────────────────────────────────────
   const [rules, setRules] = useState<ChildRulesPayload | null>(null);
   const rulesRef = useRef<ChildRulesPayload | null>(null);
+  /** The latest `approvedAt` among the payloads applied (guardian's clock, ms). */
+  const latestReadingAt = useRef<number | undefined>(undefined);
 
   // ── Unpaired (§9.4) ──────────────────────────────────────────────────────
   const [unpaired, setUnpaired] = useState(false);
@@ -176,6 +180,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     unpairedRef.current = true;
     setUnpaired(true);
     rulesRef.current = null;
+    latestReadingAt.current = undefined;
     setRules(null);
     const id = recordRef.current?.dependantPubkey;
     if (id) void clearChildRulesCache(id).catch(() => { /* best effort */ });
@@ -214,6 +219,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const [cacheRead, setCacheRead] = useState(false);
   useEffect(() => {
     rulesRef.current = null;
+    latestReadingAt.current = undefined;
     setRules(null);
     setCacheRead(false);
     if (!depId || !clientPub || !clientPriv || !railPub || !railRelay || !encryptionKey) return;
@@ -223,6 +229,9 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
       const next = newerRulesPayload(rulesRef.current, incoming);
       if (next === rulesRef.current) return false;
       rulesRef.current = next;
+      // A reading never moves back: a newer payload carrying an older reading time
+      // (another guardian phone) does not revive a press a later reading overruled.
+      if (next?.approvedAt !== undefined) latestReadingAt.current = Math.max(latestReadingAt.current ?? 0, next.approvedAt);
       setRules(next);
       return true;
     };
@@ -258,6 +267,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const [probedOk, setProbedOk] = useState(false);
   /** Per persona: the guardian's reading (`approved`, [] when none) when its probe last succeeded (this session). */
   const approvedUnder = useRef(new Map<string, readonly string[]>());
+  /** Per persona: when its probe last succeeded (this session; this phone's clock, ms). */
+  const pressedAt = useRef(new Map<string, number>());
   const recordKey = direct ? `${direct.id}:${clientPub}` : '';
 
   useEffect(() => {
@@ -267,6 +278,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     attempted.current = new Set();
     inflight.current = new Map();
     approvedUnder.current = new Map();
+    pressedAt.current = new Map();
     setProbedOk(false);
   }, [recordKey]);
 
@@ -294,17 +306,21 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   /** One persona's state as shown, from the refs (the guardian's reading first). */
   const effectiveOf = useCallback((persona: string): ChildEffectiveApproval => {
     const r = rulesRef.current;
-    // This phone's press still counts while the guardian's reading has lost
-    // nothing it held at the time of the press: a rules edit republishing the
-    // same (older) reading, or a reading that only gained identities, keeps
-    // it; a reading that dropped one (a restore, cleared approvals) does not.
-    const atPress = approvedUnder.current.get(persona);
-    const now = r?.approved ?? [];
+    // This phone's press counts until a reading taken after it says otherwise
+    // (`childPressStands`): a rules edit republishing an older reading keeps
+    // it; a later reading that does not list the identity overrules it. An
+    // older guardian build sends no reading time: the press then counts while
+    // the reading has lost nothing it held at the time of the press.
     return childEffectiveApproval({
       persona,
       saved: approvalsRef.current[persona],
       approved: r?.approved,
-      probedUnderCurrent: atPress !== undefined && atPress.every(id => now.includes(id)),
+      probedUnderCurrent: childPressStands({
+        pressedAt: pressedAt.current.get(persona),
+        approvedAt: r?.approvedAt !== undefined ? Math.max(r.approvedAt, latestReadingAt.current ?? 0) : undefined,
+        atPress: approvedUnder.current.get(persona),
+        approved: r?.approved ?? [],
+      }),
     });
   }, []);
 
@@ -354,6 +370,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
           }
         }
         approvedUnder.current.set(persona, [...(rulesRef.current?.approved ?? [])]);
+        pressedAt.current.set(persona, Date.now());
         setApproval(persona, 'approved');
         setProbedOk(true);
         return true;
