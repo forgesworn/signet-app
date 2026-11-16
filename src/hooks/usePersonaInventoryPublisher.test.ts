@@ -69,5 +69,12 @@ describe('usePersonaInventoryPublisher — what goes to the paired phone', () =>
       relayUrl: RELAY, encryptionKey: 'k' }));
     await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
     expect(sentKeys(0)).toEqual([EXTRA]);
+    expect(mPublish.mock.calls[0][2]).toEqual([RELAY]);
+  });
+
+  it('A56: a direct dependant\'s inventory also goes to the pairing\'s rail relay', async () => {
+    renderHook(() => usePersonaInventoryPublisher({ dependants: [direct()], relayUrl: RELAY, encryptionKey: 'k' }));
+    await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(mPublish.mock.calls[0][2]).toEqual([RELAY, RAIL]);
   });
 });

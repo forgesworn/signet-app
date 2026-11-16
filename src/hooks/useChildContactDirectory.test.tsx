@@ -132,6 +132,29 @@ it('rebuilds after a missing relay acknowledgement instead of replaying a signed
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
 });
+it('A56: one socket per relay; each extra relay is published to with its own relay named', async () => {
+  vi.useFakeTimers();
+  const sockets: FakeSocket[] = [];
+  class FakeSocket {
+    static OPEN = 1; readyState = 0; onopen?: () => void; onclose?: () => void; onerror?: () => void; onmessage?: (m: { data: string }) => void;
+    send = vi.fn((raw: string) => { const id = JSON.parse(raw)[1].id; queueMicrotask(() => this.onmessage?.({ data: JSON.stringify(['OK', id, true, '']) })); });
+    close = vi.fn(() => { this.readyState = 3; this.onclose?.(); });
+    constructor(public url: string) { sockets.push(this); queueMicrotask(() => { this.readyState = 1; this.onopen?.(); }); }
+  }
+  vi.stubGlobal('WebSocket', FakeSocket);
+  const publish = vi.fn(async (send: (event: NostrEvent) => void, _current: () => boolean, relay: string) => {
+    send({ id: relay === 'wss://rail.example' ? 'rail' : 'base' } as NostrEvent);
+  });
+  const { unmount } = renderHook(() => useChildContactDirectoryPublisher({ enabled: true, session: 'one', changeToken: 'one', relayUrl: options.relayUrl,
+    extraRelays: ['wss://rail.example', options.relayUrl], publish }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(publish.mock.calls.map(c => c[2]).sort()).toEqual([options.relayUrl, 'wss://rail.example'].sort());
+  expect(sockets.map(s => s.url).sort()).toEqual([options.relayUrl, 'wss://rail.example'].sort());
+  expect(sockets.find(s => s.url === 'wss://rail.example')!.send.mock.calls[0][0]).toContain('"rail"');
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(publish).toHaveBeenCalledTimes(2); // both acknowledged: no retry
+  unmount();
+});
 it('follows an in-session re-pair: new endpoint and client key are used once the pairing generation bumps', async () => {
   const endpoint2 = new LocalSigningBackend('06'.repeat(32)), recipient2 = new LocalSigningBackend('07'.repeat(32));
   const pair2 = { ...pair, bunkerUri: `bunker://${endpoint2.activePublicKeyHex}?relay=wss%3A%2F%2Frelay.example`,

@@ -21,7 +21,7 @@ import { resolveChildAskPersona, childDirectoryPersonas, publishChildContactDire
 import { ChildContactDirectory } from './components/ChildContactDirectory';
 import { ChildContactAsk } from './components/ChildContactAsk';
 import { useChildContactOutbox } from './hooks/useChildContactOutbox';
-import { guardianRailPubkey } from './lib/paired-child-rail';
+import { childRailExtraRelays, childRailRelay, guardianRailPubkey, guardianToChildRelays, publishesToChildOn, withChildRailRelay } from './lib/paired-child-rail';
 import { sanitizeDisplayName } from './lib/text-sanitize';
 import { vaultPurpose } from 'signet-protocol/experimental';
 import { rotatePrivateVaultDataset } from './lib/private-vault-sync';
@@ -40,7 +40,7 @@ import { forgetContactOperationsCache, getOrCreateContactsDeviceId } from './lib
 import { forgetContactInviteVaultCache } from './lib/contact-invite-vault-cache';
 import { BotCarouselCard } from './components/BotCarouselCard';
 import { useBotInventory } from './hooks/useBotInventory';
-import { publishToRelays } from './lib/sync-relays';
+import { publishToRelays, publishToRelaysRequiring } from './lib/sync-relays';
 import { BotOwnershipService } from './lib/bot-ownership-service';
 import { approveBotAuth } from './lib/bot-auth';
 import { createBotSigningBackend } from './lib/bot-signing';
@@ -2119,7 +2119,9 @@ function AppContent() {
     session: JSON.stringify([identity?.naturalPerson.publicKey, encryptionKey]),
     changeToken: JSON.stringify([contactsV2Version, [...childSettingsMap], dependants.map(dep => [dep.id, dep.bunkerEndpoint?.publicKey, dep.bunkerEndpoint?.authorizedClientPubkey])]),
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
-    build: async () => {
+    // A56: a direct child reads this rail on its pairing's rail relay.
+    extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
+    build: async (relay) => {
       const key = encryptionKey, guardian = identity?.naturalPerson.publicKey;
       if (!key || !guardian) return [];
       const current = () => encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
@@ -2128,6 +2130,7 @@ function AppContent() {
       for (const dep of fresh) {
         const endpoint = dep.bunkerEndpoint;
         if (!current()) return [];
+        if (!publishesToChildOn(dep, relay, preferences.relayUrl ?? DEFAULT_RELAY_URL)) continue;
         if (dep.guardianPubkey !== guardian || !endpoint?.privateKey || !endpoint.authorizedClientPubkey) continue;
         let backend: LocalSigningBackend | undefined;
         try {
@@ -2150,13 +2153,16 @@ function AppContent() {
     changeToken: JSON.stringify([contactsV2Version, [...childSettingsMap], dependants.map(dep => [dep.id,
       dep.autonomyStage, dep.bunkerEndpoint, childDirectoryPersonas(dep)])]),
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
-    publish: async (send, active) => {
+    // A56: a direct child reads this rail on its pairing's rail relay.
+    extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
+    publish: async (send, active, relay) => {
       const key = encryptionKey, guardian = identity?.naturalPerson.publicKey;
       if (!key || !guardian) return;
       const current = () => active() && encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
       const fresh = await loadFreshDependants(key);
       for (const dep of fresh) {
         if (!current()) return;
+        if (!publishesToChildOn(dep, relay, preferences.relayUrl ?? DEFAULT_RELAY_URL)) continue;
         if (dep.guardianPubkey !== guardian || !dep.bunkerEndpoint?.authorizedClientPubkey) continue;
         try {
           await publishChildContactDirectory({ guardian, child: dep.id, key, isCurrent: current,
@@ -2181,6 +2187,7 @@ function AppContent() {
       && !!dep.bunkerEndpoint?.publicKey && !!dep.bunkerEndpoint?.authorizedClientPubkey).map(dep => ({
         scope: { guardian, child: dep.id, endpoint: dep.bunkerEndpoint!.publicKey, client: dep.bunkerEndpoint!.authorizedClientPubkey!, personas: childDirectoryPersonas(dep) },
         endpointPrivateKey: dep.bunkerEndpoint!.privateKey,
+        ...(childRailRelay(dep) ? { railRelay: childRailRelay(dep)! } : {}),
       }));
   }, [encryptionKey, identity, isPairedChild, loadFreshDependants]);
   const guardianChildLifecycle = useRef<{
@@ -2661,9 +2668,10 @@ function AppContent() {
         // D1: the receipt records completion before the completed reply is queued.
         await transitionChildContactReceipt({ scope, key, requestId: plan.requestId, from: ['pending', 'approved'], to: 'completed',
           now: Math.floor(Date.now() / 1000), isCurrent: current });
+        // A56: a direct child reads replies on its rail relay only, so that one must accept.
         await sendChildContactReply({ scope, key, plan, status: 'completed', exchangeId: plan.exchangeId, contactId,
-          now: Math.floor(Date.now() / 1000), isCurrent: current, transport: backend, relays: syncRelays.write, mayDeliver: mayReply,
-          publish: (signed, relays) => publishToRelays(signed, relays, { isCurrent: current, beforeSend: async () => {
+          now: Math.floor(Date.now() / 1000), isCurrent: current, transport: backend, relays: guardianToChildRelays(dep, syncRelays.write), mayDeliver: mayReply,
+          publish: (signed, relays) => publishToRelaysRequiring(signed, relays, childRailRelay(dep), { isCurrent: current, beforeSend: async () => {
             if (!await mayReply()) throw new Error('Child pairing or contact policy changed');
           } }) });
       } finally { backend.destroy(); }
@@ -2701,8 +2709,8 @@ function AppContent() {
         const inScope = async () => !!await guardianChildInScope(plan.request, found.scope.child) && current();
         try {
           await cancelChildContactRequest({ scope: found.scope, key, requestId: plan.requestId, now: Math.floor(Date.now() / 1000), isCurrent: current,
-            ...(await inScope() ? { reply: { transport, relays: syncRelays.write, mayDeliver: inScope,
-              publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelays(signed, relays, { isCurrent: current, beforeSend: async () => {
+            ...(await inScope() ? { reply: { transport, relays: guardianToChildRelays(found.dep, syncRelays.write), mayDeliver: inScope,
+              publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelaysRequiring(signed, relays, childRailRelay(found.dep), { isCurrent: current, beforeSend: async () => {
                 if (!await inScope()) throw new Error('Child pairing changed');
               } }) } } : {}) });
         } finally { transport.destroy(); }
@@ -2777,12 +2785,13 @@ function AppContent() {
     makeInviteService(`dependant:${child}`, guardianChildReviewCurrent, () => guardianChildPeerAllowed(peer, request, child)),
   [makeInviteService, guardianChildReviewCurrent, guardianChildPeerAllowed]);
   const guardianChildTransport = useCallback((source: GuardianChildRequestSource, plan: ChildContactExchangePlan, status: string, current: () => boolean) => ({
-    relays: syncRelays.write,
+    // A56: a direct child reads replies on its rail relay only, so that one must accept.
+    relays: withChildRailRelay(syncRelays.write, source.railRelay),
     // Saying no, or that a request ended, cannot widen access: scope only (D2).
     mayDeliver: async () => status === 'pending' || status === 'completed'
       ? await guardianChildPeerAllowed(plan.peer, plan.request, source.scope.child) && current()
       : !!await guardianChildInScope(plan.request, source.scope.child) && current(),
-    publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelays(signed, relays, { isCurrent: current, beforeSend: async () => {
+    publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelaysRequiring(signed, relays, source.railRelay, { isCurrent: current, beforeSend: async () => {
       const allowed = status === 'pending' || status === 'completed'
         ? await guardianChildPeerAllowed(plan.peer, plan.request, source.scope.child)
         : !!await guardianChildInScope(plan.request, source.scope.child);

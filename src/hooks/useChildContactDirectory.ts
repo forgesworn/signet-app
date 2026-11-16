@@ -69,27 +69,39 @@ export function useChildContactDirectory(options: {
 }
 
 /** Open-socket adapter: never queues signed events through reconnect. Each
- * change/retry creates a fresh publication with its own durable revision. */
+ * change/retry creates a fresh publication with its own durable revision.
+ *
+ * One socket per relay, each with its own retry: `publish(send, current,
+ * relay)` sends only the directories bound for that relay — every
+ * dependant's on `relayUrl`, and on each of `extraRelays` (A56: a direct
+ * child's rail relay) only the dependants that read there. */
 export function useChildContactDirectoryPublisher(options: {
   enabled: boolean; session: string; changeToken: string; relayUrl: string;
-  publish(send: (event: NostrEvent) => void, current: () => boolean): Promise<void>;
+  extraRelays?: readonly string[];
+  publish(send: (event: NostrEvent) => void, current: () => boolean, relay: string): Promise<void>;
 }) {
   const latest = useRef(options); latest.current = options;
   const { enabled, session, changeToken, relayUrl } = options;
+  const extraKeyOf = (o: typeof options) => [...new Set(o.extraRelays ?? [])].filter(r => r !== o.relayUrl && isValidRelayUrl(r)).sort().join(' ');
+  const extraKey = extraKeyOf(options);
   useEffect(() => {
     if (!enabled || !isValidRelayUrl(relayUrl)) return;
-    let active = true, busy = false, socket: WebSocket | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
+    const targets = [relayUrl, ...(extraKey ? extraKey.split(' ') : [])];
+    let active = true;
+    const busy = new Set<string>();
+    const sockets = new Map<string, WebSocket>();
+    const retries = new Map<string, ReturnType<typeof setTimeout>>();
     const current = () => active && latest.current.enabled && latest.current.session === session
-      && latest.current.changeToken === changeToken && latest.current.relayUrl === relayUrl;
-    const run = async () => {
-      if (!current() || busy) return;
-      busy = true;
+      && latest.current.changeToken === changeToken && latest.current.relayUrl === relayUrl
+      && extraKeyOf(latest.current) === extraKey;
+    const run = async (target: string) => {
+      if (!current() || busy.has(target)) return;
+      busy.add(target);
       let connected: WebSocket | undefined;
       const acknowledgements = new Map<string, (ok: boolean) => void>();
       const confirmations: Promise<boolean>[] = [];
       try {
-        connected = new WebSocket(relayUrl); socket = connected;
+        connected = new WebSocket(target); sockets.set(target, connected);
         const transport = connected;
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(() => { reject(new Error('Directory relay timeout')); transport.close(); }, 5000);
@@ -112,17 +124,22 @@ export function useChildContactDirectoryPublisher(options: {
             acknowledgements.set(event.id, ok => { clearTimeout(timeout); acknowledgements.delete(event.id); resolve(ok); });
           }));
           transport.send(JSON.stringify(['EVENT', event]));
-        }, current);
+        }, current, target);
         if ((await Promise.all(confirmations)).some(ok => !ok)) throw new Error('Directory relay did not confirm publication');
       } catch {
-        if (current()) retry = setTimeout(() => { void run(); }, 5000);
+        if (current()) { clearTimeout(retries.get(target)); retries.set(target, setTimeout(() => { void run(target); }, 5000)); }
       } finally {
         for (const settle of [...acknowledgements.values()]) settle(false);
-        connected?.close(); if (socket === connected) socket = undefined; busy = false;
+        connected?.close(); if (sockets.get(target) === connected) sockets.delete(target); busy.delete(target);
       }
     };
-    const initial = setTimeout(() => { void run(); }, 1000);
-    const refresh = setInterval(() => { void run(); }, 5 * 60_000);
-    return () => { active = false; clearTimeout(initial); clearTimeout(retry); clearInterval(refresh); socket?.close(); };
-  }, [enabled, session, changeToken, relayUrl]);
+    const runAll = () => { for (const target of targets) void run(target); };
+    const initial = setTimeout(runAll, 1000);
+    const refresh = setInterval(runAll, 5 * 60_000);
+    return () => {
+      active = false; clearTimeout(initial); clearInterval(refresh);
+      for (const t of retries.values()) clearTimeout(t);
+      for (const s of sockets.values()) s.close();
+    };
+  }, [enabled, session, changeToken, relayUrl, extraKey]);
 }

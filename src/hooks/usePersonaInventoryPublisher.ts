@@ -19,6 +19,7 @@ import { LocalSigningBackend } from '../lib/signing-backend';
 import { publishPersonaInventory, publicProfileToInventoryBlock } from '../lib/persona-inventory-sync';
 import { isDependantNaturalPersonActive } from '../lib/identity-display';
 import { pairedDeviceAllows } from '../lib/paired-device-personas';
+import { guardianToChildRelays } from '../lib/paired-child-rail';
 import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
@@ -254,7 +255,8 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
               revision: Math.floor(Date.now() / 1000),
             },
             backend,
-            relayUrl,
+            // A56: a direct child reads this rail on its pairing's rail relay.
+            guardianToChildRelays(dep, [relayUrl]),
           );
           if (ok) lastPublishedRef.current.set(dep.id, hash);
         } finally {

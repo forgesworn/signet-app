@@ -2,12 +2,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { NostrEvent } from 'signet-protocol';
-const state = vi.hoisted(() => ({ relays: [] as Array<{ filters?: Array<{ authors?: string[] }>; receive?: (event: NostrEvent) => void; disconnect: ReturnType<typeof vi.fn>; publish: ReturnType<typeof vi.fn> }> }));
+const state = vi.hoisted(() => ({ relays: [] as Array<{ url?: string; filters?: Array<{ authors?: string[] }>; receive?: (event: NostrEvent) => void; disconnect: ReturnType<typeof vi.fn>; publish: ReturnType<typeof vi.fn> }> }));
 vi.mock('signet-protocol', async original => ({ ...await original<typeof import('signet-protocol')>(), RelayClient: class {
   filters?: Array<{ authors?: string[] }>;
   receive?: (event: NostrEvent) => void;
   disconnect = vi.fn(); publish = vi.fn(async () => ({ ok: true, message: '' }));
-  constructor() { state.relays.push(this); }
+  constructor(public url?: string) { state.relays.push(this); }
   async connect() {}
   subscribe(filters: Array<{ authors?: string[] }>, receive: (event: NostrEvent) => void) { this.filters = filters; this.receive = receive; return 'sub'; }
 } }));
@@ -86,6 +86,19 @@ it('publishes bounded refreshes and drops a build finishing after lock', async (
   expect(state.relays[0].publish).toHaveBeenCalledWith(event);
   await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
   expect(state.relays[1].publish).toHaveBeenCalledWith(event);
+});
+it('A56: each extra relay gets only the events built for it; the guardian relay gets every dependant\'s', async () => {
+  vi.useFakeTimers();
+  const legacy = await sealChildContactPolicy(view(), endpoint);
+  const direct = await sealChildContactPolicy(view(), new LocalSigningBackend('06'.repeat(32)));
+  const build = vi.fn(async (relay: string) => relay === 'wss://rail.example' ? [direct] : [legacy, direct]);
+  renderHook(() => useChildContactPolicyPublisher({ enabled: true, session: 'guardian', changeToken: 'one', relayUrl: 'wss://relay.example',
+    extraRelays: ['wss://rail.example', 'wss://relay.example'], build }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(build.mock.calls.map(c => c[0])).toEqual(['wss://relay.example', 'wss://rail.example']);
+  const published = (url: string) => state.relays.filter(r => r.url === url).flatMap(r => r.publish.mock.calls.map(c => c[0]));
+  expect(published('wss://relay.example')).toEqual([legacy, direct]);
+  expect(published('wss://rail.example')).toEqual([direct]);
 });
 it('follows an in-session re-pair: new endpoint and client key are used once the pairing generation bumps', async () => {
   const endpoint2 = new LocalSigningBackend('06'.repeat(32)), recipient2 = new LocalSigningBackend('07'.repeat(32));

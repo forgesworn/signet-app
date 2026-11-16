@@ -6,7 +6,11 @@ import { openChildContactRequest, storeChildContactRequest, type ChildRequestRec
 import { guardianChildContactHistory, loadChildContactLifecycle } from '../lib/child-contact-lifecycle';
 import type { ChildContactExchangePlan } from '../lib/child-contact-review';
 
-export interface GuardianChildRequestSource { scope: ChildRequestScope; endpointPrivateKey: string }
+export interface GuardianChildRequestSource {
+  scope: ChildRequestScope; endpointPrivateKey: string;
+  /** A56: a direct child's rail relay (`childRailRelay`) — replies must reach it. */
+  railRelay?: string;
+}
 export interface GuardianChildRequest { source: GuardianChildRequestSource; receipt: ChildRequestReceipt }
 /** A request that stopped partway (D3). Only an explicit Cancel resolves it. */
 export interface GuardianChildStuckRequest { source: GuardianChildRequestSource; plan: ChildContactExchangePlan }

@@ -30,6 +30,7 @@ import { RelayClient } from 'signet-protocol';
 import type { AutonomyStage } from '../types';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { isValidRelayUrl } from './relay-url';
+import { publishToEveryRelay } from './sync-relays';
 
 const SYNC_D_TAG = 'signet:dependant-status';
 const SYNC_KIND = 30078;
@@ -81,9 +82,12 @@ const HEX64 = /^[0-9a-f]{64}$/i;
 export async function publishDependantStatus(
   params: DependantStatusParams,
   endpointBackend: DecryptingSigningBackend,
-  relayUrl: string,
+  relayUrl: string | readonly string[],
 ): Promise<boolean> {
-  if (!isValidRelayUrl(relayUrl)) return false;
+  // A56: a direct child's rail relay rides alongside the guardian's relay;
+  // the publication counts only once EVERY relay accepted it.
+  const relays = (typeof relayUrl === 'string' ? [relayUrl] : [...relayUrl]).filter(r => isValidRelayUrl(r));
+  if (relays.length === 0) return false;
   if (!HEX64.test(params.childTransportPubkey)) return false;
 
   const payload: DependantStatusPayload = {
@@ -109,17 +113,7 @@ export async function publishDependantStatus(
     content: ciphertext,
   };
   const signed = await endpointBackend.signEvent(event);
-
-  const relay = new RelayClient(relayUrl);
-  try {
-    await relay.connect();
-    const result = await relay.publish(signed);
-    return result.ok;
-  } catch {
-    return false;
-  } finally {
-    relay.disconnect();
-  }
+  return publishToEveryRelay(signed, relays);
 }
 
 /**

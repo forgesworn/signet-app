@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { guardianRailPubkey } from './paired-child-rail';
+import { childRailRelay, childRailExtraRelays, guardianRailPubkey, guardianToChildRelays, publishesToChildOn } from './paired-child-rail';
 import { extractEndpointPubkey } from './dependant-status-sync';
 
 const RAIL = 'a'.repeat(64);
@@ -29,5 +29,44 @@ describe('guardianRailPubkey', () => {
       expect(guardianRailPubkey({ bunkerUri })).toBe(extractEndpointPubkey(bunkerUri));
       expect(guardianRailPubkey({ mode: 'phone', bunkerUri, railPubkey: RAIL })).toBe(extractEndpointPubkey(bunkerUri));
     }
+  });
+});
+
+describe('A56: guardian→child relays', () => {
+  const direct = (railRelay?: string) => ({ childDevice: { mode: 'heartwood-direct' as const, railRelay } });
+
+  it('childRailRelay: a direct dependant\'s valid rail relay, else null', () => {
+    expect(childRailRelay(direct('wss://rail.example'))).toBe('wss://rail.example');
+    expect(childRailRelay(direct())).toBeNull();
+    expect(childRailRelay(direct('http://evil.example'))).toBeNull();
+    expect(childRailRelay({})).toBeNull();
+  });
+
+  it('adds the rail relay to what the publisher uses today, once', () => {
+    expect(guardianToChildRelays(direct('wss://rail.example'), ['wss://a.example'])).toEqual(['wss://a.example', 'wss://rail.example']);
+    expect(guardianToChildRelays(direct('wss://a.example'), ['wss://a.example'])).toEqual(['wss://a.example']);
+  });
+
+  it('a legacy dependant, or an older direct record with no rail relay, keeps exactly today\'s relays', () => {
+    expect(guardianToChildRelays({}, ['wss://a.example', 'wss://b.example'])).toEqual(['wss://a.example', 'wss://b.example']);
+    expect(guardianToChildRelays(direct(), ['wss://a.example'])).toEqual(['wss://a.example']);
+  });
+});
+
+describe('A56: one connection per relay, per-dependant routing', () => {
+  const direct = (railRelay?: string) => ({ childDevice: { mode: 'heartwood-direct' as const, railRelay } });
+  const BASE = 'wss://a.example';
+
+  it('childRailExtraRelays: the distinct rail relays not already the base relay', () => {
+    expect(childRailExtraRelays([direct('wss://r1.example'), direct(BASE), {}, direct('wss://r1.example'), direct('wss://r2.example')], BASE))
+      .toEqual(['wss://r1.example', 'wss://r2.example']);
+  });
+
+  it('publishesToChildOn: every dependant on the base relay; on a rail relay only the children that read there', () => {
+    expect(publishesToChildOn({}, BASE, BASE)).toBe(true);
+    expect(publishesToChildOn(direct('wss://r1.example'), BASE, BASE)).toBe(true);
+    expect(publishesToChildOn(direct('wss://r1.example'), 'wss://r1.example', BASE)).toBe(true);
+    expect(publishesToChildOn({}, 'wss://r1.example', BASE)).toBe(false);
+    expect(publishesToChildOn(direct('wss://r2.example'), 'wss://r1.example', BASE)).toBe(false);
   });
 });

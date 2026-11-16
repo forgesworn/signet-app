@@ -29,6 +29,7 @@ import type { DecryptingSigningBackend } from './signing-backend';
 import { safeImageOrLinkUrl } from './public-profile-publish';
 import { clampAbout } from './about-cap';
 import { isValidRelayUrl } from './relay-url';
+import { publishToEveryRelay } from './sync-relays';
 
 const INVENTORY_D_TAG = 'signet:persona-inventory';
 const INVENTORY_KIND = 30078;
@@ -210,9 +211,12 @@ export interface PersonaInventoryParams {
 export async function publishPersonaInventory(
   params: PersonaInventoryParams,
   endpointBackend: DecryptingSigningBackend,
-  relayUrl: string,
+  relayUrl: string | readonly string[],
 ): Promise<boolean> {
-  if (!isValidRelayUrl(relayUrl)) return false;
+  // A56: a direct child's rail relay rides alongside the guardian's relay;
+  // the publication counts only once EVERY relay accepted it.
+  const relays = (typeof relayUrl === 'string' ? [relayUrl] : [...relayUrl]).filter(r => isValidRelayUrl(r));
+  if (relays.length === 0) return false;
   if (!HEX64.test(params.childTransportPubkey)) return false;
   if (params.naturalPerson && !HEX64.test(params.naturalPerson.publicKey)) return false;
   const personaOk = !!params.persona && HEX64.test(params.persona.publicKey);
@@ -268,17 +272,7 @@ export async function publishPersonaInventory(
     content: ciphertext,
   };
   const signed = await endpointBackend.signEvent(event);
-
-  const relay = new RelayClient(relayUrl);
-  try {
-    await relay.connect();
-    const result = await relay.publish(signed);
-    return result.ok;
-  } catch {
-    return false;
-  } finally {
-    relay.disconnect();
-  }
+  return publishToEveryRelay(signed, relays);
 }
 
 /**
