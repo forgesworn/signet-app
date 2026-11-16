@@ -59,6 +59,8 @@ interface CarouselProps {
    * failure so AddCard can surface the error inline.
    */
   onAddPersona: (displayName: string) => Promise<void>;
+  /** A new persona is being derived on the Heartwood right now (AddCard shows the "press and hold" hint). */
+  addPersonaHeartwoodHold?: boolean;
   /** Navigate to the Add Dependant page (guardian only). Omit to hide the affordance (e.g. the paired-child surface). */
   onAddDependant?: () => void;
   /**
@@ -274,6 +276,7 @@ function renderCard(
       <AddCard
         context={props.childMode ? 'child' : 'guardian'}
         onAddPersona={props.onAddPersona}
+        heartwoodHold={props.addPersonaHeartwoodHold}
         onAddDependant={props.childMode ? undefined : props.onAddDependant}
       />
     );

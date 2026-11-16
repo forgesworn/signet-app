@@ -10,6 +10,7 @@ import type { ContactPolicy } from '../lib/lift-child-settings';
 import { DEFAULT_CHILD_CEILING_SECTION_TITLE, defaultChildCeilingCopy, tierChipLabel } from '../lib/contacts-v2-copy';
 import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 import { PairReadinessChecklist, type PairReadinessChecklistProps } from '../components/PairReadinessChecklist';
+import { HEARTWOOD_HOLD_TO_FINISH } from '../lib/local-key-only-copy';
 
 const TIER_LABELS: Record<string, string> = {
   basic: 'Basic',
@@ -59,6 +60,8 @@ interface Props {
   onSwitchDependantPrimary: (keypair: string) => void;
   onUpdateDependantPersonaName?: (target: 'natural-person' | 'persona' | string, name: string) => Promise<void>;
   onAddDependantPersona?: (displayName: string) => Promise<void>;
+  /** The persona is being derived on the Heartwood right now: shows the "press and hold" hint under "Adding...". */
+  addPersonaHeartwoodHold?: boolean;
   /* Avatar Set/Change/Remove for dep personas moved to the carousel
      SettingsCard. The dep slot's `avatarHash` is still edited
      via `useDependants.setDependantPersonaAvatar` — just from the carousel
@@ -128,6 +131,7 @@ export function GuardianSettings({
   onSwitchDependantPrimary: _onSwitchDependantPrimary,
   onUpdateDependantPersonaName,
   onAddDependantPersona,
+  addPersonaHeartwoodHold = false,
   onUpdatePersonaVisibility,
   guardianHasMnemonic,
   // The only caller of `requestAuth` in this file was removed along with the
@@ -791,6 +795,9 @@ export function GuardianSettings({
                 Cancel
               </button>
             </div>
+            {addPersonaSaving && addPersonaHeartwoodHold && (
+              <p role="status" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 6 }}>{HEARTWOOD_HOLD_TO_FINISH}</p>
+            )}
           </div>
         )}
       </div>

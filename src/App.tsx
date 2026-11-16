@@ -461,7 +461,7 @@ import { PAGE_AUTH_CONTEXTS, type PurposeContext } from './lib/auth-purposes';
 import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
-import { deriveDependantOnDevice, deriveExtraPersonaOnDevice } from './lib/heartwood-dependant-create';
+import { deriveDependantOnDevice, deriveExtraPersonaOnDevice, trackDeviceDerive } from './lib/heartwood-dependant-create';
 import type { HeartwoodRequestFn } from './lib/heartwood-dependant-create';
 import type { PairedChildMeta } from './lib/db';
 import type { VerifyRequest, VerifyResponse } from './lib/presentation';
@@ -7575,6 +7575,15 @@ function AppContent() {
     }
     return (name) => deriveExtraPersonaOnDevice(heartwoodRequestFn, name);
   }, [bunkerRouter, heartwoodRequestFn, preferences.signingMode]);
+  // While a persona derive is with the Heartwood (it waits for a hold), the add
+  // screens say so under their busy label. Counted only when the derive is
+  // actually called — local keys never call it, so never show the hint.
+  const [heartwoodHoldCount, setHeartwoodHoldCount] = useState(0);
+  const extraPersonaDeviceDeriveTracked = useMemo<ExtraPersonaDeviceDerive | undefined>(() => (
+    extraPersonaDeviceDerive && preferences.signingMode === 'bunker' && bunkerRouter && heartwoodRequestFn
+      ? trackDeviceDerive(extraPersonaDeviceDerive, d => setHeartwoodHoldCount(n => Math.max(0, n + d)))
+      : extraPersonaDeviceDerive
+  ), [extraPersonaDeviceDerive, preferences.signingMode, bunkerRouter, heartwoodRequestFn]);
 
   const handleMigrationFinalize = useCallback(async (verifiedSlots: EnrolmentSlot[]) => {
     migrationFinalizeInFlightRef.current = true;
@@ -12140,8 +12149,9 @@ function AppContent() {
             onAddDependantPersona={async (displayName) => {
               const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', depName: activeDependant.displayName, action: 'create', personaName: displayName });
               if (!key) throw new Error('Authentication required');
-              await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+              await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
             }}
+            addPersonaHeartwoodHold={heartwoodHoldCount > 0}
             onUpdatePersonaVisibility={async (pubkey, visible) => {
               if (!activeDependant) return;
               await updatePersonaVisibility(activeDependant.id, pubkey, visible);
@@ -15367,11 +15377,12 @@ function AppContent() {
           // own identity. Matches the GuardianSettings "Add persona to
           // dependant" path.
           if (carousel.childMode && activeDependant) {
-            await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+            await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
           } else {
-            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
           }
         }}
+        addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
         childSignerKind={preferences.signingMode === 'paired-child' && bunkerRouter ? 'heartwood' : 'guardian-phone'}
