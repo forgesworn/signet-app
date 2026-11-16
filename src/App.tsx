@@ -957,11 +957,12 @@ function AppContent() {
   // further down (`childDeviceLink`), so they reach the carousel through this
   // state, set by an effect there. Null = no filter.
   const [childCarouselAllowCsv, setChildCarouselAllowCsv] = useState<string | null>(null);
+  const [childCarouselBound, setChildCarouselBound] = useState<string | null>(null);
   const childCarouselAllowed = useMemo(
     () => (childCarouselAllowCsv === null ? null : new Set(childCarouselAllowCsv.split(',').filter(Boolean))),
     [childCarouselAllowCsv],
   );
-  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed);
+  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed, childCarouselBound);
   // The identities whose cards list places in Where you're known (owner rows;
   // a dependant's card lists none). Read when a hand-off record is kept.
   const placeCardPubkeys = useMemo<ReadonlySet<string>>(() => new Set(carousel.rows
@@ -2358,10 +2359,17 @@ function AppContent() {
     () => childAllowedPersonas(childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey),
     [childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey],
   );
+  // Before the rules payload has loaded, only the bound persona has a route
+  // (A50), so it is the only card: never a card that cannot sign.
+  const childCarouselBoundNext = childDirect ? (pairedChildRecord?.personaPubkey ?? '').toLowerCase() || null : null;
   const childCarouselAllowNext = childDirect
-    ? (() => { const keys = childAllowedPersonaKeys(childDeviceLink.rules, pairedChildRecord?.personaPubkey); return keys ? [...keys].sort().join(',') : null; })()
+    ? (() => {
+      const keys = childAllowedPersonaKeys(childDeviceLink.rules, pairedChildRecord?.personaPubkey);
+      return keys ? [...keys].sort().join(',') : (childCarouselBoundNext ?? '');
+    })()
     : null;
   useEffect(() => { setChildCarouselAllowCsv(childCarouselAllowNext); }, [childCarouselAllowNext]);
+  useEffect(() => { setChildCarouselBound(childCarouselBoundNext); }, [childCarouselBoundNext]);
   // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
   const childBunkerPersonasCsv = childDirect
     ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childAllowedInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')

@@ -1,5 +1,5 @@
 import type { BotMetadata } from './useBotInventory';
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { SignetIdentity, DependantIdentity, CarouselRow, CarouselColumn } from '../types';
 import { buildRows, buildChildRows, resolveActiveIdentity, findRowForGuardianKeypair } from '../lib/carousel-utils';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
@@ -47,13 +47,31 @@ interface CarouselState {
 /** Top of the ring — the persona row for every identity that has one. */
 const TOP_ROW = 0;
 
+/** What a row shows, independent of where it sits in the ring. */
+export function carouselRowKey(row: CarouselRow): string {
+  switch (row.type) {
+    case 'persona': return `key:${row.identity.persona.publicKey.toLowerCase()}`;
+    case 'extra-persona': return `key:${(row.identity.extraPersonas?.[row.personaIndex]?.publicKey ?? '').toLowerCase()}`;
+    case 'natural-person': return `key:${row.identity.naturalPerson.publicKey.toLowerCase()}`;
+    case 'bot': return `bot:${row.bot.publicKey.toLowerCase()}`;
+    case 'dependant': return `dep:${row.dependant.id}`;
+    default: return row.type;
+  }
+}
+
 export function useCarousel(
   identity: SignetIdentity | null,
   dependants: DependantIdentity[],
   bots: readonly BotMetadata[] = [],
   /** A direct child's install: the personas its rules allow (`buildRows`). */
   allowedPersonas: ReadonlySet<string> | null = null,
+  /** A direct child's install: the bound persona, shown when the card on screen is no longer allowed. */
+  boundPersona: string | null = null,
 ): CarouselState {
+  // Keyed on content: a new Set with the same keys is the same list.
+  const allowKey = allowedPersonas ? [...allowedPersonas].map(k => k.toLowerCase()).sort().join(',') : null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `allowKey` is the content of `allowedPersonas`
+  const allowed = useMemo(() => allowedPersonas, [allowKey]);
   // Start at the top of the ring — the persona row. Swiping up walks through
   // extra personas, the real identity (when activated) and dependants.
   const [row, setRow] = useState(TOP_ROW);
@@ -78,11 +96,11 @@ export function useCarousel(
     if (hasLandedRef.current) return;
     hasLandedRef.current = true;
     const keypair = resolveLandingKeypair(identity);
-    const targetRow = findRowForGuardianKeypair(identity, keypair, bots, allowedPersonas);
+    const targetRow = findRowForGuardianKeypair(identity, keypair, bots, allowed);
     if (targetRow !== TOP_ROW) {
       setRow(targetRow);
     }
-  }, [identity, bots, allowedPersonas]);
+  }, [identity, bots, allowed]);
 
   const childDependant: DependantIdentity | null = useMemo(
     () => childDependantId
@@ -99,11 +117,33 @@ export function useCarousel(
     if (childMode && childDependant) {
       return buildChildRows(childDependant);
     }
-    return buildRows(identity, dependants, bots, allowedPersonas);
-  }, [identity, dependants, childMode, childDependant, bots, allowedPersonas]);
+    return buildRows(identity, dependants, bots, allowed);
+  }, [identity, dependants, childMode, childDependant, bots, allowed]);
+
+  // When the allow-list arrives, grows or shrinks, the ring keeps the card on
+  // screen, not its row number: an extra persona's card must not turn into
+  // its neighbour. A card no longer allowed gives way to the bound persona.
+  // Decided while rendering, from the card last committed to the screen, so
+  // no frame shows the wrong card.
+  const shownKeyRef = useRef<string | null>(null);
+  const [seenAllowKey, setSeenAllowKey] = useState(allowKey);
+  let positioned = row;
+  if (seenAllowKey !== allowKey) {
+    setSeenAllowKey(allowKey);
+    if (identity) {
+      const key = shownKeyRef.current;
+      let next = key ? rows.findIndex(r => carouselRowKey(r) === key) : -1;
+      if (next < 0 && boundPersona) next = rows.findIndex(r => carouselRowKey(r) === `key:${boundPersona.toLowerCase()}`);
+      if (next < 0) next = findRowForGuardianKeypair(identity, resolveLandingKeypair(identity), bots, allowed);
+      if (next !== row && next >= 0 && next < rows.length) { positioned = next; setRow(next); }
+    }
+  }
 
   // Clamp row if rows array shrunk (e.g. dependant removed)
-  const safeRow = rows.length > 0 && row < rows.length ? row : 0;
+  const safeRow = rows.length > 0 && positioned < rows.length ? positioned : 0;
+
+  const shownKey = rows.length > 0 ? carouselRowKey(rows[safeRow]) : null;
+  useLayoutEffect(() => { shownKeyRef.current = shownKey; }, [shownKey]);
 
   const activeIdentity = useMemo<ResolvedIdentity>(
     () => rows.length > 0
@@ -142,9 +182,9 @@ export function useCarousel(
 
   const landOnPrimary = useCallback((next: SignetIdentity) => {
     const keypair = resolveLandingKeypair(next);
-    setRow(findRowForGuardianKeypair(next, keypair, bots, allowedPersonas));
+    setRow(findRowForGuardianKeypair(next, keypair, bots, allowed));
     setCol(0);
-  }, [bots, allowedPersonas]);
+  }, [bots, allowed]);
 
   return {
     row: safeRow,
