@@ -209,6 +209,28 @@ describe('useGuardianReadyChecks (guardian, App-level)', () => {
     await waitFor(() => expect(result.current.forDependant(paused.id)!.summary.kind).toBe('owed'));
   });
 
+  it('this phone\'s client key resolving after the first read: reads again and its own row follows', async () => {
+    mList.mockResolvedValue(device([PERSONA], [GNP]));
+    const dep = makeDep({}, 1);
+    const { result, rerender } = renderHook((p: { me: string | null }) => useGuardianReadyChecks(opts({ dependants: [dep], guardianClientPubkey: p.me })),
+      { initialProps: { me: null as string | null } });
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'unknown' }));
+    const before = mList.mock.calls.length;
+    rerender({ me: GUARDIAN });
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'ready' }));
+    expect(mList.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it('no operator channel on this phone: cannot ask, so unknown; nothing while the key is still loading', async () => {
+    const dep = makeDep({}, 1);
+    const pending = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], operator: null, operatorPending: true })));
+    await wait(30);
+    expect(pending.result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'empty' });
+    const none = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], operator: null })));
+    await waitFor(() => expect(none.result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'unknown' }));
+    expect(mList).not.toHaveBeenCalled();
+  });
+
   it('disabled or not a direct dependant: nothing', async () => {
     mList.mockResolvedValue(device([PERSONA], [GNP]));
     const dep = makeDep();

@@ -47,9 +47,10 @@
  * persona is approved only when listed there, "full" when absent and the slot
  * holds as many as the Heartwood can remember, and owed otherwise, whatever
  * this phone saved (a restored or cleared Heartwood shows as "Not ready" here,
- * with "Finish now"). A probe of this phone's that succeeded under that same
- * payload counts too (the press came after the guardian's reading). Without
- * `approved`, this phone's own probe answers stand.
+ * with "Finish now"). A probe of this phone's that succeeded this session
+ * counts too while the reading has lost nothing it held at the time of the
+ * press (the press came after the guardian's reading). Without `approved`,
+ * this phone's own probe answers stand.
  *
  * Paused (`defaultSchedule.paused`): the slot refuses everything, so no probe
  * is sent and nothing is owed; probes resume `UNPAUSE_SETTLE_MS` after the
@@ -255,8 +256,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const inflight = useRef(new Map<string, Promise<boolean>>());
   const [probingNow, setProbingNow] = useState<string | null>(null);
   const [probedOk, setProbedOk] = useState(false);
-  /** Per persona: the `updatedAt` of the newest rules payload when its probe last succeeded (this session). */
-  const approvedUnder = useRef(new Map<string, number>());
+  /** Per persona: the guardian's reading (`approved`, [] when none) when its probe last succeeded (this session). */
+  const approvedUnder = useRef(new Map<string, readonly string[]>());
   const recordKey = direct ? `${direct.id}:${clientPub}` : '';
 
   useEffect(() => {
@@ -293,11 +294,17 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   /** One persona's state as shown, from the refs (the guardian's reading first). */
   const effectiveOf = useCallback((persona: string): ChildEffectiveApproval => {
     const r = rulesRef.current;
+    // This phone's press still counts while the guardian's reading has lost
+    // nothing it held at the time of the press: a rules edit republishing the
+    // same (older) reading, or a reading that only gained identities, keeps
+    // it; a reading that dropped one (a restore, cleared approvals) does not.
+    const atPress = approvedUnder.current.get(persona);
+    const now = r?.approved ?? [];
     return childEffectiveApproval({
       persona,
       saved: approvalsRef.current[persona],
       approved: r?.approved,
-      probedUnderCurrent: !!r && approvedUnder.current.get(persona) === r.updatedAt,
+      probedUnderCurrent: atPress !== undefined && atPress.every(id => now.includes(id)),
     });
   }, []);
 
@@ -346,7 +353,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
             throw err;
           }
         }
-        approvedUnder.current.set(persona, rulesRef.current?.updatedAt ?? 0);
+        approvedUnder.current.set(persona, [...(rulesRef.current?.approved ?? [])]);
         setApproval(persona, 'approved');
         setProbedOk(true);
         return true;

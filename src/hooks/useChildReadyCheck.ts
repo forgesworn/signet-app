@@ -7,6 +7,7 @@
  *                 direct dependant. A failed read, a reply with no client list
  *                 or an empty list is "unknown", retried with backoff; the
  *                 last good reading is kept for the child (`approvedByDep`).
+ *                 No operator channel at all (no key here) is "unknown" too.
  *   after pairing (`pairedAt` within `autoProbeWindowMs`, no saved result for
  *                 that pairing yet): after `startDelayMs` (the mint's policy
  *                 push settles), read; if the device does not list this
@@ -68,6 +69,8 @@ export interface UseGuardianReadyChecksOpts {
   autoProbeWindowMs?: number;
   /** Waits before each retry of a failed read; the list's length bounds the retries. */
   retryDelaysMs?: readonly number[];
+  /** The operator key is still loading: no channel yet is not "cannot ask". */
+  operatorPending?: boolean;
 }
 
 export interface ChildReadyCheck {
@@ -375,15 +378,17 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   };
 
   // A new look whenever the set of pairings, their personas or a pause
-  // changes, and when the operator channel comes up: the automatic probe when
-  // one is due, else a plain read.
+  // changes, when the operator channel comes up or is replaced, and after
+  // every reset (this phone's client key resolving after unlock): the
+  // automatic probe when one is due, else a plain read. Declared after the
+  // reset effect, so it runs after it in the same commit.
   const loaded = records !== null;
   useEffect(() => {
     if (!enabled || !hasOperator || !loaded || directRef.current.length === 0) return;
     retryIdx.current = 0;
     if (directRef.current.some(d => isDue(d) && !isPaused(d))) scheduleAutoRef.current();
     else void read();
-  }, [enabled, hasOperator, loaded, directKey, read, isDue]);
+  }, [enabled, hasOperator, o.operator, memoryKey, loaded, directKey, read, isDue]);
 
   // ── Per dependant ────────────────────────────────────────────────────────
   const uiSlots = lastFailed ? null : reading;
@@ -394,12 +399,15 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
       dependant: dep, slots: uiSlots, guardianClientPubkey: opts.guardianClientPubkey, guardianNpPubkey: opts.guardianNpPubkey,
       npProbe, guardianRowName: CHILD_READY_COPY.guardianRow, savedGuardian: saved,
     });
-    if (!rows) return [];
+    if (!rows || !loaded) return [];
+    // No operator channel (no key on this phone, or it would not start): this
+    // phone cannot ask the Heartwood, which is "unknown", not "nothing to say".
+    const cannotAsk = !hasOperator && !opts.operatorPending;
     // Nothing asked yet and nothing owed on record: say nothing rather than "unknown" for a moment.
-    if (!attempted && npProbe !== 'probing' && saved !== 'owed' && saved !== 'no-route') return [];
+    if (!attempted && !cannotAsk && npProbe !== 'probing' && saved !== 'owed' && saved !== 'no-route') return [];
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `records` makes `recordFor` current
-  }, [uiSlots, npProbe, attempted, recordFor, records, memoryKey]);
+  }, [uiSlots, npProbe, attempted, recordFor, records, memoryKey, loaded, hasOperator, o.operatorPending]);
 
   // Watch for presses while something is owed.
   const anyOwed = enabled && direct.some(d => !isPaused(d) && owedPresses(rowsFor(d)) > 0);

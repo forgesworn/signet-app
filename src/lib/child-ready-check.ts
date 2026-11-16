@@ -140,8 +140,8 @@ export function isApprovalChanged(err: unknown): boolean {
 /**
  * Child's phone: one persona's state as shown. With the guardian's reading
  * (`approved`, from the newest rules payload): listed ⇒ approved; absent and
- * the slot full ⇒ full; absent but this phone's own probe succeeded under
- * that same payload ⇒ approved (the press came after the guardian's reading);
+ * the slot full ⇒ full; absent but this phone's own probe succeeded after
+ * that reading (`probedUnderCurrent`, the caller's rule) ⇒ approved;
  * otherwise owed, overriding a saved "approved". Without a reading: the saved
  * ceremony state, as before.
  */

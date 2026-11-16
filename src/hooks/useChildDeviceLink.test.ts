@@ -349,13 +349,26 @@ describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `ap
     expect(result.current.summary).toEqual({ kind: 'ready' });
   });
 
-  it('a newer payload still not listing it overrides an earlier probe', async () => {
+  it('a rules edit republishing the same (older) reading keeps the press: no nag for a press already made', async () => {
     const { result, fr, subs } = await mount({ ...payload(100), approved: [PERSONA] });
     await act(async () => { await result.current.finishNow(); });
     expect(result.current.summary.kind).toBe('ready');
-    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200), approved: [PERSONA] }, railPriv, clientPub, 1_800_000_000)); });
-    await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200, 'full-control'), approved: [PERSONA] }, railPriv, clientPub, 1_800_000_000)); });
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(200));
+    expect(result.current.summary.kind).toBe('ready');
     expect(fr.calls).toHaveLength(1);
+  });
+
+  it('a reading that lost an identity it held (a restore, cleared approvals) overrides an earlier press', async () => {
+    const { result, fr, subs } = await mount({ ...payload(100), approved: [PERSONA] });
+    await act(async () => { await result.current.finishNow(); });
+    expect(result.current.summary.kind).toBe('ready');
+    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200), approved: [] }, railPriv, clientPub, 1_800_000_000)); });
+    await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 2 }));
+    expect(fr.calls).toHaveLength(1);
+    // Finish now on this phone asks again for both.
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA, PERSONA, EXTRA]);
   });
 
   it('listed by the guardian: ready even without a probe of its own', async () => {

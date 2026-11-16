@@ -5244,6 +5244,7 @@ function AppContent() {
     guardianNpPubkey: identity?.naturalPerson.publicKey ?? '',
     npBackend: npBunkerBackend,
     encryptionKey,
+    operatorPending: heartwoodOperator.loading,
   });
 
   // Guardian → child rules rail for every dependant whose own phone is
