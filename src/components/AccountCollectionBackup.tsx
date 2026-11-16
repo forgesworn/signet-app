@@ -69,7 +69,7 @@ export function AccountCollectionBackup({accounts, existingNpubs, onCreate, onIn
     </fieldset>}
     <p>The 65 KB file can be kept offline. Wildbloom can store it as an already encrypted file; keep its private storage receipt separately. Direct Bothy Keep storage is still awaiting integration.</p>
     <label style={{display: 'block'}}>Account collection file
-      <input type="file" accept=".nstc,application/octet-stream" disabled={busy} onChange={e => {
+      <input type="file" accept=".nstc,.fswnenc,application/octet-stream,application/vnd.forgesworn.encrypted" disabled={busy} onChange={e => {
         const picked = e.target.files?.[0]; e.target.value = '';
         if (picked) void run(() => choose(picked));
       }} />
