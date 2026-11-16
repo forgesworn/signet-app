@@ -202,6 +202,8 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
     readRef.current = null;
     probeRef.current = null;
     autoRunning.current = false;
+    // A check cut short here (a lock) may start again; a saved result still stops it.
+    autoTried.current = new Set();
     retryIdx.current = 0;
     if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
     if (autoTimer.current) { clearTimeout(autoTimer.current); autoTimer.current = null; }
@@ -378,6 +380,7 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   const loaded = records !== null;
   useEffect(() => {
     if (!enabled || !hasOperator || !loaded || directRef.current.length === 0) return;
+    retryIdx.current = 0;
     if (directRef.current.some(d => isDue(d) && !isPaused(d))) scheduleAutoRef.current();
     else void read();
   }, [enabled, hasOperator, loaded, directKey, read, isDue]);
@@ -399,7 +402,7 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   }, [uiSlots, npProbe, attempted, recordFor, records, memoryKey]);
 
   // Watch for presses while something is owed.
-  const anyOwed = enabled && direct.some(d => owedPresses(rowsFor(d)) > 0);
+  const anyOwed = enabled && direct.some(d => !isPaused(d) && owedPresses(rowsFor(d)) > 0);
   useEffect(() => {
     if (!enabled || !hasOperator || !anyOwed) return;
     if (Date.now() >= pollUntil) return;
@@ -413,11 +416,13 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   const finishFor = useCallback(async (depId: string) => {
     const dep = directRef.current.find(d => d.id === depId);
     if (!dep) return;
+    retryIdx.current = 0;
     try { await check([dep], !isPaused(dep)); } catch { /* shown as still owed */ }
   }, [check]);
 
   const watch = useCallback((depId: string) => {
     if (!directRef.current.some(d => d.id === depId)) return;
+    retryIdx.current = 0;
     void read();
     setPollUntil(Date.now() + pollForMs);
   }, [read, pollForMs]);
