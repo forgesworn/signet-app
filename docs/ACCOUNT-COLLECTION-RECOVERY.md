@@ -12,6 +12,10 @@ Words alone cannot reconstruct unrelated nsecs. The file alone cannot decrypt
 them. Equivalent access to the same root also opens the file. Keep independent
 key backups during the preview; external security review remains pending.
 
+For a first owner rehearsal, follow [the preparation and recovery steps](ACCOUNT-COLLECTION-REHEARSAL.md).
+The [external security review pack](ACCOUNT-COLLECTION-SECURITY-REVIEW.md) pins
+the shipped implementation, test evidence and questions for the specialist.
+
 Restore your Signet from its recovery words on a fresh installation, open the
 collection under My identities, check its timestamp, names and exact npubs,
 then select the accounts to restore. A separate fresh owner approval precedes
@@ -118,6 +122,28 @@ No Bothy server, ownership, policy, retention or replication code is changed by
 this release. A direct Keep backup button and verified Keep recovery remain
 pending that client integration. The downloaded-file and Wildbloom paths can
 be used independently.
+
+The Signet implementation currently holds Keep public keys and Nostr control
+relay URLs (`src/lib/keep-link.ts`, `src/lib/keep-store.ts`), not a Link
+file-transfer endpoint. Bothy's `crates/bothy-link/src/client.rs` speaks
+HTTP/1.1 over a Link session; its JSON control client explicitly sends blobs
+through the separate FSLB path. Ordinary browser `fetch` to a Nostr relay is
+therefore not a file-upload adapter. Bothy's verified-read support is useful
+for a native integration, but does not supply a browser transport or an upload
+path in Signet.
+
+Before implementing the Signet adapter, the Bothy maintainer's handover needs
+to name the supported client/bridge, endpoint identity and admitted write/read
+authority. It must also explain how a fresh Signet installation obtains that
+authority using the words and independently saved locator. Importing an
+account from the collection cannot be a prerequisite for downloading it.
+
+Acceptance for that adapter is a fresh-client round trip of the exact
+65,608-byte file, including an independent read/hash check per claimed copy,
+an interrupted or refused upload that leaves the previous verified snapshot
+available, and refusal of substituted endpoints, incorrect sizes and hashes.
+Perform the recovery with the original phone unavailable. Neither a claim
+acknowledgement nor a successful upload acknowledgement counts as this proof.
 
 ## Verification scope
 
