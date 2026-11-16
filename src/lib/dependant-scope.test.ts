@@ -2,9 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   dependantScopeReducer as reduce,
   INITIAL_DEPENDANT_SCOPE,
+  liveScopeId,
+  pageNeedsDependant,
+  resolvePoppedEntry,
   type DependantScope,
   type DependantScopeAction,
 } from './dependant-scope';
+import type { Page } from '../types';
 
 function run(...actions: DependantScopeAction[]): DependantScope {
   return actions.reduce(reduce, INITIAL_DEPENDANT_SCOPE);
@@ -80,32 +84,69 @@ describe('dependantScopeReducer', () => {
     expect(s.id).toBeNull();
   });
 
-  it('forget drops a removed dependant from the scope and from the pending restore', () => {
-    const viewing = run({ type: 'borrow', id: 'dep-a' }, { type: 'forget', id: 'dep-a' });
-    expect(viewing).toEqual({ id: null, restore: { id: null } });
-
-    const priorWasRemoved = run(
-      { type: 'set', id: 'dep-a' },
-      { type: 'borrow', id: 'dep-b' },
-      { type: 'forget', id: 'dep-a' },
-      { type: 'arrived-home' },
-    );
-    expect(priorWasRemoved).toEqual({ id: null, restore: null });
-
-    const other = run(
-      { type: 'set', id: 'dep-a' },
-      { type: 'borrow', id: 'dep-b' },
-      { type: 'forget', id: 'dep-b' },
-      { type: 'arrived-home' },
-    );
-    expect(other).toEqual({ id: 'dep-a', restore: null });
-  });
-
   it('returns the same state object when nothing changes, so React can bail out', () => {
     const s = run({ type: 'set', id: 'dep-a' });
     expect(reduce(s, { type: 'arrived-home' })).toBe(s);
     expect(reduce(s, { type: 'commit' })).toBe(s);
     expect(reduce(s, { type: 'set', id: 'dep-a' })).toBe(s);
-    expect(reduce(s, { type: 'forget', id: 'dep-z' })).toBe(s);
+  });
+});
+
+describe('liveScopeId', () => {
+  const live = (id: string) => id === 'dep-a';
+  it('reads a removed dependant as the owner', () => {
+    expect(liveScopeId('dep-a', live)).toBe('dep-a');
+    expect(liveScopeId('dep-gone', live)).toBeNull();
+    expect(liveScopeId(null, live)).toBeNull();
+  });
+});
+
+describe('resolvePoppedEntry', () => {
+  const live = (id: string) => id === 'dep-x' || id === 'dep-b';
+  const base = { isLive: live, locked: false, needsDependant: false };
+  const pop = (page: Page, entryDependantId: string | null, currentId: string | null, extra: Partial<typeof base> = {}) =>
+    resolvePoppedEntry({ ...base, needsDependant: pageNeedsDependant(page), ...extra, page, entryDependantId, currentId });
+
+  it('re-borrows the dependant a page was opened for after Home restored another scope', () => {
+    // Managing X → B's Phone & Pairing → Home (back to X) → back.
+    expect(pop('pair-dependant-device', 'dep-b', 'dep-x')).toEqual({ show: 'page', borrow: 'dep-b' });
+    expect(pop('settings', 'dep-b', 'dep-x')).toEqual({ show: 'page', borrow: 'dep-b' });
+    expect(pop('pair-dependant-device', 'dep-b', null)).toEqual({ show: 'page', borrow: 'dep-b' });
+  });
+
+  it('goes home when the dependant the page was for no longer exists', () => {
+    expect(pop('pair-dependant-device', 'dep-gone', null)).toEqual({ show: 'home' });
+    expect(pop('settings', 'dep-gone', 'dep-x')).toEqual({ show: 'home' });
+  });
+
+  it('never shows a dependant-only page from an owner entry', () => {
+    expect(pop('pair-dependant-device', null, 'dep-x')).toEqual({ show: 'home' });
+    expect(pop('pair-dependant-device', null, null)).toEqual({ show: 'home' });
+    expect(pop('activity', null, null)).toEqual({ show: 'home' });
+  });
+
+  it("shows a child install's own activity page (no dependant needed there)", () => {
+    expect(pop('activity', null, null, { needsDependant: false })).toEqual({ show: 'page' });
+  });
+
+  it('shows an owner page under the owner scope again', () => {
+    // Settings → Family → X's settings → back → back lands on the OWNER's settings.
+    expect(pop('family-list', null, 'dep-x')).toEqual({ show: 'page', borrow: null });
+    expect(pop('settings', null, 'dep-x')).toEqual({ show: 'page', borrow: null });
+  });
+
+  it('changes nothing when the entry was shown under the current scope', () => {
+    expect(pop('settings', 'dep-x', 'dep-x')).toEqual({ show: 'page' });
+    expect(pop('settings', null, null)).toEqual({ show: 'page' });
+  });
+
+  it('never re-scopes child mode: any other scope goes home', () => {
+    expect(pop('settings', 'dep-x', 'dep-x', { locked: true })).toEqual({ show: 'page' });
+    expect(pop('settings', 'dep-b', 'dep-x', { locked: true })).toEqual({ show: 'home' });
+    expect(pop('family-list', null, 'dep-x', { locked: true })).toEqual({ show: 'home' });
+  });
+
+  it('home is always home', () => {
+    expect(pop('home', 'dep-b', 'dep-x')).toEqual({ show: 'home' });
   });
 });

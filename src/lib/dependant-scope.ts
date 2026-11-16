@@ -1,6 +1,6 @@
 /**
- * Which dependant the app is scoped to (App's `activeDependantId`), and how
- * that scope gets back to where it was after a management page.
+ * Which dependant the app is scoped to (App's `activeDependantId`), how a
+ * management page borrows that scope, and how the scope follows history.
  *
  * The id means two different things:
  *
@@ -9,15 +9,22 @@
  *   until the user changes it again. That is `set`.
  * - A page parameter: Phone & Pairing, a dependant's settings, the family list,
  *   the dependant's contacts and so on open "for" a dependant by putting its id
- *   here. Nothing on those pages hands it back, so before this the guardian
- *   reached home still scoped to the dependant, without the Bunker tab and with
- *   the dependant's signing backend, until the app was restarted. That is
- *   `borrow`: the scope in force before the first borrow is kept and put back
- *   the next time the app reaches home, however it gets there.
+ *   here. That is `borrow`: the scope in force before the first borrow is kept
+ *   and put back the next time the app reaches home, however it gets there.
+ *   Before this the guardian reached home still scoped to the dependant,
+ *   without the Bunker tab and with the dependant's signing backend, until the
+ *   app was restarted.
+ *
+ * A page's dependant is part of the page: every history entry records the
+ * scope it was shown under, and going back or forward to it shows it under
+ * that scope again (`resolvePoppedEntry`). Ids are always read against the
+ * live dependant list (`liveScopeId`), so a dependant removed anywhere — the
+ * Advanced page, the independence ceremony, a sync — reads as the owner.
  */
+import type { Page } from '../types';
 
 export interface DependantScope {
-  /** The dependant the app is scoped to, or null for the owner. */
+  /** The dependant the app is scoped to, or null for the owner. Read it through `liveScopeId`. */
   readonly id: string | null;
   /**
    * Set while a management page has borrowed `id`: the scope to put back on
@@ -34,9 +41,7 @@ export type DependantScopeAction =
   /** The user chose the borrowed scope after all, so keep it past home. */
   | { type: 'commit' }
   /** The app reached home: put back the scope from before the borrow. */
-  | { type: 'arrived-home' }
-  /** The dependant was removed: neither the scope nor a restore may name it. */
-  | { type: 'forget'; id: string };
+  | { type: 'arrived-home' };
 
 export const INITIAL_DEPENDANT_SCOPE: DependantScope = { id: null, restore: null };
 
@@ -52,10 +57,59 @@ export function dependantScopeReducer(state: DependantScope, action: DependantSc
       return state.restore === null ? state : { id: state.id, restore: null };
     case 'arrived-home':
       return state.restore === null ? state : { id: state.restore.id, restore: null };
-    case 'forget': {
-      const id = state.id === action.id ? null : state.id;
-      const restore = state.restore?.id === action.id ? { id: null } : state.restore;
-      return id === state.id && restore === state.restore ? state : { id, restore };
-    }
   }
+}
+
+/** The one place a stored id is read: a dependant that no longer exists is the owner. */
+export function liveScopeId(id: string | null, isLive: (dependantId: string) => boolean): string | null {
+  return id !== null && isLive(id) ? id : null;
+}
+
+/**
+ * Pages that show nothing of their own without a dependant in scope on a
+ * guardian install (they fall through to the carousel with the bar hidden or
+ * mislabelled). `activity` and `child-permissions` have their own variants on
+ * a child's install, so the caller excludes those installs.
+ */
+const DEPENDANT_ONLY_PAGES: ReadonlySet<Page> = new Set<Page>([
+  'pair-dependant-device', 'pair-dependant-app', 'transition-ceremony', 'activity', 'child-permissions',
+]);
+
+export function pageNeedsDependant(page: Page): boolean {
+  return DEPENDANT_ONLY_PAGES.has(page);
+}
+
+export type PoppedEntryResolution =
+  /** Show home instead of the entry's page. */
+  | { show: 'home' }
+  /** Show the entry's page, borrowing `borrow` first when present. */
+  | { show: 'page'; borrow?: string | null };
+
+/**
+ * What going back or forward to a history entry shows. The entry carries the
+ * scope its page was shown under (`entryDependantId`, null for the owner).
+ */
+export function resolvePoppedEntry(input: {
+  page: Page;
+  entryDependantId: string | null;
+  /** The live scope now (`liveScopeId`). */
+  currentId: string | null;
+  /** Deliberate child mode: a popped entry never re-scopes it. */
+  locked: boolean;
+  isLive: (dependantId: string) => boolean;
+  /** `pageNeedsDependant(page)`, false on a child's own install. */
+  needsDependant: boolean;
+}): PoppedEntryResolution {
+  const { page, entryDependantId: entry, currentId, locked, isLive, needsDependant } = input;
+  if (page === 'home') return { show: 'home' };
+  // The dependant this page was for is gone.
+  if (entry !== null && !isLive(entry)) return { show: 'home' };
+  if (entry === currentId) {
+    return entry === null && needsDependant ? { show: 'home' } : { show: 'page' };
+  }
+  // Child mode is left only through the guardian's unlock; history never
+  // takes it to the owner's pages or another dependant's.
+  if (locked) return { show: 'home' };
+  if (entry === null) return needsDependant ? { show: 'home' } : { show: 'page', borrow: null };
+  return { show: 'page', borrow: entry };
 }

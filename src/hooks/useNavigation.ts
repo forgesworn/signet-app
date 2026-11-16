@@ -16,6 +16,18 @@ interface NavigationOptions {
   isBounded?: () => boolean;
   /** Called when popstate fires while isBounded() is true. */
   onAttemptBoundaryExit?: () => void;
+  /**
+   * Extra fields stored on every entry navigateTo / navigateReplace /
+   * navigateBack write. Read after `setPage`, so state the caller updates in
+   * `setPage` is what gets stored.
+   */
+  entryFields?: () => Record<string, unknown>;
+  /**
+   * Decides what a popped entry shows, before `setPage`. The caller may update
+   * its own state for that entry here; it renders in the same pass. Returning
+   * another page rewrites the entry to it.
+   */
+  resolvePop?: (entry: { page: Page } & Record<string, unknown>) => Page;
 }
 
 /** How many in-app entries sit below the current one. An entry without a
@@ -35,6 +47,10 @@ export function useNavigation(
   isBoundedRef.current = opts?.isBounded;
   const onAttemptBoundaryExitRef = useRef(opts?.onAttemptBoundaryExit);
   onAttemptBoundaryExitRef.current = opts?.onAttemptBoundaryExit;
+  const entryFieldsRef = useRef(opts?.entryFields);
+  entryFieldsRef.current = opts?.entryFields;
+  const resolvePopRef = useRef(opts?.resolvePop);
+  resolvePopRef.current = opts?.resolvePop;
 
   // Counts in-flight intentional back navigations originating from
   // `navigateBack()` (i.e. the in-app back chevron, "Cancel" buttons, etc.)
@@ -56,9 +72,11 @@ export function useNavigation(
         onAttemptBoundaryExitRef.current?.();
         return;
       }
-      const state = e.state as { page: Page } | null;
+      const state = e.state as ({ page: Page } & Record<string, unknown>) | null;
       if (state?.page) {
-        setPage(state.page);
+        const target = resolvePopRef.current ? resolvePopRef.current(state) : state.page;
+        if (target !== state.page) window.history.replaceState({ ...state, page: target }, '');
+        setPage(target);
       } else {
         // Refresh-then-back guard: after page refresh, history may be shallow.
         // Stay on home instead of exiting the app.
@@ -76,7 +94,7 @@ export function useNavigation(
 
   const navigateTo = useCallback((page: Page) => {
     setPage(page);
-    window.history.pushState({ page, depth: currentDepth() + 1 }, '');
+    window.history.pushState({ ...entryFieldsRef.current?.(), page, depth: currentDepth() + 1 }, '');
   }, [setPage]);
 
   // A page reached only by replaces (e.g. a signet-grant: link → approve →
@@ -86,7 +104,7 @@ export function useNavigation(
   const navigateBack = useCallback(() => {
     if (currentDepth() === 0) {
       setPage('home');
-      window.history.replaceState({ page: 'home', depth: 0 }, '');
+      window.history.replaceState({ ...entryFieldsRef.current?.(), page: 'home', depth: 0 }, '');
       return;
     }
     pendingIntentionalBacksRef.current++;
@@ -95,7 +113,7 @@ export function useNavigation(
 
   const navigateReplace = useCallback((page: Page) => {
     setPage(page);
-    window.history.replaceState({ page, depth: currentDepth() }, '');
+    window.history.replaceState({ ...entryFieldsRef.current?.(), page, depth: currentDepth() }, '');
   }, [setPage]);
 
   return { navigateTo, navigateBack, navigateReplace };

@@ -434,8 +434,8 @@ import { deriveAndStoreProPersona } from './hooks/useIdentity';
 import { proModeBlockedReason, publishProNameOnly } from './lib/professional/pro-persona';
 import { PRO_ROSTER } from './lib/professional/kinds';
 import type { RosterMember } from './lib/professional/role-anchor';
-import { useNavigation } from './hooks/useNavigation';
-import { useDependantScope } from './hooks/useDependantScope';
+import { useAppNavigation } from './hooks/useAppNavigation';
+import { pageNeedsDependant } from './lib/dependant-scope';
 import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLock';
 import { BunkerPanel } from './components/BunkerPanel';
 import { isBarHiddenPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './lib/app-nav';
@@ -940,14 +940,33 @@ function AppContent() {
     nowMs: Date.now(),
     dependantCount: dependants.length,
   });
-  const [page, setPageState] = useState<Page>('home');
-  // A management page that borrows a dependant's id as its parameter gets the
-  // prior scope back on reaching home; `setPage` below is the wrapper that does
-  // it, so every navigation path goes through it (src/lib/dependant-scope.ts).
+  // Refs threaded into navigation so hardware/browser back can be PIN-gated
+  // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
+  // are defined later in the function body — assignment at render time is enough
+  // since the refs are only read inside the popstate handler.
+  const childModeActiveRef = useRef(false);
+  const attemptExitChildModeRef = useRef<() => void>(() => {});
+  // Hardware/browser back while a sign-in approval is in flight is pinned
+  // like a bounded session and does nothing — the approval owns the answer.
+  const authApprovalInFlightRef = useRef<() => boolean>(() => false);
+  // The page and the dependant scope move together (src/lib/dependant-scope.ts):
+  // management pages borrow a dependant's id with openDependantPage, reaching
+  // home puts the earlier scope back, and back/forward re-shows each page
+  // under the dependant it was opened for.
   const {
-    activeDependantId, setActiveDependantId, borrowActiveDependantId,
-    keepActiveDependantId, forgetActiveDependantId, setPage,
-  } = useDependantScope(setPageState);
+    page, setPage, navigateTo, navigateBack, navigateReplace, openDependantPage,
+    activeDependantId, setActiveDependantId, borrowActiveDependantId, keepActiveDependantId,
+  } = useAppNavigation({
+    isLive: id => dependants.some(d => d.id === id),
+    isScopeLocked: () => childModeActiveRef.current,
+    // A child's own install has no dependants; its activity and permissions pages stand alone.
+    needsDependant: p => !isPairedChild && !childDirect && pageNeedsDependant(p),
+    isBounded: () => childModeActiveRef.current || authApprovalInFlightRef.current(),
+    onAttemptBoundaryExit: () => {
+      if (authApprovalInFlightRef.current()) return;
+      attemptExitChildModeRef.current();
+    },
+  });
   const activeDependant = activeDependantId ? dependants.find(d => d.id === activeDependantId) ?? null : null;
 
 
@@ -1012,22 +1031,6 @@ function AppContent() {
     return () => { cancelled = true; };
   }, [page, identity?.naturalPerson.publicKey, encryptionKey]);
   handshakeForegroundRef.current = page === 'contact-handshake' && !!encryptionKey;
-  // Refs threaded into useNavigation so hardware/browser back can be PIN-gated
-  // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
-  // are defined later in the function body — assignment at render time is enough
-  // since the refs are only read inside the popstate handler.
-  const childModeActiveRef = useRef(false);
-  const attemptExitChildModeRef = useRef<() => void>(() => {});
-  // Hardware/browser back while a sign-in approval is in flight is pinned
-  // like a bounded session and does nothing — the approval owns the answer.
-  const authApprovalInFlightRef = useRef<() => boolean>(() => false);
-  const { navigateTo, navigateBack, navigateReplace } = useNavigation(setPage, {
-    isBounded: () => childModeActiveRef.current || authApprovalInFlightRef.current(),
-    onAttemptBoundaryExit: () => {
-      if (authApprovalInFlightRef.current()) return;
-      attemptExitChildModeRef.current();
-    },
-  });
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [selectedKenPubkey, setSelectedKenPubkey] = useState<string | null>(null);
   const [selectedCredential, setSelectedCredential] = useState<StoredCredential | null>(null);
@@ -13156,7 +13159,6 @@ function AppContent() {
           }
           await retractDepProfilesBeforePurge(dep);
           await removeDependant(depPubkey);
-          forgetActiveDependantId(depPubkey);
           setPendingPersonaAdvancedTarget(null);
           navigateBack();
         } : undefined}
@@ -14456,7 +14458,7 @@ function AppContent() {
             return dep.id;
           }}
           onSwitchToDependant={(depId) => { setActiveDependantId(depId); navigateReplace('home'); }}
-          onPairDevice={(depId) => { borrowActiveDependantId(depId); navigateTo('pair-dependant-device'); }}
+          onPairDevice={(depId) => openDependantPage('pair-dependant-device', depId)}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           onBack={() => navigateBack()}
@@ -14521,10 +14523,7 @@ function AppContent() {
         <FamilyList
           dependants={dependants}
           independenceArchives={independenceArchives}
-          onSelect={(depId) => {
-            borrowActiveDependantId(depId);
-            navigateTo('settings');
-          }}
+          onSelect={(depId) => openDependantPage('settings', depId)}
           onAddDependant={() => navigateTo('add-dependant')}
           onAddKen={() => navigateTo('ken-add')}
           onManageContacts={contactsScope.canManageFamily ? handleOpenFamilyContacts : undefined}
@@ -15238,17 +15237,16 @@ function AppContent() {
         onHandshake={async (resolved, choose) => {
           const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
           if (!key || !resolved.publicKey) return;
-          borrowActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
           setContactsIdentityChoice(resolved.publicKey);
           const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
           setPendingHandshake({ persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
-          navigateTo('contact-handshake');
+          openDependantPage('contact-handshake', resolved.isDependant ? resolved.dependantId ?? null : null);
         }}
         renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
             locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
-            onManage={() => { borrowActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
+            onManage={() => { setContactsIdentityChoice(resolved.publicKey); openDependantPage('contact-invites', null); }} />
           : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           placesCard={col === 3 ? knownPlacesColumn(row, resolveActiveIdentity(row)) : undefined}
@@ -15263,7 +15261,7 @@ function AppContent() {
                 routed: target => mode === 'nip07' ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
                   : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) }) });
           }}
-          onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); borrowActiveDependantId(null); navigateTo('bots'); }}
+          onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); openDependantPage('bots', null); }}
           onHide={async () => {
             if (!encryptionKey) throw new Error('Unlock first');
             const root = identity.naturalPerson.publicKey;
@@ -15303,11 +15301,10 @@ function AppContent() {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
             if (!key || identityRef.current?.naturalPerson.publicKey !== owner) return;
-            borrowActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
             setContactsOpenFollows(action === 'follows');
-            navigateTo(action === 'new' ? 'contact-new' : 'contacts');
+            openDependantPage(action === 'new' ? 'contact-new' : 'contacts', resolved.isDependant ? resolved.dependantId ?? null : null);
           }} />}
         row={carousel.row}
         col={carousel.col}
@@ -15320,22 +15317,19 @@ function AppContent() {
         onNavigateDeepPage={(p, opts) => {
           if (opts?.focusPersona) setPendingPersonaFocus(opts.focusPersona);
           if (opts?.section) setPendingSecurityFocus(opts.section);
-          // Must precede navigateTo — destination routes (e.g. 'settings',
-          // 'transition-ceremony') read activeDependant synchronously on
-          // render; React batches both state updates into the same flush.
-          // Borrowed, not chosen: reaching home again puts back the scope
-          // from before (src/lib/dependant-scope.ts).
-          if (opts?.dependantId) borrowActiveDependantId(opts.dependantId);
-          // An owner slot's Advanced page must not inherit a dependant scope
-          // left over from an earlier visit (it hid the follows panel).
-          else if (p === 'persona-advanced' && opts?.slotTarget) borrowActiveDependantId(null);
           if (opts?.slotTarget) {
             setPendingPersonaAdvancedTarget({
               slotTarget: opts.slotTarget,
               depPubkey: opts.dependantId,
             });
           }
-          navigateTo(p as Page);
+          // Borrowed, not chosen: the page is opened for this dependant, and
+          // reaching home puts back the scope from before (src/lib/dependant-scope.ts).
+          if (opts?.dependantId) openDependantPage(p as Page, opts.dependantId);
+          // An owner slot's Advanced page must not inherit a dependant scope
+          // left over from an earlier visit (it hid the follows panel).
+          else if (p === 'persona-advanced' && opts?.slotTarget) openDependantPage(p, null);
+          else navigateTo(p as Page);
         }}
         onQRScanned={handleCarouselQRScanned}
         onEnterChildMode={handleEnterChildMode}
@@ -15646,9 +15640,10 @@ function AppContent() {
               if (current.isDependant) {
                 const key = await requestAuth({ purpose: 'manage-family-contacts' });
                 if (!key) return;
-                borrowActiveDependantId(current.dependantId ?? null);
-              } else borrowActiveDependantId(null);
+              }
               setContactsIdentityChoice(current.publicKey || null);
+              openDependantPage(target, current.isDependant ? current.dependantId ?? null : null);
+              return;
             }
             navigateTo(target);
           })();
