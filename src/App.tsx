@@ -12540,9 +12540,11 @@ function AppContent() {
             const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
             if (!key) throw new Error('Authentication required');
             // §11.1.8 D4: in bunker mode the phone has no mnemonic — the
-            // device derives `persona-N` from its own tree instead.
-            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+            // device derives `persona-N` from its own tree instead (tracked:
+            // the "press and hold" hint shows while it is with the device).
+            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
           }}
+          addPersonaHeartwoodHold={heartwoodHoldCount > 0}
           onUpdateName={async (target, name) => {
             const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'rename', personaName: name });
             if (!key) throw new Error('Authentication required');
@@ -14263,8 +14265,9 @@ function AppContent() {
       onAddPersona: async (displayName: string) => {
         const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
         if (!key) throw new Error('Authentication required');
-        return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+        return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
       },
+      addPersonaHeartwoodHold: heartwoodHoldCount > 0,
       onApprove: handleApproveAuthGuarded,
       // Straight to my Heartwood: offered, and pre-selected, where the owner's own identity is held by a
       // Heartwood this phone manages. The combined online-play sign-in keeps its own answer.

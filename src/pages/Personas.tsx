@@ -8,6 +8,7 @@ import { resolveRealIdentityRow } from '../lib/real-identity-row';
 import { ExistingProfilePanel, type ExistingProfileChoice } from '../components/ExistingProfilePanel';
 import { decodeNsec, getPublicKey, bytesToHex } from '../lib/signet';
 import { parseNsecOrRecoveryWords, NSEC_INPUT_ERROR_COPY, RESTORE_ERROR_COPY } from '../lib/recovery-words';
+import { HEARTWOOD_HOLD_TO_FINISH } from '../lib/local-key-only-copy';
 import type { ExistingProfile } from '../lib/existing-profile';
 import { FollowsImportPanel } from '../components/FollowsImportPanel';
 import type { FollowsHandlers } from '../lib/follows-import-flow';
@@ -27,6 +28,8 @@ interface Props {
    */
   onSwitchPrimary: (target: 'natural-person' | 'persona') => Promise<void>;
   onAddPersona: (displayName: string) => Promise<void>;
+  /** A new persona is being derived on the Heartwood right now: shows the "press and hold" hint under "Adding…". */
+  addPersonaHeartwoodHold?: boolean;
   /**
    * Update the display name for a persona on the guardian's own identity.
    * Target is `'natural-person'`, `'persona'`, or an extra persona's
@@ -99,6 +102,7 @@ export function Personas({
   wrappedRestore,
   identity,
   onAddPersona,
+  addPersonaHeartwoodHold = false,
   onUpdateName,
   startEditPersona,
   onConsumeFocus,
@@ -614,6 +618,9 @@ export function Personas({
                 <button className="btn btn-ghost btn-sm" onClick={handleAdd} disabled={busy || !newName.trim()}>{busy ? 'Adding…' : 'Add'}</button>
                 <button className="btn btn-ghost btn-sm" onClick={() => { setAdding(false); setNewName(''); setAddError(''); }} disabled={busy}>Cancel</button>
               </div>
+              {busy && addPersonaHeartwoodHold && (
+                <p role="status" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 6 }}>{HEARTWOOD_HOLD_TO_FINISH}</p>
+              )}
               {addError && (
                 <div style={{ fontSize: '0.75rem', color: 'var(--danger)', marginTop: 4 }}>{addError}</div>
               )}
