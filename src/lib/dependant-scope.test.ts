@@ -92,12 +92,35 @@ describe('dependantScopeReducer', () => {
   });
 });
 
+describe('dependantScopeReducer: a removed dependant is ended', () => {
+  it('stops being the scope and the restore target', () => {
+    expect(run({ type: 'set', id: 'dep-a' }, { type: 'ended', id: 'dep-a' })).toMatchObject({ id: null, restore: null });
+    const s = run({ type: 'set', id: 'dep-a' }, { type: 'borrow', id: 'dep-b' }, { type: 'ended', id: 'dep-a' });
+    expect(s).toMatchObject({ id: 'dep-b', restore: { id: null } });
+    expect(reduce(s, { type: 'arrived-home' }).id).toBeNull();
+    expect(s.ended?.has('dep-a')).toBe(true);
+  });
+
+  it('stays ended until the user chooses that dependant again', () => {
+    const ended = run({ type: 'set', id: 'dep-a' }, { type: 'ended', id: 'dep-a' });
+    expect(reduce(ended, { type: 'arrived-home' }).ended?.has('dep-a')).toBe(true);
+    expect(reduce(ended, { type: 'set', id: 'dep-a' })).toEqual({ id: 'dep-a', restore: null });
+    expect(reduce(ended, { type: 'borrow', id: 'dep-a' }).ended).toBeUndefined();
+    expect(reduce(ended, { type: 'set', id: 'dep-b' }).ended?.has('dep-a')).toBe(true);
+  });
+});
+
 describe('liveScopeId', () => {
   const live = (id: string) => id === 'dep-a';
   it('reads a removed dependant as the owner', () => {
     expect(liveScopeId('dep-a', live)).toBe('dep-a');
     expect(liveScopeId('dep-gone', live)).toBeNull();
     expect(liveScopeId(null, live)).toBeNull();
+  });
+
+  it('reads a dependant ended this session as the owner even when the record is back', () => {
+    expect(liveScopeId('dep-a', live, new Set(['dep-a']))).toBeNull();
+    expect(liveScopeId('dep-a', live, new Set(['dep-b']))).toBe('dep-a');
   });
 });
 

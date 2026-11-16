@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { Page } from '../types';
-import { useNavigation } from './useNavigation';
+import { useNavigation, type NavigationEntry } from './useNavigation';
 import {
   dependantScopeReducer, INITIAL_DEPENDANT_SCOPE, liveScopeId, resolvePoppedEntry,
   type DependantScope, type DependantScopeAction,
@@ -13,44 +13,68 @@ export interface AppNavigationOptions {
   isScopeLocked: () => boolean;
   /** Whether `page` needs a dependant in scope on this install (`pageNeedsDependant`). */
   needsDependant: (page: Page) => boolean;
+  /**
+   * Whether what a popped entry's parameter names still exists (a persona, a
+   * dependant). False sends the entry home. Absent: every parameter is live.
+   */
+  isPageParamLive?: (page: Page, param: unknown) => boolean;
   /** Passed to useNavigation: hardware/browser back is pinned while true. */
   isBounded?: () => boolean;
   /** Passed to useNavigation: called on a pinned hardware/browser back. */
   onAttemptBoundaryExit?: () => void;
 }
 
+/**
+ * The only way App changes the page or the dependant scope. There is no raw
+ * page or scope setter: every change below keeps the history entry on screen
+ * describing the page, its scope and its parameter.
+ */
 export interface AppNavigation {
   page: Page;
-  navigateTo: (page: Page) => void;
+  /**
+   * The parameter of the entry on screen (which slot, which dependant's
+   * activation…), opaque here. Back and forward bring back each entry's own.
+   */
+  pageParam: unknown;
+  navigateTo: (page: Page, param?: unknown) => void;
   navigateBack: () => void;
-  navigateReplace: (page: Page) => void;
+  navigateReplace: (page: Page, param?: unknown) => void;
   /** Open a management page for a dependant (or the owner, null) without choosing that scope. */
-  openDependantPage: (page: Page, dependantId: string | null) => void;
+  openDependantPage: (page: Page, dependantId: string | null, param?: unknown) => void;
   /** The dependant the app is scoped to, or null; a removed dependant reads as null. */
   activeDependantId: string | null;
   /** A scope the user chose (child mode, "Switch to …", "Back to me"). Stays past home. */
-  setActiveDependantId: (id: string | null) => void;
+  chooseDependantScope: (id: string | null) => void;
   /** A page parameter set on the page itself, without navigating. Put back on reaching home. */
   borrowActiveDependantId: (id: string | null) => void;
   /** The user chose the borrowed scope after all ("Switch to …" after an import). */
   keepActiveDependantId: () => void;
-  /** Bare page setter for the DEV harness; reaching home still puts a borrowed scope back. */
-  setPage: (page: Page) => void;
+  /**
+   * This dependant was removed on this device: it stops being the scope, the
+   * scope to put back, and the scope of any history entry, for the rest of
+   * the session, even if a sync merges the record back.
+   */
+  endDependantScope: (id: string) => void;
 }
 
+interface View { page: Page; param: unknown }
+
 /**
- * The page, the dependant scope and history, wired together. Every route to a
- * page goes through here so the scope cannot drift from the page:
+ * The page, its parameter, the dependant scope and history, wired together.
+ * Every route to a page goes through here so neither the scope nor the
+ * parameter can drift from the page:
  *
  * - reaching home (back, hardware back, the Home tab, a replace) puts back the
  *   scope from before a management page borrowed it;
- * - every history entry records the scope its page was shown under, and going
- *   back or forward to it shows it under that scope again, in the same render;
- * - an entry whose dependant is gone, or a dependant-only page with no
+ * - every history entry records the scope its page was shown under and its
+ *   parameter, and going back or forward to it shows it with both again, in
+ *   the same render;
+ * - an entry whose dependant is gone (or was removed this session), whose
+ *   parameter names something gone, or a dependant-only page with no
  *   dependant, goes home.
  */
 export function useAppNavigation(opts: AppNavigationOptions): AppNavigation {
-  const [page, setPageState] = useState<Page>('home');
+  const [view, setView] = useState<View>({ page: 'home', param: undefined });
   const [scope, setScope] = useState<DependantScope>(INITIAL_DEPENDANT_SCOPE);
   // The scope as of the latest action, readable in the same handler (the entry
   // a navigateTo pushes right after a borrow must record the borrowed id).
@@ -65,55 +89,70 @@ export function useAppNavigation(opts: AppNavigationOptions): AppNavigation {
     setScope(next);
   }, []);
 
-  const setPage = useCallback((next: Page) => {
+  /** The single resolver every stored id is read through, ended set included. */
+  const live = useCallback(
+    (id: string | null) => liveScopeId(id, optsRef.current.isLive, scopeRef.current.ended),
+    [],
+  );
+
+  // Shows the entry useNavigation hands over; its parameter comes with it.
+  const show = useCallback((next: Page, entry?: NavigationEntry) => {
     if (next === 'home') apply({ type: 'arrived-home' });
-    setPageState(next);
+    setView({ page: next, param: next === 'home' ? undefined : entry?.param });
   }, [apply]);
 
-  const entryFields = useCallback(() => ({
-    dependantId: liveScopeId(scopeRef.current.id, optsRef.current.isLive),
-  }), []);
+  const entryFields = useCallback(() => ({ dependantId: live(scopeRef.current.id) }), [live]);
 
-  const resolvePop = useCallback((entry: { page: Page } & Record<string, unknown>): Page => {
+  const resolvePop = useCallback((entry: NavigationEntry): Page => {
     const o = optsRef.current;
     const resolution = resolvePoppedEntry({
       page: entry.page,
       entryDependantId: typeof entry.dependantId === 'string' ? entry.dependantId : null,
-      currentId: liveScopeId(scopeRef.current.id, o.isLive),
+      currentId: live(scopeRef.current.id),
       locked: o.isScopeLocked(),
-      isLive: o.isLive,
+      isLive: id => live(id) !== null,
       needsDependant: o.needsDependant(entry.page),
     });
     if (resolution.show === 'home') return 'home';
+    if (o.isPageParamLive && !o.isPageParamLive(entry.page, entry.param)) return 'home';
     if (resolution.borrow !== undefined) apply({ type: 'borrow', id: resolution.borrow });
     return entry.page;
-  }, [apply]);
+  }, [apply, live]);
 
-  const { navigateTo, navigateBack, navigateReplace } = useNavigation(setPage, {
+  const nav = useNavigation(show, {
     isBounded: () => optsRef.current.isBounded?.() ?? false,
     onAttemptBoundaryExit: () => optsRef.current.onAttemptBoundaryExit?.(),
     entryFields,
     resolvePop,
   });
 
-  const openDependantPage = useCallback((target: Page, dependantId: string | null) => {
+  const navigateTo = useCallback((target: Page, param?: unknown) => {
+    nav.navigateTo(target, param === undefined ? undefined : { param });
+  }, [nav.navigateTo]);
+  const navigateReplace = useCallback((target: Page, param?: unknown) => {
+    nav.navigateReplace(target, param === undefined ? undefined : { param });
+  }, [nav.navigateReplace]);
+
+  const openDependantPage = useCallback((target: Page, dependantId: string | null, param?: unknown) => {
     apply({ type: 'borrow', id: dependantId });
-    navigateTo(target);
+    navigateTo(target, param);
   }, [apply, navigateTo]);
-  const setActiveDependantId = useCallback((id: string | null) => apply({ type: 'set', id }), [apply]);
+  const chooseDependantScope = useCallback((id: string | null) => apply({ type: 'set', id }), [apply]);
   const borrowActiveDependantId = useCallback((id: string | null) => apply({ type: 'borrow', id }), [apply]);
   const keepActiveDependantId = useCallback(() => apply({ type: 'commit' }), [apply]);
+  const endDependantScope = useCallback((id: string) => apply({ type: 'ended', id }), [apply]);
 
   return {
-    page,
+    page: view.page,
+    pageParam: view.param,
     navigateTo,
-    navigateBack,
+    navigateBack: nav.navigateBack,
     navigateReplace,
     openDependantPage,
-    activeDependantId: liveScopeId(scope.id, opts.isLive),
-    setActiveDependantId,
+    activeDependantId: liveScopeId(scope.id, opts.isLive, scope.ended),
+    chooseDependantScope,
     borrowActiveDependantId,
     keepActiveDependantId,
-    setPage,
+    endDependantScope,
   };
 }

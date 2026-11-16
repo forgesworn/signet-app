@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Page } from '../types';
 
+/** A history entry: the page, plus whatever the caller stores with it. */
+export type NavigationEntry = { page: Page } & Record<string, unknown>;
+
 interface NavigationActions {
-  navigateTo: (page: Page) => void;
+  /** Push `page`; `extra` is stored on its entry and handed to `setPage`. */
+  navigateTo: (page: Page, extra?: Record<string, unknown>) => void;
   navigateBack: () => void;
-  navigateReplace: (page: Page) => void;
+  /** Replace the current entry with `page`; `extra` as for navigateTo. */
+  navigateReplace: (page: Page, extra?: Record<string, unknown>) => void;
 }
 
 interface NavigationOptions {
@@ -27,7 +32,7 @@ interface NavigationOptions {
    * its own state for that entry here; it renders in the same pass. Returning
    * another page rewrites the entry to it.
    */
-  resolvePop?: (entry: { page: Page } & Record<string, unknown>) => Page;
+  resolvePop?: (entry: NavigationEntry) => Page;
 }
 
 /** How many in-app entries sit below the current one. An entry without a
@@ -38,8 +43,14 @@ function currentDepth(): number {
   return typeof depth === 'number' && depth > 0 ? depth : 0;
 }
 
+/**
+ * `setPage` is told the entry it is showing whenever there is one (a push, a
+ * replace, or a popped entry shown as it is), so state the caller keeps per
+ * entry comes from the same object as the page. Going home without an entry
+ * (the bottom of history) passes the page alone.
+ */
 export function useNavigation(
-  setPage: (page: Page) => void,
+  setPage: (page: Page, entry?: NavigationEntry) => void,
   opts?: NavigationOptions,
 ): NavigationActions {
   // Keep latest opts in a ref so the effect doesn't re-attach on every render
@@ -72,11 +83,15 @@ export function useNavigation(
         onAttemptBoundaryExitRef.current?.();
         return;
       }
-      const state = e.state as ({ page: Page } & Record<string, unknown>) | null;
+      const state = e.state as NavigationEntry | null;
       if (state?.page) {
         const target = resolvePopRef.current ? resolvePopRef.current(state) : state.page;
-        if (target !== state.page) window.history.replaceState({ ...state, page: target }, '');
-        setPage(target);
+        if (target !== state.page) {
+          window.history.replaceState({ ...state, page: target }, '');
+          setPage(target);
+        } else {
+          setPage(target, state);
+        }
       } else {
         // Refresh-then-back guard: after page refresh, history may be shallow.
         // Stay on home instead of exiting the app.
@@ -92,9 +107,9 @@ export function useNavigation(
     return () => window.removeEventListener('popstate', handlePopState);
   }, [setPage]);
 
-  const navigateTo = useCallback((page: Page) => {
-    setPage(page);
-    window.history.pushState({ ...entryFieldsRef.current?.(), page, depth: currentDepth() + 1 }, '');
+  const navigateTo = useCallback((page: Page, extra?: Record<string, unknown>) => {
+    setPage(page, { ...extra, page });
+    window.history.pushState({ ...entryFieldsRef.current?.(), ...extra, page, depth: currentDepth() + 1 }, '');
   }, [setPage]);
 
   // A page reached only by replaces (e.g. a signet-grant: link → approve →
@@ -111,9 +126,9 @@ export function useNavigation(
     window.history.back();
   }, [setPage]);
 
-  const navigateReplace = useCallback((page: Page) => {
-    setPage(page);
-    window.history.replaceState({ ...entryFieldsRef.current?.(), page, depth: currentDepth() }, '');
+  const navigateReplace = useCallback((page: Page, extra?: Record<string, unknown>) => {
+    setPage(page, { ...extra, page });
+    window.history.replaceState({ ...entryFieldsRef.current?.(), ...extra, page, depth: currentDepth() }, '');
   }, [setPage]);
 
   return { navigateTo, navigateBack, navigateReplace };

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import type { Page } from '../types';
+import type { Page, PersonaAdvancedRoute } from '../types';
 import { useAppNavigation } from './useAppNavigation';
 import { barTabsFor } from '../lib/app-nav';
 import { pageNeedsDependant } from '../lib/dependant-scope';
@@ -59,7 +59,7 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
     'back after Home re-opens %s for the dependant it was opened for, never the managed one',
     async (page) => {
       const { result } = setup();
-      act(() => result.current.setActiveDependantId('dep-x'));            // "Managing X"
+      act(() => result.current.chooseDependantScope('dep-x'));            // "Managing X"
       act(() => result.current.openDependantPage(page, 'dep-b'));         // B's card → page
       act(() => result.current.navigateTo('home'));                       // Home tab
       expect(result.current.activeDependantId).toBe('dep-x');
@@ -95,7 +95,7 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
 
   it('a removed dependant reads as the owner, as the current scope and as the restore target', () => {
     const { result, rerender, props } = setup();
-    act(() => result.current.setActiveDependantId('dep-x'));
+    act(() => result.current.chooseDependantScope('dep-x'));
     act(() => result.current.openDependantPage('settings', 'dep-b'));
     rerender({ ...props, dependants: [] });
     expect(result.current.activeDependantId).toBeNull();
@@ -117,7 +117,7 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
 
   it('keeps deliberate child mode through a deep-link to the same child and back', async () => {
     const { result } = setup({ childMode: true });
-    act(() => result.current.setActiveDependantId('dep-x'));
+    act(() => result.current.chooseDependantScope('dep-x'));
     act(() => result.current.openDependantPage('persona-advanced', 'dep-x'));
     await back(result, 'home');
     expect(result.current.activeDependantId).toBe('dep-x');
@@ -127,7 +127,7 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
     const { result, rerender, props } = setup();
     act(() => result.current.navigateTo('settings'));
     act(() => result.current.navigateTo('family-list'));
-    act(() => result.current.setActiveDependantId('dep-x'));             // hand-off picker → child mode
+    act(() => result.current.chooseDependantScope('dep-x'));             // hand-off picker → child mode
     rerender({ ...props, childMode: true });
     act(() => result.current.navigateBack());
     await waitFor(() => expect(window.history.state).toMatchObject({ page: 'home' }));
@@ -140,7 +140,7 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
     act(() => result.current.openDependantPage('settings', 'dep-b'));
     act(() => result.current.navigateTo('add-dependant'));
     act(() => {
-      result.current.setActiveDependantId('dep-x');
+      result.current.chooseDependantScope('dep-x');
       result.current.navigateReplace('home');
     });
     expect(result.current.page).toBe('home');
@@ -149,10 +149,10 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
 
   it('"Back to me" on a management page (set null, then home) lands on the owner', () => {
     const { result } = setup();
-    act(() => result.current.setActiveDependantId('dep-x'));
+    act(() => result.current.chooseDependantScope('dep-x'));
     act(() => result.current.openDependantPage('settings', 'dep-x'));
     act(() => {
-      result.current.setActiveDependantId(null);
+      result.current.chooseDependantScope(null);
       result.current.navigateTo('home');
     });
     expect(result.current.activeDependantId).toBeNull();
@@ -173,5 +173,170 @@ describe('useAppNavigation: a borrowed dependant scope', () => {
       result.current.navigateReplace('home');
     });
     expect(result.current.activeDependantId).toBe('dep-b');
+  });
+});
+
+/**
+ * App opens a slot's Advanced page with openPersonaAdvanced: the slot rides on
+ * the entry as its parameter, under the slot's own scope. The page renders its
+ * slot from `pageParam` and its "Managing …" banner from `activeDependantId`.
+ */
+function openAdvanced(nav: { openDependantPage: (p: Page, id: string | null, param?: unknown) => void }, route: PersonaAdvancedRoute) {
+  nav.openDependantPage('persona-advanced', route.depPubkey ?? null, route);
+}
+const shown = (r: { current: { page: Page; pageParam: unknown; activeDependantId: string | null } }) => ({
+  page: r.current.page, slot: r.current.pageParam, banner: r.current.activeDependantId,
+});
+
+describe('useAppNavigation: a page parameter rides on its history entry', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '');
+  });
+
+  const aSlot: PersonaAdvancedRoute = { slotTarget: 'persona', depPubkey: 'dep-x' };
+  const bSlot: PersonaAdvancedRoute = { slotTarget: 'persona', depPubkey: 'dep-b' };
+  const ownerSlot: PersonaAdvancedRoute = { slotTarget: 'persona' };
+
+  it("back ×3 to A's Advanced page shows A's slot under A's banner, not B's", async () => {
+    const { result } = setup();
+    act(() => openAdvanced(result.current, aSlot));                      // A's card → Advanced
+    act(() => result.current.navigateTo('home'));                        // Home
+    act(() => openAdvanced(result.current, bSlot));                      // B's card → Advanced
+    act(() => result.current.navigateTo('home'));                        // Home
+    await back(result, 'persona-advanced');
+    expect(shown(result)).toEqual({ page: 'persona-advanced', slot: bSlot, banner: 'dep-b' });
+    await back(result, 'home');
+    await back(result, 'persona-advanced');
+    expect(shown(result)).toEqual({ page: 'persona-advanced', slot: aSlot, banner: 'dep-x' });
+  });
+
+  it("back ×3 to A's Advanced page after the owner's shows A's slot, not the owner's persona", async () => {
+    const { result } = setup();
+    act(() => openAdvanced(result.current, aSlot));
+    act(() => result.current.navigateTo('home'));
+    act(() => openAdvanced(result.current, ownerSlot));                  // owner's persona card → Advanced
+    expect(shown(result)).toEqual({ page: 'persona-advanced', slot: ownerSlot, banner: null });
+    act(() => result.current.navigateTo('home'));
+    await back(result, 'persona-advanced');
+    expect(shown(result)).toEqual({ page: 'persona-advanced', slot: ownerSlot, banner: null });
+    await back(result, 'home');
+    await back(result, 'persona-advanced');
+    expect(shown(result)).toEqual({ page: 'persona-advanced', slot: aSlot, banner: 'dep-x' });
+  });
+
+  it("back ×3 to the owner's Advanced page after A's shows the owner's slot with no banner", async () => {
+    const { result } = setup();
+    act(() => openAdvanced(result.current, ownerSlot));
+    act(() => result.current.navigateTo('home'));
+    act(() => openAdvanced(result.current, aSlot));
+    act(() => result.current.navigateTo('home'));
+    await back(result, 'persona-advanced');
+    await back(result, 'home');
+    await back(result, 'persona-advanced');
+    expect(shown(result)).toEqual({ page: 'persona-advanced', slot: ownerSlot, banner: null });
+    expect(result.current.tabs).toContain('bunker');
+  });
+
+  it('a page reached without a parameter has none, and home never keeps one', async () => {
+    const { result } = setup();
+    act(() => openAdvanced(result.current, aSlot));
+    act(() => result.current.navigateTo('settings'));
+    expect(result.current.pageParam).toBeUndefined();
+    await back(result, 'persona-advanced');
+    expect(result.current.pageParam).toEqual(aSlot);
+    act(() => result.current.navigateReplace('home'));
+    expect(result.current.pageParam).toBeUndefined();
+  });
+
+  it('an entry whose target is gone goes home', async () => {
+    let live = true;
+    const hook = renderHook(() => useAppNavigation({
+      isLive: () => true,
+      isScopeLocked: () => false,
+      needsDependant: () => false,
+      isPageParamLive: (page, param) => page !== 'persona-advanced' || (live && param !== undefined),
+    }));
+    act(() => hook.result.current.openDependantPage('persona-advanced', null, ownerSlot));
+    act(() => hook.result.current.navigateTo('home'));
+    live = false;                                                         // the extra persona was deleted
+    act(() => hook.result.current.navigateBack());
+    await waitFor(() => expect(window.history.state).toMatchObject({ page: 'home' }));
+    expect(hook.result.current.page).toBe('home');
+    expect(hook.result.current.pageParam).toBeUndefined();
+  });
+});
+
+describe('useAppNavigation: a removed dependant stays ended for the session', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '');
+  });
+
+  it('removing the managed dependant from their Advanced page does not come back when a sync re-merges them', async () => {
+    const { result, rerender, props } = setup();
+    act(() => result.current.chooseDependantScope('dep-x'));             // "Managing X"
+    act(() => openAdvanced(result.current, { slotTarget: 'persona', depPubkey: 'dep-x' }));
+    act(() => result.current.endDependantScope('dep-x'));                // Remove dependant
+    rerender({ ...props, dependants: ['dep-b'] });
+    await back(result, 'home');
+    expect(result.current.activeDependantId).toBeNull();
+    rerender({ ...props, dependants: ['dep-x', 'dep-b'] });              // the dependants rail merges X back
+    expect(result.current.activeDependantId).toBeNull();
+    expect(result.current.tabs).toContain('bunker');
+  });
+
+  it('a history entry for a removed-then-re-merged dependant goes home under the owner', async () => {
+    const { result, rerender, props } = setup();
+    act(() => result.current.openDependantPage('settings', 'dep-x'));
+    act(() => result.current.navigateTo('home'));
+    act(() => result.current.endDependantScope('dep-x'));                // removed (ceremony, Advanced…)
+    rerender({ ...props, dependants: ['dep-b'] });
+    rerender({ ...props, dependants: ['dep-x', 'dep-b'] });              // merged back
+    act(() => result.current.navigateBack());
+    await waitFor(() => expect(window.history.state).toMatchObject({ page: 'home' }));
+    expect(result.current.page).toBe('home');
+    expect(result.current.activeDependantId).toBeNull();
+  });
+
+  it('a removed dependant is not the scope put back on reaching home', () => {
+    const { result, rerender, props } = setup();
+    act(() => result.current.chooseDependantScope('dep-x'));
+    act(() => result.current.openDependantPage('settings', 'dep-b'));    // restore target: X
+    act(() => result.current.endDependantScope('dep-x'));
+    rerender({ ...props, dependants: ['dep-b'] });
+    rerender({ ...props, dependants: ['dep-x', 'dep-b'] });
+    act(() => result.current.openDependantPage('pair-dependant-device', 'dep-x')); // X chosen again later
+    act(() => result.current.navigateTo('home'));
+    expect(result.current.activeDependantId).toBeNull();
+  });
+
+  it('choosing the dependant again on purpose brings them back', () => {
+    const { result, rerender, props } = setup();
+    act(() => result.current.chooseDependantScope('dep-x'));
+    act(() => result.current.endDependantScope('dep-x'));
+    rerender({ ...props, dependants: ['dep-x', 'dep-b'] });
+    expect(result.current.activeDependantId).toBeNull();
+    act(() => result.current.chooseDependantScope('dep-x'));             // "Switch to X"
+    expect(result.current.activeDependantId).toBe('dep-x');
+  });
+
+  it("opening the dependant's page on purpose brings them back for that page", () => {
+    const { result } = setup();
+    act(() => result.current.endDependantScope('dep-x'));
+    act(() => result.current.openDependantPage('settings', 'dep-x'));    // X's card → Settings
+    expect(result.current.activeDependantId).toBe('dep-x');
+    expect(window.history.state).toMatchObject({ page: 'settings', dependantId: 'dep-x' });
+  });
+});
+
+describe('useAppNavigation: the only way to change the page or the scope', () => {
+  it('exposes no raw page or scope setter', () => {
+    const { result } = renderHook(() => useAppNavigation({
+      isLive: () => true, isScopeLocked: () => false, needsDependant: () => false,
+    }));
+    expect(Object.keys(result.current).sort()).toEqual([
+      'activeDependantId', 'borrowActiveDependantId', 'chooseDependantScope', 'endDependantScope',
+      'keepActiveDependantId', 'navigateBack', 'navigateReplace', 'navigateTo', 'openDependantPage',
+      'page', 'pageParam',
+    ]);
   });
 });
