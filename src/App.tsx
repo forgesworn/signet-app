@@ -2162,7 +2162,7 @@ function AppContent() {
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     // A56: a direct child reads this rail on its pairing's rail relay.
     extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
-    publish: async (send, active, relay) => {
+    publish: async (send, active, relay, resend) => {
       const key = encryptionKey, guardian = identity?.naturalPerson.publicKey;
       if (!key || !guardian) return;
       const current = () => active() && encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
@@ -2172,7 +2172,8 @@ function AppContent() {
         if (!publishesToChildOn(dep, relay, preferences.relayUrl ?? DEFAULT_RELAY_URL)) continue;
         if (dep.guardianPubkey !== guardian || !dep.bunkerEndpoint?.authorizedClientPubkey) continue;
         try {
-          await publishChildContactDirectory({ guardian, child: dep.id, key, isCurrent: current,
+          // A retry of unchanged content sends the same publication again (no new revision).
+          await publishChildContactDirectory({ guardian, child: dep.id, key, isCurrent: current, resend,
             readScope: async () => {
               const dependant = (await loadFreshDependants(key)).find(row => row.id === dep.id && row.guardianPubkey === guardian);
               if (!dependant) throw new Error('Dependant is no longer managed here');

@@ -113,7 +113,7 @@ it('opens the transport before building and refuses a delayed send after lock', 
   await act(async () => { release(); });
   expect(sockets[0].send).not.toHaveBeenCalled(); unmount();
 });
-it('rebuilds after a missing relay acknowledgement instead of replaying a signed event', async () => {
+it('retries after a missing relay acknowledgement through publish, never by replaying on the socket', async () => {
   vi.useFakeTimers();
   const sockets: FakeSocket[] = [];
   class FakeSocket {
@@ -125,12 +125,65 @@ it('rebuilds after a missing relay acknowledgement instead of replaying a signed
   let revision = 0;
   const publish = vi.fn(async (send: (event: NostrEvent) => void) => { send({ id: `${++revision}`, content: `revision ${revision}` } as NostrEvent); });
   const { unmount } = renderHook(() => useChildContactDirectoryPublisher({ enabled: true, session: 'one', changeToken: 'one', relayUrl: options.relayUrl, publish }));
-  await act(async () => { await vi.advanceTimersByTimeAsync(11001); });
+  // Initial run at 1 s, unacknowledged at 6 s, first retry 10 s later.
+  await act(async () => { await vi.advanceTimersByTimeAsync(15999); });
+  expect(publish).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2); });
   expect(publish).toHaveBeenCalledTimes(2);
   expect(sockets[0].send.mock.calls[0][0]).toContain('revision 1');
   expect(sockets[1].send.mock.calls[0][0]).toContain('revision 2');
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+});
+it('backs off a relay that stays down: 10 s doubling to a 10 min cap, the refresh leaving it alone', async () => {
+  vi.useFakeTimers();
+  const opened: number[] = [];
+  class FakeSocket {
+    static OPEN = 1; readyState = 0; onopen?: () => void; onclose?: () => void; onerror?: () => void;
+    send = vi.fn(); close = vi.fn();
+    constructor() { opened.push(Date.now()); queueMicrotask(() => { this.readyState = 3; this.onerror?.(); }); }
+  }
+  vi.stubGlobal('WebSocket', FakeSocket);
+  const publish = vi.fn(async () => {});
+  const start = Date.now();
+  const { unmount } = renderHook(() => useChildContactDirectoryPublisher({ enabled: true, session: 'one', changeToken: 'one', relayUrl: options.relayUrl, publish }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(40 * 60_000); });
+  const gaps = opened.map((t, i) => (i === 0 ? t - start : t - opened[i - 1]) / 1000);
+  expect(gaps).toEqual([1, 10, 20, 40, 80, 160, 320, 600, 600]);
+  expect(publish).not.toHaveBeenCalled();
+  unmount();
+});
+it('a success resets the backoff; a retry reuses the failed run\'s resend memo, a fresh run never does', async () => {
+  vi.useFakeTimers();
+  let acknowledge = false;
+  class FakeSocket {
+    static OPEN = 1; readyState = 0; onopen?: () => void; onclose?: () => void; onerror?: () => void; onmessage?: (m: { data: string }) => void;
+    send = vi.fn((raw: string) => { const id = JSON.parse(raw)[1].id; queueMicrotask(() => this.onmessage?.({ data: JSON.stringify(['OK', id, acknowledge, acknowledge ? '' : 'blocked: rate-limited']) })); });
+    close = vi.fn(() => { this.readyState = 3; this.onclose?.(); });
+    constructor() { queueMicrotask(() => { this.readyState = 1; this.onopen?.(); }); }
+  }
+  vi.stubGlobal('WebSocket', FakeSocket);
+  const calls: { at: number; resend: Map<string, unknown> }[] = [];
+  const start = Date.now();
+  const publish = vi.fn(async (send: (event: NostrEvent) => void, _current: () => boolean, _relay: string, resend: Map<string, unknown>) => {
+    calls.push({ at: (Date.now() - start) / 1000, resend }); send({ id: `e${calls.length}` } as NostrEvent);
+  });
+  const { unmount } = renderHook(() => useChildContactDirectoryPublisher({ enabled: true, session: 'one', changeToken: 'one', relayUrl: options.relayUrl, publish }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(32_000); });
+  // Refused at 1 s, retried at 11 s and 31 s, each retry with the first run's memo.
+  expect(calls.map(c => c.at)).toEqual([1, 11, 31]);
+  expect(calls[1].resend).toBe(calls[0].resend);
+  expect(calls[2].resend).toBe(calls[0].resend);
+  acknowledge = true;
+  await act(async () => { await vi.advanceTimersByTimeAsync(40_000); });
+  expect(calls.map(c => c.at)).toEqual([1, 11, 31, 71]);
+  // Accepted at 71 s. The 5-minute refresh is a fresh run with a fresh memo; refused again, it waits 10 s.
+  acknowledge = false;
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000 - 71_000 + 10_500); });
+  expect(calls.map(c => c.at)).toEqual([1, 11, 31, 71, 300, 310]);
+  expect(calls[4].resend).not.toBe(calls[0].resend);
+  expect(calls[5].resend).toBe(calls[4].resend);
+  unmount();
 });
 it('A56: one socket per relay; each extra relay is published to with its own relay named', async () => {
   vi.useFakeTimers();

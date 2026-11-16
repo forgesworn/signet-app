@@ -5,6 +5,8 @@ import { pairedDeviceAllows } from './paired-device-personas';
 import { updateEncryptedPrivateState } from './private-vault-store';
 import { projectChildContactDirectory, sealChildContactDirectory } from './child-contact-directory';
 import type { DecryptingSigningBackend } from './signing-backend';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_REVISION = 253402300799;
@@ -75,16 +77,35 @@ async function reservePublication(scope: Omit<Revision, 'v' | 'revision' | 'issu
   return next as Revision & { issuedAt: number };
 }
 
+/** One publication kept for a retry (in memory only): the signed event and a
+ * digest of exactly what it was built from. */
+export interface ChildDirectoryResendEntry {
+  guardian: string; event: NostrEvent; bindingDigest: string; revision: number; issuedAt: number; expiresAt: number;
+}
+/** Per child id, owned by the caller for one publication attempt and its retries. */
+export type ChildDirectoryResendCache = Map<string, ChildDirectoryResendEntry>;
+/** A retry this close to a publication's expiry builds a fresh one instead. */
+export const CHILD_DIRECTORY_RESEND_MARGIN_S = 300;
+
+const digest = (binding: string) => bytesToHex(sha256(new TextEncoder().encode(binding)));
+
 /** All waits (including socket connection) belong before send. The adapter must
  * read fresh encrypted guardian state and synchronously transmit on an already
- * open socket; it must not queue an event for a later connection/retry. A failed
- * send is rebuilt with a new revision. This does not grant child write access. */
+ * open socket; it must not queue an event for a later connection/retry.
+ *
+ * With `resend` (a retry of a send that failed or was not acknowledged): when
+ * the publication kept there for this child still matches what fresh guardian
+ * state would build at its revision and time, and is not near expiry, the same
+ * signed event goes again — no new revision, no new signature. Anything else
+ * (a real change, near expiry, no entry) builds a fresh one with a new
+ * revision, as before. This does not grant child write access. */
 export async function publishChildContactDirectory(options: {
   guardian: string; child: string; key: string; isCurrent(): boolean;
   readScope(): Promise<ChildDirectoryPublicationScope>;
   signer(scope: ChildDirectoryPublicationScope): Promise<DecryptingSigningBackend>;
   send(event: NostrEvent): void;
   now?(): number;
+  resend?: ChildDirectoryResendCache;
 }): Promise<void> {
   const o = { ...options };
   const check = () => { if (!o.isCurrent()) throw new Error('Child directory session changed'); };
@@ -101,6 +122,19 @@ export async function publishChildContactDirectory(options: {
       records: dep.autonomyStage === 'full-control' ? [] : scope.records, settings: scope.settings, revision, now: issuedAt });
     return { scope, view, endpoint: endpoint.publicKey, binding: JSON.stringify([endpoint, view]) };
   };
+  const kept = o.resend?.get(o.child);
+  if (kept) {
+    o.resend!.delete(o.child);
+    const again = await read(kept.revision, kept.issuedAt);
+    check();
+    const t = now();
+    if (kept.guardian === o.guardian && digest(again.binding) === kept.bindingDigest
+      && t < kept.expiresAt - CHILD_DIRECTORY_RESEND_MARGIN_S && t >= kept.issuedAt - 300) {
+      o.resend!.set(o.child, kept);
+      o.send(kept.event);
+      return;
+    }
+  }
   const initial = await read(0, now());
   const { revision, issuedAt } = await reservePublication({ guardian: o.guardian, child: o.child,
     endpoint: initial.endpoint, recipient: initial.view.recipient }, o.key, o.isCurrent, now());
@@ -115,6 +149,7 @@ export async function publishChildContactDirectory(options: {
     if ((await read(revision, issuedAt)).binding !== binding) throw new Error('Child directory scope changed');
     check();
     if (now() >= expected.expiresAt || now() < issuedAt - 300) throw new Error('Child directory publication expired');
+    o.resend?.set(o.child, { guardian: o.guardian, event, bindingDigest: digest(binding), revision, issuedAt, expiresAt: expected.expiresAt });
     o.send(event);
   } finally { backend?.destroy(); }
 }
