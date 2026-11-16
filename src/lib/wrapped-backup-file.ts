@@ -1,4 +1,31 @@
 import {isNativeApp, SignetNative} from './native';
+import {COLLECTION_BYTES, isAccountCollection} from './wrapped-account-collection';
+
+/** Binary FSWNENC2 on disk; the text prefix exists only across the native bridge. */
+export async function saveAccountCollectionFile(bytes: Uint8Array): Promise<boolean> {
+  if (!isAccountCollection(bytes)) throw new Error('Invalid account collection file.');
+  if (isNativeApp()) {
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    const record = 'nstc1:' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return (await SignetNative.saveWrappedBackup({record})).saved;
+  }
+  const owned = new Uint8Array(bytes);
+  const url = URL.createObjectURL(new Blob([owned], {type: 'application/octet-stream'}));
+  try {
+    const link = document.createElement('a');
+    link.href = url; link.download = 'signet-accounts.nstc'; document.body.appendChild(link);
+    try { link.click(); } finally { link.remove(); }
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  return true;
+}
+
+export async function readAccountCollectionFile(file: File): Promise<Uint8Array> {
+  if (file.size !== COLLECTION_BYTES) throw new Error('Choose a Signet account collection.');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!isAccountCollection(bytes)) throw new Error('Invalid account collection file.');
+  return bytes;
+}
 
 /** Save only the bounded encrypted envelope; cancellation never claims a saved file. */
 export async function saveWrappedBackupFile(record: string): Promise<boolean> {

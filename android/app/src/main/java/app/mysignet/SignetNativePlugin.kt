@@ -71,7 +71,7 @@ class SignetNativePlugin : Plugin() {
             call.reject("A backup save is already open"); return
         }
         try {
-            startActivityForResult(call, WrappedBackupDocument.createIntent(), "saveWrappedBackupResult")
+            startActivityForResult(call, WrappedBackupDocument.createIntent(record), "saveWrappedBackupResult")
         } catch (_: Exception) {
             savingWrappedBackup.set(false)
             call.reject("Cannot open the backup file picker")

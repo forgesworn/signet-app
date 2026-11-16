@@ -7,6 +7,10 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 - Sign in with Signet and Nostr Connect: "Straight to my Heartwood" now shows greyed out with the reason when your Heartwood can't take it yet, instead of being hidden
 
+## 0.29.0
+
+- Imported accounts: select up to 100 accounts for one encrypted collection, check the saved file and restore selected accounts with your Signet recovery words. Both the file and the words are needed. Wildbloom can store the existing encrypted file across a 2-of-4 pool without another password; keep its private receipt separately. Direct Bothy Keep upload remains pending. Keep separate key backups during this preview.
+
 ## 0.28.0
 
 - Imported accounts: preview an encrypted backup file that restores the same account with your Signet recovery words. Download and check the saved file in Manage identity, or check and confirm a restore in Identities. Keep the account's separate backup while this feature is in preview.
