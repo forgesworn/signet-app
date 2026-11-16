@@ -413,3 +413,198 @@ describe('mergeInventory omits a dormant real identity (spec §7.6)', () => {
     expect(savedIdentity.naturalPersonActive).toBe(true);
   });
 });
+
+describe('mergeInventory on a child-direct install (bound persona pinned, A26/A50/A51)', () => {
+  const DEP_PUB = 'a'.repeat(64);
+  const BOUND = 'b'.repeat(64);
+  const NP_PUB = 'c'.repeat(64);
+  const EXTRA = 'e'.repeat(64);
+  const NEW_EXTRA = 'f'.repeat(64);
+  const direct = { boundPersona: BOUND };
+
+  // The stub a direct pairing writes (childDirectStubIdentity), after one
+  // earlier merge brought in an extra.
+  const directStub = (): SignetIdentity => ({
+    id: DEP_PUB,
+    mnemonic: '',
+    naturalPerson: { publicKey: '', privateKey: '', displayName: 'Lily' },
+    persona: { publicKey: BOUND, privateKey: '', displayName: 'Lily', about: 'kept-about' },
+    extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer', derivationName: '' }],
+    primaryKeypair: 'persona',
+    naturalPersonActive: false,
+  } as unknown as SignetIdentity);
+
+  const saved = () => mockSaveId.mock.calls[0][0] as SignetIdentity;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadRev.mockResolvedValue(0);
+    mockSaveId.mockResolvedValue(undefined as never);
+    mockSaveRev.mockResolvedValue(undefined as never);
+  });
+
+  it('a persona added after pairing is merged in as an extra with no private key', async () => {
+    mockLoadId.mockResolvedValue(directStub());
+    await mergeInventory({
+      v: 1, revision: 2,
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [{ publicKey: EXTRA, displayName: 'Gamer' }, { publicKey: NEW_EXTRA, displayName: 'Artist' }],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().extraPersonas?.map(x => [x.publicKey, x.displayName, x.privateKey])).toEqual([
+      [EXTRA, 'Gamer', ''], [NEW_EXTRA, 'Artist', ''],
+    ]);
+    expect(saved().persona.publicKey).toBe(BOUND);
+    expect(saved().naturalPerson.publicKey).toBe('');
+    expect(saved().naturalPersonActive).toBe(false);
+    expect(saved().primaryKeypair).toBe('persona');
+  });
+
+  it('keeps the stored bound persona when the guardian hides it from the phone', async () => {
+    mockLoadId.mockResolvedValue(directStub());
+    await mergeInventory({
+      v: 1, revision: 2,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      extraPersonas: [{ publicKey: EXTRA, displayName: 'Gamer' }],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().persona.publicKey).toBe(BOUND);
+    expect(saved().persona.displayName).toBe('Lily');
+    expect(saved().persona.about).toBe('kept-about');
+    expect(saved().persona.privateKey).toBe('');
+    expect(saved().primaryKeypair).toBe('persona');
+  });
+
+  it('keeps the bound persona when the persona slot names another key, and drops that key', async () => {
+    const OTHER = '7'.repeat(64);
+    mockLoadId.mockResolvedValue(directStub());
+    await mergeInventory({
+      v: 1, revision: 2,
+      persona: { publicKey: OTHER, displayName: 'Someone else' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().persona.publicKey).toBe(BOUND);
+    expect(saved().persona.displayName).toBe('Lily');
+    expect(saved().extraPersonas?.map(x => x.publicKey)).not.toContain(OTHER);
+  });
+
+  it('never lists the bound persona a second time as an extra', async () => {
+    mockLoadId.mockResolvedValue(directStub());
+    await mergeInventory({
+      v: 1, revision: 2,
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [{ publicKey: BOUND, displayName: 'Lily again' }, { publicKey: EXTRA, displayName: 'Gamer' }],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().extraPersonas?.map(x => x.publicKey)).toEqual([EXTRA]);
+  });
+
+  it('a real-identity entry carrying the bound key is treated as absent (A50)', async () => {
+    mockLoadId.mockResolvedValue(directStub());
+    await mergeInventory({
+      v: 1, revision: 2,
+      naturalPerson: { publicKey: BOUND, displayName: 'Lily' },
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().naturalPerson).toEqual({ publicKey: '', privateKey: '', displayName: '' });
+    expect(saved().naturalPersonActive).toBe(false);
+    expect(saved().primaryKeypair).toBe('persona');
+  });
+
+  it('a vanished primary extra falls back to the bound persona, never the real-identity slot', async () => {
+    mockLoadId.mockResolvedValue({ ...directStub(), primaryKeypair: EXTRA } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2,
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().primaryKeypair).toBe('persona');
+  });
+
+  it('a primary extra that vanishes while the real identity is active still falls back to the bound persona', async () => {
+    mockLoadId.mockResolvedValue({ ...directStub(), primaryKeypair: EXTRA } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().primaryKeypair).toBe('persona');
+    expect(saved().naturalPerson.publicKey).toBe(NP_PUB);
+    expect(saved().naturalPersonActive).toBe(true);
+  });
+
+  it('a real-identity primary is moved to the bound persona once the inventory says it is dormant', async () => {
+    mockLoadId.mockResolvedValue({
+      ...directStub(),
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Lily Rivera' },
+      naturalPersonActive: true,
+      primaryKeypair: 'natural-person',
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2,
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().naturalPerson.publicKey).toBe('');
+    expect(saved().naturalPersonActive).toBe(false);
+    expect(saved().primaryKeypair).toBe('persona');
+  });
+
+  it('an active real-identity primary stays primary', async () => {
+    mockLoadId.mockResolvedValue({
+      ...directStub(),
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Lily Rivera' },
+      naturalPersonActive: true,
+      primaryKeypair: 'natural-person',
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().primaryKeypair).toBe('natural-person');
+  });
+
+  it('private keys stay empty in every slot, even if the stored record held one', async () => {
+    mockLoadId.mockResolvedValue({
+      ...directStub(),
+      naturalPerson: { publicKey: NP_PUB, privateKey: '9'.repeat(64), displayName: 'Lily Rivera' },
+      persona: { publicKey: BOUND, privateKey: '9'.repeat(64), displayName: 'Lily' },
+      naturalPersonActive: true,
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      extraPersonas: [{ publicKey: NEW_EXTRA, displayName: 'Artist' }],
+    }, DEP_PUB, 'test-key', direct);
+    expect(saved().naturalPerson.privateKey).toBe('');
+    expect(saved().persona.privateKey).toBe('');
+    expect(saved().extraPersonas?.every(x => x.privateKey === '')).toBe(true);
+  });
+
+  it('an invalid bound persona merges nothing', async () => {
+    mockLoadId.mockResolvedValue(directStub());
+    await mergeInventory({
+      v: 1, revision: 2,
+      persona: { publicKey: BOUND, displayName: 'Lily' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key', { boundPersona: 'not-a-key' });
+    expect(mockSaveId).not.toHaveBeenCalled();
+    expect(mockSaveRev).not.toHaveBeenCalled();
+  });
+
+  it('legacy (no direct option): a hidden persona is still blanked and primary falls back to the real identity', async () => {
+    mockLoadId.mockResolvedValue({
+      ...directStub(),
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Lily Rivera' },
+      naturalPersonActive: true,
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      extraPersonas: [],
+    }, DEP_PUB, 'test-key');
+    expect(saved().persona.publicKey).toBe('');
+    expect(saved().primaryKeypair).toBe('natural-person');
+  });
+});

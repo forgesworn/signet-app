@@ -330,6 +330,7 @@ export function subscribePersonaInventory(
   if (!HEX64.test(endpointPubkey)) return () => { /* no-op */ };
 
   const relay = new RelayClient(relayUrl);
+  const author = endpointPubkey.toLowerCase();
   let cancelled = false;
   let subId: string | null = null;
 
@@ -343,14 +344,18 @@ export function subscribePersonaInventory(
       subId = relay.subscribe(
         [{
           kinds: [INVENTORY_KIND],
-          authors: [endpointPubkey.toLowerCase()],
+          authors: [author],
           '#d': [INVENTORY_D_TAG],
         } as never],
         async (event) => {
           if (cancelled) return;
+          // Author pin, held here rather than trusted to the relay's
+          // `authors` filter: only the guardian's endpoint (the rail key on
+          // a child-direct pairing) may author this rail.
+          if (typeof event?.pubkey !== 'string' || event.pubkey.toLowerCase() !== author) return;
           try {
             const plaintext = await childTransportBackend.nip44Decrypt(
-              endpointPubkey.toLowerCase(),
+              author,
               event.content,
             );
             const payload = parsePersonaInventoryPayload(plaintext);

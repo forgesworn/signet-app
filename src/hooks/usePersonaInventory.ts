@@ -3,7 +3,8 @@
  * (2026-05-15-persona-inventory-sync-to-paired-child-design.md §2.6).
  *
  * Runs only in `paired-child` signingMode. Loads the PairedChildRecord,
- * extracts the endpoint pubkey from the stored bunker URI, builds a
+ * resolves the guardian's rail key (`guardianRailPubkey`: the stored bunker
+ * URI's endpoint on a legacy pairing, `railPubkey` on a child-direct one), builds a
  * LocalSigningBackend over the child's transport private key, opens a
  * relay subscription for the guardian's NIP-44-encrypted persona-inventory
  * events, decrypts each one as it arrives, merges into the stored
@@ -21,17 +22,26 @@
  *
  * §2.7 active-persona revocation fallback: if the currently-selected
  * `primaryKeypair` is no longer in the merged inventory, fall back to
- * `'natural-person'` before saving.
+ * `'natural-person'` before saving — except on a child-direct install, where
+ * the fallback is always the bound persona (see `mergeInventory`).
  */
 
 import { useEffect, useRef } from 'react';
 import type { PairedChildRecord, SignetIdentity, ExtraPersona, PersonaPublicProfile, PublicProfileConfig } from '../types';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { subscribePersonaInventory, type PersonaInventoryPayload, type PersonaInventoryPublicProfileBlock } from '../lib/persona-inventory-sync';
-// `extractEndpointPubkey` lives on dependant-status-sync — reuse it here
-// rather than duplicating the bunker URI authority parser.
-import { extractEndpointPubkey } from '../lib/dependant-status-sync';
+// The guardian authors this rail with the dependant's `bunkerEndpoint` key:
+// the bunker URI's endpoint on a legacy pairing, the rail key on a direct one.
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import * as db from '../lib/db';
+
+const STRICT_HEX64 = /^[0-9a-f]{64}$/;
+
+/** Child-direct install only: the merge never loses the phone's own persona. */
+export interface DirectInventoryOptions {
+  /** The persona the Heartwood slot is bound to (`PairedChildRecord.personaPubkey`). */
+  boundPersona: string;
+}
 
 interface Options {
   relayUrl: string;
@@ -80,8 +90,16 @@ export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, 
         return;
       }
 
-      const endpointPubkey = extractEndpointPubkey(record.bunkerUri);
+      // Author pin AND NIP-44 peer. On a direct pairing this is the rail key,
+      // never the bound persona the record's `bunker://` URI names.
+      const endpointPubkey = guardianRailPubkey(record);
       if (!endpointPubkey) return;
+      let direct: DirectInventoryOptions | undefined;
+      if (record.mode === 'heartwood-direct') {
+        // A direct record without a usable bound persona is not merged into.
+        if (!record.personaPubkey || !STRICT_HEX64.test(record.personaPubkey)) return;
+        direct = { boundPersona: record.personaPubkey };
+      }
 
       unsubscribe = subscribePersonaInventory(
         endpointPubkey,
@@ -89,7 +107,7 @@ export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, 
         relayUrl,
         async ({ payload }) => {
           if (!active) return;
-          await mergeInventory(payload, dependantPubkey, encryptionKey);
+          await mergeInventory(payload, dependantPubkey, encryptionKey, direct);
           await onMergedRef.current();
         },
       );
@@ -118,12 +136,26 @@ export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, 
  * merge persona + extras (public keys + display names), drop stale
  * revisions, and fall back to NP if the active persona disappeared.
  * Exported for testability.
+ *
+ * `direct` (child-direct Heartwood install only; absent = legacy, unchanged):
+ * the persona the phone's Heartwood slot is bound to is pinned. Unpair, not
+ * the inventory, is how it goes (A51), so when the guardian hides it from
+ * the phone (or, never expected, names another key in the persona slot) the
+ * stored slot is kept rather than blanked, and the bound key is never listed
+ * again as an extra. A real-identity entry carrying the bound key is treated
+ * as absent (A50), and every fallback lands on the bound persona — never on
+ * the real-identity slot unless the guardian's inventory says it is active
+ * (A26). Private keys stay empty in every slot.
  */
 export async function mergeInventory(
   payload: PersonaInventoryPayload,
   dependantPubkey: string,
   encryptionKey: string,
+  direct?: DirectInventoryOptions,
 ): Promise<void> {
+  const bound = direct ? direct.boundPersona.toLowerCase() : null;
+  if (bound !== null && !STRICT_HEX64.test(bound)) return;
+
   const cachedRevision = await db.loadPairedChildPersonaRevision().catch(() => 0);
   if (payload.revision <= cachedRevision) return;
 
@@ -131,6 +163,12 @@ export async function mergeInventory(
     .loadIdentityDecrypted(dependantPubkey, encryptionKey)
     .catch(() => undefined);
   if (!stored) return;
+
+  // What the merge reads from the wire. On a legacy install these are the
+  // payload's own fields, so that path is exactly as before.
+  const wirePersona = bound === null || payload.persona?.publicKey === bound ? payload.persona : undefined;
+  const wireNaturalPerson = bound !== null && payload.naturalPerson?.publicKey === bound ? undefined : payload.naturalPerson;
+  const wireExtras = bound === null ? payload.extraPersonas : payload.extraPersonas.filter(ep => ep.publicKey !== bound);
 
   // Carry avatar fields through from the inventory payload onto the kid's
   // local persona slots. The publisher (Phase 3) emits them when
@@ -149,7 +187,7 @@ export async function mergeInventory(
   const findStoredExtra = (pubkey: string) =>
     (stored.extraPersonas ?? []).find(ep => ep.publicKey === pubkey);
 
-  const mergedExtras: ExtraPersona[] = payload.extraPersonas.map(ep => {
+  const mergedExtras: ExtraPersona[] = wireExtras.map(ep => {
     const localExtra = findStoredExtra(ep.publicKey);
     const { config: cfg, state: st } = mergeSlotPublicConfig(
       ep.publicProfile,
@@ -170,15 +208,15 @@ export async function mergeInventory(
     };
   });
 
-  const npMerge = payload.naturalPerson
+  const npMerge = wireNaturalPerson
     ? mergeSlotPublicConfig(
-        payload.naturalPerson.publicProfile,
+        wireNaturalPerson.publicProfile,
         extractConfigFromSlot(stored.naturalPerson),
         stored.naturalPerson.publicProfile,
       )
     : { config: undefined, state: undefined };
   const personaMerge = mergeSlotPublicConfig(
-    payload.persona?.publicProfile,
+    wirePersona?.publicProfile,
     extractConfigFromSlot(stored.persona),
     stored.persona.publicProfile,
   );
@@ -224,42 +262,43 @@ export async function mergeInventory(
     // persona pubkey. When the guardian's inventory omits the real
     // identity, clear the stub rather than leaving a second row rendering
     // the same key under a real-identity label.
-    naturalPerson: payload.naturalPerson
+    naturalPerson: wireNaturalPerson
       ? {
           ...stored.naturalPerson,
+          ...(bound !== null ? { privateKey: '' } : {}),
           // A61: the payload's key is authoritative, so a dormant (empty)
           // or stub NP slot picks up the real key once it is activated.
-          publicKey: payload.naturalPerson.publicKey,
-          avatarHash: payload.naturalPerson.avatarHash,
-          avatarBlossomUrl: payload.naturalPerson.avatarBlossomUrl,
-          avatarKey: payload.naturalPerson.avatarKey,
-          avatarUpdatedAt: payload.naturalPerson.avatarUpdatedAt,
+          publicKey: wireNaturalPerson.publicKey,
+          avatarHash: wireNaturalPerson.avatarHash,
+          avatarBlossomUrl: wireNaturalPerson.avatarBlossomUrl,
+          avatarKey: wireNaturalPerson.avatarKey,
+          avatarUpdatedAt: wireNaturalPerson.avatarUpdatedAt,
           ...applyConfigWithWipes(
-            payload.naturalPerson.publicProfile !== undefined,
+            wireNaturalPerson.publicProfile !== undefined,
             npMerge.config,
             stored.naturalPerson.nip05,
           ),
           publicProfile: npMerge.state,
         }
       : { publicKey: '', privateKey: '', displayName: '' },
-    primaryKeypair: payload.naturalPerson ? stored.primaryKeypair : 'persona',
-    naturalPersonActive: !!payload.naturalPerson,
-    persona: {
+    primaryKeypair: wireNaturalPerson ? stored.primaryKeypair : 'persona',
+    naturalPersonActive: !!wireNaturalPerson,
+    persona: bound !== null && !wirePersona ? keepBoundPersona(stored.persona, bound) : {
       // Sibling to fix 1 (sweep-2 medium): spread stored.persona FIRST so
       // that when `applyConfigWithWipes(false, _)` returns `{}` (wire omits
       // the persona's publicProfile block, e.g. older guardian / mid-rollout)
       // the kid's local kind-0 config fields (about, pictureUrl, etc.) are
       // preserved. Matches the NP slot above.
       ...stored.persona,
-      publicKey: payload.persona?.publicKey ?? '',
+      publicKey: wirePersona?.publicKey ?? '',
       privateKey: '',
-      displayName: payload.persona?.displayName ?? '',
-      avatarHash: payload.persona?.avatarHash,
-      avatarBlossomUrl: payload.persona?.avatarBlossomUrl,
-      avatarKey: payload.persona?.avatarKey,
-      avatarUpdatedAt: payload.persona?.avatarUpdatedAt,
+      displayName: wirePersona?.displayName ?? '',
+      avatarHash: wirePersona?.avatarHash,
+      avatarBlossomUrl: wirePersona?.avatarBlossomUrl,
+      avatarKey: wirePersona?.avatarKey,
+      avatarUpdatedAt: wirePersona?.avatarUpdatedAt,
       ...applyConfigWithWipes(
-        payload.persona?.publicProfile !== undefined,
+        wirePersona?.publicProfile !== undefined,
         personaMerge.config,
         stored.persona.nip05,
       ),
@@ -273,7 +312,15 @@ export async function mergeInventory(
   // valid. No error shown — the picker rendered the lapsed row from
   // local state on the last unlock; by the next render it's gone.
   const primary = merged.primaryKeypair;
-  if (primary === 'persona' && merged.persona.publicKey === '') {
+  if (bound !== null) {
+    // Direct: the bound persona is always present and is the only fallback.
+    // The real-identity slot stays primary only while the inventory says it
+    // is active (A26) — a dormant one is never landed on.
+    const keep = primary === 'persona'
+      || (primary === 'natural-person' && merged.naturalPersonActive === true && merged.naturalPerson.publicKey !== '')
+      || (merged.extraPersonas ?? []).some(ep => ep.publicKey === primary);
+    if (!keep) merged.primaryKeypair = 'persona';
+  } else if (primary === 'persona' && merged.persona.publicKey === '') {
     merged.primaryKeypair = 'natural-person';
   } else if (primary !== 'natural-person' && primary !== 'persona') {
     const stillPresent = merged.extraPersonas?.some(ep => ep.publicKey === primary);
@@ -284,6 +331,16 @@ export async function mergeInventory(
 
   await db.saveIdentityEncrypted(merged, encryptionKey);
   await db.savePairedChildPersonaRevision(payload.revision);
+}
+
+/**
+ * Direct install, inventory without the bound persona: keep the stored slot.
+ * A stored slot under another key (never expected) carries that key's profile
+ * config and publication state, so only its name is kept.
+ */
+function keepBoundPersona(slot: SignetIdentity['persona'], bound: string): SignetIdentity['persona'] {
+  if ((slot.publicKey || '').toLowerCase() === bound) return { ...slot, publicKey: bound, privateKey: '' };
+  return { publicKey: bound, privateKey: '', displayName: slot.displayName ?? '' };
 }
 
 /**
