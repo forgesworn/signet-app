@@ -11790,6 +11790,7 @@ function AppContent() {
     <ChildReadyNotice
       rows={childDeviceLink.rows}
       summary={childDeviceLink.summary}
+      viewer="child"
       name={pairedChildRecord?.dependantName || identity?.persona?.displayName || ''}
       showReady={childDeviceLink.readyThisSession}
       open={childDeviceLink.personas.some(p => p.approval === 'waiting')}

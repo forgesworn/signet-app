@@ -30,6 +30,19 @@ describe('CHILD_READY_COPY', () => {
     expect(COPY.unknownHeading + COPY.fullHeading + COPY.paused('Sky')).not.toMatch(/Ready/);
   });
 
+  it('speaks to the child on the child\'s own phone: "you", never their name in the third person', () => {
+    expect(COPY.child.fullBody).toBe('It will ask for a press each time you use this one.');
+    expect(COPY.child.paused).toBe('Paused. Readiness will be checked when you are unpaused.');
+    expect(COPY.child.unknownBody).toBe('Your Heartwood didn\'t report what it has remembered.');
+    for (const line of Object.values(COPY.child)) {
+      expect(line).not.toMatch(/presses? still needed|Finish now|Ready|'s phone/);
+      expect(line).toMatch(/\byou(r)?\b/i);
+    }
+    // The guardian's lines keep the child's name.
+    expect(COPY.fullBody('Sky')).toContain('Sky');
+    expect(COPY.paused('Sky')).toContain('Sky');
+  });
+
   it('counts presses in the singular and the plural', () => {
     expect(COPY.pressesOwed(1)).toBe('1 press still needed on your Heartwood.');
     expect(COPY.pressesOwed(2)).toBe('2 presses still needed on your Heartwood.');

@@ -75,4 +75,19 @@ describe('ChildReadyNotice', () => {
     expect(screen.queryByText(/still needed/)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
   });
+  it('on the child\'s own phone the full, paused and unknown lines speak to the child, never name them', () => {
+    const full = [row(A, 'full'), row(B, 'ready')];
+    const { unmount } = render(notice(full, { viewer: 'child' }));
+    expect(screen.getByText('It will ask for a press each time you use this one.')).toBeTruthy();
+    expect(screen.queryByText(/Lily/)).toBeNull();
+    unmount();
+    const waiting = [row(A, 'waiting')];
+    const paused = render(<ChildReadyNotice rows={waiting} summary={readySummary(waiting, { paused: true })} name="Lily" viewer="child" showReady onFinishNow={() => {}} />);
+    expect(screen.getByText('Paused. Readiness will be checked when you are unpaused.')).toBeTruthy();
+    expect(screen.queryByText(/Lily/)).toBeNull();
+    paused.unmount();
+    render(notice([row(A, 'unknown')], { viewer: 'child' }));
+    expect(screen.getByText(COPY.child.unknownBody)).toBeTruthy();
+    expect(screen.queryByText(/Lily/)).toBeNull();
+  });
 });

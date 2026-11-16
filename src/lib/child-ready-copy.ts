@@ -7,7 +7,8 @@
  *
  * The rule behind every line: never say Ready unless the Heartwood has
  * confirmed it, never ask for a press that cannot be shown to be owed, and say
- * so when this phone cannot tell.
+ * so when this phone cannot tell. Lines about the child take the child's name
+ * on the guardian's phone and speak to the child (`child`) on the child's own.
  */
 import { HEARTWOOD_HOLD_TO_FINISH } from './local-key-only-copy';
 
@@ -46,4 +47,13 @@ export const CHILD_READY_COPY = {
   childPressHint: (name: string) => `${name}'s presses start from their phone: tap “Finish now” there.`,
   /** Each row's identity line, as the Heartwood card shows it. */
   onHeartwood: (shortNpub: string) => `On the Heartwood: ${shortNpub}`,
+  /**
+   * On the child's own phone the same lines speak to the child ("you"), never
+   * about them by name. The guardian-side lines above keep `{name}`.
+   */
+  child: {
+    unknownBody: 'Your Heartwood didn\'t report what it has remembered.',
+    fullBody: 'It will ask for a press each time you use this one.',
+    paused: 'Paused. Readiness will be checked when you are unpaused.',
+  },
 } as const;

@@ -18,8 +18,10 @@ import { ChildIdentityApprovals } from './ChildIdentityApprovals';
 interface Props {
   rows: ReadyRow[];
   summary: ReadySummary;
-  /** The child's name, for the full / unknown / paused lines. */
+  /** The child's name, for the full / unknown / paused lines on the guardian's phone. */
   name: string;
+  /** Whose phone: on the child's own the lines speak to the child (`CHILD_READY_COPY.child`). Default guardian. */
+  viewer?: 'guardian' | 'child';
   /** Show the ready line once everything is confirmed. */
   showReady: boolean;
   /** Show the checklist without a tap (setup surfaces, or while a first probe runs). */
@@ -33,8 +35,9 @@ interface Props {
 
 const secondary = { color: 'var(--text-secondary)', fontSize: '0.85rem' } as const;
 
-export function ChildReadyNotice({ rows, summary, name, showReady, open, compact, onFinishNow, onRetry, onDefer, hint }: Props) {
+export function ChildReadyNotice({ rows, summary, name, viewer = 'guardian', showReady, open, compact, onFinishNow, onRetry, onDefer, hint }: Props) {
   const [opened, setOpened] = useState(false);
+  const child = viewer === 'child';
   if (summary.kind === 'empty') return null;
   if (summary.kind === 'ready' && !showReady) return null;
   const frame = compact
@@ -52,16 +55,16 @@ export function ChildReadyNotice({ rows, summary, name, showReady, open, compact
       {summary.kind === 'ready' ? (
         <div style={{ fontWeight: 600 }}>{COPY.ready}</div>
       ) : summary.kind === 'paused' ? (
-        <div style={secondary}>{COPY.paused(name)}</div>
+        <div style={secondary}>{child ? COPY.child.paused : COPY.paused(name)}</div>
       ) : summary.kind === 'unknown' ? (
         <>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>{COPY.unknownHeading}</div>
-          <p style={{ ...secondary, margin: 0 }}>{COPY.unknownBody(name)}</p>
+          <p style={{ ...secondary, margin: 0 }}>{child ? COPY.child.unknownBody : COPY.unknownBody(name)}</p>
         </>
       ) : summary.kind === 'full' ? (
         <>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>{COPY.fullHeading}</div>
-          <p style={{ ...secondary, marginBottom: compact ? 0 : 12 }}>{COPY.fullBody(name)}</p>
+          <p style={{ ...secondary, marginBottom: compact ? 0 : 12 }}>{child ? COPY.child.fullBody : COPY.fullBody(name)}</p>
           {compact ? null : list}
         </>
       ) : (
