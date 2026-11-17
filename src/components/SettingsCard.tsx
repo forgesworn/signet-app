@@ -592,7 +592,11 @@ export function SettingsCard({
   const isDepRow = row.type === 'dependant' ||
     row.type === 'dependant-persona' ||
     row.type === 'dependant-extra-persona';
-  const hidePersonaAdvancedCog = isPairedChild && isDepRow;
+  // Child mode (the guardian's unlocked phone handed to the dependant) hides it
+  // too: that page holds the guardian's controls for the dependant — autonomy,
+  // rules, unpair and Remove, which dropped the phone out of child mode with
+  // no PIN.
+  const hidePersonaAdvancedCog = (isPairedChild || childMode) && isDepRow;
   // In child mode the dep's own rows shouldn't surface the guardian-scoped
   // Profile/Security/Connections shortcuts — `settings-profile` etc. all
   // bind to the guardian identity.
