@@ -173,12 +173,13 @@ import { ScannerSettingsProvider, usePublishScannerSettings } from './components
 import { useDocuments } from './hooks/useDocuments';
 import { useCredentials } from './hooks/useCredentials';
 import { useDependants } from './hooks/useDependants';
+import { useChildModeSessionRestore } from './hooks/useChildModeSessionRestore';
 import type { DependantDeviceDerive, ExtraPersonaDeviceDerive } from './hooks/useDependants';
 import { Layout } from './components/Layout';
 import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
-import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
 import { RateLimitBanner } from './components/RateLimitBanner';
@@ -10783,54 +10784,28 @@ function AppContent() {
   // (or the child tried to escape via reload), we re-enter the same child-mode
   // session. The PIN gate still applies on the next exit attempt.
   //
-  // The `encryptionKey` guard and the deferred "restored" flag together fix a race.
-  // Previously the ref flipped to true synchronously before dependants had been
-  // decrypted, so `dependants.find(...)` returned undefined and we'd clear the
-  // session — a child-mode reload escaped back to the guardian account. Now we
-  // wait for unlock, only mark restored after the async lookup resolves, and
-  // never clear on "not found" here: until the dependants have been read with
-  // the key, "not found" proves nothing. The stale-session check below clears
-  // a session only once that read is in.
+  // `useChildModeSessionRestore` waits for unlock and only marks the session
+  // handled after the async lookup resolves, and never clears on "not found"
+  // until the dependants have been read with the key: before that, "not found"
+  // proves nothing (a reload used to escape back to the guardian account).
+  // After it, a session whose dependant is absent (another guardian's, or not
+  // stored encrypted, or missing at start-up) is cleared and marked handled, so
+  // every restriction it held lifts and a later sync merge cannot switch child
+  // mode on mid-session.
   const childModeRestoredRef = useRef(false);
-  useEffect(() => {
-    if (childModeRestoredRef.current) return;
-    if (identityLoading || prefsLoading) return;
-    if (!encryptionKey) return;
-    loadChildModeSession().then(session => {
-      if (childModeRestoredRef.current) return;
-      if (!session) {
-        childModeRestoredRef.current = true;
-        // No saved session any more (cleared in another tab or instance): drop what the
-        // start-up read held, so the banner, hidden Bunker tab and child-only sign-ins lift.
-        setSavedChildMode(null);
-        return;
-      }
-      const dep = dependants.find(d => d.id === session.activeDependantId);
-      if (dep) {
-        childModeRestoredRef.current = true;
-        carousel.enterChildMode(session.activeDependantId);
-        chooseDependantScope(session.activeDependantId);
-      }
-    }).catch(() => {});
-  }, [identityLoading, prefsLoading, encryptionKey, dependants, carousel.enterChildMode]);
-
-  // A saved child-mode session that can never be restored here (the read of
-  // the dependants skips its record: another guardian's, or not stored
-  // encrypted) used to restrict the guardian for good, with no live child mode
-  // and so no exit. Once unlocked and the dependants have been read with the
-  // key, it is cleared and every restriction it held lifts.
-  useEffect(() => {
-    if (!childModeSessionStale({
-      unlocked: !!encryptionKey,
-      dependantsLoadedWithKey,
-      childModeLive: carousel.childMode,
-      sessionDependantId: savedChildMode?.id,
-      dependantIds: dependants.map(d => d.id),
-    })) return;
-    childModeRestoredRef.current = true;
-    clearChildModeSession().catch(() => {});
-    setSavedChildMode(null);
-  }, [encryptionKey, dependantsLoadedWithKey, carousel.childMode, savedChildMode, dependants]);
+  useChildModeSessionRestore({
+    ready: !identityLoading && !prefsLoading,
+    unlocked: !!encryptionKey,
+    dependantIds: dependants.map(d => d.id),
+    dependantsLoadedWithKey,
+    childModeLive: carousel.childMode,
+    restoredRef: childModeRestoredRef,
+    onRestore: (id) => {
+      carousel.enterChildMode(id);
+      chooseDependantScope(id);
+    },
+    onDrop: () => setSavedChildMode(null),
+  });
 
   const resolveSigningSelection = useCallback((row: CarouselRow): AuthSelection | null => {
     switch (row.type) {
