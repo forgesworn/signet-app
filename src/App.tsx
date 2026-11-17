@@ -11796,6 +11796,7 @@ function AppContent() {
       viewer="child"
       name={pairedChildRecord?.dependantName || identity?.persona?.displayName || ''}
       showReady={childDeviceLink.readyThisSession}
+      {...(childDeviceLink.readyUnconfirmed ? { readyLine: CHILD_READY_COPY.childLooksReady(cachedGuardianName) } : {})}
       open={childDeviceLink.personas.some(p => p.approval === 'waiting')}
       onFinishNow={() => { void childDeviceLink.finishNow(); }}
       onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }}

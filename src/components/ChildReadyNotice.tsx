@@ -7,7 +7,8 @@
  *            phone: no press count, no "Finish now";
  *   unknown  this phone cannot confirm: no "Ready", no count, no button;
  *   paused   one line, no nag;
- *   ready    "Ready to use away from home." only when `showReady`.
+ *   ready    "Ready to use away from home." only when `showReady`
+ *            (`readyLine` in its place, when given).
  * `compact` drops the card frame, for a notice inside another card.
  */
 import { useState } from 'react';
@@ -24,6 +25,8 @@ interface Props {
   viewer?: 'guardian' | 'child';
   /** Show the ready line once everything is confirmed. */
   showReady: boolean;
+  /** Said instead of the ready line (the child's phone, when the guardian's could not confirm it). */
+  readyLine?: string;
   /** Show the checklist without a tap (setup surfaces, or while a first probe runs). */
   open?: boolean;
   compact?: boolean;
@@ -35,7 +38,7 @@ interface Props {
 
 const secondary = { color: 'var(--text-secondary)', fontSize: '0.85rem' } as const;
 
-export function ChildReadyNotice({ rows, summary, name, viewer = 'guardian', showReady, open, compact, onFinishNow, onRetry, onDefer, hint }: Props) {
+export function ChildReadyNotice({ rows, summary, name, viewer = 'guardian', showReady, readyLine, open, compact, onFinishNow, onRetry, onDefer, hint }: Props) {
   const [opened, setOpened] = useState(false);
   const child = viewer === 'child';
   if (summary.kind === 'empty') return null;
@@ -53,7 +56,7 @@ export function ChildReadyNotice({ rows, summary, name, viewer = 'guardian', sho
   return (
     <div className={frame.className} role="status" data-testid="ready-notice" data-summary={summary.kind} style={frame.style} {...stop}>
       {summary.kind === 'ready' ? (
-        <div style={{ fontWeight: 600 }}>{COPY.ready}</div>
+        <div style={{ fontWeight: 600 }}>{readyLine ?? COPY.ready}</div>
       ) : summary.kind === 'paused' ? (
         <div style={secondary}>{child ? COPY.child.paused : COPY.paused(name)}</div>
       ) : summary.kind === 'unknown' ? (

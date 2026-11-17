@@ -18,6 +18,13 @@ export const CHILD_READY_COPY = {
   doAtHome: 'Do this at home, with the Heartwood in reach.',
   finishNow: 'Finish now',
   ready: 'Ready to use away from home.',
+  /**
+   * The child's phone, in place of `ready`, when the newest rules payload
+   * carries no reading (the guardian's phone could not read the Heartwood,
+   * older firmware) and the child's state rests on its own probe answers.
+   * Names the guardian, so it sits outside `child` (lines that say "you").
+   */
+  childLooksReady: (guardianName?: string | null) => `Looks ready. ${guardianName?.trim() || 'Your guardian'}'s phone couldn't confirm it with the Heartwood.`,
   pressAndHold: HEARTWOOD_HOLD_TO_FINISH,
   /** The Heartwood did not say what it has remembered (older firmware, or a reply this phone could not read). */
   unknownHeading: 'Can\'t confirm from this phone',

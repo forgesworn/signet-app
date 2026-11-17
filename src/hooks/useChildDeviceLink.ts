@@ -134,6 +134,12 @@ export interface ChildDeviceLink {
   probing: boolean;
   /** A probe succeeded in this session and everything is confirmed now ("Ready to use away from home"). */
   readyThisSession: boolean;
+  /**
+   * Everything shows ready, but the newest rules payload carries no reading
+   * (`approved`): the guardian's phone could not confirm it, and the states
+   * rest on this phone's own probe answers (`CHILD_READY_COPY.childLooksReady`).
+   */
+  readyUnconfirmed: boolean;
   /** "Finish now": ask again for every owed persona (A43: candidates only), one at a time. */
   finishNow(): Promise<void>;
   /** Set by the unpaired signal (Task 12). */
@@ -490,5 +496,6 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     rules, personas, retryApproval, deferApproval, ensureApproved, ceremonyFinished, unpaired,
     rows, owed, summary, paused, probing: probingNow !== null,
     readyThisSession: probedOk && summary.kind === 'ready', finishNow,
+    readyUnconfirmed: !!rules && rules.approved === undefined && summary.kind === 'ready',
   };
 }

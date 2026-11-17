@@ -43,6 +43,13 @@ describe('CHILD_READY_COPY', () => {
     expect(COPY.paused('Sky')).toContain('Sky');
   });
 
+  it('on the child\'s phone, when the guardian\'s phone could not read the Heartwood: never the unqualified Ready line', () => {
+    expect(COPY.childLooksReady('Alex')).toBe('Looks ready. Alex\'s phone couldn\'t confirm it with the Heartwood.');
+    expect(COPY.childLooksReady(' ')).toBe('Looks ready. Your guardian\'s phone couldn\'t confirm it with the Heartwood.');
+    expect(COPY.childLooksReady(null)).toBe('Looks ready. Your guardian\'s phone couldn\'t confirm it with the Heartwood.');
+    expect(COPY.childLooksReady('Alex')).not.toContain(COPY.ready);
+  });
+
   it('counts presses in the singular and the plural', () => {
     expect(COPY.pressesOwed(1)).toBe('1 press still needed on your Heartwood.');
     expect(COPY.pressesOwed(2)).toBe('2 presses still needed on your Heartwood.');

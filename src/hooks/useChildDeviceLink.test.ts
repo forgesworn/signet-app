@@ -335,6 +335,8 @@ describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `ap
     expect(fr.calls).toHaveLength(0);
     expect(result.current.summary).toEqual({ kind: 'ready' });
     expect(result.current.owed).toBe(0);
+    // The guardian's phone could not confirm it: the child's Ready line says so.
+    expect(result.current.readyUnconfirmed).toBe(true);
   });
 
   it('a restored or cleared Heartwood: a saved "approved" the reading does not list is owed again, and Finish now works HERE', async () => {
@@ -482,6 +484,7 @@ describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `ap
     const { result, fr } = await mount({ ...payload(100), approved: [EXTRA, PERSONA].sort() }, { identityApprovals: {} });
     expect(fr.calls).toHaveLength(0);
     expect(result.current.summary).toEqual({ kind: 'ready' });
+    expect(result.current.readyUnconfirmed).toBe(false);
   });
 
   it('a full slot (16 recorded, this persona absent): cannot remember, no press count, Finish now sends nothing', async () => {
