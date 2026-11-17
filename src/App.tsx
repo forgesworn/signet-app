@@ -14234,7 +14234,7 @@ function AppContent() {
   if (page === 'shamir') {
     return (
       <Layout title="Shamir Backup" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
-        <ShamirBackup identity={identity} onBack={() => navigateBack()} />
+        <ShamirBackup identity={identity} onBack={() => navigateBack()} onRequestFreshAuth={requestFreshAuth} />
       </Layout>
     );
   }

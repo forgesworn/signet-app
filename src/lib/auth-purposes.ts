@@ -81,6 +81,7 @@ export type AuthPurpose =
   | 'manage-keep'
   | 'rotate-backup-key'
   | 'reveal-recovery-words'
+  | 'split-recovery-words'
   | 'change-biometric'
   | 'recheck-professional';
 
@@ -141,6 +142,8 @@ export type PurposeContext =
   | { purpose: 'rotate-backup-key' }
   /** `scope: 'key'`: the 31 words of one imported Nostr key, not the whole Signet. */
   | { purpose: 'reveal-recovery-words'; scope?: 'signet' | 'key'; personaName?: string }
+  /** Shamir backup: the shares are the recovery words in pieces, so showing them needs the same fresh unlock. */
+  | { purpose: 'split-recovery-words' }
   | { purpose: 'change-biometric'; enabled: boolean }
   | { purpose: 'recheck-professional'; firmName: string };
 
@@ -273,6 +276,11 @@ export const PURPOSES: Record<AuthPurpose, PurposeConfig> = {
       const who = ctx.personaName?.trim() ? ` for **${ctx.personaName.trim()}**` : '';
       return `Show the words that restore this one Nostr key${who}. Anyone with these words controls it.`;
     },
+  },
+  'split-recovery-words': {
+    tier: 2, icon: 'key-plus', accent: 'warning',
+    title: () => 'Split your backup',
+    description: () => 'Confirm it’s you before My Signet shows the shares. Any two of them restore your whole Signet.',
   },
   'change-biometric': {
     tier: 2, icon: 'shield-warn', accent: 'warning',

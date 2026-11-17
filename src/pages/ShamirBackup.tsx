@@ -3,10 +3,17 @@ import type { SignetIdentity } from '../types';
 import { splitSecretToWordsV3 } from '../lib/signet';
 import { recoveryWordsCompactBytes } from '../lib/recovery-words';
 import { SHAMIR_NOT_FOR_RAW_NSEC } from '../lib/raw-nsec-backup-copy';
+import type { PurposeContext } from '../lib/auth-purposes';
 
 interface Props {
   identity: SignetIdentity;
   onBack?: () => void;
+  /**
+   * Fresh unlock (PIN or biometric) required before the shares are generated
+   * and shown, matching the Backup Words card. Resolves to a key, or null /
+   * empty when the user cancels or fails; then no shares are produced.
+   */
+  onRequestFreshAuth?: (ctx: PurposeContext) => Promise<string | null>;
 }
 
 // Split the recovery-words envelope into 3 Shamir shares (threshold 2-of-3).
@@ -77,7 +84,7 @@ function WordGrid({ words }: { words: string[] }) {
   );
 }
 
-export function ShamirBackup({ identity }: Props) {
+export function ShamirBackup({ identity, onRequestFreshAuth }: Props) {
   const [shares, setShares] = useState<string[][] | null>(null);
   const [expandedShare, setExpandedShare] = useState<number | null>(null);
 
@@ -89,12 +96,16 @@ export function ShamirBackup({ identity }: Props) {
 
   const isBackedUp = identity.backedUp === true;
 
-  const handleSplit = useCallback(() => {
+  const handleSplit = useCallback(async () => {
     if (!identity.mnemonic) return;
+    if (onRequestFreshAuth) {
+      const key = await onRequestFreshAuth({ purpose: 'split-recovery-words' });
+      if (!key) return;
+    }
     const result = splitMnemonic(identity.mnemonic);
     setShares(result);
     setExpandedShare(0);
-  }, [identity.mnemonic]);
+  }, [identity.mnemonic, onRequestFreshAuth]);
 
   const toggleShare = useCallback((index: number) => {
     setExpandedShare((prev) => (prev === index ? null : index));
