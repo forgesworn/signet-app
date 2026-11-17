@@ -125,7 +125,7 @@ describe('a retry (the hook passes the failed run\'s resend memo)', () => {
     expect(send).toHaveBeenCalledOnce();
   });
 });
-it('publishes an empty withdrawal when the guardian returns to full control', async () => {
+it('publishes an empty withdrawal when the guardian returns to “Asks every time”', async () => {
   const state = scope(); state.dependant.autonomyStage = 'full-control';
   const send = vi.fn();
   await publishChildContactDirectory({ guardian, child, key, isCurrent: current, readScope: async () => state,

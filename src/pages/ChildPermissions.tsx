@@ -250,7 +250,7 @@ export function ChildPermissions(props: ChildPermissionsProps) {
               <span>Let {childName} approve online-play permissions</span>
             </label>
           ) : <p style={muted}>{delegated ? 'You can approve online-play permissions yourself.' : 'Online-play permissions go to your guardian.'}</p>}
-          <p style={{ ...small, marginTop: 8 }}>Each new permission still needs an approval tap. App blocks, schedules and limits continue to apply. This setting applies only at full autonomy.</p>
+          <p style={{ ...small, marginTop: 8 }}>Each new permission still needs an approval tap. App blocks, schedules and limits continue to apply. This setting applies only at “Fully independent”.</p>
           {delegationError && <p role="alert" style={small}>{delegationError}</p>}
         </div>
       )}

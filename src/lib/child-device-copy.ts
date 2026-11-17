@@ -4,6 +4,8 @@
  * lives here, not inline in pages or hooks.
  */
 
+import { AUTONOMY_STAGE_INFO } from './autonomy-labels';
+
 /** The label on the new phone's welcome button; the guardian's QR text names the same one. */
 export const PAIR_WITH_GUARDIAN_LABEL = "Pair with my guardian's phone";
 
@@ -182,8 +184,8 @@ export const CHILD_ASK_COPY = {
   allowOnce: 'Allow once',
   /** A36: names the scope, the re-derived target and the persona — "Always allow sign-in to school.org for Sky". */
   allowAlways: (scopePhrase: string, target: string, persona: string) => `Always allow ${scopePhrase} ${target} for ${persona}`,
-  /** Why "Always allow" is missing: the child is on Full control, where every request is asked for. */
-  alwaysHiddenFullControl: (child: string) => `${child} is on Full control, so every request asks you. To offer “Always allow”, change Autonomy Level in ${child}’s settings.`,
+  /** Why "Always allow" is missing: the child is on "Asks every time", where every request is asked for. */
+  alwaysHiddenAsksEveryTime: (child: string) => `${child} is on “${AUTONOMY_STAGE_INFO['full-control'].label}”. To offer “Always allow”, choose “${AUTONOMY_STAGE_INFO['request-approve'].label}” in ${child}’s Autonomy Level.`,
   scopePhrase: {
     'sign-in': 'sign-in to',
     'venue-entry': 'venue entry at',
@@ -312,13 +314,10 @@ export const CHILD_PERMISSIONS_COPY = {
   unpairedChild: 'Your guardian has unpaired this phone.',
   noRulesYet: 'Waiting for your guardian’s rules. Until they arrive, everything is asked for.',
   stage: 'Stage',
-  stageName: {
-    'full-control': 'Full control — every request is asked for',
-    'request-approve': 'Asks for approval',
-    'autonomous-alerts': 'Independent, with alerts',
-    'autonomous-logging': 'Independent, logged',
-    'full-autonomy': 'Fully independent',
-  } as Record<string, string>,
+  /** The same five names the guardian picks from (autonomy-labels.ts), so the two never drift. */
+  stageName: Object.fromEntries(
+    Object.entries(AUTONOMY_STAGE_INFO).map(([stage, info]) => [stage, info.label]),
+  ) as Record<string, string>,
   changeStage: 'Change stage',
   rulesHeading: 'Rules',
   allPersonas: (name: string) => `All of ${name}'s identities`,

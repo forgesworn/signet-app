@@ -15126,7 +15126,7 @@ function AppContent() {
               const key = await requestFreshAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
               const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-              if (!fresh || fresh.autonomyStage !== 'full-autonomy') throw new Error('Full autonomy is required');
+              if (!fresh || fresh.autonomyStage !== 'full-autonomy') throw new Error('This needs the “Fully independent” level');
               const id = childRuleId(dep.id, '*', 'app-permission-self', '*');
               const existing = (await listChildRules(dep.id, key)).find(r => r.id === id);
               const now = Date.now();

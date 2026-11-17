@@ -154,3 +154,16 @@ describe('PersonaAdvanced primary keypair switch', () => {
     expect(screen.getByRole('button', { name: /Switch primary to Natural Person/ })).toBeDefined();
   });
 });
+
+describe('PersonaAdvanced autonomy picker', () => {
+  it('names the five levels and tells the guardian they can step back in at any level', async () => {
+    const { AUTONOMY_STAGE_INFO, AUTONOMY_PICKER_NOTE } = await import('../lib/autonomy-labels');
+    renderPage({ onChangeAutonomyStage: vi.fn(async () => {}) });
+    for (const { label } of Object.values(AUTONOMY_STAGE_INFO)) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+    expect(screen.getByTestId('autonomy-picker-note').textContent)
+      .toBe('You can change this, take back an “Always” or unpair at any level.');
+    expect(AUTONOMY_PICKER_NOTE).toBe(screen.getByTestId('autonomy-picker-note').textContent);
+  });
+});
