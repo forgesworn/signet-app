@@ -21,10 +21,28 @@ describe('child mode always has a way out', () => {
     expect(screen.getByRole('button', { name: 'Exit (PIN)' })).toBeTruthy();
   });
 
+  it('with no exit (child mode only saved while locked) names the child and shows no button', () => {
+    render(<ChildModeBanner name="Ada" blur={false} />);
+    expect(screen.getByText('Ada')).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('the carousel shows it for saved child mode too, with Exit only when live', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const carousel = readFileSync(join(here, 'Carousel.tsx'), 'utf8');
+    expect(carousel).toMatch(/\{\(props\.childMode \|\| props\.childModeSaved\) && \(\s*<ChildModeBanner/);
+    expect(carousel).toContain('onExit={props.childMode ? props.onExitChildMode : undefined}');
+    const app = readFileSync(join(here, '..', 'App.tsx'), 'utf8');
+    expect(app).toContain('childModeSaved={!carousel.childMode && !!savedChildMode}');
+    expect(app).toContain("isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}");
+    // childMode itself still drives only live child mode.
+    expect(app).toContain('childMode={carousel.childMode}');
+  });
+
   it('the carousel shows it whenever child mode is on, not only with the full record', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const carousel = readFileSync(join(here, 'Carousel.tsx'), 'utf8');
-    expect(carousel).toMatch(/\{props\.childMode && \(\s*<ChildModeBanner/);
+    expect(carousel).toMatch(/\{\(props\.childMode \|\| props\.childModeSaved\) && \(\s*<ChildModeBanner/);
     const app = readFileSync(join(here, '..', 'App.tsx'), 'utf8');
     expect(app).toContain('childModeName={signInChildDependant?.displayName}');
   });

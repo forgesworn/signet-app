@@ -340,3 +340,53 @@ describe('useAppNavigation: the only way to change the page or the scope', () =>
     ]);
   });
 });
+
+describe('useAppNavigation: pairing a phone from Add Dependant', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '');
+  });
+
+  // Add Dependant's "Pair their phone now": the pair page takes the form's entry.
+  const pairFromAddDependant = (result: ReturnType<typeof setup>['result'], origin: Page = 'home') => {
+    if (origin !== 'home') act(() => result.current.navigateTo(origin));
+    act(() => result.current.navigateTo('add-dependant'));
+    act(() => {
+      result.current.borrowActiveDependantId('dep-b');
+      result.current.navigateReplace('pair-dependant-device');
+    });
+  };
+
+  it('opens the pair page for the new dependant', () => {
+    const { result } = setup();
+    pairFromAddDependant(result);
+    expect(result.current.page).toBe('pair-dependant-device');
+    expect(result.current.activeDependantId).toBe('dep-b');
+    expect(window.history.state).toMatchObject({ page: 'pair-dependant-device', dependantId: 'dep-b' });
+  });
+
+  it('back from the pair page lands on home under the owner, never the Add Dependant form', async () => {
+    const { result } = setup();
+    pairFromAddDependant(result);
+    await back(result, 'home');
+    expect(result.current.activeDependantId).toBeNull();
+    expect(result.current.tabs).toContain('bunker');
+    // Home is not doubled: the entry under the pair page was home already.
+    expect(window.history.state).toMatchObject({ page: 'home' });
+    expect(window.history.state?.depth ?? 0).toBe(0);
+  });
+
+  it('opened from the family list, back returns to the family list', async () => {
+    const { result } = setup();
+    pairFromAddDependant(result, 'family-list');
+    await back(result, 'family-list');
+    expect(result.current.activeDependantId).toBeNull();
+  });
+
+  it("the pair page opened from the dependant's settings still goes back to those settings", async () => {
+    const { result } = setup();
+    act(() => result.current.openDependantPage('settings', 'dep-b'));
+    act(() => result.current.navigateTo('pair-dependant-device'));
+    await back(result, 'settings');
+    expect(result.current.activeDependantId).toBe('dep-b');
+  });
+});

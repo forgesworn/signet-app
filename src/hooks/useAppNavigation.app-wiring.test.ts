@@ -46,14 +46,25 @@ describe('App.tsx dependant-scope wiring', () => {
     // openDependantPage instead; if this count moved, check which it is.
     expect(count(/\bchooseDependantScope\(/g)).toBe(8);
     // The one borrow made on the page itself: a finished import.
-    expect(count(/\bborrowActiveDependantId\(/g)).toBe(1);
+    expect(count(/\bborrowActiveDependantId\(/g)).toBe(2);
   });
 
   it('opens the dependant management pages with openDependantPage', () => {
     expect(app).toContain("else if (opts?.dependantId) openDependantPage(p as Page, opts.dependantId);");
-    expect(app).toContain("onPairDevice={(depId) => openDependantPage('pair-dependant-device', depId)}");
     expect(app).toContain("onSelect={(depId) => openDependantPage('settings', depId)}");
-    expect(count(/\bopenDependantPage\(/g)).toBe(11);
+    expect(count(/\bopenDependantPage\(/g)).toBe(10);
+  });
+
+  it('pairing from Add Dependant replaces its entry with the pair page, the new card under it', () => {
+    const start = app.indexOf('onPairDevice={(depId) => {');
+    const block = app.slice(start, app.indexOf('onTurnOnBunker', start));
+    expect(block).toContain('findRowForDependant(identity, dependants, depId, botInventory, childCarouselAllowed)');
+    expect(block).toContain('carousel.commitPosition(row, 0);');
+    expect(block.indexOf('borrowActiveDependantId(depId)')).toBeGreaterThan(block.indexOf('commitPosition'));
+    expect(block.indexOf("navigateReplace('pair-dependant-device')")).toBeGreaterThan(block.indexOf('borrowActiveDependantId'));
+    expect(block).not.toContain('openDependantPage');
+    // Settings' own entry point is unchanged: back there returns to the settings page.
+    expect(app).toContain("onPairDevice={() => navigateTo('pair-dependant-device')}");
   });
 
   it('carries the Advanced slot, the activation target and the handshake persona on the history entry', () => {

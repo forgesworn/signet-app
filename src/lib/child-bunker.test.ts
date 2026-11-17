@@ -259,6 +259,10 @@ describe('A44: sign-in bunker handoff', () => {
     expect(signInBunkerHandoff({ childDirect: false, remoteBunkerUri: 'bunker://x', inPageServer: true })).toEqual({ kind: 'remote', uri: 'bunker://x' });
     expect(signInBunkerHandoff({ childDirect: false, inPageServer: true })).toEqual({ kind: 'in-page' });
     expect(signInBunkerHandoff({ childDirect: false, inPageServer: false })).toEqual({ kind: 'none' });
+    // A sign-in as a dependant never hands a bunker over, in-page or remote.
+    expect(signInBunkerHandoff({ childDirect: false, dependantSelected: true, inPageServer: true })).toEqual({ kind: 'none' });
+    expect(signInBunkerHandoff({ childDirect: false, dependantSelected: true, remoteBunkerUri: 'bunker://x', inPageServer: true })).toEqual({ kind: 'none' });
+    expect(signInBunkerHandoff({ childDirect: false, dependantSelected: false, inPageServer: true })).toEqual({ kind: 'in-page' });
   });
 });
 

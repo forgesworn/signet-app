@@ -125,3 +125,36 @@ describe('child-mode sign-in gate in App.tsx', () => {
     expect(app).toContain('const signInChildMode = carousel.childMode || !!savedChildMode;');
   });
 });
+
+describe('sign-in picker offers Heartwood-held dependants (auth page only)', () => {
+  it('the auth filter asks approvalDependantSignable, with the signing mode and router state', () => {
+    expect(app).toContain('approvalDependantSignable(d, {');
+    expect(app).toContain("signingMode: preferences.signingMode,\n        routerUnsupported: routerProbeState === 'unsupported',");
+    expect(count('approvalDependantSignable(d, {')).toBe(1);
+  });
+
+  it('the connect page stays local-key-only', () => {
+    expect(count('!d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)')).toBe(1);
+    const connect = app.indexOf('!d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)');
+    expect(app.slice(connect, connect + 200)).toContain('childModeOffer.offersDependant(d.id)');
+  });
+});
+
+describe('a sign-in as a dependant hands no bunker', () => {
+  it('both delivery paths pass the selection to the handoff decision and skip the URI lookup', () => {
+    expect(count("signInBunkerHandoff({ childDirect, dependantSelected: selection.source === 'dependant', remoteBunkerUri, inPageServer:")).toBe(2);
+    expect(count("remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(")).toBe(2);
+  });
+});
+
+describe('a saved child mode that is gone by start-up is dropped', () => {
+  it('the no-session restore branch clears savedChildMode', () => {
+    expect(app).toContain(`      if (!session) {
+        childModeRestoredRef.current = true;
+        // No saved session any more (cleared in another tab or instance): drop what the
+        // start-up read held, so the banner, hidden Bunker tab and child-only sign-ins lift.
+        setSavedChildMode(null);
+        return;
+      }`);
+  });
+});

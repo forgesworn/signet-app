@@ -402,7 +402,7 @@ import { contactToKindredEntry } from './lib/kindred-adapter';
 import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
-import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
+import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, approvalDependantSignable, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
@@ -9827,11 +9827,11 @@ function AppContent() {
           mintedSignInLink = minted.record;
           remoteBunkerUri = minted.bunkerUri;
         } else {
-          remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+          remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         }
         // Denied/withdrawn while signing: arm nothing, deliver nothing.
         if (!authDeliveryStillOpen(request)) return;
-        const handoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: bunkerServerEnabled });
+        const handoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, dependantSelected: selection.source === 'dependant', remoteBunkerUri, inPageServer: bunkerServerEnabled });
         if (handoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
@@ -10084,9 +10084,9 @@ function AppContent() {
           mintedSignInLink = minted.record;
           remoteBunkerUri = minted.bunkerUri;
         } else {
-          remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+          remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         }
-        const sameTabHandoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: false });
+        const sameTabHandoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, dependantSelected: selection.source === 'dependant', remoteBunkerUri, inPageServer: false });
         if (sameTabHandoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
@@ -10800,6 +10800,9 @@ function AppContent() {
       if (childModeRestoredRef.current) return;
       if (!session) {
         childModeRestoredRef.current = true;
+        // No saved session any more (cleared in another tab or instance): drop what the
+        // start-up read held, so the banner, hidden Bunker tab and child-only sign-ins lift.
+        setSavedChildMode(null);
         return;
       }
       const dep = dependants.find(d => d.id === session.activeDependantId);
@@ -14393,9 +14396,14 @@ function AppContent() {
     // Gate on the ACTING slot's key, not the NP's: a persona-first dependant
     // signs as their persona, so an NP-keyed test would drop them from the
     // picker after a key strip that left the persona signable (and vice versa).
+    // A dependant whose key lives on the guardian's Heartwood (bunker mode, no
+    // local key) is offered too: the approval signs through the device route.
     // In child mode only the child-mode dependant signs: never the guardian, never a sibling.
     const availableDependants = dependants.filter(d =>
-      !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
+      approvalDependantSignable(d, {
+        signingMode: preferences.signingMode,
+        routerUnsupported: routerProbeState === 'unsupported',
+      })
       && childModeOffer.offersDependant(d.id));
     const approveAuthRequestKey = authRequestKey(pendingAuthRequest);
     // Default selection comes from the row the user was viewing when the
@@ -14565,6 +14573,8 @@ function AppContent() {
     // signs as their persona, so an NP-keyed test would drop them from the
     // picker after a key strip that left the persona signable (and vice versa).
     // In child mode only the child-mode dependant connects: never the guardian, never a sibling.
+    // Stays local-key-only: a connect for a device-held dependant would need this
+    // phone's NIP-46 server to sign as them; chaining that to the Heartwood is deferred.
     const availableDependants = dependants.filter(d =>
       !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
       && childModeOffer.offersDependant(d.id));
@@ -14739,7 +14749,15 @@ function AppContent() {
             return dep.id;
           }}
           onSwitchToDependant={(depId) => { chooseDependantScope(depId); navigateReplace('home'); }}
-          onPairDevice={(depId) => openDependantPage('pair-dependant-device', depId)}
+          onPairDevice={(depId) => {
+            // The pair page takes this entry's place, so leaving it (Done, back, hardware
+            // back) returns to wherever Add Dependant was opened from, never a blank form.
+            // From home that is the carousel, left on the new dependant's card.
+            const row = identity ? findRowForDependant(identity, dependants, depId, botInventory, childCarouselAllowed) : null;
+            if (row !== null) carousel.commitPosition(row, 0);
+            borrowActiveDependantId(depId);
+            navigateReplace('pair-dependant-device');
+          }}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           pairsDirect={(depId) => { const d = dependants.find(x => x.id === depId); return !!identity && !!d && usesChildDirectPairing(d, preferences.signingMode); }}
@@ -15631,6 +15649,7 @@ function AppContent() {
         childMode={carousel.childMode}
         childDependant={carousel.childDependant}
         childModeName={signInChildDependant?.displayName}
+        childModeSaved={!carousel.childMode && !!savedChildMode}
         onAddPersona={async (displayName) => {
           // Fresh-auth gate so a child who's shoulder-surfed the PIN can't
           // mint new personas on the guardian's identity. Same pattern as
@@ -15921,7 +15940,9 @@ function AppContent() {
     <>
       <AppShell
         page={page}
-        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child'}
+        // Locked cold start: child mode is only saved, not live (no activeDependant yet).
+        // Still a hand-the-phone-to-a-child state, so the Bunker tab stays hidden.
+        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}
         childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
         bunkerTint={bunkerTint({
