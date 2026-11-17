@@ -4342,13 +4342,16 @@ function AppContent() {
   // saved is read here without it: a request that cold-starts the app in child
   // mode must not ask for the guardian's PIN or list the guardian's identities
   // first. `undefined` until read; dropped once child mode is live again, or
-  // once unlocked it can never be restored (the stale-session check below).
+  // once unlocked it can never be restored (`useChildModeSessionRestore` below).
+  // Set by that restore once it has decided (and by entering child mode): a
+  // start-up read that lands after the decision must not put back what it dropped.
+  const childModeRestoredRef = useRef(false);
   const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
     loadChildModeSession()
       .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
-      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current ? null : facts); })
+      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current || childModeRestoredRef.current ? null : facts); })
       .catch(() => { if (live) setSavedChildMode(null); });
     return () => { live = false; };
   }, []);
@@ -10792,7 +10795,6 @@ function AppContent() {
   // stored encrypted, or missing at start-up) is cleared and marked handled, so
   // every restriction it held lifts and a later sync merge cannot switch child
   // mode on mid-session.
-  const childModeRestoredRef = useRef(false);
   useChildModeSessionRestore({
     ready: !identityLoading && !prefsLoading,
     unlocked: !!encryptionKey,
