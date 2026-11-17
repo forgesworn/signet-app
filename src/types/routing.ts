@@ -6,9 +6,9 @@ export type Page = 'contact-handshake' | 'home' | 'contacts' | 'add' | 'contact-
 
 /**
  * Routing state for the per-slot Persona Advanced page (Phase 2 of the
- * persona-card-as-source-of-truth refactor). Threaded via
- * `pendingPersonaAdvancedTarget` in App.tsx and set when the carousel
- * `gear-fab` is tapped; consumed by the (Phase 2F) render branch.
+ * persona-card-as-source-of-truth refactor). It is the page's history-entry
+ * parameter (`useAppNavigation`, `src/lib/page-params.ts`), so back and
+ * forward show the slot each entry was opened for.
  *
  * - `slotTarget`: which slot the page edits. Built-in tokens are
  *   `'natural-person' | 'persona' | 'professional-persona'`; for an
@@ -23,15 +23,20 @@ export interface PersonaAdvancedRoute {
 }
 
 /**
- * Routing state for the real-identity activation page.
+ * Routing state for the real-identity activation page, carried as its
+ * history-entry parameter.
  *
  * `returnTo` is the page that sent the user here — a gated feature, or
  * `'approve-auth'` when a consumer's `accept=natural-person` hint found a
  * dormant slot (spec §6). Null means "there was no gate": return to the newly
  * activated real-identity card instead.
+ *
+ * `dependantId` is present when the ceremony activates a dependant's real
+ * identity (guardian device only); absent, it is the owner's.
  */
 export interface ActivateRealIdentityRoute {
   returnTo: Page | null;
+  dependantId?: string;
 }
 
 /**

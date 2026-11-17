@@ -442,7 +442,11 @@ export async function getAllIdentities(): Promise<SignetIdentity[]> {
  * Encrypt private keys and mnemonic with a passphrase-derived AES-256-GCM key before storing.
  * The stored record has encrypted: true so callers know to decrypt on load.
  */
-export async function saveIdentityEncrypted(identity: SignetIdentity, passphrase: string): Promise<void> {
+export async function saveIdentityEncrypted(identity: SignetIdentity, passphrase: string, guard?: {
+  /** A recovery save must never replace a row changed while decryption/encryption was pending. */
+  expectedStored: SignetIdentity;
+  assertAuthorised: () => void;
+}): Promise<void> {
   if (!passphrase || passphrase.length < 8) {
     throw new Error('Passphrase must be at least 8 characters');
   }
@@ -517,7 +521,19 @@ export async function saveIdentityEncrypted(identity: SignetIdentity, passphrase
   };
 
   const db = await getDB();
-  await db.put('identity', encryptedIdentity);
+  if (!guard) { await db.put('identity', encryptedIdentity); return; }
+  const tx = db.transaction('identity', 'readwrite');
+  try {
+    const current = await tx.store.get(identity.id);
+    if (JSON.stringify(current) !== JSON.stringify(guard.expectedStored)) throw new Error('Identity changed during recovery. Check the selection again.');
+    guard.assertAuthorised();
+    await tx.store.put(encryptedIdentity);
+    await tx.done;
+  } catch (error) {
+    try { tx.abort(); } catch { /* already aborted or completed */ }
+    await tx.done.catch(() => {});
+    throw error;
+  }
 }
 
 /**

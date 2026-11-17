@@ -22,6 +22,8 @@ export function hasLocalVaultTree(identity: SignetIdentity | null): boolean {
 export async function privateVaultJobs(args: {
   identity: SignetIdentity; encryptionKey: string; deviceHeldKeys: boolean;
   bunker: BunkerSigningBackend | null; isCurrent(): boolean;
+  /** A merged independence closure removed this dependant from the device (see profilesVaultAdapter). */
+  onDependantClosed?: (dependantId: string) => void;
 }): Promise<PrivateVaultJob[]> {
   const { identity, encryptionKey, deviceHeldKeys, isCurrent } = args;
   if (!deviceHeldKeys && !hasLocalVaultTree(identity)) throw new Error('Recovery-derived vault keys are unavailable');
@@ -47,7 +49,8 @@ export async function privateVaultJobs(args: {
     return [...keys(fresh), ...(fresh.professionalPersona ? [fresh.professionalPersona.publicKey] : []), ...deps.flatMap(keys)];
   };
   const adapters: PrivateVaultDatasetAdapter[] = [profilesVaultAdapter({ identityId: identity.id, ownerPubkey,
-    encryptionKey, mnemonic: deviceHeldKeys ? null : identity.mnemonic, deviceHeldKeys, isCurrent }),
+    encryptionKey, mnemonic: deviceHeldKeys ? null : identity.mnemonic, deviceHeldKeys, isCurrent,
+    onDependantClosed: args.onDependantClosed }),
     contactsVaultAdapter('owner', encryptionKey, isCurrent), contactsVaultAdapter('bots', encryptionKey, isCurrent)];
   for (const dependant of dependants) {
     if (/^dependant-(0|[1-9][0-9]*)$/.test(dependant.derivationPath)) {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { HeartwoodKeyPersonaAdd } from '../components/HeartwoodKeyPersonaAdd';
 import { WrappedKeyRestore } from '../components/WrappedKeyBackup';
+import { AccountCollectionBackup, type AccountCollectionBackupProps } from '../components/AccountCollectionBackup';
 import type { SignetIdentity, AppPreferences } from '../types';
 import { NpubRow } from '../components/NpubRow';
 import { Icon } from '../components/Icon';
@@ -18,6 +19,7 @@ import type { FollowsHandlers } from '../lib/follows-import-flow';
    different host surface. */
 
 interface Props {
+  collectionBackup?: AccountCollectionBackupProps;
   wrappedRestore?: React.ComponentProps<typeof WrappedKeyRestore>;
   identity: SignetIdentity;
   /**
@@ -99,6 +101,7 @@ type EditTarget = 'natural-person' | 'persona' | string;
  * ones, and import an existing Nostr account.
  */
 export function Personas({
+  collectionBackup,
   wrappedRestore,
   identity,
   onAddPersona,
@@ -474,6 +477,7 @@ export function Personas({
         Each identity has its own public address (npub). Open an identity to use its card, or manage its profile, backup and visibility.
       </div>
 
+      {collectionBackup && !pairedChildView && <AccountCollectionBackup {...collectionBackup} />}
       {wrappedRestore && !pairedChildView && <WrappedKeyRestore {...wrappedRestore} />}
 
       {/* Always rendered: `resolveRealIdentityRow` covers the no-key (nsec

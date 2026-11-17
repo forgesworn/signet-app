@@ -101,13 +101,14 @@ export function closureMetadata(value: IndependenceArchive): IndependenceClosure
 /** Cutover marker, identity removal, grant removal and source deletion commit
  * together. The marker freezes the source even against in-flight tab writers.
  * Only encrypted archives survive, outside the writable contact directory. */
+/** Resolves true when this call closed the source, false when it was already closed. */
 export async function closeIndependenceSource(args: {
   closure: IndependenceClosure; key: string; expectedFingerprint?: string; isCurrent(): boolean;
-}): Promise<void> {
+}): Promise<boolean> {
   if (!validIndependenceClosure(args.closure)) throw new Error('Invalid independence closure');
-  await contactsMutationQueue.run(async () => {
+  return contactsMutationQueue.run(async () => {
     const db = await getDb();
-    if (await db.get('privateVaultState', independenceDirectoryMarker(args.closure.directoryId))) return;
+    if (await db.get('privateVaultState', independenceDirectoryMarker(args.closure.directoryId))) return false;
     const source = await rawSource(args.closure.dependantId);
     if (args.expectedFingerprint !== undefined && source.fingerprint !== args.expectedFingerprint) throw new Error('Family data changed. Review and retry the transfer.');
     const operations = await listContactOperationsV2(args.closure.directoryId, args.key);
@@ -125,7 +126,7 @@ export async function closeIndependenceSource(args: {
       const fingerprint = bytesToHex(sha256(new TextEncoder().encode(JSON.stringify({ identity,
         operations: ops.sort((a, b) => a.operationId.localeCompare(b.operationId)), grants, invite, pictures }))));
       if (!args.isCurrent() || fingerprint !== source.fingerprint) throw new Error('Family data changed or locked. Retry the transfer.');
-      if (await tx.objectStore('privateVaultState').get(independenceDirectoryMarker(args.closure.directoryId))) { await tx.done; return; }
+      if (await tx.objectStore('privateVaultState').get(independenceDirectoryMarker(args.closure.directoryId))) { await tx.done; return false; }
       await tx.objectStore('privateVaultState').put({ id: independenceDirectoryMarker(args.closure.directoryId), generation: 1, encrypted });
       const slots = new Set<string>([args.closure.dependantId, ...(args.closure.slotPubkeys ?? []),
         ...[identity?.naturalPerson, identity?.persona, ...(identity?.extraPersonas ?? [])].flatMap(slot => slot?.publicKey ? [slot.publicKey] : [])]);
@@ -149,6 +150,7 @@ export async function closeIndependenceSource(args: {
       await tx.objectStore('privateVaultState').delete(`contact-invites:${args.closure.directoryId}`);
       await tx.done;
     } catch (error) { tx.abort(); await tx.done.catch(() => {}); throw error; }
+    return true;
   });
 }
 

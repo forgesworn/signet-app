@@ -646,6 +646,37 @@ export function useIdentity(encryptionKey?: string | null) {
     return { added: true, pubkey: publicKey };
   }, [activeIdentity, loadAll, encryptionKey]);
 
+  /** One encrypted identity-row write: validate everything and refuse any collision before saving. */
+  const addImportedPersonas = useCallback(async (
+    accounts: readonly {privateKey: Uint8Array; name: string}[],
+    key: string,
+    assertAuthorised: () => void,
+  ): Promise<void> => {
+    if (!activeIdentity || !key || !accounts.length || accounts.length > 100) throw new Error('Invalid account restore.');
+    assertAuthorised();
+    const {getPublicKey: gpk} = await import('../lib/signet');
+    const {bytesToHex: btoh} = await import('@noble/hashes/utils.js');
+    const restored: ExtraPersona[] = accounts.map(account => {
+      if (!(account.privateKey instanceof Uint8Array) || account.privateKey.length !== 32 || !account.name.trim()
+        || new TextEncoder().encode(account.name).length > 100) throw new Error('Invalid restored account.');
+      const privateKey = btoh(account.privateKey);
+      return {publicKey: gpk(privateKey), privateKey, displayName: account.name.trim(), derivationName: '', imported: true};
+    });
+    const expectedStored = await db.getIdentity(activeIdentity.id);
+    if (!expectedStored) throw new Error('Identity is no longer available.');
+    const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, key);
+    if (!decrypted) throw new Error('Could not decrypt identity.');
+    const existing = [decrypted.naturalPerson, decrypted.persona, decrypted.professionalPersona, ...(decrypted.extraPersonas ?? [])];
+    const seen = new Set(existing.flatMap(p => p ? [p.publicKey.toLowerCase()] : []));
+    for (const account of restored) {
+      if (seen.has(account.publicKey)) throw new Error('An account is already here. Check the collection and selection again.');
+      seen.add(account.publicKey);
+    }
+    assertAuthorised();
+    await db.saveIdentityEncrypted({...decrypted, extraPersonas: [...(decrypted.extraPersonas ?? []), ...restored]}, key, {expectedStored, assertAuthorised});
+    await loadAll();
+  }, [activeIdentity, loadAll]);
+
   /**
    * Adds a persona whose key is a separate identity on the paired Heartwood
    * (see `lib/heartwood-key-persona.ts`). Public key only; the caller has
@@ -1161,7 +1192,7 @@ export function useIdentity(encryptionKey?: string | null) {
     await loadAll();
   }, [activeIdentity, loadAll, encryptionKey]);
 
-  return { identity: activeIdentity, identities, loading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addHeartwoodKeyPersona, remove, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: loadAll };
+  return { identity: activeIdentity, identities, loading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, remove, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: loadAll };
 }
 
 /**

@@ -17,6 +17,25 @@ import java.io.ByteArrayOutputStream
 class WrappedBackupDocumentTest {
     private val record = "nstw1:" + "A".repeat(175)
 
+    @Test fun `collection transport is decoded to an interoperable encrypted binary file`() {
+        val bytes = ByteArray(65608)
+        "FSWNENC2".toByteArray().copyInto(bytes)
+        val transport = "nstc1:" + android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
+        assertTrue(WrappedBackupDocument.validRecord(transport))
+        val intent = WrappedBackupDocument.createIntent(transport)
+        assertEquals("application/octet-stream", intent.type)
+        assertEquals("signet-accounts.nstc", intent.getStringExtra(Intent.EXTRA_TITLE))
+        val context = RuntimeEnvironment.getApplication()
+        val uri = Uri.parse("content://test-documents/collection")
+        val output = ByteArrayOutputStream()
+        shadowOf(context.contentResolver).registerOutputStream(uri, output)
+        shadowOf(context.contentResolver).registerInputStream(uri, ByteArrayInputStream(bytes))
+        WrappedBackupDocument.write(context.contentResolver, uri, transport)
+        assertArrayEquals(bytes, output.toByteArray())
+        assertFalse(WrappedBackupDocument.validRecord(transport + "A"))
+        assertFalse(WrappedBackupDocument.validRecord("nstc1:" + "A".repeat(87478)))
+    }
+
     @Test fun `asks the owner for a new document with a generic name`() {
         val intent = WrappedBackupDocument.createIntent()
         assertEquals(Intent.ACTION_CREATE_DOCUMENT, intent.action)
