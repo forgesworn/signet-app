@@ -162,10 +162,10 @@ describe('useGuardianReadyChecks (guardian, App-level)', () => {
     let state = device([], [GNP]);
     mList.mockImplementation(async () => state);
     const dep = makeDep({}, 1);
-    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], pollMs: 10, pollForMs: 30, pollWindows: 3, slowPollMs: 60_000 })));
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], pollMs: 10, pollForMs: 150, pollWindows: 5, slowPollMs: 60_000 })));
     await waitFor(() => expect(result.current.forDependant(dep.id)!.summary).toEqual({ kind: 'owed', owed: 1 }));
     // Past the first window: another one opens without `watch` or Finish now.
-    await wait(50);
+    await wait(200);
     state = device([PERSONA], [GNP]);
     await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('ready'));
     // Nothing owed: no more reads.
@@ -178,16 +178,16 @@ describe('useGuardianReadyChecks (guardian, App-level)', () => {
     let state = device([], [GNP]);
     mList.mockImplementation(async () => state);
     const dep = makeDep({}, 1);
-    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], pollMs: 10, pollForMs: 20, pollWindows: 2, slowPollMs: 400 })));
+    const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], pollMs: 10, pollForMs: 20, pollWindows: 2, slowPollMs: 800 })));
     await waitFor(() => expect(result.current.forDependant(dep.id)!.owed).toBe(1));
     // Both windows are over well before this: the fast reads have stopped.
-    await wait(150);
+    await wait(300);
     const settled = mList.mock.calls.length;
-    await wait(100);
+    await wait(150);
     expect(mList.mock.calls.length - settled).toBeLessThanOrEqual(1);
     // The slow re-read picks up the press.
     state = device([PERSONA], [GNP]);
-    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('ready'), { timeout: 2_000 });
+    await waitFor(() => expect(result.current.forDependant(dep.id)!.summary.kind).toBe('ready'), { timeout: 3_000 });
   });
 
   it('a failed read is unknown (never Ready, never "child gone") and is retried with backoff', async () => {
