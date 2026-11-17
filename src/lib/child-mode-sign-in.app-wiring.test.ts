@@ -139,3 +139,10 @@ describe('sign-in picker offers Heartwood-held dependants (auth page only)', () 
     expect(app.slice(connect, connect + 200)).toContain('childModeOffer.offersDependant(d.id)');
   });
 });
+
+describe('a sign-in as a dependant hands no bunker', () => {
+  it('both delivery paths pass the selection to the handoff decision and skip the URI lookup', () => {
+    expect(count("signInBunkerHandoff({ childDirect, dependantSelected: selection.source === 'dependant', remoteBunkerUri, inPageServer:")).toBe(2);
+    expect(count("remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(")).toBe(2);
+  });
+});

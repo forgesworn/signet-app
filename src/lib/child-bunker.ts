@@ -277,13 +277,19 @@ export function addDependantRequestAllowed(signingMode: Mode): boolean {
  * its NIP-46 server serves only the gated per-persona transport routes, so a
  * `bunker://` pointing at the persona or an in-page pairing would reach
  * nothing (or, worse, an ungated path).
+ *
+ * A sign-in AS A DEPENDANT hands none either: an in-page pairing would install
+ * a temporary NIP-46 route with no autonomy or contact guards (silent signing
+ * as the child afterwards), and a keyless dependant would chain this phone's
+ * server to the Heartwood. The sign-in itself still completes normally.
  */
 export function signInBunkerHandoff(input: {
   childDirect: boolean;
+  dependantSelected?: boolean;
   remoteBunkerUri?: string;
   inPageServer: boolean;
 }): { kind: 'remote'; uri: string } | { kind: 'in-page' } | { kind: 'none' } {
-  if (input.childDirect) return { kind: 'none' };
+  if (input.childDirect || input.dependantSelected) return { kind: 'none' };
   if (input.remoteBunkerUri) return { kind: 'remote', uri: input.remoteBunkerUri };
   return input.inPageServer ? { kind: 'in-page' } : { kind: 'none' };
 }

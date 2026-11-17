@@ -9827,11 +9827,11 @@ function AppContent() {
           mintedSignInLink = minted.record;
           remoteBunkerUri = minted.bunkerUri;
         } else {
-          remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+          remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         }
         // Denied/withdrawn while signing: arm nothing, deliver nothing.
         if (!authDeliveryStillOpen(request)) return;
-        const handoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: bunkerServerEnabled });
+        const handoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, dependantSelected: selection.source === 'dependant', remoteBunkerUri, inPageServer: bunkerServerEnabled });
         if (handoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
@@ -10084,9 +10084,9 @@ function AppContent() {
           mintedSignInLink = minted.record;
           remoteBunkerUri = minted.bunkerUri;
         } else {
-          remoteBunkerUri = childDirect ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
+          remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(selectedBackend, selection, authEvent.pubkey);
         }
-        const sameTabHandoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, remoteBunkerUri, inPageServer: false });
+        const sameTabHandoff = combinedPermission ? { kind: 'none' as const } : signInBunkerHandoff({ childDirect, dependantSelected: selection.source === 'dependant', remoteBunkerUri, inPageServer: false });
         if (sameTabHandoff.kind === 'remote') {
           // Bunker-backed persona (e.g. an ESP32 hardware signer): hand over the
           // REAL, persistent bunker URI so the consumer connects directly to the
