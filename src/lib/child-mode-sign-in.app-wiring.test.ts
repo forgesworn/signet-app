@@ -24,9 +24,9 @@ describe('child-mode sign-in gate in App.tsx', () => {
     expect(app).toContain("const childSignInHold = !!childSignIn || savedChildMode === undefined;");
   });
 
-  it('asks for no PIN for a refused sign-in, on the approval page or on home', () => {
-    expect(app).toContain("const approveAuthHeld = page === 'approve-auth' && childSignInHold;");
-    expect(app).toContain('if (approveAuthHeld) return; // refused in child mode: no PIN');
+  it('asks for no PIN for a refused sign-in or connect, on the approval pages or on home', () => {
+    expect(app).toContain("const approveAuthHeld = (page === 'approve-auth' || page === 'approve-connect') && childSignInHold;");
+    expect(app).toContain('if (approveAuthHeld) return; // refused in child mode, sign-in or connect: no PIN');
     expect(app).toContain('if (childSignInHold) return; // refused in child mode: no PIN, and the refusal stays on home');
     // Scoped: the hold settling at start-up must not re-run another page's prompt.
     expect(app).toContain('}, [page, encryptionKey, requestAuth, approveAuthHeld]);');
@@ -37,7 +37,7 @@ describe('child-mode sign-in gate in App.tsx', () => {
     expect(app).toContain("if (page === 'approve-auth' && pendingAuthRequest && childSignInHold) {");
     expect(app.indexOf("if (page === 'approve-auth' && pendingAuthRequest && childSignInHold) {"))
       .toBeLessThan(app.indexOf("if (page === 'approve-auth' && pendingAuthRequest && identity) {"));
-    expect(count('<ChildSignInRefusal ')).toBe(2);
+    expect(count('<ChildSignInRefusal ')).toBe(3);
     expect(count('child={childSignIn.child} onDecline={handleDenyAuth} />')).toBe(2);
     expect(app).toContain("{pendingAuthRequest && page === 'home' && identity && !childSignInHold && !savedChildMode && (() => {");
   });
@@ -50,8 +50,8 @@ describe('child-mode sign-in gate in App.tsx', () => {
   });
 
   it('the picker in child mode offers only the child-mode dependant, never the guardian', () => {
-    expect(app).toContain('&& (!signInChildMode || d.id === signInChildDependant?.id));');
-    expect(app).toContain('childModeOnly: signInChildMode,');
+    expect(app).toContain('const childModeOffer = childModeApprovalOffer({ childMode: signInChildMode, dependant: signInChildDependant });');
+    expect(app).toContain('childModeOnly: !childModeOffer.guardian,');
     expect(app).toContain("onActivateRealIdentity: preferences.signingMode === 'paired-child' || signInChildMode ? undefined");
   });
 
@@ -61,5 +61,67 @@ describe('child-mode sign-in gate in App.tsx', () => {
     const begin = app.indexOf('const began = authSettlementRef.current.beginApproval(key);');
     expect(guard).toBeGreaterThan(0);
     expect(guard).toBeLessThan(begin);
+  });
+
+  it('a connect, from every entry, gets the same refusal: before the connect page, no PIN, declined through the connect Deny', () => {
+    // Every connect entry (a nostrconnect:// scanned on the carousel or the scan
+    // page, a ?nostrconnect= link, the App Link) lands on 'approve-connect'.
+    expect(count("navigateReplace('approve-connect');")).toBe(2);
+    const refusal = "if (page === 'approve-connect' && pendingConnectRequest && childSignInHold) {";
+    const picker = "if (page === 'approve-connect' && pendingConnectRequest && identity) {";
+    expect(app).toContain(refusal);
+    expect(app.indexOf(refusal)).toBeLessThan(app.indexOf(picker));
+    const branch = app.slice(app.indexOf(refusal), app.indexOf(picker));
+    expect(branch).toContain('child={childSignIn.child} onDecline={handleConnectDone} />');
+    expect(branch).not.toContain('exitChildMode');
+    expect(branch).not.toContain('requestAuth');
+    expect(branch).not.toContain('bunkerApprovalOverlay');
+  });
+
+  it('the connect picker in child mode offers only the child-mode dependant, and a connect as anyone else is refused before anything is sent', () => {
+    const picker = app.slice(app.indexOf("if (page === 'approve-connect' && pendingConnectRequest && identity) {"));
+    expect(count('&& childModeOffer.offersDependant(d.id));')).toBe(2);
+    expect(picker.indexOf('&& childModeOffer.offersDependant(d.id));')).toBeGreaterThan(0);
+    expect(picker).toContain('childModeOnly={!childModeOffer.guardian}');
+    expect(app).toContain('if (childModeSelectionRefused({ ...signInChildModeRef.current, selection: sel })) throw new Error(CHILD_MODE_SIGN_IN_COPY.connectOnlyAsTheChild);');
+    const guard = app.indexOf('if (childModeSelectionRefused({ ...signInChildModeRef.current, selection: sel }))');
+    const begin = app.indexOf('const began = connectSettlementRef.current.beginApproval(key);');
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(begin);
+  });
+
+  it('the carousel step after an approval never leaves child mode', () => {
+    const start = app.indexOf('const alignCarouselToApprovedSelection = useCallback(');
+    const align = app.slice(start, app.indexOf('// Auto-clear the transient sign-in ack chip', start));
+    expect(align).toContain("const childStep = childModeAlignStep({ childMode: carousel.childMode, childModeDependantId: carousel.childDependant?.id, selection });");
+    expect(align).toContain("if (childStep === 'stay-put') return;");
+    expect(align).toContain('const childRow = childRingRowFor(carousel.rows, selection.keypairType);');
+    expect(align).not.toContain('exitChildMode');
+    expect(align).not.toContain('clearChildModeSession');
+  });
+
+  it('phone apps (NIP-55) are refused in child mode, and neither they nor the relay sheet show', () => {
+    expect(app).toContain('const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });');
+    expect(app).toContain('    childMode: nip55ChildMode,\n  });\n  refuseHeldNip55Ref.current = nip55.refuseHeld;');
+    // Child mode as saved is read before the NIP-55 server is set up.
+    expect(app.indexOf('const [savedChildMode, setSavedChildMode]')).toBeLessThan(app.indexOf('const nip55 = useNip55Server({'));
+    expect(app).toContain("const nip55Overlay = nip55.pending && nip55ChildMode === 'off' && !showAuthPrompt && !bunkerPendingApproval ? (");
+    expect(app).toContain('const bunkerApprovalOverlay = bunkerPanelOpen || signInChildMode ? null : (bunkerPendingApproval ? (');
+  });
+
+  it('a saved session that can never restore is cleared once unlocked and read with the key, lifting every restriction', () => {
+    expect(app).toContain('loadedWithKey: dependantsLoadedWithKey,');
+    const start = app.indexOf('if (!childModeSessionStale({');
+    expect(start).toBeGreaterThan(0);
+    const heal = app.slice(start, app.indexOf('}, [encryptionKey, dependantsLoadedWithKey, carousel.childMode, savedChildMode, dependants]);', start));
+    expect(heal).toContain('unlocked: !!encryptionKey,');
+    expect(heal).toContain('dependantsLoadedWithKey,');
+    expect(heal).toContain('childModeLive: carousel.childMode,');
+    expect(heal).toContain('sessionDependantId: savedChildMode?.id,');
+    expect(heal).toContain('dependantIds: dependants.map(d => d.id),');
+    expect(heal).toContain('clearChildModeSession().catch(() => {});');
+    expect(heal).toContain('setSavedChildMode(null);');
+    // Every restriction outside live child mode reads `savedChildMode`, so clearing it lifts them all.
+    expect(app).toContain('const signInChildMode = carousel.childMode || !!savedChildMode;');
   });
 });

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { childModeSignInRefusal, childModeSelectionRefused } from './child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale } from './child-mode-sign-in';
+import { buildChildRows } from './carousel-utils';
+import type { DependantIdentity } from '../types';
 import { CHILD_MODE_SIGN_IN_COPY } from './child-device-copy';
 import { buildPersonaFirstDependant } from './dependant-record';
 
@@ -76,6 +78,122 @@ describe('childModeSelectionRefused (the approval-time check)', () => {
   it('in child mode with no known child: nothing signs', () => {
     expect(childModeSelectionRefused({ childMode: true, dependant: null, selection: guardian })).toBe(true);
     expect(childModeSelectionRefused({ childMode: true, dependant: null, selection: asKid })).toBe(true);
+  });
+});
+
+describe('childModeApprovalOffer (every sign-in and connect entry)', () => {
+  const ids = [KID, SIB];
+
+  it('outside child mode offers the guardian and every dependant, and refuses nothing', () => {
+    const offer = childModeApprovalOffer({ childMode: false, dependant: direct });
+    expect(offer.refuse).toBeNull();
+    expect(offer.guardian).toBe(true);
+    expect(ids.filter(offer.offersDependant)).toEqual(ids);
+  });
+
+  it('a phone-served child in child mode: only that child, never the guardian or a sibling', () => {
+    const offer = childModeApprovalOffer({ childMode: true, dependant: phoneServed });
+    expect(offer.refuse).toBeNull();
+    expect(offer.guardian).toBe(false);
+    expect(ids.filter(offer.offersDependant)).toEqual([KID]);
+  });
+
+  it('a child paired straight to the Heartwood: refused, naming them, with nobody offered', () => {
+    const offer = childModeApprovalOffer({ childMode: true, dependant: direct });
+    expect(offer.refuse).toEqual({ child: 'RunKid' });
+    expect(offer.guardian).toBe(false);
+    expect(ids.filter(offer.offersDependant)).toEqual([]);
+  });
+
+  it('child mode with no known child offers nobody at all', () => {
+    const offer = childModeApprovalOffer({ childMode: true, dependant: null });
+    expect(offer.guardian).toBe(false);
+    expect(ids.filter(offer.offersDependant)).toEqual([]);
+  });
+});
+
+describe('childModeState (how phone apps are answered)', () => {
+  it('is unknown until child mode as saved has been read, then off with no session', () => {
+    expect(childModeState({ live: false, saved: undefined })).toBe('unknown');
+    expect(childModeState({ live: false, saved: null })).toBe('off');
+  });
+
+  it('is on while child mode is live, or saved and not yet restored', () => {
+    expect(childModeState({ live: true, saved: null })).toBe('on');
+    expect(childModeState({ live: true, saved: undefined })).toBe('on');
+    expect(childModeState({ live: false, saved: phoneServed })).toBe('on');
+  });
+});
+
+describe('childModeAlignStep (the carousel step after an approval)', () => {
+  const guardian = { source: 'guardian' as const, keypairType: 'persona' };
+  const asKid = { source: 'dependant' as const, dependantId: KID, keypairType: 'persona' };
+  const asSibling = { source: 'dependant' as const, dependantId: SIB, keypairType: 'persona' };
+
+  it('outside child mode lands as before', () => {
+    for (const selection of [guardian, asKid, asSibling]) {
+      expect(childModeAlignStep({ childMode: false, childModeDependantId: null, selection })).toBe('outside-child-mode');
+    }
+  });
+
+  it('in child mode the child\'s own approval stays in child mode on their card', () => {
+    expect(childModeAlignStep({ childMode: true, childModeDependantId: KID, selection: asKid })).toBe('land-on-child');
+    expect(childModeAlignStep({ childMode: true, childModeDependantId: KID, selection: { ...asKid, keypairType: 'natural-person' } })).toBe('land-on-child');
+  });
+
+  it('in child mode nothing else leaves it: the guardian, a sibling, or an unknown child stay put', () => {
+    expect(childModeAlignStep({ childMode: true, childModeDependantId: KID, selection: guardian })).toBe('stay-put');
+    expect(childModeAlignStep({ childMode: true, childModeDependantId: KID, selection: asSibling })).toBe('stay-put');
+    expect(childModeAlignStep({ childMode: true, childModeDependantId: null, selection: asKid })).toBe('stay-put');
+    expect(childModeAlignStep({ childMode: true, childModeDependantId: undefined, selection: asKid })).toBe('stay-put');
+  });
+});
+
+describe('childRingRowFor (the card in the child\'s ring)', () => {
+  const EXTRA = '9'.repeat(64);
+  const dep = {
+    id: KID, displayName: 'RunKid',
+    naturalPerson: { publicKey: KID, privateKey: '' },
+    persona: { publicKey: 'e'.repeat(64), privateKey: '' },
+    extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Kid Extra' }],
+    naturalPersonActive: true,
+  } as unknown as DependantIdentity;
+
+  it('finds the real-name, persona and extra persona cards of the child ring', () => {
+    const rows = buildChildRows(dep);
+    expect(rows[childRingRowFor(rows, 'natural-person')].type).toBe('dependant');
+    expect(rows[childRingRowFor(rows, 'persona')].type).toBe('dependant-persona');
+    expect(rows[childRingRowFor(rows, EXTRA)].type).toBe('dependant-extra-persona');
+    expect(childRingRowFor(rows, 'f'.repeat(64))).toBe(-1);
+  });
+
+  it('a dormant real name has no card in the ring', () => {
+    const rows = buildChildRows({ ...dep, naturalPersonActive: false } as DependantIdentity);
+    expect(childRingRowFor(rows, 'natural-person')).toBe(-1);
+  });
+});
+
+describe('childModeSessionStale (a saved session that can never restore)', () => {
+  const base = { unlocked: true, dependantsLoadedWithKey: true, childModeLive: false, sessionDependantId: KID, dependantIds: [SIB] };
+
+  it('is stale once unlocked and read with the key, when the session\'s child is not there', () => {
+    expect(childModeSessionStale(base)).toBe(true);
+    expect(childModeSessionStale({ ...base, dependantIds: [] })).toBe(true);
+  });
+
+  it('is never stale while the child is there: the restore will put child mode back', () => {
+    expect(childModeSessionStale({ ...base, dependantIds: [SIB, KID] })).toBe(false);
+  });
+
+  it('is never stale before the keyed read, so a valid session survives the keyless or empty window', () => {
+    expect(childModeSessionStale({ ...base, unlocked: false, dependantIds: [] })).toBe(false);
+    expect(childModeSessionStale({ ...base, dependantsLoadedWithKey: false, dependantIds: [] })).toBe(false);
+  });
+
+  it('is never stale while child mode is live, or with no session', () => {
+    expect(childModeSessionStale({ ...base, childModeLive: true })).toBe(false);
+    expect(childModeSessionStale({ ...base, sessionDependantId: null })).toBe(false);
+    expect(childModeSessionStale({ ...base, sessionDependantId: undefined })).toBe(false);
   });
 });
 

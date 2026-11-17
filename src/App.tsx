@@ -178,7 +178,7 @@ import { Layout } from './components/Layout';
 import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
-import { childModeSignInRefusal, childModeSelectionRefused, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
 import { RateLimitBanner } from './components/RateLimitBanner';
@@ -903,7 +903,7 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
 
@@ -4336,6 +4336,35 @@ function AppContent() {
     },
   });
 
+  // Child mode for sign-ins, connects and phone apps (device run 2026-11-17,
+  // F12). The child-mode restore below waits for the key, so child mode as last
+  // saved is read here without it: a request that cold-starts the app in child
+  // mode must not ask for the guardian's PIN or list the guardian's identities
+  // first. `undefined` until read; dropped once child mode is live again, or
+  // once unlocked it can never be restored (the stale-session check below).
+  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    loadChildModeSession()
+      .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
+      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current ? null : facts); })
+      .catch(() => { if (live) setSavedChildMode(null); });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (carousel.childMode) setSavedChildMode(null);
+  }, [carousel.childMode]);
+  // A lock empties `dependants` for a moment (identity → null → reload), so the
+  // child-mode dependant is held while child mode lasts: the refusal must not
+  // blink off and let a PIN prompt open over it.
+  const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
+  if (!carousel.childMode) childModeDependantRef.current = null;
+  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
+  const signInChildMode = carousel.childMode || !!savedChildMode;
+  const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
+  // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
+  const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
+
   // NIP-55: requests from other apps on this phone (Amethyst, KithMoot,
   // anything Amber-shaped), served by the same owner-persona backends the
   // NIP-46 server signs with, decided by the table in src/lib/nip55.ts.
@@ -4363,6 +4392,7 @@ function AppContent() {
     onServed: () => { phoneAppsUntilRef.current = Date.now() + PHONE_APPS_WINDOW_MS; },
     keyExpired: phoneAppsKeyExpiredNow,
     onKeyExpired: lockExpiredPhoneAppsKey,
+    childMode: nip55ChildMode,
   });
   refuseHeldNip55Ref.current = nip55.refuseHeld;
   // The remembered NIP-55 decisions, as the Connected apps page lists them; grants keep milliseconds, the page reads seconds.
@@ -6488,37 +6518,14 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
-  // Sign-ins in child mode (device run 2026-11-17, F12). The child-mode restore
-  // below waits for the key, so child mode as last saved is read here without
-  // it: a sign-in that cold-starts the app in child mode must not ask for the
-  // guardian's PIN or list the guardian's identities first. `undefined` until
-  // read; dropped once child mode is live again.
-  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    loadChildModeSession()
-      .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
-      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current ? null : facts); })
-      .catch(() => { if (live) setSavedChildMode(null); });
-    return () => { live = false; };
-  }, []);
-  useEffect(() => {
-    if (carousel.childMode) setSavedChildMode(null);
-  }, [carousel.childMode]);
-  // A lock empties `dependants` for a moment (identity → null → reload), so the
-  // child-mode dependant is held while child mode lasts: the refusal must not
-  // blink off and let a PIN prompt open over it.
-  const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
-  if (!carousel.childMode) childModeDependantRef.current = null;
-  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
-  const signInChildMode = carousel.childMode || !!savedChildMode;
-  const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
   // A child who signs in on their own phone: every sign-in here is refused, with no PIN.
   const childSignIn = childModeSignInRefusal({ childMode: signInChildMode, dependant: signInChildDependant });
-  // No sign-in PIN prompt and no picker while refused, or before saved child mode is known.
+  // No sign-in or connect PIN prompt and no picker while refused, or before saved child mode is known.
   const childSignInHold = !!childSignIn || savedChildMode === undefined;
-  // Scoped to the sign-in page, so the hold settling at start-up re-runs no other page's prompt.
-  const approveAuthHeld = page === 'approve-auth' && childSignInHold;
+  // Scoped to the sign-in and connect pages, so the hold settling at start-up re-runs no other page's prompt.
+  const approveAuthHeld = (page === 'approve-auth' || page === 'approve-connect') && childSignInHold;
+  // Who a sign-in or connect may offer: in child mode never the guardian, only the child.
+  const childModeOffer = childModeApprovalOffer({ childMode: signInChildMode, dependant: signInChildDependant });
   const signInChildModeRef = useRef({ childMode: signInChildMode, dependant: signInChildDependant });
   signInChildModeRef.current = { childMode: signInChildMode, dependant: signInChildDependant };
 
@@ -6569,7 +6576,7 @@ function AppContent() {
     // end-to-end verification caught 'approve-companion-grant' missing here:
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
-    if (approveAuthHeld) return; // refused in child mode: no PIN
+    if (approveAuthHeld) return; // refused in child mode, sign-in or connect: no PIN
     const pagePurpose = PAGE_AUTH_CONTEXTS[page];
     // Capture the request label when entering/re-unlocking its review page.
     // Labels alone must not re-run this effect and contend with an open prompt.
@@ -8574,27 +8581,31 @@ function AppContent() {
   // dependant card after signing as guardian (or vice versa) and second-
   // guessing what they just authorized.
   //
-  // Child-mode is silently exited when the selection escapes the locked
-  // dependant. The auth picker already lets the user pick guardian or any
-  // dependant from inside child-mode (existing behaviour), so the visual
-  // lock is cosmetic at that point — we make it match the selection.
+  // Child mode is never left here: only the PIN exit leaves it. In child mode
+  // the pickers offer only the child-mode dependant and any other selection is
+  // refused before signing (`childModeSelectionRefused`), so the child's own
+  // approval lands on their card in the child's ring and keeps the session;
+  // anything else leaves the carousel as it is (`childModeAlignStep`).
   const alignCarouselToApprovedSelection = useCallback((selection: AuthSelection) => {
     if (!identity) return;
+    const childStep = childModeAlignStep({ childMode: carousel.childMode, childModeDependantId: carousel.childDependant?.id, selection });
+    if (childStep === 'stay-put') return;
+    if (childStep === 'land-on-child' && selection.source === 'dependant') {
+      const label = selection.keypairType === 'natural-person' ? null
+        : selection.keypairType === 'persona' ? (carousel.childDependant?.persona.displayName || 'Persona')
+          : carousel.childDependant?.extraPersonas?.find(e => e.publicKey === selection.keypairType)?.displayName || null;
+      setRecentSignInAck(label ? { dependantId: selection.dependantId, label } : null);
+      const childRow = childRingRowFor(carousel.rows, selection.keypairType);
+      if (childRow >= 0) carousel.commitPosition(childRow, 0);
+      return;
+    }
     if (selection.source === 'guardian') {
-      if (carousel.childMode) {
-        carousel.exitChildMode();
-        clearChildModeSession().catch(() => {});
-      }
       chooseDependantScope(null);
       // Guardian's persona/extras are separate rows in the parent ring, so
       // the landing card itself conveys the keypair — no ack chip needed.
       setRecentSignInAck(null);
       carousel.commitPosition(findRowForGuardianKeypair(identity, selection.keypairType, botInventory, childCarouselAllowed), 0);
       return;
-    }
-    if (carousel.childMode) {
-      carousel.exitChildMode();
-      clearChildModeSession().catch(() => {});
     }
     chooseDependantScope(selection.dependantId);
     // Resolve the persona/extra display name when the dep selection is a
@@ -8617,7 +8628,7 @@ function AppContent() {
     setRecentSignInAck(ackLabel ? { dependantId: selection.dependantId, label: ackLabel } : null);
     const targetRow = findRowForDependant(identity, dependants, selection.dependantId, botInventory, childCarouselAllowed);
     if (targetRow !== null) carousel.commitPosition(targetRow, 0);
-  }, [identity, dependants, botInventory, childCarouselAllowed, carousel.childMode, carousel.exitChildMode, carousel.commitPosition, chooseDependantScope]);
+  }, [identity, dependants, botInventory, childCarouselAllowed, carousel.childMode, carousel.childDependant, carousel.rows, carousel.commitPosition, chooseDependantScope]);
 
   // Auto-clear the transient sign-in ack chip after a few seconds. Long enough
   // for the user to register the confirmation, short enough that it doesn't
@@ -9162,6 +9173,8 @@ function AppContent() {
   const handleApproveConnect = useCallback(async (sel: AuthSelection, connectOptions?: { askToSign: boolean; viaHeartwood?: boolean }) => {
     const request = pendingConnectRequestRef.current;
     if (!request) throw new Error('No pending connect request');
+    // Child mode connects only as the child, and never for one who signs in on their own phone.
+    if (childModeSelectionRefused({ ...signInChildModeRef.current, selection: sel })) throw new Error(CHILD_MODE_SIGN_IN_COPY.connectOnlyAsTheChild);
     const key = requestObjectKey(request);
     const began = connectSettlementRef.current.beginApproval(key);
     if (began === 'settled') {
@@ -10775,8 +10788,9 @@ function AppContent() {
   // decrypted, so `dependants.find(...)` returned undefined and we'd clear the
   // session — a child-mode reload escaped back to the guardian account. Now we
   // wait for unlock, only mark restored after the async lookup resolves, and
-  // never clear on "not found" (a stale session is harmless: enterChildMode only
-  // fires when the dep is present, and the next enter/exit overwrites or clears).
+  // never clear on "not found" here: until the dependants have been read with
+  // the key, "not found" proves nothing. The stale-session check below clears
+  // a session only once that read is in.
   const childModeRestoredRef = useRef(false);
   useEffect(() => {
     if (childModeRestoredRef.current) return;
@@ -10796,6 +10810,24 @@ function AppContent() {
       }
     }).catch(() => {});
   }, [identityLoading, prefsLoading, encryptionKey, dependants, carousel.enterChildMode]);
+
+  // A saved child-mode session that can never be restored here (the read of
+  // the dependants skips its record: another guardian's, or not stored
+  // encrypted) used to restrict the guardian for good, with no live child mode
+  // and so no exit. Once unlocked and the dependants have been read with the
+  // key, it is cleared and every restriction it held lifts.
+  useEffect(() => {
+    if (!childModeSessionStale({
+      unlocked: !!encryptionKey,
+      dependantsLoadedWithKey,
+      childModeLive: carousel.childMode,
+      sessionDependantId: savedChildMode?.id,
+      dependantIds: dependants.map(d => d.id),
+    })) return;
+    childModeRestoredRef.current = true;
+    clearChildModeSession().catch(() => {});
+    setSavedChildMode(null);
+  }, [encryptionKey, dependantsLoadedWithKey, carousel.childMode, savedChildMode, dependants]);
 
   const resolveSigningSelection = useCallback((row: CarouselRow): AuthSelection | null => {
     switch (row.type) {
@@ -11963,7 +11995,9 @@ function AppContent() {
   //
   // Single-modal serial flow (holodeck OQ8). Exposed as one variable so
   // per-page renders don't need to branch — they just drop it in.
-  const bunkerApprovalOverlay = bunkerPanelOpen ? null : (bunkerPendingApproval ? (
+  // Never in child mode, on any page: the child holds the phone. The guardian's
+  // relay requests stay queued and show after the PIN exit.
+  const bunkerApprovalOverlay = bunkerPanelOpen || signInChildMode ? null : (bunkerPendingApproval ? (
         <BunkerApprovalModal
           approval={bunkerPendingApproval}
           onApproveOnce={bunkerApproveOnce}
@@ -11987,7 +12021,8 @@ function AppContent() {
   // is, which is every page including the guest home: the request may have
   // arrived on any of them, and the person was brought here to answer it.
   // Waits its turn behind a relay request, and never shows over the PIN.
-  const nip55Overlay = nip55.pending && !showAuthPrompt && !bunkerPendingApproval ? (
+  // Never in child mode (the hook refuses those requests and shows none).
+  const nip55Overlay = nip55.pending && nip55ChildMode === 'off' && !showAuthPrompt && !bunkerPendingApproval ? (
         <Nip55ApprovalModal
           approval={nip55.pending}
           identities={nip55Identities}
@@ -14361,7 +14396,7 @@ function AppContent() {
     // In child mode only the child-mode dependant signs: never the guardian, never a sibling.
     const availableDependants = dependants.filter(d =>
       !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
-      && (!signInChildMode || d.id === signInChildDependant?.id));
+      && childModeOffer.offersDependant(d.id));
     const approveAuthRequestKey = authRequestKey(pendingAuthRequest);
     // Default selection comes from the row the user was viewing when the
     // request arrived. For QR scans we use the snapshot taken in
@@ -14412,7 +14447,7 @@ function AppContent() {
       realNameNeedsHeartwood: realNameCardExpected,
       isPairedChild,
       childDirect,
-      childModeOnly: signInChildMode,
+      childModeOnly: !childModeOffer.guardian,
       // A paired-child install cannot activate the owner's real identity, nor can child mode.
       onActivateRealIdentity: preferences.signingMode === 'paired-child' || signInChildMode ? undefined
         : () => navigateTo('activate-real-identity', { returnTo: 'approve-auth' }),
@@ -14496,6 +14531,22 @@ function AppContent() {
     );
   }
 
+  // A connect in child mode for a child who signs in on their own phone: the
+  // same refusal as a sign-in, declined through the connect Deny, no PIN, and
+  // child mode stays on. Blank before saved child mode is read.
+  if (page === 'approve-connect' && pendingConnectRequest && childSignInHold) {
+    return (
+      <>
+        <Layout title="Connect">
+          {childSignIn && (
+            <ChildSignInRefusal key={requestObjectKey(pendingConnectRequest)} child={childSignIn.child} onDecline={handleConnectDone} />
+          )}
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
+
   // Approve Connect (NIP-46)
   if (page === 'approve-connect' && pendingConnectRequest && identity) {
     // Same listing as the sign-in picker: device-held slots stay listed (and
@@ -14513,8 +14564,10 @@ function AppContent() {
     // Gate on the ACTING slot's key, not the NP's: a persona-first dependant
     // signs as their persona, so an NP-keyed test would drop them from the
     // picker after a key strip that left the persona signable (and vice versa).
+    // In child mode only the child-mode dependant connects: never the guardian, never a sibling.
     const availableDependants = dependants.filter(d =>
-      !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey));
+      !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
+      && childModeOffer.offersDependant(d.id));
     return (
       <>
       <Layout title="Connect" showBack onBack={handleConnectDone}>
@@ -14541,6 +14594,7 @@ function AppContent() {
           heartwoodNeedsUpdate={preferences.signingMode === 'bunker' && handoffClients.length === 0 && !activeDependant && bunkerRouter !== null
             ? (pk) => !isImportedGuardianPersona(identity, pk)
             : undefined}
+          childModeOnly={!childModeOffer.guardian}
         />
       </Layout>
       {authOverlay}{nip55Overlay}

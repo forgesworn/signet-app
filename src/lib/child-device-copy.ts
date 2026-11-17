@@ -424,4 +424,8 @@ export const CHILD_MODE_SIGN_IN_COPY = {
   decline: 'Decline',
   /** An approval that slipped past the picker in child mode. */
   onlyAsTheChild: "This phone is being used as a child right now, so it can't sign in as anyone else.",
+  /** The same, for an app asking to connect. */
+  connectOnlyAsTheChild: "This phone is being used as a child right now, so it can't connect as anyone else.",
+  /** The connect picker in child mode when the child has no identity on this phone to connect with. */
+  connectNoChildIdentity: "This phone is being used as a child right now, and it holds none of the child's identities to connect with.",
 } as const;

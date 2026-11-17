@@ -13,6 +13,7 @@
  * identities, and any other dependant's, are never on offer.
  */
 import type { AuthSelection } from '../pages/ApproveAuth';
+import type { CarouselRow } from '../types';
 import { sanitizeDisplayName } from './text-sanitize';
 
 /** What the decision reads from the child-mode dependant. Readable while locked. */
@@ -57,4 +58,90 @@ export function childModeSelectionRefused(input: ChildModeSignInInput & { select
   return input.selection.source !== 'dependant'
     || !input.dependant
     || input.selection.dependantId !== input.dependant.id;
+}
+
+/**
+ * What a sign-in or connect approval may offer, whichever way the request
+ * came in (a link, a QR on the carousel or the scan page, a relay request, an
+ * App Link). In child mode the guardian's identities are never offered and
+ * only the child-mode dependant is; for a child who signs in on their own
+ * phone the request is refused outright (`refuse` names them). Outside child
+ * mode everything is offered, as before.
+ */
+export interface ChildModeApprovalOffer {
+  refuse: { child: string } | null;
+  /** The guardian's own identities (real name, persona, extras, Pro) may be offered. */
+  guardian: boolean;
+  /** This dependant may be offered. */
+  offersDependant: (dependantId: string) => boolean;
+}
+
+export function childModeApprovalOffer(input: ChildModeSignInInput): ChildModeApprovalOffer {
+  if (!input.childMode) return { refuse: null, guardian: true, offersDependant: () => true };
+  const refuse = childModeSignInRefusal(input);
+  const onlyId = refuse ? null : input.dependant?.id ?? null;
+  return { refuse, guardian: false, offersDependant: id => onlyId !== null && id === onlyId };
+}
+
+/**
+ * Child mode as phone apps (NIP-55) are answered: `unknown` until child mode
+ * as last saved has been read at start-up, then `on` while it is live or still
+ * saved and not yet restored, `off` otherwise.
+ */
+export type ChildModeState = 'on' | 'off' | 'unknown';
+
+export function childModeState(input: { live: boolean; saved: ChildModeSignInDependant | null | undefined }): ChildModeState {
+  if (input.live || input.saved) return 'on';
+  return input.saved === undefined ? 'unknown' : 'off';
+}
+
+/**
+ * The carousel step after an approved sign-in or connect. Outside child mode
+ * it lands on the approved card as before. In child mode it never leaves child
+ * mode, which only the PIN exit does: the child-mode dependant's own approval
+ * lands on their card in the child's ring, and anything else (refused before
+ * signing, so never expected here) leaves the carousel as it is.
+ */
+export type ChildModeAlignStep = 'outside-child-mode' | 'land-on-child' | 'stay-put';
+
+export function childModeAlignStep(input: { childMode: boolean; childModeDependantId: string | null | undefined; selection: AuthSelection }): ChildModeAlignStep {
+  if (!input.childMode) return 'outside-child-mode';
+  return input.selection.source === 'dependant' && !!input.childModeDependantId
+    && input.selection.dependantId === input.childModeDependantId ? 'land-on-child' : 'stay-put';
+}
+
+/**
+ * The row of the child's ring (`buildChildRows`) holding the keypair a
+ * child-mode approval signed with, or -1. `keypairType` is 'natural-person',
+ * 'persona' or an extra persona's pubkey, as in `AuthSelection`.
+ */
+export function childRingRowFor(rows: readonly CarouselRow[], keypairType: string): number {
+  return rows.findIndex(row => {
+    if (row.type === 'dependant') return keypairType === 'natural-person';
+    if (row.type === 'dependant-persona') return keypairType === 'persona';
+    if (row.type === 'dependant-extra-persona') return row.dependant.extraPersonas?.[row.personaIndex]?.publicKey === keypairType;
+    return false;
+  });
+}
+
+/**
+ * A child-mode session saved on this phone that can never be restored here:
+ * the phone is unlocked, the dependants have been read with the key, child
+ * mode is not live, and the session's dependant is not among them (the read
+ * skipped its record, or it is gone). It is then
+ * cleared, so it restricts nothing: outside live child mode the guardian is
+ * never restricted once unlocked. Never stale before the keyed read, so a
+ * valid session is not dropped in the window where the list is still the
+ * keyless one or empty.
+ */
+export function childModeSessionStale(input: {
+  unlocked: boolean;
+  dependantsLoadedWithKey: boolean;
+  childModeLive: boolean;
+  sessionDependantId: string | null | undefined;
+  dependantIds: readonly string[];
+}): boolean {
+  if (!input.unlocked || !input.dependantsLoadedWithKey || input.childModeLive) return false;
+  if (!input.sessionDependantId) return false;
+  return !input.dependantIds.includes(input.sessionDependantId);
 }

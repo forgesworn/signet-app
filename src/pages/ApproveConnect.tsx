@@ -11,6 +11,7 @@ import type { AuthSelection } from './ApproveAuth';
 import { buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
 import { endsConnectRequest, handoffReach, handoffWarning } from '../lib/heartwood-handoff';
 import { SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
+import { CHILD_MODE_SIGN_IN_COPY } from '../lib/child-device-copy';
 
 interface Props {
   request: NostrConnectRequest;
@@ -48,6 +49,13 @@ interface Props {
   onUserChoice?: (selection: AuthSelection | null) => void;
   /** Listed guardian slots whose route to the paired signer is not back yet. */
   waitingGuardianPubkeys?: readonly string[];
+  /**
+   * The guardian's phone is in child mode: none of the guardian's own
+   * identities is offered (nor the "add a persona" hint), and a guardian pick
+   * made before never carries over. The caller passes only the child-mode
+   * dependant in `dependants`.
+   */
+  childModeOnly?: boolean;
 }
 
 type SignMode = 'heartwood' | 'auto' | 'ask';
@@ -69,13 +77,15 @@ export function ApproveConnect({
   waitingGuardianPubkeys,
   canHandOffToHeartwood,
   heartwoodNeedsUpdate,
+  childModeOnly = false,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
+  // In child mode there are none: the guardian's identities are not on offer.
   const guardianOptions: KeypairOption[] = useMemo(
-    () => buildGuardianKeypairOptions(identity)
+    () => childModeOnly ? [] : buildGuardianKeypairOptions(identity)
       .filter(option => !availableGuardianPubkeys || availableGuardianPubkeys.includes(option.pubkey)),
-    [identity, availableGuardianPubkeys],
+    [identity, availableGuardianPubkeys, childModeOnly],
   );
 
   // `nostrconnect://` has no consumer hint — pass null and lean entirely
@@ -170,7 +180,8 @@ export function ApproveConnect({
       if (sel.keypairType === 'natural-person') return identity.naturalPerson.publicKey;
       return buildGuardianKeypairOptions(identity).find(o => o.key === sel.keypairType)?.pubkey ?? null;
     },
-    userChoice,
+    // A guardian pick made before child mode came back never carries over.
+    userChoice: childModeOnly && userChoice?.selection?.source === 'guardian' ? undefined : userChoice,
     onUserChoice,
     waitingGuardianPubkeys,
   });
@@ -181,7 +192,8 @@ export function ApproveConnect({
   // Crypto (nip44 / nip04) stays automatic either way; this only decides
   // whether sign_event asks each time.
   const [signMode, setSignMode] = useState<SignMode | null>(null);
-  const selectedPubkey = selection?.source !== 'guardian' ? null
+  // The guardian key a hand-off would bind: never one in child mode.
+  const selectedPubkey = childModeOnly || selection?.source !== 'guardian' ? null
     : selection.keypairType === 'natural-person' ? identity.naturalPerson.publicKey
       : selection.keypairType === 'persona' ? identity.persona.publicKey
         : selection.keypairType;
@@ -263,7 +275,7 @@ export function ApproveConnect({
       <div className="card section">
         <div className="section-title">Connect as</div>
 
-        {canSwitchGuardianPersona ? (
+        {childModeOnly ? null : canSwitchGuardianPersona ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {guardianPolicy.ranked.map(({ key, token, label, pubkey }) => (
               <button
@@ -334,10 +346,16 @@ export function ApproveConnect({
 
         {/* A dormant real identity is excluded from the picker (spec §6), so an
             identity with no persona yet can leave the list empty. Say why. */}
-        {guardianPickerEmpty && (
+        {!childModeOnly && guardianPickerEmpty && (
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
             You have no persona set up to connect with yet. Add one, or set up your real
             identity, from Settings &rsaquo; Personas.
+          </p>
+        )}
+
+        {childModeOnly && !hasAnyDependantOption && (
+          <p data-testid="connect-child-mode-empty" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+            {CHILD_MODE_SIGN_IN_COPY.connectNoChildIdentity}
           </p>
         )}
 
