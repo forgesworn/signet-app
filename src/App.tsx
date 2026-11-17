@@ -387,7 +387,7 @@ import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
 import { buildUnpairedNotice } from './lib/child-activity';
-import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
+import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
 import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
@@ -14498,6 +14498,7 @@ function AppContent() {
           onPairDevice={(depId) => { setActiveDependantId(depId); navigateTo('pair-dependant-device'); }}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
+          pairsDirect={(depId) => { const d = dependants.find(x => x.id === depId); return !!identity && !!d && usesChildDirectPairing(d, preferences.signingMode); }}
           onBack={() => navigateBack()}
           showRoleConfirm={!preferences.dependantRoleConfirmedAt}
           heartwoodDeriveCards={addChildRaisesCards({ deviceDerive: !!dependantDeviceDerive && !!bunkerRouter, ownSlotMethods: heartwoodOwner.ownSlotMethods })}
