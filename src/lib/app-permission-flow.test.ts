@@ -82,6 +82,7 @@ describe('classifyAppPermissionFailure (I1)', () => {
       expect(classifyAppPermissionFailure(new ChildGateRefusedError(code))).toEqual({ kind: 'retry', message: APP_PERMISSION_COPY.guardianUnreachable });
     }
     expect(classifyAppPermissionFailure(new ChildGateRefusedError('device-unreachable'))).toEqual({ kind: 'retry', message: APP_PERMISSION_COPY.deviceUnreachable });
+    expect(classifyAppPermissionFailure(new ChildGateRefusedError('locked'))).toEqual({ kind: 'retry', message: APP_PERMISSION_COPY.appLocked });
   });
 
   it('the person\'s own Cancel (withdrawn) is already answered', () => {

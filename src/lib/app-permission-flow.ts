@@ -91,6 +91,7 @@ export function classifyAppPermissionFailure(e: unknown): AppPermissionFailure {
     case 'denied': return { kind: 'guardian-denied' };
     case 'withdrawn': return { kind: 'withdrawn' };
     case 'device-unreachable': return { kind: 'retry', message: APP_PERMISSION_COPY.deviceUnreachable };
+    case 'locked': return { kind: 'retry', message: APP_PERMISSION_COPY.appLocked };
     case 'unsent': case 'rate-limited': case 'expired': case 'unpaired':
       return { kind: 'retry', message: APP_PERMISSION_COPY.guardianUnreachable };
     default: return { kind: 'other' };

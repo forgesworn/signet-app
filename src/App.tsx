@@ -388,7 +388,7 @@ import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
 import { buildUnpairedNotice } from './lib/child-activity';
-import { pendingRuleSeeds, phoneServedDependants } from './lib/child-device-pairing';
+import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
 import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
@@ -2374,6 +2374,9 @@ function AppContent() {
     rules: childDeviceLink.rules,
     relays: pairedChildRecord?.railRelay ? [pairedChildRecord.railRelay] : [],
     unpaired: childDeviceLink.unpaired,
+    // Locking clears the paired record: a request it cuts short says the app
+    // locked, not that the phone is unpaired (device run 2026-11-17, F15).
+    locked: !encryptionKey,
     onActivity: (e) => childActivitySinkRef.current(e),
     // A deferred persona ("Later") is approved on the Heartwood the first time
     // a request is routed as it. The gate decides first (A39): only a request
@@ -11927,8 +11930,10 @@ function AppContent() {
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
         />
-      ) : sheetChildAsks.length > 0 && !showAuthPrompt ? (
-        // A dependant's own phone asking (child-direct, spec §7).
+      ) : sheetChildAsks.length > 0 && !showAuthPrompt && !carousel.childMode ? (
+        // A dependant's own phone asking (child-direct, spec §7). The guardian's
+        // decision, never shown in child mode: the Settings tab stays in the bar
+        // there, and Settings renders this overlay too.
         <ChildAskApprovalModal
           asks={sheetChildAsks}
           alwaysAvailableFor={childAskAlwaysAvailable}
@@ -11952,6 +11957,17 @@ function AppContent() {
           onDenyAlways={nip55.denyAlways}
         />
       ) : null;
+
+  // Home, where a guardian spends most of their time: without this a child's
+  // ask reached the Bunker panel's "Family asks" and nothing else, so the child
+  // waited on "Asking your guardian…" until the guardian happened to open it
+  // (and the native notification is skipped in the foreground). Home is also
+  // where a child sits in child mode, holding the guardian's phone: the approve
+  // UI never shows there, nor under any dependant scope. The guardian's own
+  // sign-in (ApprovalOverlay in the carousel) goes first; a phone app's request
+  // (nip55Overlay) goes before a child's ask, a relay request before both.
+  const homeApprovalOverlay = carousel.childMode || activeDependant || pendingAuthRequest ? null
+    : bunkerPendingApproval || !nip55.pending ? bunkerApprovalOverlay : null;
 
   // Hand-off picker overlay — shown when the guardian taps the banner while in
   // child-mode to hand the phone to a different dependant. No PIN required
@@ -14613,6 +14629,7 @@ function AppContent() {
           onPairDevice={(depId) => openDependantPage('pair-dependant-device', depId)}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
+          pairsDirect={(depId) => { const d = dependants.find(x => x.id === depId); return !!identity && !!d && usesChildDirectPairing(d, preferences.signingMode); }}
           onBack={() => navigateBack()}
           showRoleConfirm={!preferences.dependantRoleConfirmedAt}
           heartwoodDeriveCards={addChildRaisesCards({ deviceDerive: !!dependantDeviceDerive && !!bunkerRouter, ownSlotMethods: heartwoodOwner.ownSlotMethods })}
@@ -15774,7 +15791,7 @@ function AppContent() {
           );
         })()}
       </Carousel>
-      {authOverlay}{nip55Overlay}
+      {authOverlay}{nip55Overlay}{homeApprovalOverlay}
           {handoffPickerOverlay}
     </>
   );

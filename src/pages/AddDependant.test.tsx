@@ -51,6 +51,22 @@ describe('AddDependant — success screen', () => {
     expect(screen.getByText(/Turn the Bunker on first/)).toBeDefined();
   });
 
+  it('a child-direct dependant pairs straight to the Heartwood: Pair is offered with the Bunker off, and no Bunker detour', async () => {
+    const onPairDevice = vi.fn();
+    const pairsDirect = vi.fn((id: string) => id === 'dep-id-123');
+    await arriveAtSuccess({ bunkerServerEnabled: false, onPairDevice, pairsDirect });
+    expect(screen.queryByText(/Turn the Bunker on first/)).toBeNull();
+    expect(screen.getByText(/Hold Lily's phone against this one, or show a QR code/)).toBeDefined();
+    fireEvent.click(screen.getByText(/Pair their phone now/));
+    expect(onPairDevice).toHaveBeenCalledWith('dep-id-123');
+  });
+
+  it('a phone-served dependant still needs the Bunker', async () => {
+    await arriveAtSuccess({ bunkerServerEnabled: false, pairsDirect: () => false });
+    expect(screen.queryByText(/Pair their phone now/)).toBeNull();
+    expect(screen.getByText(/Turn the Bunker on first/)).toBeDefined();
+  });
+
   it('names the page the bunker-off CTA actually opens', async () => {
     await arriveAtSuccess({ bunkerServerEnabled: false });
     expect(screen.getByText(/off in Bunker & Scanning settings/)).toBeDefined();

@@ -29,6 +29,11 @@ interface Props {
    * preview says "more than twice".
    */
   heartwoodFullAccess?: boolean;
+  /**
+   * The new dependant's phone pairs straight to the Heartwood (child-direct),
+   * so this phone's Bunker plays no part and must not be asked for.
+   */
+  pairsDirect?: (dependantId: string) => boolean;
 }
 
 type Step = 'form' | 'creating' | 'backup' | 'success' | 'error';
@@ -48,6 +53,7 @@ export function AddDependant({
   onMarkBackedUp,
   heartwoodDeriveCards = false,
   heartwoodFullAccess = false,
+  pairsDirect,
 }: Props) {
   const [step, setStep] = useState<Step>('form');
   const [name, setName] = useState('');
@@ -311,6 +317,8 @@ export function AddDependant({
 
   if (step === 'success') {
     const trimmedName = name.trim();
+    // Child-direct: the pair page goes to the Heartwood, never this phone's Bunker.
+    const direct = !!createdId && !!pairsDirect?.(createdId);
     return (
       <div className="fade-in" role="main" style={{ textAlign: 'center' }}>
         <div
@@ -351,18 +359,20 @@ export function AddDependant({
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, textAlign: 'left' }}>
-          {bunkerServerEnabled && onPairDevice && createdId && (
+          {(bunkerServerEnabled || direct) && onPairDevice && createdId && (
             <button
               className="btn btn-primary"
               onClick={() => onPairDevice(createdId)}
             >
               <Icon name="smartphone" size={15} className="icon-inline" />Pair their phone now
               <div style={{ fontWeight: 400, fontSize: '0.8rem', opacity: 0.85, marginTop: 2 }}>
-                Show a QR code on this phone for {trimmedName}'s phone to scan.
+                {direct
+                  ? <>Hold {trimmedName}'s phone against this one, or show a QR code for it to scan.</>
+                  : <>Show a QR code on this phone for {trimmedName}'s phone to scan.</>}
               </div>
             </button>
           )}
-          {!bunkerServerEnabled && onTurnOnBunker && (
+          {!bunkerServerEnabled && !direct && onTurnOnBunker && (
             <button
               className="btn btn-primary"
               onClick={onTurnOnBunker}
