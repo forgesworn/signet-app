@@ -101,9 +101,18 @@ describe('ChildAskApprovalModal', () => {
     expect(screen.getByRole('button', { name: CHILD_ASK_COPY.deny })).toBeTruthy();
   });
 
-  it('full-control: no Always button', () => {
+  it('full-control: no Always button, and a line saying why and where to change it', () => {
     render(<ChildAskApprovalModal asks={[pending()]} alwaysAvailableFor={() => false} onDecide={vi.fn()} />);
     expect(screen.queryByRole('button', { name: CHILD_ASK_COPY.allowAlways('public posts on', 'game.example.com', 'Lil') })).toBeNull();
+    expect(screen.getByTestId('child-ask-always-hidden').textContent).toBe(CHILD_ASK_COPY.alwaysHiddenFullControl('Lily'));
+  });
+
+  it('no "why" line when Always is offered, nor on an app-permission ask (its standing option is a Full-autonomy matter)', () => {
+    const { unmount } = render(<ChildAskApprovalModal asks={[pending()]} alwaysAvailableFor={() => true} onDecide={vi.fn()} />);
+    expect(screen.queryByTestId('child-ask-always-hidden')).toBeNull();
+    unmount();
+    render(<ChildAskApprovalModal asks={[pending({ scope: 'app-permission' })]} alwaysAvailableFor={() => false} onDecide={vi.fn()} />);
+    expect(screen.queryByTestId('child-ask-always-hidden')).toBeNull();
   });
 
   it('A12: a truncated request says how much is hidden', () => {

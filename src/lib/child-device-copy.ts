@@ -192,6 +192,8 @@ export const CHILD_ASK_COPY = {
   allowOnce: 'Allow once',
   /** A36: names the scope, the re-derived target and the persona — "Always allow sign-in to school.org for Sky". */
   allowAlways: (scopePhrase: string, target: string, persona: string) => `Always allow ${scopePhrase} ${target} for ${persona}`,
+  /** Why "Always allow" is missing: the child is on Full control, where every request is asked for. */
+  alwaysHiddenFullControl: (child: string) => `${child} is on Full control, so every request asks you. To offer “Always allow”, change Autonomy Level in ${child}’s settings.`,
   scopePhrase: {
     'sign-in': 'sign-in to',
     'venue-entry': 'venue entry at',
