@@ -10760,7 +10760,7 @@ function AppContent() {
   }, [pendingAddDependantRequest, navigateReplace]);
 
   // Decline on the child-mode refusal of a guardian-only page. Signs and
-  // publishes nothing: it only clears the request and leaves the page. Home,
+  // publishes nothing (no verify rejection either): it only clears the request and leaves the page. Home,
   // never `companion-apps` (the normal deny's target), which is a guardian page.
   const declineChildModeGuardianPage = useCallback(() => {
     if (page === 'approve-add-dependant') {
@@ -10769,8 +10769,20 @@ function AppContent() {
     }
     if (page === 'approve-companion-grant') setPendingPairingRequest(null);
     else if (page === 'contacts-grant-approve') setPendingContactsGrantV2(null);
+    else if (page === 'approve-verification') {
+      // Like Deny, minus the relay rejection: in local child mode that would
+      // be signed with the child's key.
+      const callback = pendingVerifyRequest?.callbackUrl;
+      const viaUrl = verifyArrivedViaUrl;
+      setPendingVerifyRequest(null);
+      setVerifyArrivedViaUrl(false);
+      if (viaUrl && callback) {
+        window.location.href = buildVerifyDeniedUrl(callback);
+        return;
+      }
+    }
     navigateReplace('home');
-  }, [page, handleDenyAddDependant, navigateReplace]);
+  }, [page, handleDenyAddDependant, navigateReplace, pendingVerifyRequest, verifyArrivedViaUrl]);
 
   // Carousel helpers — child mode, QR routing, and inline approval from current row
 

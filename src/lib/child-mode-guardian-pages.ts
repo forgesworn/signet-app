@@ -11,6 +11,11 @@
  * key labelled as the guardian. A Heartwood operator-import QR opens the
  * guardian's Advanced settings, with the signer, relays and operator key.
  *
+ * Age verification is listed too: stored credentials carry no owner
+ * (`StoredCredential`), so `pickCredential` can pick the guardian's 18+
+ * credential and the response then names the guardian's pubkey. There is no way
+ * to offer only the child's own.
+ *
  * `contacts-grant-code` is deliberately not listed: leaving that page strands a
  * live grant unchecked, and it is only reachable after an approve, which is now
  * refused.
@@ -24,6 +29,7 @@ export const CHILD_MODE_GUARDIAN_PAGES: readonly Page[] = [
   'contacts-grant-approve',
   'approve-add-dependant',
   'settings-advanced',
+  'approve-verification',
 ];
 
 /** `refuse`: show the refusal, no PIN. `hold`: child mode not yet known, show and ask nothing. */

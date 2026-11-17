@@ -41,6 +41,7 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain('<ChildModeGuardianRefusal ');
     for (const branch of [
       "if (page === 'settings-advanced') {",
+      "if (page === 'approve-verification' && pendingVerifyRequest) {",
       "if (page === 'approve-companion-grant' && pendingPairingRequest && identity) {",
       "if (page === 'contacts-grant-approve' && pendingContactsGrantV2 && identity && !encryptionKey && !isPairedChild) {",
       "if (page === 'approve-add-dependant' && pendingAddDependantRequest && identity",
@@ -58,6 +59,17 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(handler).toContain('setPendingContactsGrantV2(null)');
     expect(handler).toContain("navigateReplace('home')");
     expect(handler).not.toContain('companion-apps');
-    expect(handler).not.toMatch(/sign|publish|requestAuth/i);
+    expect(handler).not.toMatch(/signEvent|publish\w*\(|requestAuth\(|activeBackend|Backend/);
+    expect(handler).not.toContain('publishVerifyRejectionToRelay');
+  });
+
+  it('the verification decline clears the request and redirects like Deny, without the relay rejection', () => {
+    const start = idx('const declineChildModeGuardianPage = useCallback(() => {');
+    const handler = app.slice(start, app.indexOf('}, [page,', start));
+    expect(handler).toContain("page === 'approve-verification'");
+    expect(handler).toContain('setPendingVerifyRequest(null)');
+    expect(handler).toContain('setVerifyArrivedViaUrl(false)');
+    expect(handler).toContain('buildVerifyDeniedUrl(callback)');
+    expect(app.slice(idx('const handleDenyVerification = useCallback(() => {'))).toContain('publishVerifyRejectionToRelay(');
   });
 });
