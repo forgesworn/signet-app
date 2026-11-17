@@ -13,6 +13,7 @@ import type { ConnectedChildApp } from './child-activity';
 import { appTarget, childRuleId, isLiveRule, kindFromScope, normaliseAppId, siteTarget } from './child-rules';
 import { SCOPE_KINDS } from './policy-compiler';
 import { isDependantNaturalPersonActive } from './identity-display';
+import { pairedDeviceAllows } from './paired-device-personas';
 import { CHILD_PERMISSIONS_COPY as COPY } from './child-device-copy';
 
 /** Wire cap on `disconnectedApps` (child-rules-wire MAX_DISCONNECTED). */
@@ -117,18 +118,23 @@ export function ceilingTypeNames(kinds: number[], stage: AutonomyStage): string[
   return names;
 }
 
-/** The child's personas a guardian manages on the phone: default persona, the real identity once active, visible extras. */
+/**
+ * The child's personas a guardian manages on the phone: default persona, the
+ * real identity once active, visible extras — exactly the ones the phone has
+ * (`pairedDeviceAllows`, the rule the pairing reply, rules rail and inventory
+ * share). A persona removed from the phone or hidden from it is not listed
+ * (A51: it cannot be re-added without re-pairing; any rules it still has show
+ * under their own heading); the bound persona always is.
+ */
 export function permissionPersonas(dep: DependantIdentity): { pubkey: string; name: string }[] {
   const out: { pubkey: string; name: string }[] = [];
-  // A51: a persona removed from the phone is no longer managed there (never the bound one).
-  const bound = (dep.childDevice?.boundPersona ?? '').toLowerCase();
-  const removed = new Set((dep.childDevice?.removedPersonas ?? []).map(k => k.toLowerCase()).filter(k => k !== bound));
-  const put = (pk: string | undefined, name: string | undefined) => {
+  const allows = pairedDeviceAllows(dep);
+  const put = (pk: string | undefined, name: string | undefined, softDeleted = false) => {
     const p = (pk ?? '').toLowerCase();
-    if (/^[0-9a-f]{64}$/.test(p) && !removed.has(p) && !out.some(x => x.pubkey === p)) out.push({ pubkey: p, name: name || dep.displayName });
+    if (/^[0-9a-f]{64}$/.test(p) && allows(p, softDeleted) && !out.some(x => x.pubkey === p)) out.push({ pubkey: p, name: name || dep.displayName });
   };
   put(dep.persona?.publicKey, dep.persona?.displayName);
   if (isDependantNaturalPersonActive(dep)) put(dep.naturalPerson?.publicKey, dep.naturalPerson?.displayName);
-  for (const x of dep.extraPersonas ?? []) if (!x.hidden) put(x.publicKey, x.displayName);
+  for (const x of dep.extraPersonas ?? []) put(x.publicKey, x.displayName, x.hidden === true);
   return out;
 }

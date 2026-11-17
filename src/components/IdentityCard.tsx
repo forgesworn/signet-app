@@ -1,5 +1,5 @@
 import { HandshakeButton } from './HandshakeButton';
-import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
 import type { CarouselRow } from '../types';
 import type { KnownPlace } from '../types/known-places';
 import type { Badge } from '../lib/known-place-badges';
@@ -15,6 +15,9 @@ import { KnownPlacesStrip } from './KnownPlacesStrip';
 import { Icon } from './Icon';
 import { useCarouselArrows } from './CarouselArrowContext';
 import { armPickerGrace } from '../lib/picker-grace';
+import type { ChildSignerKind } from '../lib/child-bunker';
+import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
+import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 
 /**
  * One place this identity is known (a signed-in site, a paired app), with the
@@ -46,8 +49,11 @@ export interface IdentityCardProps {
    * (family-bunker §11.1.7). 'heartwood' when the family runs a Heartwood
    * signer that answered the capabilities probe, so the kid's sign-ins are
    * served by the device rather than parked on a guardian's phone.
+   * 'heartwood-connecting': a phone paired straight to the Heartwood whose
+   * connection is not up yet (it still never signs on a guardian's phone);
+   * 'heartwood-unreachable': still not up after a minute.
    */
-  childSignerKind?: 'guardian-phone' | 'heartwood';
+  childSignerKind?: ChildSignerKind;
   /**
    * Guardian's display name, surfaced in the dormant copy. Falls back
    * to "your guardian" when the status-sync payload didn't include it.
@@ -55,6 +61,8 @@ export interface IdentityCardProps {
   cachedGuardianName?: string;
   /** Pairing status for dependant rows. Undefined for non-dependants. */
   pairingStatus?: { paired: true } | { paired: false } | null;
+  /** Dependant rows on the guardian's phone: the child-direct ready check's notice (compact). */
+  readyNotice?: ReactNode;
   /** Optional resolved photo URL. When provided externally, overrides the
    *  internally-resolved per-persona avatar — used by tests / callers that
    *  want full control. When omitted, this component resolves the avatar
@@ -107,7 +115,17 @@ export interface IdentityCardProps {
 
 const BACKDROP_NOTE_MS = 4000;
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+const CHILD_NOTICE_STYLE: CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: 'var(--radius)',
+  background: 'var(--bg-card-alt)',
+  border: '1px solid var(--border)',
+  fontSize: '0.85rem',
+  lineHeight: 1.4,
+  textAlign: 'center',
+};
+
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -520,24 +538,24 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
           </div>
         )}
 
+        {readyNotice}
+
         {childDormant && (
           <div
             className="card-dormant-notice"
-            style={{
-              padding: '12px 14px',
-              borderRadius: 'var(--radius)',
-              background: 'var(--bg-card-alt)',
-              border: '1px solid var(--border)',
-              fontSize: '0.85rem',
-              lineHeight: 1.4,
-              textAlign: 'center',
-            }}
+            style={CHILD_NOTICE_STYLE}
           >
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              {childSignerKind === 'heartwood' ? 'Your family Heartwood signs for you.' : 'This device is dormant.'}
+              {childSignerKind === 'heartwood-unreachable'
+                ? CHILD_READY_COPY.unreachableHeading
+                : childSignerKind === 'heartwood' || childSignerKind === 'heartwood-connecting' ? 'Your family Heartwood signs for you.' : 'This device is dormant.'}
             </div>
             <div style={{ opacity: 0.8 }}>
-              {childSignerKind === 'heartwood' ? (
+              {childSignerKind === 'heartwood-unreachable' ? (
+                <>{CHILD_READY_COPY.unreachableBody(guardianName)}</>
+              ) : childSignerKind === 'heartwood-connecting' ? (
+                <>{CHILD_SIDE_COPY.connectingHeartwood}</>
+              ) : childSignerKind === 'heartwood' ? (
                 <>
                   Sign-ins from this device go to your family&rsquo;s Heartwood signer. Some may still need{' '}
                   <strong>{guardianName}</strong> to say yes.
@@ -549,6 +567,14 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 </>
               )}
             </div>
+          </div>
+        )}
+
+        {/* The notice used to be dormant-only, so a child on any other stage never learned the Heartwood was unreachable. */}
+        {!childDormant && childSignerKind === 'heartwood-unreachable' && (
+          <div className="card-dormant-notice" role="status" style={CHILD_NOTICE_STYLE}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>{CHILD_READY_COPY.unreachableHeading}</div>
+            <div style={{ opacity: 0.8 }}>{CHILD_READY_COPY.unreachableBody(guardianName)}</div>
           </div>
         )}
 

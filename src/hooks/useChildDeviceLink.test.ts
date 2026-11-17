@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -8,7 +8,7 @@ import { buildChildRulesEvent, CHILD_RULES_WIRE_D_TAG, type ChildRulesPayload } 
 import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '../lib/db';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 import type { PairedChildRecord } from '../types';
-import { useChildDeviceLink, APPROVE_IDENTITY_PLAINTEXT, type ChildLinkTransport } from './useChildDeviceLink';
+import { useChildDeviceLink, APPROVE_IDENTITY_PLAINTEXT, APPROVAL_CHANGED_RETRIES, UNPAUSE_SETTLE_MS, type ChildLinkTransport } from './useChildDeviceLink';
 import { buildUnpairedNotice, CHILD_UNPAIRED_D_TAG } from '../lib/child-activity';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 
@@ -46,8 +46,10 @@ function fakeTransport() {
   return { t, subs };
 }
 
-function fakeRouter(behaviour: Record<string, 'ok' | 'fail'>, primaryClient: string = clientPub, confirm: () => Promise<string> = async () => PERSONA) {
+function fakeRouter(behaviour: Record<string, 'ok' | 'fail' | 'hold' | 'changed'>, primaryClient: string = clientPub, confirm: () => Promise<string> = async () => PERSONA) {
   const calls: { slot: string; args: string[] }[] = [];
+  /** 'hold': the probe waits here until released (the card is up on the device). */
+  const held = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
   const router = {
     primaryClientPubkeyHex: primaryClient,
     primary: { request: async () => confirm() },
@@ -55,11 +57,13 @@ function fakeRouter(behaviour: Record<string, 'ok' | 'fail'>, primaryClient: str
       nip44Encrypt: async (recipient: string, text: string) => {
         calls.push({ slot, args: [recipient, text] });
         if (behaviour[slot] === 'fail') throw new Error('denied');
+        if (behaviour[slot] === 'changed') throw new Error('approval_changed: pairing or permissions changed; send the request again');
+        if (behaviour[slot] === 'hold') await new Promise<void>((resolve, reject) => { held.set(slot, { resolve, reject }); });
         return 'ciphertext';
       },
     }),
   } as unknown as BunkerBackendRouter;
-  return { router, calls, behaviour };
+  return { router, calls, behaviour, held };
 }
 
 beforeEach(async () => { await clearChildRulesCache(DEP); });
@@ -122,7 +126,7 @@ describe('useChildDeviceLink — rules', () => {
 });
 
 describe('useChildDeviceLink — identity approvals ceremony', () => {
-  it('asks the Heartwood once per non-bound persona, as that persona, and records approved / failed', async () => {
+  it('asks the Heartwood once per persona, the bound persona FIRST, as that persona, and records approved / failed', async () => {
     const { t } = fakeTransport();
     const { router, calls } = fakeRouter({ [NP]: 'fail' });
     const saved: PairedChildRecord[] = [];
@@ -134,9 +138,11 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     await waitFor(() => expect(result.current.personas.find(p => p.pubkey === NP)?.approval).toBe('failed'));
     await waitFor(() => expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved'));
     expect(result.current.personas.find(p => p.pubkey === PERSONA)?.approval).toBe('approved');
-    expect(calls.map(c => c.slot).sort()).toEqual([EXTRA, NP].sort());
+    expect(calls[0].slot).toBe(PERSONA);
+    expect(calls.map(c => c.slot).sort()).toEqual([EXTRA, NP, PERSONA].sort());
     for (const c of calls) expect(c.args).toEqual([c.slot, APPROVE_IDENTITY_PLAINTEXT]);
-    expect(saved.at(-1)?.identityApprovals).toMatchObject({ [EXTRA]: 'approved', [NP]: 'failed' });
+    expect(saved.at(-1)?.identityApprovals).toMatchObject({ [PERSONA]: 'approved', [EXTRA]: 'approved', [NP]: 'failed' });
+    expect(result.current.owed).toBe(1);
   });
 
   it('retryApproval re-asks a failed persona', async () => {
@@ -155,7 +161,7 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     const fr = fakeRouter({});
     let inv = [{ pubkey: EXTRA, name: 'Gamer' }];
     const { result, rerender } = renderHook(() => useChildDeviceLink({
-      record: record({ identityApprovals: { [EXTRA]: 'approved' } }), encryptionKey: KEY, router: fr.router, transport: t,
+      record: record({ identityApprovals: { [EXTRA]: 'approved', [PERSONA]: 'approved' } }), encryptionKey: KEY, router: fr.router, transport: t,
       inventoryPersonas: inv, onRecordUpdated: async () => {},
     }));
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
@@ -190,7 +196,7 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     }));
     await waitFor(() => expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved'));
     expect(result.current.personas.some(p => p.pubkey === NP)).toBe(false);
-    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+    expect(fr.calls.map(c => c.slot)).toEqual([PERSONA, EXTRA]);
   });
 
   it('A43: retryApproval refuses a persona outside the ceremony candidates (a withheld dormant NP, a stranger)', async () => {
@@ -203,7 +209,103 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     await waitFor(() => expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved'));
     await act(async () => { await result.current.retryApproval(NP); });
     await act(async () => { await result.current.retryApproval('99'.repeat(32)); });
-    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+    expect(fr.calls.map(c => c.slot)).toEqual([PERSONA, EXTRA]);
+  });
+
+  it('the bound persona is not shown ready before its probe returns; the press-and-hold row is the bound one', async () => {
+    const { t } = fakeTransport();
+    const fr = fakeRouter({ [PERSONA]: 'hold' });
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: fr.router, transport: t, onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(fr.held.has(PERSONA)).toBe(true));
+    expect(result.current.personas.find(p => p.pubkey === PERSONA)?.approval).toBe('waiting');
+    expect(result.current.rows[0]).toMatchObject({ pubkey: PERSONA, state: 'waiting', probing: true });
+    expect(result.current.probing).toBe(true);
+    expect(result.current.owed).toBe(2);
+    // One at a time: the extra waits behind the bound persona's card.
+    expect(fr.calls.map(c => c.slot)).toEqual([PERSONA]);
+    await act(async () => { fr.held.get(PERSONA)!.resolve(); });
+    await waitFor(() => expect(result.current.owed).toBe(0));
+    expect(fr.calls.map(c => c.slot)).toEqual([PERSONA, EXTRA]);
+    expect(result.current.readyThisSession).toBe(true);
+  });
+
+  it('like the real router, the bound persona is probed on the primary connection (same client key), extras on their routes', async () => {
+    const { t } = fakeTransport();
+    const seen: string[] = [];
+    const primary = {
+      activePublicKeyHex: PERSONA,
+      request: async () => PERSONA,
+      nip44Encrypt: async (recipient: string) => { seen.push(`primary:${recipient}`); return 'x'; },
+    };
+    const router = {
+      primaryClientPubkeyHex: clientPub,
+      primary,
+      // BunkerBackendRouter.backendFor: the primary's own pubkey gets the primary itself.
+      backendFor: (slot: string) => (slot === primary.activePublicKeyHex ? primary
+        : { nip44Encrypt: async (recipient: string) => { seen.push(`route:${slot}:${recipient}`); return 'x'; } }),
+    } as unknown as BunkerBackendRouter;
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router, transport: t, onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(result.current.owed).toBe(0));
+    expect(seen).toEqual([`primary:${PERSONA}`, `route:${EXTRA}:${EXTRA}`]);
+  });
+
+  it('a timed-out probe is waiting (owed, Try again), never ready', async () => {
+    const { t } = fakeTransport();
+    const fr = fakeRouter({ [PERSONA]: 'hold' });
+    const { result } = renderHook(() => useChildDeviceLink({ record: record({ identityApprovals: { [EXTRA]: 'approved' } }), encryptionKey: KEY, router: fr.router, transport: t, onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(fr.held.has(PERSONA)).toBe(true));
+    await act(async () => { fr.held.get(PERSONA)!.reject(new Error('BunkerRequestTimeoutError: nip44_encrypt')); });
+    await waitFor(() => expect(result.current.rows[0]).toMatchObject({ pubkey: PERSONA, state: 'waiting', failed: true }));
+    expect(result.current.owed).toBe(1);
+    expect(result.current.readyThisSession).toBe(false);
+  });
+
+  it('a card the device withdrew (approval_changed) is asked again, at most twice more, then waits for Finish now', async () => {
+    const { t } = fakeTransport();
+    const fr = fakeRouter({ [PERSONA]: 'changed' });
+    const { result } = renderHook(() => useChildDeviceLink({ record: record({ identityApprovals: { [EXTRA]: 'approved' } }), encryptionKey: KEY, router: fr.router, transport: t, onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(result.current.personas.find(p => p.pubkey === PERSONA)?.approval).toBe('failed'));
+    expect(fr.calls.filter(c => c.slot === PERSONA)).toHaveLength(1 + APPROVAL_CHANGED_RETRIES);
+    fr.behaviour[PERSONA] = 'ok';
+    await act(async () => { await result.current.finishNow(); });
+    expect(result.current.personas.find(p => p.pubkey === PERSONA)?.approval).toBe('approved');
+    expect(result.current.owed).toBe(0);
+  });
+
+  it('Finish now asks again for every owed persona (failed and put off), bound first, and only listed ones (A43)', async () => {
+    const { t } = fakeTransport();
+    const fr = fakeRouter({});
+    const { result } = renderHook(() => useChildDeviceLink({
+      record: record({ identityApprovals: { [PERSONA]: 'failed', [EXTRA]: 'deferred' } }), encryptionKey: KEY, router: fr.router, transport: t,
+      withheldSlots: [NP], onRecordUpdated: async () => {},
+    }));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.owed).toBe(2);
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls.map(c => c.slot)).toEqual([PERSONA, EXTRA]);
+    expect(result.current.owed).toBe(0);
+  });
+
+  it('a persona added after pairing enters the checklist once the rules payload lists it, and is probed', async () => {
+    const NEW = '78'.repeat(32);
+    await saveChildRulesCache(DEP, { ...payload(100), personas: [PERSONA, EXTRA] }, KEY);
+    const { t, subs } = fakeTransport();
+    const fr = fakeRouter({ [NEW]: 'hold' });
+    const { result } = renderHook(() => useChildDeviceLink({
+      record: record({ identityApprovals: { [PERSONA]: 'approved', [EXTRA]: 'approved' } }), encryptionKey: KEY, router: fr.router, transport: t,
+      inventoryPersonas: [{ pubkey: NEW, name: 'Climber' }], onRecordUpdated: async () => {},
+    }));
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(100));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(result.current.personas.some(p => p.pubkey === NEW)).toBe(false);
+    expect(result.current.owed).toBe(0);
+    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200), personas: [PERSONA, EXTRA, NEW] }, railPriv, clientPub, 1_800_000_000)); });
+    await waitFor(() => expect(fr.held.has(NEW)).toBe(true));
+    expect(result.current.rows.find(r => r.pubkey === NEW)).toMatchObject({ name: 'Climber', state: 'waiting', probing: true });
+    expect(result.current.owed).toBe(1);
+    await act(async () => { fr.held.get(NEW)!.resolve(); });
+    await waitFor(() => expect(result.current.owed).toBe(0));
   });
 
   it('waits for the router before asking', async () => {
@@ -211,6 +313,217 @@ describe('useChildDeviceLink — identity approvals ceremony', () => {
     const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, transport: t, onRecordUpdated: async () => {} }));
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('waiting');
+  });
+});
+
+describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `approved`)', () => {
+  const both = { [PERSONA]: 'approved', [EXTRA]: 'approved' } as const;
+  async function mount(rules: ChildRulesPayload | null, over: Partial<PairedChildRecord> = {}, behaviour: Record<string, 'ok' | 'fail' | 'hold'> = {}) {
+    if (rules) await saveChildRulesCache(DEP, rules, KEY);
+    const { t, subs } = fakeTransport();
+    const fr = fakeRouter(behaviour);
+    const h = renderHook(() => useChildDeviceLink({
+      record: record({ identityApprovals: { ...both }, ...over }), encryptionKey: KEY, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated: async () => {},
+    }));
+    if (rules) await waitFor(() => expect(h.result.current.rules?.updatedAt).toBe(rules.updatedAt));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    return { ...h, fr, subs };
+  }
+
+  it('a payload without `approved` (an older guardian, or one that cannot read the device): this phone\'s own answers stand', async () => {
+    const { result, fr } = await mount(payload(100));
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.summary).toEqual({ kind: 'ready' });
+    expect(result.current.owed).toBe(0);
+    // The guardian's phone could not confirm it: the child's Ready line says so.
+    expect(result.current.readyUnconfirmed).toBe(true);
+  });
+
+  it('a restored or cleared Heartwood: a saved "approved" the reading does not list is owed again, and Finish now works HERE', async () => {
+    const { result, fr } = await mount({ ...payload(100), approved: [PERSONA] });
+    // Not probed on its own (no card popping up away from home): owed, with Finish now.
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.rows.find(r => r.pubkey === EXTRA)).toMatchObject({ state: 'waiting' });
+    expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+    // The press came after the guardian's reading: counted until a newer reading says otherwise.
+    expect(result.current.summary).toEqual({ kind: 'ready' });
+  });
+
+  it('a rules edit republishing the same (older) reading keeps the press: no nag for a press already made', async () => {
+    const { result, fr, subs } = await mount({ ...payload(100), approved: [PERSONA] });
+    await act(async () => { await result.current.finishNow(); });
+    expect(result.current.summary.kind).toBe('ready');
+    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200, 'full-control'), approved: [PERSONA] }, railPriv, clientPub, 1_800_000_000)); });
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(200));
+    expect(result.current.summary.kind).toBe('ready');
+    expect(fr.calls).toHaveLength(1);
+  });
+
+  it('a reading that lost an identity it held (a restore, cleared approvals) overrides an earlier press', async () => {
+    const { result, fr, subs } = await mount({ ...payload(100), approved: [PERSONA] });
+    await act(async () => { await result.current.finishNow(); });
+    expect(result.current.summary.kind).toBe('ready');
+    await act(async () => { subs[0].onEvent(await buildChildRulesEvent({ ...payload(200), approved: [] }, railPriv, clientPub, 1_800_000_000)); });
+    await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 2 }));
+    expect(fr.calls).toHaveLength(1);
+    // Finish now on this phone asks again for both.
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls.map(c => c.slot)).toEqual([EXTRA, PERSONA, EXTRA]);
+  });
+
+  describe('with the time the guardian read the device (`approvedAt`)', () => {
+    const MIN = 60_000;
+    const send = async (subs: { onEvent: (e: NostrEvent) => void }[], p: ChildRulesPayload) => {
+      await act(async () => { subs[0].onEvent(await buildChildRulesEvent(p, railPriv, clientPub, 1_800_000_000)); });
+    };
+
+    it('a press after the reading stands through a rules edit that republishes that reading; a later reading without it is owed', async () => {
+      const now = Date.now();
+      const { result, fr, subs } = await mount({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+      await act(async () => { await result.current.finishNow(); });
+      expect(fr.calls.map(c => c.slot)).toEqual([EXTRA]);
+      expect(result.current.summary.kind).toBe('ready');
+      // A rules edit: the same (older) reading again.
+      await send(subs, { ...payload(now + 1_000, 'full-control'), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 1_000));
+      expect(result.current.summary.kind).toBe('ready');
+      // A reading taken after the press that does not list it.
+      await send(subs, { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+      // A newer payload carrying an OLDER reading time (another guardian phone) does not bring the press back.
+      await send(subs, { ...payload(now + 30 * MIN), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 30 * MIN));
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+      expect(fr.calls).toHaveLength(1);
+    });
+
+    it('an empty reading, presses, then a full clear read later: owed again', async () => {
+      const now = Date.now();
+      const { result, fr, subs } = await mount({ ...payload(now), approved: [], approvedAt: now - 10 * MIN });
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 2 });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      await send(subs, { ...payload(now + 20 * MIN), approved: [], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 2 }));
+      expect(fr.calls).toHaveLength(2);
+    });
+
+    /** Mounted with props, so a lock (no record, no key) and an unlock (the record as last saved) can be played. */
+    async function mountSaved(rules: ChildRulesPayload) {
+      await saveChildRulesCache(DEP, rules, KEY);
+      const { t, subs } = fakeTransport();
+      const fr = fakeRouter({});
+      let saved: PairedChildRecord = record({ identityApprovals: { ...both } });
+      const onRecordUpdated = async (r: PairedChildRecord) => { saved = r; };
+      const h = renderHook(({ rec, key }) => useChildDeviceLink({
+        record: rec, encryptionKey: key, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated,
+      }), { initialProps: { rec: saved as PairedChildRecord | null, key: KEY as string | null } });
+      await waitFor(() => expect(h.result.current.rules?.updatedAt).toBe(rules.updatedAt));
+      await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+      const relock = async () => {
+        h.rerender({ rec: null, key: null });
+        h.rerender({ rec: saved, key: KEY });
+        await waitFor(() => expect(h.result.current.rules).not.toBeNull());
+        await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+      };
+      return { ...h, fr, subs, relock, saved: () => saved };
+    }
+
+    it('a press survives a lock: the older reading does not undo it, no notice; a later reading without it is owed', async () => {
+      const now = Date.now();
+      const { result, fr, subs, relock, saved } = await mountSaved({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      expect(saved().identityPressedAt?.[EXTRA]).toBeGreaterThanOrEqual(now);
+      // The app locks whenever it is hidden; unlocking reloads the record as saved.
+      await relock();
+      expect(result.current.rules?.approvedAt).toBe(now - 10 * MIN);
+      expect(result.current.summary).toEqual({ kind: 'ready' });
+      expect(result.current.owed).toBe(0);
+      // Nothing to show: Ready is said only after a press made in this session.
+      expect(result.current.readyThisSession).toBe(false);
+      expect(fr.calls).toHaveLength(1);
+      // A reading taken after the press that does not list it (on the subscription opened at unlock).
+      await send([subs[subs.length - 1]], { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+    });
+
+    it('a press a later reading overruled stays overruled after a lock, even when the newest payload carries an older reading', async () => {
+      const now = Date.now();
+      const { result, subs, relock, saved } = await mountSaved({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      await send(subs, { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+      await waitFor(() => expect(saved().identityPressedAt?.[EXTRA]).toBeUndefined());
+      // Another guardian phone: a newer payload, an older reading.
+      await send(subs, { ...payload(now + 30 * MIN), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 30 * MIN));
+      await waitFor(async () => expect((await loadChildRulesCache(DEP, KEY))?.updatedAt).toBe(now + 30 * MIN));
+      await relock();
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 30 * MIN));
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+    });
+
+    it('a reading up to 2 minutes after the press (the phones\' clocks differ) leaves the press standing', async () => {
+      const now = Date.now();
+      const { result, subs } = await mount({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      await send(subs, { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: Date.now() + MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 20 * MIN));
+      expect(result.current.summary.kind).toBe('ready');
+    });
+  });
+
+  it('listed by the guardian: ready even without a probe of its own', async () => {
+    const { result, fr } = await mount({ ...payload(100), approved: [EXTRA, PERSONA].sort() }, { identityApprovals: {} });
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.summary).toEqual({ kind: 'ready' });
+    expect(result.current.readyUnconfirmed).toBe(false);
+  });
+
+  it('a full slot (16 recorded, this persona absent): cannot remember, no press count, Finish now sends nothing', async () => {
+    const sixteen = Array.from({ length: 16 }, (_, i) => `c${i.toString(16).padStart(63, '0')}`).concat(PERSONA).slice(1).sort();
+    const { result, fr } = await mount({ ...payload(100), approved: sixteen });
+    expect(result.current.rows.find(r => r.pubkey === EXTRA)).toMatchObject({ state: 'full' });
+    expect(result.current.summary).toEqual({ kind: 'full' });
+    expect(result.current.owed).toBe(0);
+    await act(async () => { await result.current.finishNow(); });
+    expect(fr.calls).toHaveLength(0);
+  });
+});
+
+describe('useChildDeviceLink — paused', () => {
+  it('no probe while paused, nothing owed; probes start after the pause ends (and the settle delay)', async () => {
+    const pausedRules = { ...payload(100), defaultSchedule: { paused: true } as ChildRulesPayload['defaultSchedule'] };
+    await saveChildRulesCache(DEP, pausedRules, KEY);
+    const { t, subs } = fakeTransport();
+    const fr = fakeRouter({});
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated: async () => {} }));
+    await waitFor(() => expect(result.current.rules?.updatedAt).toBe(100));
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.paused).toBe(true);
+    expect(result.current.summary).toEqual({ kind: 'paused' });
+    expect(result.current.owed).toBe(0);
+    await act(async () => { await result.current.finishNow(); });
+    await act(async () => { await result.current.retryApproval(EXTRA); });
+    expect(fr.calls).toHaveLength(0);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await act(async () => { subs[0].onEvent(await buildChildRulesEvent(payload(200), railPriv, clientPub, 1_800_000_000)); });
+      await waitFor(() => expect(result.current.paused).toBe(false));
+      expect(fr.calls).toHaveLength(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(UNPAUSE_SETTLE_MS + 50); });
+      await waitFor(() => expect(fr.calls.map(c => c.slot)).toEqual([PERSONA, EXTRA]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -228,7 +541,7 @@ describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
   }
 
   it('deferring every pending persona finishes the ceremony without a probe', async () => {
-    const { fr, saved, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved' } });
+    const { fr, saved, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved', [PERSONA]: 'approved' } });
     const { result } = mk(rec);
     act(() => { result.current.deferApproval(NP); });
     expect(result.current.personas.find(p => p.pubkey === NP)?.approval).toBe('deferred');
@@ -236,10 +549,13 @@ describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     expect(fr.calls.filter(c => c.slot === NP)).toHaveLength(0);
     expect(saved.at(-1)?.identityApprovals).toMatchObject({ [NP]: 'deferred', [EXTRA]: 'approved' });
+    // Put off is still owed: the notice stays until the press is done.
+    expect(result.current.owed).toBe(1);
+    expect(result.current.rows.find(r => r.pubkey === NP)?.state).toBe('skipped');
   });
 
   it('a deferred persona survives a reload of the record and is not probed', async () => {
-    const first = setup({ identityApprovals: { [EXTRA]: 'approved' } });
+    const first = setup({ identityApprovals: { [EXTRA]: 'approved', [PERSONA]: 'approved' } });
     const a = first.mk(first.rec);
     act(() => { a.result.current.deferApproval(NP); });
     const stored = first.saved.at(-1)!;
@@ -262,7 +578,7 @@ describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
   });
 
   it('Approve now runs exactly one probe for that persona', async () => {
-    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved' } });
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved', [PERSONA]: 'approved' } });
     const { result } = mk(rec);
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     expect(fr.calls).toHaveLength(0);
@@ -272,7 +588,7 @@ describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
   });
 
   it('first use of a deferred persona runs its probe before the request; later uses do not', async () => {
-    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved' } });
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved', [PERSONA]: 'approved' } });
     const { result } = mk(rec);
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     let ok: boolean | undefined;
@@ -282,13 +598,13 @@ describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
     await act(async () => { ok = await result.current.ensureApproved(EXTRA); });
     expect(ok).toBe(true);
     expect(fr.calls).toHaveLength(1);
-    // the bound persona and an approved one never probe
+    // approved personas (the bound one included) never probe again
     await act(async () => { await result.current.ensureApproved(PERSONA); await result.current.ensureApproved(NP); });
     expect(fr.calls).toHaveLength(1);
   });
 
   it('concurrent first uses share one probe, and a refused probe blocks the request', async () => {
-    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved' } }, { [EXTRA]: 'fail' });
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'deferred', [NP]: 'approved', [PERSONA]: 'approved' } }, { [EXTRA]: 'fail' });
     const { result } = mk(rec);
     await act(async () => { await new Promise(r => setTimeout(r, 20)); });
     let out: boolean[] = [];
@@ -298,13 +614,26 @@ describe('useChildDeviceLink — "Later" (deferred approvals)', () => {
     expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('failed');
   });
 
-  it('deferApproval refuses the bound persona, an approved one and a stranger', async () => {
-    const { mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved' } });
+  it('deferApproval refuses an approved persona (the bound one included) and a stranger', async () => {
+    const { mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved', [PERSONA]: 'approved' } });
     const { result } = mk(rec);
     act(() => { result.current.deferApproval(PERSONA); result.current.deferApproval(EXTRA); result.current.deferApproval('99'.repeat(32)); });
     expect(result.current.personas.find(p => p.pubkey === EXTRA)?.approval).toBe('approved');
     expect(result.current.personas.find(p => p.pubkey === PERSONA)?.approval).toBe('approved');
     expect(result.current.personas).toHaveLength(3);
+  });
+
+  it('the bound persona may be put off too; its first use then runs the probe', async () => {
+    const { fr, mk, rec } = setup({ identityApprovals: { [EXTRA]: 'approved', [NP]: 'approved', [PERSONA]: 'deferred' } });
+    const { result } = mk(rec);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(fr.calls).toHaveLength(0);
+    expect(result.current.owed).toBe(1);
+    let ok: boolean | undefined;
+    await act(async () => { ok = await result.current.ensureApproved(PERSONA); });
+    expect(ok).toBe(true);
+    expect(fr.calls.map(c => c.slot)).toEqual([PERSONA]);
+    expect(result.current.owed).toBe(0);
   });
 });
 

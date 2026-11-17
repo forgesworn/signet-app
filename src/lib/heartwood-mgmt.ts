@@ -32,7 +32,7 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { v2 as nip44 } from 'nostr-tools/nip44';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { publishEvent, subscribeEvents } from './relay-service';
-import type { DeviceClientSlot, DeviceNetworkConfig, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
+import type { ClientApproval, DeviceClientSlot, DeviceNetworkConfig, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
 
 export type { DeviceClientSlot, DeviceNetworkConfig, DeviceStatus, SlotPolicyUpdate } from './heartwood-mgmt-types';
 export {
@@ -459,6 +459,30 @@ function optBool(v: unknown): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined;
 }
 
+const STRICT_HEX16 = /^[0-9a-f]{16}$/;
+
+/**
+ * `client_approvals` → per-client approvals, or undefined when the device did
+ * not report them (absent, `null`) or the field is not exactly the firmware's
+ * shape. All or nothing: one bad entry rejects the whole field rather than
+ * reading a partial list as "these are all the approvals".
+ */
+export function parseClientApprovals(v: unknown): ClientApproval[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: ClientApproval[] = [];
+  for (const row of v) {
+    if (!isRecord(row)) return undefined;
+    const client = row.client_pubkey;
+    const ids = row.approved_identities;
+    const tags = row.legacy_identity_tags;
+    if (typeof client !== 'string' || !HEX64.test(client)) return undefined;
+    if (!isStringArray(ids) || !ids.every(x => HEX64.test(x))) return undefined;
+    if (!isStringArray(tags) || !tags.every(x => STRICT_HEX16.test(x))) return undefined;
+    out.push({ clientPubkey: client, approvedIdentities: [...ids], legacyIdentityTags: [...tags] });
+  }
+  return out;
+}
+
 /** Parse one `client_summary` row; undefined ⇒ malformed (dropped). */
 export function parseDeviceClientSlot(row: unknown): DeviceClientSlot | undefined {
   if (!isRecord(row)) return undefined;
@@ -480,6 +504,8 @@ export function parseDeviceClientSlot(row: unknown): DeviceClientSlot | undefine
   if (row.bound_identity === null || row.bound_identity === undefined) boundIdentity = null;
   else if (typeof row.bound_identity === 'string' && HEX64.test(row.bound_identity.toLowerCase())) boundIdentity = row.bound_identity.toLowerCase();
   else return undefined;
+  // Never drops the row: pairing checks and the policy push read it.
+  const clientApprovals = parseClientApprovals(row.client_approvals);
   return {
     slotIndex,
     label: typeof row.label === 'string' ? row.label : '',
@@ -495,6 +521,7 @@ export function parseDeviceClientSlot(row: unknown): DeviceClientSlot | undefine
     petitionOnDeny,
     auditChildWrap,
     boundIdentity,
+    ...(clientApprovals ? { clientApprovals } : {}),
   };
 }
 

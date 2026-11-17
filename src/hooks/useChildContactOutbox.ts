@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { loadPairedChild } from '../lib/db';
-import { extractEndpointPubkey } from '../lib/dependant-status-sync';
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import { loadChildContactOutbox, type ChildContactOutboxEntry } from '../lib/child-contact-exchange';
 import type { ChildRequestScope } from '../lib/child-contact-requests';
 
@@ -25,7 +25,8 @@ export function useChildContactOutbox(options: {
     const current = () => active && latest.current === session;
     void (async () => {
       const pair = await loadPairedChild(child, key); if (!current() || !pair || pair.guardianPubkey !== guardian) return;
-      const endpoint = extractEndpointPubkey(pair.bunkerUri); if (!endpoint) return;
+      // Same scope as the request it records (App's askGuardianToConnect): the rail key on a direct pairing.
+      const endpoint = guardianRailPubkey(pair); if (!endpoint) return;
       const scope: ChildRequestScope = { guardian, child, endpoint, client: pair.clientKeypair.publicKey, personas: JSON.parse(personas) };
       const loaded = await loadChildContactOutbox(scope, key, current);
       if (current()) setEntries(loaded);

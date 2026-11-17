@@ -86,3 +86,23 @@ export function deriveExtraPersonaOnDevice(
   if (!derivationName) throw new Error('Invalid derivation name');
   return deriveToken(requestFn, derivationName, timeoutMs);
 }
+
+/**
+ * Wrap a device derive so `onActive(+1)` / `onActive(-1)` bracket each call.
+ * The UI shows `HEARTWOOD_HOLD_TO_FINISH` only while a derive is actually
+ * with the device: a caller that derives locally (a mnemonic is present)
+ * never calls it, so the hint cannot appear when the keys are local.
+ */
+export function trackDeviceDerive<A extends unknown[], R>(
+  derive: (...args: A) => Promise<R>,
+  onActive: (delta: 1 | -1) => void,
+): (...args: A) => Promise<R> {
+  return async (...args: A) => {
+    onActive(1);
+    try {
+      return await derive(...args);
+    } finally {
+      onActive(-1);
+    }
+  };
+}

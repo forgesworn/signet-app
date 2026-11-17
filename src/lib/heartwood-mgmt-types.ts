@@ -30,6 +30,24 @@ export interface DeviceClientSlot {
   auditChildWrap: boolean;
   /** Lowercase hex64 identity the slot serves, or null. */
   boundIdentity: string | null;
+  /**
+   * `client_approvals`: which identities each client key on the slot may act
+   * as without a press (firmware per-client consent, #169). Absent when the
+   * device did not report it: older firmware, a slot with no per-client
+   * grants (`null` on the wire), or a field this phone could not read. Absent
+   * means "not reported", never "nothing approved".
+   */
+  clientApprovals?: ClientApproval[];
+}
+
+/** One `client_approvals` entry: a client key and what it is approved to act as. */
+export interface ClientApproval {
+  /** Lowercase hex64 client pubkey. */
+  clientPubkey: string;
+  /** Lowercase hex64 identities this client may act as. */
+  approvedIdentities: string[];
+  /** Lowercase hex16 (8-byte) identity prefixes a migrated legacy client still holds. */
+  legacyIdentityTags: string[];
 }
 
 /**

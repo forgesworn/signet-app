@@ -3359,6 +3359,7 @@ function directPairingFields(record: Omit<PairedChildRecord, 'id' | 'encrypted'>
   return {
     mode: 'heartwood-direct', railPubkey, personaPubkey, hwRelays: [...hwRelays], railRelay, personas,
     ...(record.identityApprovals ? { identityApprovals: cleanApprovals(record.identityApprovals) } : {}),
+    ...(record.identityPressedAt ? { identityPressedAt: cleanPressedAt(record.identityPressedAt) } : {}),
   };
 }
 
@@ -3370,16 +3371,33 @@ function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 
   return out;
 }
 
-/** Persist the identity-approval ceremony state (clear routing metadata). */
+function cleanPressedAt(a: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(a)) {
+    if (STRICT_HEX64.test(k) && typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Persist the identity-approval ceremony state and, when given, when each
+ * persona was last pressed (clear routing metadata, like the states).
+ */
 export async function setPairedChildIdentityApprovals(
   dependantPubkey: string,
   approvals: Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'>,
+  pressedAt?: Record<string, number>,
 ): Promise<void> {
   if (!HEX64.test(dependantPubkey)) return;
   const db = await getDB();
   const tx = db.transaction('pairedChild', 'readwrite');
   const raw = await tx.store.get(dependantPubkey.toLowerCase()) as PairedChildRecord | undefined;
-  if (raw?.mode === 'heartwood-direct') await tx.store.put({ ...raw, identityApprovals: cleanApprovals(approvals) });
+  if (raw?.mode === 'heartwood-direct') {
+    await tx.store.put({
+      ...raw, identityApprovals: cleanApprovals(approvals),
+      ...(pressedAt ? { identityPressedAt: cleanPressedAt(pressedAt) } : {}),
+    });
+  }
   await tx.done;
 }
 
@@ -3412,6 +3430,17 @@ export async function loadChildRulesCache(dependantPubkey: string, encryptionKey
     const p = parsed as ChildRulesPayload;
     if (p.v !== 1 || p.dependantId !== dependantPubkey.toLowerCase() || !Array.isArray(p.rules)
       || !Array.isArray(p.ceilingKinds) || !Array.isArray(p.disconnectedApps) || !Number.isSafeInteger(p.updatedAt)) return null;
+    // The ready check's reading: a malformed one is dropped (the child falls back to its own answers).
+    if (p.approved !== undefined && !(Array.isArray(p.approved) && p.approved.length <= 32 && p.approved.every(x => typeof x === 'string' && /^[0-9a-f]{64}$/.test(x)))) {
+      const { approved: _drop, approvedAt: _at, ...rest } = p; void _drop; void _at;
+      return rest;
+    }
+    // Its time, as the wire checks it (`isApprovedAt`): only with a reading, ms, never after `updatedAt`.
+    if (p.approvedAt !== undefined && (p.approved === undefined || typeof p.approvedAt !== 'number' || !Number.isSafeInteger(p.approvedAt)
+      || p.approvedAt < 1_600_000_000_000 || p.approvedAt > p.updatedAt)) {
+      const { approvedAt: _drop, ...rest } = p; void _drop;
+      return rest;
+    }
     return p;
   } catch {
     return null;
@@ -4184,6 +4213,65 @@ export function appendGuardianActing(entry: GuardianActingEntry, encryptionKey: 
     const list = await loadGuardianActing(encryptionKey);
     const next = pruneGuardianActing([entry, ...list], Math.floor(Date.now() / 1000));
     await saveEncryptedJsonRow(GUARDIAN_ACTING_ROW, next, encryptionKey);
+  });
+}
+
+const CHILD_READY_ROW = CHILD_DIRECT_ROW_PREFIX + 'readyCheck';
+
+/**
+ * Guardian's phone: the child-direct ready check's last result per direct
+ * dependant (`useGuardianReadyChecks`). Encrypted, device-local, never on any
+ * wire, and outside the dependant record so no dependant save or sync merge
+ * can overwrite it. A record whose `pairing` no longer matches the
+ * dependant's pairing (re-pair, unpair) is ignored and pruned on the next
+ * write.
+ */
+export interface ChildReadyRecord {
+  /** `dep.id:clientPubkey:slotIndex:secretFingerprint`, lowercase. */
+  pairing: string;
+  /** This phone's own row (its natural person) at the last check. Written as owed BEFORE a probe is sent. */
+  guardian: 'owed' | 'confirmed' | 'unknown' | 'no-route' | 'full';
+  /** The child's recorded identities at the last good reading; absent when the device did not report them. */
+  approved?: string[];
+  /** Unix ms. */
+  at: number;
+}
+export type ChildReadyRecords = Record<string, ChildReadyRecord>;
+
+const READY_OUTCOMES: readonly string[] = ['owed', 'confirmed', 'unknown', 'no-route', 'full'];
+
+function parseChildReadyRecord(x: unknown): ChildReadyRecord | null {
+  if (!x || typeof x !== 'object') return null;
+  const o = x as Record<string, unknown>;
+  if (typeof o.pairing !== 'string' || o.pairing.length > 400 || typeof o.guardian !== 'string' || !READY_OUTCOMES.includes(o.guardian)
+    || !Number.isSafeInteger(o.at)) return null;
+  const out: ChildReadyRecord = { pairing: o.pairing, guardian: o.guardian as ChildReadyRecord['guardian'], at: o.at as number };
+  if (o.approved !== undefined) {
+    if (!Array.isArray(o.approved) || o.approved.length > 32 || !o.approved.every(a => typeof a === 'string' && /^[0-9a-f]{64}$/.test(a))) return null;
+    out.approved = [...o.approved as string[]];
+  }
+  return out;
+}
+
+export async function loadChildReadyRecords(encryptionKey: string): Promise<ChildReadyRecords> {
+  const raw = await loadEncryptedJsonRow(CHILD_READY_ROW, encryptionKey);
+  const out: ChildReadyRecords = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [dep, rec] of Object.entries(raw as Record<string, unknown>)) {
+    if (!HEX64.test(dep)) continue;
+    const r = parseChildReadyRecord(rec);
+    if (r) out[dep.toLowerCase()] = r;
+  }
+  return out;
+}
+
+const childReadyWrites = createSerialQueue();
+
+/** Serialised read-modify-write of the whole row; `update` returns the new map (null: no change). */
+export function updateChildReadyRecords(update: (current: ChildReadyRecords) => ChildReadyRecords | null, encryptionKey: string): Promise<void> {
+  return childReadyWrites.run(async () => {
+    const next = update(await loadChildReadyRecords(encryptionKey));
+    if (next) await saveEncryptedJsonRow(CHILD_READY_ROW, next, encryptionKey);
   });
 }
 

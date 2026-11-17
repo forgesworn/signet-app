@@ -1,7 +1,7 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb, purgeAllUserData } from './db';
 import { LocalSigningBackend } from './signing-backend';
-import { childDirectoryPersonas, resolveChildAskPersona, publishChildContactDirectory, reserveChildDirectoryRevision, type ChildDirectoryPublicationScope } from './child-contact-directory-publisher';
+import { childDirectoryPersonas, resolveChildAskPersona, publishChildContactDirectory, reserveChildDirectoryRevision, type ChildDirectoryPublicationScope, type ChildDirectoryResendCache } from './child-contact-directory-publisher';
 import { openChildContactDirectory } from './child-contact-directory';
 import * as crypto from './crypto-store';
 import { contactIdentityLists } from './contacts-v2-identity-lists';
@@ -29,6 +29,16 @@ it('omits dormant, hidden and removed persona slots', () => {
   dep.extraPersonas = [{ publicKey: '6'.repeat(64), hidden: true }, { publicKey: '7'.repeat(64) }] as typeof dep.extraPersonas;
   dep.hiddenOnPairedDeviceKeys = [persona];
   expect(childDirectoryPersonas(dep)).toEqual(['7'.repeat(64)]);
+});
+it('A51: omits personas removed from a direct child\'s phone, never the bound one', () => {
+  // The child's directory hook refuses a view naming a persona it no longer
+  // has, so a removed persona left in this list would blank the whole directory.
+  const dep = scope().dependant;
+  dep.extraPersonas = [{ publicKey: '7'.repeat(64) }, { publicKey: '8'.repeat(64) }] as typeof dep.extraPersonas;
+  dep.hiddenOnPairedDeviceKeys = [persona];
+  dep.childDevice = { mode: 'heartwood-direct', slotLabel: 'x', secretFingerprint: 'ab', slotIndex: 1, clientPubkey: '9'.repeat(64),
+    boundPersona: persona, pairedAt: 1, removedPersonas: ['7'.repeat(64), persona] };
+  expect(childDirectoryPersonas(dep)).toEqual([persona, '8'.repeat(64)]);
 });
 it('sends an authenticated encrypted snapshot after fresh scope checks', async () => {
   const send = vi.fn(), readScope = vi.fn(async () => scope());
@@ -74,6 +84,46 @@ it('does not reuse a revision after a transport failure', async () => {
   await expect(publishChildContactDirectory({ guardian, child, key, isCurrent: current, readScope: async () => scope(),
     signer: async () => new LocalSigningBackend('04'.repeat(32)), send: () => { throw new Error('socket closed'); }, now: () => 100 })).rejects.toThrow('socket closed');
   expect(await reserveChildDirectoryRevision(binding, key, current)).toBe(2);
+});
+describe('a retry (the hook passes the failed run\'s resend memo)', () => {
+  const signer = () => vi.fn(async () => new LocalSigningBackend('04'.repeat(32)));
+  it('unchanged content goes again as the SAME publication: no new revision, no new signature', async () => {
+    const resend: ChildDirectoryResendCache = new Map(), send = vi.fn(), sign = signer();
+    const base = { guardian, child, key, isCurrent: current, readScope: async () => scope(), signer: sign, send, resend };
+    await publishChildContactDirectory({ ...base, now: () => 100 });
+    // The relay refused it; the retry comes 40 s later.
+    await publishChildContactDirectory({ ...base, now: () => 140 });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toBe(send.mock.calls[0][0]);
+    expect(sign).toHaveBeenCalledOnce();
+    expect(await reserveChildDirectoryRevision(binding, key, current)).toBe(2);
+  });
+  it('a real change in between builds a fresh publication with a new revision', async () => {
+    const resend: ChildDirectoryResendCache = new Map(), send = vi.fn(), state = scope();
+    const base = { guardian, child, key, isCurrent: current, readScope: async () => structuredClone(state), signer: signer(), send, resend };
+    await publishChildContactDirectory({ ...base, now: () => 100 });
+    state.dependant.hiddenOnPairedDeviceKeys = [persona];
+    await publishChildContactDirectory({ ...base, now: () => 140 });
+    expect(send.mock.calls[1][0].id).not.toBe(send.mock.calls[0][0].id);
+    expect(await openChildContactDirectory(send.mock.calls[1][0], { ...binding, availablePersonas: [persona], backend: recipient, now: 140, isCurrent: current }))
+      .toMatchObject({ revision: 2, personas: [] });
+  });
+  it('near its expiry the kept publication is not sent again: a fresh one is built', async () => {
+    const resend: ChildDirectoryResendCache = new Map(), send = vi.fn();
+    const base = { guardian, child, key, isCurrent: current, readScope: async () => scope(), signer: signer(), send, resend };
+    await publishChildContactDirectory({ ...base, now: () => 100 });
+    await publishChildContactDirectory({ ...base, now: () => 100 + 900 - 300 });
+    expect(send.mock.calls[1][0].id).not.toBe(send.mock.calls[0][0].id);
+    expect(await reserveChildDirectoryRevision(binding, key, current)).toBe(3);
+  });
+  it('a locked session sends nothing, kept or fresh', async () => {
+    const resend: ChildDirectoryResendCache = new Map(), send = vi.fn(); let active = true;
+    const base = { guardian, child, key, isCurrent: () => active, readScope: async () => scope(), signer: signer(), send, resend };
+    await publishChildContactDirectory({ ...base, now: () => 100 });
+    active = false;
+    await expect(publishChildContactDirectory({ ...base, now: () => 140 })).rejects.toThrow('session changed');
+    expect(send).toHaveBeenCalledOnce();
+  });
 });
 it('publishes an empty withdrawal when the guardian returns to full control', async () => {
   const state = scope(); state.dependant.autonomyStage = 'full-control';

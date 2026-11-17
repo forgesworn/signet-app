@@ -22,6 +22,7 @@ import {
   canRevokeClient,
   listClients,
   parseDeviceClientSlot,
+  parseClientApprovals,
   updateClientPolicy,
   updateClientEscalate,
   nostrconnectV2,
@@ -766,6 +767,53 @@ describe('listClients / parseDeviceClientSlot', () => {
     expect(await listClients(c3, { targetHex: target, strict: true })).toHaveLength(1);
     expect(spy).toHaveBeenCalledWith('list_clients', {}, { targetHex: target });
     c3.stop();
+  });
+
+  describe('client_approvals', () => {
+    const client = 'e'.repeat(64), persona = 'a'.repeat(64);
+    const approvals = [{ approved_identities: [persona], client_pubkey: client, legacy_identity_tags: ['0123456789abcdef'] }];
+
+    it('a valid field is read into clientApprovals', () => {
+      expect(parseDeviceClientSlot({ ...goodRow(), client_approvals: approvals })?.clientApprovals).toEqual([
+        { clientPubkey: client, approvedIdentities: [persona], legacyIdentityTags: ['0123456789abcdef'] },
+      ]);
+      expect(parseDeviceClientSlot({ ...goodRow(), client_approvals: [] })?.clientApprovals).toEqual([]);
+      expect(parseClientApprovals(approvals)).toHaveLength(1);
+    });
+
+    it('missing (older firmware) or null (no per-client grants): the row stays, approvals are not reported', () => {
+      const absent = parseDeviceClientSlot(goodRow());
+      expect(absent).toBeDefined();
+      expect(absent?.clientApprovals).toBeUndefined();
+      expect('clientApprovals' in (absent ?? {})).toBe(false);
+      const none = parseDeviceClientSlot({ ...goodRow(), client_approvals: null });
+      expect(none).toBeDefined();
+      expect(none?.clientApprovals).toBeUndefined();
+    });
+
+    it('malformed: the whole field is not reported, and the row is never dropped (strict list_clients still reads it)', async () => {
+      const bad: unknown[] = [
+        'nope',
+        [{ ...approvals[0], client_pubkey: 'E'.repeat(64) }],           // uppercase hex
+        [{ ...approvals[0], client_pubkey: 'e'.repeat(63) }],           // short key
+        [{ ...approvals[0], approved_identities: [persona, 7] }],        // non-string
+        [{ ...approvals[0], approved_identities: ['zz'.repeat(32)] }],  // not hex
+        [{ ...approvals[0], legacy_identity_tags: ['0123'] }],          // wrong tag length
+        [{ client_pubkey: client, approved_identities: [persona] }],    // tags missing
+        [approvals[0], 'row'],                                          // one bad entry rejects all
+      ];
+      for (const v of bad) {
+        expect(parseClientApprovals(v)).toBeUndefined();
+        const slot = parseDeviceClientSlot({ ...goodRow(), client_approvals: v });
+        expect(slot).toBeDefined();
+        expect(slot?.clientApprovals).toBeUndefined();
+      }
+      const d = makeFakeDevice({ handler: () => ({ result: { clients: [{ ...goodRow(), client_approvals: [{ junk: true }] }] } }) });
+      const c = d.client();
+      c.start();
+      expect(await listClients(c, { strict: true })).toHaveLength(1);
+      c.stop();
+    });
   });
 
   it('non-array clients ⇒ []', async () => {

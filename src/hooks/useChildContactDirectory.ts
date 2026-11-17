@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { RelayClient, type NostrEvent } from 'signet-protocol';
 import { loadPairedChild } from '../lib/db';
 import { LocalSigningBackend } from '../lib/signing-backend';
-import { extractEndpointPubkey } from '../lib/dependant-status-sync';
+import { guardianRailPubkey } from '../lib/paired-child-rail';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { CHILD_CONTACT_DIRECTORY_TAG, childDirectoryVisible, openChildContactDirectory, type ChildContactDirectory } from '../lib/child-contact-directory';
+import type { ChildDirectoryResendCache } from '../lib/child-contact-directory-publisher';
 import { loadChildContactDirectoryCache, saveChildContactDirectoryCache } from '../lib/child-contact-directory-cache';
 
 /** Separate read-only state. A directory is never folded into local operations. */
@@ -31,7 +32,8 @@ export function useChildContactDirectory(options: {
     void (async () => {
       const pair = await loadPairedChild(child, key);
       if (!current() || !pair?.guardianPubkey) return;
-      const endpoint = extractEndpointPubkey(pair.bunkerUri);
+      // The guardian seals the directory with `dep.bunkerEndpoint` — the rail key on a direct pairing.
+      const endpoint = guardianRailPubkey(pair);
       if (!endpoint) return;
       const cached = await loadChildContactDirectoryCache(pair, key, current);
       if (!current()) return;
@@ -67,28 +69,59 @@ export function useChildContactDirectory(options: {
     && view!.personas.every(p => options.availablePersonas.includes(p)) ? view : null;
 }
 
+/** First wait after a failed publication to one relay; doubled per failure up to the cap. */
+export const DIRECTORY_RETRY_FIRST_MS = 10_000;
+export const DIRECTORY_RETRY_MAX_MS = 10 * 60_000;
+/** The wait before retry number `failures` (1 = after the first failure). */
+export function directoryRetryDelayMs(failures: number): number {
+  return Math.min(DIRECTORY_RETRY_FIRST_MS * 2 ** Math.max(0, Math.min(failures - 1, 16)), DIRECTORY_RETRY_MAX_MS);
+}
+
 /** Open-socket adapter: never queues signed events through reconnect. Each
- * change/retry creates a fresh publication with its own durable revision. */
+ * change and each refresh creates a fresh publication with its own durable
+ * revision; a RETRY passes the failed run's `resend` memo, so content that
+ * has not changed goes again as the same publication
+ * (`publishChildContactDirectory` re-checks it first) instead of a new one.
+ *
+ * One socket per relay, each with its own retry: `publish(send, current,
+ * relay, resend)` sends only the directories bound for that relay — every
+ * dependant's on `relayUrl`, and on each of `extraRelays` (A56: a direct
+ * child's rail relay) only the dependants that read there. A relay that is
+ * down or refuses is retried with capped exponential backoff
+ * (`directoryRetryDelayMs`), reset by a success or a change (which restarts
+ * this effect); the periodic refresh leaves a relay that is backing off alone. */
 export function useChildContactDirectoryPublisher(options: {
   enabled: boolean; session: string; changeToken: string; relayUrl: string;
-  publish(send: (event: NostrEvent) => void, current: () => boolean): Promise<void>;
+  extraRelays?: readonly string[];
+  publish(send: (event: NostrEvent) => void, current: () => boolean, relay: string, resend: ChildDirectoryResendCache): Promise<void>;
 }) {
   const latest = useRef(options); latest.current = options;
   const { enabled, session, changeToken, relayUrl } = options;
+  const extraKeyOf = (o: typeof options) => [...new Set(o.extraRelays ?? [])].filter(r => r !== o.relayUrl && isValidRelayUrl(r)).sort().join(' ');
+  const extraKey = extraKeyOf(options);
   useEffect(() => {
     if (!enabled || !isValidRelayUrl(relayUrl)) return;
-    let active = true, busy = false, socket: WebSocket | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
+    const targets = [relayUrl, ...(extraKey ? extraKey.split(' ') : [])];
+    let active = true;
+    const busy = new Set<string>();
+    const sockets = new Map<string, WebSocket>();
+    const retries = new Map<string, ReturnType<typeof setTimeout>>();
+    const failures = new Map<string, number>();
+    const memos = new Map<string, ChildDirectoryResendCache>();
     const current = () => active && latest.current.enabled && latest.current.session === session
-      && latest.current.changeToken === changeToken && latest.current.relayUrl === relayUrl;
-    const run = async () => {
-      if (!current() || busy) return;
-      busy = true;
+      && latest.current.changeToken === changeToken && latest.current.relayUrl === relayUrl
+      && extraKeyOf(latest.current) === extraKey;
+    const run = async (target: string, retry = false) => {
+      if (!current() || busy.has(target)) return;
+      busy.add(target);
+      // A fresh run starts a fresh publication; a retry may send the failed one again.
+      if (!retry || !memos.has(target)) memos.set(target, new Map());
+      const resend = memos.get(target)!;
       let connected: WebSocket | undefined;
       const acknowledgements = new Map<string, (ok: boolean) => void>();
       const confirmations: Promise<boolean>[] = [];
       try {
-        connected = new WebSocket(relayUrl); socket = connected;
+        connected = new WebSocket(target); sockets.set(target, connected);
         const transport = connected;
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(() => { reject(new Error('Directory relay timeout')); transport.close(); }, 5000);
@@ -111,17 +144,29 @@ export function useChildContactDirectoryPublisher(options: {
             acknowledgements.set(event.id, ok => { clearTimeout(timeout); acknowledgements.delete(event.id); resolve(ok); });
           }));
           transport.send(JSON.stringify(['EVENT', event]));
-        }, current);
+        }, current, target, resend);
         if ((await Promise.all(confirmations)).some(ok => !ok)) throw new Error('Directory relay did not confirm publication');
+        failures.delete(target);
       } catch {
-        if (current()) retry = setTimeout(() => { void run(); }, 5000);
+        if (current()) {
+          const n = (failures.get(target) ?? 0) + 1;
+          failures.set(target, n);
+          clearTimeout(retries.get(target));
+          retries.set(target, setTimeout(() => { retries.delete(target); void run(target, true); }, directoryRetryDelayMs(n)));
+        }
       } finally {
         for (const settle of [...acknowledgements.values()]) settle(false);
-        connected?.close(); if (socket === connected) socket = undefined; busy = false;
+        connected?.close(); if (sockets.get(target) === connected) sockets.delete(target); busy.delete(target);
       }
     };
-    const initial = setTimeout(() => { void run(); }, 1000);
-    const refresh = setInterval(() => { void run(); }, 5 * 60_000);
-    return () => { active = false; clearTimeout(initial); clearTimeout(retry); clearInterval(refresh); socket?.close(); };
-  }, [enabled, session, changeToken, relayUrl]);
+    // A relay already waiting for its retry is left to it.
+    const runAll = () => { for (const target of targets) if (!retries.has(target)) void run(target); };
+    const initial = setTimeout(runAll, 1000);
+    const refresh = setInterval(runAll, 5 * 60_000);
+    return () => {
+      active = false; clearTimeout(initial); clearInterval(refresh);
+      for (const t of retries.values()) clearTimeout(t);
+      for (const s of sockets.values()) s.close();
+    };
+  }, [enabled, session, changeToken, relayUrl, extraKey]);
 }

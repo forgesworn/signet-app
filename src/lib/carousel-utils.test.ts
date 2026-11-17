@@ -173,6 +173,34 @@ describe('findRowForDependant — dynamic', () => {
   });
 });
 
+describe('A51: a direct child\'s ring holds only the personas its rules allow', () => {
+  const child: SignetIdentity = {
+    ...activeIdentity,
+    extraPersonas: [
+      { publicKey: 'x1', privateKey: '', displayName: 'Removed', derivationName: '' },
+      { publicKey: 'x2', privateKey: '', displayName: 'Allowed', derivationName: '' },
+    ],
+  };
+  const allowed = new Set(['p-pub', 'x2']);
+
+  it('no allow-list ⇒ the ring is unchanged', () => {
+    expect(buildRows(child, [], [], null)).toEqual(buildRows(child, []));
+  });
+
+  it('drops extras and an active real identity the rules do not list', () => {
+    const rows = buildRows(child, [], [], allowed);
+    expect(rows.map(r => r.type)).toEqual(['persona', 'extra-persona', 'add']);
+    expect(rows[1]).toMatchObject({ type: 'extra-persona', personaIndex: 1 });
+  });
+
+  it('row finders index the same filtered ring', () => {
+    expect(findRowForGuardianKeypair(child, 'x2', [], allowed)).toBe(1);
+    expect(findRowForGuardianKeypair(child, 'x1', [], allowed)).toBe(0);
+    expect(findRowForGuardianKeypair(child, 'x2')).toBe(2);
+    expect(findRowForDependant(child, [mockDependant], 'dep1', [], allowed)).toBe(2);
+  });
+});
+
 describe('buildChildRows', () => {
   it('surfaces the dependant\'s built-in persona between NP and the add row', () => {
     const rows = buildChildRows(mockDependant);

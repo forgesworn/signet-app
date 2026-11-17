@@ -52,15 +52,22 @@ export function resolveRenameTarget(row: CarouselRow): string | null {
  * `showNaturalPersonRow`) → dependants → add. The persona is the top of the ring
  * and the landing row; the real identity sits AFTER the personas so it can never
  * be used by accident. The carousel is linear (hard stop at both ends).
+ *
+ * `allowedPersonas` (lowercase pubkeys; a direct child's install only, from
+ * `childAllowedPersonaKeys`): an identity card whose key is not in it is left
+ * out, so a card never exists without a route (A51). Null/absent = no filter.
+ * Every row finder below takes the same value, or row indices drift.
  */
 export function buildRows(
   identity: SignetIdentity,
   dependants: DependantIdentity[],
   bots: readonly BotMetadata[] = [],
+  allowedPersonas: ReadonlySet<string> | null = null,
 ): CarouselRow[] {
   const rows: CarouselRow[] = [];
+  const allowed = (pubkey: string) => !allowedPersonas || allowedPersonas.has(pubkey.toLowerCase());
 
-  if (identity.persona.publicKey) {
+  if (identity.persona.publicKey && allowed(identity.persona.publicKey)) {
     rows.push({ type: 'persona', identity });
   }
 
@@ -69,14 +76,14 @@ export function buildRows(
       // Hidden extras keep their slot in the array (so derivation names can't
       // be reused) but are excluded from the carousel surface. `personaIndex`
       // still indexes into the canonical array.
-      if (identity.extraPersonas[i].hidden) continue;
+      if (identity.extraPersonas[i].hidden || !allowed(identity.extraPersonas[i].publicKey)) continue;
       rows.push({ type: 'extra-persona', identity, personaIndex: i });
     }
   }
 
   for (const bot of bots) if (!bot.hidden && bot.removedAt === undefined) rows.push({ type: 'bot', bot });
 
-  if (showNaturalPersonRow(identity)) {
+  if (showNaturalPersonRow(identity) && allowed(identity.naturalPerson.publicKey)) {
     rows.push({ type: 'natural-person', identity });
   }
 
@@ -552,8 +559,9 @@ export function findRowForGuardianKeypair(
   identity: SignetIdentity,
   keypairType: string,
   bots: readonly BotMetadata[] = [],
+  allowedPersonas: ReadonlySet<string> | null = null,
 ): number {
-  const rows = buildRows(identity, [], bots);
+  const rows = buildRows(identity, [], bots, allowedPersonas);
   const idx = rows.findIndex(row => {
     if (row.type === 'natural-person') return keypairType === 'natural-person';
     if (row.type === 'persona') return keypairType === 'persona';
@@ -579,9 +587,10 @@ export function findRowForDependant(
   dependants: ReadonlyArray<DependantIdentity>,
   dependantId: string,
   bots: readonly BotMetadata[] = [],
+  allowedPersonas: ReadonlySet<string> | null = null,
 ): number | null {
   if (!dependants.some(d => d.id === dependantId)) return null;
-  const rows = buildRows(identity, [...dependants], bots);
+  const rows = buildRows(identity, [...dependants], bots, allowedPersonas);
   const idx = rows.findIndex(row => row.type === 'dependant' && row.dependant.id === dependantId);
   return idx >= 0 ? idx : null;
 }

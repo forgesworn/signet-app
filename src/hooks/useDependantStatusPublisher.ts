@@ -20,6 +20,7 @@ import { useEffect, useRef } from 'react';
 import type { DependantIdentity } from '../types';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { publishDependantStatus } from '../lib/dependant-status-sync';
+import { guardianToChildRelays } from '../lib/paired-child-rail';
 import { schedulePublish, type PendingPublish } from '../lib/pending-publish';
 
 const PUBLISH_DEBOUNCE_MS = 1000;
@@ -84,7 +85,8 @@ export function useDependantStatusPublisher({ dependants, relayUrl, encryptionKe
             guardianName,
           },
           backend,
-          relayUrl,
+          // A56: a direct child reads this rail on its pairing's rail relay.
+          guardianToChildRelays(dep, [relayUrl]),
         );
         if (ok) lastPublishedRef.current.set(dep.id, hash);
       }

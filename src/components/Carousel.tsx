@@ -59,6 +59,8 @@ interface CarouselProps {
    * failure so AddCard can surface the error inline.
    */
   onAddPersona: (displayName: string) => Promise<void>;
+  /** A new persona is being derived on the Heartwood right now (AddCard shows the "press and hold" hint). */
+  addPersonaHeartwoodHold?: boolean;
   /** Navigate to the Add Dependant page (guardian only). Omit to hide the affordance (e.g. the paired-child surface). */
   onAddDependant?: () => void;
   /**
@@ -81,6 +83,8 @@ interface CarouselProps {
   children?: ReactNode;
   /** Map from dependant id to DependantIdentity, used to compute pairing status. */
   dependantById?: Record<string, DependantIdentity>;
+  /** Guardian's phone: the child-direct ready check's notice for a dependant's home card (null: none). */
+  readyNoticeFor?: (dependantId: string) => ReactNode;
   /** When true, renders the Pro pill on the owner IdentityCard. */
   proAnchorActive?: boolean;
   /** Called when the Pro pill is tapped — navigates to Professional Dashboard. */
@@ -274,6 +278,7 @@ function renderCard(
       <AddCard
         context={props.childMode ? 'child' : 'guardian'}
         onAddPersona={props.onAddPersona}
+        heartwoodHold={props.addPersonaHeartwoodHold}
         onAddDependant={props.childMode ? undefined : props.onAddDependant}
       />
     );
@@ -305,6 +310,7 @@ function renderCard(
             childSignerKind={props.childSignerKind}
             cachedGuardianName={props.cachedGuardianName}
             pairingStatus={pairingStatus}
+            readyNotice={row.type === 'dependant' ? props.readyNoticeFor?.(row.dependant.id) : undefined}
             // TODO: resolve photoHash → URL via local cache or Blossom server. Tracked as follow-up.
             photoUrl={null}
             proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}

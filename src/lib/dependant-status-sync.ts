@@ -30,6 +30,8 @@ import { RelayClient } from 'signet-protocol';
 import type { AutonomyStage } from '../types';
 import type { DecryptingSigningBackend } from './signing-backend';
 import { isValidRelayUrl } from './relay-url';
+import { publishToEveryRelay } from './sync-relays';
+import { verifiedAuthoredEvent } from './event-verify';
 
 const SYNC_D_TAG = 'signet:dependant-status';
 const SYNC_KIND = 30078;
@@ -81,9 +83,12 @@ const HEX64 = /^[0-9a-f]{64}$/i;
 export async function publishDependantStatus(
   params: DependantStatusParams,
   endpointBackend: DecryptingSigningBackend,
-  relayUrl: string,
+  relayUrl: string | readonly string[],
 ): Promise<boolean> {
-  if (!isValidRelayUrl(relayUrl)) return false;
+  // A56: a direct child's rail relay rides alongside the guardian's relay;
+  // the publication counts only once EVERY relay accepted it.
+  const relays = (typeof relayUrl === 'string' ? [relayUrl] : [...relayUrl]).filter(r => isValidRelayUrl(r));
+  if (relays.length === 0) return false;
   if (!HEX64.test(params.childTransportPubkey)) return false;
 
   const payload: DependantStatusPayload = {
@@ -109,17 +114,7 @@ export async function publishDependantStatus(
     content: ciphertext,
   };
   const signed = await endpointBackend.signEvent(event);
-
-  const relay = new RelayClient(relayUrl);
-  try {
-    await relay.connect();
-    const result = await relay.publish(signed);
-    return result.ok;
-  } catch {
-    return false;
-  } finally {
-    relay.disconnect();
-  }
+  return publishToEveryRelay(signed, relays);
 }
 
 /**
@@ -136,16 +131,22 @@ export async function fetchDependantStatus(
 ): Promise<{ payload: DependantStatusPayload; createdAt: number } | null> {
   if (!isValidRelayUrl(relayUrl)) return null;
   if (!HEX64.test(endpointPubkey)) return null;
+  const author = endpointPubkey.toLowerCase();
 
   const relay = new RelayClient(relayUrl);
   try {
     await relay.connect();
-    const events = await relay.fetch([{
+    const fetched = await relay.fetch([{
       kinds: [SYNC_KIND],
-      authors: [endpointPubkey.toLowerCase()],
+      authors: [author],
       '#d': [SYNC_D_TAG],
       limit: 1,
     } as never]);
+    // The relay's filter is not trusted: an event from another author, under
+    // another `d` tag (the same endpoint authors the persona inventory to this
+    // child), or whose signature does not verify (e.g. a genuine older status
+    // re-dated to look newest) is skipped — never allowed to hide the real one.
+    const events = fetched.filter(ev => isGenuineStatusEvent(ev, author));
     if (events.length === 0) return null;
 
     const latest = events.sort((a, b) => b.created_at - a.created_at)[0];
@@ -163,6 +164,19 @@ export async function fetchDependantStatus(
     return null;
   } finally {
     relay.disconnect();
+  }
+}
+
+/** Author, kind, (first) `d` tag and signature — one malformed event is
+ *  skipped rather than failing the whole fetch. */
+function isGenuineStatusEvent(ev: { pubkey?: unknown; kind?: unknown; tags?: unknown; id: string; sig: string } | null | undefined, author: string): boolean {
+  try {
+    if (!ev || typeof ev.pubkey !== 'string' || ev.pubkey.toLowerCase() !== author || ev.kind !== SYNC_KIND || !Array.isArray(ev.tags)) return false;
+    const d = (ev.tags as unknown[]).find((t): t is string[] => Array.isArray(t) && t[0] === 'd');
+    if (d?.[1] !== SYNC_D_TAG) return false;
+    return verifiedAuthoredEvent(ev as { pubkey: string; id: string; sig: string }, author) !== null;
+  } catch {
+    return false;
   }
 }
 
