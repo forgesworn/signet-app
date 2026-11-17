@@ -409,6 +409,64 @@ describe('useChildDeviceLink — the guardian\'s reading wins (rules payload `ap
       expect(fr.calls).toHaveLength(2);
     });
 
+    /** Mounted with props, so a lock (no record, no key) and an unlock (the record as last saved) can be played. */
+    async function mountSaved(rules: ChildRulesPayload) {
+      await saveChildRulesCache(DEP, rules, KEY);
+      const { t, subs } = fakeTransport();
+      const fr = fakeRouter({});
+      let saved: PairedChildRecord = record({ identityApprovals: { ...both } });
+      const onRecordUpdated = async (r: PairedChildRecord) => { saved = r; };
+      const h = renderHook(({ rec, key }) => useChildDeviceLink({
+        record: rec, encryptionKey: key, router: fr.router, transport: t, withheldSlots: [NP], onRecordUpdated,
+      }), { initialProps: { rec: saved as PairedChildRecord | null, key: KEY as string | null } });
+      await waitFor(() => expect(h.result.current.rules?.updatedAt).toBe(rules.updatedAt));
+      await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+      const relock = async () => {
+        h.rerender({ rec: null, key: null });
+        h.rerender({ rec: saved, key: KEY });
+        await waitFor(() => expect(h.result.current.rules).not.toBeNull());
+        await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+      };
+      return { ...h, fr, subs, relock, saved: () => saved };
+    }
+
+    it('a press survives a lock: the older reading does not undo it, no notice; a later reading without it is owed', async () => {
+      const now = Date.now();
+      const { result, fr, subs, relock, saved } = await mountSaved({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      expect(saved().identityPressedAt?.[EXTRA]).toBeGreaterThanOrEqual(now);
+      // The app locks whenever it is hidden; unlocking reloads the record as saved.
+      await relock();
+      expect(result.current.rules?.approvedAt).toBe(now - 10 * MIN);
+      expect(result.current.summary).toEqual({ kind: 'ready' });
+      expect(result.current.owed).toBe(0);
+      // Nothing to show: Ready is said only after a press made in this session.
+      expect(result.current.readyThisSession).toBe(false);
+      expect(fr.calls).toHaveLength(1);
+      // A reading taken after the press that does not list it (on the subscription opened at unlock).
+      await send([subs[subs.length - 1]], { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+    });
+
+    it('a press a later reading overruled stays overruled after a lock, even when the newest payload carries an older reading', async () => {
+      const now = Date.now();
+      const { result, subs, relock, saved } = await mountSaved({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await act(async () => { await result.current.finishNow(); });
+      expect(result.current.summary.kind).toBe('ready');
+      await send(subs, { ...payload(now + 20 * MIN), approved: [PERSONA], approvedAt: now + 10 * MIN });
+      await waitFor(() => expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 }));
+      await waitFor(() => expect(saved().identityPressedAt?.[EXTRA]).toBeUndefined());
+      // Another guardian phone: a newer payload, an older reading.
+      await send(subs, { ...payload(now + 30 * MIN), approved: [PERSONA], approvedAt: now - 10 * MIN });
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 30 * MIN));
+      await waitFor(async () => expect((await loadChildRulesCache(DEP, KEY))?.updatedAt).toBe(now + 30 * MIN));
+      await relock();
+      await waitFor(() => expect(result.current.rules?.updatedAt).toBe(now + 30 * MIN));
+      expect(result.current.summary).toEqual({ kind: 'owed', owed: 1 });
+    });
+
     it('a reading up to 2 minutes after the press (the phones\' clocks differ) leaves the press standing', async () => {
       const now = Date.now();
       const { result, subs } = await mount({ ...payload(now), approved: [PERSONA], approvedAt: now - 10 * MIN });

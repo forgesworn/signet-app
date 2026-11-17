@@ -75,6 +75,26 @@ describe('paired-child record, heartwood-direct fields', () => {
     expect(legacy?.personaPubkey).toBeUndefined();
   });
 
+  it('keeps when each identity was last pressed with the approvals; a re-pair starts with none', async () => {
+    const db = await import('./db');
+    const direct = {
+      bunkerUri: `bunker://${PERSONA}?relay=wss%3A%2F%2Fhw.example`,
+      clientKeypair: { publicKey: 'a1'.repeat(32), privateKey: 'b2'.repeat(32) },
+      dependantPubkey: DEP, dependantName: 'Alice', pairedAt: 1, hasPaired: true, mode: 'heartwood-direct' as const,
+      railPubkey: '12'.repeat(32), personaPubkey: PERSONA, hwRelays: ['wss://hw.example'], railRelay: 'wss://rail.example',
+    };
+    await db.savePairedChild(direct, KEY);
+    const T = 1_800_000_000_000;
+    await db.setPairedChildIdentityApprovals(DEP, { [PERSONA]: 'approved' },
+      { [PERSONA]: T, ['XY'.repeat(32)]: T, ['34'.repeat(32)]: Number.NaN, ['56'.repeat(32)]: -1 });
+    const back = await db.loadPairedChild(DEP, KEY);
+    expect(back?.identityApprovals).toEqual({ [PERSONA]: 'approved' });
+    expect(back?.identityPressedAt).toEqual({ [PERSONA]: T });
+    // A re-pair writes a fresh record: no press carries over.
+    await db.savePairedChild({ ...direct, clientKeypair: { publicKey: 'c3'.repeat(32), privateKey: 'd4'.repeat(32) } }, KEY);
+    expect((await db.loadPairedChild(DEP, KEY))?.identityPressedAt).toBeUndefined();
+  });
+
   it('refuses a direct record with a malformed persona or relay', async () => {
     const db = await import('./db');
     const base = {

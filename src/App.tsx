@@ -2322,7 +2322,7 @@ function AppContent() {
     router: preferences.signingMode === 'paired-child' ? bunkerRouter : null,
     inventoryPersonas: childLinkInventory,
     withheldSlots: slotResolveOpts.withheld,
-    onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}); },
+    onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}, r.identityPressedAt ?? {}); },
   });
 
   // The child's gate (spec §8): the one choke point for sign-in, the child's

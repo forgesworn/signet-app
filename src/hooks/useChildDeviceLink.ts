@@ -47,12 +47,16 @@
  * persona is approved only when listed there, "full" when absent and the slot
  * holds as many as the Heartwood can remember, and owed otherwise, whatever
  * this phone saved (a restored or cleared Heartwood shows as "Not ready" here,
- * with "Finish now"). A probe of this phone's that succeeded this session
- * counts too when it came after the guardian's reading (`approvedAt`, with
+ * with "Finish now"). A probe of this phone's that succeeded counts too when
+ * it came after the guardian's reading (`approvedAt`, with
  * `PRESS_CLOCK_SKEW_MS` for the clocks), until a reading taken after it
- * arrives (`childPressStands`); from an older guardian build without
- * `approvedAt`, while the reading has lost nothing it held at the time of the
- * press. Without `approved`, this phone's own probe answers stand.
+ * arrives (`childPressStands`). Its time is saved with the approvals
+ * (`identityPressedAt`), so a lock or a restart keeps it; a press a later
+ * reading overruled is dropped from there, so it cannot come back once the
+ * reading time this phone has seen starts again from the cache. From an older
+ * guardian build without `approvedAt`: while the reading has lost nothing it
+ * held at the time of a press made this session. Without `approved`, this
+ * phone's own probe answers stand.
  *
  * Paused (`defaultSchedule.paused`): the slot refuses everything, so no probe
  * is sent and nothing is owed; probes resume `UNPAUSE_SETTLE_MS` after the
@@ -71,7 +75,7 @@ import { observeStampedCalls } from '../lib/signing-backend';
 import { childAllowedPersonas } from '../lib/child-bunker';
 import { subscribeEvents } from '../lib/relay-service';
 import {
-  childEffectiveApproval, childPressStands, childReadyRows, isApprovalChanged, owedPresses, readySummary,
+  childEffectiveApproval, childPressStands, childReadyRows, isApprovalChanged, owedPresses, readySummary, PRESS_CLOCK_SKEW_MS,
   type ChildEffectiveApproval, type ReadyRow, type ReadySummary,
 } from '../lib/child-ready-check';
 
@@ -267,7 +271,7 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
   const [probedOk, setProbedOk] = useState(false);
   /** Per persona: the guardian's reading (`approved`, [] when none) when its probe last succeeded (this session). */
   const approvedUnder = useRef(new Map<string, readonly string[]>());
-  /** Per persona: when its probe last succeeded (this session; this phone's clock, ms). */
+  /** Per persona: when its probe last succeeded (this phone's clock, ms; saved with the approvals). */
   const pressedAt = useRef(new Map<string, number>());
   const recordKey = direct ? `${direct.id}:${clientPub}` : '';
 
@@ -278,9 +282,31 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     attempted.current = new Set();
     inflight.current = new Map();
     approvedUnder.current = new Map();
-    pressedAt.current = new Map();
+    pressedAt.current = new Map(Object.entries(recordRef.current?.identityPressedAt ?? {}));
     setProbedOk(false);
   }, [recordKey]);
+
+  /** Save the ceremony states and the press times on the record. */
+  const persist = useCallback((identityApprovals: Record<string, Approval>) => {
+    const rec = recordRef.current;
+    if (!rec) return;
+    void onUpdatedRef.current({ ...rec, identityApprovals, identityPressedAt: Object.fromEntries(pressedAt.current) })
+      .catch(() => { /* re-run next start */ });
+  }, []);
+
+  // A press that a reading taken after it overruled never counts again in this
+  // session (the reading time only moves forward). Forget it on the record too:
+  // after a lock the reading time starts again from the cached payload, which
+  // may carry an older reading (another guardian phone), and must not revive it.
+  useEffect(() => {
+    const latest = latestReadingAt.current;
+    if (latest === undefined) return;
+    let dropped = false;
+    for (const [persona, at] of pressedAt.current) {
+      if (at < latest - PRESS_CLOCK_SKEW_MS) { pressedAt.current.delete(persona); dropped = true; }
+    }
+    if (dropped) persist(approvalsRef.current);
+  }, [rules, persist]);
 
   // ── Pause ────────────────────────────────────────────────────────────────
   const paused = rules?.defaultSchedule?.paused === true;
@@ -344,9 +370,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     const next = { ...approvalsRef.current, [persona]: state };
     approvalsRef.current = next;
     setApprovals(next);
-    const rec = recordRef.current;
-    if (rec && state !== 'waiting') void onUpdatedRef.current({ ...rec, identityApprovals: next }).catch(() => { /* re-run next start */ });
-  }, []);
+    if (state !== 'waiting') persist(next);
+  }, [persist]);
 
   /** `force` is an explicit "Approve now" / first use: it overrides a deferral. */
   const approve = useCallback((persona: string, force = false): Promise<boolean> => {

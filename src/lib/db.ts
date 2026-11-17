@@ -3343,6 +3343,7 @@ function directPairingFields(record: Omit<PairedChildRecord, 'id' | 'encrypted'>
   return {
     mode: 'heartwood-direct', railPubkey, personaPubkey, hwRelays: [...hwRelays], railRelay, personas,
     ...(record.identityApprovals ? { identityApprovals: cleanApprovals(record.identityApprovals) } : {}),
+    ...(record.identityPressedAt ? { identityPressedAt: cleanPressedAt(record.identityPressedAt) } : {}),
   };
 }
 
@@ -3354,16 +3355,33 @@ function cleanApprovals(a: Record<string, string>): Record<string, 'approved' | 
   return out;
 }
 
-/** Persist the identity-approval ceremony state (clear routing metadata). */
+function cleanPressedAt(a: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(a)) {
+    if (STRICT_HEX64.test(k) && typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Persist the identity-approval ceremony state and, when given, when each
+ * persona was last pressed (clear routing metadata, like the states).
+ */
 export async function setPairedChildIdentityApprovals(
   dependantPubkey: string,
   approvals: Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'>,
+  pressedAt?: Record<string, number>,
 ): Promise<void> {
   if (!HEX64.test(dependantPubkey)) return;
   const db = await getDB();
   const tx = db.transaction('pairedChild', 'readwrite');
   const raw = await tx.store.get(dependantPubkey.toLowerCase()) as PairedChildRecord | undefined;
-  if (raw?.mode === 'heartwood-direct') await tx.store.put({ ...raw, identityApprovals: cleanApprovals(approvals) });
+  if (raw?.mode === 'heartwood-direct') {
+    await tx.store.put({
+      ...raw, identityApprovals: cleanApprovals(approvals),
+      ...(pressedAt ? { identityPressedAt: cleanPressedAt(pressedAt) } : {}),
+    });
+  }
   await tx.done;
 }
 
