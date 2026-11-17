@@ -15588,7 +15588,8 @@ function AppContent() {
           }}
         />
       )}
-      {showBackupNudge && (
+      {/* Not in child mode: its button leads to the guardian's security settings and Shamir split. */}
+      {showBackupNudge && !signInChildMode && (
         <BackupCard
           {...backupNudgeCopy(dependants.map(d => d.displayName))}
           onBackup={() => { navigateTo('settings-security'); }}

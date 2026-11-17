@@ -78,6 +78,13 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app.slice(start, app.indexOf('/>', start + 400))).toContain("skipBackup={childModeNow !== 'off'}");
   });
 
+  it('the home backup card is hidden in child mode, so its button never leads to the guardian\'s Shamir split', () => {
+    expect(app).toContain('{showBackupNudge && !signInChildMode && (');
+    expect(idx('{showBackupNudge && !signInChildMode && (')).toBeGreaterThan(idx('const signInChildMode = carousel.childMode || !!savedChildMode;'));
+    // the nudge itself is unchanged outside child mode
+    expect(app).toContain('const showBackupNudge = !!identity && !!encryptionKey && shouldShowBackupNudge({');
+  });
+
   it('app permission reads saved child mode too, not only the live carousel flag', () => {
     expect(app).toContain('guardianActingAsChild: signInChildMode,');
     expect(app).not.toContain('guardianActingAsChild: carousel.childMode');
