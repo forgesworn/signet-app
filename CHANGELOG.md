@@ -6,7 +6,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 ## Unreleased
 
 - Companion apps: connecting an app no longer offers your real identity until you have set it up
-- Child mode: after a restart, an app permission request or a contact invite that arrives before child mode is restored no longer reaches your own identities. Both wait for child mode to end
+- Child mode: after a restart, an app permission request or a contact invite that arrives before child mode is restored no longer reaches your own identities. The app permission request is refused with no PIN asked for; the contact invite waits for child mode to end
 - Child mode: Get Verified no longer shows your recovery words or marks you backed up while the phone is in child mode
 - Child mode: age verification requests are now refused while the phone is in child mode, because they could answer with your own credential. Leave child mode with your PIN first
 - Child mode: connecting a companion app, giving an app access to contacts, adding a dependant and Advanced settings are now refused while the phone is in child mode, with no PIN asked for. Leave child mode with the guardian's PIN first

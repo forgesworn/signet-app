@@ -6722,6 +6722,10 @@ function AppContent() {
     if (page === 'approve-app-permission') return;
     if (appPermissionMarksRef.current.get(pendingAppPermissionRequest) === 'answered') return; // its answer is on its way
     if (prefsLoading || identityLoading) return;
+    // Child mode: refused on this phone, so never asked for the guardian's PIN.
+    // Unknown waits (the effect re-runs once it is read); on, the refusal shows.
+    if (childModeNow === 'unknown') return;
+    if (childModeNow === 'on') { navigateReplace('approve-app-permission'); return; }
     if (!encryptionKey) {
       if (!isAuthSetUp()) return;
       // A startup/page unlock may already own the auth slot. Its busy result
@@ -6744,7 +6748,7 @@ function AppContent() {
     // legacy, and the child's persona): wait until it has loaded.
     if (preferences.signingMode === 'paired-child' && pairedChildLoadedFor !== identity?.id) return;
     navigateReplace('approve-app-permission');
-  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id, showAuthPrompt]);
+  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id, showAuthPrompt, childModeNow]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
@@ -10779,7 +10783,12 @@ function AppContent() {
       handleDenyAddDependant(); // only redirects to the consumer's error callback
       return;
     }
+    if (page === 'approve-app-permission') {
+      handleCancelAppPermission(); // answers with a throwaway key, never a person's
+      return;
+    }
     if (page === 'approve-companion-grant') setPendingPairingRequest(null);
+    else if (page === 'settings-advanced') setPendingOperatorImportText(null); // the scanned link must not wait for the guardian
     else if (page === 'contacts-grant-approve') setPendingContactsGrantV2(null);
     else if (page === 'approve-verification') {
       // Like Deny, minus the relay rejection: in local child mode that would
@@ -10794,7 +10803,7 @@ function AppContent() {
       }
     }
     navigateReplace('home');
-  }, [page, handleDenyAddDependant, navigateReplace, pendingVerifyRequest, verifyArrivedViaUrl]);
+  }, [page, handleDenyAddDependant, handleCancelAppPermission, navigateReplace, pendingVerifyRequest, verifyArrivedViaUrl]);
 
   // Carousel helpers — child mode, QR routing, and inline approval from current row
 

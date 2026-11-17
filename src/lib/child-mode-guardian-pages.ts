@@ -16,6 +16,10 @@
  * credential and the response then names the guardian's pubkey. There is no way
  * to offer only the child's own.
  *
+ * App permission is listed so it asks for no PIN: on the guardian's phone every
+ * request is refused in child mode anyway (`routeAppPermission`), and its own
+ * unlock prompt was the guardian's PIN.
+ *
  * `contacts-grant-code` is deliberately not listed: leaving that page strands a
  * live grant unchecked, and it is only reachable after an approve, which is now
  * refused.
@@ -30,6 +34,7 @@ export const CHILD_MODE_GUARDIAN_PAGES: readonly Page[] = [
   'approve-add-dependant',
   'settings-advanced',
   'approve-verification',
+  'approve-app-permission',
 ];
 
 /** `refuse`: show the refusal, no PIN. `hold`: child mode not yet known, show and ask nothing. */
