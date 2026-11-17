@@ -19,6 +19,7 @@ import {
 } from '../lib/nip55';
 import type { BunkerRoute } from './useBunkerServer';
 import type { ChildGateOutcome } from '../lib/child-bunker';
+import type { ChildModeState } from '../lib/child-mode-sign-in';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 
 export interface PendingNip55 {
@@ -74,6 +75,15 @@ interface Options {
     persona: string; appId: string; appLabel: string; method: 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
     template?: UnsignedEvent; peer?: string; wait: boolean;
   }) => Promise<ChildGateOutcome>;
+  /**
+   * The guardian's phone in child mode (`childModeState`). NIP-55 only ever
+   * serves the owner's own keys, so while it is `on` every request is refused
+   * with the reject answer, an "always" grant included, nothing is shown and
+   * no PIN is asked for; anything already waiting is refused too. While
+   * `unknown` (start-up, before child mode as saved has been read) a request
+   * waits, unplanned and with no PIN prompt, until it is known. Default `off`.
+   */
+  childMode?: ChildModeState;
 }
 
 interface Waiting {
@@ -91,7 +101,11 @@ function grantIsFor(grant: Nip55Grants[string], pubkey: string): boolean {
 /** A stable default clock: a fresh function each render would re-register the native listeners. */
 const defaultNow = () => Date.now();
 
-export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = defaultNow, gate }: Options) {
+export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsUnlock, onServed, keyExpired, onKeyExpired, now = defaultNow, gate, childMode = 'off' }: Options) {
+  const childModeRef = useRef(childMode);
+  childModeRef.current = childMode;
+  /** Requests that arrived before child mode was known; planned once it is. */
+  const heldForChildMode = useRef<NativeNip55Request[]>([]);
   const keyExpiredRef = useRef(keyExpired);
   keyExpiredRef.current = keyExpired;
   const onKeyExpiredRef = useRef(onKeyExpired);
@@ -147,6 +161,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   /** Signs, encrypts or decrypts with the route that holds `pubkey`, and answers. */
   const execute = useCallback(async (raw: NativeNip55Request, parsed: ParsedNip55, pubkey: string) => {
     const byIntent = !raw.viaProvider;
+    // Backstop: nothing is ever answered with an owner key outside child mode 'off'.
+    if (childModeRef.current !== 'off') { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
     const route = routesRef.current.find(r => !r.dependantId && r.pubkey.toLowerCase() === pubkey);
     if (!route) { await respond({ id: raw.id, status: 'rejected' }, byIntent); return; }
     let backend: Pick<typeof route.backend, 'signEvent' | 'nip44Encrypt' | 'nip44Decrypt' | 'nip04Decrypt'> = route.signingBackend ?? route.backend;
@@ -216,9 +232,11 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     return plan;
   }, []);
 
-  const handleRequest = useCallback(async (raw: NativeNip55Request) => {
-    if (!raw || typeof raw.id !== 'string' || seen.current.has(raw.id)) return;
-    seen.current.add(raw.id);
+  /** A request whose id has been seen: refused in child mode, held while child mode is not known, otherwise planned. */
+  const planRequest = useCallback(async (raw: NativeNip55Request) => {
+    // Child mode: refused before any unlock prompt, plan or grant is looked at.
+    if (childModeRef.current === 'on') { await respond({ id: raw.id, status: 'rejected' }, !raw.viaProvider); return; }
+    if (childModeRef.current === 'unknown') { heldForChildMode.current.push(raw); return; }
     // The window the key was held for may have ended while the page was
     // frozen. Drop the key first; until the lock renders, this request and
     // anything after it are treated as locked.
@@ -246,7 +264,13 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       case 'forward': await execute(raw, parsed!, plan.pubkey); return;
       case 'ask': setQueue(q => [...q, { handle: nextHandle.current++, raw, parsed: parsed!, pubkey: plan.pubkey }]); return;
     }
-  }, [execute, respond]);
+  }, [execute, respond, planFor]);
+
+  const handleRequest = useCallback(async (raw: NativeNip55Request) => {
+    if (!raw || typeof raw.id !== 'string' || seen.current.has(raw.id)) return;
+    seen.current.add(raw.id);
+    await planRequest(raw);
+  }, [planRequest]);
 
   // The caller is gone (task swiped away, or the shell's timeout fired):
   // whatever was waiting for the person's decision is dropped unanswered. A
@@ -256,8 +280,26 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   // is ignored too.
   const withdraw = useCallback((id: string) => {
     seen.current.add(id);
+    heldForChildMode.current = heldForChildMode.current.filter(r => r.id !== id);
     setQueue(q => q.filter(w => w.raw.id !== id));
   }, []);
+
+  // Child mode settles: what waited to learn it is refused (on) or planned
+  // (off), and on entering child mode everything waiting for the person (or
+  // for the PIN) is refused, so an "always" grant cannot answer it after an
+  // unlock either.
+  useEffect(() => {
+    if (childMode === 'unknown') return;
+    const early = heldForChildMode.current;
+    heldForChildMode.current = [];
+    for (const raw of early) void planRequest(raw);
+    if (childMode !== 'on') return;
+    const waiting = queueRef.current;
+    if (waiting.length === 0) return;
+    queueRef.current = [];
+    setQueue([]);
+    for (const item of waiting) void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
+  }, [childMode, planRequest, respond]);
 
   useEffect(() => {
     if (!enabled || !isNativeApp()) return;
@@ -295,7 +337,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   // once they are there, one the person already allowed always is answered
   // without a screen, as it would have been had the app been open.
   useEffect(() => {
-    if (locked || queue.length === 0) return;
+    if (locked || queue.length === 0 || childMode !== 'off') return;
     const owned = routes.filter(r => !r.dependantId).map(r => r.pubkey.toLowerCase());
     // The keys are decrypted a render after the unlock; until they are here
     // there is nothing to judge against, and "no key" would be a false refusal.
@@ -320,7 +362,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
         .filter(w => !settled.includes(w.handle))
         .map(w => (w.pubkey === null && keyed.has(w.handle) ? { ...w, pubkey: keyed.get(w.handle)! } : w)));
     }
-  }, [locked, queue, routes, grants, activePubkey, execute, respond, planFor]);
+  }, [locked, queue, routes, grants, activePubkey, execute, respond, planFor, childMode]);
 
   const remember = useCallback((pkg: string, grant: Nip55Grants[string]) => {
     setGrants(g => { const next = { ...g, [pkg]: grant }; saveNip55Grants(next); return next; });
@@ -353,6 +395,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
    * the app did not ask for is refused, never substituted.
    */
   const approvedKey = useCallback((item: Waiting, pubkey?: string): string | null => {
+    // In child mode (or before it is known) no owner key answers anything.
+    if (childModeRef.current !== 'off') return null;
     const key = (pubkey ?? item.pubkey)?.toLowerCase();
     if (!key) return null;
     if (item.parsed.currentUser && item.parsed.currentUser !== key) return null;
@@ -450,7 +494,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
 
   const pending = useMemo<PendingNip55 | null>(() => {
     const item = queue[0];
-    if (!item || locked) return null;
+    // Nothing is shown in child mode: there is no key a child may use here.
+    if (!item || locked || childMode !== 'off') return null;
     const pkg = item.raw.callerPackage ?? '';
     return {
       handle: item.handle,
@@ -468,7 +513,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       permissions: item.parsed.permissions,
       existing: !!(pkg && grants[pkg]),
     };
-  }, [queue, locked, grants, activePubkey, routes]);
+  }, [queue, locked, grants, activePubkey, routes, childMode]);
 
   return { pending, waiting: queue.length, grants, approveOnce, approveAlways, deny, denyAlways, forget, refuseHeld, setAllowAlways };
 }

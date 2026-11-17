@@ -15,6 +15,11 @@ describe('child Heartwood heartbeat wiring in App.tsx', () => {
     expect(app).toMatch(/childSignerKind\(\{[^}]*lost: childHeartwoodLost[^}]*\}\)/);
   });
 
+  it('feeds the unpaired state into the signer line and wires Pair again to the repair page', () => {
+    expect(app).toMatch(/childSignerKind\(\{[^}]*unpaired: childDeviceLink\.unpaired[^}]*\}\)/);
+    expect(app).toContain("onPairAgain={() => navigateTo('paired-child-repair')}");
+  });
+
   it('the ready notice is withheld while the Heartwood is lost', () => {
     expect(app).toContain("(childReadySummary === 'ready' && !childHeartwoodLost && childDeviceLink.readyThisSession)");
   });

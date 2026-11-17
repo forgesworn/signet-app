@@ -55,6 +55,12 @@ interface CarouselProps {
   childMode: boolean;
   childDependant: DependantIdentity | null;
   /**
+   * The child-mode child's name when the full record is not to hand (a record
+   * that will not decrypt): the exit banner still shows, so child mode always
+   * has a way out.
+   */
+  childModeName?: string;
+  /**
    * Add a persona. Caller does the freshAuth + IDB write. Throws on
    * failure so AddCard can surface the error inline.
    */
@@ -74,6 +80,8 @@ interface CarouselProps {
    * through to IdentityCard's dormant notice (family-bunker §11.1.7).
    */
   childSignerKind?: IdentityCardProps['childSignerKind'];
+  /** The unpaired notice's "Pair again" button on a paired-child card. */
+  onPairAgain?: () => void;
   /**
    * Guardian display name the guardian's status-publish included, so
    * the dormant copy reads "Ask [Mum]..." rather than the generic
@@ -308,6 +316,7 @@ function renderCard(
             childMode={props.childMode}
             childDormant={props.childDormant}
             childSignerKind={props.childSignerKind}
+            onPairAgain={props.onPairAgain}
             cachedGuardianName={props.cachedGuardianName}
             pairingStatus={pairingStatus}
             readyNotice={row.type === 'dependant' ? props.readyNoticeFor?.(row.dependant.id) : undefined}
@@ -406,6 +415,23 @@ interface IncomingCard {
   col: CarouselColumn;
   baseX: number;
   baseY: number;
+}
+
+/**
+ * "Viewing as: <child> / Exit (PIN)". Shown whenever child mode is on, even
+ * without the child's full record, so the PIN exit is always reachable.
+ */
+export function ChildModeBanner({ name, blur, onExit }: { name: string; blur: boolean; onExit: () => void }) {
+  return (
+    <div className="child-banner">
+      <span>Viewing as:{' '}
+        <span style={blur ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{name || 'a child'}</span>
+      </span>
+      <button className="child-banner-exit" onClick={onExit}>
+        Exit (PIN)
+      </button>
+    </div>
+  );
 }
 
 export function Carousel(props: CarouselProps) {
@@ -841,15 +867,12 @@ export function Carousel(props: CarouselProps) {
         />
       )}
 
-      {props.childMode && props.childDependant && (
-        <div className="child-banner">
-          <span>Viewing as:{' '}
-            <span style={props.blurIdentityNames ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{props.childDependant.displayName}</span>
-          </span>
-          <button className="child-banner-exit" onClick={props.onExitChildMode}>
-            Exit (PIN)
-          </button>
-        </div>
+      {props.childMode && (
+        <ChildModeBanner
+          name={props.childDependant?.displayName || props.childModeName || ''}
+          blur={!!props.blurIdentityNames}
+          onExit={props.onExitChildMode}
+        />
       )}
 
       {props.children}

@@ -6,6 +6,10 @@ import { openDB } from 'idb';
 import { saveIdentityEncrypted, saveDependant, getDependants, purgeAllUserData, setCardBackdrop } from '../lib/db';
 import { createNewIdentity } from '../lib/signet';
 import type { SignetIdentity, DependantIdentity } from '../types';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { bytesToHex } from '@noble/hashes/utils.js';
+import { buildPersonaFirstDependant } from '../lib/dependant-record';
+import { childModeSessionStale } from '../lib/child-mode-sign-in';
 
 const KEY = 'a'.repeat(64);
 const NP = '1'.repeat(64);
@@ -292,5 +296,60 @@ describe('useDependants edit time (#199)', () => {
     const inState = result.current.dependants.find(d => d.id === dep.id)!;
     expect(inState.autonomyStage).toBe('request-approve');
     expect(inState.updatedAt).toBeGreaterThanOrEqual(before);
+  });
+});
+
+// The child-mode stale-session check (App.tsx, `childModeSessionStale`) clears
+// a saved session only once the dependants have been read WITH the key: the
+// keyless read before unlock lists records it cannot decrypt, so "the child is
+// not there" means nothing until then.
+describe('useDependants.loadedWithKey', () => {
+  beforeEach(async () => {
+    await purgeAllUserData();
+  });
+
+  async function seedKid(guardianPubkey: string, key: string): Promise<DependantIdentity> {
+    const npSk = generateSecretKey();
+    const personaSk = generateSecretKey();
+    const dep = buildPersonaFirstDependant({
+      guardianPubkey, enteredName: 'RunKid', derivationPath: 'dependant-0',
+      naturalPerson: { publicKey: getPublicKey(npSk), privateKey: bytesToHex(npSk) },
+      persona: { publicKey: getPublicKey(personaSk), privateKey: bytesToHex(personaSk) },
+      createdAt: 1_700_000_000,
+    });
+    await saveDependant(dep, key);
+    return dep;
+  }
+
+  it('is false for the keyless read before unlock, true once read with the key, and false again after a lock', async () => {
+    const g = await seedGuardian(true);
+    const kid = await seedKid(g.naturalPerson.publicKey, KEY);
+    const { result, rerender } = renderHook(
+      ({ key, guardian }: { key: string | null; guardian: string | undefined }) => useDependants(guardian, g.id, key),
+      { initialProps: { key: null, guardian: g.naturalPerson.publicKey } as { key: string | null; guardian: string | undefined } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.loadedWithKey).toBe(false);
+    expect(result.current.dependants.map(d => d.id)).toEqual([kid.id]);
+    expect(childModeSessionStale({ unlocked: false, dependantsLoadedWithKey: result.current.loadedWithKey, childModeLive: false, sessionDependantId: kid.id, dependantIds: [] })).toBe(false);
+
+    rerender({ key: KEY, guardian: g.naturalPerson.publicKey });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(true));
+    expect(result.current.dependants.map(d => d.id)).toEqual([kid.id]);
+    expect(childModeSessionStale({ unlocked: true, dependantsLoadedWithKey: true, childModeLive: false, sessionDependantId: kid.id, dependantIds: result.current.dependants.map(d => d.id) })).toBe(false);
+
+    // A lock passes through "no guardian identity" and an empty list.
+    rerender({ key: null, guardian: undefined });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(false));
+    expect(result.current.dependants).toEqual([]);
+  });
+
+  it('a record the key cannot decrypt is left out of the keyed read, so a session for it is stale', async () => {
+    const g = await seedGuardian(true);
+    const kid = await seedKid(g.naturalPerson.publicKey, 'b'.repeat(64));
+    const { result } = renderHook(() => useDependants(g.naturalPerson.publicKey, g.id, KEY));
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(true));
+    expect(result.current.dependants).toEqual([]);
+    expect(childModeSessionStale({ unlocked: true, dependantsLoadedWithKey: true, childModeLive: false, sessionDependantId: kid.id, dependantIds: result.current.dependants.map(d => d.id) })).toBe(true);
   });
 });

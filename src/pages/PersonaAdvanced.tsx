@@ -25,7 +25,7 @@ import { FollowsImportPanel } from '../components/FollowsImportPanel';
 import type { FollowsImportOptions, FollowsImportOutcome } from '../lib/follows-import-flow';
 import type { ExistingProfile } from '../lib/existing-profile';
 import { TypedNameConfirm } from '../components/TypedNameConfirm';
-import { AUTONOMY_STAGE_INFO } from '../lib/autonomy-labels';
+import { AUTONOMY_STAGE_INFO, AUTONOMY_PICKER_NOTE } from '../lib/autonomy-labels';
 import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
 import { resolveAuditVisibility } from '../lib/audit-visibility';
 import { isDependantNaturalPersonActive, isNaturalPersonActive, REAL_IDENTITY_DORMANT_PRIMARY_COPY } from '../lib/identity-display';
@@ -1276,6 +1276,9 @@ function DepSettingsBlock({
               </button>
             ))}
           </div>
+          <p data-testid="autonomy-picker-note" style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: 12, marginBottom: 0, lineHeight: 1.5 }}>
+            {AUTONOMY_PICKER_NOTE}
+          </p>
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { DependantIdentity, AutonomyStage, ExtraPersona, DependantBunkerEndpoint } from '../types';
@@ -66,6 +66,12 @@ export function useDependants(
   }, [guardianIdentityId]);
   const [dependants, setDependants] = useState<DependantIdentity[]>([]);
   const [loading, setLoading] = useState(true);
+  // Whether `dependants` is the result of a finished read made WITH the key
+  // (decrypted), not the keyless read before unlock, nor an empty list while
+  // the guardian identity is not there. `loading` cannot say this: it goes
+  // false after the first, keyless, read and never comes back.
+  const [loadedWithKey, setLoadedWithKey] = useState(false);
+  const loadSeqRef = useRef(0);
 
   /**
    * Shared lift + sort step used by both effect-driven `loadDependants`
@@ -90,14 +96,18 @@ export function useDependants(
   }, []);
 
   const loadDependants = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     if (!guardianPubkey) {
       setDependants([]);
       setLoading(false);
+      setLoadedWithKey(false);
       return;
     }
     const results = await getDependants(guardianPubkey, encryptionKey ?? undefined);
     setDependants(migrateAndSort(results));
     setLoading(false);
+    // Only the newest read speaks for the key: an older one finishing late must not.
+    if (seq === loadSeqRef.current) setLoadedWithKey(!!encryptionKey);
   }, [guardianPubkey, encryptionKey, migrateAndSort]);
 
   useEffect(() => {
@@ -1085,5 +1095,5 @@ export function useDependants(
   }, [dependants, encryptionKey, loadDependants]);
 
 
-  return { dependants, loading, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants };
+  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants };
 }

@@ -144,7 +144,7 @@ export function decideChildRequest(input: ChildGateInput): ChildGateVerdict {
   });
 }
 
-/** Online play asks by default. Full autonomy needs a new, explicit guardian
+/** Online play asks by default. “Fully independent” (full-autonomy) needs a new, explicit guardian
  * delegation plus visible consent, or an exact, unexpired standing grant.
  * Legacy wildcard allows never grant this permission. Blocks win first. */
 function decideAppPermission(

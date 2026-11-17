@@ -84,7 +84,7 @@ export function isDirectChildInstall(input: {
 }
 
 /** Who signs for a paired child, as its card says it. */
-export type ChildSignerKind = 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable';
+export type ChildSignerKind = 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable' | 'unpaired';
 
 /** How long a direct child's card says "Connecting…" before it says the Heartwood cannot be reached. */
 export const CHILD_CONNECT_STALL_MS = 60_000;
@@ -96,14 +96,18 @@ export const CHILD_CONNECT_STALL_MS = 60_000;
  * and once it has been down for `CHILD_CONNECT_STALL_MS` while unlocked
  * (`stalled`) it says the Heartwood cannot be reached. A connection that was
  * up and then stopped answering its regular ping (`lost`) says the same.
+ * Once the guardian has unpaired this phone (`unpaired`) an unlocked direct
+ * child says so, whatever the router, stall or ping say: the Heartwood still
+ * answers pings from an unpaired phone, so only the notice can tell.
  * A legacy phone-paired
  * child keeps the old rule (Heartwood only while a router answered the
  * capabilities probe).
  */
-export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean; lost?: boolean }): ChildSignerKind {
+export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean; lost?: boolean; unpaired?: boolean }): ChildSignerKind {
   if (input.signingMode !== 'paired-child') return 'guardian-phone';
   if (input.direct) {
     if (!input.unlocked) return 'heartwood';
+    if (input.unpaired) return 'unpaired';
     if (input.routerUp) return input.lost ? 'heartwood-unreachable' : 'heartwood';
     return input.stalled ? 'heartwood-unreachable' : 'heartwood-connecting';
   }

@@ -4,6 +4,8 @@
  * lives here, not inline in pages or hooks.
  */
 
+import { AUTONOMY_STAGE_INFO } from './autonomy-labels';
+
 /** The label on the new phone's welcome button; the guardian's QR text names the same one. */
 export const PAIR_WITH_GUARDIAN_LABEL = "Pair with my guardian's phone";
 
@@ -154,6 +156,7 @@ export const CHILD_SIDE_COPY = {
   },
   /** §9.4: the guardian unpaired this phone (notice or the Heartwood refusing it). */
   unpaired: 'Your guardian has unpaired this phone',
+  unpairedBody: "This phone can't sign in until it's paired again.",
   pairAgain: 'Pair again',
   /** The card on a phone paired straight to the Heartwood while its connection is not up. */
   connectingHeartwood: 'Connecting to your family Heartwood…',
@@ -181,8 +184,8 @@ export const CHILD_ASK_COPY = {
   allowOnce: 'Allow once',
   /** A36: names the scope, the re-derived target and the persona — "Always allow sign-in to school.org for Sky". */
   allowAlways: (scopePhrase: string, target: string, persona: string) => `Always allow ${scopePhrase} ${target} for ${persona}`,
-  /** Why "Always allow" is missing: the child is on Full control, where every request is asked for. */
-  alwaysHiddenFullControl: (child: string) => `${child} is on Full control, so every request asks you. To offer “Always allow”, change Autonomy Level in ${child}’s settings.`,
+  /** Why "Always allow" is missing: the child is on "Asks every time", where every request is asked for. */
+  alwaysHiddenAsksEveryTime: (child: string) => `${child} is on “${AUTONOMY_STAGE_INFO['full-control'].label}”. To offer “Always allow”, choose “${AUTONOMY_STAGE_INFO['request-approve'].label}” in ${child}’s Autonomy Level.`,
   scopePhrase: {
     'sign-in': 'sign-in to',
     'venue-entry': 'venue entry at',
@@ -311,13 +314,10 @@ export const CHILD_PERMISSIONS_COPY = {
   unpairedChild: 'Your guardian has unpaired this phone.',
   noRulesYet: 'Waiting for your guardian’s rules. Until they arrive, everything is asked for.',
   stage: 'Stage',
-  stageName: {
-    'full-control': 'Full control — every request is asked for',
-    'request-approve': 'Asks for approval',
-    'autonomous-alerts': 'Independent, with alerts',
-    'autonomous-logging': 'Independent, logged',
-    'full-autonomy': 'Fully independent',
-  } as Record<string, string>,
+  /** The same five names the guardian picks from (autonomy-labels.ts), so the two never drift. */
+  stageName: Object.fromEntries(
+    Object.entries(AUTONOMY_STAGE_INFO).map(([stage, info]) => [stage, info.label]),
+  ) as Record<string, string>,
   changeStage: 'Change stage',
   rulesHeading: 'Rules',
   allPersonas: (name: string) => `All of ${name}'s identities`,
@@ -411,4 +411,21 @@ export const PAIR_READINESS_COPY = {
     fix: 'Add or switch to a persona first.',
     action: 'Go to personas',
   },
+} as const;
+
+/**
+ * A sign-in reaching the guardian's phone in child mode (device run
+ * 2026-11-17, F12). See `child-mode-sign-in.ts`.
+ */
+export const CHILD_MODE_SIGN_IN_COPY = {
+  /** The child paired straight to the Heartwood: every sign-in is refused. */
+  refusalHeading: (child: string) => `${child.charAt(0).toUpperCase()}${child.slice(1)} signs in on their own phone`,
+  refusalBody: (child: string) => `This phone can't sign in for ${child}. Use ${child}'s own phone.`,
+  decline: 'Decline',
+  /** An approval that slipped past the picker in child mode. */
+  onlyAsTheChild: "This phone is being used as a child right now, so it can't sign in as anyone else.",
+  /** The same, for an app asking to connect. */
+  connectOnlyAsTheChild: "This phone is being used as a child right now, so it can't connect as anyone else.",
+  /** The connect picker in child mode when the child has no identity on this phone to connect with. */
+  connectNoChildIdentity: "This phone is being used as a child right now, and it holds none of the child's identities to connect with.",
 } as const;

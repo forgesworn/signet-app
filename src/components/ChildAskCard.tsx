@@ -178,11 +178,11 @@ export function ChildAskCard({ pending, alwaysAvailable, appPermissionStandingAv
         {showAlways && (
           <button className="btn btn-secondary" disabled={busy} onClick={() => { void act('always'); }}>{permission ? `Allow online play until ${new Date(permission.validUntil * 1000).toLocaleDateString()}` : COPY.allowAlways(askScopePhrase(a), target, persona)}</button>
         )}
-        {/* Full control hides "Always" by design; say so, or the guardian looks for it and finds nothing.
-            Not on an app-permission ask: its standing option comes only at Full autonomy, so
+        {/* "Asks every time" hides "Always" by design; say so, or the guardian looks for it and finds nothing.
+            Not on an app-permission ask: its standing option comes only at "Fully independent", so
             "change Autonomy Level" would point at the wrong step. */}
         {!alwaysAvailable && a.scope !== 'app-permission' && (
-          <div data-testid="child-ask-always-hidden" role="note" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{COPY.alwaysHiddenFullControl(child)}</div>
+          <div data-testid="child-ask-always-hidden" role="note" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{COPY.alwaysHiddenAsksEveryTime(child)}</div>
         )}
         <button className="btn btn-ghost" disabled={busy} onClick={() => { void act('deny'); }} style={{ color: 'var(--danger)' }}>{COPY.deny}</button>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>

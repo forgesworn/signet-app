@@ -30,6 +30,7 @@ import { useNip55Server } from './useNip55Server';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import type { BunkerRoute } from './useBunkerServer';
 import * as db from '../lib/db';
+import { saveNip55Grants } from '../lib/nip55';
 
 const sk = generateSecretKey();
 const pubkey = getPublicKey(sk);
@@ -771,5 +772,132 @@ describe('useNip55Server', () => {
       await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
       expect(respond.mock.calls[0][0]).toMatchObject({ status: 'deferred' });
     });
+  });
+});
+
+// Child mode on the guardian's phone (review of the F12 fix): NIP-55 only ever
+// serves the owner's own keys, so while a child holds the phone every request
+// is refused with the reject answer, an "always" grant included, nothing is
+// shown, nothing is signed and no PIN is asked for.
+describe('useNip55Server in child mode', () => {
+  const PKG = 'dev.forgesworn.kithmoot';
+  type Props = { childMode: 'on' | 'off' | 'unknown'; locked: boolean };
+
+  beforeEach(() => { for (const k of Object.keys(listeners)) delete listeners[k]; respond.mockClear(); pendingFromShell.mockClear(); localStorage.clear(); });
+
+  function setUp(initialProps: Props, onNeedsUnlock = vi.fn()) {
+    // An "allow always" grant for the caller, pinned to the owner key.
+    saveNip55Grants({ [PKG]: { pubkey, allowAlways: true, denyAlways: false, grantedAt: 1 } });
+    const backend = new LocalSigningBackend(bytesToHex(sk));
+    const sign = vi.spyOn(backend, 'signEvent');
+    const owner: BunkerRoute = { pubkey, backend };
+    const hook = renderHook(({ childMode, locked }: Props) => useNip55Server({
+      enabled: true, routes: locked ? [] : [owner], locked, activePubkey: pubkey, onNeedsUnlock, childMode,
+    }), { initialProps });
+    return { ...hook, sign, onNeedsUnlock };
+  }
+
+  it('control: outside child mode the always grant signs silently', async () => {
+    const { sign } = setUp({ childMode: 'off', locked: false });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request({ viaProvider: true })); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok' });
+    expect(sign).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses every request, by provider or intent, even under an always grant, and shows nothing', async () => {
+    const { result, sign, onNeedsUnlock } = setUp({ childMode: 'on', locked: false });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const byProvider = request({ viaProvider: true });
+    const byIntent = request();
+    const key = request({ type: 'get_public_key', payload: null });
+    await act(async () => { listeners.nip55Request[0](byProvider); listeners.nip55Request[0](byIntent); listeners.nip55Request[0](key); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+    expect(respond.mock.calls.map(c => c[0])).toEqual([
+      { id: byProvider.id, status: 'rejected' }, { id: byIntent.id, status: 'rejected' }, { id: key.id, status: 'rejected' },
+    ]);
+    expect(sign).not.toHaveBeenCalled();
+    expect(result.current.pending).toBeNull();
+    expect(result.current.waiting).toBe(0);
+    expect(onNeedsUnlock).not.toHaveBeenCalled();
+  });
+
+  it('refuses while locked too, with no PIN prompt', async () => {
+    const { sign, onNeedsUnlock } = setUp({ childMode: 'on', locked: true });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const raw = request();
+    await act(async () => { listeners.nip55Request[0](raw); });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(respond.mock.calls[0][0]).toEqual({ id: raw.id, status: 'rejected' });
+    expect(onNeedsUnlock).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('a request held for the PIN is refused once child mode comes on, and never signed after the unlock', async () => {
+    const { result, rerender, sign, onNeedsUnlock } = setUp({ childMode: 'off', locked: true });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const raw = request();
+    await act(async () => { listeners.nip55Request[0](raw); });
+    await waitFor(() => expect(onNeedsUnlock).toHaveBeenCalledTimes(1));
+    expect(result.current.waiting).toBe(1);
+    rerender({ childMode: 'on', locked: true });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(respond.mock.calls[0][0]).toEqual({ id: raw.id, status: 'rejected' });
+    expect(result.current.waiting).toBe(0);
+    rerender({ childMode: 'on', locked: false });
+    await act(async () => { await Promise.resolve(); });
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('a request on screen when child mode comes on is refused and the screen goes', async () => {
+    localStorage.clear();
+    const backend = new LocalSigningBackend(bytesToHex(sk));
+    const sign = vi.spyOn(backend, 'signEvent');
+    const { result, rerender } = renderHook(({ childMode }: { childMode: 'on' | 'off' }) => useNip55Server({
+      enabled: true, routes: [{ pubkey, backend }], locked: false, activePubkey: pubkey, childMode,
+    }), { initialProps: { childMode: 'off' as 'on' | 'off' } });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const raw = request();
+    await act(async () => { listeners.nip55Request[0](raw); });
+    await waitFor(() => expect(result.current.pending).not.toBeNull());
+    const handle = result.current.pending!.handle;
+    rerender({ childMode: 'on' });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(respond.mock.calls[0][0]).toEqual({ id: raw.id, status: 'rejected' });
+    expect(result.current.pending).toBeNull();
+    // A stale approval from the old screen answers nothing.
+    await act(async () => { result.current.approveAlways(handle); });
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('before child mode is known (cold start) a request waits with no PIN prompt, then is refused when it is on', async () => {
+    const { rerender, sign, onNeedsUnlock } = setUp({ childMode: 'unknown', locked: true });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    const raw = request();
+    await act(async () => { listeners.nip55Request[0](raw); });
+    await act(async () => { await Promise.resolve(); });
+    expect(onNeedsUnlock).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    rerender({ childMode: 'on', locked: true });
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(respond.mock.calls[0][0]).toEqual({ id: raw.id, status: 'rejected' });
+    expect(onNeedsUnlock).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('before child mode is known a request waits, then is handled as before when it is off', async () => {
+    const { rerender, onNeedsUnlock } = setUp({ childMode: 'unknown', locked: true });
+    await waitFor(() => expect(listeners.nip55Request?.length).toBe(1));
+    await act(async () => { listeners.nip55Request[0](request()); });
+    expect(onNeedsUnlock).not.toHaveBeenCalled();
+    rerender({ childMode: 'off', locked: true });
+    await waitFor(() => expect(onNeedsUnlock).toHaveBeenCalledTimes(1));
+    rerender({ childMode: 'off', locked: false });
+    // The always grant answers it once unlocked, as it would have without the wait.
+    await waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(respond.mock.calls[0][0]).toMatchObject({ status: 'ok' });
   });
 });
