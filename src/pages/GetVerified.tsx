@@ -22,14 +22,22 @@ interface Props {
    * Defaults to true for the guardian's own get-verified flow.
    */
   allowPublish?: boolean;
+  /**
+   * Never enter the backup phase and never mark the identity backed up. In
+   * child mode `identity` is the guardian's, so the recovery words there would
+   * be the guardian's: the phase would show them with no fresh auth.
+   */
+  skipBackup?: boolean;
   /** DEV only — allows e2e tests to inject saved-credential state without going through full QR flow */
   onRegisterSavedInjector?: (fn: (eventJsons: string[]) => void) => void;
 }
 
 type Phase = 'education' | 'backup' | 'with-verifier' | 'receive-credentials';
 
-export function GetVerified({ identity, onMarkBackedUp, relayUrl, encryptionKey, allowPublish = true, onRegisterSavedInjector }: Props) {
-  const [phase, setPhase] = useState<Phase>('education');
+export function GetVerified({ identity, onMarkBackedUp, relayUrl, encryptionKey, allowPublish = true, skipBackup = false, onRegisterSavedInjector }: Props) {
+  const [phaseState, setPhase] = useState<Phase>('education');
+  // Child mode can become known while the backup phase is open: never show it then.
+  const phase: Phase = skipBackup && phaseState === 'backup' ? 'with-verifier' : phaseState;
   const [backedUpChecked, setBackedUpChecked] = useState(false);
 
   // QR scanner state for verifier scan
@@ -61,7 +69,7 @@ export function GetVerified({ identity, onMarkBackedUp, relayUrl, encryptionKey,
   }, [onRegisterSavedInjector]);
 
   const handleEnterDetails = () => {
-    if (!identity.backedUp) {
+    if (!identity.backedUp && !skipBackup) {
       setPhase('backup');
     } else {
       setPhase('with-verifier');
@@ -69,6 +77,7 @@ export function GetVerified({ identity, onMarkBackedUp, relayUrl, encryptionKey,
   };
 
   const handleBackupContinue = () => {
+    if (skipBackup) { setPhase('with-verifier'); return; }
     onMarkBackedUp();
     setPhase('with-verifier');
   };

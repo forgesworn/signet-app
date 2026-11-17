@@ -72,4 +72,9 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(handler).toContain('buildVerifyDeniedUrl(callback)');
     expect(app.slice(idx('const handleDenyVerification = useCallback(() => {'))).toContain('publishVerifyRejectionToRelay(');
   });
+
+  it('Get Verified skips the backup phase, which would show the guardian\'s recovery words', () => {
+    const start = idx('<GetVerified');
+    expect(app.slice(start, app.indexOf('/>', start + 400))).toContain("skipBackup={childModeNow !== 'off'}");
+  });
 });

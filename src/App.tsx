@@ -14250,6 +14250,8 @@ function AppContent() {
           // (child) context — a child's pubkey → tier mapping must not
           // be placed on a public relay (UK GDPR / AADC).
           allowPublish={!activeDependant}
+          // Child mode: `identity` is the guardian's, and so would be its recovery words.
+          skipBackup={childModeNow !== 'off'}
           onRegisterSavedInjector={
             (import.meta as any).env?.DEV
               ? (fn: (eventJsons: string[]) => void) => { getVerifiedSavedInjectorRef.current = fn; }

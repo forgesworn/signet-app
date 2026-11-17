@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Child mode: Get Verified no longer shows your recovery words or marks you backed up while the phone is in child mode
 - Child mode: age verification requests are now refused while the phone is in child mode, because they could answer with your own credential. Leave child mode with your PIN first
 - Child mode: connecting a companion app, giving an app access to contacts, adding a dependant and Advanced settings are now refused while the phone is in child mode, with no PIN asked for. Leave child mode with the guardian's PIN first
 - Sign in with Signet from another device: signing in as a child no longer hands the site a connection to My Signet's Nostr Connect server, so it cannot go on signing as them afterwards
