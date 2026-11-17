@@ -85,6 +85,16 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain('const showBackupNudge = !!identity && !!encryptionKey && shouldShowBackupNudge({');
   });
 
+  it('the ready notice and both backup banners are withheld in child mode', () => {
+    expect(app).toContain('readyNoticeFor={isPairedChild || signInChildMode ? undefined : (id) =>');
+    expect(app).toContain('const privateVaultApprovalBanner = (!isPairedChild && !signInChildMode && privateVaultSupported');
+    expect(app).toContain('const ownerAgainBanner = (!isPairedChild && !signInChildMode && ownerAgainOffer) ? (');
+    const signIn = idx('const signInChildMode = carousel.childMode || !!savedChildMode;');
+    expect(idx('const privateVaultApprovalBanner =')).toBeGreaterThan(signIn);
+    expect(idx('const ownerAgainBanner =')).toBeGreaterThan(signIn);
+    expect(idx('readyNoticeFor={isPairedChild || signInChildMode')).toBeGreaterThan(signIn);
+  });
+
   it('app permission reads saved child mode too, not only the live carousel flag', () => {
     expect(app).toContain('guardianActingAsChild: signInChildMode,');
     expect(app).not.toContain('guardianActingAsChild: carousel.childMode');

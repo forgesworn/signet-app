@@ -11775,10 +11775,13 @@ function AppContent() {
     </div>
   ) : null;
 
+  // Neither banner shows in child mode: their buttons re-run the guardian's
+  // backup jobs or open the guardian's Advanced settings, and the child has no
+  // use for either.
   // The device refused a private-backup request (denied, card timed out or
   // busy), so the vault jobs stopped retrying for this unlock rather than put
   // the same cards back up. One quiet line; the button runs them once more.
-  const privateVaultApprovalBanner = (!isPairedChild && privateVaultSupported
+  const privateVaultApprovalBanner = (!isPairedChild && !signInChildMode && privateVaultSupported
     && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed
     // The "approve again" banner below says the same words; one at a time.
     && !ownerAgainOffer) ? (
@@ -11792,7 +11795,7 @@ function AppContent() {
   // pairing was edited, restored or had its approvals forgotten), or a private
   // backup request was refused. One quiet line; the button opens the choice
   // screen in Settings, where the owner checks the five words first.
-  const ownerAgainBanner = (!isPairedChild && ownerAgainOffer) ? (
+  const ownerAgainBanner = (!isPairedChild && !signInChildMode && ownerAgainOffer) ? (
     <div className="vault-approval-banner">
       <span className="vault-approval-banner-text">{ownerLost ? 'This phone no longer has full access on your Heartwood.' : PRIVATE_VAULT_NEEDS_APPROVAL_COPY}</span>
       <span className="vault-approval-banner-actions">
@@ -15745,7 +15748,7 @@ function AppContent() {
         onPairAgain={() => navigateTo('paired-child-repair')}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
-        readyNoticeFor={isPairedChild ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
+        readyNoticeFor={isPairedChild || signInChildMode ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
         proAnchorActive={!!proAnchor}
         onProPillTap={() => navigateTo('pro-dashboard')}
         recentSignInAck={recentSignInAck}
