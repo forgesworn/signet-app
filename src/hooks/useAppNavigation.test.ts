@@ -346,16 +346,17 @@ describe('useAppNavigation: pairing a phone from Add Dependant', () => {
     window.history.replaceState(null, '');
   });
 
-  // Add Dependant's "Pair their phone now": the form's entry becomes home, the pair page opens above it.
-  const pairFromAddDependant = (result: ReturnType<typeof setup>['result']) => {
+  // Add Dependant's "Pair their phone now": the pair page takes the form's entry.
+  const pairFromAddDependant = (result: ReturnType<typeof setup>['result'], origin: Page = 'home') => {
+    if (origin !== 'home') act(() => result.current.navigateTo(origin));
     act(() => result.current.navigateTo('add-dependant'));
     act(() => {
-      result.current.navigateReplace('home');
-      result.current.openDependantPage('pair-dependant-device', 'dep-b');
+      result.current.borrowActiveDependantId('dep-b');
+      result.current.navigateReplace('pair-dependant-device');
     });
   };
 
-  it('opens the pair page for the new dependant, over home', () => {
+  it('opens the pair page for the new dependant', () => {
     const { result } = setup();
     pairFromAddDependant(result);
     expect(result.current.page).toBe('pair-dependant-device');
@@ -369,7 +370,16 @@ describe('useAppNavigation: pairing a phone from Add Dependant', () => {
     await back(result, 'home');
     expect(result.current.activeDependantId).toBeNull();
     expect(result.current.tabs).toContain('bunker');
+    // Home is not doubled: the entry under the pair page was home already.
     expect(window.history.state).toMatchObject({ page: 'home' });
+    expect(window.history.state?.depth ?? 0).toBe(0);
+  });
+
+  it('opened from the family list, back returns to the family list', async () => {
+    const { result } = setup();
+    pairFromAddDependant(result, 'family-list');
+    await back(result, 'family-list');
+    expect(result.current.activeDependantId).toBeNull();
   });
 
   it("the pair page opened from the dependant's settings still goes back to those settings", async () => {

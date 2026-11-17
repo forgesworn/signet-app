@@ -14750,13 +14750,13 @@ function AppContent() {
           }}
           onSwitchToDependant={(depId) => { chooseDependantScope(depId); navigateReplace('home'); }}
           onPairDevice={(depId) => {
-            // Leaving the pair page (Done, back, hardware back) must not land on a blank
-            // Add Dependant form: this entry becomes home, with the carousel on the new
-            // dependant's card, and the pair page opens above it.
+            // The pair page takes this entry's place, so leaving it (Done, back, hardware
+            // back) returns to wherever Add Dependant was opened from, never a blank form.
+            // From home that is the carousel, left on the new dependant's card.
             const row = identity ? findRowForDependant(identity, dependants, depId, botInventory, childCarouselAllowed) : null;
             if (row !== null) carousel.commitPosition(row, 0);
-            navigateReplace('home');
-            openDependantPage('pair-dependant-device', depId);
+            borrowActiveDependantId(depId);
+            navigateReplace('pair-dependant-device');
           }}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
