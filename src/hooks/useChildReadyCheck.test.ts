@@ -198,12 +198,16 @@ describe('useGuardianReadyChecks (guardian, App-level)', () => {
     const store = memStore({ [dep.id.toLowerCase()]: { pairing: pairingKeyOf(dep), guardian: 'confirmed', approved: [PERSONA], at: 1_700_000_000_000 } });
     let release!: () => void;
     mList.mockImplementationOnce(() => new Promise(r => { release = () => r(device([PERSONA], [GNP])); }));
+    // A reading is stamped when the device is ASKED, which happens somewhere
+    // after this point and before the answer is released.
+    const mounted = Date.now();
     const { result } = renderHook(() => useGuardianReadyChecks(opts({ dependants: [dep], store })));
     // The saved reading and its time, until the device answers.
     await waitFor(() => expect(result.current.approvedAtByDep[dep.id]).toBe(1_700_000_000_000));
-    const asked = Date.now();
     await act(async () => { release(); });
-    await waitFor(() => expect(result.current.approvedAtByDep[dep.id]).toBeGreaterThanOrEqual(asked - 50));
+    const answered = Date.now();
+    await waitFor(() => expect(result.current.approvedAtByDep[dep.id]).toBeGreaterThanOrEqual(mounted));
+    expect(result.current.approvedAtByDep[dep.id]).toBeLessThanOrEqual(answered);
     const first = result.current.approvedAtByDep[dep.id];
     expect(result.current.approvedByDep[dep.id]).toEqual([PERSONA]);
     mList.mockResolvedValue(device([PERSONA], [GNP]));
