@@ -56,4 +56,51 @@ describe('useCarousel — a direct child\'s allow-list changing under the card o
     expect(h.result.current.activeIdentity.publicKey).toBe(E2);
     expect(h.result.current.row).toBe(2);
   });
+
+  // App: `null` = no filter / not decided yet (the record still loading).
+  function mountNullable(allowed: string[] | null, bound: string | null = null, id: SignetIdentity | null = identity) {
+    return renderHook(({ allow, b, ident }) => useCarousel(ident, [], [], allow ? new Set(allow) : null, b), {
+      initialProps: { allow: allowed, b: bound, ident: id },
+    });
+  }
+
+  it('an empty list then the bound persona: the bound persona\'s card, never the add card', () => {
+    const h = mountNullable([], null);
+    expect(h.result.current.rows.map(r => r.type)).toEqual(['add']);
+    h.rerender({ allow: [P], b: P, ident: identity });
+    expect(h.result.current.activeIdentity.publicKey).toBe(P);
+    h.rerender({ allow: [P, E1, E2], b: P, ident: identity });
+    expect(h.result.current.activeIdentity.publicKey).toBe(P);
+  });
+
+  it('unlocking while the record loads (null), then the bound persona, then the full list: P\'s card, even if the add card was on screen before the lock', async () => {
+    const h = mountNullable(null, null);
+    // On the add card (the last row) when the phone locked: the next unlock lands on the bound persona.
+    await act(async () => { h.result.current.navigateToCell(3, 0); });
+    h.rerender({ allow: null, b: null, ident: null });
+    h.rerender({ allow: null, b: null, ident: identity });
+    h.rerender({ allow: [P], b: P, ident: identity });
+    expect(h.result.current.activeIdentity.publicKey).toBe(P);
+    h.rerender({ allow: [P, E1, E2], b: P, ident: identity });
+    expect(h.result.current.activeIdentity.publicKey).toBe(P);
+    expect(h.result.current.rows[h.result.current.row].type).toBe('persona');
+  });
+
+  it('the card on screen before the list is decided is kept when the list has it', async () => {
+    const h = mountNullable(null, null);
+    await act(async () => { h.result.current.commitPosition(1, 0); });
+    expect(h.result.current.activeIdentity.publicKey).toBe(E1);
+    h.rerender({ allow: [P, E1, E2], b: P, ident: identity });
+    expect(h.result.current.activeIdentity.publicKey).toBe(E1);
+  });
+
+  it('the add card stays on screen only when the user went there', async () => {
+    const h = mount([P, E2]);
+    await act(async () => { h.result.current.commitPosition(2, 0); });
+    expect(h.result.current.rows[h.result.current.row].type).toBe('add');
+    h.rerender({ allow: [E1, P, E2], b: P });
+    expect(h.result.current.rows[h.result.current.row].type).toBe('add');
+    h.rerender({ allow: [P], b: P });
+    expect(h.result.current.rows[h.result.current.row].type).toBe('add');
+  });
 });

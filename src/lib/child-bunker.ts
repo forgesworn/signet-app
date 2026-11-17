@@ -204,6 +204,34 @@ export function childAllowedPersonaKeys(
 }
 
 /**
+ * What App hands the carousel on a direct child (`useCarousel`): the allowed
+ * personas as a sorted lowercase CSV, and the bound persona (the card shown
+ * when the one on screen is no longer allowed). `allow: null` is no filter,
+ * and on a direct child "not decided yet": the pairing record is still
+ * loading, so nothing is known and the carousel must not settle on the add
+ * card, which an empty list would leave as the only card. With the record:
+ * the bound persona only until the rules payload has loaded (only it has a
+ * route, A50), then the payload's personas plus it (A51). When the record
+ * load has settled without one (it failed): the identity's own persona, so
+ * there is never a session without identity cards.
+ */
+export function childCarouselFilter(input: {
+  direct: boolean;
+  record: { personaPubkey?: string } | null | undefined;
+  /** The record load has settled (found or not) for this identity since the unlock. */
+  loadSettled: boolean;
+  identity: { persona: { publicKey: string } } | null | undefined;
+  rules: { personas?: string[] } | null | undefined;
+}): { allow: string | null; bound: string | null } {
+  const none = { allow: null, bound: null };
+  if (!input.direct || (!input.record && !input.loadSettled)) return none;
+  const bound = (input.record?.personaPubkey || input.identity?.persona.publicKey || '').toLowerCase();
+  if (!bound) return none;
+  const keys = childAllowedPersonaKeys(input.rules, bound);
+  return { allow: keys ? [...keys].sort().join(',') : bound, bound };
+}
+
+/**
  * The five legacy guardian-self sync rails (contacts, kens, dependants,
  * credentials, grants) decrypt as the identity they sync. On a paired child
  * that is the dependant — on a direct install it would hit the Heartwood — so

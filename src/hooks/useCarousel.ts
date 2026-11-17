@@ -63,7 +63,10 @@ export function useCarousel(
   identity: SignetIdentity | null,
   dependants: DependantIdentity[],
   bots: readonly BotMetadata[] = [],
-  /** A direct child's install: the personas its rules allow (`buildRows`). */
+  /**
+   * A direct child's install: the personas its rules allow (`buildRows`).
+   * Null is no filter; on a direct child, "not decided yet" (`childCarouselFilter`).
+   */
   allowedPersonas: ReadonlySet<string> | null = null,
   /** A direct child's install: the bound persona, shown when the card on screen is no longer allowed. */
   boundPersona: string | null = null,
@@ -86,18 +89,34 @@ export function useCarousel(
   const [childDependantId, setChildDependantId] = useState<string | null>(null);
   const [animating, setAnimating] = useState(false);
 
+  /**
+   * The card a changing allow-list keeps on screen (`carouselRowKey`). The add
+   * card is kept only when the user went there (`addChosenRef`): a moment
+   * with no identity card (a list not decided yet) is not a choice. Forgotten
+   * on lock, so an unlock lands afresh.
+   */
+  const shownKeyRef = useRef<string | null>(null);
+  /** The user's last move (`navigateToCell` / `commitPosition`) was to the add card. */
+  const addChosenRef = useRef(false);
+
   // Snap to the primary keypair's row on each unlock (identity null→non-null).
   // A ref guards against overriding user navigation on subsequent identity
   // reloads while unlocked (e.g. after a cross-device sync merges and re-sets
   // identity in React state); it resets on lock so the next unlock re-lands.
   const hasLandedRef = useRef(false);
   useEffect(() => {
-    if (!identity) { hasLandedRef.current = false; return; }
+    if (!identity) {
+      hasLandedRef.current = false;
+      shownKeyRef.current = null;
+      addChosenRef.current = false;
+      return;
+    }
     if (hasLandedRef.current) return;
     hasLandedRef.current = true;
     const keypair = resolveLandingKeypair(identity);
     const targetRow = findRowForGuardianKeypair(identity, keypair, bots, allowed);
     if (targetRow !== TOP_ROW) {
+      addChosenRef.current = false;
       setRow(targetRow);
     }
   }, [identity, bots, allowed]);
@@ -119,13 +138,14 @@ export function useCarousel(
     }
     return buildRows(identity, dependants, bots, allowed);
   }, [identity, dependants, childMode, childDependant, bots, allowed]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
 
   // When the allow-list arrives, grows or shrinks, the ring keeps the card on
   // screen, not its row number: an extra persona's card must not turn into
   // its neighbour. A card no longer allowed gives way to the bound persona.
   // Decided while rendering, from the card last committed to the screen, so
   // no frame shows the wrong card.
-  const shownKeyRef = useRef<string | null>(null);
   const [seenAllowKey, setSeenAllowKey] = useState(allowKey);
   let positioned = row;
   if (seenAllowKey !== allowKey) {
@@ -143,7 +163,11 @@ export function useCarousel(
   const safeRow = rows.length > 0 && positioned < rows.length ? positioned : 0;
 
   const shownKey = rows.length > 0 ? carouselRowKey(rows[safeRow]) : null;
-  useLayoutEffect(() => { shownKeyRef.current = shownKey; }, [shownKey]);
+  useLayoutEffect(() => {
+    if (!shownKey) return; // locked: nothing on screen to keep
+    if (shownKey !== 'add') { addChosenRef.current = false; shownKeyRef.current = shownKey; }
+    else if (addChosenRef.current) shownKeyRef.current = shownKey;
+  }, [shownKey]);
 
   const activeIdentity = useMemo<ResolvedIdentity>(
     () => rows.length > 0
@@ -153,11 +177,13 @@ export function useCarousel(
   );
 
   const navigateToCell = useCallback((newRow: number, newCol: CarouselColumn) => {
+    addChosenRef.current = rowsRef.current[newRow]?.type === 'add';
     setRow(newRow);
     setCol(newCol);
   }, []);
 
   const commitPosition = useCallback((r: number, c: CarouselColumn) => {
+    addChosenRef.current = rowsRef.current[r]?.type === 'add';
     setRow(r);
     setCol(c);
     setAnimating(false);
@@ -168,6 +194,7 @@ export function useCarousel(
     if (!dep) return;
     setChildMode(true);
     setChildDependantId(dependantId);
+    addChosenRef.current = false;
     setRow(0);
     setCol(0);
   }, [dependants]);
@@ -176,12 +203,14 @@ export function useCarousel(
     setChildMode(false);
     setChildDependantId(null);
     // Exiting child mode returns to the top of the ring — the persona row.
+    addChosenRef.current = false;
     setRow(TOP_ROW);
     setCol(0);
   }, []);
 
   const landOnPrimary = useCallback((next: SignetIdentity) => {
     const keypair = resolveLandingKeypair(next);
+    addChosenRef.current = false;
     setRow(findRowForGuardianKeypair(next, keypair, bots, allowed));
     setCol(0);
   }, [bots, allowed]);

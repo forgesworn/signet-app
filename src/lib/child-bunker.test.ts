@@ -5,7 +5,7 @@ import type { AppPreferences, SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, childSignerKind, CHILD_CONNECT_STALL_MS, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonaKeys, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, childSignerKind, CHILD_CONNECT_STALL_MS, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -118,6 +118,34 @@ describe('A51: childAllowedPersonaKeys (the carousel allow-list)', () => {
   });
   it('the listed personas plus the bound one, lowercased', () => {
     expect([...childAllowedPersonaKeys({ personas: [NP.toUpperCase()] }, PERSONA.toUpperCase())!].sort()).toEqual([PERSONA, NP].sort());
+  });
+});
+
+describe('childCarouselFilter (what App hands the carousel on a direct child)', () => {
+  const rec = { personaPubkey: EXTRA };
+  it('not a direct install: no filter', () => {
+    expect(childCarouselFilter({ direct: false, record: rec, loadSettled: true, identity: identity(), rules: { personas: [PERSONA] } }))
+      .toEqual({ allow: null, bound: null });
+  });
+  it('the record still loading: no decision yet (never an empty list, which leaves only the add card)', () => {
+    const f = childCarouselFilter({ direct: true, record: null, loadSettled: false, identity: identity(), rules: null });
+    expect(f).toEqual({ allow: null, bound: null });
+    expect(f.allow).not.toBe('');
+  });
+  it('the record known, no rules payload yet: the bound persona only', () => {
+    expect(childCarouselFilter({ direct: true, record: rec, loadSettled: true, identity: identity(), rules: null }))
+      .toEqual({ allow: EXTRA, bound: EXTRA });
+    // Reloading (a bump): the record in hand still decides.
+    expect(childCarouselFilter({ direct: true, record: rec, loadSettled: false, identity: identity(), rules: null }))
+      .toEqual({ allow: EXTRA, bound: EXTRA });
+  });
+  it('with the rules payload: its personas plus the bound one, sorted', () => {
+    expect(childCarouselFilter({ direct: true, record: rec, loadSettled: true, identity: identity(), rules: { personas: [PERSONA.toUpperCase()] } }))
+      .toEqual({ allow: [EXTRA, PERSONA].sort().join(','), bound: EXTRA });
+  });
+  it('the record failed to load: the identity\'s own persona, never zero identity cards', () => {
+    expect(childCarouselFilter({ direct: true, record: null, loadSettled: true, identity: identity(), rules: null }))
+      .toEqual({ allow: PERSONA, bound: PERSONA });
   });
 });
 

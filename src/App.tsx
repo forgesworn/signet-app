@@ -402,7 +402,7 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonaKeys, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
 import { useChildConnectStall } from './hooks/useChildConnectStall';
 import { CHILD_READY_COPY } from './lib/child-ready-copy';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
@@ -2360,14 +2360,16 @@ function AppContent() {
     [childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey],
   );
   // Before the rules payload has loaded, only the bound persona has a route
-  // (A50), so it is the only card: never a card that cannot sign.
-  const childCarouselBoundNext = childDirect ? (pairedChildRecord?.personaPubkey ?? '').toLowerCase() || null : null;
-  const childCarouselAllowNext = childDirect
-    ? (() => {
-      const keys = childAllowedPersonaKeys(childDeviceLink.rules, pairedChildRecord?.personaPubkey);
-      return keys ? [...keys].sort().join(',') : (childCarouselBoundNext ?? '');
-    })()
-    : null;
+  // (A50), so it is the only card: never a card that cannot sign. While the
+  // record itself loads nothing is decided (no filter, never an empty list);
+  // a record that will not load falls back to the identity's own persona.
+  const { allow: childCarouselAllowNext, bound: childCarouselBoundNext } = childCarouselFilter({
+    direct: childDirect,
+    record: pairedChildRecord,
+    loadSettled: !!identity && pairedChildLoadedFor === identity.id,
+    identity,
+    rules: childDeviceLink.rules,
+  });
   useEffect(() => { setChildCarouselAllowCsv(childCarouselAllowNext); }, [childCarouselAllowNext]);
   useEffect(() => { setChildCarouselBound(childCarouselBoundNext); }, [childCarouselBoundNext]);
   // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
