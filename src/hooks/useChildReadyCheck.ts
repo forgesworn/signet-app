@@ -26,6 +26,10 @@
  *   watching      `watch(dep)` (a surface showing the checklist) and every
  *                 check read again every `pollMs` for `pollForMs` while a
  *                 press is owed: the child's presses start from its phone.
+ *                 Any good reading that finds a press owed does the same
+ *                 with no screen open: a window opens again when one ends,
+ *                 at most `pollWindows` times, then the device is read every
+ *                 `slowPollMs` while still owed and the app is in front.
  *
  * Nothing throws out of an effect. Retries are bounded.
  */
@@ -65,6 +69,10 @@ export interface UseGuardianReadyChecksOpts {
   startDelayMs?: number;
   pollMs?: number;
   pollForMs?: number;
+  /** Watch windows a reading that finds a press owed may open in a row, before the slow re-read. */
+  pollWindows?: number;
+  /** After those windows, while a press is still owed: one read this often. */
+  slowPollMs?: number;
   /** How long after `pairedAt` the automatic probe may still start (a later unlock). */
   autoProbeWindowMs?: number;
   /** Waits before each retry of a failed read; the list's length bounds the retries. */
@@ -119,6 +127,8 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   const startDelayMs = o.startDelayMs ?? 3_000;
   const pollMs = o.pollMs ?? 8_000;
   const pollForMs = o.pollForMs ?? 3 * 60_000;
+  const pollWindows = o.pollWindows ?? 3;
+  const slowPollMs = o.slowPollMs ?? 10 * 60_000;
   const autoProbeWindowMs = o.autoProbeWindowMs ?? 30 * 60_000;
   const retryDelaysMs = o.retryDelaysMs ?? [5_000, 15_000, 60_000, 180_000];
 
@@ -184,6 +194,10 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   const [npProbe, setNpProbeState] = useState<NpProbeState>('none');
   const npProbeRef = useRef<NpProbeState>('none');
   const [pollUntil, setPollUntil] = useState(0);
+  /** Watch windows opened by readings since nothing was owed (or since `watch` / a check). */
+  const windowsOpened = useRef(0);
+  /** Moved when a watch window ends or a slow re-read is due: the poll looks again. */
+  const [pollTick, setPollTick] = useState(0);
   const genRef = useRef(0);
   const readRef = useRef<Promise<DeviceClientSlot[] | null> | null>(null);
   const probeRef = useRef<Promise<void> | null>(null);
@@ -207,6 +221,7 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
     setLastFailed(false);
     setAttempted(false);
     setPollUntil(0);
+    windowsOpened.current = 0;
     readRef.current = null;
     probeRef.current = null;
     autoRunning.current = false;
@@ -366,7 +381,7 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
         await persistReading(first, new Set());
       }
     }
-    if (gen === genRef.current) setPollUntil(Date.now() + pollForMs);
+    if (gen === genRef.current) { windowsOpened.current = 0; setPollUntil(Date.now() + pollForMs); }
   }, [read, probeNp, recordFor, saveRecords, persistReading, pollForMs]);
 
   // The automatic probe for fresh pairings, once each: after `startDelayMs`,
@@ -418,17 +433,39 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `records` makes `recordFor` current
   }, [uiSlots, npProbe, attempted, recordFor, records, memoryKey, loaded, hasOperator, o.operatorPending]);
 
-  // Watch for presses while something is owed.
+  // Watch for presses while something is owed: the window `watch` or a check
+  // opened, else one opened by a good reading that finds a press owed (again
+  // when it ends, `pollWindows` times), then a slow re-read. Reads stay
+  // deduplicated (`read`) and under the operator lock.
   const anyOwed = enabled && direct.some(d => !isPaused(d) && owedPresses(rowsFor(d)) > 0);
+  const goodReading = readingAt > 0 && !lastFailed;
   useEffect(() => {
+    // Only a good reading that owes nothing ends the series: a failed read must not restart it.
+    if (!anyOwed && goodReading) windowsOpened.current = 0;
     if (!enabled || !hasOperator || !anyOwed) return;
-    if (Date.now() >= pollUntil) return;
-    const timer = setInterval(() => {
-      if (Date.now() >= pollUntil) { clearInterval(timer); return; }
-      void read();
-    }, pollMs);
-    return () => clearInterval(timer);
-  }, [enabled, hasOperator, anyOwed, pollUntil, pollMs, read]);
+    const now = Date.now();
+    if (now < pollUntil) {
+      const timer = setInterval(() => {
+        if (Date.now() >= pollUntil) { clearInterval(timer); return; }
+        void read();
+      }, pollMs);
+      const ended = setTimeout(() => setPollTick(t => t + 1), pollUntil - now);
+      return () => { clearInterval(timer); clearTimeout(ended); };
+    }
+    // A failed read has its own bounded retries.
+    if (!goodReading) return;
+    const inFront = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
+    if (windowsOpened.current < pollWindows && inFront()) {
+      windowsOpened.current++;
+      setPollUntil(now + pollForMs);
+      return;
+    }
+    const slow = setTimeout(() => {
+      if (inFront()) void read();
+      setPollTick(t => t + 1);
+    }, slowPollMs);
+    return () => clearTimeout(slow);
+  }, [enabled, hasOperator, anyOwed, goodReading, pollUntil, pollMs, pollForMs, pollWindows, slowPollMs, read, pollTick]);
 
   const finishFor = useCallback(async (depId: string) => {
     const dep = directRef.current.find(d => d.id === depId);
@@ -440,6 +477,7 @@ export function useGuardianReadyChecks(o: UseGuardianReadyChecksOpts): GuardianR
   const watch = useCallback((depId: string) => {
     if (!directRef.current.some(d => d.id === depId)) return;
     retryIdx.current = 0;
+    windowsOpened.current = 0;
     void read();
     setPollUntil(Date.now() + pollForMs);
   }, [read, pollForMs]);
