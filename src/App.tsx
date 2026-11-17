@@ -11778,8 +11778,10 @@ function AppContent() {
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
         />
-      ) : sheetChildAsks.length > 0 && !showAuthPrompt ? (
-        // A dependant's own phone asking (child-direct, spec §7).
+      ) : sheetChildAsks.length > 0 && !showAuthPrompt && !carousel.childMode ? (
+        // A dependant's own phone asking (child-direct, spec §7). The guardian's
+        // decision, never shown in child mode: the Settings tab stays in the bar
+        // there, and Settings renders this overlay too.
         <ChildAskApprovalModal
           asks={sheetChildAsks}
           alwaysAvailableFor={childAskAlwaysAvailable}
@@ -11803,6 +11805,17 @@ function AppContent() {
           onDenyAlways={nip55.denyAlways}
         />
       ) : null;
+
+  // Home, where a guardian spends most of their time: without this a child's
+  // ask reached the Bunker panel's "Family asks" and nothing else, so the child
+  // waited on "Asking your guardian…" until the guardian happened to open it
+  // (and the native notification is skipped in the foreground). Home is also
+  // where a child sits in child mode, holding the guardian's phone: the approve
+  // UI never shows there, nor under any dependant scope. The guardian's own
+  // sign-in (ApprovalOverlay in the carousel) goes first; a phone app's request
+  // (nip55Overlay) goes before a child's ask, a relay request before both.
+  const homeApprovalOverlay = carousel.childMode || activeDependant || pendingAuthRequest ? null
+    : bunkerPendingApproval || !nip55.pending ? bunkerApprovalOverlay : null;
 
   // Hand-off picker overlay — shown when the guardian taps the banner while in
   // child-mode to hand the phone to a different dependant. No PIN required
@@ -15636,7 +15649,7 @@ function AppContent() {
           );
         })()}
       </Carousel>
-      {authOverlay}{nip55Overlay}
+      {authOverlay}{nip55Overlay}{homeApprovalOverlay}
           {handoffPickerOverlay}
     </>
   );
