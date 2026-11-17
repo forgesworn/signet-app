@@ -15630,6 +15630,7 @@ function AppContent() {
         onExitChildMode={handleExitChildMode}
         childMode={carousel.childMode}
         childDependant={carousel.childDependant}
+        childModeName={signInChildDependant?.displayName}
         onAddPersona={async (displayName) => {
           // Fresh-auth gate so a child who's shoulder-surfed the PIN can't
           // mint new personas on the guardian's identity. Same pattern as
