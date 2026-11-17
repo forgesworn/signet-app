@@ -125,3 +125,17 @@ describe('child-mode sign-in gate in App.tsx', () => {
     expect(app).toContain('const signInChildMode = carousel.childMode || !!savedChildMode;');
   });
 });
+
+describe('sign-in picker offers Heartwood-held dependants (auth page only)', () => {
+  it('the auth filter asks approvalDependantSignable, with the signing mode and router state', () => {
+    expect(app).toContain('approvalDependantSignable(d, {');
+    expect(app).toContain("signingMode: preferences.signingMode,\n        routerUnsupported: routerProbeState === 'unsupported',");
+    expect(count('approvalDependantSignable(d, {')).toBe(1);
+  });
+
+  it('the connect page stays local-key-only', () => {
+    expect(count('!d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)')).toBe(1);
+    const connect = app.indexOf('!d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)');
+    expect(app.slice(connect, connect + 200)).toContain('childModeOffer.offersDependant(d.id)');
+  });
+});

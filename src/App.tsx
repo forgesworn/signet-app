@@ -402,7 +402,7 @@ import { contactToKindredEntry } from './lib/kindred-adapter';
 import { RelayClient } from 'signet-protocol';
 import { buildOwnerPersonaRoutes } from './lib/persona-bunker-routes';
 import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
-import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
+import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, approvalDependantSignable, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
@@ -14393,9 +14393,14 @@ function AppContent() {
     // Gate on the ACTING slot's key, not the NP's: a persona-first dependant
     // signs as their persona, so an NP-keyed test would drop them from the
     // picker after a key strip that left the persona signable (and vice versa).
+    // A dependant whose key lives on the guardian's Heartwood (bunker mode, no
+    // local key) is offered too: the approval signs through the device route.
     // In child mode only the child-mode dependant signs: never the guardian, never a sibling.
     const availableDependants = dependants.filter(d =>
-      !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
+      approvalDependantSignable(d, {
+        signingMode: preferences.signingMode,
+        routerUnsupported: routerProbeState === 'unsupported',
+      })
       && childModeOffer.offersDependant(d.id));
     const approveAuthRequestKey = authRequestKey(pendingAuthRequest);
     // Default selection comes from the row the user was viewing when the
@@ -14565,6 +14570,8 @@ function AppContent() {
     // signs as their persona, so an NP-keyed test would drop them from the
     // picker after a key strip that left the persona signable (and vice versa).
     // In child mode only the child-mode dependant connects: never the guardian, never a sibling.
+    // Stays local-key-only: a connect for a device-held dependant would need this
+    // phone's NIP-46 server to sign as them; chaining that to the Heartwood is deferred.
     const availableDependants = dependants.filter(d =>
       !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
       && childModeOffer.offersDependant(d.id));

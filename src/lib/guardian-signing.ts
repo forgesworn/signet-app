@@ -1,6 +1,7 @@
-import type { SignetIdentity } from '../types';
+import type { SignetIdentity, DependantIdentity } from '../types';
 import { isValidHexKey, validateMnemonic } from './signet';
 import { LocalSigningBackend, createLocalBackends } from './signing-backend';
+import { resolveDependantCardSlot } from './carousel-utils';
 
 /**
  * Resolve a {@link LocalSigningBackend} for one of the guardian's OWN keypairs
@@ -130,6 +131,26 @@ export function approvalGuardianPubkeys(
     externalPubkey: o.externalPubkey,
   }));
   return { listed, waiting: listed.filter(pubkey => !ready.has(pubkey)) };
+}
+
+/**
+ * Can the approval picker offer this dependant? The dependant analog of
+ * {@link approvalGuardianPubkeys}. The ACTING slot (not the NP) decides: a
+ * local private key is always signable. A keyless slot is signable only when
+ * the guardian's keys live on a paired Heartwood (`bunker`) whose router has
+ * not answered "cannot route personas" and the slot carries a valid public key
+ * to address — the signing path then goes through the device. Keyless slots
+ * under `local`, no mode, or `paired-child` are never offered; an encrypted
+ * (locked, public-only) record has nothing to sign with.
+ */
+export function approvalDependantSignable(
+  dep: DependantIdentity,
+  o: { signingMode: string | undefined; routerUnsupported: boolean },
+): boolean {
+  if (dep.encrypted) return false;
+  const slot = resolveDependantCardSlot(dep).slot;
+  if (isValidHexKey(slot.privateKey)) return true;
+  return o.signingMode === 'bunker' && !o.routerUnsupported && isValidHexKey(slot.publicKey);
 }
 
 export function isImportedGuardianPersona(identity: SignetIdentity | null, keypair: string | undefined): boolean {

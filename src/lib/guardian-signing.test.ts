@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { createLocalBackends } from './signing-backend';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
-import type { SignetIdentity } from '../types';
-import { resolveGuardianBackend, assertSigningIdentity, guardianSigningPubkeys, approvalGuardianPubkeys, isImportedGuardianPersona } from './guardian-signing';
+import type { SignetIdentity, DependantIdentity } from '../types';
+import { resolveGuardianBackend, assertSigningIdentity, guardianSigningPubkeys, approvalGuardianPubkeys, approvalDependantSignable, isImportedGuardianPersona } from './guardian-signing';
 
 // Valid 64-char-hex secp256k1 scalars (small, well below the curve order).
 const NP_PRIV = '1'.repeat(64);
@@ -218,5 +218,67 @@ describe('approvalGuardianPubkeys — device-held slots stay listed while their 
   it('local mode is unchanged and never waits', () => {
     const { waiting } = approvalGuardianPubkeys(locked(), { ...base, signingMode: 'local' });
     expect(waiting).toEqual([]);
+  });
+});
+
+describe('approvalDependantSignable — a device-held dependant is offered only through a Heartwood', () => {
+  const DEP_P = 'a'.repeat(64);
+  const DEP_NP = 'b'.repeat(64);
+  const DEP_EXTRA = 'c'.repeat(64);
+  const KEY = '4'.repeat(64);
+  const dep = (over: Partial<DependantIdentity> = {}): DependantIdentity => ({
+    id: 'dep1',
+    guardianPubkey: pub(NP_PRIV),
+    displayName: 'Ben',
+    dateOfBirth: '2015-06-01',
+    naturalPerson: { publicKey: DEP_NP, privateKey: '', displayName: 'Ben' },
+    persona: { publicKey: DEP_P, privateKey: '', displayName: 'BenGamer' },
+    derivationPath: 'dependant-0',
+    createdAt: 0,
+    autonomyStage: 'full-control',
+    primaryKeypair: 'persona',
+    ...over,
+  } as DependantIdentity);
+  const bunker = { signingMode: 'bunker', routerUnsupported: false };
+
+  it('a local key on the acting slot is signable in any mode', () => {
+    const d = dep({ persona: { publicKey: DEP_P, privateKey: KEY, displayName: 'BenGamer' } });
+    expect(approvalDependantSignable(d, { signingMode: undefined, routerUnsupported: false })).toBe(true);
+    expect(approvalDependantSignable(d, { signingMode: 'local', routerUnsupported: true })).toBe(true);
+    expect(approvalDependantSignable(d, bunker)).toBe(true);
+  });
+
+  it('bunker + keyless + valid pubkey is signable', () => {
+    expect(approvalDependantSignable(dep(), bunker)).toBe(true);
+  });
+
+  it('bunker with a signer that cannot route personas is not', () => {
+    expect(approvalDependantSignable(dep(), { signingMode: 'bunker', routerUnsupported: true })).toBe(false);
+  });
+
+  it("keyless under 'local', undefined or 'paired-child' is not", () => {
+    for (const signingMode of ['local', undefined, 'paired-child']) {
+      expect(approvalDependantSignable(dep(), { signingMode, routerUnsupported: false })).toBe(false);
+    }
+  });
+
+  it('an encrypted (public-only) record is not, even with a key present', () => {
+    expect(approvalDependantSignable(dep({ encrypted: true }), bunker)).toBe(false);
+    expect(approvalDependantSignable(dep({ encrypted: true, persona: { publicKey: DEP_P, privateKey: KEY, displayName: 'x' } }), bunker)).toBe(false);
+  });
+
+  it('bunker + keyless with an empty or invalid pubkey is not', () => {
+    expect(approvalDependantSignable(dep({ persona: { publicKey: '', privateKey: '', displayName: 'x' }, naturalPerson: { publicKey: '', privateKey: '', displayName: 'x' } }), bunker)).toBe(false);
+    expect(approvalDependantSignable(dep({ persona: { publicKey: 'not-hex', privateKey: '', displayName: 'x' } }), bunker)).toBe(false);
+  });
+
+  it('follows the ACTING slot: an extra persona decides, not the keyed persona', () => {
+    const keyedPersona = { publicKey: DEP_P, privateKey: KEY, displayName: 'BenGamer' };
+    const extra = (privateKey: string, publicKey = DEP_EXTRA) => [{ publicKey, privateKey, displayName: 'Extra' }] as never;
+    // Acting slot is the keyless extra: a keyed persona does not make it local.
+    expect(approvalDependantSignable(dep({ persona: keyedPersona, primaryKeypair: DEP_EXTRA, extraPersonas: extra('') }), bunker)).toBe(true);
+    expect(approvalDependantSignable(dep({ persona: keyedPersona, primaryKeypair: DEP_EXTRA, extraPersonas: extra('') }), { signingMode: 'local', routerUnsupported: false })).toBe(false);
+    // Acting slot is a keyed extra: signable locally even when the persona is keyless.
+    expect(approvalDependantSignable(dep({ primaryKeypair: DEP_EXTRA, extraPersonas: extra(KEY) }), { signingMode: 'local', routerUnsupported: false })).toBe(true);
   });
 });
