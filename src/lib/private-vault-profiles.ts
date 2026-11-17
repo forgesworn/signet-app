@@ -14,6 +14,8 @@ import { listIndependenceArchives, closureMetadata, validIndependenceClosure, cl
 export function profilesVaultAdapter(args: {
   identityId: string; ownerPubkey: string; encryptionKey: string; mnemonic: string | null;
   deviceHeldKeys: boolean; isCurrent(): boolean;
+  /** Told each dependant an applied independence closure removed from this device. */
+  onDependantClosed?: (dependantId: string) => void;
 }): PrivateVaultDatasetAdapter {
   const current = () => { if (!args.isCurrent()) throw new Error('Vault session changed'); };
   const identity = async () => {
@@ -108,7 +110,10 @@ export function profilesVaultAdapter(args: {
       });
       for (const closure of closures) {
         current();
-        await closeIndependenceSource({ closure, key: args.encryptionKey, isCurrent: args.isCurrent });
+        // Only a closure that removed the dependant now: the history repeats on every merge.
+        if (await closeIndependenceSource({ closure, key: args.encryptionKey, isCurrent: args.isCurrent })) {
+          args.onDependantClosed?.(closure.dependantId);
+        }
       }
     },
   };

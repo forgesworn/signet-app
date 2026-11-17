@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { encodeNpub } from './signet';
-import { nextDependantIndex, deriveDependantOnDevice, deriveExtraPersonaOnDevice, HeartwoodDeriveError } from './heartwood-dependant-create';
+import { nextDependantIndex, deriveDependantOnDevice, deriveExtraPersonaOnDevice, HeartwoodDeriveError, trackDeviceDerive } from './heartwood-dependant-create';
 
 const NP = '1'.repeat(64);
 const PERSONA = '2'.repeat(64);
@@ -43,5 +43,25 @@ describe('deriveExtraPersonaOnDevice', () => {
     const requestFn = vi.fn(async (_m: string, p: string[]) => reply(PERSONA, p[0]));
     expect(await deriveExtraPersonaOnDevice(requestFn, 'dependant-1-persona-2')).toEqual({ publicKey: PERSONA, privateKey: '' });
     expect(requestFn).toHaveBeenCalledWith('heartwood_derive_persona', ['dependant-1-persona-2']);
+  });
+});
+
+describe('trackDeviceDerive (the "press and hold" hint shows only while the Heartwood is asked)', () => {
+  it('brackets each call, success or failure', async () => {
+    const seen: number[] = [];
+    const ok = trackDeviceDerive(async (_name: string) => ({ publicKey: PERSONA, privateKey: '' as const }), d => seen.push(d));
+    await expect(ok('persona-1')).resolves.toEqual({ publicKey: PERSONA, privateKey: '' });
+    const bad = trackDeviceDerive(async (_name: string): Promise<never> => { throw new Error('denied'); }, d => seen.push(d));
+    await expect(bad('persona-2')).rejects.toThrow('denied');
+    expect(seen).toEqual([1, -1, 1, -1]);
+  });
+  it('signals before the device is asked, not after', async () => {
+    const seen: number[] = [];
+    let release!: () => void;
+    const derive = trackDeviceDerive((_name: string) => new Promise(r => { release = () => r({ publicKey: PERSONA, privateKey: '' }); }), d => seen.push(d));
+    const p = derive('persona-1');
+    expect(seen).toEqual([1]);
+    release(); await p;
+    expect(seen).toEqual([1, -1]);
   });
 });

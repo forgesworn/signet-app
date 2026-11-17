@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import type { ChildRule } from '../types/child-rules';
 import type { ConnectedChildApp } from './child-activity';
 import { childRuleId, findRule } from './child-rules';
+import type { DependantIdentity } from '../types';
 import {
-  blockAppRules, ceilingTypeNames, disconnectedAppsFromRules, isAppBlocked, ruleTypeName,
+  blockAppRules, ceilingTypeNames, disconnectedAppsFromRules, isAppBlocked, permissionPersonas, ruleTypeName,
 } from './child-permissions';
 
 const DEP = 'd'.repeat(64);
@@ -81,5 +82,31 @@ describe('copy', () => {
     const text = JSON.stringify(CHILD_PERMISSIONS_COPY, (_k, v) => (typeof v === 'function' ? v('X', 'Y') : v));
     expect(text).not.toMatch(/\b(authoriz|organiz|recogniz|color|canceled|license)\w*/i);
     expect(CHILD_PERMISSIONS_COPY.removePersona('Sky')).toBe("Remove from Sky's phone");
+  });
+});
+
+describe('permissionPersonas — the same rule as everything sent to the phone (pairedDeviceAllows)', () => {
+  const X1 = '1'.repeat(64), X2 = '2'.repeat(64), X3 = '3'.repeat(64);
+  const dep = (over: Partial<DependantIdentity> = {}) => ({
+    id: DEP, displayName: 'Sky', guardianPubkey: 'e'.repeat(64), createdAt: 1, autonomyStage: 'request-approve', primaryKeypair: 'persona',
+    naturalPerson: { publicKey: DEP, privateKey: '', displayName: '' }, naturalPersonActive: false,
+    persona: { publicKey: P, privateKey: '', displayName: 'Ally' },
+    extraPersonas: [
+      { publicKey: X1, privateKey: '', displayName: 'Gamer' },
+      { publicKey: X2, privateKey: '', displayName: 'Old', hidden: true },
+      { publicKey: X3, privateKey: '', displayName: 'Secret' },
+    ],
+    childDevice: { mode: 'heartwood-direct', slotLabel: 'x', secretFingerprint: 'ab', slotIndex: 1, clientPubkey: '9'.repeat(64), boundPersona: P, pairedAt: 1 },
+    ...over,
+  }) as unknown as DependantIdentity;
+
+  it('leaves out a persona hidden from the paired phone, as the pairing reply and inventory do', () => {
+    expect(permissionPersonas(dep({ hiddenOnPairedDeviceKeys: [X3] })).map(p => p.pubkey)).toEqual([P, X1]);
+  });
+
+  it('leaves out soft-deleted and removed personas, never the bound one', () => {
+    const d = dep({ hiddenOnPairedDeviceKeys: [P] });
+    d.childDevice = { ...d.childDevice!, removedPersonas: [X1, P] };
+    expect(permissionPersonas(d)).toEqual([{ pubkey: P, name: 'Ally' }, { pubkey: X3, name: 'Secret' }]);
   });
 });

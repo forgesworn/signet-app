@@ -72,6 +72,49 @@ export async function publishToRelays(signedEvent: NostrEvent, relayUrls: string
 }
 
 /**
+ * Publish to every relay in `relayUrls` in parallel; true only when EVERY one
+ * accepted. For a rail whose reader listens on one particular relay (a direct
+ * child reads its rail relay only, A56), "any relay accepted" would mark the
+ * publication done while the one relay that matters missed it.
+ */
+export async function publishToEveryRelay(signedEvent: NostrEvent, relayUrls: readonly string[]): Promise<boolean> {
+  const urls = dedupe([...relayUrls]);
+  if (urls.length === 0) return false;
+  const results = await Promise.all(urls.map(async url => {
+    try {
+      const relay = new RelayClient(url, { autoReconnect: false });
+      try {
+        await relayTimeout(relay.connect(), NETWORK_TIMEOUT_MS);
+        return (await relayTimeout(relay.publish(signedEvent), NETWORK_TIMEOUT_MS)).ok === true;
+      } finally {
+        relay.disconnect();
+      }
+    } catch {
+      return false;
+    }
+  }));
+  return results.every(Boolean);
+}
+
+/**
+ * `publishToRelays`, except that when `required` is set the result is that
+ * relay's answer: it is always published to (even when the list, e.g. a
+ * stored outbox entry, predates it), and the rest are best effort. A56: a
+ * direct child reads guardian replies on its rail relay only.
+ */
+export async function publishToRelaysRequiring(signedEvent: NostrEvent, relayUrls: string[], required: string | null | undefined, guard?: {
+  beforeSend(): Promise<void>; isCurrent(): boolean;
+}): Promise<boolean> {
+  if (!required) return publishToRelays(signedEvent, relayUrls, guard);
+  const others = dedupe(relayUrls).filter(url => url !== required);
+  const [, ok] = await Promise.all([
+    publishToRelays(signedEvent, others, guard).catch(() => false),
+    publishToRelays(signedEvent, [required], guard).catch(() => false),
+  ]);
+  return ok;
+}
+
+/**
  * Fetch the newest event matching `filter` across every relay in
  * `relayUrls`. Each relay is queried independently (per-relay try/catch);
  * an unreachable relay (construct/connect/fetch throws) doesn't count

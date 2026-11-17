@@ -5,7 +5,7 @@ import type { AppPreferences, SignetIdentity } from '../types';
 import { LocalSigningBackend, type BunkerSigningBackend } from './signing-backend';
 import { resolveNpBunkerBackend, resolveSlotBunkerBackend, type BunkerBackendRouter } from './bunker-router';
 import {
-  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
+  addDependantRequestAllowed, buildChildDirectRoutes, childAllowedPersonaKeys, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childSignInBackend, childSignerKind, CHILD_CONNECT_STALL_MS, escalationsAvailable, signInBunkerHandoff, gatedSigningBackend, ChildGateRefusedError, isDirectChildInstall, legacyRailIdentity, type ChildRouteGate,
 } from './child-bunker';
 
 const NP = 'ef'.repeat(32), PERSONA = 'ab'.repeat(32), EXTRA = '34'.repeat(32);
@@ -108,6 +108,44 @@ describe('A51: childAllowedPersonas', () => {
   it('keeps only the listed personas, and always the bound one', () => {
     expect(childAllowedPersonas(list, { personas: [NP] }, PERSONA).map(p => p.pubkey)).toEqual([PERSONA, NP]);
     expect(childAllowedPersonas(list, { personas: [] }, PERSONA.toUpperCase()).map(p => p.pubkey)).toEqual([PERSONA]);
+  });
+});
+
+describe('A51: childAllowedPersonaKeys (the carousel allow-list)', () => {
+  it('no payload or no list ⇒ no filter', () => {
+    expect(childAllowedPersonaKeys(null, PERSONA)).toBeNull();
+    expect(childAllowedPersonaKeys({}, PERSONA)).toBeNull();
+  });
+  it('the listed personas plus the bound one, lowercased', () => {
+    expect([...childAllowedPersonaKeys({ personas: [NP.toUpperCase()] }, PERSONA.toUpperCase())!].sort()).toEqual([PERSONA, NP].sort());
+  });
+});
+
+describe('childCarouselFilter (what App hands the carousel on a direct child)', () => {
+  const rec = { personaPubkey: EXTRA };
+  it('not a direct install: no filter', () => {
+    expect(childCarouselFilter({ direct: false, record: rec, loadSettled: true, identity: identity(), rules: { personas: [PERSONA] } }))
+      .toEqual({ allow: null, bound: null });
+  });
+  it('the record still loading: no decision yet (never an empty list, which leaves only the add card)', () => {
+    const f = childCarouselFilter({ direct: true, record: null, loadSettled: false, identity: identity(), rules: null });
+    expect(f).toEqual({ allow: null, bound: null });
+    expect(f.allow).not.toBe('');
+  });
+  it('the record known, no rules payload yet: the bound persona only', () => {
+    expect(childCarouselFilter({ direct: true, record: rec, loadSettled: true, identity: identity(), rules: null }))
+      .toEqual({ allow: EXTRA, bound: EXTRA });
+    // Reloading (a bump): the record in hand still decides.
+    expect(childCarouselFilter({ direct: true, record: rec, loadSettled: false, identity: identity(), rules: null }))
+      .toEqual({ allow: EXTRA, bound: EXTRA });
+  });
+  it('with the rules payload: its personas plus the bound one, sorted', () => {
+    expect(childCarouselFilter({ direct: true, record: rec, loadSettled: true, identity: identity(), rules: { personas: [PERSONA.toUpperCase()] } }))
+      .toEqual({ allow: [EXTRA, PERSONA].sort().join(','), bound: EXTRA });
+  });
+  it('the record failed to load: the identity\'s own persona, never zero identity cards', () => {
+    expect(childCarouselFilter({ direct: true, record: null, loadSettled: true, identity: identity(), rules: null }))
+      .toEqual({ allow: PERSONA, bound: PERSONA });
   });
 });
 
@@ -242,5 +280,39 @@ describe('A45: sign-in on a direct child', () => {
     const refused = childSignInBackend({ inner, origin: 'https://x.example', siteLabel: 'X', authorise: async () => ({ ok: false, error: 'denied' }), touch: (a) => touched.push(a) });
     await expect(refused.signEvent({ kind: 21236, created_at: 1, tags: [], content: '', pubkey: '' })).rejects.toBeInstanceOf(ChildGateRefusedError);
     expect(touched.filter(a => a === 'site:https://x.example')).toHaveLength(1);
+  });
+});
+
+describe('childSignerKind', () => {
+  it('a direct install is the Heartwood whatever the router does: connecting while it is down (unlocked)', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: true })).toBe('heartwood-connecting');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: false })).toBe('heartwood');
+  });
+
+  it('a direct install still not connected after a minute unlocked: the Heartwood cannot be reached; back to normal once it connects', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: true, stalled: true })).toBe('heartwood-unreachable');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true, stalled: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: false, stalled: true })).toBe('heartwood');
+    // A legacy phone-paired child never says it.
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, stalled: true })).toBe('guardian-phone');
+    expect(CHILD_CONNECT_STALL_MS).toBe(60_000);
+  });
+
+  it('a direct install whose up connection stopped answering pings: the Heartwood cannot be reached', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true, lost: true })).toBe('heartwood-unreachable');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true, lost: false })).toBe('heartwood');
+    // Locked: nothing is shown as lost.
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: false, lost: true })).toBe('heartwood');
+    // A legacy phone-paired child and a guardian are unchanged.
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true, lost: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, lost: true })).toBe('guardian-phone');
+    expect(childSignerKind({ signingMode: 'bunker', direct: true, routerUp: true, unlocked: true, lost: true })).toBe('guardian-phone');
+  });
+
+  it('a legacy phone-paired child keeps the old rule; a guardian never gets the child copy', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true })).toBe('guardian-phone');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'bunker', direct: false, routerUp: true, unlocked: true })).toBe('guardian-phone');
   });
 });

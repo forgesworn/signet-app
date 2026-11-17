@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Icon } from './Icon';
+import { HEARTWOOD_HOLD_TO_FINISH } from '../lib/local-key-only-copy';
 
 interface Props {
   /**
@@ -34,9 +35,14 @@ interface Props {
    * "Ask your guardian". paired-child context only.
    */
   guardianName?: string;
+  /**
+   * The persona is being derived on the Heartwood right now and waits for its
+   * button to be held: shown as `HEARTWOOD_HOLD_TO_FINISH` under the busy label.
+   */
+  heartwoodHold?: boolean;
 }
 
-export function AddCard({ context, onAddPersona, onAddDependant, guardianName }: Props) {
+export function AddCard({ context, onAddPersona, onAddDependant, guardianName, heartwoodHold = false }: Props) {
   // Paired-child surface — informational only, no actions. The kid
   // can't create personas on their own device because all signing
   // material lives on the guardian's device (or upstream signer). Any
@@ -193,6 +199,11 @@ export function AddCard({ context, onAddPersona, onAddDependant, guardianName }:
             >
               {saving ? 'Saving…' : 'Create persona'}
             </button>
+            {saving && heartwoodHold && (
+              <p role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, textAlign: 'center' }}>
+                {HEARTWOOD_HOLD_TO_FINISH}
+              </p>
+            )}
             <button
               className="btn btn-ghost"
               onClick={cancelPersona}

@@ -128,6 +128,12 @@ export interface PairedChildRecord {
   personas?: { pubkey: string; name: string; role: 'persona' | 'natural-person' | 'extra' }[];
   /** Identity-approval ceremony state per persona pubkey (§4 step 6). */
   identityApprovals?: Record<string, 'approved' | 'waiting' | 'failed' | 'deferred'>;
+  /**
+   * When each persona's approval probe last succeeded (this phone's clock, ms),
+   * saved with `identityApprovals` so the press still counts against an older
+   * guardian reading after a lock or a restart (`childPressStands`).
+   */
+  identityPressedAt?: Record<string, number>;
 }
 
 /**

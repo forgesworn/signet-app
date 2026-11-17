@@ -83,6 +83,33 @@ export function isDirectChildInstall(input: {
   return input.identity?.primaryKeypair === 'persona';
 }
 
+/** Who signs for a paired child, as its card says it. */
+export type ChildSignerKind = 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable';
+
+/** How long a direct child's card says "Connecting…" before it says the Heartwood cannot be reached. */
+export const CHILD_CONNECT_STALL_MS = 60_000;
+
+/**
+ * The card's signer line on a paired child. A direct install (`direct`, from
+ * how the phone was paired) always signs through the family Heartwood: while
+ * its router is down it is "connecting", never "ask your guardian's phone",
+ * and once it has been down for `CHILD_CONNECT_STALL_MS` while unlocked
+ * (`stalled`) it says the Heartwood cannot be reached. A connection that was
+ * up and then stopped answering its regular ping (`lost`) says the same.
+ * A legacy phone-paired
+ * child keeps the old rule (Heartwood only while a router answered the
+ * capabilities probe).
+ */
+export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean; lost?: boolean }): ChildSignerKind {
+  if (input.signingMode !== 'paired-child') return 'guardian-phone';
+  if (input.direct) {
+    if (!input.unlocked) return 'heartwood';
+    if (input.routerUp) return input.lost ? 'heartwood-unreachable' : 'heartwood';
+    return input.stalled ? 'heartwood-unreachable' : 'heartwood-connecting';
+  }
+  return input.routerUp ? 'heartwood' : 'guardian-phone';
+}
+
 /**
  * A26: on a direct child install the dependant's real-identity slot is
  * dormant unless the guardian activated it — nothing may address it, so it
@@ -160,10 +187,53 @@ export function childAllowedPersonas<T extends { pubkey: string }>(
   rules: { personas?: string[] } | null | undefined,
   bound: string | null | undefined,
 ): T[] {
-  if (!rules?.personas) return list;
+  const allowed = childAllowedPersonaKeys(rules, bound);
+  return allowed ? list.filter(p => allowed.has(p.pubkey.toLowerCase())) : list;
+}
+
+/**
+ * A51, the same rule as a key set (lowercase): the rules payload's `personas`
+ * plus the bound persona; null when there is no list (every persona). The
+ * carousel builds a direct child's cards from this, so a card can never
+ * exist without a route.
+ */
+export function childAllowedPersonaKeys(
+  rules: { personas?: string[] } | null | undefined,
+  bound: string | null | undefined,
+): Set<string> | null {
+  if (!rules?.personas) return null;
   const allowed = new Set(rules.personas.map(p => p.toLowerCase()));
   const b = (bound || '').toLowerCase();
-  return list.filter(p => { const k = p.pubkey.toLowerCase(); return k === b || allowed.has(k); });
+  if (b) allowed.add(b);
+  return allowed;
+}
+
+/**
+ * What App hands the carousel on a direct child (`useCarousel`): the allowed
+ * personas as a sorted lowercase CSV, and the bound persona (the card shown
+ * when the one on screen is no longer allowed). `allow: null` is no filter,
+ * and on a direct child "not decided yet": the pairing record is still
+ * loading, so nothing is known and the carousel must not settle on the add
+ * card, which an empty list would leave as the only card. With the record:
+ * the bound persona only until the rules payload has loaded (only it has a
+ * route, A50), then the payload's personas plus it (A51). When the record
+ * load has settled without one (it failed): the identity's own persona, so
+ * there is never a session without identity cards.
+ */
+export function childCarouselFilter(input: {
+  direct: boolean;
+  record: { personaPubkey?: string } | null | undefined;
+  /** The record load has settled (found or not) for this identity since the unlock. */
+  loadSettled: boolean;
+  identity: { persona: { publicKey: string } } | null | undefined;
+  rules: { personas?: string[] } | null | undefined;
+}): { allow: string | null; bound: string | null } {
+  const none = { allow: null, bound: null };
+  if (!input.direct || (!input.record && !input.loadSettled)) return none;
+  const bound = (input.record?.personaPubkey || input.identity?.persona.publicKey || '').toLowerCase();
+  if (!bound) return none;
+  const keys = childAllowedPersonaKeys(input.rules, bound);
+  return { allow: keys ? [...keys].sort().join(',') : bound, bound };
 }
 
 /**

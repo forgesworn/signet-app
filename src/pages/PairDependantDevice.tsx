@@ -19,6 +19,9 @@ import { buildPairingURI, generatePairingSecret } from '../lib/pairing-uri';
 import { usesChildDirectPairing } from '../lib/child-device-pairing';
 import { CHILD_DEVICE_COPY as COPY } from '../lib/child-device-copy';
 import { useChildDevicePairing, type UseChildDevicePairingOpts } from '../hooks/useChildDevicePairing';
+import type { ChildReadyCheck } from '../hooks/useChildReadyCheck';
+import { ChildReadyNotice } from '../components/ChildReadyNotice';
+import { CHILD_READY_COPY } from '../lib/child-ready-copy';
 import { isNativeApp, SignetNative } from '../lib/native';
 import type { TapRadioReason } from '../lib/child-pair-tap';
 
@@ -60,7 +63,13 @@ interface Props {
   /** Guardian's signing mode — `'bunker'` + a tree-derived dependant takes the child-direct Heartwood flow. */
   signingMode?: string;
   /** Inputs for the child-direct flow (spec §4). Absent ⇒ legacy phone-served QR only. */
-  direct?: Omit<UseChildDevicePairingOpts, 'dependant'> & { onOpenOperatorImport?: () => void };
+  direct?: Omit<UseChildDevicePairingOpts, 'dependant'> & {
+    onOpenOperatorImport?: () => void;
+    /** The ready check for this dependant (App-level `useGuardianReadyChecks`, which also sends the end-of-pairing probe). */
+    readiness?: ChildReadyCheck | null;
+    /** The page is showing the checklist: read the Heartwood now and watch for presses. */
+    onWatchReadiness?: () => void;
+  };
 }
 
 type Stage =
@@ -374,11 +383,32 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
   requestAuth: (ctx?: PurposeContext) => Promise<string | null>;
   onBack: () => void;
 }) {
-  const { onOpenOperatorImport, ...opts } = direct;
+  const { onOpenOperatorImport, readiness, onWatchReadiness, ...opts } = direct;
   const pairing = useChildDevicePairing({ ...opts, dependant });
   const { state } = pairing;
   const name = dependant.displayName;
   const alreadyPaired = dependant.childDevice?.mode === 'heartwood-direct';
+  // The ready check: at the end of THIS pairing (the saved slot is the new
+  // phone's), every press is collected while the family is at the device. The
+  // App-level check sends the probe itself, whether or not this page stays open.
+  const pairedNow = state.phase === 'paired'
+    && (dependant.childDevice?.clientPubkey ?? '').toLowerCase() === state.clientPubkey.toLowerCase();
+  const showReady = !!readiness && (pairedNow || (state.phase === 'idle' && alreadyPaired));
+  const watchRef = useRef(onWatchReadiness);
+  watchRef.current = onWatchReadiness;
+  useEffect(() => { if (showReady) watchRef.current?.(); }, [showReady, dependant.childDevice?.clientPubkey]);
+  const readyNotice = showReady && readiness ? (
+    <ChildReadyNotice
+      rows={readiness.rows}
+      summary={readiness.summary}
+      name={name}
+      showReady
+      open
+      onFinishNow={() => { void readiness.finishNow(); }}
+      onRetry={() => { void readiness.finishNow(); }}
+      {...(readiness.rows.some(r => r.who === 'child' && (r.state === 'waiting' || r.state === 'skipped')) ? { hint: CHILD_READY_COPY.childPressHint(name) } : {})}
+    />
+  ) : null;
   const [confirmUnpair, setConfirmUnpair] = useState(false);
   const [unpairError, setUnpairError] = useState<string | null>(null);
   const [unpairing, setUnpairing] = useState(false);
@@ -464,6 +494,7 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
       <div className="fade-in" style={pad}>
         <h2 style={{ marginBottom: 8 }}>{COPY.pairedHeading}</h2>
         <p style={{ ...muted, marginBottom: 20 }}>{COPY.pairedAlready(name)}</p>
+        {readyNotice}
         {unpairError && <p role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{unpairError}</p>}
         {!confirmUnpair ? (
           <>
@@ -589,6 +620,7 @@ function ChildDirectPairing({ dependant, direct, requestAuth, onBack }: {
         <h2 style={{ marginBottom: 8 }}>{COPY.pairedHeading}</h2>
         <p style={{ ...muted, marginBottom: 12 }}>{COPY.pairedBody(name)}</p>
         {state.warning && <p role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{state.warning}</p>}
+        {readyNotice}
         <button className="btn btn-primary" onClick={onBack} style={{ width: '100%' }}>{COPY.done}</button>
       </div>
     );

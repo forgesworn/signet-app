@@ -50,6 +50,14 @@ export function localKeyOnlyCopy(
  */
 export const BACKUP_WORDS_ON_SIGNER = 'Backup words live with your Heartwood signer.';
 
+/**
+ * Shown under a busy label while a new persona (or other slot) is being
+ * derived ON the Heartwood: the device waits for its button to be held, and
+ * "Saving…" alone reads as a hang. Only when the derive really goes to the
+ * device — never when the keys are local.
+ */
+export const HEARTWOOD_HOLD_TO_FINISH = 'Press and hold the button on your Heartwood to finish.';
+
 /** Same replacement when this Signet never had words: its key came from elsewhere. */
 export const NO_BACKUP_WORDS_IMPORTED = 'This Signet has no recovery words, because its key came from outside Signet. Keep your own backup of that key.';
 

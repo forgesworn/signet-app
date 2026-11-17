@@ -46,3 +46,23 @@ it('follows an in-session re-pair: listens on the new endpoint and opens replies
   await waitFor(() => expect(result.current.map(r => r.reply.requestId)).toEqual(['a'.repeat(32)]));
   unmount();
 });
+
+it('child-direct pairing: listens for the rail key, not the bound persona named in bunkerUri', async () => {
+  const rail = endpointA, bound = endpointB;
+  await savePairedChild({
+    bunkerUri: `bunker://${bound.activePublicKeyHex}?relay=wss%3A%2F%2Fhw.example`,
+    clientKeypair: { publicKey: clientA.activePublicKeyHex, privateKey: '05'.repeat(32) },
+    dependantPubkey: childId, dependantName: 'Robin', pairedAt: 1, hasPaired: true, guardianPubkey: guardian,
+    mode: 'heartwood-direct', railPubkey: rail.activePublicKeyHex, personaPubkey: bound.activePublicKeyHex,
+    hwRelays: ['wss://hw.example'], railRelay: 'wss://relay.example' }, key);
+  const { result, unmount } = renderHook(() => useChildContactReplyInbox({
+    enabled: true, child: childId, key, relayUrl: 'wss://relay.example', guardian, personas: [persona] }));
+  await waitFor(() => expect(state.relays[0]?.receive).toBeDefined());
+  expect(state.relays[0].filters?.[0].authors).toEqual([rail.activePublicKeyHex]);
+  const now = Math.floor(Date.now() / 1000);
+  const reply: ChildContactReply = { v: 1, requestId: 'a'.repeat(32), guardian, endpoint: rail.activePublicKeyHex, client: clientA.activePublicKeyHex,
+    persona, revision: 1, createdAt: now, expiresAt: now + 600, status: 'pending' };
+  await act(async () => { state.relays[0].receive!(await sealChildContactReply(reply, rail)); });
+  await waitFor(() => expect(result.current.map(r => r.reply.requestId)).toEqual(['a'.repeat(32)]));
+  unmount();
+});

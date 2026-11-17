@@ -3,9 +3,15 @@
  * dependant whose own phone is paired straight to the Heartwood, publish
  * `signet:child-rules:v1` (authored by the rail key, sealed to the child's
  * client key) on the rail relay whenever that dependant's rules, stage,
- * schedule or ceiling change. Debounce 1 s, no jitter (single recipient;
- * latency matters more than timing privacy here). A payload identical to the
- * last one this session published for that dependant is not re-sent.
+ * schedule or ceiling change, or when the ready check's reading of the
+ * Heartwood for that phone (`approved`) changes. Debounce 1 s, no jitter
+ * (single recipient; latency matters more than timing privacy here). A
+ * payload identical to the last one this session published for that
+ * dependant is not re-sent, so the reading republishes when the device's
+ * answer changes, and when the same answer has been read again at least
+ * `APPROVED_AT_REPUBLISH_MS` after the time last sent (`approvedAt`, so a
+ * press on the child's phone that the device did not keep is overruled by a
+ * later reading, not left standing).
  *
  * Never throws out of an effect.
  */
@@ -22,8 +28,17 @@ import { earliestChildExpiryMs } from './usePolicyPush';
 import { disconnectedAppsFromRules } from '../lib/child-permissions';
 import { replyPersonas } from '../lib/child-device-pairing';
 import { isLiveRule } from '../lib/child-rules';
+import { MAX_APPROVED_ON_WIRE, PRESS_CLOCK_SKEW_MS } from '../lib/child-ready-check';
+import { APPROVED_AT_MIN_MS } from '../lib/child-rules-wire';
 
 export const CHILD_RULES_PUBLISH_DEBOUNCE_MS = 1_000;
+/**
+ * The same reading, read again this much later than the time last sent, is
+ * sent again with its new time. Below it the child's clock allowance
+ * (`PRESS_CLOCK_SKEW_MS`) would still let a press stand, so sending it would
+ * change nothing.
+ */
+export const APPROVED_AT_REPUBLISH_MS = PRESS_CLOCK_SKEW_MS;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 export interface UseChildRulesPublisherArgs {
@@ -32,6 +47,10 @@ export interface UseChildRulesPublisherArgs {
   /** All child rules INCLUDING tombstones; null while loading (nothing is sent). */
   childRules: ChildRule[] | null;
   approvedOnceKinds?: Record<string, { kind: number; until: number }[]>;
+  /** The ready check's reading per dependant id (`approved`); a dependant missing here gets no `approved`. */
+  approvedByDep?: Readonly<Record<string, string[]>>;
+  /** When each reading was taken (ms, `approvedAt`); sent only with its `approved`. */
+  approvedAtByDep?: Readonly<Record<string, number>>;
   relayUrl: string;
   publish?: (ev: NostrEvent, relays: string[]) => Promise<{ ok: boolean; message: string }>;
 }
@@ -42,6 +61,10 @@ export function childRulesPayloadFor(
   rules: ChildRule[],
   approvedOnce: { kind: number; until: number }[],
   nowMs: number,
+  /** The guardian's reading of the device for this phone's key; omitted when it cannot tell. */
+  approved?: readonly string[],
+  /** When that reading was taken (ms). Kept only with `approved`, never later than `nowMs` (the payload's `updatedAt`). */
+  approvedAt?: number,
 ): Omit<ChildRulesPayload, 'updatedAt'> | null {
   const cd = dep.childDevice;
   if (cd?.mode !== 'heartwood-direct') return null;
@@ -71,25 +94,32 @@ export function childRulesPayloadFor(
     disconnectedApps: disconnectedAppsFromRules(live, nowMs),
     // A51: the personas the phone may use — the reply's list, minus those removed from it.
     personas: replyPersonas(dep).map(p => p.pubkey),
+    ...(approved ? { approved: [...new Set(approved.map(a => a.toLowerCase()))].filter(a => HEX64.test(a)).sort().slice(0, MAX_APPROVED_ON_WIRE) } : {}),
+    ...(approved && typeof approvedAt === 'number' && Number.isSafeInteger(approvedAt) && approvedAt >= APPROVED_AT_MIN_MS
+      ? { approvedAt: Math.min(approvedAt, nowMs) } : {}),
   };
 }
 
+/** Everything but the reading's time, which `APPROVED_AT_REPUBLISH_MS` paces separately. */
 function hashFor(p: Omit<ChildRulesPayload, 'updatedAt'>, client: string): string {
   const rules = p.rules.map(({ lastUsedAt: _u, ...r }) => { void _u; return r; });
-  return JSON.stringify([client, { ...p, rules }]);
+  const { approvedAt: _at, ...rest } = p; void _at;
+  return JSON.stringify([client, { ...rest, rules }]);
 }
 
-export function useChildRulesPublisher({ enabled, dependants, childRules, approvedOnceKinds, relayUrl, publish }: UseChildRulesPublisherArgs): void {
+export function useChildRulesPublisher({ enabled, dependants, childRules, approvedOnceKinds, approvedByDep, approvedAtByDep, relayUrl, publish }: UseChildRulesPublisherArgs): void {
   const lastRef = useRef(new Map<string, string>());
-  const inputsRef = useRef({ dependants, childRules, approvedOnceKinds, relayUrl, publish });
-  inputsRef.current = { dependants, childRules, approvedOnceKinds, relayUrl, publish };
+  /** Per dependant: the `approvedAt` last sent. */
+  const lastAtRef = useRef(new Map<string, number>());
+  const inputsRef = useRef({ dependants, childRules, approvedOnceKinds, approvedByDep, approvedAtByDep, relayUrl, publish });
+  inputsRef.current = { dependants, childRules, approvedOnceKinds, approvedByDep, approvedAtByDep, relayUrl, publish };
   const runningRef = useRef(false);
   const queuedRef = useRef(false);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
   useEffect(() => {
-    if (!enabled) lastRef.current.clear();
+    if (!enabled) { lastRef.current.clear(); lastAtRef.current.clear(); }
   }, [enabled]);
 
   // Stable runner reading the latest inputs through refs; a change landing
@@ -99,7 +129,7 @@ export function useChildRulesPublisher({ enabled, dependants, childRules, approv
     if (runningRef.current) { queuedRef.current = true; return; }
     runningRef.current = true;
     try {
-      const { dependants: deps, childRules: rules, approvedOnceKinds: once, relayUrl: relay, publish: pub } = inputsRef.current;
+      const { dependants: deps, childRules: rules, approvedOnceKinds: once, approvedByDep: approvedMap, approvedAtByDep: atMap, relayUrl: relay, publish: pub } = inputsRef.current;
       if (!rules) return;
       const send = pub ?? ((ev: NostrEvent, relays: string[]) => publishEvent(ev, { relays }));
       for (const dep of deps) {
@@ -110,16 +140,21 @@ export function useChildRulesPublisher({ enabled, dependants, childRules, approv
           || ep.authorizedClientPubkey !== cd.clientPubkey) continue;
         const nowMs = Date.now();
         const onceFor = Object.entries(once ?? {}).filter(([k]) => k.toLowerCase() === dep.id.toLowerCase()).flatMap(([, v]) => v);
-        const body = childRulesPayloadFor(dep, rules, onceFor, nowMs);
+        const body = childRulesPayloadFor(dep, rules, onceFor, nowMs, approvedMap?.[dep.id], atMap?.[dep.id]);
         if (!body) continue;
         const h = hashFor(body, cd.clientPubkey);
-        if (lastRef.current.get(dep.id) === h) continue;
+        const sentAt = lastAtRef.current.get(dep.id);
+        const newerReading = body.approvedAt !== undefined && (sentAt === undefined || body.approvedAt - sentAt >= APPROVED_AT_REPUBLISH_MS);
+        if (lastRef.current.get(dep.id) === h && !newerReading) continue;
         try {
           const ev = await buildChildRulesEvent({ ...body, updatedAt: nowMs }, ep.privateKey, cd.clientPubkey, Math.floor(nowMs / 1000));
           // A25: the relay agreed at pairing; older records fall back to the guardian's relay.
           const target = cd.railRelay && isValidRelayUrl(cd.railRelay) ? cd.railRelay : relay;
           const r = await send(ev, [target]);
-          if (r.ok) lastRef.current.set(dep.id, h);
+          if (r.ok) {
+            lastRef.current.set(dep.id, h);
+            if (body.approvedAt !== undefined) lastAtRef.current.set(dep.id, body.approvedAt); else lastAtRef.current.delete(dep.id);
+          }
         } catch { /* one dependant must not block the others; retried on the next change */ }
       }
     } finally {
@@ -132,7 +167,7 @@ export function useChildRulesPublisher({ enabled, dependants, childRules, approv
     if (!enabled || childRules === null) return;
     const id = setTimeout(() => { void runRef.current(); }, CHILD_RULES_PUBLISH_DEBOUNCE_MS);
     return () => clearTimeout(id);
-  }, [enabled, dependants, childRules, approvedOnceKinds, relayUrl]);
+  }, [enabled, dependants, childRules, approvedOnceKinds, approvedByDep, approvedAtByDep, relayUrl]);
 
   // A21: republish just after the earliest approved-once / rule expiry, so the
   // child's copy narrows when the guardian's does.

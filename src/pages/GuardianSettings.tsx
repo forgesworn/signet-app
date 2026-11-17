@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import type { DependantIdentity, AutonomyStage, TrustedAppPairing, ContactCeilingTier } from '../types';
 import { TRUSTED_APP_PAIRING_CAP } from '../types';
 import { shortNpub } from '../lib/signet';
@@ -10,6 +10,7 @@ import type { ContactPolicy } from '../lib/lift-child-settings';
 import { DEFAULT_CHILD_CEILING_SECTION_TITLE, defaultChildCeilingCopy, tierChipLabel } from '../lib/contacts-v2-copy';
 import { CHILD_PERMISSIONS_COPY } from '../lib/child-device-copy';
 import { PairReadinessChecklist, type PairReadinessChecklistProps } from '../components/PairReadinessChecklist';
+import { HEARTWOOD_HOLD_TO_FINISH } from '../lib/local-key-only-copy';
 
 const TIER_LABELS: Record<string, string> = {
   basic: 'Basic',
@@ -41,6 +42,8 @@ interface Props {
   onViewActivity?: () => void;
   /** Opens the Permissions page for a child's own phone paired straight to the Heartwood (spec §9.3). */
   onOpenPermissions?: () => void;
+  /** The child-direct ready check's notice for this dependant (guardian only); shown above Permissions. */
+  readyNotice?: ReactNode;
   /**
    * Audit-visibility override — kept on the interface (Phase 2 transitional).
    * The selector UI moved to PersonaAdvanced's DepSettingsBlock. Read-only here.
@@ -59,6 +62,8 @@ interface Props {
   onSwitchDependantPrimary: (keypair: string) => void;
   onUpdateDependantPersonaName?: (target: 'natural-person' | 'persona' | string, name: string) => Promise<void>;
   onAddDependantPersona?: (displayName: string) => Promise<void>;
+  /** The persona is being derived on the Heartwood right now: shows the "press and hold" hint under "Adding...". */
+  addPersonaHeartwoodHold?: boolean;
   /* Avatar Set/Change/Remove for dep personas moved to the carousel
      SettingsCard. The dep slot's `avatarHash` is still edited
      via `useDependants.setDependantPersonaAvatar` — just from the carousel
@@ -120,6 +125,7 @@ export function GuardianSettings({
   pairReadiness,
   onViewActivity,
   onOpenPermissions,
+  readyNotice,
   appPairings,
   onRevokeAppPairing,
   // Kept on the prop interface (Phase 2 transitional) — the Switch buttons
@@ -128,6 +134,7 @@ export function GuardianSettings({
   onSwitchDependantPrimary: _onSwitchDependantPrimary,
   onUpdateDependantPersonaName,
   onAddDependantPersona,
+  addPersonaHeartwoodHold = false,
   onUpdatePersonaVisibility,
   guardianHasMnemonic,
   // The only caller of `requestAuth` in this file was removed along with the
@@ -460,6 +467,8 @@ export function GuardianSettings({
         </div>
       )}
 
+      {viewer === 'guardian' && activeDependant.childDevice?.mode === 'heartwood-direct' ? readyNotice : null}
+
       {/* Permissions — a child's own phone paired straight to the Heartwood
           (spec §9.3): rules, the Heartwood ceiling, the apps on the phone. */}
       {viewer === 'guardian' && onOpenPermissions && activeDependant.childDevice?.mode === 'heartwood-direct' && (
@@ -791,6 +800,9 @@ export function GuardianSettings({
                 Cancel
               </button>
             </div>
+            {addPersonaSaving && addPersonaHeartwoodHold && (
+              <p role="status" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 6 }}>{HEARTWOOD_HOLD_TO_FINISH}</p>
+            )}
           </div>
         )}
       </div>

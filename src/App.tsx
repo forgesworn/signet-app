@@ -22,7 +22,7 @@ import { resolveChildAskPersona, childDirectoryPersonas, publishChildContactDire
 import { ChildContactDirectory } from './components/ChildContactDirectory';
 import { ChildContactAsk } from './components/ChildContactAsk';
 import { useChildContactOutbox } from './hooks/useChildContactOutbox';
-import { extractEndpointPubkey } from './lib/dependant-status-sync';
+import { childRailExtraRelays, childRailRelay, guardianRailPubkey, guardianToChildRelays, publishesToChildOn, withChildRailRelay } from './lib/paired-child-rail';
 import { sanitizeDisplayName } from './lib/text-sanitize';
 import { vaultPurpose } from 'signet-protocol/experimental';
 import { rotatePrivateVaultDataset } from './lib/private-vault-sync';
@@ -41,7 +41,7 @@ import { forgetContactOperationsCache, getOrCreateContactsDeviceId } from './lib
 import { forgetContactInviteVaultCache } from './lib/contact-invite-vault-cache';
 import { BotCarouselCard } from './components/BotCarouselCard';
 import { useBotInventory } from './hooks/useBotInventory';
-import { publishToRelays } from './lib/sync-relays';
+import { publishToRelays, publishToRelaysRequiring } from './lib/sync-relays';
 import { BotOwnershipService } from './lib/bot-ownership-service';
 import { approveBotAuth } from './lib/bot-auth';
 import { createBotSigningBackend } from './lib/bot-signing';
@@ -199,7 +199,7 @@ import { PairChildOnboarding, type DirectPairControl } from './pages/PairChildOn
 import { runChildDirectPairing, pairedChildSignerPubkey, awaitTapOffer, childTapDeps, type ChildTapChannel } from './lib/child-direct-pairing';
 import type { ChildPairOffer } from './lib/child-pair-wire';
 import { useChildDeviceLink } from './hooks/useChildDeviceLink';
-import { ChildIdentityApprovals } from './components/ChildIdentityApprovals';
+import { ChildReadyNotice } from './components/ChildReadyNotice';
 import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { FamilyList } from './pages/FamilyList';
 import { FamilyContacts } from './pages/FamilyContacts';
@@ -275,6 +275,7 @@ import { VouchSomeone } from './pages/VouchSomeone';
 import { TransitionCeremony } from './pages/TransitionCeremony';
 import { PairDependantDevice } from './pages/PairDependantDevice';
 import type { UseChildDevicePairingOpts } from './hooks/useChildDevicePairing';
+import { useGuardianReadyChecks } from './hooks/useChildReadyCheck';
 import { PairDependantApp } from './pages/PairDependantApp';
 import { MigrateToHeartwood } from './pages/MigrateToHeartwood';
 import { HeartwoodOnboardingError, type OnboardingKeys } from './lib/heartwood-onboarding';
@@ -402,7 +403,10 @@ import { resolveDependantRouteSlots } from './lib/dependant-route-slots';
 import { resolveGuardianBackend, assertSigningIdentity, approvalGuardianPubkeys, isImportedGuardianPersona } from './lib/guardian-signing';
 import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
-import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, type ChildGateOutcome } from './lib/child-bunker';
+import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
+import { useChildConnectStall } from './hooks/useChildConnectStall';
+import { useChildHeartwoodHeartbeat, CHILD_HEARTBEAT_TIMEOUT_MS } from './hooks/useChildHeartwoodHeartbeat';
+import { CHILD_READY_COPY } from './lib/child-ready-copy';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
 import { useChildGate, reserveRequestCreatedAt } from './hooks/useChildGate';
@@ -435,7 +439,9 @@ import { deriveAndStoreProPersona } from './hooks/useIdentity';
 import { proModeBlockedReason, publishProNameOnly } from './lib/professional/pro-persona';
 import { PRO_ROSTER } from './lib/professional/kinds';
 import type { RosterMember } from './lib/professional/role-anchor';
-import { useNavigation } from './hooks/useNavigation';
+import { useAppNavigation } from './hooks/useAppNavigation';
+import { pageNeedsDependant } from './lib/dependant-scope';
+import { activationRouteOf, handshakeRouteOf, isPageParamLive, personaAdvancedRouteOf } from './lib/page-params';
 import { useScreenWakeLock, isWakeLockSupported } from './hooks/useScreenWakeLock';
 import { BunkerPanel } from './components/BunkerPanel';
 import { isBarHiddenPage, isOrphanedApprovalPage, homeTapAction, bunkerTint } from './lib/app-nav';
@@ -462,7 +468,7 @@ import { PAGE_AUTH_CONTEXTS, type PurposeContext } from './lib/auth-purposes';
 import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
-import { deriveDependantOnDevice, deriveExtraPersonaOnDevice } from './lib/heartwood-dependant-create';
+import { deriveDependantOnDevice, deriveExtraPersonaOnDevice, trackDeviceDerive } from './lib/heartwood-dependant-create';
 import type { HeartwoodRequestFn } from './lib/heartwood-dependant-create';
 import type { PairedChildMeta } from './lib/db';
 import type { VerifyRequest, VerifyResponse } from './lib/presentation';
@@ -895,7 +901,7 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
+  const { dependants, loading: dependantsLoading, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
 
@@ -940,7 +946,59 @@ function AppContent() {
     nowMs: Date.now(),
     dependantCount: dependants.length,
   });
-  const [activeDependantId, setActiveDependantId] = useState<string | null>(null);
+  // Refs threaded into navigation so hardware/browser back can be PIN-gated
+  // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
+  // are defined later in the function body — assignment at render time is enough
+  // since the refs are only read inside the popstate handler.
+  const childModeActiveRef = useRef(false);
+  const attemptExitChildModeRef = useRef<() => void>(() => {});
+  // Hardware/browser back while a sign-in approval is in flight is pinned
+  // like a bounded session and does nothing — the approval owns the answer.
+  const authApprovalInFlightRef = useRef<() => boolean>(() => false);
+  // The page, its parameter and the dependant scope move together
+  // (src/lib/dependant-scope.ts, src/lib/page-params.ts): management pages
+  // borrow a dependant's id with openDependantPage, reaching home puts the
+  // earlier scope back, and back/forward re-shows each page under the
+  // dependant, and with the target, it was opened for. The hook exposes no
+  // raw page or scope setter; go through these.
+  const {
+    page, pageParam, navigateTo, navigateBack, navigateReplace, openDependantPage,
+    activeDependantId, chooseDependantScope, borrowActiveDependantId, keepActiveDependantId, endDependantScope,
+  } = useAppNavigation({
+    isLive: id => dependants.some(d => d.id === id),
+    isScopeLocked: () => childModeActiveRef.current,
+    // A child's own install has no dependants; its activity and permissions pages stand alone.
+    needsDependant: p => !isPairedChild && !childDirect && pageNeedsDependant(p),
+    isPageParamLive: (p, param) => isPageParamLive(p, param, { identity, dependants }),
+    isBounded: () => childModeActiveRef.current || authApprovalInFlightRef.current(),
+    onAttemptBoundaryExit: () => {
+      if (authApprovalInFlightRef.current()) return;
+      attemptExitChildModeRef.current();
+    },
+  });
+  // Every removal of a dependant on this device ends it as a scope for the
+  // session (a sync may merge the record back; it must not become "Managing"
+  // them again). The hook's own remover is not called anywhere else.
+  const removeDependant = useCallback(async (dependantId: string) => {
+    // finally: the record is deleted before the hook's follow-up steps, so a
+    // throw from one of those must still end the scope.
+    try {
+      await removeDependantRecord(dependantId);
+    } finally {
+      endDependantScope(dependantId);
+    }
+  }, [removeDependantRecord, endDependantScope]);
+  // The targets of the pages that carry one (src/lib/page-params.ts), read
+  // from the entry on screen, never from state a later visit overwrites.
+  // Memoised on the entry's parameter so a page's props keep their identity
+  // across renders (the handshake's card info feeds a live session).
+  const personaAdvancedRoute = useMemo(() => page === 'persona-advanced' ? personaAdvancedRouteOf(pageParam) : null, [page, pageParam]);
+  const activationRoute = useMemo(() => page === 'activate-real-identity' ? activationRouteOf(pageParam) : null, [page, pageParam]);
+  const handshakeRoute = useMemo(() => page === 'contact-handshake' ? handshakeRouteOf(pageParam) : null, [page, pageParam]);
+  /** Open a slot's Advanced page under its own scope: the dependant's, or the owner's. */
+  const openPersonaAdvanced = useCallback((route: import('./types').PersonaAdvancedRoute) => {
+    openDependantPage('persona-advanced', route.depPubkey ?? null, route);
+  }, [openDependantPage]);
   const activeDependant = activeDependantId ? dependants.find(d => d.id === activeDependantId) ?? null : null;
 
 
@@ -950,7 +1008,17 @@ function AppContent() {
   const [botsChangeVersion, setBotsChangeVersion] = useState(0);
   const [pendingBotContacts, setPendingBotContacts] = useState<string>();
   const botInventory = useBotInventory(preferences.signingMode === 'paired-child' ? null : identity?.naturalPerson.publicKey ?? null, encryptionKey, botsVersion);
-  const carousel = useCarousel(identity, dependants, botInventory);
+  // A51 defence in depth: a direct child's cards come only from the personas
+  // its rules allow (routes are built from the same list). The rules are read
+  // further down (`childDeviceLink`), so they reach the carousel through this
+  // state, set by an effect there. Null = no filter.
+  const [childCarouselAllowCsv, setChildCarouselAllowCsv] = useState<string | null>(null);
+  const [childCarouselBound, setChildCarouselBound] = useState<string | null>(null);
+  const childCarouselAllowed = useMemo(
+    () => (childCarouselAllowCsv === null ? null : new Set(childCarouselAllowCsv.split(',').filter(Boolean))),
+    [childCarouselAllowCsv],
+  );
+  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed, childCarouselBound);
   // The identities whose cards list places in Where you're known (owner rows;
   // a dependant's card lists none). Read when a hand-off record is kept.
   const placeCardPubkeys = useMemo<ReadonlySet<string>>(() => new Set(carousel.rows
@@ -987,7 +1055,6 @@ function AppContent() {
   const needRefreshRef = useRef(needRefresh);
   needRefreshRef.current = needRefresh;
 
-  const [page, setPage] = useState<Page>('home');
   /** The page on screen, for callbacks that must not navigate away from somewhere else (M11). */
   const pageRef = useRef<Page>(page);
   pageRef.current = page;
@@ -1006,22 +1073,6 @@ function AppContent() {
     return () => { cancelled = true; };
   }, [page, identity?.naturalPerson.publicKey, encryptionKey]);
   handshakeForegroundRef.current = page === 'contact-handshake' && !!encryptionKey;
-  // Refs threaded into useNavigation so hardware/browser back can be PIN-gated
-  // while child-mode is active. The targets (carousel.childMode, handleExitChildMode)
-  // are defined later in the function body — assignment at render time is enough
-  // since the refs are only read inside the popstate handler.
-  const childModeActiveRef = useRef(false);
-  const attemptExitChildModeRef = useRef<() => void>(() => {});
-  // Hardware/browser back while a sign-in approval is in flight is pinned
-  // like a bounded session and does nothing — the approval owns the answer.
-  const authApprovalInFlightRef = useRef<() => boolean>(() => false);
-  const { navigateTo, navigateBack, navigateReplace } = useNavigation(setPage, {
-    isBounded: () => childModeActiveRef.current || authApprovalInFlightRef.current(),
-    onAttemptBoundaryExit: () => {
-      if (authApprovalInFlightRef.current()) return;
-      attemptExitChildModeRef.current();
-    },
-  });
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [selectedKenPubkey, setSelectedKenPubkey] = useState<string | null>(null);
   const [selectedCredential, setSelectedCredential] = useState<StoredCredential | null>(null);
@@ -1050,20 +1101,9 @@ function AppContent() {
     viewer: 'paired-child' | 'race-recover';
     depPubkey?: string;
   } | null>(null);
-  /**
-   * One-shot routing-state for the per-slot Persona Advanced page.
-   * Set when the carousel `gear-fab` is tapped (`onNavigateDeepPage` below)
-   * and consumed by the `persona-advanced` render branch.
-   */
-  const [pendingHandshake, setPendingHandshake] = useState<{ persona: string; choose: boolean; info: { name: string; hasPhoto: boolean } } | null>(null);
-  const [pendingPersonaAdvancedTarget, setPendingPersonaAdvancedTarget] = useState<import('./types').PersonaAdvancedRoute | null>(null);
-  // Where activation returns to. Set by every gate and by the sign-in
-  // np-dormant empty state; null means "return to the new real-identity card".
-  const [activationReturnTo, setActivationReturnTo] = useState<Page | null>(null);
-  // Which dependant's real-identity activation ceremony is in flight, set by
-  // the GuardianSettings "Set up their real identity" action. Consumed by the
-  // dependant branch of the `activate-real-identity` route below.
-  const [pendingDependantActivation, setPendingDependantActivation] = useState<string | null>(null);
+  // The Persona Advanced slot, the handshake persona and the activation
+  // target / return page are history-entry parameters now
+  // (`personaAdvancedRoute`, `handshakeRoute`, `activationRoute` above).
   // Bump counter that forces the kid's bunker-setup effect to rebuild from
   // a freshly-updated PairedChildRecord. Incremented by handleRepairChild
   // See deps on the big signing-backend effect
@@ -1513,6 +1553,21 @@ function AppContent() {
   const [pairedChildRecord, setPairedChildRecord] = useState<import('./types').PairedChildRecord | null>(null);
   // A child's phone paired straight to the Heartwood (spec §8).
   const childDirect = isDirectChildInstall({ signingMode: preferences.signingMode, record: pairedChildRecord, identity });
+  // Its card says "Connecting…" while the router is down; after a minute
+  // unlocked without it, that the Heartwood cannot be reached. A lock or the
+  // connection coming up starts the minute again.
+  const childConnectStalled = useChildConnectStall(childDirect && !!encryptionKey && !bunkerRouter);
+  // Once it is up, the Heartwood is pinged every minute while the app is open
+  // and unlocked; two missed pings in a row and the card says it cannot be
+  // reached (a power loss mid-session otherwise goes unnoticed).
+  const childHeartbeatPing = useMemo(
+    () => (bunkerBackend ? () => bunkerBackend.request('ping', [], CHILD_HEARTBEAT_TIMEOUT_MS) : null),
+    [bunkerBackend],
+  );
+  const childHeartwoodLost = useChildHeartwoodHeartbeat({
+    enabled: childDirect && !!encryptionKey && !!bunkerRouter,
+    ping: childHeartbeatPing,
+  });
   // A26: slots nothing may address on this install (the dependant's dormant
   // real identity on a direct child). Every slot resolver below gets it, so no
   // router route is ever requested for it.
@@ -2111,7 +2166,9 @@ function AppContent() {
     session: JSON.stringify([identity?.naturalPerson.publicKey, encryptionKey]),
     changeToken: JSON.stringify([contactsV2Version, [...childSettingsMap], dependants.map(dep => [dep.id, dep.bunkerEndpoint?.publicKey, dep.bunkerEndpoint?.authorizedClientPubkey])]),
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
-    build: async () => {
+    // A56: a direct child reads this rail on its pairing's rail relay.
+    extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
+    build: async (relay) => {
       const key = encryptionKey, guardian = identity?.naturalPerson.publicKey;
       if (!key || !guardian) return [];
       const current = () => encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
@@ -2120,6 +2177,7 @@ function AppContent() {
       for (const dep of fresh) {
         const endpoint = dep.bunkerEndpoint;
         if (!current()) return [];
+        if (!publishesToChildOn(dep, relay, preferences.relayUrl ?? DEFAULT_RELAY_URL)) continue;
         if (dep.guardianPubkey !== guardian || !endpoint?.privateKey || !endpoint.authorizedClientPubkey) continue;
         let backend: LocalSigningBackend | undefined;
         try {
@@ -2142,16 +2200,20 @@ function AppContent() {
     changeToken: JSON.stringify([contactsV2Version, [...childSettingsMap], dependants.map(dep => [dep.id,
       dep.autonomyStage, dep.bunkerEndpoint, childDirectoryPersonas(dep)])]),
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
-    publish: async (send, active) => {
+    // A56: a direct child reads this rail on its pairing's rail relay.
+    extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
+    publish: async (send, active, relay, resend) => {
       const key = encryptionKey, guardian = identity?.naturalPerson.publicKey;
       if (!key || !guardian) return;
       const current = () => active() && encryptionKeyRef.current === key && identityRef.current?.naturalPerson.publicKey === guardian;
       const fresh = await loadFreshDependants(key);
       for (const dep of fresh) {
         if (!current()) return;
+        if (!publishesToChildOn(dep, relay, preferences.relayUrl ?? DEFAULT_RELAY_URL)) continue;
         if (dep.guardianPubkey !== guardian || !dep.bunkerEndpoint?.authorizedClientPubkey) continue;
         try {
-          await publishChildContactDirectory({ guardian, child: dep.id, key, isCurrent: current,
+          // A retry of unchanged content sends the same publication again (no new revision).
+          await publishChildContactDirectory({ guardian, child: dep.id, key, isCurrent: current, resend,
             readScope: async () => {
               const dependant = (await loadFreshDependants(key)).find(row => row.id === dep.id && row.guardianPubkey === guardian);
               if (!dependant) throw new Error('Dependant is no longer managed here');
@@ -2173,6 +2235,7 @@ function AppContent() {
       && !!dep.bunkerEndpoint?.publicKey && !!dep.bunkerEndpoint?.authorizedClientPubkey).map(dep => ({
         scope: { guardian, child: dep.id, endpoint: dep.bunkerEndpoint!.publicKey, client: dep.bunkerEndpoint!.authorizedClientPubkey!, personas: childDirectoryPersonas(dep) },
         endpointPrivateKey: dep.bunkerEndpoint!.privateKey,
+        ...(childRailRelay(dep) ? { railRelay: childRailRelay(dep)! } : {}),
       }));
   }, [encryptionKey, identity, isPairedChild, loadFreshDependants]);
   const guardianChildLifecycle = useRef<{
@@ -2184,7 +2247,9 @@ function AppContent() {
     key: encryptionKey,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
     sources: guardianChildRequestSources,
-    changeToken: JSON.stringify(dependants.map(dep => [dep.id, dep.bunkerEndpoint?.publicKey, dep.bunkerEndpoint?.authorizedClientPubkey, childDirectoryPersonas(dep)])),
+    // A56: a direct child asks on its rail relay; the listener restarts when that set changes.
+    extraRelays: childRailExtraRelays(dependants, preferences.relayUrl ?? DEFAULT_RELAY_URL),
+    changeToken: JSON.stringify(dependants.map(dep => [dep.id, dep.bunkerEndpoint?.publicKey, dep.bunkerEndpoint?.authorizedClientPubkey, childDirectoryPersonas(dep), childRailRelay(dep)])),
     // Defined below, after the invite services they need; read at call time.
     expireStuck: (item, current) => guardianChildLifecycle.current.cancel(item, current),
     retryReplies: (source, current) => guardianChildLifecycle.current.retry(source, current),
@@ -2296,7 +2361,7 @@ function AppContent() {
     router: preferences.signingMode === 'paired-child' ? bunkerRouter : null,
     inventoryPersonas: childLinkInventory,
     withheldSlots: slotResolveOpts.withheld,
-    onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}); },
+    onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}, r.identityPressedAt ?? {}); },
   });
 
   // The child's gate (spec §8): the one choke point for sign-in, the child's
@@ -2336,6 +2401,19 @@ function AppContent() {
     () => childAllowedPersonas(childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey),
     [childLinkInventory, childDeviceLink.rules, pairedChildRecord?.personaPubkey],
   );
+  // Before the rules payload has loaded, only the bound persona has a route
+  // (A50), so it is the only card: never a card that cannot sign. While the
+  // record itself loads nothing is decided (no filter, never an empty list);
+  // a record that will not load falls back to the identity's own persona.
+  const { allow: childCarouselAllowNext, bound: childCarouselBoundNext } = childCarouselFilter({
+    direct: childDirect,
+    record: pairedChildRecord,
+    loadSettled: !!identity && pairedChildLoadedFor === identity.id,
+    identity,
+    rules: childDeviceLink.rules,
+  });
+  useEffect(() => { setChildCarouselAllowCsv(childCarouselAllowNext); }, [childCarouselAllowNext]);
+  useEffect(() => { setChildCarouselBound(childCarouselBoundNext); }, [childCarouselBoundNext]);
   // Local NIP-46 transport key per non-dormant persona (child-transport-keys.ts).
   const childBunkerPersonasCsv = childDirect
     ? [...new Set([pairedChildRecord?.personaPubkey ?? '', ...childAllowedInventory.map(p => p.pubkey)].filter(Boolean).map(p => p.toLowerCase()))].join(',')
@@ -2426,7 +2504,8 @@ function AppContent() {
     const current = () => encryptionKeyRef.current === key && identityRef.current?.id === identity.id;
     const pair = await loadPairedChild(childId, key);
     if (!current() || !pair || pair.guardianPubkey !== guardian) throw new Error('Pairing details are not available yet.');
-    const endpoint = extractEndpointPubkey(pair.bunkerUri);
+    // The guardian opens requests with `dep.bunkerEndpoint` — the rail key on a direct pairing.
+    const endpoint = guardianRailPubkey(pair);
     if (!endpoint) throw new Error('Pairing details are not available yet.');
     const persona = childAskPersona?.pubkey;
     const personas = childDirectoryPersonas(identity);
@@ -2651,9 +2730,10 @@ function AppContent() {
         // D1: the receipt records completion before the completed reply is queued.
         await transitionChildContactReceipt({ scope, key, requestId: plan.requestId, from: ['pending', 'approved'], to: 'completed',
           now: Math.floor(Date.now() / 1000), isCurrent: current });
+        // A56: a direct child reads replies on its rail relay only, so that one must accept.
         await sendChildContactReply({ scope, key, plan, status: 'completed', exchangeId: plan.exchangeId, contactId,
-          now: Math.floor(Date.now() / 1000), isCurrent: current, transport: backend, relays: syncRelays.write, mayDeliver: mayReply,
-          publish: (signed, relays) => publishToRelays(signed, relays, { isCurrent: current, beforeSend: async () => {
+          now: Math.floor(Date.now() / 1000), isCurrent: current, transport: backend, relays: guardianToChildRelays(dep, syncRelays.write), mayDeliver: mayReply,
+          publish: (signed, relays) => publishToRelaysRequiring(signed, relays, childRailRelay(dep), { isCurrent: current, beforeSend: async () => {
             if (!await mayReply()) throw new Error('Child pairing or contact policy changed');
           } }) });
       } finally { backend.destroy(); }
@@ -2691,8 +2771,8 @@ function AppContent() {
         const inScope = async () => !!await guardianChildInScope(plan.request, found.scope.child) && current();
         try {
           await cancelChildContactRequest({ scope: found.scope, key, requestId: plan.requestId, now: Math.floor(Date.now() / 1000), isCurrent: current,
-            ...(await inScope() ? { reply: { transport, relays: syncRelays.write, mayDeliver: inScope,
-              publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelays(signed, relays, { isCurrent: current, beforeSend: async () => {
+            ...(await inScope() ? { reply: { transport, relays: guardianToChildRelays(found.dep, syncRelays.write), mayDeliver: inScope,
+              publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelaysRequiring(signed, relays, childRailRelay(found.dep), { isCurrent: current, beforeSend: async () => {
                 if (!await inScope()) throw new Error('Child pairing changed');
               } }) } } : {}) });
         } finally { transport.destroy(); }
@@ -2767,12 +2847,13 @@ function AppContent() {
     makeInviteService(`dependant:${child}`, guardianChildReviewCurrent, () => guardianChildPeerAllowed(peer, request, child)),
   [makeInviteService, guardianChildReviewCurrent, guardianChildPeerAllowed]);
   const guardianChildTransport = useCallback((source: GuardianChildRequestSource, plan: ChildContactExchangePlan, status: string, current: () => boolean) => ({
-    relays: syncRelays.write,
+    // A56: a direct child reads replies on its rail relay only, so that one must accept.
+    relays: withChildRailRelay(syncRelays.write, source.railRelay),
     // Saying no, or that a request ended, cannot widen access: scope only (D2).
     mayDeliver: async () => status === 'pending' || status === 'completed'
       ? await guardianChildPeerAllowed(plan.peer, plan.request, source.scope.child) && current()
       : !!await guardianChildInScope(plan.request, source.scope.child) && current(),
-    publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelays(signed, relays, { isCurrent: current, beforeSend: async () => {
+    publish: (signed: import('signet-protocol').NostrEvent, relays: string[]) => publishToRelaysRequiring(signed, relays, source.railRelay, { isCurrent: current, beforeSend: async () => {
       const allowed = status === 'pending' || status === 'completed'
         ? await guardianChildPeerAllowed(plan.peer, plan.request, source.scope.child)
         : !!await guardianChildInScope(plan.request, source.scope.child);
@@ -2969,7 +3050,7 @@ function AppContent() {
   // included. Also the gate for the "load every dependant's child settings"
   // effect below (I2), so both consult the same condition.
   const familyLogEnabledNow = familyLogEnabled(
-    encryptionKey, page, contactsScope, familyContactsUnlocked, pendingPersonaAdvancedTarget?.depPubkey,
+    encryptionKey, page, contactsScope, familyContactsUnlocked, personaAdvancedRoute?.depPubkey,
   );
 
   const familyContacts = useFamilyContactsV2({
@@ -5206,13 +5287,30 @@ function AppContent() {
     );
   };
 
+  // The child-direct ready check, once for every direct dependant (not tied
+  // to any screen): reads the Heartwood, sends this phone's own natural-person
+  // probe after a pairing, keeps an owed press across a lock or a restart, and
+  // hands the child its reading through the rules payload (`approved`).
+  const guardianReady = useGuardianReadyChecks({
+    enabled: !!encryptionKey && !isPairedChild,
+    dependants,
+    operator: heartwoodOperator.client,
+    guardianClientPubkey: policyPush.guardianClientPubkey,
+    guardianNpPubkey: identity?.naturalPerson.publicKey ?? '',
+    npBackend: npBunkerBackend,
+    encryptionKey,
+    operatorPending: heartwoodOperator.loading,
+  });
+
   // Guardian → child rules rail for every dependant whose own phone is
   // paired straight to the Heartwood (spec §5.2), on the rail relay.
   useChildRulesPublisher({
-    enabled: !!encryptionKey && !isPairedChild && approvedOnceKinds !== null,
+    enabled: !!encryptionKey && !isPairedChild && approvedOnceKinds !== null && guardianReady.loaded,
     dependants,
     childRules,
     approvedOnceKinds: approvedOnceKinds ?? undefined,
+    approvedByDep: guardianReady.approvedByDep,
+    approvedAtByDep: guardianReady.approvedAtByDep,
     relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
   });
 
@@ -5332,7 +5430,9 @@ function AppContent() {
   useEffect(() => {
     if (!(import.meta as any).env?.DEV) return;
     (window as any).__TEST__ = {
-      setPage,
+      // A jump to `page` that replaces the current history entry (current
+      // scope, no parameter), so the entry on screen always describes it.
+      setPage: (p: Page) => navigateReplace(p),
       setSelectedCredential,
       setPendingConnectRequest,
       setPendingVerifyRequest,
@@ -7434,7 +7534,9 @@ function AppContent() {
     const fresh = await loadIdentityDecrypted(identity.id, key);
     if (!fresh || fresh.naturalPerson.publicKey !== root || !isCurrent()) return 'Backup session changed. Unlock and try again.';
     const jobs = await privateVaultJobs({ identity: fresh, encryptionKey: key,
-      deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent });
+      deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend,
+      // A closure merged from another device's handover ends that dependant here too.
+      onDependantClosed: endDependantScope, isCurrent });
     const job = jobs.find(item => vaultPurpose(item.adapter.dataset) === purpose);
     if (!job || !isCurrent()) return 'This backup is no longer available in this session.';
     const result = await rotatePrivateVaultDataset({ ...job, ownerPubkey: root, encryptionKey: key,
@@ -7489,7 +7591,9 @@ function AppContent() {
     paused: preferences.signingMode === 'bunker' && (pendingAuthRequest !== null || authApprovalInFlightKey !== null || heartwoodOwner.busy),
     relays: syncRelays,
     jobs: isCurrent => privateVaultJobs({ identity: identity!, encryptionKey: encryptionKey!,
-      deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent }),
+      deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend,
+      // A closure merged from another device's handover ends that dependant here too.
+      onDependantClosed: endDependantScope, isCurrent }),
     onMerged: refreshPrivateVaultData,
     onHealth: health => setPrivateVaultStatus({ session: privateVaultSession, health }),
   });
@@ -7556,6 +7660,15 @@ function AppContent() {
     }
     return (name) => deriveExtraPersonaOnDevice(heartwoodRequestFn, name);
   }, [bunkerRouter, heartwoodRequestFn, preferences.signingMode]);
+  // While a persona derive is with the Heartwood (it waits for a hold), the add
+  // screens say so under their busy label. Counted only when the derive is
+  // actually called — local keys never call it, so never show the hint.
+  const [heartwoodHoldCount, setHeartwoodHoldCount] = useState(0);
+  const extraPersonaDeviceDeriveTracked = useMemo<ExtraPersonaDeviceDerive | undefined>(() => (
+    extraPersonaDeviceDerive && preferences.signingMode === 'bunker' && bunkerRouter && heartwoodRequestFn
+      ? trackDeviceDerive(extraPersonaDeviceDerive, d => setHeartwoodHoldCount(n => Math.max(0, n + d)))
+      : extraPersonaDeviceDerive
+  ), [extraPersonaDeviceDerive, preferences.signingMode, bunkerRouter, heartwoodRequestFn]);
 
   const handleMigrationFinalize = useCallback(async (verifiedSlots: EnrolmentSlot[]) => {
     migrationFinalizeInFlightRef.current = true;
@@ -8434,18 +8547,18 @@ function AppContent() {
         carousel.exitChildMode();
         clearChildModeSession().catch(() => {});
       }
-      setActiveDependantId(null);
+      chooseDependantScope(null);
       // Guardian's persona/extras are separate rows in the parent ring, so
       // the landing card itself conveys the keypair — no ack chip needed.
       setRecentSignInAck(null);
-      carousel.commitPosition(findRowForGuardianKeypair(identity, selection.keypairType, botInventory), 0);
+      carousel.commitPosition(findRowForGuardianKeypair(identity, selection.keypairType, botInventory, childCarouselAllowed), 0);
       return;
     }
     if (carousel.childMode) {
       carousel.exitChildMode();
       clearChildModeSession().catch(() => {});
     }
-    setActiveDependantId(selection.dependantId);
+    chooseDependantScope(selection.dependantId);
     // Resolve the persona/extra display name when the dep selection is a
     // non-NP keypair. Drives the transient ack chip on the dep card so the
     // user can confirm which of Sara's personas they just signed in with —
@@ -8464,9 +8577,9 @@ function AppContent() {
       }
     }
     setRecentSignInAck(ackLabel ? { dependantId: selection.dependantId, label: ackLabel } : null);
-    const targetRow = findRowForDependant(identity, dependants, selection.dependantId, botInventory);
+    const targetRow = findRowForDependant(identity, dependants, selection.dependantId, botInventory, childCarouselAllowed);
     if (targetRow !== null) carousel.commitPosition(targetRow, 0);
-  }, [identity, dependants, botInventory, carousel.childMode, carousel.exitChildMode, carousel.commitPosition, setActiveDependantId]);
+  }, [identity, dependants, botInventory, childCarouselAllowed, carousel.childMode, carousel.exitChildMode, carousel.commitPosition, chooseDependantScope]);
 
   // Auto-clear the transient sign-in ack chip after a few seconds. Long enough
   // for the user to register the confirmation, short enough that it doesn't
@@ -10583,7 +10696,7 @@ function AppContent() {
 
   const handleEnterChildMode = useCallback((dependantId: string) => {
     carousel.enterChildMode(dependantId);
-    setActiveDependantId(dependantId);
+    chooseDependantScope(dependantId);
     // Persist so the boundary survives reload / process-kill — without this,
     // the child can escape child-mode by closing and reopening the app.
     // Exit remains PIN-gated via handleExitChildMode. See spec §3.
@@ -10595,7 +10708,7 @@ function AppContent() {
     // bouncing a user who'd swiped to a persona row back to the dependant
     // NP row.
     childModeRestoredRef.current = true;
-  }, [carousel.enterChildMode, setActiveDependantId]);
+  }, [carousel.enterChildMode, chooseDependantScope]);
 
   const handleExitChildMode = useCallback(async () => {
     // Load-bearing safety boundary: exit requires the guardian's PIN/biometric.
@@ -10603,9 +10716,9 @@ function AppContent() {
     const key = await requestFreshAuth({ purpose: 'exit-child-mode', depName: activeDependant?.displayName || carousel.childDependant?.displayName || 'your dependant' });
     if (!key) return; // Cancelled or failed — stay in child-mode.
     carousel.exitChildMode();
-    setActiveDependantId(null);
+    chooseDependantScope(null);
     clearChildModeSession().catch(() => {});
-  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, setActiveDependantId, requestFreshAuth]);
+  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, chooseDependantScope, requestFreshAuth]);
 
   // Publish current child-mode state + exit handler to useNavigation's refs so
   // hardware back / browser back can trigger the same gated exit while inside
@@ -10639,7 +10752,7 @@ function AppContent() {
       if (dep) {
         childModeRestoredRef.current = true;
         carousel.enterChildMode(session.activeDependantId);
-        setActiveDependantId(session.activeDependantId);
+        chooseDependantScope(session.activeDependantId);
       }
     }).catch(() => {});
   }, [identityLoading, prefsLoading, encryptionKey, dependants, carousel.enterChildMode]);
@@ -11423,7 +11536,7 @@ function AppContent() {
     // "Managing X" but the exit still demands the PIN, which is confusing.
     onExitGuardianMode: carousel.childMode
       ? () => { handleExitChildMode(); }
-      : () => { setActiveDependantId(null); navigateTo('home'); },
+      : () => { chooseDependantScope(null); navigateTo('home'); },
     // Only offer the hand-off picker if there's actually someone to switch to.
     onOpenHandoffPicker: dependants.length > 1 ? () => setShowHandoffPicker(true) : undefined,
   } : {};
@@ -11717,8 +11830,46 @@ function AppContent() {
   // opening Security & Backup, so problems also show at the top of Settings.
   const settingsBackupWarning = privateVaultBanner && privateVaultWarning
     ? <div className="app-notices">{privateVaultBanner}</div> : null;
-  // Child-direct pairing: per-persona ALLOW AS checklist until all approved.
-  const childApprovalsBanner = (childDeviceLink.unpaired || childDeviceLink.personas.some(p => p.approval !== 'approved') || (childDirect && childTransportKeysUnreadable)) ? (
+  // Child-direct ready check: "Not ready away from home" while any Heartwood
+  // press is owed (the checklist opens on its own while a first probe runs),
+  // "Ready to use away from home" once this session's presses cleared it.
+  const childReadySummary = childDeviceLink.summary.kind;
+  const childReadyVisible = childDirect && !childDeviceLink.unpaired && childDeviceLink.rows.length > 0
+    && (childReadySummary === 'owed' || childReadySummary === 'full' || childReadySummary === 'paused'
+      || (childReadySummary === 'ready' && !childHeartwoodLost && childDeviceLink.readyThisSession));
+  const childReadyNotice = childReadyVisible ? (
+    <ChildReadyNotice
+      rows={childDeviceLink.rows}
+      summary={childDeviceLink.summary}
+      viewer="child"
+      name={pairedChildRecord?.dependantName || identity?.persona?.displayName || ''}
+      showReady={childDeviceLink.readyThisSession}
+      {...(childDeviceLink.readyUnconfirmed ? { readyLine: CHILD_READY_COPY.childLooksReady(cachedGuardianName) } : {})}
+      open={childDeviceLink.personas.some(p => p.approval === 'waiting')}
+      onFinishNow={() => { void childDeviceLink.finishNow(); }}
+      onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }}
+      onDefer={(pk) => childDeviceLink.deferApproval(pk)}
+    />
+  ) : null;
+  // Guardian's phone: the same check per direct dependant, on its settings
+  // page and its home card. Only what needs saying: never a bare "Ready" there.
+  const guardianReadyNotice = (dep: DependantIdentity, compact = false) => {
+    const r = guardianReady.forDependant(dep.id);
+    if (!r || r.summary.kind === 'empty' || r.summary.kind === 'ready') return null;
+    return (
+      <ChildReadyNotice
+        rows={r.rows}
+        summary={r.summary}
+        name={dep.displayName}
+        showReady={false}
+        compact={compact}
+        onFinishNow={() => { void r.finishNow(); }}
+        onRetry={() => { void r.finishNow(); }}
+        {...(r.rows.some(x => x.who === 'child' && (x.state === 'waiting' || x.state === 'skipped')) ? { hint: CHILD_READY_COPY.childPressHint(dep.displayName) } : {})}
+      />
+    );
+  };
+  const childApprovalsBanner = (childDeviceLink.unpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
     <>
       {childDeviceLink.unpaired ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -11729,9 +11880,7 @@ function AppContent() {
       {childDirect && childTransportKeysUnreadable ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>{CHILD_SIDE_COPY.transportKeysUnreadable}</div>
       ) : null}
-      {!childDeviceLink.unpaired && childDeviceLink.personas.some(p => p.approval !== 'approved') ? (
-        <ChildIdentityApprovals personas={childDeviceLink.personas} onRetry={(pk) => { void childDeviceLink.retryApproval(pk); }} onDefer={(pk) => childDeviceLink.deferApproval(pk)} />
-      ) : null}
+      {childReadyNotice}
     </>
   ) : null;
   const topBanners = (updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
@@ -11828,7 +11977,9 @@ function AppContent() {
     <DependantSwitchPicker
       dependants={dependants}
       activeDependantId={activeDependant.id}
-      onSwitch={(depId) => { handleEnterChildMode(depId); setShowHandoffPicker(false); }}
+      // Home, not the page underneath: that page belongs to the dependant
+      // being switched away from, and would stay live under the new banner.
+      onSwitch={(depId) => { handleEnterChildMode(depId); setShowHandoffPicker(false); navigateTo('home'); }}
       onClose={() => setShowHandoffPicker(false)}
     />
   ) : null;
@@ -11949,7 +12100,7 @@ function AppContent() {
       <Layout title="Your real identity" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <RequireRealIdentity
           reason={reason}
-          onActivate={() => { setActivationReturnTo(returnTo); navigateTo('activate-real-identity'); }}
+          onActivate={() => navigateTo('activate-real-identity', { returnTo })}
           onCancel={() => navigateBack()}
         />
       </Layout>
@@ -11978,11 +12129,7 @@ function AppContent() {
           title={`${who}'s real identity`}
           activateLabel="Activate their real identity"
           reason={reason}
-          onActivate={() => {
-            setPendingDependantActivation(depId);
-            setActivationReturnTo(returnTo);
-            navigateTo('activate-real-identity');
-          }}
+          onActivate={() => openDependantPage('activate-real-identity', depId, { returnTo, dependantId: depId })}
           onCancel={() => navigateBack()}
         />
       </Layout>
@@ -12102,6 +12249,7 @@ function AppContent() {
             onChangeAuditVisibility={handleUpdateAuditVisibility}
             onBeginCeremony={() => navigateTo('transition-ceremony')}
             onPairDevice={() => navigateTo('pair-dependant-device')}
+            readyNotice={isPairedChild ? null : guardianReadyNotice(activeDependant)}
             pairReadiness={resolveSettingsViewer(preferences.signingMode, carousel.childMode) === 'guardian' ? {
               signingMode: preferences.signingMode,
               signerStatus,
@@ -12134,8 +12282,9 @@ function AppContent() {
             onAddDependantPersona={async (displayName) => {
               const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', depName: activeDependant.displayName, action: 'create', personaName: displayName });
               if (!key) throw new Error('Authentication required');
-              await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+              await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
             }}
+            addPersonaHeartwoodHold={heartwoodHoldCount > 0}
             onUpdatePersonaVisibility={async (pubkey, visible) => {
               if (!activeDependant) return;
               await updatePersonaVisibility(activeDependant.id, pubkey, visible);
@@ -12182,11 +12331,8 @@ function AppContent() {
             viewer={resolveSettingsViewer(preferences.signingMode, carousel.childMode)}
             onActivateDependantRealIdentity={
               resolveSettingsViewer(preferences.signingMode, carousel.childMode) === 'guardian'
-                ? () => {
-                    setPendingDependantActivation(activeDependant.id);
-                    setActivationReturnTo('settings');
-                    navigateTo('activate-real-identity');
-                  }
+                ? () => openDependantPage('activate-real-identity', activeDependant.id,
+                    { returnTo: 'settings', dependantId: activeDependant.id })
                 : undefined
             }
             startEditPersona={pendingPersonaFocus}
@@ -12431,19 +12577,13 @@ function AppContent() {
         <Personas
           identity={identity!}
           pairedChildView={isPairedChild}
-          onActivateRealIdentity={isPairedChild ? undefined : () => { setActivationReturnTo('settings-personas'); navigateTo('activate-real-identity'); }}
-          onOpenRealIdentityAdvanced={isPairedChild ? undefined : () => {
-            setPendingPersonaAdvancedTarget({ slotTarget: 'natural-person' });
-            navigateTo('persona-advanced');
-          }}
+          onActivateRealIdentity={isPairedChild ? undefined : () => navigateTo('activate-real-identity', { returnTo: 'settings-personas' })}
+          onOpenRealIdentityAdvanced={isPairedChild ? undefined : () => openPersonaAdvanced({ slotTarget: 'natural-person' })}
           signingMode={preferences.signingMode}
-          onManagePersona={isPairedChild ? undefined : (slotTarget) => {
-            setPendingPersonaAdvancedTarget({ slotTarget });
-            navigateTo('persona-advanced');
-          }}
+          onManagePersona={isPairedChild ? undefined : (slotTarget) => openPersonaAdvanced({ slotTarget })}
           onOpenPersona={isPairedChild ? undefined : (target) => {
             carousel.exitChildMode();
-            carousel.commitPosition(findRowForGuardianKeypair(identity!, target, botInventory), 0);
+            carousel.commitPosition(findRowForGuardianKeypair(identity!, target, botInventory, childCarouselAllowed), 0);
             navigateTo('home');
           }}
           onSwitchPrimary={async (target) => {
@@ -12455,9 +12595,11 @@ function AppContent() {
             const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
             if (!key) throw new Error('Authentication required');
             // §11.1.8 D4: in bunker mode the phone has no mnemonic — the
-            // device derives `persona-N` from its own tree instead.
-            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+            // device derives `persona-N` from its own tree instead (tracked:
+            // the "press and hold" hint shows while it is with the device).
+            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
           }}
+          addPersonaHeartwoodHold={heartwoodHoldCount > 0}
           onUpdateName={async (target, name) => {
             const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'rename', personaName: name });
             if (!key) throw new Error('Authentication required');
@@ -12961,18 +13103,17 @@ function AppContent() {
     return deleteStoppedShareCopy(shareCopy, (domain, hash, server) => deleteOwnBlob(domain, hash, server, key));
   };
 
-  if (page === 'persona-advanced' && identity && pendingPersonaAdvancedTarget) {
-    const { slotTarget, depPubkey } = pendingPersonaAdvancedTarget;
+  // The slot comes from the history entry on screen, as the scope (and so the
+  // banner) does: back/forward never shows one slot under another's banner.
+  if (page === 'persona-advanced' && identity && personaAdvancedRoute) {
+    const { slotTarget, depPubkey } = personaAdvancedRoute;
     return renderSettingsPage('persona-advanced', 'Advanced', (
       <PersonaAdvanced
         slotTarget={slotTarget}
         depPubkey={depPubkey}
         identity={identity}
         dependants={dependants}
-        onBack={() => {
-          setPendingPersonaAdvancedTarget(null);
-          navigateBack();
-        }}
+        onBack={() => navigateBack()}
         onPublishProfile={async (_slotKind: PersonaAdvancedSlotKind, _typedNameValue) => {
           // typedNameValue arrives from PersonaAdvanced's §6.5 NP first-time
           // confirm modal — PersonaAdvanced has already gated the publish on
@@ -13118,7 +13259,6 @@ function AppContent() {
           // Its device-local card backdrop goes with it.
           await forgetCardBackdrop(pubkey);
           // Routing target is gone — pop back to the carousel.
-          setPendingPersonaAdvancedTarget(null);
           navigateBack();
         }}
         onShowImportedNsec={undefined /* no in-app reveal UI today; tracked for follow-up */}
@@ -13198,8 +13338,6 @@ function AppContent() {
           }
           await retractDepProfilesBeforePurge(dep);
           await removeDependant(depPubkey);
-          if (activeDependantId === depPubkey) setActiveDependantId(null);
-          setPendingPersonaAdvancedTarget(null);
           navigateBack();
         } : undefined}
         contactsLoading={familyContacts.loading}
@@ -13226,8 +13364,11 @@ function AppContent() {
     ));
   }
 
-  if (page === 'activate-real-identity' && identity && pendingDependantActivation && !isPairedChild) {
-    const dep = dependants.find(d => d.id === pendingDependantActivation);
+  // Whose real identity this ceremony activates, and where it returns to,
+  // come from the history entry on screen (src/lib/page-params.ts), so back
+  // and forward never activate one dependant under another's banner.
+  if (page === 'activate-real-identity' && identity && activationRoute?.dependantId && !isPairedChild) {
+    const dep = dependants.find(d => d.id === activationRoute.dependantId);
     if (dep) {
       return renderSettingsPage('activate-real-identity', 'Real identity', (
         <ActivateRealIdentity
@@ -13240,23 +13381,15 @@ function AppContent() {
             await activateDependantNaturalPerson(dep.id, legalName, key);
           }}
           onMarkBackedUp={async () => { /* dependants have no separate backup — spec §7.7 */ }}
-          onDone={() => {
-            const to = activationReturnTo;
-            setPendingDependantActivation(null);
-            setActivationReturnTo(null);
-            navigateReplace(to ?? 'settings');
-          }}
-          onCancel={() => {
-            setPendingDependantActivation(null);
-            setActivationReturnTo(null);
-            navigateBack();
-          }}
+          onDone={() => navigateReplace(activationRoute.returnTo ?? 'settings')}
+          onCancel={() => navigateBack()}
         />
       ));
     }
   }
 
-  if (page === 'activate-real-identity' && identity) {
+  // The owner's ceremony. An entry naming a dependant never falls through to it.
+  if (page === 'activate-real-identity' && identity && !activationRoute?.dependantId) {
     const backupStep = resolveActivationBackupStep({
       hasMnemonic: !!identity.mnemonic,
       backedUp: identity.backedUp === true,
@@ -13278,13 +13411,8 @@ function AppContent() {
         recoveryWords={words}
         onActivate={activateNaturalPerson}
         onMarkBackedUp={handleMarkBackedUp}
-        onDone={() => {
-          const target = activationReturnTo;
-          setActivationReturnTo(null);
-          if (target) navigateReplace(target);
-          else navigateReplace('home');
-        }}
-        onCancel={() => { setActivationReturnTo(null); navigateBack(); }}
+        onDone={() => navigateReplace(activationRoute?.returnTo ?? 'home')}
+        onCancel={() => navigateBack()}
       />
     ));
   }
@@ -13750,18 +13878,19 @@ function AppContent() {
     );
   }
 
-  if (page === 'contact-handshake' && pendingHandshake && encryptionKey) {
+  if (page === 'contact-handshake' && handshakeRoute && encryptionKey) {
+    const route = handshakeRoute;
     return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack}>
-      <ContactHandshake key={encryptionKey + pendingHandshake.persona} persona={pendingHandshake.persona}
-        info={pendingHandshake.info} choose={pendingHandshake.choose} encryptionKey={encryptionKey}
+      <ContactHandshake key={encryptionKey + route.persona} persona={route.persona}
+        info={route.info} choose={route.choose} encryptionKey={encryptionKey}
         version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
         service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid)}
-        warm={() => { void contactPeerAllowed(contactsScope.directoryId ?? 'owner', encryptionKey, pendingHandshake.persona).catch(() => {}); }}
-        buildCard={choice => contactCardFor(pendingHandshake.persona, choice)} pairedChild={isPairedChild}
-        onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(pendingHandshake.persona); }}
+        warm={() => { void contactPeerAllowed(contactsScope.directoryId ?? 'owner', encryptionKey, route.persona).catch(() => {}); }}
+        buildCard={choice => contactCardFor(route.persona, choice)} pairedChild={isPairedChild}
+        onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(route.persona); }}
         onOpenContact={async contactId => {
           await contactsV2.reload();
-          setContactsIdentityChoice(pendingHandshake.persona);
+          setContactsIdentityChoice(route.persona);
           setSelectedContactId(contactId); navigateTo('contact-detail');
         }}
         relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL} directoryId={contactsScope.directoryId ?? 'owner'}
@@ -14210,8 +14339,9 @@ function AppContent() {
       onAddPersona: async (displayName: string) => {
         const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
         if (!key) throw new Error('Authentication required');
-        return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+        return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
       },
+      addPersonaHeartwoodHold: heartwoodHoldCount > 0,
       onApprove: handleApproveAuthGuarded,
       // Straight to my Heartwood: offered, and pre-selected, where the owner's own identity is held by a
       // Heartwood this phone manages. The combined online-play sign-in keeps its own answer.
@@ -14225,10 +14355,8 @@ function AppContent() {
       isPairedChild,
       childDirect,
       // A paired-child install cannot activate the owner's real identity.
-      onActivateRealIdentity: preferences.signingMode === 'paired-child' ? undefined : () => {
-        setActivationReturnTo('approve-auth');
-        navigateTo('activate-real-identity');
-      },
+      onActivateRealIdentity: preferences.signingMode === 'paired-child' ? undefined
+        : () => navigateTo('activate-real-identity', { returnTo: 'approve-auth' }),
     };
 
     return (
@@ -14497,8 +14625,8 @@ function AppContent() {
             void noteDependantAdded({ clearSnooze: identity?.backedUp !== true });
             return dep.id;
           }}
-          onSwitchToDependant={(depId) => { setActiveDependantId(depId); navigateReplace('home'); }}
-          onPairDevice={(depId) => { setActiveDependantId(depId); navigateTo('pair-dependant-device'); }}
+          onSwitchToDependant={(depId) => { chooseDependantScope(depId); navigateReplace('home'); }}
+          onPairDevice={(depId) => openDependantPage('pair-dependant-device', depId)}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           pairsDirect={(depId) => { const d = dependants.find(x => x.id === depId); return !!identity && !!d && usesChildDirectPairing(d, preferences.signingMode); }}
@@ -14564,10 +14692,7 @@ function AppContent() {
         <FamilyList
           dependants={dependants}
           independenceArchives={independenceArchives}
-          onSelect={(depId) => {
-            setActiveDependantId(depId);
-            navigateTo('settings');
-          }}
+          onSelect={(depId) => openDependantPage('settings', depId)}
           onAddDependant={() => navigateTo('add-dependant')}
           onAddKen={() => navigateTo('ken-add')}
           onManageContacts={contactsScope.canManageFamily ? handleOpenFamilyContacts : undefined}
@@ -14643,9 +14768,11 @@ function AppContent() {
         <ImportDependant
           onImportDependant={async ({ displayName, dateOfBirth, publicKey, mnemonic }) => {
             const dep = await importDependant(publicKey, displayName, dateOfBirth, mnemonic);
-            setActiveDependantId(dep.id);
+            // Borrowed: "Stay as me" just backs out, and must not leave the
+            // guardian scoped to the new dependant. "Switch to" keeps it.
+            borrowActiveDependantId(dep.id);
           }}
-          onSwitchToDependant={() => navigateReplace('home')}
+          onSwitchToDependant={() => { keepActiveDependantId(); navigateReplace('home'); }}
           onBack={() => navigateBack()}
         />
       </Layout>
@@ -14667,7 +14794,9 @@ function AppContent() {
       const fresh = await loadIdentityDecrypted(identity.id, key);
       if (!fresh || !current(key)()) throw new Error('Identity locked');
       const jobs = await privateVaultJobs({ identity: fresh, encryptionKey: key,
-        deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent: current(key) });
+        deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend,
+        // A closure merged from another device's handover ends that dependant here too.
+        onDependantClosed: endDependantScope, isCurrent: current(key) });
       const match = /^dependant-(0|[1-9][0-9]*)$/.exec(dep.derivationPath);
       const job = match && jobs.find(j => typeof j.adapter.dataset === 'object' && j.adapter.dataset.dependant === Number(match[1]));
       if (!job) throw new Error('This identity has no recovery-backed contacts vault. Its handover is unavailable.');
@@ -14707,7 +14836,9 @@ function AppContent() {
               const fresh = await loadIdentityDecrypted(owner.id, key);
               if (!fresh) throw new Error('Identity unavailable');
               const jobs = await privateVaultJobs({ identity: fresh, encryptionKey: key,
-                deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend, isCurrent: current(key) });
+                deviceHeldKeys: preferences.signingMode === 'bunker', bunker: bunkerBackend,
+                // A closure merged from another device's handover ends that dependant here too.
+                onDependantClosed: endDependantScope, isCurrent: current(key) });
               const profiles = jobs.find(j => j.adapter.dataset === 'profiles');
               if (!profiles) throw new Error('Family backup unavailable');
               const synced = await syncPrivateVaultDataset({ ...profiles, ownerPubkey: guardian, encryptionKey: key,
@@ -14740,6 +14871,9 @@ function AppContent() {
               slotPubkeys: [...new Set([source.dependant.id, source.dependant.naturalPerson.publicKey, source.dependant.persona.publicKey,
                 ...(source.dependant.extraPersonas ?? []).map(p => p.publicKey)].filter(Boolean))] } });
             // The durable closure already removed identity and contact grants.
+            // That removed the dependant record, so end it as a scope now: the
+            // sweep below can fail and be resumed later.
+            endDependantScope(dep.id);
             // Sweep the existing signing/approval state before returning.
             await finishClosure();
           }}
@@ -14894,7 +15028,10 @@ function AppContent() {
           requestAuth={requestAuth}
           onBack={() => navigateBack()}
           signingMode={preferences.signingMode}
-          direct={childDirectPairingOpts()}
+          direct={(() => {
+            const d = childDirectPairingOpts();
+            return d ? { ...d, readiness: guardianReady.forDependant(activeDependant.id), onWatchReadiness: () => guardianReady.watch(activeDependant.id) } : undefined;
+          })()}
         />
       </Layout>
     );
@@ -14964,11 +15101,10 @@ function AppContent() {
                 await reloadDependants();
               }
             }}
-            onOpenStage={() => {
-              setPendingPersonaAdvancedTarget({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id });
-              navigateTo('persona-advanced');
-            }}
+            onOpenStage={() => openPersonaAdvanced({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id })}
             onUnpaired={() => navigateBack()}
+            readiness={guardianReady.forDependant(dep.id)}
+            onWatchReadiness={() => guardianReady.watch(dep.id)}
           />
         )}
       </Layout>
@@ -15215,7 +15351,7 @@ function AppContent() {
           actingAs={carousel.childMode}
           onSwitchBack={carousel.childMode
             ? () => { handleExitChildMode(); }
-            : () => { setActiveDependantId(null); }}
+            : () => { chooseDependantScope(null); }}
           onOpenSwitcher={dependants.length > 1 ? () => setShowHandoffPicker(true) : undefined}
         />
       )}
@@ -15275,21 +15411,23 @@ function AppContent() {
             {notice.canUndo && <button className="btn btn-ghost" onClick={() => { void contactsV2.removeContact(contact.contactId).catch(() => {}); }}>Undo app connection</button>}
           </div> : null;
         })}
+      {isPairedChild ? childReadyNotice : null}
       <Carousel
         onHandshake={async (resolved, choose) => {
           const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
           if (!key || !resolved.publicKey) return;
-          setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
           setContactsIdentityChoice(resolved.publicKey);
           const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
-          setPendingHandshake({ persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
-          navigateTo('contact-handshake');
+          // The persona exchanging rides on the entry with the scope whose
+          // directory it writes to, so back/forward cannot pair them wrongly.
+          openDependantPage('contact-handshake', resolved.isDependant ? resolved.dependantId ?? null : null,
+            { persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
         }}
         renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
             locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
-            onManage={() => { setActiveDependantId(null); setContactsIdentityChoice(resolved.publicKey); navigateTo('contact-invites'); }} />
+            onManage={() => { setContactsIdentityChoice(resolved.publicKey); openDependantPage('contact-invites', null); }} />
           : renderPublicCard()}
         renderBotCard={(row, col) => <BotCarouselCard key={row.bot.publicKey} bot={row.bot} col={col}
           placesCard={col === 3 ? knownPlacesColumn(row, resolveActiveIdentity(row)) : undefined}
@@ -15304,7 +15442,7 @@ function AppContent() {
                 routed: target => mode === 'nip07' ? nip07Backend?.activePublicKeyHex === target ? nip07Backend : null
                   : resolveSlotBunkerBackend(bunkerBackend, bunkerRouter, target, slotResolveOpts) }) });
           }}
-          onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); setActiveDependantId(null); navigateTo('bots'); }}
+          onOpen={contacts => { setPendingBotContacts(contacts ? row.bot.publicKey : undefined); openDependantPage('bots', null); }}
           onHide={async () => {
             if (!encryptionKey) throw new Error('Unlock first');
             const root = identity.naturalPerson.publicKey;
@@ -15344,11 +15482,10 @@ function AppContent() {
             const owner = identity.naturalPerson.publicKey;
             const key = await requestAuth({ purpose: 'manage-family-contacts' });
             if (!key || identityRef.current?.naturalPerson.publicKey !== owner) return;
-            setActiveDependantId(resolved.isDependant ? resolved.dependantId ?? null : null);
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
             setContactsOpenFollows(action === 'follows');
-            navigateTo(action === 'new' ? 'contact-new' : 'contacts');
+            openDependantPage(action === 'new' ? 'contact-new' : 'contacts', resolved.isDependant ? resolved.dependantId ?? null : null);
           }} />}
         row={carousel.row}
         col={carousel.col}
@@ -15361,20 +15498,19 @@ function AppContent() {
         onNavigateDeepPage={(p, opts) => {
           if (opts?.focusPersona) setPendingPersonaFocus(opts.focusPersona);
           if (opts?.section) setPendingSecurityFocus(opts.section);
-          // Must precede navigateTo — destination routes (e.g. 'settings',
-          // 'transition-ceremony') read activeDependant synchronously on
-          // render; React batches both state updates into the same flush.
-          if (opts?.dependantId) setActiveDependantId(opts.dependantId);
-          // An owner slot's Advanced page must not inherit a dependant scope
-          // left over from an earlier visit (it hid the follows panel).
-          else if (p === 'persona-advanced' && opts?.slotTarget) setActiveDependantId(null);
-          if (opts?.slotTarget) {
-            setPendingPersonaAdvancedTarget({
-              slotTarget: opts.slotTarget,
-              depPubkey: opts.dependantId,
-            });
+          // A slot's Advanced page carries its slot on its history entry and
+          // opens under that slot's scope: the dependant's, or the owner's (an
+          // owner slot must not inherit a dependant scope left over from an
+          // earlier visit; it hid the follows panel).
+          if (p === 'persona-advanced' && opts?.slotTarget) {
+            openPersonaAdvanced(opts.dependantId
+              ? { slotTarget: opts.slotTarget, depPubkey: opts.dependantId }
+              : { slotTarget: opts.slotTarget });
           }
-          navigateTo(p as Page);
+          // Borrowed, not chosen: the page is opened for this dependant, and
+          // reaching home puts back the scope from before (src/lib/dependant-scope.ts).
+          else if (opts?.dependantId) openDependantPage(p as Page, opts.dependantId);
+          else navigateTo(p as Page);
         }}
         onQRScanned={handleCarouselQRScanned}
         onEnterChildMode={handleEnterChildMode}
@@ -15394,16 +15530,18 @@ function AppContent() {
           // own identity. Matches the GuardianSettings "Add persona to
           // dependant" path.
           if (carousel.childMode && activeDependant) {
-            await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+            await addDependantPersona(activeDependant.id, displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
           } else {
-            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDerive });
+            await addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
           }
         }}
+        addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={preferences.signingMode === 'paired-child' && bunkerRouter ? 'heartwood' : 'guardian-phone'}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost })}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
+        readyNoticeFor={isPairedChild ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
         proAnchorActive={!!proAnchor}
         onProPillTap={() => navigateTo('pro-dashboard')}
         recentSignInAck={recentSignInAck}
@@ -15685,9 +15823,10 @@ function AppContent() {
               if (current.isDependant) {
                 const key = await requestAuth({ purpose: 'manage-family-contacts' });
                 if (!key) return;
-                setActiveDependantId(current.dependantId ?? null);
-              } else setActiveDependantId(null);
+              }
               setContactsIdentityChoice(current.publicKey || null);
+              openDependantPage(target, current.isDependant ? current.dependantId ?? null : null);
+              return;
             }
             navigateTo(target);
           })();

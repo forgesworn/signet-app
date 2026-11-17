@@ -6,6 +6,7 @@ import type { SignetIdentity, DependantIdentity, ConsumerHint, KeypairToken, Ori
 import { shortNpub } from '../lib/signet';
 import { authRequestKey } from '../lib/auth-request-settlement';
 import { friendlyApprovalError, friendlySignerMessage } from '../lib/signer-error-copy';
+import { HEARTWOOD_HOLD_TO_FINISH } from '../lib/local-key-only-copy';
 import { SharePreview } from '../components/SharePreview';
 import { resolveSelectedDisplayName, resolveSelectedToken, resolveSelectedPubkey, resolveSelectedPublicProfile, buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
 import { isNaturalPersonActive } from '../lib/identity-display';
@@ -76,6 +77,8 @@ interface Props {
   preferredPersonaPubkey?: string;
   /** Inline add-persona callback used by the empty-state fallback. */
   onAddPersona?: (displayName: string) => Promise<void>;
+  /** A new persona is being derived on the Heartwood right now: shows the "press and hold" hint while it saves. */
+  addPersonaHeartwoodHold?: boolean;
   /**
    * Offered when the consumer asked for the real identity and this user has not
    * activated one (`classifyEmptyState` → `'np-dormant'`). Navigates to the
@@ -239,6 +242,7 @@ export function ApproveAuth({
   waitingGuardianPubkeys,
   isPairedChild = false,
   childDirect = false,
+  addPersonaHeartwoodHold = false,
 }: Props) {
   const [includeOnlinePlay, setIncludeOnlinePlay] = useState(true);
   // null = the user hasn't touched the radio, so the effective choice follows `heartwoodByDefault`
@@ -387,6 +391,7 @@ export function ApproveAuth({
   }, [initialError]);
   const [addingPersona, setAddingPersona] = useState(false);
   const [newPersonaName, setNewPersonaName] = useState('');
+  const [savingPersona, setSavingPersona] = useState(false);
   const [showNpConfirm, setShowNpConfirm] = useState(false);
 
   const needsCredential = login && ageRange !== null;
@@ -509,7 +514,8 @@ export function ApproveAuth({
     const handleAddPersona = async () => {
       if (!onAddPersona) return;
       const name = newPersonaName.trim();
-      if (!name) return;
+      if (!name || savingPersona) return;
+      setSavingPersona(true);
       try {
         await onAddPersona(name);
         // The parent re-renders with the new persona on identity — the empty
@@ -517,6 +523,8 @@ export function ApproveAuth({
         setNewPersonaName('');
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not add persona — please try again');
+      } finally {
+        setSavingPersona(false);
       }
     };
 
@@ -582,13 +590,16 @@ export function ApproveAuth({
                   }}
                 />
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-primary" disabled={!newPersonaName.trim()} onClick={handleAddPersona} style={{ flex: 1 }}>
+                  <button className="btn btn-primary" disabled={!newPersonaName.trim() || savingPersona} onClick={handleAddPersona} style={{ flex: 1 }}>
                     Save &amp; continue
                   </button>
                   <button className="btn btn-ghost" onClick={() => { setAddingPersona(false); setNewPersonaName(''); }} style={{ flex: 1 }}>
                     Cancel
                   </button>
                 </div>
+                {savingPersona && addPersonaHeartwoodHold && (
+                  <p role="status" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>{HEARTWOOD_HOLD_TO_FINISH}</p>
+                )}
               </div>
             )}
           </div>
