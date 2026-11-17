@@ -20,6 +20,15 @@
  * request is refused in child mode anyway (`routeAppPermission`), and its own
  * unlock prompt was the guardian's PIN.
  *
+ * `persona-advanced` holds the guardian's controls for a dependant: autonomy,
+ * rules, unpair and remove. Removing the dependant there dropped the phone out
+ * of child mode with no PIN.
+ *
+ * `settings-security` and `shamir` show or split the guardian's recovery words:
+ * the Shamir split shows all three shares with no PIN.
+ *
+ * `settings-personas` leaves child mode with no PIN.
+ *
  * `contacts-grant-code` is deliberately not listed: leaving that page strands a
  * live grant unchecked, and it is only reachable after an approve, which is now
  * refused.
@@ -35,6 +44,10 @@ export const CHILD_MODE_GUARDIAN_PAGES: readonly Page[] = [
   'settings-advanced',
   'approve-verification',
   'approve-app-permission',
+  'persona-advanced',
+  'settings-security',
+  'shamir',
+  'settings-personas',
 ];
 
 /** `refuse`: show the refusal, no PIN. `hold`: child mode not yet known, show and ask nothing. */

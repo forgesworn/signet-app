@@ -13,7 +13,10 @@ const EXPECT: Record<ChildModeState, string> = { on: 'refuse', off: 'allow', unk
 describe('childModePageDecision', () => {
   it('lists the guardian-only pages', () => {
     expect([...CHILD_MODE_GUARDIAN_PAGES].sort()).toEqual(
-      ['approve-add-dependant', 'approve-app-permission', 'approve-companion-grant', 'approve-verification', 'contacts-grant-approve', 'settings-advanced'],
+      [
+        'approve-add-dependant', 'approve-app-permission', 'approve-companion-grant', 'approve-verification',
+        'contacts-grant-approve', 'persona-advanced', 'settings-advanced', 'settings-personas', 'settings-security', 'shamir',
+      ],
     );
   });
 
