@@ -105,6 +105,46 @@ describe('useChildHeartwoodHeartbeat', () => {
     expect(result.current).toBe(false);
   });
 
+  it('a late miss from a finished activation does not count against the new one', async () => {
+    const rejecters: Array<(e: unknown) => void> = [];
+    const ping = vi.fn(() => new Promise<unknown>((_res, rej) => { rejecters.push(rej); }));
+    const { result, rerender } = renderHook((p: Props) => useChildHeartwoodHeartbeat(p), { initialProps: { enabled: true, ping } });
+    await tick(0);
+    // Activation A: first ping misses, second is sent and left in flight.
+    await act(async () => { rejecters[0](new Error('miss')); await Promise.resolve(); });
+    await tick(CHILD_HEARTBEAT_MS);
+    expect(ping).toHaveBeenCalledTimes(2);
+    rerender({ enabled: false, ping });
+    rerender({ enabled: true, ping });
+    await tick(0);
+    expect(ping).toHaveBeenCalledTimes(3);
+    // Activation B: its own first ping misses once (not lost), then A's late ping rejects.
+    await act(async () => { rejecters[2](new Error('miss')); await Promise.resolve(); });
+    expect(result.current).toBe(false);
+    await act(async () => { rejecters[1](new Error('late')); await Promise.resolve(); });
+    expect(result.current).toBe(false);
+  });
+
+  it('a late answer from a finished activation does not clear the new one being lost', async () => {
+    const settlers: Array<{ res: (v: unknown) => void; rej: (e: unknown) => void }> = [];
+    const ping = vi.fn(() => new Promise<unknown>((res, rej) => { settlers.push({ res, rej }); }));
+    const { result, rerender } = renderHook((p: Props) => useChildHeartwoodHeartbeat(p), { initialProps: { enabled: true, ping } });
+    await tick(0);
+    // Activation A's ping stays in flight.
+    rerender({ enabled: false, ping });
+    rerender({ enabled: true, ping });
+    await tick(0);
+    expect(ping).toHaveBeenCalledTimes(2);
+    // Activation B misses twice and is lost.
+    await act(async () => { settlers[1].rej(new Error('miss')); await Promise.resolve(); });
+    await tick(CHILD_HEARTBEAT_MS);
+    await act(async () => { settlers[2].rej(new Error('miss')); await Promise.resolve(); });
+    expect(result.current).toBe(true);
+    // A's ping now answers late: B stays lost.
+    await act(async () => { settlers[0].res('pong'); await Promise.resolve(); });
+    expect(result.current).toBe(true);
+  });
+
   it('a changed ping resets lost and starts afresh', async () => {
     const bad = vi.fn().mockRejectedValue(new Error('x'));
     const good = vi.fn().mockResolvedValue('pong');

@@ -1,5 +1,5 @@
 import { HandshakeButton } from './HandshakeButton';
-import { useRef, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
 import type { CarouselRow } from '../types';
 import type { KnownPlace } from '../types/known-places';
 import type { Badge } from '../lib/known-place-badges';
@@ -114,6 +114,16 @@ export interface IdentityCardProps {
 }
 
 const BACKDROP_NOTE_MS = 4000;
+
+const CHILD_NOTICE_STYLE: CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: 'var(--radius)',
+  background: 'var(--bg-card-alt)',
+  border: '1px solid var(--border)',
+  fontSize: '0.85rem',
+  lineHeight: 1.4,
+  textAlign: 'center',
+};
 
 export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
@@ -533,15 +543,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
         {childDormant && (
           <div
             className="card-dormant-notice"
-            style={{
-              padding: '12px 14px',
-              borderRadius: 'var(--radius)',
-              background: 'var(--bg-card-alt)',
-              border: '1px solid var(--border)',
-              fontSize: '0.85rem',
-              lineHeight: 1.4,
-              textAlign: 'center',
-            }}
+            style={CHILD_NOTICE_STYLE}
           >
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
               {childSignerKind === 'heartwood-unreachable'
@@ -565,6 +567,14 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 </>
               )}
             </div>
+          </div>
+        )}
+
+        {/* The notice used to be dormant-only, so a child on any other stage never learned the Heartwood was unreachable. */}
+        {!childDormant && childSignerKind === 'heartwood-unreachable' && (
+          <div className="card-dormant-notice" role="status" style={CHILD_NOTICE_STYLE}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>{CHILD_READY_COPY.unreachableHeading}</div>
+            <div style={{ opacity: 0.8 }}>{CHILD_READY_COPY.unreachableBody(guardianName)}</div>
           </div>
         )}
 

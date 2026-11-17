@@ -457,6 +457,20 @@ describe('IdentityCard — who signs for a paired child', () => {
     expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
   });
 
+  it('a child on any other stage is told the Heartwood cannot be reached', () => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childSignerKind="heartwood-unreachable" cachedGuardianName="Mum" />);
+    expect(screen.getByText('Can\'t reach your family Heartwood')).toBeTruthy();
+    expect(screen.getByText('It may be switched off or offline. If this keeps happening, tell Mum.')).toBeTruthy();
+    expect(screen.getByRole('status')).toBeTruthy();
+  });
+
+  it.each(['heartwood', 'heartwood-connecting'] as const)('a child on any other stage sees no notice while the Heartwood is %s', (kind) => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childSignerKind={kind} cachedGuardianName="Mum" />);
+    expect(screen.queryByText('Can\'t reach your family Heartwood')).toBeNull();
+    expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
+    expect(screen.queryByText('Connecting to your family Heartwood…')).toBeNull();
+  });
+
   it('a dependant card on the guardian\'s phone shows the ready notice it is given', () => {
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} readyNotice={<div data-testid="ready-notice">owed</div>} />);
     expect(screen.getByTestId('ready-notice')).toBeTruthy();
