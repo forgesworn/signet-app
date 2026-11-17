@@ -177,6 +177,8 @@ import type { DependantDeviceDerive, ExtraPersonaDeviceDerive } from './hooks/us
 import { Layout } from './components/Layout';
 import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
+import { ChildSignInRefusal } from './components/ChildSignInRefusal';
+import { childModeSignInRefusal, childModeSelectionRefused, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
 import { RateLimitBanner } from './components/RateLimitBanner';
@@ -392,7 +394,7 @@ import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from 
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
 import { ChildAskApprovalModal } from './components/BunkerApprovalModal';
-import { CHILD_ASK_COPY, CHILD_SIDE_COPY } from './lib/child-device-copy';
+import { CHILD_ASK_COPY, CHILD_SIDE_COPY, CHILD_MODE_SIGN_IN_COPY } from './lib/child-device-copy';
 import { revokeChildDeviceSlot } from './lib/child-device-pairing';
 import { createVaultPubkeyStore } from './lib/vault-pubkey-cache';
 import { PrivateVaultApprovalBanner } from './components/PrivateVaultApprovalBanner';
@@ -465,7 +467,7 @@ import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
 import { PAGE_AUTH_CONTEXTS, type PurposeContext } from './lib/auth-purposes';
-import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
+import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, loadDependantSignInFacts, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
 import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
 import { deriveDependantOnDevice, deriveExtraPersonaOnDevice, trackDeviceDerive } from './lib/heartwood-dependant-create';
@@ -6486,6 +6488,40 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
+  // Sign-ins in child mode (device run 2026-11-17, F12). The child-mode restore
+  // below waits for the key, so child mode as last saved is read here without
+  // it: a sign-in that cold-starts the app in child mode must not ask for the
+  // guardian's PIN or list the guardian's identities first. `undefined` until
+  // read; dropped once child mode is live again.
+  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    loadChildModeSession()
+      .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
+      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current ? null : facts); })
+      .catch(() => { if (live) setSavedChildMode(null); });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (carousel.childMode) setSavedChildMode(null);
+  }, [carousel.childMode]);
+  // A lock empties `dependants` for a moment (identity → null → reload), so the
+  // child-mode dependant is held while child mode lasts: the refusal must not
+  // blink off and let a PIN prompt open over it.
+  const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
+  if (!carousel.childMode) childModeDependantRef.current = null;
+  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
+  const signInChildMode = carousel.childMode || !!savedChildMode;
+  const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
+  // A child who signs in on their own phone: every sign-in here is refused, with no PIN.
+  const childSignIn = childModeSignInRefusal({ childMode: signInChildMode, dependant: signInChildDependant });
+  // No sign-in PIN prompt and no picker while refused, or before saved child mode is known.
+  const childSignInHold = !!childSignIn || savedChildMode === undefined;
+  // Scoped to the sign-in page, so the hold settling at start-up re-runs no other page's prompt.
+  const approveAuthHeld = page === 'approve-auth' && childSignInHold;
+  const signInChildModeRef = useRef({ childMode: signInChildMode, dependant: signInChildDependant });
+  signInChildModeRef.current = { childMode: signInChildMode, dependant: signInChildDependant };
+
   const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
     if (pendingAuthRequestRef.current !== request) return;
     if (currentLogEntryRef.current) {
@@ -6533,6 +6569,7 @@ function AppContent() {
     // end-to-end verification caught 'approve-companion-grant' missing here:
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
+    if (approveAuthHeld) return; // refused in child mode: no PIN
     const pagePurpose = PAGE_AUTH_CONTEXTS[page];
     // Capture the request label when entering/re-unlocking its review page.
     // Labels alone must not re-run this effect and contend with an open prompt.
@@ -6554,7 +6591,7 @@ function AppContent() {
         if (!key && page !== 'contacts-grant-code' && page !== 'contacts-grant-approve') navigateReplace('home'); // user cancelled or auth not set up — go back
       });
     }
-  }, [page, encryptionKey, requestAuth]);
+  }, [page, encryptionKey, requestAuth, approveAuthHeld]);
 
   // A picker choice belongs to one request; drop it once that request is gone.
   useEffect(() => {
@@ -6595,6 +6632,7 @@ function AppContent() {
   // requests stay on home so the ApprovalOverlay can handle them in-place.
   useEffect(() => {
     if (!pendingAuthRequest || page !== 'home') return;
+    if (childSignInHold) return; // refused in child mode: no PIN, and the refusal stays on home
     if (!encryptionKey) {
       // No identity yet — let the !identity render branch consume pendingAuthRequest
       // and show the staged onboarding flow. Don't prompt for auth that doesn't exist.
@@ -6607,7 +6645,7 @@ function AppContent() {
     if (urlAuthSiteName || urlAuthRequestsRef.current.has(pendingAuthRequest)) {
       navigateReplace('approve-auth');
     }
-  }, [encryptionKey, pendingAuthRequest, urlAuthSiteName, page, requestAuth, cancelSignInReview]);
+  }, [encryptionKey, pendingAuthRequest, urlAuthSiteName, page, requestAuth, cancelSignInReview, childSignInHold]);
 
   // After unlock, navigate to the third-party add-dependant approval page
   // Mirrors the auth-request unlock flow but
@@ -10190,6 +10228,8 @@ function AppContent() {
   const handleApproveAuth = useCallback(async (selection: AuthSelection, shareHandle: boolean = false, includeOnlinePlay = false, signOnHeartwood = false) => {
     const request = pendingAuthRequestRef.current;
     if (!request) throw new Error('No pending auth request');
+    // Child mode signs only as the child, and never for one who signs in on their own phone.
+    if (childModeSelectionRefused({ ...signInChildModeRef.current, selection })) throw new Error(CHILD_MODE_SIGN_IN_COPY.onlyAsTheChild);
     const key = authRequestKey(request);
     const began = authSettlementRef.current.beginApproval(key);
     if (began === 'settled') {
@@ -14273,6 +14313,22 @@ function AppContent() {
     );
   }
 
+  // Child mode for a child who signs in on their own phone: a refusal, never
+  // the picker, and no PIN (F12). Blank for the moment before saved child mode
+  // is read, so no guardian identity is shown first.
+  if (page === 'approve-auth' && pendingAuthRequest && childSignInHold) {
+    return (
+      <>
+        <Layout title={approveAuthTitle(pendingAuthRequest)}>
+          {childSignIn && (
+            <ChildSignInRefusal key={authRequestKey(pendingAuthRequest)} child={childSignIn.child} onDecline={handleDenyAuth} />
+          )}
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
+
   // Approve Auth (signet-auth-request or signet-login-request)
   if (page === 'approve-auth' && pendingAuthRequest && identity) {
     // Look up any per-origin policy for this request's origin.
@@ -14302,8 +14358,10 @@ function AppContent() {
     // Gate on the ACTING slot's key, not the NP's: a persona-first dependant
     // signs as their persona, so an NP-keyed test would drop them from the
     // picker after a key strip that left the persona signable (and vice versa).
+    // In child mode only the child-mode dependant signs: never the guardian, never a sibling.
     const availableDependants = dependants.filter(d =>
-      !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey));
+      !d.encrypted && isValidHexKey(resolveDependantCardSlot(d).slot.privateKey)
+      && (!signInChildMode || d.id === signInChildDependant?.id));
     const approveAuthRequestKey = authRequestKey(pendingAuthRequest);
     // Default selection comes from the row the user was viewing when the
     // request arrived. For QR scans we use the snapshot taken in
@@ -14354,8 +14412,9 @@ function AppContent() {
       realNameNeedsHeartwood: realNameCardExpected,
       isPairedChild,
       childDirect,
-      // A paired-child install cannot activate the owner's real identity.
-      onActivateRealIdentity: preferences.signingMode === 'paired-child' ? undefined
+      childModeOnly: signInChildMode,
+      // A paired-child install cannot activate the owner's real identity, nor can child mode.
+      onActivateRealIdentity: preferences.signingMode === 'paired-child' || signInChildMode ? undefined
         : () => navigateTo('activate-real-identity', { returnTo: 'approve-auth' }),
     };
 
@@ -15741,7 +15800,12 @@ function AppContent() {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });
         }}
       >
-        {pendingAuthRequest && page === 'home' && identity && (() => {
+        {pendingAuthRequest && page === 'home' && identity && childSignIn && (
+          <ChildSignInRefusal key={authRequestKey(pendingAuthRequest)} overlay child={childSignIn.child} onDecline={handleDenyAuth} />
+        )}
+        {/* Not until child mode is known and live: a saved child mode not yet
+            restored would show the guardian's row here. */}
+        {pendingAuthRequest && page === 'home' && identity && !childSignInHold && !savedChildMode && (() => {
           // Display from the scan-time selection snapshot, not the live carousel
           // row — they can diverge if any state update rebuilds `carousel.rows`
           // or resets `carousel.row` between scan and overlay render. Falling

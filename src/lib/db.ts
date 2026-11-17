@@ -2253,6 +2253,25 @@ export async function getDependants(guardianPubkey: string, encryptionKey?: stri
   return dependants.map(liftDependantPublicProfileConfig);
 }
 
+/**
+ * A dependant's name and child-phone link, from the clear-text fields of its
+ * record: readable before unlock. The child-mode restore waits for the key, so
+ * a sign-in that cold-starts the app in child mode reads these to refuse a
+ * child who signs in on their own phone before any PIN is asked for.
+ */
+export async function loadDependantSignInFacts(dependantId: string): Promise<{ id: string; displayName: string; childDevice?: { mode: 'heartwood-direct' } } | null> {
+  const db = await getDB();
+  const raw = await db.get('identity', DEPENDANT_PREFIX + dependantId) as { displayName?: unknown; childDevice?: { mode?: unknown } } | undefined;
+  if (!raw) return null;
+  // Same exclusion as `getDependants`: an independent child is no dependant.
+  if (await db.get('privateVaultState', `independence:closed:dependant:${dependantId}`)) return null;
+  return {
+    id: dependantId,
+    displayName: typeof raw.displayName === 'string' ? raw.displayName : '',
+    ...(raw.childDevice?.mode === 'heartwood-direct' ? { childDevice: { mode: 'heartwood-direct' as const } } : {}),
+  };
+}
+
 export async function deleteDependant(pubkey: string): Promise<void> {
   const db = await getDB();
   await db.delete('identity', DEPENDANT_PREFIX + pubkey);

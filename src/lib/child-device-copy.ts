@@ -413,3 +413,16 @@ export const PAIR_READINESS_COPY = {
     action: 'Go to personas',
   },
 } as const;
+
+/**
+ * A sign-in reaching the guardian's phone in child mode (device run
+ * 2026-11-17, F12). See `child-mode-sign-in.ts`.
+ */
+export const CHILD_MODE_SIGN_IN_COPY = {
+  /** The child paired straight to the Heartwood: every sign-in is refused. */
+  refusalHeading: (child: string) => `${child.charAt(0).toUpperCase()}${child.slice(1)} signs in on their own phone`,
+  refusalBody: (child: string) => `This phone can't sign in for ${child}. Use ${child}'s own phone.`,
+  decline: 'Decline',
+  /** An approval that slipped past the picker in child mode. */
+  onlyAsTheChild: "This phone is being used as a child right now, so it can't sign in as anyone else.",
+} as const;

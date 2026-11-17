@@ -169,6 +169,13 @@ interface Props {
   isPairedChild?: boolean;
   /** Paired straight to the Heartwood: the wait is an ask on the guardian's phone. */
   childDirect?: boolean;
+  /**
+   * The guardian's phone is in child mode: none of the guardian's own
+   * identities is offered anywhere on this screen (not the picker, the
+   * real-name fallback, "Add persona now" or real-identity activation). The
+   * caller passes only the child-mode dependant in `dependants`.
+   */
+  childModeOnly?: boolean;
 }
 
 function isLoginRequest(r: AuthRequest | LoginRequest): r is LoginRequest {
@@ -243,6 +250,7 @@ export function ApproveAuth({
   isPairedChild = false,
   childDirect = false,
   addPersonaHeartwoodHold = false,
+  childModeOnly = false,
 }: Props) {
   const [includeOnlinePlay, setIncludeOnlinePlay] = useState(true);
   // null = the user hasn't touched the radio, so the effective choice follows `heartwoodByDefault`
@@ -265,9 +273,10 @@ export function ApproveAuth({
     // Shared builder: persona-first order, dormant real identity excluded.
     // The filter keeps upstream's binding of the picker to the keys this
     // signing route can actually reach.
-    () => buildGuardianKeypairOptions(identity)
+    // In child mode there are none: the guardian's identities are not on offer.
+    () => childModeOnly ? [] : buildGuardianKeypairOptions(identity)
       .filter(option => !availableGuardianPubkeys || availableGuardianPubkeys.includes(option.pubkey)),
-    [identity, availableGuardianPubkeys],
+    [identity, availableGuardianPubkeys, childModeOnly],
   );
 
   const guardianPolicy = useMemo(
@@ -362,7 +371,8 @@ export function ApproveAuth({
     offeredGuardianKeys: guardianPolicy.ranked.map(o => o.key),
     guardianOptions,
     resolvePubkey: (sel) => resolveSelectedPubkey(sel, identity, dependants),
-    userChoice,
+    // A guardian pick made before child mode came back never carries over.
+    userChoice: childModeOnly && userChoice?.selection?.source === 'guardian' ? undefined : userChoice,
     onUserChoice,
     waitingGuardianPubkeys,
   });
@@ -481,7 +491,8 @@ export function ApproveAuth({
   // users have no other way to add a persona).
   if (allEmpty) {
     const npDormant = !!identity.naturalPerson.publicKey && !isNaturalPersonActive(identity);
-    const emptyKind = classifyEmptyState(
+    // Child mode: the guardian's identities are not why nothing matched.
+    const emptyKind = childModeOnly ? 'generic' : classifyEmptyState(
       consumerHint,
       !!identity.persona.publicKey,
       !!(identity.extraPersonas && identity.extraPersonas.length > 0),
@@ -490,7 +501,7 @@ export function ApproveAuth({
     );
     const wantsPersona = !!consumerHint?.allow.includes('persona');
     const wantsExtra = !!consumerHint?.allow.includes('extra-persona');
-    const canAddPersona = !!onAddPersona
+    const canAddPersona = !childModeOnly && !!onAddPersona
       && canSwitchGuardianPersona
       && (emptyKind === 'no-persona-configured' || emptyKind === 'no-extra-persona');
     const npHidden = emptyKind === 'np-hidden';
@@ -611,7 +622,7 @@ export function ApproveAuth({
             user has never chosen to use it. The np-dormant CTA above is the
             only route to it. Marked so the consumer can see the user overrode
             its hint (fromNP=true is set on the redirect-back in App.tsx). */}
-        {!npHidden && !npDormant && identity.naturalPerson.publicKey && (
+        {!childModeOnly && !npHidden && !npDormant && identity.naturalPerson.publicKey && (
           <div className="card section">
             <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 8 }}>
               Or, sign in with your real-name identity instead. The site will see that you chose this.
