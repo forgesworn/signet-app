@@ -40,6 +40,11 @@ export interface EnrolmentPlan {
 
 const DEPENDANT_PATH_RE = /^dependant-\d+$/;
 
+/** True when a dependant was derived from the mnemonic tree (`dependant-N`), so the device can hold its keys. Imported and view-only dependants are not. */
+export function isTreeDerivedDependant(dep: Pick<DependantIdentity, 'derivationPath'>): boolean {
+  return DEPENDANT_PATH_RE.test(dep.derivationPath);
+}
+
 function pushOrSkip(
   slots: EnrolmentSlot[],
   skipped: SkippedSlot[],
@@ -54,7 +59,7 @@ function pushOrSkip(
 }
 
 /** True when an extra-persona-shaped slot (owner or dep) came from the mnemonic tree. */
-function isTreeDerivedExtra(derivationName: string): boolean {
+export function isTreeDerivedExtra(derivationName: string): boolean {
   return derivationName !== '';
 }
 
@@ -125,7 +130,7 @@ export function buildEnrolmentPlan(
   }
 
   for (const dep of dependants) {
-    if (!DEPENDANT_PATH_RE.test(dep.derivationPath)) {
+    if (!isTreeDerivedDependant(dep)) {
       skipped.push({ label: dep.displayName, reason: 'imported-dependant' });
       continue;
     }

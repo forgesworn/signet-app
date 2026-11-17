@@ -2,6 +2,7 @@ import type { SignetIdentity, DependantIdentity } from '../types';
 import { isValidHexKey, validateMnemonic } from './signet';
 import { LocalSigningBackend, createLocalBackends } from './signing-backend';
 import { resolveDependantCardSlot } from './carousel-utils';
+import { isTreeDerivedDependant, isTreeDerivedExtra } from './heartwood-enrolment';
 
 /**
  * Resolve a {@link LocalSigningBackend} for one of the guardian's OWN keypairs
@@ -139,7 +140,7 @@ export function approvalGuardianPubkeys(
  * local private key is always signable. A keyless slot is signable only when
  * the guardian's keys live on a paired Heartwood (`bunker`) whose router has
  * not answered "cannot route personas" and the slot carries a valid public key
- * to address — the signing path then goes through the device. Keyless slots
+ * to address and is tree-derived — the signing path then goes through the device. Keyless slots
  * under `local`, no mode, or `paired-child` are never offered; an encrypted
  * (locked, public-only) record has nothing to sign with.
  */
@@ -148,9 +149,17 @@ export function approvalDependantSignable(
   o: { signingMode: string | undefined; routerUnsupported: boolean },
 ): boolean {
   if (dep.encrypted) return false;
-  const slot = resolveDependantCardSlot(dep).slot;
+  const { slotTarget, slot } = resolveDependantCardSlot(dep);
   if (isValidHexKey(slot.privateKey)) return true;
-  return o.signingMode === 'bunker' && !o.routerUnsupported && isValidHexKey(slot.publicKey);
+  if (o.signingMode !== 'bunker' || o.routerUnsupported || !isValidHexKey(slot.publicKey)) return false;
+  // The device only holds tree-derived keys (the same rule the enrolment plan
+  // uses): an imported, view-only or mirror dependant or persona has no key there.
+  if (!isTreeDerivedDependant(dep)) return false;
+  if (slotTarget !== 'natural-person' && slotTarget !== 'persona') {
+    const extra = (dep.extraPersonas ?? []).find(e => e.publicKey === slotTarget);
+    if (!extra || !isTreeDerivedExtra(extra.derivationName)) return false;
+  }
+  return true;
 }
 
 export function isImportedGuardianPersona(identity: SignetIdentity | null, keypair: string | undefined): boolean {

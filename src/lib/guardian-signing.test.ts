@@ -272,6 +272,29 @@ describe('approvalDependantSignable — a device-held dependant is offered only 
     expect(approvalDependantSignable(dep({ persona: { publicKey: 'not-hex', privateKey: '', displayName: 'x' } }), bunker)).toBe(false);
   });
 
+  it('a view-only or imported dependant is never offered through the Heartwood, even in bunker mode', () => {
+    const viewOnly = dep({
+      derivationPath: 'imported-view-abcd1234',
+      primaryKeypair: 'natural-person',
+      naturalPerson: { publicKey: DEP_NP, privateKey: '', displayName: 'Ben' },
+      persona: { publicKey: '', privateKey: '', displayName: '' },
+    });
+    expect(approvalDependantSignable(viewOnly, bunker)).toBe(false);
+    expect(approvalDependantSignable(dep({ derivationPath: 'imported-abcd1234' }), bunker)).toBe(false);
+  });
+
+  it('a tree-derived dependant (dependant-N) keyless in bunker mode is offered', () => {
+    expect(approvalDependantSignable(dep({ derivationPath: 'dependant-12' }), bunker)).toBe(true);
+  });
+
+  it('an imported or mirror extra persona on a tree-derived dependant is not offered when it is the acting slot', () => {
+    const extra = (derivationName: string, imported?: boolean) =>
+      [{ publicKey: DEP_EXTRA, privateKey: '', displayName: 'Extra', derivationName, imported }] as never;
+    expect(approvalDependantSignable(dep({ primaryKeypair: DEP_EXTRA, extraPersonas: extra('') }), bunker)).toBe(false);
+    expect(approvalDependantSignable(dep({ primaryKeypair: DEP_EXTRA, extraPersonas: extra('', true) }), bunker)).toBe(false);
+    expect(approvalDependantSignable(dep({ primaryKeypair: DEP_EXTRA, extraPersonas: extra('dependant-0-persona-1') }), bunker)).toBe(true);
+  });
+
   it('follows the ACTING slot: an extra persona decides, not the keyed persona', () => {
     const keyedPersona = { publicKey: DEP_P, privateKey: KEY, displayName: 'BenGamer' };
     const extra = (privateKey: string, publicKey = DEP_EXTRA) => [{ publicKey, privateKey, displayName: 'Extra' }] as never;
