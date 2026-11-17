@@ -77,4 +77,18 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     const start = idx('<GetVerified');
     expect(app.slice(start, app.indexOf('/>', start + 400))).toContain("skipBackup={childModeNow !== 'off'}");
   });
+
+  it('app permission reads saved child mode too, not only the live carousel flag', () => {
+    expect(app).toContain('guardianActingAsChild: signInChildMode,');
+    expect(app).not.toContain('guardianActingAsChild: carousel.childMode');
+    expect(app).toContain('childBunkerPersonasCsv, signInChildMode]);');
+  });
+
+  it('the contact-invite router waits for child mode and is declared after it (no TDZ)', () => {
+    const effect = idx('if (nip55ChildMode !== \'off\') return;');
+    expect(effect).toBeGreaterThan(idx('const nip55ChildMode = childModeState('));
+    expect(app).toContain("navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');");
+    expect(app.split("navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');").length).toBe(2);
+    expect(app).toContain('pendingContactInvite, activeDependantId, nip55ChildMode]);');
+  });
 });

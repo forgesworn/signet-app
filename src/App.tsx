@@ -2947,12 +2947,9 @@ function AppContent() {
     sendPageOpenRef.current = false;
     setPendingContactInvite(undefined); setPendingInviteSender(undefined);
   }, [page]);
-  useEffect(() => {
-    if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
-    // D6: a paired-child install asks the guardian instead of connecting.
-    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
-  }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId]);
+  // The effect that opens the invite page lives below `nip55ChildMode`: it also
+  // waits for child mode, which is declared further down (a dependency read here
+  // would be in its temporal dead zone).
 
   // C1: `useContactsV2`'s own mount-time `reload()` and the cold
   // `useContactsV2Import` above are two independent async effects racing
@@ -4366,6 +4363,20 @@ function AppContent() {
   const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
   // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
   const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
+
+  // A contact invite (scanned or linked) waits while the phone is in child mode,
+  // live or only saved on a locked cold start (the restore runs after the unlock,
+  // so `activeDependantId` is still null then and the invite would open for the
+  // guardian's lists). It stays pending and opens after the PIN exit. This is
+  // declared here, below `nip55ChildMode`, rather than beside the invite state:
+  // a dependency read up there would be a TDZ error.
+  useEffect(() => {
+    if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
+    if (nip55ChildMode !== 'off') return;
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    // D6: a paired-child install asks the guardian instead of connecting.
+    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
+  }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId, nip55ChildMode]);
 
   // NIP-55: requests from other apps on this phone (Amethyst, KithMoot,
   // anything Amber-shaped), served by the same owner-persona backends the
@@ -10394,9 +10405,9 @@ function AppContent() {
       ].filter(Boolean),
       dependantPersonas: dependants.flatMap(dependantPersonaPubkeys),
       childPersonas: childBunkerPersonasCsv ? childBunkerPersonasCsv.split(',') : [],
-      guardianActingAsChild: carousel.childMode,
+      guardianActingAsChild: signInChildMode,
     });
-  }, [pendingAppPermissionRequest, identity, preferences.signingMode, childDirect, npActive, dependants, childBunkerPersonasCsv, carousel.childMode]);
+  }, [pendingAppPermissionRequest, identity, preferences.signingMode, childDirect, npActive, dependants, childBunkerPersonasCsv, signInChildMode]);
 
   /** The display name of the key the permission is for. */
   const appPermissionPersonaName = useMemo(() => {
