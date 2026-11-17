@@ -180,6 +180,7 @@ import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
 import { childModePageDecision } from './lib/child-mode-guardian-pages';
+import { companionGrantPersonas } from './lib/companion-grant-personas';
 import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
@@ -14688,16 +14689,7 @@ function AppContent() {
   // native signet-grant:// scheme (appUrlOpen) — see Task 12.
   if (page === 'approve-companion-grant' && pendingPairingRequest && identity) {
     const bunkerMode = !identity.mnemonic;
-    const personas: Array<{ pubkey: string; label: string }> = [
-      { pubkey: identity.naturalPerson.publicKey, label: identity.naturalPerson.displayName || 'Natural Person' },
-      ...(identity.persona.publicKey
-        ? [{ pubkey: identity.persona.publicKey, label: identity.persona.displayName || 'Persona' }]
-        : []),
-      // Skip hidden extras — same soft-delete semantics as ApproveConnect/ApproveAuth.
-      ...(identity.extraPersonas ?? [])
-        .filter(ep => !ep.hidden)
-        .map(ep => ({ pubkey: ep.publicKey, label: ep.displayName || 'Persona' })),
-    ];
+    const personas = companionGrantPersonas(identity);
     return (
       <>
         <Layout title="Connect companion app" showBack onBack={handleDenyCompanionGrant}>

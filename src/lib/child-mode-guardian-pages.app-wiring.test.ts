@@ -91,4 +91,9 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app.split("navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');").length).toBe(2);
     expect(app).toContain('pendingContactInvite, activeDependantId, nip55ChildMode]);');
   });
+
+  it('the companion grant lists personas through the helper that skips a dormant real identity', () => {
+    expect(app).toContain('const personas = companionGrantPersonas(identity);');
+    expect(app).not.toContain("label: identity.naturalPerson.displayName || 'Natural Person'");
+  });
 });
