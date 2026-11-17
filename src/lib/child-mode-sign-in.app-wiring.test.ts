@@ -146,3 +146,15 @@ describe('a sign-in as a dependant hands no bunker', () => {
     expect(count("remoteBunkerUri = childDirect || selection.source === 'dependant' ? undefined : await resolveBunkerHandoffUri(")).toBe(2);
   });
 });
+
+describe('a saved child mode that is gone by start-up is dropped', () => {
+  it('the no-session restore branch clears savedChildMode', () => {
+    expect(app).toContain(`      if (!session) {
+        childModeRestoredRef.current = true;
+        // No saved session any more (cleared in another tab or instance): drop what the
+        // start-up read held, so the banner, hidden Bunker tab and child-only sign-ins lift.
+        setSavedChildMode(null);
+        return;
+      }`);
+  });
+});

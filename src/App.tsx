@@ -10800,6 +10800,9 @@ function AppContent() {
       if (childModeRestoredRef.current) return;
       if (!session) {
         childModeRestoredRef.current = true;
+        // No saved session any more (cleared in another tab or instance): drop what the
+        // start-up read held, so the banner, hidden Bunker tab and child-only sign-ins lift.
+        setSavedChildMode(null);
         return;
       }
       const dep = dependants.find(d => d.id === session.activeDependantId);
