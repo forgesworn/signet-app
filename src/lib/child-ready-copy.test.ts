@@ -20,7 +20,7 @@ describe('CHILD_READY_COPY', () => {
     expect(COPY.fullBody('Sky')).toBe('It will ask for a press each time Sky uses this one.');
     expect(COPY.paused('Sky')).toBe('Paused. Readiness will be checked when Sky is unpaused.');
     expect(COPY.unreachableHeading).toBe('Can\'t reach your family Heartwood');
-    expect(COPY.unreachableBody('Alex')).toBe('If this keeps happening, ask Alex to check this phone\'s pairing.');
+    expect(COPY.unreachableBody('Alex')).toBe('It may be switched off or offline. If this keeps happening, tell Alex.');
   });
 
   it('never says Ready, a press count or Finish now in the unknown, full or paused lines', () => {

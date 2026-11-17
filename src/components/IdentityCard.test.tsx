@@ -452,7 +452,7 @@ describe('IdentityCard — who signs for a paired child', () => {
   it('still connecting after a minute: says the Heartwood cannot be reached and whom to ask', () => {
     card('heartwood-unreachable');
     expect(screen.getByText('Can\'t reach your family Heartwood')).toBeTruthy();
-    expect(screen.getByText('If this keeps happening, ask Mum to check this phone\'s pairing.')).toBeTruthy();
+    expect(screen.getByText('It may be switched off or offline. If this keeps happening, tell Mum.')).toBeTruthy();
     expect(screen.queryByText('Connecting to your family Heartwood…')).toBeNull();
     expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
   });

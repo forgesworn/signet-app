@@ -34,9 +34,13 @@ export const CHILD_READY_COPY = {
   fullBody: (name: string) => `It will ask for a press each time ${name} uses this one.`,
   /** A paused child's slot refuses everything, so nothing is asked of the Heartwood. */
   paused: (name: string) => `Paused. Readiness will be checked when ${name} is unpaused.`,
-  /** The child's card after a minute without a connection to the Heartwood. */
+  /**
+   * The child's card after a minute without a connection to the Heartwood.
+   * The usual cause is the Heartwood itself being off or offline (device run
+   * 2026-11-17, F14), so say that before sending anyone to the pairing.
+   */
   unreachableHeading: 'Can\'t reach your family Heartwood',
-  unreachableBody: (guardianName: string) => `If this keeps happening, ask ${guardianName} to check this phone's pairing.`,
+  unreachableBody: (guardianName: string) => `It may be switched off or offline. If this keeps happening, tell ${guardianName}.`,
   /** Checklist row states. */
   state: {
     waiting: 'Waiting for a press',
