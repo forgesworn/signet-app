@@ -60,6 +60,8 @@ interface CarouselProps {
    * has a way out.
    */
   childModeName?: string;
+  /** Child mode is only SAVED (locked cold start), not live: show the banner without Exit. */
+  childModeSaved?: boolean;
   /**
    * Add a persona. Caller does the freshAuth + IDB write. Throws on
    * failure so AddCard can surface the error inline.
@@ -419,17 +421,21 @@ interface IncomingCard {
 
 /**
  * "Viewing as: <child> / Exit (PIN)". Shown whenever child mode is on, even
- * without the child's full record, so the PIN exit is always reachable.
+ * without the child's full record, so the PIN exit is always reachable. With no
+ * `onExit` (child mode only saved, still locked) there is no button: the PIN
+ * exit needs the live, unlocked child mode, which unlocking restores.
  */
-export function ChildModeBanner({ name, blur, onExit }: { name: string; blur: boolean; onExit: () => void }) {
+export function ChildModeBanner({ name, blur, onExit }: { name: string; blur: boolean; onExit?: () => void }) {
   return (
     <div className="child-banner">
       <span>Viewing as:{' '}
         <span style={blur ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{name || 'a child'}</span>
       </span>
-      <button className="child-banner-exit" onClick={onExit}>
-        Exit (PIN)
-      </button>
+      {onExit && (
+        <button className="child-banner-exit" onClick={onExit}>
+          Exit (PIN)
+        </button>
+      )}
     </div>
   );
 }
@@ -867,11 +873,11 @@ export function Carousel(props: CarouselProps) {
         />
       )}
 
-      {props.childMode && (
+      {(props.childMode || props.childModeSaved) && (
         <ChildModeBanner
           name={props.childDependant?.displayName || props.childModeName || ''}
           blur={!!props.blurIdentityNames}
-          onExit={props.onExitChildMode}
+          onExit={props.childMode ? props.onExitChildMode : undefined}
         />
       )}
 

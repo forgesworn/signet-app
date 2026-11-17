@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Child mode: after a restart the "Viewing as" banner shows while My Signet is locked, and the Bunker tab stays hidden, instead of looking like your own phone
 - Sign in with Signet: a child whose keys are on your Heartwood can now sign in with their own persona, signed through the Heartwood, instead of showing "No matching identity"
 - Sign in with Signet and Nostr Connect: "Straight to my Heartwood" now shows greyed out with the reason when your Heartwood can't take it yet, instead of being hidden
 

@@ -15638,6 +15638,7 @@ function AppContent() {
         childMode={carousel.childMode}
         childDependant={carousel.childDependant}
         childModeName={signInChildDependant?.displayName}
+        childModeSaved={!carousel.childMode && !!savedChildMode}
         onAddPersona={async (displayName) => {
           // Fresh-auth gate so a child who's shoulder-surfed the PIN can't
           // mint new personas on the guardian's identity. Same pattern as
@@ -15928,7 +15929,9 @@ function AppContent() {
     <>
       <AppShell
         page={page}
-        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child'}
+        // Locked cold start: child mode is only saved, not live (no activeDependant yet).
+        // Still a hand-the-phone-to-a-child state, so the Bunker tab stays hidden.
+        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}
         childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
         bunkerTint={bunkerTint({
