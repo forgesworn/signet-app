@@ -154,8 +154,10 @@ describe('guardian cutover', () => {
   it('propagates closure through the ordinary profiles vault and never restores stale dependant rows', async () => {
     const { guardian, dependant, operations, closure } = fixture();
     await saveIdentityEncrypted(guardian, KEY); await saveDependant(dependant, KEY); await saveContactOperationsV2(operations, KEY);
+    const closed: string[] = [];
     const adapter = profilesVaultAdapter({ identityId: guardian.id, ownerPubkey: guardian.naturalPerson.publicKey,
-      encryptionKey: KEY, mnemonic: guardian.mnemonic, deviceHeldKeys: false, isCurrent: () => true });
+      encryptionKey: KEY, mnemonic: guardian.mnemonic, deviceHeldKeys: false, isCurrent: () => true,
+      onDependantClosed: id => closed.push(id) });
     const stale = await adapter.snapshot();
     await closeIndependenceSource({ closure, key: KEY, isCurrent: () => true });
     const completed = await adapter.snapshot();
@@ -166,7 +168,11 @@ describe('guardian cutover', () => {
     await saveIdentityEncrypted(guardian, KEY); await saveDependant(dependant, KEY); await saveContactOperationsV2(operations, KEY);
     await adapter.merge(completed, NOW);
     await adapter.merge(stale, NOW - 1);
+    await adapter.merge(completed, NOW + 1);
     expect(await getDependants(guardian.naturalPerson.publicKey, KEY)).toEqual([]);
+    // The app ends the closed dependant as a scope for the session
+    // (useAppNavigation): once, when the closure removed it, not on every merge.
+    expect(closed).toEqual([closure.dependantId]);
     expect(await listContactOperationsV2(closure.directoryId, KEY)).toEqual([]);
     expect((await listIndependenceArchives(guardian.naturalPerson.publicKey, KEY))[0].contacts?.[0].displayName).toBe('Alex');
   }, 30_000);

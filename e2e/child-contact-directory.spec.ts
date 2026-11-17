@@ -26,6 +26,10 @@ test('delivers a scoped read-only directory to a paired child, withdraws blocked
   await expect(page.getByRole('heading', { name: 'Shared Friend added' })).toBeVisible({ timeout: 20000 });
   await page.getByRole('button', { name: 'Done', exact: true }).click();
 
+  // Done goes back past Robin's page, which gives the guardian their own scope
+  // back; open Robin again before reaching Robin's pairing page.
+  await navigateViaHarness(page, 'family-list');
+  await page.getByRole('button', { name: /Robin/ }).click();
   await navigateViaHarness(page, 'pair-dependant-device');
   await page.getByRole('button', { name: 'Open Bunker settings' }).click();
   await page.getByRole('button', { name: 'Turn the Bunker on', exact: true }).click();
