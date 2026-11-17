@@ -51,6 +51,7 @@ export const APP_PERMISSION_COPY = {
   guardianUnreachable: 'Couldn\'t reach your guardian. Try again.',
   /** I1: the guardian allowed it, but their phone could not update the Heartwood. */
   deviceUnreachable: 'Your guardian said yes, but their phone couldn\'t reach the Heartwood. Try again.',
+  appLocked: 'My Signet locked before your guardian answered. Unlock and try again.',
   invalidLink: 'That app permission link was not valid, so nothing was asked.',
   /** M4: a second link while one request is open; the second app is sent nothing. */
   anotherOpen: 'Another app\'s request is already open.',

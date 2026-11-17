@@ -149,6 +149,11 @@ export interface UseChildGateOpts {
   /** The rail relay(s) asks go out on and verdicts come back on. */
   relays: string[];
   unpaired: boolean;
+  /**
+   * The app is locked. Locking clears the paired record, so a request it cuts
+   * short ends as `locked`, not `unpaired`: the phone is still paired.
+   */
+  locked?: boolean;
   onActivity(e: ChildActivityEntry): void;
   transport?: ChildGateTransport;
   /** Unix ms clock (test seam). */
@@ -228,8 +233,11 @@ function refusal(v: ChildGateVerdict): ChildGateError {
 export function useChildGate(opts: UseChildGateOpts): ChildGate {
   const direct = opts.record?.mode === 'heartwood-direct' ? opts.record : null;
   const recordKey = direct ? `${direct.id}:${direct.clientKeypair.publicKey}` : '';
-  const live = useRef({ direct, rules: opts.rules, relays: opts.relays, unpaired: opts.unpaired, recordKey });
-  live.current = { direct, rules: opts.rules, relays: opts.relays, unpaired: opts.unpaired, recordKey };
+  const locked = !!opts.locked;
+  const live = useRef({ direct, rules: opts.rules, relays: opts.relays, unpaired: opts.unpaired, recordKey, locked });
+  live.current = { direct, rules: opts.rules, relays: opts.relays, unpaired: opts.unpaired, recordKey, locked };
+  /** Why a request lost its pairing: a real unpair wins; otherwise a lock says so. */
+  const lostPairing = useCallback((): ChildGateError => (!live.current.unpaired && live.current.locked ? 'locked' : 'unpaired'), []);
   const onActivityRef = useRef(opts.onActivity);
   onActivityRef.current = opts.onActivity;
   const transportRef = useRef(opts.transport ?? defaultTransport);
@@ -255,11 +263,11 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   // Review Focus 5: unpairing (or a different pairing) rejects every held ask.
   useEffect(() => {
     if (!opts.unpaired && recordKey) return;
-    for (const h of [...held.current.values()]) h.settle({ ok: false, error: 'unpaired' });
-  }, [opts.unpaired, recordKey]);
+    for (const h of [...held.current.values()]) h.settle({ ok: false, error: lostPairing() });
+  }, [opts.unpaired, recordKey, lostPairing]);
   useEffect(() => () => {
-    for (const h of [...held.current.values()]) h.settle({ ok: false, error: 'unpaired' });
-  }, [recordKey]);
+    for (const h of [...held.current.values()]) h.settle({ ok: false, error: lostPairing() });
+  }, [recordKey, lostPairing]);
 
   const emit = useCallback((e: Omit<ChildActivityEntry, 'at'>) => {
     try { onActivityRef.current({ ...e, at: Math.floor(nowRef.current() / 1000) }); } catch { /* bookkeeping only */ }
@@ -300,7 +308,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
   const prepare = useCallback((req: ChildGateRequest): Prepared | { ok: false; error: ChildGateError } => {
     const at = live.current;
     const rec = at.direct;
-    if (at.unpaired || !rec || !rec.railPubkey) return { ok: false, error: 'unpaired' };
+    if (at.unpaired || !rec || !rec.railPubkey) return { ok: false, error: lostPairing() };
     const persona = (req.persona ?? '').toLowerCase();
     if (!HEX64.test(persona)) return { ok: false, error: 'denied' };
     const nowMs = nowRef.current();
@@ -318,7 +326,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       return { ok: false, error: 'denied' };
     }
     return { at, rec: { ...rec, railPubkey: rec.railPubkey }, persona, nowMs, base, template, kind: template ? template.kind : null };
-  }, [touchApp]);
+  }, [touchApp, lostPairing]);
 
   /**
    * Probe (beforeStamp), stamp, and the pending activity record. `redecide`
@@ -340,7 +348,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       // rules may have changed meanwhile. An unprompted allow is re-decided
       // on the rules as they are now (a guardian approval stands).
       const now = live.current;
-      if (now.unpaired || now.recordKey !== at.recordKey) return { ok: false, error: 'unpaired' };
+      if (now.unpaired || now.recordKey !== at.recordKey) return { ok: false, error: lostPairing() };
       if (redecide && now.rules !== at.rules) {
         const again = redecide(now.rules);
         if (again.verdict !== 'sign') {
@@ -357,7 +365,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     });
     touchApp(req.appId, persona, req.appLabel);
     return { ok: true, requestCreatedAt, ...(template ? { template } : {}) };
-  }, [emit, touchApp]);
+  }, [emit, touchApp, lostPairing]);
 
   const forwardPassed = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
     if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
@@ -370,7 +378,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       return { ok: false, error: refusal(early) };
     }
     return forwardFor(p, req, 'approved');
-  }, [prepare, forwardFor, emit]);
+  }, [prepare, forwardFor, emit, lostPairing]);
 
   const authorise = useCallback(async (req: ChildGateRequest): Promise<ChildGateOutcome> => {
     if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
@@ -427,7 +435,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
     let ev: NostrEvent;
     try { ev = await buildAskEvent(ask, rec.clientKeypair.privateKey, rec.railPubkey); }
     catch { emit({ ...base, kind, outcome: 'denied', target }); return { ok: false, error: 'unsent' }; }
-    if (live.current.recordKey !== at.recordKey || live.current.unpaired) return { ok: false, error: 'unpaired' };
+    if (live.current.recordKey !== at.recordKey || live.current.unpaired) return { ok: false, error: lostPairing() };
     if (held.current.size >= CHILD_GATE_MAX_HELD) return { ok: false, error: 'busy' };
     if (req.abort?.aborted) return { ok: false, error: 'withdrawn' };
 
@@ -483,7 +491,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
         (reply) => {
           void openVerdictEvent(reply, clientPriv, { railPubkey: railPub, id }).then((v) => {
             if (!v || done) return;
-            if (live.current.unpaired || live.current.recordKey !== at.recordKey) { settle({ ok: false, error: 'unpaired' }); return; }
+            if (live.current.unpaired || live.current.recordKey !== at.recordKey) { settle({ ok: false, error: lostPairing() }); return; }
             if (v.verdict === 'deny') {
               emit({ ...base, kind, outcome: 'denied', target });
               answerAsk(id, 'denied');
@@ -509,7 +517,7 @@ export function useChildGate(opts: UseChildGateOpts): ChildGate {
       const unsent = () => { emit({ ...base, kind, outcome: 'denied', target }); answerAsk(id, 'denied'); settle({ ok: false, error: 'unsent' }); };
       void transportRef.current.publish(ev, relays).then((r) => { if (!r.ok) unsent(); }).catch(unsent);
     });
-  }, [prepare, forwardFor, emit, askTimeoutMs, noteAsk, answerAsk]);
+  }, [prepare, forwardFor, emit, askTimeoutMs, noteAsk, answerAsk, lostPairing]);
 
   const noteConnectedApp = useCallback((app: ConnectedChildApp) => {
     setConnectedApps(prev => {

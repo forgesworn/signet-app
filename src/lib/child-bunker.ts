@@ -40,11 +40,13 @@ export type ChildGateOutcome =
  * `unsent` (the ask never reached the rail relay), `rate-limited` (this
  * phone's 10/min limit), `device-unreachable` (the guardian allowed it but
  * their phone could not update the Heartwood). `withdrawn`: the caller
- * cancelled the request (its `abort` signal, M2). On the NIP-46 wire they all
- * still read `denied` (`childGateWireError`).
+ * cancelled the request (its `abort` signal, M2). `locked`: the app locked
+ * while the request waited (locking clears the paired record, which is not an
+ * unpair). On the NIP-46 wire they all still read `denied`
+ * (`childGateWireError`).
  */
 export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'busy' | 'asked'
-  | 'unsent' | 'rate-limited' | 'device-unreachable' | 'withdrawn';
+  | 'unsent' | 'rate-limited' | 'device-unreachable' | 'withdrawn' | 'locked';
 
 /**
  * The error string a third-party NIP-46 client is sent for a refused gate
@@ -52,7 +54,7 @@ export type ChildGateError = 'denied' | 'blocked' | 'expired' | 'unpaired' | 'bu
  * same `denied` it always did.
  */
 export function childGateWireError(code: ChildGateError): string {
-  return code === 'unsent' || code === 'rate-limited' || code === 'device-unreachable' || code === 'withdrawn' ? 'denied' : code;
+  return code === 'unsent' || code === 'rate-limited' || code === 'device-unreachable' || code === 'withdrawn' || code === 'locked' ? 'denied' : code;
 }
 
 export type ChildGateMethod = 'sign_event' | 'nip44_encrypt' | 'nip44_decrypt';
@@ -299,6 +301,7 @@ export class ChildGateRefusedError extends Error {
       : code === 'rate-limited' ? 'Too many requests just now. Wait a moment, then try again.'
       : code === 'device-unreachable' ? 'Your guardian said yes, but their Heartwood couldn\'t be reached. Try again.'
       : code === 'withdrawn' ? 'You cancelled this request.'
+      : code === 'locked' ? 'My Signet locked before your guardian answered. Unlock and try again.'
       : 'Your guardian has not allowed this.');
     this.name = 'ChildGateRefusedError';
   }

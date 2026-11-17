@@ -406,3 +406,59 @@ describe('nextRequestCreatedAt', () => {
   });
 });
 
+
+describe('the app locking while an ask is held (device run 2026-11-17, F15)', () => {
+  // Locking clears the paired record, which used to end every held ask as
+  // `unpaired`: the child read "This phone is no longer paired." while it
+  // was still paired.
+  function lockable() {
+    const tr = fakeTransport();
+    const r = rules();
+    const relays = ['wss://rail.example'];
+    const hook = renderHook((p: { record: PairedChildRecord | null; locked: boolean; unpaired: boolean }) => useChildGate({
+      record: p.record, rules: r, relays, unpaired: p.unpaired, locked: p.locked,
+      onActivity: () => {}, transport: tr.t, now: () => NOW,
+    }), { initialProps: { record: record() as PairedChildRecord | null, locked: false, unpaired: false } });
+    return { ...tr, hook };
+  }
+  async function holdOne(s: ReturnType<typeof lockable>) {
+    let p!: ReturnType<typeof s.hook.result.current.authorise>;
+    act(() => { p = s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() }); });
+    await waitFor(() => expect(s.published).toHaveLength(1));
+    return { p }; // wrapped: an async function returning the promise would wait for it
+  }
+
+  it('a lock (key gone, then the record) ends the held ask as locked, not unpaired', async () => {
+    const s = lockable();
+    const { p } = await holdOne(s);
+    s.hook.rerender({ record: record(), locked: true, unpaired: false });
+    s.hook.rerender({ record: null, locked: true, unpaired: false });
+    expect(await p).toEqual({ ok: false, error: 'locked' });
+    expect(s.subs.every(x => x.closed)).toBe(true);
+  });
+
+  it('a record that goes away while unlocked is still unpaired', async () => {
+    const s = lockable();
+    const { p } = await holdOne(s);
+    s.hook.rerender({ record: null, locked: false, unpaired: false });
+    expect(await p).toEqual({ ok: false, error: 'unpaired' });
+  });
+
+  it('an unpair notice wins over a lock', async () => {
+    const s = lockable();
+    const { p } = await holdOne(s);
+    s.hook.rerender({ record: null, locked: true, unpaired: true });
+    expect(await p).toEqual({ ok: false, error: 'unpaired' });
+  });
+
+  it('a request made while locked is refused as locked', async () => {
+    const s = lockable();
+    s.hook.rerender({ record: null, locked: true, unpaired: false });
+    let out: Awaited<ReturnType<typeof s.hook.result.current.authorise>> | undefined;
+    await act(async () => {
+      out = await s.hook.result.current.authorise({ persona: PERSONA, appId: APP, appLabel: 'Blocks', method: 'sign_event', template: note() });
+    });
+    expect(out).toEqual({ ok: false, error: 'locked' });
+    expect(s.published).toHaveLength(0);
+  });
+});

@@ -2309,6 +2309,9 @@ function AppContent() {
     rules: childDeviceLink.rules,
     relays: pairedChildRecord?.railRelay ? [pairedChildRecord.railRelay] : [],
     unpaired: childDeviceLink.unpaired,
+    // Locking clears the paired record: a request it cuts short says the app
+    // locked, not that the phone is unpaired (device run 2026-11-17, F15).
+    locked: !encryptionKey,
     onActivity: (e) => childActivitySinkRef.current(e),
     // A deferred persona ("Later") is approved on the Heartwood the first time
     // a request is routed as it. The gate decides first (A39): only a request
