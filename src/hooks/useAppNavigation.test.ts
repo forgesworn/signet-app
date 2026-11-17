@@ -340,3 +340,43 @@ describe('useAppNavigation: the only way to change the page or the scope', () =>
     ]);
   });
 });
+
+describe('useAppNavigation: pairing a phone from Add Dependant', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '');
+  });
+
+  // Add Dependant's "Pair their phone now": the form's entry becomes home, the pair page opens above it.
+  const pairFromAddDependant = (result: ReturnType<typeof setup>['result']) => {
+    act(() => result.current.navigateTo('add-dependant'));
+    act(() => {
+      result.current.navigateReplace('home');
+      result.current.openDependantPage('pair-dependant-device', 'dep-b');
+    });
+  };
+
+  it('opens the pair page for the new dependant, over home', () => {
+    const { result } = setup();
+    pairFromAddDependant(result);
+    expect(result.current.page).toBe('pair-dependant-device');
+    expect(result.current.activeDependantId).toBe('dep-b');
+    expect(window.history.state).toMatchObject({ page: 'pair-dependant-device', dependantId: 'dep-b' });
+  });
+
+  it('back from the pair page lands on home under the owner, never the Add Dependant form', async () => {
+    const { result } = setup();
+    pairFromAddDependant(result);
+    await back(result, 'home');
+    expect(result.current.activeDependantId).toBeNull();
+    expect(result.current.tabs).toContain('bunker');
+    expect(window.history.state).toMatchObject({ page: 'home' });
+  });
+
+  it("the pair page opened from the dependant's settings still goes back to those settings", async () => {
+    const { result } = setup();
+    act(() => result.current.openDependantPage('settings', 'dep-b'));
+    act(() => result.current.navigateTo('pair-dependant-device'));
+    await back(result, 'settings');
+    expect(result.current.activeDependantId).toBe('dep-b');
+  });
+});

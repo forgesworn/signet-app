@@ -14746,7 +14746,15 @@ function AppContent() {
             return dep.id;
           }}
           onSwitchToDependant={(depId) => { chooseDependantScope(depId); navigateReplace('home'); }}
-          onPairDevice={(depId) => openDependantPage('pair-dependant-device', depId)}
+          onPairDevice={(depId) => {
+            // Leaving the pair page (Done, back, hardware back) must not land on a blank
+            // Add Dependant form: this entry becomes home, with the carousel on the new
+            // dependant's card, and the pair page opens above it.
+            const row = identity ? findRowForDependant(identity, dependants, depId, botInventory, childCarouselAllowed) : null;
+            if (row !== null) carousel.commitPosition(row, 0);
+            navigateReplace('home');
+            openDependantPage('pair-dependant-device', depId);
+          }}
           onTurnOnBunker={() => { setPendingSecurityFocus('bunker'); navigateTo('settings-signing'); }}
           bunkerServerEnabled={bunkerServerEnabled}
           pairsDirect={(depId) => { const d = dependants.find(x => x.id === depId); return !!identity && !!d && usesChildDirectPairing(d, preferences.signingMode); }}
