@@ -178,6 +178,8 @@ import { Layout } from './components/Layout';
 import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
+import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
+import { childModePageDecision } from './lib/child-mode-guardian-pages';
 import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
@@ -6528,6 +6530,10 @@ function AppContent() {
   const childModeOffer = childModeApprovalOffer({ childMode: signInChildMode, dependant: signInChildDependant });
   const signInChildModeRef = useRef({ childMode: signInChildMode, dependant: signInChildDependant });
   signInChildModeRef.current = { childMode: signInChildMode, dependant: signInChildDependant };
+  // Pages that act as the guardian are refused in child mode, with no PIN.
+  // `nip55ChildMode` is the three-way state: unknown until saved child mode is read.
+  const childModeNow = nip55ChildMode;
+  const childModePage = childModePageDecision({ page, childMode: childModeNow });
 
   const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
     if (pendingAuthRequestRef.current !== request) return;
@@ -6577,6 +6583,7 @@ function AppContent() {
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
     if (approveAuthHeld) return; // refused in child mode, sign-in or connect: no PIN
+    if (childModePage !== 'allow') return; // a guardian-only page in child mode: refused (or held), no PIN
     const pagePurpose = PAGE_AUTH_CONTEXTS[page];
     // Capture the request label when entering/re-unlocking its review page.
     // Labels alone must not re-run this effect and contend with an open prompt.
@@ -6598,7 +6605,7 @@ function AppContent() {
         if (!key && page !== 'contacts-grant-code' && page !== 'contacts-grant-approve') navigateReplace('home'); // user cancelled or auth not set up — go back
       });
     }
-  }, [page, encryptionKey, requestAuth, approveAuthHeld]);
+  }, [page, encryptionKey, requestAuth, approveAuthHeld, childModePage]);
 
   // A picker choice belongs to one request; drop it once that request is gone.
   useEffect(() => {
@@ -6660,6 +6667,13 @@ function AppContent() {
   useEffect(() => {
     if (!pendingAddDependantRequest) return;
     if (page === 'approve-add-dependant' && addDependantRequestAllowed(preferences.signingMode)) return; // already there
+    // Child mode: this mints under the guardian, so it is never asked for a PIN.
+    // Unknown waits (the effect re-runs once it is read); on, the refusal shows.
+    if (childModeNow === 'unknown') return;
+    if (childModeNow === 'on') {
+      if (page !== 'approve-add-dependant') navigateReplace('approve-add-dependant');
+      return;
+    }
     if (!encryptionKey) {
       // No identity / not unlocked yet. If auth is set up, prompt the user.
       // Otherwise wait — the !identity onboarding branch will eventually
@@ -6685,7 +6699,7 @@ function AppContent() {
       return;
     }
     navigateReplace('approve-add-dependant');
-  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode]);
+  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode, childModeNow]);
 
   // After unlock, show a pending app-permission request. Mirrors the
   // add-dependant effect, plus one wait: a child's phone and an adult's take
@@ -10745,6 +10759,19 @@ function AppContent() {
     else navigateReplace('home');
   }, [pendingAddDependantRequest, navigateReplace]);
 
+  // Decline on the child-mode refusal of a guardian-only page. Signs and
+  // publishes nothing: it only clears the request and leaves the page. Home,
+  // never `companion-apps` (the normal deny's target), which is a guardian page.
+  const declineChildModeGuardianPage = useCallback(() => {
+    if (page === 'approve-add-dependant') {
+      handleDenyAddDependant(); // only redirects to the consumer's error callback
+      return;
+    }
+    if (page === 'approve-companion-grant') setPendingPairingRequest(null);
+    else if (page === 'contacts-grant-approve') setPendingContactsGrantV2(null);
+    navigateReplace('home');
+  }, [page, handleDenyAddDependant, navigateReplace]);
+
   // Carousel helpers — child mode, QR routing, and inline approval from current row
 
   const handleEnterChildMode = useCallback((dependantId: string) => {
@@ -12083,6 +12110,22 @@ function AppContent() {
 
   // Authenticated page routing, wrapped by <AppShell> (persistent nav) below.
   const renderPage = (): React.ReactNode => {
+
+  // A guardian-only page in child mode: a refusal with no PIN, even while
+  // locked. Held blank until saved child mode is read, so nothing of the
+  // guardian shows first. Placed before every page branch it covers.
+  if (childModePage !== 'allow') {
+    return (
+      <>
+        <Layout title={childModePage === 'refuse' ? 'Child mode is on' : ''} showBack={childModePage === 'refuse'} onBack={declineChildModeGuardianPage}>
+          {childModePage === 'refuse' && (
+            <ChildModeGuardianRefusal child={signInChildDependant?.displayName ?? ''} onDecline={declineChildModeGuardianPage} />
+          )}
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
 
   if (page === 'venue-entry' && identity && !activeDependant && !npActive) {
     return renderRealIdentityGate(
