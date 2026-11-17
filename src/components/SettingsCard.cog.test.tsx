@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ComponentProps } from 'react';
 import { cleanup, render } from '@testing-library/react';
 import { SettingsCard } from './SettingsCard';
 import type { CarouselRow } from '../types';
@@ -29,18 +30,15 @@ const resolved = {
 } as never;
 
 function renderCard(extra: { childMode: boolean; isPairedChild?: boolean; row?: CarouselRow }) {
-  return render(
-    <SettingsCard
-      {...({
-        resolved,
-        row: extra.row ?? dependantRow,
-        childMode: extra.childMode,
-        isPairedChild: extra.isPairedChild ?? false,
-        onNavigateDeepPage: vi.fn(),
-        dependantsCount: 1,
-      } as never)}
-    />,
-  );
+  const props = {
+    resolved,
+    row: extra.row ?? dependantRow,
+    childMode: extra.childMode,
+    isPairedChild: extra.isPairedChild ?? false,
+    onNavigateDeepPage: vi.fn(),
+    dependantsCount: 1,
+  } as unknown as ComponentProps<typeof SettingsCard>;
+  return render(<SettingsCard {...props} />);
 }
 
 afterEach(cleanup);
