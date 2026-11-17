@@ -51,9 +51,12 @@ export interface IdentityCardProps {
    * served by the device rather than parked on a guardian's phone.
    * 'heartwood-connecting': a phone paired straight to the Heartwood whose
    * connection is not up yet (it still never signs on a guardian's phone);
-   * 'heartwood-unreachable': still not up after a minute.
+   * 'heartwood-unreachable': still not up after a minute;
+   * 'unpaired': the guardian has unpaired this phone.
    */
   childSignerKind?: ChildSignerKind;
+  /** The unpaired notice's "Pair again" button; omitted, the notice has no button. */
+  onPairAgain?: () => void;
   /**
    * Guardian's display name, surfaced in the dormant copy. Falls back
    * to "your guardian" when the status-sync payload didn't include it.
@@ -125,7 +128,7 @@ const CHILD_NOTICE_STYLE: CSSProperties = {
   textAlign: 'center',
 };
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, onPairAgain, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -540,7 +543,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
 
         {readyNotice}
 
-        {childDormant && (
+        {childDormant && childSignerKind !== 'unpaired' && (
           <div
             className="card-dormant-notice"
             style={CHILD_NOTICE_STYLE}
@@ -567,6 +570,24 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
                 </>
               )}
             </div>
+          </div>
+        )}
+
+        {/* The guardian unpaired this phone: one notice at any stage, in place of the dormant one. */}
+        {childSignerKind === 'unpaired' && (
+          <div className="card-dormant-notice" role="status" style={CHILD_NOTICE_STYLE}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>{CHILD_SIDE_COPY.unpaired}</div>
+            <div style={{ opacity: 0.8 }}>{CHILD_SIDE_COPY.unpairedBody}</div>
+            {onPairAgain && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                style={{ marginTop: 8 }}
+                onClick={e => { e.stopPropagation(); onPairAgain(); }}
+              >
+                {CHILD_SIDE_COPY.pairAgain}
+              </button>
+            )}
           </div>
         )}
 

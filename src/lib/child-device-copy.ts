@@ -154,6 +154,7 @@ export const CHILD_SIDE_COPY = {
   },
   /** §9.4: the guardian unpaired this phone (notice or the Heartwood refusing it). */
   unpaired: 'Your guardian has unpaired this phone',
+  unpairedBody: "This phone can't sign in until it's paired again.",
   pairAgain: 'Pair again',
   /** The card on a phone paired straight to the Heartwood while its connection is not up. */
   connectingHeartwood: 'Connecting to your family Heartwood…',

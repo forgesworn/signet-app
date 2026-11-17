@@ -438,7 +438,7 @@ describe('IdentityCard — backdrop control', () => {
 });
 
 describe('IdentityCard — who signs for a paired child', () => {
-  const card = (kind: 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable') =>
+  const card = (kind: 'guardian-phone' | 'heartwood' | 'heartwood-connecting' | 'heartwood-unreachable' | 'unpaired') =>
     render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant childSignerKind={kind} cachedGuardianName="Mum" />);
 
   it('a phone paired straight to the Heartwood whose router is down is connecting, never told to ask the guardian’s phone', () => {
@@ -469,6 +469,33 @@ describe('IdentityCard — who signs for a paired child', () => {
     expect(screen.queryByText('Can\'t reach your family Heartwood')).toBeNull();
     expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
     expect(screen.queryByText('Connecting to your family Heartwood…')).toBeNull();
+  });
+
+  it('dormant + unpaired shows exactly the unpaired notice with Pair again', async () => {
+    const onPairAgain = vi.fn();
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant childSignerKind="unpaired" onPairAgain={onPairAgain} cachedGuardianName="Mum" />);
+    expect(screen.getByText('Your guardian has unpaired this phone')).toBeTruthy();
+    expect(screen.getByText("This phone can't sign in until it's paired again.")).toBeTruthy();
+    expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
+    expect(screen.queryByText('Can\'t reach your family Heartwood')).toBeNull();
+    expect(screen.queryByText('This device is dormant.')).toBeNull();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Pair again' }));
+    expect(onPairAgain).toHaveBeenCalledTimes(1);
+  });
+
+  it('a child on any other stage sees the unpaired notice too', () => {
+    render(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childSignerKind="unpaired" onPairAgain={() => {}} cachedGuardianName="Mum" />);
+    expect(screen.getByText('Your guardian has unpaired this phone')).toBeTruthy();
+    expect(screen.getByText("This phone can't sign in until it's paired again.")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Pair again' })).toBeTruthy();
+    expect(screen.queryByText('Your family Heartwood signs for you.')).toBeNull();
+  });
+
+  it('shows no Pair again button when no handler is given', () => {
+    card('unpaired');
+    expect(screen.getByText('Your guardian has unpaired this phone')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pair again' })).toBeNull();
   });
 
   it('a dependant card on the guardian\'s phone shows the ready notice it is given', () => {

@@ -284,6 +284,21 @@ describe('A45: sign-in on a direct child', () => {
 });
 
 describe('childSignerKind', () => {
+  it('an unpaired, unlocked direct install says unpaired whatever the router, stall or ping say', () => {
+    const base = { signingMode: 'paired-child' as const, direct: true, unlocked: true, unpaired: true };
+    expect(childSignerKind({ ...base, routerUp: true })).toBe('unpaired');
+    expect(childSignerKind({ ...base, routerUp: false })).toBe('unpaired');
+    expect(childSignerKind({ ...base, routerUp: true, lost: true })).toBe('unpaired');
+    expect(childSignerKind({ ...base, routerUp: false, stalled: true })).toBe('unpaired');
+  });
+
+  it('unpaired while locked stays heartwood; a non-direct child or a guardian ignores it', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: false, unpaired: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, unpaired: true })).toBe('guardian-phone');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true, unpaired: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'local', direct: true, routerUp: true, unlocked: true, unpaired: true })).toBe('guardian-phone');
+  });
+
   it('a direct install is the Heartwood whatever the router does: connecting while it is down (unlocked)', () => {
     expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: false, unlocked: true })).toBe('heartwood-connecting');
     expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true })).toBe('heartwood');

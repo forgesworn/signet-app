@@ -74,6 +74,8 @@ interface CarouselProps {
    * through to IdentityCard's dormant notice (family-bunker §11.1.7).
    */
   childSignerKind?: IdentityCardProps['childSignerKind'];
+  /** The unpaired notice's "Pair again" button on a paired-child card. */
+  onPairAgain?: () => void;
   /**
    * Guardian display name the guardian's status-publish included, so
    * the dormant copy reads "Ask [Mum]..." rather than the generic
@@ -308,6 +310,7 @@ function renderCard(
             childMode={props.childMode}
             childDormant={props.childDormant}
             childSignerKind={props.childSignerKind}
+            onPairAgain={props.onPairAgain}
             cachedGuardianName={props.cachedGuardianName}
             pairingStatus={pairingStatus}
             readyNotice={row.type === 'dependant' ? props.readyNoticeFor?.(row.dependant.id) : undefined}

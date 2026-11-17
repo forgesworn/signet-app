@@ -15538,7 +15538,8 @@ function AppContent() {
         addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost })}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost, unpaired: childDeviceLink.unpaired })}
+        onPairAgain={() => navigateTo('paired-child-repair')}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
         readyNoticeFor={isPairedChild ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
