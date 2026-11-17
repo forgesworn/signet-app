@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { AuthRequest } from '../lib/qr-router';
 import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY } from '../lib/heartwood-signin-link';
+import { SIGNER_WAITING_COPY } from '../lib/signer-error-copy';
+import { HEARTWOOD_WAIT_HINT_DELAY_MS } from './HeartwoodWaitHint';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 
 afterEach(cleanup);
@@ -91,5 +93,27 @@ describe('ApprovalOverlay — straight to my Heartwood needs an update', () => {
     cleanup();
     renderOverlay();
     expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
+  });
+});
+
+describe('ApprovalOverlay — Heartwood press hint', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('says to press the Heartwood button after a few seconds of Signing…', () => {
+    vi.useFakeTimers();
+    renderOverlay({ heartwoodSigner: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(screen.getByRole('button', { name: 'Signing…' })).toBeTruthy();
+    expect(screen.queryByText(SIGNER_WAITING_COPY)).toBeNull();
+    act(() => { vi.advanceTimersByTime(HEARTWOOD_WAIT_HINT_DELAY_MS); });
+    expect(screen.getByText(SIGNER_WAITING_COPY)).toBeTruthy();
+  });
+
+  it('stays silent without heartwoodSigner', () => {
+    vi.useFakeTimers();
+    renderOverlay();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    act(() => { vi.advanceTimersByTime(HEARTWOOD_WAIT_HINT_DELAY_MS * 3); });
+    expect(screen.queryByText(SIGNER_WAITING_COPY)).toBeNull();
   });
 });

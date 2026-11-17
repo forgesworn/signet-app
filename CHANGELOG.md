@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- While a sign-in waits on your Heartwood for more than a few seconds, the approval screen now says to press its button if it's showing a card
 - Sign in with Signet from another device: signing in as a child no longer hands the site a connection to My Signet's Nostr Connect server, so it cannot go on signing as them afterwards
 - Adding a child: after pairing their phone, Done (or Back) now returns to their card on the home screen instead of an empty Add Dependant form
 - Child mode: after a restart the "Viewing as" banner shows while My Signet is locked, and the Bunker tab stays hidden, instead of looking like your own phone

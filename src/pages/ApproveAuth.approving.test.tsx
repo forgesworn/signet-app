@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { ApproveAuth } from './ApproveAuth';
 import type { SignetIdentity } from '../types';
 import type { AuthRequest } from '../lib/qr-router';
+import { SIGNER_WAITING_COPY } from '../lib/signer-error-copy';
+import { HEARTWOOD_WAIT_HINT_DELAY_MS } from '../components/HeartwoodWaitHint';
 
 /**
  * The approval screen must always end usable: a failed approval re-enables
@@ -153,5 +155,43 @@ describe('ApproveAuth — approving state always resolves', () => {
     expect(btn.disabled).toBe(true);
     fireEvent.click(btn);
     expect(onApprove).not.toHaveBeenCalled();
+  });
+});
+
+describe('ApproveAuth — Heartwood press hint', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function renderSigner(heartwoodSigner: boolean) {
+    render(
+      <ApproveAuth
+        request={request}
+        hasCredentialForSelection={() => false}
+        identity={identity}
+        canSwitchGuardianPersona={true}
+        consumerHint={null}
+        requireNpConfirmation={true}
+        onApprove={() => new Promise<void>(() => {})}
+        onDeny={vi.fn()}
+        heartwoodSigner={heartwoodSigner}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+  }
+
+  it('tells the user to press the Heartwood button after a few seconds of Signing…', () => {
+    renderSigner(true);
+    expect(screen.getByRole('button', { name: 'Signing…' })).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(HEARTWOOD_WAIT_HINT_DELAY_MS - 1); });
+    expect(screen.queryByText(SIGNER_WAITING_COPY)).toBeNull();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByText(SIGNER_WAITING_COPY)).toBeTruthy();
+  });
+
+  it('never shows the hint when the sign is not on a Heartwood', () => {
+    renderSigner(false);
+    expect(screen.getByRole('button', { name: 'Signing…' })).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(HEARTWOOD_WAIT_HINT_DELAY_MS * 3); });
+    expect(screen.queryByText(SIGNER_WAITING_COPY)).toBeNull();
   });
 });

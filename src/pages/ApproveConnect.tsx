@@ -10,6 +10,7 @@ import { KeypairBadge } from '../components/KeypairBadge';
 import type { AuthSelection } from './ApproveAuth';
 import { buildGuardianKeypairOptions, buildDependantKeypairOptions } from '../lib/auth-selection';
 import { endsConnectRequest, handoffReach, handoffWarning } from '../lib/heartwood-handoff';
+import { HeartwoodWaitHint } from '../components/HeartwoodWaitHint';
 import { SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
 import { CHILD_MODE_SIGN_IN_COPY } from '../lib/child-device-copy';
 
@@ -56,6 +57,8 @@ interface Props {
    * dependant in `dependants`.
    */
   childModeOnly?: boolean;
+  /** Signing goes through a paired Heartwood: after a few seconds of Sending…, say to press its button. */
+  heartwoodSigner?: boolean;
 }
 
 type SignMode = 'heartwood' | 'auto' | 'ask';
@@ -78,6 +81,7 @@ export function ApproveConnect({
   canHandOffToHeartwood,
   heartwoodNeedsUpdate,
   childModeOnly = false,
+  heartwoodSigner = false,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -544,6 +548,7 @@ export function ApproveConnect({
       {status === 'sending' && (
         <div className="section" style={{ textAlign: 'center' }}>
           <p style={{ color: 'var(--text-secondary)' }}>Sending...</p>
+          <HeartwoodWaitHint active={heartwoodSigner} />
         </div>
       )}
 
