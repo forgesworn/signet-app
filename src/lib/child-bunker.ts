@@ -92,14 +92,17 @@ export const CHILD_CONNECT_STALL_MS = 60_000;
  * how the phone was paired) always signs through the family Heartwood: while
  * its router is down it is "connecting", never "ask your guardian's phone",
  * and once it has been down for `CHILD_CONNECT_STALL_MS` while unlocked
- * (`stalled`) it says the Heartwood cannot be reached. A legacy phone-paired
+ * (`stalled`) it says the Heartwood cannot be reached. A connection that was
+ * up and then stopped answering its regular ping (`lost`) says the same.
+ * A legacy phone-paired
  * child keeps the old rule (Heartwood only while a router answered the
  * capabilities probe).
  */
-export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean }): ChildSignerKind {
+export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean; lost?: boolean }): ChildSignerKind {
   if (input.signingMode !== 'paired-child') return 'guardian-phone';
   if (input.direct) {
-    if (input.routerUp || !input.unlocked) return 'heartwood';
+    if (!input.unlocked) return 'heartwood';
+    if (input.routerUp) return input.lost ? 'heartwood-unreachable' : 'heartwood';
     return input.stalled ? 'heartwood-unreachable' : 'heartwood-connecting';
   }
   return input.routerUp ? 'heartwood' : 'guardian-phone';

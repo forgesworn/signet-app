@@ -404,6 +404,7 @@ import { backendsTargetId } from './lib/backends-target';
 import { BunkerBackendRouter, createRouterWithRetry, routedSignerUnavailableMessage, resolveNpBunkerBackend, resolveSlotBunkerBackend, resolveServerTransportBackend } from './lib/bunker-router';
 import { addDependantRequestAllowed, childSiteAppId, buildChildDirectRoutes, childCarouselFilter, childAllowedPersonas, childDirectRelayPreferences, childDirectStubIdentity, childDirectWithheldSlots, childOwnActsBackend, childSignInBackend, escalationsAvailable, gatedSigningBackend, signInBunkerHandoff, isDirectChildInstall, legacyRailIdentity, childSignerKind, type ChildGateOutcome } from './lib/child-bunker';
 import { useChildConnectStall } from './hooks/useChildConnectStall';
+import { useChildHeartwoodHeartbeat, CHILD_HEARTBEAT_TIMEOUT_MS } from './hooks/useChildHeartwoodHeartbeat';
 import { CHILD_READY_COPY } from './lib/child-ready-copy';
 import { ChildTransportKeysUnreadableError, loadOrCreateTransportKeys } from './lib/child-transport-keys';
 import { childConnectRoute, deliverChildNostrConnect } from './lib/child-nostrconnect';
@@ -1529,6 +1530,17 @@ function AppContent() {
   // unlocked without it, that the Heartwood cannot be reached. A lock or the
   // connection coming up starts the minute again.
   const childConnectStalled = useChildConnectStall(childDirect && !!encryptionKey && !bunkerRouter);
+  // Once it is up, the Heartwood is pinged every minute while the app is open
+  // and unlocked; two missed pings in a row and the card says it cannot be
+  // reached (a power loss mid-session otherwise goes unnoticed).
+  const childHeartbeatPing = useMemo(
+    () => (bunkerBackend ? () => bunkerBackend.request('ping', [], CHILD_HEARTBEAT_TIMEOUT_MS) : null),
+    [bunkerBackend],
+  );
+  const childHeartwoodLost = useChildHeartwoodHeartbeat({
+    enabled: childDirect && !!encryptionKey && !!bunkerRouter,
+    ping: childHeartbeatPing,
+  });
   // A26: slots nothing may address on this install (the dependant's dormant
   // real identity on a direct child). Every slot resolver below gets it, so no
   // router route is ever requested for it.
@@ -11788,7 +11800,7 @@ function AppContent() {
   const childReadySummary = childDeviceLink.summary.kind;
   const childReadyVisible = childDirect && !childDeviceLink.unpaired && childDeviceLink.rows.length > 0
     && (childReadySummary === 'owed' || childReadySummary === 'full' || childReadySummary === 'paused'
-      || (childReadySummary === 'ready' && childDeviceLink.readyThisSession));
+      || (childReadySummary === 'ready' && !childHeartwoodLost && childDeviceLink.readyThisSession));
   const childReadyNotice = childReadyVisible ? (
     <ChildReadyNotice
       rows={childDeviceLink.rows}
@@ -15468,7 +15480,7 @@ function AppContent() {
         addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled })}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost })}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
         readyNoticeFor={isPairedChild ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}

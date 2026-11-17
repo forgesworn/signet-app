@@ -299,6 +299,17 @@ describe('childSignerKind', () => {
     expect(CHILD_CONNECT_STALL_MS).toBe(60_000);
   });
 
+  it('a direct install whose up connection stopped answering pings: the Heartwood cannot be reached', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true, lost: true })).toBe('heartwood-unreachable');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: true, lost: false })).toBe('heartwood');
+    // Locked: nothing is shown as lost.
+    expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: false, lost: true })).toBe('heartwood');
+    // A legacy phone-paired child and a guardian are unchanged.
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true, lost: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, lost: true })).toBe('guardian-phone');
+    expect(childSignerKind({ signingMode: 'bunker', direct: true, routerUp: true, unlocked: true, lost: true })).toBe('guardian-phone');
+  });
+
   it('a legacy phone-paired child keeps the old rule; a guardian never gets the child copy', () => {
     expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true })).toBe('guardian-phone');
     expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true })).toBe('heartwood');
