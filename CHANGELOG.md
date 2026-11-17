@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Child mode: a dependant's settings, your security settings and Shamir backup are now refused while the phone is in child mode, and the backup reminder and the Heartwood "approve again" and "Finish now" prompts are hidden. Removing the child from their own settings no longer drops the phone out of child mode
 - Companion apps: connecting an app no longer offers your real identity until you have set it up
 - Child mode: after a restart, an app permission request or a contact invite that arrives before child mode is restored no longer reaches your own identities. The app permission request is refused with no PIN asked for; the contact invite waits for child mode to end
 - Child mode: Get Verified no longer shows your recovery words or marks you backed up while the phone is in child mode
