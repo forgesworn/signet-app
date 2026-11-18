@@ -141,6 +141,17 @@ export function childModePageDecision(input: ChildModePageDecisionInput): ChildM
   return input.activeDependantId === null || input.activeDependantId === input.stableChildId ? 'allow' : 'refuse';
 }
 
+/**
+ * After the guardian's PIN turns child mode off: if the page on screen was refused,
+ * whatever the child staged on it is cleared and the guardian lands home. Otherwise
+ * the same page becomes the guardian's own, with the child's request one tap from Approve.
+ */
+export function leaveRefusedPageOnExit(decision: ChildModePageDecision, actions: { clear: () => void; goHome: () => void }): void {
+  if (decision !== 'refuse') return;
+  actions.clear();
+  actions.goHome();
+}
+
 const NAME_MAX = 64;
 
 export function childModeGuardianRefusalCopy(displayName: string): { title: string; body: string } {

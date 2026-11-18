@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import {
   CHILD_MODE_PAGE_RULES,
   childModePageDecision,
   childModeGuardianRefusalCopy,
+  leaveRefusedPageOnExit,
   type ChildModePageDecisionInput,
 } from './child-mode-page-allowlist';
 
@@ -149,5 +150,28 @@ describe('childModeGuardianRefusalCopy', () => {
     expect(copy.body).toContain('not Runkid.');
     const long = childModeGuardianRefusalCopy('x'.repeat(200)).body;
     expect(long).toContain(`not ${'x'.repeat(64)}.`);
+  });
+});
+
+describe('leaveRefusedPageOnExit: the guardian\'s PIN exit taken on a page the child had staged', () => {
+  it('a refused page (a scanned verify request) is cleared and the guardian lands home, not on Verify Age', () => {
+    // The page the child's scan opened, with its request staged.
+    const state = { page: 'approve-verification', pendingVerify: { verifier: 'v' } as { verifier: string } | null };
+    const decisionBeforeExit = childModePageDecision(base({ page: 'approve-verification' }));
+    expect(decisionBeforeExit).toBe('refuse');
+    leaveRefusedPageOnExit(decisionBeforeExit, {
+      clear: () => { state.pendingVerify = null; },
+      goHome: () => { state.page = 'home'; },
+    });
+    expect(state).toEqual({ page: 'home', pendingVerify: null });
+  });
+
+  it('an allowed or held page is left alone', () => {
+    for (const decision of ['allow', 'hold'] as const) {
+      const clear = vi.fn(); const goHome = vi.fn();
+      leaveRefusedPageOnExit(decision, { clear, goHome });
+      expect(clear).not.toHaveBeenCalled();
+      expect(goHome).not.toHaveBeenCalled();
+    }
   });
 });

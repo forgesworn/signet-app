@@ -43,7 +43,7 @@ describe('child-mode guardian-page gate in App.tsx', () => {
   });
 
   it('clears the staged request state on any way off a refused page, not only Decline', () => {
-    expect(app).toContain("page, decision: childModePage, childModeOn: childModeNow !== 'off',");
+    expect(app).toContain('page, decision: childModePage, locked: !encryptionKey,');
     expect(app).toContain('onLeave: () => clearChildModeStagedRequestsRef.current(),');
     const decline = app.slice(idx('const declineChildModeGuardianPage = useCallback(() => {'));
     expect(decline.indexOf('clearChildModeStagedRequestsRef.current();')).toBeGreaterThan(-1);
@@ -64,6 +64,29 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain('useDropInviteInChildMode({');
     expect(app).toContain('childMode: nip55ChildMode, pendingInvite: pendingContactInvite,');
     expect(app).toContain('{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}');
+  });
+
+  it('the dropped-invite notice shows on home beside the child-mode banner, and the PIN exit resets it', () => {
+    const home = app.slice(idx('// Home (default) — card-swipe wallet carousel'));
+    expect(home.indexOf('{childModeInviteDroppedBanner}')).toBeGreaterThan(-1);
+    expect(home.indexOf('{childModeInviteDroppedBanner}')).toBeLessThan(home.indexOf('<Carousel'));
+    const exit = app.slice(idx('const handleExitChildMode = useCallback(async () => {'));
+    expect(exit.slice(0, exit.indexOf('}, [carousel.exitChildMode')).includes('setChildModeInviteDropped(false);')).toBe(true);
+  });
+
+  it('a PIN exit taken on a refused page clears what the child staged and lands home', () => {
+    expect(app).toContain('const childModePageRef = useRef(childModePage);');
+    const exit = app.slice(idx('const handleExitChildMode = useCallback(async () => {'));
+    const body = exit.slice(0, exit.indexOf('}, [carousel.exitChildMode'));
+    expect(body).toContain('leaveRefusedPageOnExit(childModePageRef.current, {');
+    expect(body).toContain('clear: () => clearChildModeStagedRequestsRef.current(),');
+    expect(body).toContain("goHome: () => navigateReplace('home'),");
+    expect(body.indexOf('leaveRefusedPageOnExit(')).toBeGreaterThan(body.indexOf('if (!key) return;'));
+    expect(body.indexOf('leaveRefusedPageOnExit(')).toBeLessThan(body.indexOf('carousel.exitChildMode();'));
+  });
+
+  it('the staged-request clear ignores a same-page lock-window flip', () => {
+    expect(app).toContain('page, decision: childModePage, locked: !encryptionKey,');
   });
 
   it('the invite service tells a peer that needs the guardian apart from a blocked one', () => {

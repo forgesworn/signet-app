@@ -181,7 +181,7 @@ import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
-import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY, CHILD_MODE_LINK_INVITE_COPY } from './lib/child-mode-page-allowlist';
+import { childModePageDecision, leaveRefusedPageOnExit, CHILD_MODE_SCAN_INVITE_COPY, CHILD_MODE_LINK_INVITE_COPY } from './lib/child-mode-page-allowlist';
 import { useDropInviteInChildMode } from './hooks/useDropInviteInChildMode';
 import { useOnChildModeEntered } from './hooks/useOnChildModeEntered';
 import { useOnLeaveRefusedPage } from './hooks/useOnLeaveRefusedPage';
@@ -10885,8 +10885,11 @@ function AppContent() {
   };
   const clearChildModeStagedRequestsRef = useRef(clearChildModeStagedRequests);
   clearChildModeStagedRequestsRef.current = clearChildModeStagedRequests;
+  // The decision as of the latest render, read after the PIN (an async step) in handleExitChildMode.
+  const childModePageRef = useRef(childModePage);
+  childModePageRef.current = childModePage;
   useOnLeaveRefusedPage({
-    page, decision: childModePage, childModeOn: childModeNow !== 'off',
+    page, decision: childModePage, locked: !encryptionKey,
     onLeave: () => clearChildModeStagedRequestsRef.current(),
   });
 
@@ -10947,6 +10950,13 @@ function AppContent() {
     // Without this, "child-mode" is just a UI state the child can flip. See spec §2.
     const key = await requestFreshAuth({ purpose: 'exit-child-mode', depName: activeDependant?.displayName || carousel.childDependant?.displayName || 'your dependant' });
     if (!key) return; // Cancelled or failed — stay in child-mode.
+    // A page the child was refused on (a scanned verify request, a pairing) must not
+    // become the guardian's own with the child's request staged on it: clear it, go home.
+    leaveRefusedPageOnExit(childModePageRef.current, {
+      clear: () => clearChildModeStagedRequestsRef.current(),
+      goHome: () => navigateReplace('home'),
+    });
+    setChildModeInviteDropped(false);
     carousel.exitChildMode();
     chooseDependantScope(null);
     clearChildModeSession().catch(() => {});
@@ -10954,7 +10964,7 @@ function AppContent() {
     // nothing else clears while still locked out of the restore.
     childModeRestoredRef.current = true;
     setSavedChildMode(null);
-  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, chooseDependantScope, requestFreshAuth]);
+  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, chooseDependantScope, requestFreshAuth, navigateReplace]);
 
   // Publish current child-mode state + exit handler to useNavigation's refs so
   // hardware back / browser back can trigger the same gated exit while inside
@@ -15722,6 +15732,8 @@ function AppContent() {
           }}
         />
       )}
+      {/* Where the child is: a link invite dropped in child mode says so here, not only on Settings. */}
+      {childModeInviteDroppedBanner}
       {/* Not in child mode: its button leads to the guardian's security settings and Shamir split. */}
       {showBackupNudge && !signInChildMode && (
         <BackupCard
