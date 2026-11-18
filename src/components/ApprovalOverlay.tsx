@@ -6,6 +6,7 @@ import { shortNpub } from '../lib/signet';
 import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY } from '../lib/heartwood-signin-link';
 import { SharePreview } from './SharePreview';
 import { PairedChildApprovalWaiting } from './PairedChildApprovalWaiting';
+import { HeartwoodWaitHint } from './HeartwoodWaitHint';
 
 interface Props {
   /** The auth or login request we're prompting about */
@@ -50,6 +51,8 @@ interface Props {
   heartwoodNeedsUpdate?: boolean;
   /** "Straight to my Heartwood" is pre-selected where offered. Default true. */
   heartwoodByDefault?: boolean;
+  /** Signing goes through a paired Heartwood: after a few seconds of Signing…, say to press its button. */
+  heartwoodSigner?: boolean;
 }
 
 const VALID_AGE_RANGES = ['0-3', '4-7', '8-12', '13-17', '18+'];
@@ -86,6 +89,7 @@ export function ApprovalOverlay({
   heartwoodLinkOffered = false,
   heartwoodNeedsUpdate = false,
   heartwoodByDefault = true,
+  heartwoodSigner = false,
 }: Props) {
   // Local approving flag — App.tsx owns the actual signEvent lifecycle but
   // doesn't surface a loading state down to the overlay. Tracking it here
@@ -243,6 +247,7 @@ export function ApprovalOverlay({
             )}
           </div>
         )}
+        <HeartwoodWaitHint active={approving && !isPairedChild && heartwoodSigner} />
         {heartwoodLinkOffered && !straightByDefault && !approving && activeAllowed && !npCeilingBlocks && (
           <button
             type="button"

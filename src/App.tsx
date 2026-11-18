@@ -14454,6 +14454,7 @@ function AppContent() {
             appPermission={signInAppPermissionsRef.current.get(pendingAuthRequest)}
             appPermissionName={urlAuthSiteName || pendingAuthRequest.origin}
             {...approveAuthProps}
+            heartwoodSigner={preferences.signingMode === 'bunker'}
             externallyApproving={authApprovalInFlightKey === approveAuthRequestKey}
             userChoice={authPickerChoice?.key === approveAuthRequestKey ? { selection: authPickerChoice.selection } : undefined}
             onUserChoice={(selection) => setAuthPickerChoice({ key: approveAuthRequestKey, selection })}
@@ -14575,6 +14576,7 @@ function AppContent() {
           preferPersonaForSignIns={preferPersonaForSignIns}
           preferredPersonaPubkey={preferredPersonaPubkey}
           onApprove={handleApproveConnect}
+          heartwoodSigner={preferences.signingMode === 'bunker'}
           onDeny={handleConnectDone}
           userChoice={connectPickerChoice?.key === connectRequestKey ? { selection: connectPickerChoice.selection } : undefined}
           onUserChoice={(selection) => setConnectPickerChoice({ key: connectRequestKey, selection })}
@@ -15889,6 +15891,7 @@ function AppContent() {
               isPairedChild={isPairedChild}
               childDirect={childDirect}
               heartwoodByDefault={signInLinkDefault}
+              heartwoodSigner={preferences.signingMode === 'bunker'}
               heartwoodLinkOffered={!overlayIdentity.isDependant
                 && !!overlayIdentity.publicKey
                 && signInLinkOfferedFor(
