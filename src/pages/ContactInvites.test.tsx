@@ -91,3 +91,37 @@ describe('accepting with a card', () => {
     expect(build).not.toHaveBeenCalled();
   });
 });
+
+describe('child mode on the guardian\'s phone (guardian approval not offered)', () => {
+  function setupChildMode(accept: () => Promise<void>) {
+    const service = { read: vi.fn(async () => vault(request())), accept: vi.fn(accept), flush: vi.fn(async () => {}), dismiss: vi.fn(async () => {}),
+      request: vi.fn(async () => { throw new Error('This contact is not allowed by the contact policy'); }) };
+    render(<ContactInvites service={service as never} identityPubkey={ME} identityName="Pip" relays={[]} version={0}
+      guardianApproves onAddContact={async () => {}} onBack={() => {}} />);
+    return service;
+  }
+  it('says the guardian approves, and offers no approve button', async () => {
+    setupChildMode(async () => {});
+    await screen.findByRole('button', { name: 'Accept request' });
+    expect(screen.getByText('Your guardian approves new contacts. Anything they have not approved yet waits for them.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Approve and/ })).toBeNull();
+  });
+  it('reads a policy refusal on accept as waiting for the guardian', async () => {
+    setupChildMode(async () => { throw new Error('Request cannot be accepted'); });
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept request' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Waiting for your guardian to approve this contact.'));
+  });
+  it('reads a policy refusal on send as waiting for the guardian', async () => {
+    setupChildMode(async () => {});
+    await screen.findByRole('button', { name: 'Accept request' });
+    fireEvent.change(screen.getByLabelText('Invite link'), { target: { value: 'x' } });
+    // an invalid link keeps its own message
+    fireEvent.click(screen.getByRole('button', { name: 'Send contact request' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This invite is invalid or has expired.'));
+  });
+  it('leaves other errors and the guardian-mode page unchanged', async () => {
+    setup(request());
+    await screen.findByRole('button', { name: 'Accept request' });
+    expect(screen.queryByText(/Your guardian approves new contacts/)).toBeNull();
+  });
+});

@@ -11965,7 +11965,8 @@ function AppContent() {
     const next = relayListWithDisabled(preferences, url);
     if (next) void setRelays(next);
   };
-  const privateVaultBanner = !isPairedChild && encryptionKey ? <PrivateVaultStatus key={privateVaultSession}
+  // Never in child mode: it names the guardian's backup rails and edits the guardian's relay list.
+  const privateVaultBanner = !isPairedChild && childModeNow === 'off' && encryptionKey ? <PrivateVaultStatus key={privateVaultSession}
     onRotate={privateVaultSupported && !activeDependant && supportsPrivateVaultRotationLock() ? rotatePrivateBackup : undefined}
     onDisableRelay={disableVaultRelay}
     canDisableRelay={url => relayListWithDisabled(preferences, url) !== null}
@@ -14123,7 +14124,9 @@ function AppContent() {
           infoFor: persona => contactCardInfoFor(identity, persona, { pairedChild: isPairedChild }),
           build: contactCardFor,
         }}
-        onApproveContact={activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved' ? async peer => {
+        // The guardian's approval is never offered in child mode (live, saved or not yet known).
+        guardianApproves={childModeNow !== 'off' && !!activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved'}
+        onApproveContact={childModeNow === 'off' && activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved' ? async peer => {
           if (!encryptionKey || !identity || isPairedChild) throw new Error('Unlock the guardian identity first.');
           const guardian = identity.naturalPerson.publicKey;
           const dep = (await loadFreshDependants(encryptionKey)).find(dep => dep.id === activeDependant.id && dep.guardianPubkey === guardian);
@@ -14164,10 +14167,10 @@ function AppContent() {
             : pairedContactPolicy.policy === 'approved' ? 'New contacts need your guardian’s approval.'
             : 'Your guardian allows contact requests. Blocked contacts are still excluded.'}
         </p>}
-        {!isPairedChild && pendingGuardianChildRequests.pendingCount > 0 && <p role="status" className="field-hint">
+        {!isPairedChild && childModeNow === 'off' && pendingGuardianChildRequests.pendingCount > 0 && <p role="status" className="field-hint">
           {pendingGuardianChildRequests.pendingCount} paired-child contact request{pendingGuardianChildRequests.pendingCount === 1 ? '' : 's'} waiting for review.
         </p>}
-        {!isPairedChild && <PairedChildRequestReview requests={pendingGuardianChildRequests.pending} stuck={pendingGuardianChildRequests.stuck}
+        {!isPairedChild && childModeNow === 'off' && <PairedChildRequestReview requests={pendingGuardianChildRequests.pending} stuck={pendingGuardianChildRequests.stuck}
           history={pendingGuardianChildRequests.history}
           keyMaterial={encryptionKey!} now={() => Math.floor(Date.now() / 1000)} current={guardianChildReviewCurrent} mayConnect={guardianChildMayConnect}
           childName={child => dependants.find(dep => dep.id === child)?.displayName ?? 'your child'}

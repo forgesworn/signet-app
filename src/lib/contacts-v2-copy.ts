@@ -834,6 +834,9 @@ export const CARD_PHOTO_UNAVAILABLE_COPY = 'Add an in-app picture on your person
 export const CARD_PHOTO_FAILED_COPY = "Your photo couldn't be shared, so nothing was sent.";
 export const SEND_WITHOUT_PHOTO_LABEL = 'Send without your photo';
 export const ACCEPT_WITHOUT_PHOTO_LABEL = 'Accept without your photo';
+/** Child mode on the guardian's phone: the guardian's approval cannot be given here, so a contact they have not approved waits for them. */
+export const GUARDIAN_APPROVES_NOTE_COPY = 'Your guardian approves new contacts. Anything they have not approved yet waits for them.';
+export const WAITING_FOR_GUARDIAN_COPY = 'Waiting for your guardian to approve this contact.';
 /** An unaccepted request's card name is self-declared, never a fact: anyone holding the invite can claim any name. */
 export function requestFromNamedCopy(name: string): string {
   return `Request from someone calling themselves “${sanitizeDisplayName(name, 100)}”`;

@@ -9,16 +9,21 @@ import { ContactCardPhotoError, defaultCardChoice } from '../lib/contact-card-sh
 import type { ContactCardChoice, ContactCardInfo } from '../lib/contact-card-share';
 import { ShareCardChips } from '../components/ShareCardChips';
 import { shortNpub } from '../lib/nostr-follows';
-import { ACCEPT_WITHOUT_PHOTO_LABEL, CARD_PHOTO_FAILED_COPY, requestFromNamedCopy } from '../lib/contacts-v2-copy';
+import { ACCEPT_WITHOUT_PHOTO_LABEL, CARD_PHOTO_FAILED_COPY, GUARDIAN_APPROVES_NOTE_COPY, WAITING_FOR_GUARDIAN_COPY, requestFromNamedCopy } from '../lib/contacts-v2-copy';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import { conflictedContactExchanges } from '../lib/contact-invite-store';
 import type { ContactInviteVault } from '../lib/contact-invite-store';
 
+/** What the invite service throws when the contact policy refuses a peer (`contact-invite-service.ts`). */
+const POLICY_REFUSALS = ['Request cannot be accepted', 'This contact is not allowed by the contact policy', 'The contact policy changed'];
+
 export function ContactInvites({ service, identityPubkey, identityName, relays, version, initialInvite,
-  onAddContact, onBack, onApproveContact, cards }: { service: ContactInviteService; identityPubkey: string; identityName: string;
+  onAddContact, onBack, onApproveContact, guardianApproves, cards }: { service: ContactInviteService; identityPubkey: string; identityName: string;
   relays: string[]; version: number; initialInvite?: string;
   onAddContact(exchange: ContactExchangeState): Promise<void>; onBack(): void;
   onApproveContact?(peer: string): Promise<void>;
+  /** The contact policy needs the guardian's approval and it cannot be given on this page (child mode on the guardian's phone). A refused request reads as waiting for them. */
+  guardianApproves?: boolean;
   /** "They'll see:" on an opened request. Absent (a paired child, a dependant's list) means no chips and no card.
    * `build` uploads the share copy and publishes its pointer, so it runs only when Accept is pressed. */
   cards?: { infoFor(persona: string): ContactCardInfo | null; build(persona: string, choice: ContactCardChoice): Promise<ContactCard | undefined> } }) {
@@ -46,7 +51,10 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
     try { await action(); const value = await service.read(); if (mounted.current) setState(value); }
-    catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : 'The invite could not be updated.'); }
+    catch (reason) {
+      const message = reason instanceof Error ? reason.message : 'The invite could not be updated.';
+      if (mounted.current) setError(guardianApproves && POLICY_REFUSALS.includes(message) ? WAITING_FOR_GUARDIAN_COPY : message);
+    }
     finally { if (mounted.current) setBusy(false); }
   };
   const now = () => Math.floor(Date.now() / 1000);
@@ -76,6 +84,7 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
     <h2>Invites for {identityName}</h2>
     <p>Only people with an active invite can send a request. Invite names stay private.</p>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
+    {guardianApproves && !onApproveContact && <p role="status">{GUARDIAN_APPROVES_NOTE_COPY}</p>}
     <label>Private invite name<input className="input" value={name} maxLength={100} onChange={e => setName(e.target.value)} /></label>
     <label><input type="checkbox" checked={shareCaption} onChange={event => setShareCaption(event.target.checked)} /> Include a public caption</label>
     {shareCaption && <label>Public caption — anyone with the invite can read this<input className="input" value={publicCaption} maxLength={200} onChange={event => setPublicCaption(event.target.value)} /></label>}

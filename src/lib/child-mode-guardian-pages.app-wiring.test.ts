@@ -122,4 +122,23 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain('const personas = companionGrantPersonas(identity);');
     expect(app).not.toContain("label: identity.naturalPerson.displayName || 'Natural Person'");
   });
+
+  it('the paired-child request review and its count are never shown in child mode (live, saved or unknown)', () => {
+    expect(app).toContain("{!isPairedChild && childModeNow === 'off' && <PairedChildRequestReview");
+    expect(app).toContain("{!isPairedChild && childModeNow === 'off' && pendingGuardianChildRequests.pendingCount > 0 && <p role=\"status\"");
+    expect(idx("childModeNow === 'off' && <PairedChildRequestReview")).toBeGreaterThan(idx('const childModeNow = nip55ChildMode;'));
+  });
+
+  it('the guardian\'s contact approval is withheld in child mode, and the page is told why', () => {
+    expect(app).toContain("onApproveContact={childModeNow === 'off' && activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved' ? async peer => {");
+    expect(app).toContain("guardianApproves={childModeNow !== 'off' && !!activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved'}");
+  });
+
+  it('the private-backups status (rail names, turn-off-relay) is never rendered in child mode', () => {
+    expect(app).toContain("const privateVaultBanner = !isPairedChild && childModeNow === 'off' && encryptionKey ? <PrivateVaultStatus");
+    expect(idx('const privateVaultBanner =')).toBeGreaterThan(idx('const childModeNow = nip55ChildMode;'));
+    // every other use goes through that one banner, so the Settings warning and Security & Backup follow it
+    expect(app.match(/<PrivateVaultStatus/g)).toHaveLength(1);
+    expect(app).toContain('const settingsBackupWarning = privateVaultBanner && privateVaultWarning');
+  });
 });

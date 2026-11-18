@@ -29,6 +29,13 @@
  *
  * `settings-personas` leaves child mode with no PIN.
  *
+ * The dependant management pages (`pair-dependant-device` is Phone & Pairing,
+ * `child-permissions`, `family-list`, `add-dependant`, ...) are listed because
+ * the scope backstop below passes them whenever they were opened for the child
+ * itself, and in-app back can land on one after child mode starts. `activity`
+ * here is the guardian's audit view (`guardianAuditBackend`); the paired
+ * child's own activity page runs on a paired-child install, never child mode.
+ *
  * `contacts-grant-code` is deliberately not listed: leaving that page strands a
  * live grant unchecked, and it is only reachable after an approve, which is now
  * refused.
@@ -48,6 +55,18 @@ export const CHILD_MODE_GUARDIAN_PAGES: readonly Page[] = [
   'settings-security',
   'shamir',
   'settings-personas',
+  // The guardian's management pages for a dependant. The live-child backstop
+  // lets these through when they were opened for the child itself, so in-app
+  // back could reach them: pairing and permissions, the family and independence.
+  'pair-dependant-device',
+  'pair-dependant-app',
+  'child-permissions',
+  'family-list',
+  'family-contacts',
+  'add-dependant',
+  'import-dependant',
+  'transition-ceremony',
+  'activity',
 ];
 
 /** `refuse`: show the refusal, no PIN. `hold`: child mode not yet known, show and ask nothing. */
@@ -65,8 +84,10 @@ export function childModePageDecision(
   if (!CHILD_MODE_GUARDIAN_PAGES.includes(input.page)) {
     // Backstop: whatever moved the scope, a page outside home that is not the
     // child's own never shows in live child mode.
+    // With no child id (their record left `dependants`) there is no scope to match, so only home is safe.
     const live = input.liveChild;
-    if (input.childMode === 'on' && live && input.page !== 'home' && live.activeDependantId !== live.childDependantId) return 'refuse';
+    if (input.childMode === 'on' && live && input.page !== 'home'
+      && (live.childDependantId === null || live.activeDependantId !== live.childDependantId)) return 'refuse';
     return 'allow';
   }
   if (input.childMode === 'on') return 'refuse';
