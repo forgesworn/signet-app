@@ -34,7 +34,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NpubRow } from './NpubRow';
 import type { PublicProfileConfig, PersonaPublicProfile, PublicProfileBase } from '../types';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
-import { checkNip05, parseNip05, type Nip05CheckResult } from '../lib/nip05-check';
+import { canonicalNip05, checkNip05, parseNip05, type Nip05CheckResult } from '../lib/nip05-check';
 import type { PictureCrop } from '../lib/picture-crop';
 import { blobDeletionNote, publishedBlobHashes, serverFromBlobUrl, type DeleteOutcome } from '../lib/blob-deletion';
 import { OLD_PICTURE_STAYS_COPY, withBlobHost } from '../lib/blob-deletion-copy';
@@ -112,8 +112,10 @@ export interface SlotProfileFieldsProps {
   onNip05Checked?: (result: Nip05CheckResult, checkedAt: number) => void;
 }
 
-// Validation regex shared by NIP-05 and lightning-address (LUD-16) inputs.
-const NIP05_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
+// Lightning-address (LUD-16) shape. NIP-05 no longer shares it: LUD-16 allows
+// `+` in the local part, NIP-05 does not, so the NIP-05 field is validated by
+// `canonicalNip05` (parseNip05 itself) so the two can never drift apart.
+const LUD16_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
 
 // Default-Persona variant hides the three deanonymising fields by default
 // (per the brainstorm — anonymous personas shouldn't be nudged into hooking
@@ -307,8 +309,11 @@ export function SlotProfileFields({
   const [nip05SaveError, setNip05SaveError] = useState(false);
 
   // Validation. Live (not on-blur) for v1 — matches EditPublicProfile.tsx.
-  const nip05Invalid = nip05.length > 0 && !NIP05_RE.test(nip05);
-  const lud16Invalid = lud16.length > 0 && !NIP05_RE.test(lud16);
+  // An unchanged value an older build saved (a `+`, say) is left alone, so it
+  // doesn't block saving other fields; it just can't be checked (see below).
+  const nip05Invalid = nip05.trim().length > 0 && canonicalNip05(nip05) === null
+    && nip05.trim() !== (config.nip05 ?? '');
+  const lud16Invalid = lud16.length > 0 && !LUD16_RE.test(lud16);
   const websiteInvalid = website.length > 0 && safeImageOrLinkUrl(website) === null;
 
   const isPictureSignetHosted = !!pictureBlossomHash;
@@ -333,7 +338,9 @@ export function SlotProfileFields({
       pictureBlossomHash: pictureForSave === pictureUrl ? pictureBlossomHash : undefined,
       bannerUrl: bannerForSave,
       bannerBlossomHash: bannerForSave === bannerUrl ? bannerBlossomHash : undefined,
-      nip05: nip05.trim() || undefined,
+      // Canonical form (`_@domain` for a bare domain) so a published kind-0
+      // never carries a bare domain. An invalid value can't reach Save.
+      nip05: canonicalNip05(nip05) ?? (nip05.trim() || undefined),
       lud16: lud16.trim() || undefined,
       website: website.trim() || undefined,
     };
@@ -347,14 +354,12 @@ export function SlotProfileFields({
   // that's actually persisted. "Dirty" here is scoped to the NIP-05 field
   // only (not the whole form) so editing an unrelated field (About, say)
   // doesn't block a check on an already-saved NIP-05.
-  const nip05Dirty = nip05.trim() !== (config.nip05 ?? '');
+  const nip05Dirty = (canonicalNip05(nip05) ?? nip05.trim()) !== (config.nip05 ?? '');
   const nip05Empty = nip05.trim().length === 0;
-  // NIP05_RE (the Save-time validator above) is intentionally looser than
-  // parseNip05 (accepts `+` in the local part, doesn't reject IP-literal
-  // domains, etc.) — a value can pass NIP05_RE and still fail parseNip05.
-  // Gate the Check button on the STRICT parser too, or checkNip05 silently
-  // no-fetches to 'unreachable' and the result line renders with an empty
-  // domain.
+  // Save now uses parseNip05 too, but a value stored by an older build (with
+  // a `+`, say) can still fail it. Gate the Check button on the parser, or
+  // checkNip05 silently no-fetches to 'unreachable' and the result line
+  // renders with an empty domain.
   const savedNip05Parsed = config.nip05 ? parseNip05(config.nip05) : null;
   const nip05Unparseable = !nip05Empty && !nip05Dirty && !!config.nip05 && savedNip05Parsed === null;
   const nip05CheckDisabled =
@@ -723,7 +728,7 @@ export function SlotProfileFields({
                   </button>
                 )}
               </div>
-              {nip05Invalid && <FieldError>NIP-05 looks like name@example.com. Yours doesn't match — it'll still publish, but most Nostr clients won't show it as verified.</FieldError>}
+              {nip05Invalid && <FieldError>NIP-05 looks like name@example.com, or just example.com. Yours doesn't match, so it can't be saved.</FieldError>}
               {onNip05Checked && nip05Dirty && !nip05Empty && !nip05Invalid && (
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 4 }}>Save first</div>
               )}

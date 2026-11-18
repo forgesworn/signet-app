@@ -264,6 +264,18 @@ export const TYPE_SECTION_TITLE = 'Type';
 export const TIER_PICKER_SECTION_TITLE = 'Tier';
 export const PHONE_OPTIONAL_LABEL = 'Phone (optional)';
 export const EMAIL_OPTIONAL_LABEL = 'Email (optional)';
+export const NIP05_FIELD_LABEL = 'NIP-05 address (optional)';
+export const NIP05_FIELD_HINT = 'Their address, such as name@example.com, or just example.com.';
+export const NIP05_LOOKUP_LABEL = 'Look up';
+export const NIP05_LOOKING_UP_LABEL = 'Looking up…';
+export const NIP05_FOUND_LABEL = 'Found';
+export const NIP05_CLEAR_LABEL = 'Clear';
+export const NIP05_PROFILE_NAME_LABEL = 'Get their name from their Nostr profile';
+export const OPEN_CONTACT_LABEL = 'Open';
+export const NIP05_ADDRESS_INVALID_COPY = 'Enter a NIP-05 address in the format name@domain.com, or just domain.com.';
+export function alreadyInContactsCopy(name: string): string {
+  return `Already in your contacts as ${safeName(name)}`;
+}
 export const SAVE_CONTACT_LABEL = 'Save contact';
 export const SAVING_LABEL = 'Saving…';
 

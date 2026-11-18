@@ -2,7 +2,7 @@ import { JigsawIcon } from './JigsawIcon';
 import { JigsawSigil } from './JigsawSigil';
 import { readHandshakeEvidence } from '../lib/handshake-sigil';
 import { HANDSHAKE_COPY } from '../lib/contacts-v2-copy';
-import { checkNip05, parseNip05 } from '../lib/nip05-check';
+import { checkNip05, displayNip05, parseNip05 } from '../lib/nip05-check';
 import { useId, useState } from 'react';
 import type { ContactCheck } from '../lib/contact-checks';
 import { CONTACT_CHECK_SOURCES } from '../lib/contact-checks';
@@ -42,7 +42,7 @@ export function ContactChecks({ checks, identities, onRecord, onUpdate, onRemove
       {readHandshakeEvidence(check.evidence) ? <div className="handshake-mark">
         <span><JigsawIcon state="joined" />{HANDSHAKE_COPY[({ mutual: 'met', tapped: 'tapped', proven: 'checked' } as const)[readHandshakeEvidence(check.evidence)!.strength]]}</span>
         <JigsawSigil digest={readHandshakeEvidence(check.evidence)!.sigil} />
-      </div> : check.evidence && <p style={{ whiteSpace: 'pre-wrap' }}>{check.evidence}</p>}
+      </div> : check.evidence && <p style={{ whiteSpace: 'pre-wrap' }}>{check.method === 'nip05' ? displayNip05(check.evidence) : check.evidence}</p>}
       {onUpdate && <button className="btn btn-ghost" disabled={busy} onClick={() => {
         setEditing(check); setMethod(check.method); setSource(check.source); setPeer(check.identityPubkey);
         setDate(new Date(check.checkedAt).toISOString().slice(0, 10)); setEvidence(check.evidence ?? '');

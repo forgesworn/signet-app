@@ -5,6 +5,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   parseNip05,
+  canonicalNip05,
+  displayNip05,
   buildNip05LookupUrl,
   evaluateNip05Response,
   checkNip05,
@@ -227,5 +229,39 @@ describe('checkNip05', () => {
       throw new Error('boom');
     });
     await expect(checkNip05('alice@example.com', PUBKEY, fetchImpl)).resolves.toBe('unreachable');
+  });
+});
+
+describe('bare domain, canonical and display forms', () => {
+  it('parses a bare domain as the root name _', () => {
+    expect(parseNip05('example.com')).toEqual({ name: '_', domain: 'example.com' });
+    expect(parseNip05('  Example.COM  ')).toEqual({ name: '_', domain: 'example.com' });
+  });
+
+  it('still refuses a bare word, an IP, a path, a port and a private host', () => {
+    for (const bad of ['intranet', '10.0.0.1', 'example.com/x', 'example.com:80', 'app.localhost', 'example.com.', '']) {
+      expect(parseNip05(bad), bad).toBeNull();
+    }
+  });
+
+  it('refuses a + in the local part', () => {
+    expect(parseNip05('alice+tag@example.com')).toBeNull();
+    expect(canonicalNip05('alice+tag@example.com')).toBeNull();
+  });
+
+  it('canonicalNip05 returns name@domain, _@domain for a bare domain, lowercased', () => {
+    expect(canonicalNip05('example.com')).toBe('_@example.com');
+    expect(canonicalNip05('Alice@Example.COM')).toBe('alice@example.com');
+    expect(canonicalNip05('_@example.com')).toBe('_@example.com');
+    expect(canonicalNip05('nope')).toBeNull();
+  });
+
+  it('displayNip05 shows _@domain as the domain and leaves everything else alone', () => {
+    expect(displayNip05('_@example.com')).toBe('example.com');
+    expect(displayNip05('alice@example.com')).toBe('alice@example.com');
+    expect(displayNip05('__@example.com')).toBe('__@example.com');
+    expect(displayNip05('example.com')).toBe('example.com');
+    expect(displayNip05('_@')).toBe('_@');
+    expect(displayNip05('')).toBe('');
   });
 });

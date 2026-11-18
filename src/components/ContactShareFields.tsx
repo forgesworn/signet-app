@@ -2,7 +2,7 @@ import type { ContactRecord } from '../types';
 import type { ContactShareFields as Fields } from '../lib/contact-share-fields';
 import { contactDisplayName } from '../lib/contacts-v2-name';
 import { shortNpub } from '../lib/nostr-follows';
-import { METHOD_KIND_LABELS } from '../lib/contacts-v2-detail';
+import { METHOD_KIND_LABELS, methodDisplayValue } from '../lib/contacts-v2-detail';
 
 export function ContactShareFields({ contact, value, onChange }: {
   contact: ContactRecord; value: Fields; onChange: (value: Fields) => void;
@@ -18,7 +18,7 @@ export function ContactShareFields({ contact, value, onChange }: {
     </label>)}
     {contact.contactMethods.map(m => <label className="row" key={m.itemId}>
       <input type="checkbox" checked={value.methods.includes(m.itemId)} onChange={e => toggle('methods', m.itemId, e.target.checked)} />
-      {METHOD_KIND_LABELS[m.kind]}: {m.value}
+      {METHOD_KIND_LABELS[m.kind]}: {methodDisplayValue(m)}
     </label>)}
     {(['tier', 'roles', 'notes', 'type', 'checks', 'blocked'] as const).map(key => <label className="row" key={key}>
       <input type="checkbox" checked={value[key]} onChange={e => onChange({ ...value, [key]: e.target.checked })} />

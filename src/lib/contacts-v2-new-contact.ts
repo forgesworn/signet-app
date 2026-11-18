@@ -7,8 +7,9 @@
  * says so rather than letting the user assume otherwise.
  */
 import type { AddContactValue, AddMethodValue, ContactTier, ContactType } from '../types';
-import { validateMethodDraft } from './contacts-v2-detail';
-import { NEW_CONTACT_NAME_REQUIRED_COPY } from './contacts-v2-copy';
+import { METHOD_VALUE_MAX, NIP05_METHOD_LABEL, validateMethodDraft } from './contacts-v2-detail';
+import { canonicalNip05 } from './nip05-check';
+import { NEW_CONTACT_NAME_REQUIRED_COPY, NIP05_ADDRESS_INVALID_COPY } from './contacts-v2-copy';
 import { sanitizeDisplayName } from './text-sanitize';
 
 export interface NewContactDraft {
@@ -27,7 +28,12 @@ export type NewContactPlan =
   | { ok: true; contact: AddContactValue; methods: Omit<AddMethodValue, 'itemId'>[] }
   | { ok: false; error: string };
 
-export function planNewContact(draft: NewContactDraft): NewContactPlan {
+/**
+ * `nip05` is the address typed in the lookup field, if any. A non-empty one
+ * is stored as a private, unverified `NIP-05` method in its canonical form
+ * (`_@domain` for a bare domain), whether or not a key was looked up.
+ */
+export function planNewContact(draft: NewContactDraft, nip05 = ''): NewContactPlan {
   const displayName = sanitizeDisplayName(draft.displayName, 100);
   if (!displayName) return { ok: false, error: NEW_CONTACT_NAME_REQUIRED_COPY };
 
@@ -35,6 +41,14 @@ export function planNewContact(draft: NewContactDraft): NewContactPlan {
   for (const [kind, raw] of [['phone', draft.phone], ['email', draft.email]] as const) {
     if (!raw.trim()) continue;
     const parsed = validateMethodDraft({ kind, label: '', value: raw });
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    methods.push(parsed.value);
+  }
+
+  if (nip05.trim()) {
+    const canonical = canonicalNip05(nip05);
+    if (!canonical || canonical.length > METHOD_VALUE_MAX) return { ok: false, error: NIP05_ADDRESS_INVALID_COPY };
+    const parsed = validateMethodDraft({ kind: 'other', label: NIP05_METHOD_LABEL, value: canonical });
     if (!parsed.ok) return { ok: false, error: parsed.error };
     methods.push(parsed.value);
   }
