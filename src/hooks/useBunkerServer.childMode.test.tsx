@@ -63,6 +63,10 @@ function request(clientSk: Uint8Array, target: string, id: string, template: obj
   );
   return finalizeEvent({ kind: NostrConnect, created_at: Math.floor(Date.now() / 1000), tags: [['p', target]], content }, clientSk) as unknown as NostrEvent;
 }
+function cryptoRequest(clientSk: Uint8Array, target: string, id: string, method: string, params: string[]): NostrEvent {
+  const content = encrypt(JSON.stringify({ id, method, params }), getConversationKey(clientSk, target));
+  return finalizeEvent({ kind: NostrConnect, created_at: Math.floor(Date.now() / 1000), tags: [['p', target]], content }, clientSk) as unknown as NostrEvent;
+}
 function reply(clientSk: Uint8Array, event: NostrEvent): { id: string; result?: string; error?: string } {
   return JSON.parse(decrypt(event.content, getConversationKey(clientSk, event.pubkey)));
 }
@@ -71,7 +75,7 @@ const ORIGIN = 'https://game.example';
 const SIGN_IN = { kind: 21236, created_at: 1_800_000_000, tags: [['origin', ORIGIN]], content: '' };
 let n = 0;
 
-async function setup(opts: { dependant: boolean; childMode?: { current: ChildModeState }; omitSignal?: boolean }) {
+async function setup(opts: { dependant: boolean; childMode?: { current: ChildModeState }; omitSignal?: boolean; signal?: () => ChildModeState }) {
   const transport = new LocalSigningBackend(bytesToHex(generateSecretKey()));
   const personaSk = generateSecretKey();
   const persona = getPublicKey(personaSk);
@@ -87,7 +91,7 @@ async function setup(opts: { dependant: boolean; childMode?: { current: ChildMod
   const relayUrl = `wss://child-mode-${++n}.example`;
   const hook = renderHook(() => useBunkerServer({
     enabled: true, relayUrl, routes: [route], isOwnerServingActive: () => true,
-    ...(opts.omitSignal ? {} : { childModeNow: () => state.current }),
+    ...(opts.omitSignal ? {} : { childModeNow: opts.signal ?? (() => state.current) }),
   }));
   await waitFor(() => expect(MockRelaySocket.instances[0]?.subId).toBeTruthy());
   const ws = MockRelaySocket.instances[0];
@@ -97,7 +101,14 @@ async function setup(opts: { dependant: boolean; childMode?: { current: ChildMod
     await waitFor(() => expect(ws.published.length).toBe(before + 1));
     return reply(clientSk, ws.published[before]);
   };
-  return { hook, ws, ask, signing, state };
+  const askNip44 = async (id: string) => {
+    const before = ws.published.length;
+    const peer = getPublicKey(generateSecretKey());
+    await act(async () => { ws.deliver(cryptoRequest(clientSk, transport.activePublicKeyHex, id, 'nip44_encrypt', [peer, 'hello'])); });
+    await waitFor(() => expect(ws.published.length).toBe(before + 1));
+    return reply(clientSk, ws.published[before]);
+  };
+  return { hook, ws, ask, askNip44, signing, state };
 }
 
 describe('useBunkerServer: owner routes in child mode', () => {
@@ -139,6 +150,33 @@ describe('useBunkerServer: owner routes in child mode', () => {
     const h = await setup({ dependant: true, childMode: { current: 'on' } });
     const res = await h.ask('d1');
     expect(JSON.parse(res.result!)).toMatchObject({ kind: 21236 });
+    h.hook.unmount();
+  });
+
+  // The first read (the early gate) sees child mode off; every later read sees it on, as when
+  // child mode starts while the request is in flight. Only the re-check right before the
+  // operation can stop it.
+  const startsMidRequest = () => { let reads = 0; return () => (++reads === 1 ? 'off' : 'on') as ChildModeState; };
+
+  it('child mode starting after the first gate still stops the silent sign_event', async () => {
+    const h = await setup({ dependant: false, signal: startsMidRequest() });
+    const sign = vi.spyOn(h.signing, 'signEvent');
+    expect(await h.ask('m1')).toEqual({ id: 'm1', error: 'serving paused' });
+    expect(sign).not.toHaveBeenCalled();
+    h.hook.unmount();
+  });
+
+  it('child mode starting after the first gate still stops the silent owner-route nip44', async () => {
+    const h = await setup({ dependant: false, signal: startsMidRequest() });
+    const enc = vi.spyOn(h.signing, 'nip44Encrypt');
+    expect(await h.askNip44('m2')).toEqual({ id: 'm2', error: 'serving paused' });
+    expect(enc).not.toHaveBeenCalled();
+    h.hook.unmount();
+  });
+
+  it('the same nip44 request with child mode off the whole time is answered', async () => {
+    const h = await setup({ dependant: false, childMode: { current: 'off' } });
+    expect((await h.askNip44('m3')).result).toBeTruthy();
     h.hook.unmount();
   });
 });

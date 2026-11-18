@@ -1332,6 +1332,13 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // NOT the transport backend — the consumer's NIP-44 is addressed
       // to the dependant's signing pubkey (the one returned by
       // get_public_key for that route), not the transport pubkey.
+      // Asked again here, on the silent path: the awaits above can outlast the
+      // moment child mode started, and this is the last gate before the owner's
+      // key runs.
+      if (childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off')) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
+        return;
+      }
       const outcome = await runBunkerCrypto(route.signingBackend ?? route.backend, request.method as BunkerCryptoMethod, theirPubkey, payload);
       if (!outcome.ok) {
         await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
