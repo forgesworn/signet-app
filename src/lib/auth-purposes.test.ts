@@ -50,6 +50,7 @@ describe('PURPOSES registry — shape invariants', () => {
     'manage-keep',
     'rotate-backup-key',
     'reveal-recovery-words',
+    'split-recovery-words',
     'change-biometric',
     'recheck-professional',
   ];
@@ -113,6 +114,7 @@ describe('PURPOSES registry — tier contract', () => {
       'manage-keep',
       'rotate-backup-key',
       'reveal-recovery-words',
+      'split-recovery-words',
       'change-biometric',
     ].sort());
   });
@@ -327,6 +329,7 @@ describe('Contextual action prompts', () => {
     { purpose: 'reveal-recovery-words' },
     { purpose: 'reveal-recovery-words', scope: 'key' },
     { purpose: 'reveal-recovery-words', scope: 'key', personaName: 'Fox' },
+    { purpose: 'split-recovery-words' },
     { purpose: 'change-biometric', enabled: true },
     { purpose: 'change-biometric', enabled: false },
     { purpose: 'recheck-professional', firmName: 'Example School' },
@@ -351,6 +354,13 @@ describe('Contextual action prompts', () => {
     expect(resolved.title).toBe('Review sign-in request');
     expect(resolved.description).toContain('**Example app**');
     expect(resolved.description).toContain('approve or decline it after unlocking');
+  });
+
+  it('split-recovery-words asks for a fresh unlock before showing the shares', () => {
+    const resolved = resolvePurpose({ purpose: 'split-recovery-words' });
+    expect(resolved.title).toBe('Split your backup');
+    expect(resolved.description).toContain('Any two of them restore your whole Signet');
+    expect(resolved.tier).toBe(2);
   });
 
   it('bot key reveal warns that the key grants signing access', () => {

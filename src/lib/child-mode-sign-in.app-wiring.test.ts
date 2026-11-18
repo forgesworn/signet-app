@@ -111,16 +111,20 @@ describe('child-mode sign-in gate in App.tsx', () => {
 
   it('a saved session that can never restore is cleared once unlocked and read with the key, lifting every restriction', () => {
     expect(app).toContain('loadedWithKey: dependantsLoadedWithKey,');
-    const start = app.indexOf('if (!childModeSessionStale({');
+    const start = app.indexOf('useChildModeSessionRestore({');
     expect(start).toBeGreaterThan(0);
-    const heal = app.slice(start, app.indexOf('}, [encryptionKey, dependantsLoadedWithKey, carousel.childMode, savedChildMode, dependants]);', start));
-    expect(heal).toContain('unlocked: !!encryptionKey,');
-    expect(heal).toContain('dependantsLoadedWithKey,');
-    expect(heal).toContain('childModeLive: carousel.childMode,');
-    expect(heal).toContain('sessionDependantId: savedChildMode?.id,');
-    expect(heal).toContain('dependantIds: dependants.map(d => d.id),');
-    expect(heal).toContain('clearChildModeSession().catch(() => {});');
-    expect(heal).toContain('setSavedChildMode(null);');
+    const wiring = app.slice(start, app.indexOf('});', start));
+    expect(wiring).toContain('unlocked: !!encryptionKey,');
+    expect(wiring).toContain('dependantIds: dependants.map(d => d.id),');
+    expect(wiring).toContain('dependantsLoadedWithKey,');
+    expect(wiring).toContain('childModeLive: carousel.childMode,');
+    expect(wiring).toContain('restoredRef: childModeRestoredRef,');
+    expect(wiring).toContain('onDrop: () => setSavedChildMode(null),');
+    // The decision reads the session on disk, not `savedChildMode`, and the old effects are gone.
+    expect(count('useChildModeSessionRestore(')).toBe(1);
+    expect(app).not.toContain('if (!childModeSessionStale({');
+    expect(app).not.toContain('sessionDependantId: savedChildMode?.id');
+    expect(app).not.toContain('loadChildModeSession().then(');
     // Every restriction outside live child mode reads `savedChildMode`, so clearing it lifts them all.
     expect(app).toContain('const signInChildMode = carousel.childMode || !!savedChildMode;');
   });
@@ -148,13 +152,11 @@ describe('a sign-in as a dependant hands no bunker', () => {
 });
 
 describe('a saved child mode that is gone by start-up is dropped', () => {
-  it('the no-session restore branch clears savedChildMode', () => {
-    expect(app).toContain(`      if (!session) {
-        childModeRestoredRef.current = true;
-        // No saved session any more (cleared in another tab or instance): drop what the
-        // start-up read held, so the banner, hidden Bunker tab and child-only sign-ins lift.
-        setSavedChildMode(null);
-        return;
-      }`);
+  it('the no-session restore branch clears savedChildMode, through the hook', () => {
+    expect(app).toContain('onDrop: () => setSavedChildMode(null),');
+    const hook = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'useChildModeSessionRestore.ts'), 'utf8');
+    expect(hook).toContain(`      if (!session) {
+        restoredRef.current = true;`);
+    expect(hook).toContain('onDropRef.current();');
   });
 });
