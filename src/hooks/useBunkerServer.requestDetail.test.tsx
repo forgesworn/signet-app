@@ -441,6 +441,36 @@ describe('clearApproval', () => {
   });
 });
 
+describe('a request still being handled across a route-set change (no lock)', () => {
+  it('still gets its answer, as it always did', async () => {
+    const h = await ownerServer({ appPairingsEncryptionKey: 'unlock-key' });
+    const real = db.getConnectedClient;
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const c = h.client();
+    let held = false;
+    vi.spyOn(db, 'getConnectedClient').mockImplementation(async pk => {
+      if (pk === c.pk && !held) { held = true; await gate; }
+      return real(pk);
+    });
+    await h.send(c, 'c1', 'connect', [h.owner]);
+    await waitFor(() => expect(held).toBe(true));
+
+    // A new route joins the served set: the subscription is rebuilt, the queue wiped.
+    const other = new LocalSigningBackend(bytesToHex(generateSecretKey()));
+    const instancesBefore = MockRelaySocket.instances.length;
+    h.hook.rerender({ appPairingsEncryptionKey: 'unlock-key', routes: [
+      { pubkey: h.owner, backend: h.ownerBackend }, { pubkey: other.activePublicKeyHex, backend: other }] });
+    await waitFor(() => expect(MockRelaySocket.instances.length).toBeGreaterThan(instancesBefore));
+    await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
+
+    await act(async () => { release(); await new Promise(r => setTimeout(r, 50)); });
+    const answers = MockRelaySocket.instances.flatMap(ws => ws.published)
+      .map(e => { try { return reply(c.sk, e); } catch { return null; } });
+    expect(answers.filter(a => a?.id === 'c1' && a.result === 'ack')).toHaveLength(1);
+  }, 30_000);
+});
+
 describe('a request still being handled when the phone locks', () => {
   it('leaves no queue entry, preview, active request or hint behind', async () => {
     const h = await ownerServer({ appPairingsEncryptionKey: 'unlock-key' });

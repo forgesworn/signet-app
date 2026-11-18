@@ -635,7 +635,9 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   // per session. UNAUTHENTICATED display hints: read only when a queue entry
   // is built, so it can never change who is prompted or who is signed for.
   const declaredAppsRef = useRef<Map<string, DeclaredApp>>(new Map());
-  // Bumped on every lock, so a request still being handled across one can tell.
+  // Bumped when the unlock key goes away (App.tsx passes `encryptionKey ?? null`,
+  // which every lock path nulls and nothing else does), so a request still being
+  // handled across a lock can tell. It does not move on a route-set change.
   const lockGenerationRef = useRef(0);
   useEffect(() => {
     if (!appPairingsEncryptionKey) {
@@ -795,13 +797,14 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
 
   /** Dispatch an inbound kind-24133 event to the right handler. */
   const handleInboundEvent = useCallback(async (event: NostrEvent) => {
-    // A request is handled across many awaits. If the serving session ends or
-    // the phone locks meanwhile, the queue and the declared-app hints have
-    // already been cleared: whatever this call would still add (a queue entry
-    // holding a plaintext preview, a hint, an answer) must leave no trace.
-    const serveGeneration = responseGenerationRef.current;
+    // A request is handled across many awaits. If the phone locks meanwhile,
+    // the queue and the declared-app hints have already been cleared: whatever
+    // this call would still add (a queue entry holding a plaintext preview, a
+    // hint, an answer) must leave no trace. ONLY a lock makes it stale: a
+    // route-set change or serving restart does not, and behaves as it always
+    // did (its writes and its reply still happen).
     const lockGeneration = lockGenerationRef.current;
-    const stale = () => serveGeneration !== responseGenerationRef.current || lockGeneration !== lockGenerationRef.current;
+    const stale = () => lockGeneration !== lockGenerationRef.current;
     const reply = (...args: Parameters<typeof publishResponse>): Promise<void> => (stale() ? Promise.resolve() : publishResponse(...args));
     // Structural validation — the event is an untyped cast from a relay
     // message. A malicious or buggy relay could send anything, and we
