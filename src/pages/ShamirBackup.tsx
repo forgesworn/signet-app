@@ -12,8 +12,9 @@ interface Props {
    * Fresh unlock (PIN or biometric) required before the shares are generated
    * and shown, matching the Backup Words card. Resolves to a key, or null /
    * empty when the user cancels or fails; then no shares are produced.
+   * Required: with no way to ask, the page never shows shares.
    */
-  onRequestFreshAuth?: (ctx: PurposeContext) => Promise<string | null>;
+  onRequestFreshAuth: (ctx: PurposeContext) => Promise<string | null>;
 }
 
 // Split the recovery-words envelope into 3 Shamir shares (threshold 2-of-3).
@@ -96,16 +97,31 @@ export function ShamirBackup({ identity, onRequestFreshAuth }: Props) {
 
   const isBackedUp = identity.backedUp === true;
 
+  const [splitAuthorised, setSplitAuthorised] = useState(false);
+
   const handleSplit = useCallback(async () => {
-    if (!identity.mnemonic) return;
-    if (onRequestFreshAuth) {
-      const key = await onRequestFreshAuth({ purpose: 'split-recovery-words' });
-      if (!key) return;
+    if (!identity.mnemonic || !onRequestFreshAuth) return;
+    const key = await onRequestFreshAuth({ purpose: 'split-recovery-words' });
+    if (!key) return;
+    setSplitAuthorised(true);
+  }, [identity.mnemonic, onRequestFreshAuth]);
+
+  // Split the identity as it is after the unlock, never the one captured at
+  // the tap: a page left open while locked holds the encrypted record, which
+  // is not a mnemonic. Until the decrypted record arrives this waits; it never
+  // shows shares without the fresh unlock above.
+  useEffect(() => {
+    if (!splitAuthorised || !identity.mnemonic) return;
+    let result: string[][];
+    try {
+      result = splitMnemonic(identity.mnemonic);
+    } catch {
+      return;
     }
-    const result = splitMnemonic(identity.mnemonic);
+    setSplitAuthorised(false);
     setShares(result);
     setExpandedShare(0);
-  }, [identity.mnemonic, onRequestFreshAuth]);
+  }, [splitAuthorised, identity.mnemonic]);
 
   const toggleShare = useCallback((index: number) => {
     setExpandedShare((prev) => (prev === index ? null : index));

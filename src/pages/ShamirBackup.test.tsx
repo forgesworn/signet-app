@@ -62,9 +62,28 @@ describe('ShamirBackup fresh-auth gate', () => {
     expect(onRequestFreshAuth).toHaveBeenCalledTimes(2);
   });
 
-  it('without the prop, behaves as before', async () => {
-    render(<ShamirBackup identity={identity} />);
+  it('splits the identity as it is after the unlock, not the locked record captured at the tap', async () => {
+    // A locked record holds ciphertext where the mnemonic goes.
+    const locked = { ...identity, mnemonic: 'ciphertext-not-a-mnemonic' } as SignetIdentity;
+    let resolveAuth: (key: string | null) => void = () => {};
+    const onRequestFreshAuth = vi.fn<FreshAuth>(() => new Promise(r => { resolveAuth = r; }));
+    const view = render(<ShamirBackup identity={locked} onRequestFreshAuth={onRequestFreshAuth} />);
     fireEvent.click(screen.getByText('Split my backup'));
+    await waitFor(() => expect(onRequestFreshAuth).toHaveBeenCalledTimes(1));
+    resolveAuth('unlock-key');
+    await waitFor(() => expect(screen.getByText('Split my backup')).toBeDefined());
+    expect(screen.queryByText('Your 3 Shares')).toBeNull();
+    // The unlock lands: the decrypted record arrives and the split runs once.
+    view.rerender(<ShamirBackup identity={identity} onRequestFreshAuth={onRequestFreshAuth} />);
     expect(await screen.findByText('Your 3 Shares')).toBeDefined();
+    expect(onRequestFreshAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no shares when it has no way to ask for the unlock', async () => {
+    const noAsk = undefined as unknown as FreshAuth;
+    render(<ShamirBackup identity={identity} onRequestFreshAuth={noAsk} />);
+    fireEvent.click(screen.getByText('Split my backup'));
+    await new Promise(r => setTimeout(r, 20));
+    expect(screen.queryByText('Your 3 Shares')).toBeNull();
   });
 });
