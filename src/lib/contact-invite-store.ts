@@ -304,7 +304,8 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
       || (old.acceptance && row.acceptance && contactMessageHash(old.acceptance) !== contactMessageHash(row.acceptance))
       || (old.reveal && row.reveal && contactMessageHash(old.reveal) !== contactMessageHash(row.reveal)))) {
       retainConflict(old); retainConflict(row);
-      exchanges.set(contactExchangeKey(row.request), JSON.stringify(old) < JSON.stringify(row) ? old : row);
+      const kept = JSON.stringify(old) < JSON.stringify(row) ? old : row;
+      exchanges.set(contactExchangeKey(row.request), old.actedAsChild || row.actedAsChild ? { ...kept, actedAsChild: true as const } : kept);
       continue;
     }
     if (!old || rank[row.phase] > rank[old.phase]) exchanges.set(contactExchangeKey(row.request), row);

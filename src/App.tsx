@@ -14065,7 +14065,7 @@ function AppContent() {
           confirmContacts={contactsV2.effective}
           confirmKeyHolderIds={contactsV2.keyHolderIds}
           ownPubkeys={[...new Set([...contactsIdentityLists.map(l => l.ownerIdentityPubkey),
-            ...(identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])]}
+            ...(!childContactsMode && identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])])]}
           onStartExchange={contactsScope.directoryId && !isPairedChild ? () => navigateTo('contact-invites') : undefined}
           onRemoveCheck={id => contactsV2.removeCheck(record.contactId, id)}
           onSetNote={(note) => contactsV2.setNote(record.contactId, note)}

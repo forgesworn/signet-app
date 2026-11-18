@@ -61,6 +61,12 @@ describe('guardian data stays out of child mode', () => {
     expect(app).not.toContain('guardianName={activeDependant ? (identity?.naturalPerson.displayName || null) : null}');
   });
 
+  it('does not list the guardian\'s real-name key among the child\'s own keys on the confirm sheet', () => {
+    const own = between('ownPubkeys={[...new Set([', 'onStartExchange=');
+    expect(own).toContain('...(!childContactsMode && identity?.naturalPerson?.publicKey ? [identity.naturalPerson.publicKey.toLowerCase()] : [])');
+    expect(own).not.toContain('...(identity?.naturalPerson?.publicKey');
+  });
+
   it('matches no legacy members or kens, offers no own picture, and hides Refresh pictures', () => {
     const detail = between("if (page === 'contact-detail' && selectedContactId) {", "if (page === 'contact-new')");
     expect(detail).toContain('const legacyContact = childContactsMode ? undefined : members.find(');
