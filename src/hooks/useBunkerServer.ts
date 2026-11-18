@@ -805,7 +805,21 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // did (its writes and its reply still happen).
     const lockGeneration = lockGenerationRef.current;
     const stale = () => lockGeneration !== lockGenerationRef.current;
-    const reply = (...args: Parameters<typeof publishResponse>): Promise<void> => (stale() ? Promise.resolve() : publishResponse(...args));
+    // Dropped because of a lock, an inbound request was never answered or
+    // recorded as answered, so the look-back after unlock must be able to bring
+    // it in again: forget that it was handled (here and in the request-id map).
+    // A native `markAnswered` is NOT undone: nothing was sent, so none was set.
+    let requestKey: string | undefined;
+    const unmark = () => {
+      if (typeof event.id !== 'string') return;
+      handledEventIdsRef.current.delete(event.id);
+      if (requestKey && inboundEventByRequestRef.current.get(requestKey) === event.id) inboundEventByRequestRef.current.delete(requestKey);
+    };
+    const reply = (...args: Parameters<typeof publishResponse>): Promise<void> => {
+      if (!stale()) return publishResponse(...args);
+      unmark();
+      return Promise.resolve();
+    };
     // Structural validation — the event is an untyped cast from a relay
     // message. A malicious or buggy relay could send anything, and we
     // access .tags before verifyEvent runs below. Without these guards,
@@ -895,7 +909,9 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     }
 
     const request = await parseInboundRequest(event, route.backend);
-    if (!request || stale()) return;
+    if (stale()) { unmark(); return; }
+    if (!request) return;
+    requestKey = `${request.clientPubkey}:${request.id}`;
     if (shareAnswered) {
       const inbound = inboundEventByRequestRef.current;
       inbound.set(`${request.clientPubkey}:${request.id}`, event.id);
@@ -921,7 +937,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // Apply explicit connection scopes before every dispatch, including crypto
     // and manual approvals. Reconnecting cannot widen a saved ceiling.
     const scopedClient = await db.getConnectedClient(request.clientPubkey);
-    if (stale()) return;
+    if (stale()) { unmark(); return; }
     const requestedKind = request.method === 'sign_event'
       ? parseSignEventTemplate(request.params[0] ?? '')?.kind : undefined;
     if (!nip46PermissionAllows(scopedClient?.permissions, request.method, requestedKind)) {
@@ -1315,7 +1331,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         let owner: import('../types').ConnectedClient | undefined;
         try { owner = await db.getConnectedClient(request.clientPubkey); }
         catch { owner = undefined; }
-        if (stale()) return;
+        if (stale()) { unmark(); return; }
         if (!nip46PermissionAllows(owner?.permissions, request.method)) {
           await reply(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
           return;
@@ -1857,7 +1873,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // queue holds up to PENDING_APPROVALS_CAP entries; bump the
     // sync-visible ref alongside the React state update so the next
     // inbound-in-the-same-tick sees the new length against the cap.
-    if (stale()) return;
+    if (stale()) { unmark(); return; }
     queueSizeRef.current += 1;
     const handle = ++handleCounterRef.current;
     const askedAt = Math.min(Date.now(), event.created_at * 1000);
@@ -1874,7 +1890,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     });
     const existing = route.dependantId ? undefined : await db.getConnectedClient(request.clientPubkey);
     // The queue was cleared while that lookup ran: nothing of this request may land.
-    if (stale()) { activeRequestRef.current.delete(handle); return; }
+    if (stale()) { activeRequestRef.current.delete(handle); unmark(); return; }
     // Only a name the card will show: none when a saved row names the app.
     const declared = existing ? undefined : declaredHint;
     const queued = activeRequestRef.current.get(handle);

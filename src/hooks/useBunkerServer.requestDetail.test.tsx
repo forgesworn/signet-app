@@ -302,6 +302,19 @@ describe('"Always" and a name that is already paired under another key', () => {
   });
 });
 
+describe('a name that means "no name"', () => {
+  it.each(['Unknown app', 'unnamed APP'])('is not shown as a declared name, and "Always" saves "Unnamed app" (declared %j)', async declared => {
+    const h = await ownerServer();
+    const c = h.client();
+    await h.connect(c, { name: declared });
+    await h.send(c, 'u1', 'sign_event', [note()]);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    expect(h.hook.result.current.pendingApprovals[0].client.declaredName).toBeUndefined();
+    await act(async () => { await h.hook.result.current.approveAlways(h.hook.result.current.pendingApprovals[0].handle); });
+    await waitFor(async () => expect(await db.getConnectedClient(c.pk)).toMatchObject({ appName: 'Unnamed app', allowAlways: true }));
+  });
+});
+
 describe('crypto payload facts', () => {
   it('gives an encrypt request its length and at most 280 characters of preview', async () => {
     const h = await ownerServer();
@@ -472,7 +485,14 @@ describe('a request still being handled across a route-set change (no lock)', ()
 });
 
 describe('a request still being handled when the phone locks', () => {
-  it('leaves no queue entry, preview, active request or hint behind', async () => {
+  // Each request is parked on a numbered call to getConnectedClient, so that it
+  // is suspended at a different await of handleInboundEvent:
+  //  - connecting, call 1: the permission lookup, before the remembered-name write;
+  //  - encrypting, call 2: the crypto path's own owner lookup, before it queues a plaintext preview;
+  //  - signingA, call 2: the sign path's allow-always lookup, before it takes a queue slot;
+  //  - signingB, call 3: the sign path's lookup AFTER it took a slot and set the active request.
+  // Removing any one of the stale checks on those paths makes this test fail.
+  it('leaves no queue entry, preview, active request, slot or hint behind, and lets the request be asked again after unlock', async () => {
     const h = await ownerServer({ appPairingsEncryptionKey: 'unlock-key' });
     const real = db.getConnectedClient;
     const calls = new Map<string, number>();
@@ -485,40 +505,101 @@ describe('a request still being handled when the phone locks', () => {
       if (holdOn.get(pk) === n) await gate;
       return real(pk);
     });
-    const connecting = h.client(), encrypting = h.client(), signing = h.client();
+    const connecting = h.client(), encrypting = h.client(), signingA = h.client(), signingB = h.client();
     holdOn.set(connecting.pk, 1);
-    holdOn.set(encrypting.pk, 1);
-    holdOn.set(signing.pk, 2); // past the permission lookup, into the queue's own
-    await h.send(connecting, 'c1', 'connect', [h.owner, '', '', JSON.stringify({ name: 'Ghost App', url: 'https://ghost.example' })]);
-    await h.send(encrypting, 'e1', 'nip44_encrypt', [peer(), 'meet at 6, door code 4471']);
-    await h.send(signing, 's1', 'sign_event', [note('door code 4471')]);
+    holdOn.set(encrypting.pk, 2);
+    holdOn.set(signingA.pk, 2);
+    holdOn.set(signingB.pk, 3);
+    const ev = (c: { sk: Uint8Array }, id: string, method: string, params: string[]) =>
+      request({ clientSk: c.sk, target: h.owner, id, method, params });
+    const connectEv = ev(connecting, 'c1', 'connect', [h.owner, '', '', JSON.stringify({ name: 'Ghost App', url: 'https://ghost.example' })]);
+    const encryptEv = ev(encrypting, 'e1', 'nip44_encrypt', [peer(), 'meet at 6, door code 4471']);
+    const signAEv = ev(signingA, 'sa', 'sign_event', [note('door code 4471')]);
+    const signBEv = ev(signingB, 'sb', 'sign_event', [note('door code 4471')]);
+    await act(async () => { for (const e of [connectEv, encryptEv, signAEv, signBEv]) h.ws.deliver(e); });
     await waitFor(() => {
       expect(calls.get(connecting.pk)).toBe(1);
-      expect(calls.get(encrypting.pk)).toBe(1);
-      expect(calls.get(signing.pk)).toBe(2);
+      expect(calls.get(encrypting.pk)).toBe(2);
+      expect(calls.get(signingA.pk)).toBe(2);
+      expect(calls.get(signingB.pk)).toBe(3);
     });
 
     h.hook.rerender({ enabled: false, appPairingsEncryptionKey: null }); // lock
     await act(async () => { release(); await new Promise(r => setTimeout(r, 50)); });
 
     expect(h.hook.result.current.pendingApprovals).toHaveLength(0);
-    // No handle (the handler's own counter starts at 1) names a live request: answering any of them writes nothing.
-    for (const handle of [1, 2, 3, 4]) {
+    // No handle names a live request: answering any of them writes nothing.
+    for (const handle of [1, 2, 3, 4, 5]) {
       await act(async () => { await h.hook.result.current.approveAlways(handle); await h.hook.result.current.approveOnce(handle); });
     }
     expect(await db.listConnectedClients()).toEqual([]);
-    expect(h.ws.published).toHaveLength(0); // not even the connect's ACK
+    // Nothing answered but the lock's own "serving stopped" for the one request that already held a slot (signingB).
+    expect(h.ws.published.map(e => { try { return reply(signingB.sk, e); } catch { return null; } }))
+      .toEqual([expect.objectContaining({ id: 'sb', error: 'serving stopped' })]);
 
-    // Unlocked again: the connect's name was not remembered across the lock.
+    // Unlocked again.
     h.hook.rerender({ enabled: true, appPairingsEncryptionKey: 'unlock-key-2' });
     await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
     const ws2 = MockRelaySocket.instances.at(-1)!;
     expect(ws2).not.toBe(h.ws);
+    // The connect's name was not remembered across the lock, and the dead requests took no queue slot:
+    // only signingB reached the point of taking a handle (1), so the next one is 2.
     await act(async () => { ws2.deliver(request({ clientSk: connecting.sk, target: h.owner, id: 'after', method: 'sign_event', params: [note()] })); });
     await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
-    const { client } = h.hook.result.current.pendingApprovals[0];
-    expect(client.declaredName).toBeUndefined();
-    expect(client.declaredUrl).toBeUndefined();
-    expect(h.hook.result.current.pendingApprovals[0].askedAt).toBeGreaterThan(0);
+    const fresh = h.hook.result.current.pendingApprovals[0];
+    expect(fresh.client.declaredName).toBeUndefined();
+    expect(fresh.client.declaredUrl).toBeUndefined();
+    expect(fresh.handle).toBe(2);
+    expect(ws2.published).toHaveLength(0);
+
+    // The look-back after unlock replays what the lock dropped: it is asked again, not skipped as already handled.
+    await act(async () => { ws2.deliver(encryptEv); ws2.deliver(signAEv); ws2.deliver(signBEv); });
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(4));
+    expect(h.hook.result.current.pendingApprovals.map(a => a.method).sort()).toEqual(['nip44_encrypt', 'sign_event', 'sign_event', 'sign_event']);
+  }, 30_000);
+
+  it('sends no answer that was waiting on a lookup when the phone locked, and answers it when it is asked again', async () => {
+    const transportSk = generateSecretKey(), personaSk = generateSecretKey(), clientSk = generateSecretKey();
+    const persona = getPublicKey(personaSk);
+    const transport = new LocalSigningBackend(bytesToHex(transportSk));
+    const route: BunkerRoute = {
+      pubkey: transport.activePublicKeyHex, backend: transport, signingBackend: new LocalSigningBackend(bytesToHex(personaSk)),
+      dependantId: persona, autonomyStage: 'request-approve', authorizedClientPubkey: getPublicKey(clientSk),
+    };
+    const origin = 'https://game.example';
+    await db.saveGrant({ dependantId: persona, scope: 'sign-in', origin, decision: 'deny', decidedAt: 1, lastUsedAt: 1 });
+    const relayUrl = `wss://detail-lock-dep-${++relayCounter}.example`;
+    const hook = renderHook((props: Partial<Parameters<typeof useBunkerServer>[0]>) => useBunkerServer({
+      enabled: true, relayUrl, routes: [route], isOwnerServingActive: () => true, appPairingsEncryptionKey: 'unlock-key', ...props,
+    }), { initialProps: {} });
+    await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
+    const ws = MockRelaySocket.instances.at(-1)!;
+    const real = db.lookupGrant;
+    let held = false;
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    vi.spyOn(db, 'lookupGrant').mockImplementation(async (...args) => {
+      if (!held) { held = true; await gate; }
+      return real(...args);
+    });
+    const signIn = JSON.stringify({ kind: 21236, created_at: 1_800_000_000, tags: [['origin', origin]], content: '' });
+    const ev = request({ clientSk, target: transport.activePublicKeyHex, id: 'dep1', method: 'sign_event', params: [signIn] });
+    await act(async () => { ws.deliver(ev); });
+    await waitFor(() => expect(held).toBe(true));
+
+    hook.rerender({ enabled: false, appPairingsEncryptionKey: null }); // lock
+    await act(async () => { release(); await new Promise(r => setTimeout(r, 50)); });
+    hook.rerender({ enabled: true, appPairingsEncryptionKey: 'unlock-key-2' });
+    await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
+    const ws2 = MockRelaySocket.instances.at(-1)!;
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+    // The answer it was about to give (a refusal from the stored grant) never went out, not even after the reconnect.
+    expect(ws.published).toHaveLength(0);
+    expect(ws2.published).toHaveLength(0);
+
+    // Asked again after unlock, it is answered.
+    await act(async () => { ws2.deliver(ev); });
+    await waitFor(() => expect(ws2.published).toHaveLength(1));
+    expect(reply(clientSk, ws2.published[0])).toMatchObject({ id: 'dep1', error: 'user denied' });
   }, 30_000);
 });

@@ -125,7 +125,7 @@ describe('site and declared names', () => {
     expect(declaredNameForDisplay('Kith\u00adMoot\u3164')).toBe('KithMoot');
   });
   it('cannot be made to close the quotes the card puts around it', () => {
-    for (const q of ['"', '\u201c', '\u201d', '\uff02']) {
+    for (const q of ['"', '\u201c', '\u201d', '\uff02', '\u02ba', '\u02dd', '\u05f4', '\u2036', '\u275d', '\u275e', '\u301d', '\u301e', '\u301f', '\u{1F676}', '\u{1F678}']) {
       expect(declaredNameForDisplay(`KithMoot${q} · paired`)).toBe("KithMoot' · paired");
     }
   });
@@ -171,6 +171,12 @@ describe('declaredAppOf', () => {
   it('takes invisible characters out of the name, and a name that is only those is no name', () => {
     expect(declaredAppOf(['pk', 's', '', JSON.stringify({ name: 'Kith\u2060Moot' })])).toEqual({ name: 'KithMoot' });
     expect(declaredAppOf(['pk', 's', '', JSON.stringify({ name: '\u2060\u00ad' })])).toEqual({});
+  });
+  it('treats the names we give an unnamed client as no name at all', () => {
+    for (const name of ['Unknown app', 'unnamed app', ' UNKNOWN\u2060 APP ', 'Unnamed  App']) {
+      expect(declaredAppOf(['pk', 's', '', JSON.stringify({ name, url: 'https://x.example' })]), name).toEqual({ url: 'https://x.example' });
+    }
+    expect(declaredAppOf(['pk', 's', '', JSON.stringify({ name: 'Unknown app store' })])).toEqual({ name: 'Unknown app store' });
   });
   it('returns nothing for junk, arrays, oversize or no blob', () => {
     expect(declaredAppOf(['pk', 's', '', '{nope'])).toEqual({});

@@ -159,6 +159,9 @@ describe('request detail in the modal', () => {
     render(<BunkerApprovalModal approval={approval({ dependantId: 'd'.repeat(64), client: { appName: 'Unknown app', existing: false, pubkey: 'c'.repeat(64) } })}
       dependantName="Wren" onApproveOnce={() => {}} onApproveAlways={() => {}} onDeny={() => {}} />);
     expect(screen.getByRole('heading').textContent).toBe('Their paired device wants to sign a note.');
+    expect(screen.getByRole('button', { name: 'Allow always for this device' })).toBeTruthy();
+    expect(screen.queryByText(/Unknown app/)).toBeNull();
+    expect(screen.queryByText(/first request we've seen/)).toBeNull();
     expect(screen.queryByText(/calls itself/)).toBeNull();
   });
 

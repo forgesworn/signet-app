@@ -69,6 +69,9 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
   const headline = appHeadline(approval);
   const lookalike = appKindOf(approval) === 'none'
     ? pairedLookalike({ name: approval.client.declaredName, url: approval.client.declaredUrl }, approval.client.pubkey, connectedClients) : undefined;
+  const isDevice = appKindOf(approval) === 'device';
+  // The label "Allow always" carries: a dependant's own device is "this device", never "Unknown app".
+  const alwaysFor = isDevice ? 'this device' : name.slice(0, 30);
   const asPerson = approval.route.dependantId ? (dependantName ? safeAppName(dependantName) : DEPENDANT_FALLBACK) : (ownerLabel ? safeAppName(ownerLabel) : 'You');
 
   return (
@@ -170,7 +173,7 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
           {authority.child && <><p>Selected child: <strong>{sign?.kinterestChildName}</strong></p><p style={{ overflowWrap: 'anywhere' }}>Child identity: {authority.child.identityPk}</p><p style={{ overflowWrap: 'anywhere' }}>Device key: {authority.child.devicePk}</p></>}
           <p>This approval applies once. It is never remembered for future family or child authorisations.</p>
         </div>}
-        {!approval.client.existing && (
+        {!approval.client.existing && !isDevice && (
           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', padding: '4px 2px' }}>
             This is the first request we've seen from this client. Only approve if you started this.
           </div>
@@ -191,7 +194,7 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
           ) : approval.client.existing ? (
             <>
               <button className="btn btn-primary" onClick={() => onApproveAlways(approval.handle)}>
-                Allow always for {name.slice(0, 30)}
+                Allow always for {alwaysFor}
               </button>
               <button className="btn btn-secondary" onClick={() => onApproveOnce(approval.handle)}>
                 Allow once
@@ -203,7 +206,7 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
                 Allow once
               </button>
               <button className="btn btn-secondary" onClick={() => onApproveAlways(approval.handle)}>
-                Allow always for {name.slice(0, 30)}
+                Allow always for {alwaysFor}
               </button>
             </>
           )}

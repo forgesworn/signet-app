@@ -74,8 +74,11 @@ export function normaliseName(raw: string): string {
   return stripInvisible(stripInvisible(raw).normalize('NFKC')).replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/** Names the app itself uses for a client it knows nothing about. */
+const GENERIC_NAMES = new Set(['unknown app', 'unnamed app']);
+
 /** Quotation marks, which would let a declared name end its own quoted span. */
-const QUOTES = /["\u201c\u201d\u201e\u201f\u2033\u3003\uff02]/g;
+const QUOTES = /["\u02ba\u02dd\u05f4\u201c\u201d\u201e\u201f\u2033\u2036\u275d\u275e\u3003\u301d-\u301f\uff02\u{1f676}-\u{1f678}]/gu;
 
 /** True once a request has waited longer than `LATE_AFTER_MS`. */
 export function isLate(askedAt: number | undefined, now: number): boolean {
@@ -262,6 +265,10 @@ export interface DeclaredApp {
  */
 export function declaredAppOf(params: readonly unknown[]): DeclaredApp {
   const { label, origin } = parseConnectMetadata(connectMetadataParam(params), '');
-  const name = stripInvisible(label).trim();
+  const cleaned = stripInvisible(label).trim();
+  // "Unknown app" and "Unnamed app" are the names WE give a client with no name:
+  // an app claiming one would read as if we had said it, and "Always" would
+  // save the very label that means "no name". Treat both as no name at all.
+  const name = GENERIC_NAMES.has(normaliseName(cleaned)) ? '' : cleaned;
   return { ...(name ? { name } : {}), ...(origin ? { url: origin } : {}) };
 }
