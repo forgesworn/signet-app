@@ -10,6 +10,7 @@ vi.mock('../lib/nostr-follows', async () => {
 
 import { pinKenFromNip05 } from '@forgesworn/kenspeckle/ken';
 import { fetchKind0Profiles } from '../lib/nostr-follows';
+import { ConfirmMergeRefusedError } from '../lib/contacts-v2-key-holders';
 import { ContactNew } from './ContactNew';
 
 const mockResolve = vi.mocked(pinKenFromNip05);
@@ -180,7 +181,7 @@ describe('ContactNew', () => {
       const onOpenContact = vi.fn();
       const onCreate = vi.fn(async () => {});
       renderPage(onCreate, {
-        findExistingContact: (pk) => pk === KEY ? { contactId: 'cid-1', displayName: 'Alice Archer' } : null,
+        findExistingContact: (pk) => pk === KEY ? { contactId: 'cid-1', displayName: 'Alice Archer', state: 'active' } : null,
         onOpenContact,
       });
       lookUp('alice@example.com');
@@ -206,17 +207,150 @@ describe('ContactNew', () => {
       expect(key).toEqual({ pubkey: KEY, nip05: '_@example.com' });
     });
 
-    it('never downloads the profile picture', async () => {
+    it('Save with a typed address and no lookup yet looks it up first, then saves with the key and profile name', async () => {
+      mockProfiles.mockResolvedValue(new Map([[KEY, { displayName: 'Alice Archer' }]]));
+      const onCreate = vi.fn(async () => {});
+      const { onDone } = renderPage(onCreate);
+      fireEvent.change(screen.getByLabelText('NIP-05 address (optional)'), { target: { value: 'alice@example.com' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+      await waitFor(() => expect(onDone).toHaveBeenCalled());
+      const [contact, methods, key] = onCreate.mock.calls[0] as unknown as [{ displayName: string }, unknown[], unknown];
+      expect(contact.displayName).toBe('Alice Archer');
+      expect(methods).toHaveLength(1);
+      expect(key).toEqual({ pubkey: KEY, nip05: 'alice@example.com' });
+    });
+
+    it('Save with an address whose lookup fails shows the humanised error and saves nothing', async () => {
+      mockResolve.mockRejectedValue(new Error('ken: nip05 lookup failed (HTTP 404)'));
+      const onCreate = vi.fn(async () => {});
+      const { onDone } = renderPage(onCreate);
+      fireEvent.change(nameBox(), { target: { value: 'Alice' } });
+      fireEvent.change(screen.getByLabelText('NIP-05 address (optional)'), { target: { value: 'alice@example.com' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not reach that address right now.'));
+      expect(onCreate).not.toHaveBeenCalled();
+      expect(onDone).not.toHaveBeenCalled();
+      // Clearing the field saves without it.
+      fireEvent.change(screen.getByLabelText('NIP-05 address (optional)'), { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+      await waitFor(() => expect(onDone).toHaveBeenCalled());
+      const [, methods, key] = onCreate.mock.calls[0] as unknown as [unknown, unknown[], unknown];
+      expect(methods).toEqual([]);
+      expect(key).toBeUndefined();
+    });
+
+    it('Save with an address that is already a contact creates nothing', async () => {
+      const onCreate = vi.fn(async () => {});
+      renderPage(onCreate, { findExistingContact: () => ({ contactId: 'cid-1', displayName: 'Alice Archer', state: 'active' }) });
+      fireEvent.change(nameBox(), { target: { value: 'Alice' } });
+      fireEvent.change(screen.getByLabelText('NIP-05 address (optional)'), { target: { value: 'alice@example.com' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+      await waitFor(() => expect(screen.getByText(/Already in your contacts as Alice Archer/)).toBeDefined());
+      expect(onCreate).not.toHaveBeenCalled();
+    });
+
+    it('Save is disabled while a lookup is in flight', async () => {
+      let release: (v: { pubkey: string }) => void = () => {};
+      mockResolve.mockReturnValue(new Promise(r => { release = r as never; }) as never);
+      renderPage(vi.fn(async () => {}));
+      fireEvent.change(nameBox(), { target: { value: 'Alice' } });
+      lookUp('alice@example.com');
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Save contact' }) as HTMLButtonElement).disabled).toBe(true));
+      release({ pubkey: KEY });
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Save contact' }) as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it('shows a deleted or archived holder as theirs, with no Open and no Save', async () => {
+      for (const state of ['deleted', 'archived'] as const) {
+        const onCreate = vi.fn(async () => {});
+        renderPage(onCreate, { findExistingContact: () => ({ contactId: 'cid-1', displayName: 'Bob', state }), onOpenContact: vi.fn() });
+        lookUp('bob@example.com');
+        await waitFor(() => expect(screen.getByText(new RegExp(`That key belongs to Bob, a contact you ${state}`))).toBeDefined());
+        expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Save contact' })).toBeNull();
+        cleanup();
+      }
+    });
+
+    it('a save the write refuses (a key a deleted contact holds) shows whose it is and offers no second try', async () => {
+      const onCreate = vi.fn(async () => {
+        throw new ConfirmMergeRefusedError({ contactId: 'cid-9', displayName: 'Bob', state: 'deleted' });
+      });
+      const { onDone } = renderPage(onCreate);
+      fireEvent.change(nameBox(), { target: { value: 'Bob' } });
+      lookUp('bob@example.com');
+      await waitFor(() => expect(screen.getByText(/Found/)).toBeDefined());
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+      await waitFor(() => expect(screen.getByText(/That key belongs to Bob, a contact you deleted/)).toBeDefined());
+      expect(screen.queryByText('Could not save this contact.')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Save contact' })).toBeNull();
+      expect(onDone).not.toHaveBeenCalled();
+    });
+
+    it('refuses a key that is one of the person\'s own, whichever identity it is', async () => {
+      const other = 'd'.repeat(64);
+      mockResolve.mockResolvedValue({ pubkey: other } as never);
+      renderPage(vi.fn(async () => {}), { ownKeys: [OWNER, other] });
+      lookUp('me@example.com');
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent("That's your own key."));
+      expect(screen.getByRole('alert').textContent).not.toMatch(/ken/i);
+      expect(screen.queryByText(/Found/)).toBeNull();
+    });
+
+    it('Clear during the profile fetch drops the key and the late name never lands', async () => {
+      let release: (m: Map<string, { displayName: string }>) => void = () => {};
+      mockProfiles.mockReturnValue(new Promise(r => { release = r as never; }) as never);
+      renderPage(vi.fn(async () => {}));
+      lookUp('alice@example.com');
+      await waitFor(() => expect(screen.getByText(/Found/)).toBeDefined());
+      await waitFor(() => expect(mockProfiles).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      release(new Map([[KEY, { displayName: 'Late Name' }]]));
+      await new Promise(r => setTimeout(r, 20));
+      expect(nameBox().value).toBe('alice');
+      expect(screen.queryByText(/Found/)).toBeNull();
+    });
+
+    it('unticking the box during the profile fetch keeps the address name', async () => {
+      let release: (m: Map<string, { displayName: string }>) => void = () => {};
+      mockProfiles.mockReturnValue(new Promise(r => { release = r as never; }) as never);
+      renderPage(vi.fn(async () => {}));
+      lookUp('alice@example.com');
+      await waitFor(() => expect(mockProfiles).toHaveBeenCalled());
+      fireEvent.click(screen.getByLabelText('Get their name from their Nostr profile'));
+      release(new Map([[KEY, { displayName: 'Late Name' }]]));
+      await new Promise(r => setTimeout(r, 20));
+      expect(nameBox().value).toBe('alice');
+    });
+
+    it('leaving the page while the address resolves starts no relay query', async () => {
+      let release: (v: { pubkey: string }) => void = () => {};
+      mockResolve.mockReturnValue(new Promise(r => { release = r as never; }) as never);
+      renderPage(vi.fn(async () => {}));
+      lookUp('alice@example.com');
+      cleanup();
+      release({ pubkey: KEY });
+      await new Promise(r => setTimeout(r, 20));
+      expect(mockProfiles).not.toHaveBeenCalled();
+    });
+
+    it('cleans a hostile or over-long profile name before it fills the Name field', async () => {
+      const hostile = '\u202Eevil' + 'x'.repeat(300);
+      mockProfiles.mockResolvedValue(new Map([[KEY, { displayName: hostile }]]));
+      renderPage(vi.fn(async () => {}));
+      lookUp('alice@example.com');
+      await waitFor(() => expect(nameBox().value).not.toBe('alice'));
+      expect(nameBox().value).not.toContain('\u202E');
+      expect(nameBox().value.length).toBeLessThanOrEqual(100);
+    });
+
+    it('takes only the name from the profile: no picture is shown or requested', async () => {
       mockProfiles.mockResolvedValue(new Map([[KEY, { displayName: 'Alice', pictureUrl: 'https://evil.example/face.png' }]]));
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('x'));
-      try {
-        renderPage(vi.fn(async () => {}));
-        lookUp('alice@example.com');
-        await waitFor(() => expect(nameBox().value).toBe('Alice'));
-        expect(fetchSpy.mock.calls.some(c => String(c[0]).includes('evil.example'))).toBe(false);
-        expect(document.querySelector('img')).toBeNull();
-        expect(screen.queryByText(/evil\.example/)).toBeNull();
-      } finally { fetchSpy.mockRestore(); }
+      renderPage(vi.fn(async () => {}));
+      lookUp('alice@example.com');
+      await waitFor(() => expect(nameBox().value).toBe('Alice'));
+      expect(document.querySelector('img')).toBeNull();
+      expect(document.body.innerHTML).not.toContain('evil.example');
     });
   });
 });

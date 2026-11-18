@@ -91,3 +91,26 @@ export function confirmMergeRefusal(
   if (!other) return { contactId: after?.contactId ?? contactId, displayName: after ? contactDisplayName(after) : '', state: 'active' };
   return { contactId: other.contactId, displayName: contactDisplayName(other), state: contactRecordState(other) };
 }
+
+/**
+ * Would adding a BRAND NEW contact (`contactId`, not yet in `current`) with
+ * the `planned` operations pull another contact into its group, or fold it
+ * into theirs? The new-contact twin of `confirmMergeRefusal`, which has no
+ * contact to compare against yet. Returns whose key it is, or null when the
+ * write is safe. Judged against the CURRENT identities of every record
+ * (deleted and archived ones keep theirs), never against keys once removed.
+ */
+export function newContactMergeRefusal(
+  current: ContactOperation[],
+  planned: ContactOperation[],
+  contactId: string,
+): ConfirmRefusal | null {
+  const before = applyOperations(current);
+  const after = findRecord(applyOperations([...current, ...planned]), contactId);
+  if (!after) return null;
+  const others = groupIds(after).filter(id => id !== contactId);
+  if (after.contactId === contactId && others.length === 0) return null;
+  const other = others.map(id => findRecord(before, id)).find(Boolean);
+  if (!other) return { contactId: after.contactId, displayName: contactDisplayName(after), state: 'active' };
+  return { contactId: other.contactId, displayName: contactDisplayName(other), state: contactRecordState(other) };
+}

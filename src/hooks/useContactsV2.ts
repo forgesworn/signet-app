@@ -58,8 +58,18 @@ import { resolveEffectiveDirectory, type EffectiveContext } from '../lib/contact
 import { contactsMutationQueue, type SerialQueue } from '../lib/contacts-v2-queue';
 import { contactBelongsToList } from '../lib/contacts-v2-membership';
 import { planFollowsImport, type FollowImportEntry, type FollowsImportResult } from '../lib/contacts-v2-follows-import';
-import { ConfirmMergeRefusedError, confirmMergeRefusal, keyHolderIds } from '../lib/contacts-v2-key-holders';
+import { ConfirmMergeRefusedError, confirmMergeRefusal, keyHolderIds, newContactMergeRefusal } from '../lib/contacts-v2-key-holders';
 export type { FollowsImportResult };
+
+/** Everything the New contact form saves, written as ONE batch. */
+export interface CreateContactInput {
+  /** The identity list the contact is added to. */
+  ownerIdentityPubkey: string;
+  contact: AddContactValue;
+  methods: Omit<AddMethodValue, 'itemId'>[];
+  /** A key the form resolved. Present means the one origin is "NIP-05"; absent, "Added manually". */
+  identity?: Omit<AddIdentityValue, 'itemId'>;
+}
 
 export interface UseContactsV2Options {
   directoryId: string | null;
@@ -100,6 +110,14 @@ export interface UseContactsV2Result {
    */
   unlinkContactsFromList: (contactIds: string[], ownerIdentityPubkey?: string) => Promise<number>;
   addContact: (v: AddContactValue) => Promise<string>;
+  /**
+   * The New contact form's save: the contact, its methods, an optional key and
+   * exactly ONE origin, in a single batch. A key another contact holds (a
+   * deleted or archived one keeps its keys) rejects with
+   * `ConfirmMergeRefusedError` before anything is saved, so a failure leaves
+   * nothing behind.
+   */
+  createContact: (v: CreateContactInput) => Promise<string>;
   renameContact: (contactId: string, displayName: string) => Promise<void>;
   setTier: (contactId: string, tier: ContactTier) => Promise<void>;
   setRoles: (contactId: string, roles: string[]) => Promise<void>;
@@ -305,6 +323,60 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     return contactId;
   }, [mutate, opts.ownerIdentityPubkey]);
 
+  const createContact = useCallback(async (v: CreateContactInput): Promise<string> => {
+    if (!directoryId || !encryptionKey || !actor) {
+      throw new Error('contacts: cannot add — contacts scope not ready');
+    }
+    return queueRef.current!.run(async () => {
+      const currentOps = await db.listContactOperationsV2(directoryId, encryptionKey);
+      const contactId = newContactId();
+      const clock = nextClock(clockRef.current, frontierOf(currentOps).maxClock);
+      const now = Date.now();
+      // Stamped exactly as `mutate` stamps each of these operations.
+      const stamp = opts.ownerIdentityPubkey ? { ownerIdentityPubkey: opts.ownerIdentityPubkey } : {};
+      const ops: ContactOperation[] = [];
+      const make = (action: ContactOperation['action'], value: unknown, itemId?: string) => ({
+        ...buildOperation({
+          directoryId, contactId, action, value, clock: clock + ops.length, actor, now,
+          operationId: newOperationId(), itemId,
+        }),
+        ...stamp,
+      });
+      ops.push(make('add', { ...v.contact, ownerIdentityPubkey: v.ownerIdentityPubkey }));
+      for (const m of v.methods) {
+        const itemId = newContactId();
+        ops.push(make('add-method', { ...m, itemId }, itemId));
+      }
+      if (v.identity) {
+        const itemId = newContactId();
+        ops.push(make('add-identity', { ...v.identity, itemId }, itemId));
+      }
+      if (actor.actorRole !== 'app') {
+        ops.push({ ...buildOperation({
+          directoryId, contactId, action: 'record-origin',
+          value: { id: newContactId(), ownerIdentityPubkey: v.ownerIdentityPubkey,
+            method: v.identity ? 'nip05' : 'manual', addedAt: now },
+          clock: clock + ops.length, actor, now, operationId: newOperationId(),
+        }), ownerIdentityPubkey: v.ownerIdentityPubkey });
+      }
+      if (!ops.every(validateOperation)) throw new Error('contacts: cannot add — invalid operation');
+      if (v.identity) {
+        const refusal = newContactMergeRefusal(currentOps, ops, contactId);
+        if (refusal) throw new ConfirmMergeRefusedError(refusal);
+      }
+      if (currentScope.current.directoryId !== directoryId || currentScope.current.encryptionKey !== encryptionKey) throw new Error('Contacts scope changed.');
+      await db.saveContactOperationsV2(ops, encryptionKey);
+      opsRef.current = [...currentOps, ...ops];
+      clockRef.current = ops[ops.length - 1].logicalClock;
+      try {
+        publish(opsRef.current, directoryId, encryptionKey);
+      } finally {
+        onMutatedRef.current?.();
+      }
+      return contactId;
+    });
+  }, [directoryId, encryptionKey, actor, opts.ownerIdentityPubkey, publish]);
+
   const recogniseContact = useCallback(async (pubkey: string, displayName: string, ownerIdentityPubkey = opts.ownerIdentityPubkey, originMethod?: ContactOrigin['method']): Promise<string> => {
     if (!directoryId || !encryptionKey || !actor || !ownerIdentityPubkey) throw new Error('Choose an identity list first.');
     return queueRef.current!.run(async () => {
@@ -436,6 +508,7 @@ export function useContactsV2(opts: UseContactsV2Options): UseContactsV2Result {
     loading,
     reload,
     addContact,
+    createContact,
     recogniseContact,
     recogniseContacts,
     unlinkContactsFromList,

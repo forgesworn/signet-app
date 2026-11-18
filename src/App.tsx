@@ -221,7 +221,7 @@ import { ContactsRolodex } from './pages/ContactsRolodex';
 import { ContactDetail } from './pages/ContactDetail';
 import { applyConfirmSteps } from './lib/contacts-v2-confirm';
 import { ContactNew } from './pages/ContactNew';
-import { saveNewContact } from './lib/contacts-v2-new-contact-save';
+import { findContactHoldingKey, saveNewContact } from './lib/contacts-v2-new-contact-save';
 import { AddMember } from './pages/AddMember';
 import { SettingsMenu } from './pages/SettingsMenu';
 import { GuardianSettings } from './pages/GuardianSettings';
@@ -14374,19 +14374,13 @@ function AppContent() {
         <ContactNew
           subjectName={contactsIdentityLists.find(l => l.ownerIdentityPubkey === contactsWriteIdentity)?.label ?? contactsScope.subjectName}
           ownerPubkeyHex={contactsWriteIdentity || undefined}
+          ownKeys={contactsIdentityLists.map(l => l.ownerIdentityPubkey)}
           profileRelays={syncRelays.read}
-          findExistingContact={(pubkey) => {
-            const key = pubkey.toLowerCase();
-            const held = contactsV2.records.find(r => r.lifecycle !== 'removed' && r.identities.some(i => i.pubkey === key));
-            return held ? { contactId: held.contactId, displayName: held.displayName } : null;
-          }}
+          findExistingContact={(pubkey) => findContactHoldingKey(contactsV2.records, pubkey)}
           onOpenContact={(contactId) => { setSelectedContactId(contactId); navigateReplace('contact-detail'); }}
           onCreate={async (contact, methods, key) => {
             if (!contactsWriteIdentity) throw new Error('Choose an identity for this contact.');
-            await saveNewContact(
-              { ...contactsV2, recordOrigin: contactsListIdentity === 'all' ? undefined : contactsV2.recordOrigin },
-              contactsWriteIdentity, contact, methods, key,
-            );
+            await saveNewContact(contactsV2, contactsWriteIdentity, contact, methods, key);
           }}
           onDone={() => navigateReplace('contacts')}
         />

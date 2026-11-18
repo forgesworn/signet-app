@@ -93,7 +93,7 @@ describe('parseNip05', () => {
 
   it('accepts a long-but-within-cap domain', () => {
     const label = 'a'.repeat(63);
-    const domain = `${label}.${label}.${label}.b`; // 194 chars — under the 253 cap
+    const domain = `${label}.${label}.${label}.bb`; // 195 chars — under the 253 cap
     expect(domain.length).toBeLessThan(253);
     const result = parseNip05(`alice@${domain}`);
     expect(result).toEqual({ name: 'alice', domain });
@@ -263,5 +263,12 @@ describe('bare domain, canonical and display forms', () => {
     expect(displayNip05('example.com')).toBe('example.com');
     expect(displayNip05('_@')).toBe('_@');
     expect(displayNip05('')).toBe('');
+  });
+
+  it('refuses a numeric or one-letter TLD, as the resolver does', () => {
+    for (const bad of ['alice@example.123', 'example.123', 'alice@example.c', 'alice@127.1', 'alice@0x7f.1']) {
+      expect(parseNip05(bad), bad).toBeNull();
+    }
+    expect(parseNip05('alice@example.xn--p1ai')).toEqual({ name: 'alice', domain: 'example.xn--p1ai' });
   });
 });

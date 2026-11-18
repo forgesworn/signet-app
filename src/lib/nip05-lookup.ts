@@ -17,10 +17,10 @@ export function validateNip05Shape(value: string): string | null {
  *  user. `pinKen`/`pinKenFromNip05` throw "…must not equal ownerPubkeyHex"
  *  when the resolved key turns out to be the owner's own, so that case is
  *  named even though the hex/QR paths already check for it up front. */
-export function humaniseKenAddError(e: unknown): string {
+export function humaniseKenAddError(e: unknown, ownKeyCopy = "That's your own key — you can't add yourself as a ken."): string {
   const msg = e instanceof Error ? e.message : '';
   if (msg.includes('must not equal ownerPubkeyHex')) {
-    return "That's your own key — you can't add yourself as a ken.";
+    return ownKeyCopy;
   }
   if (msg.includes('HTTP')) {
     return 'Could not reach that address right now. Check it is correct and try again.';

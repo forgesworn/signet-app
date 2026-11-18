@@ -272,6 +272,16 @@ export const NIP05_FOUND_LABEL = 'Found';
 export const NIP05_CLEAR_LABEL = 'Clear';
 export const NIP05_PROFILE_NAME_LABEL = 'Get their name from their Nostr profile';
 export const OPEN_CONTACT_LABEL = 'Open';
+export const NEW_CONTACT_OWN_KEY_COPY = "That's your own key.";
+/** The key a New contact lookup found is already on a contact: say whose, and that nothing was added. */
+export function newContactKeyHeldCopy(name: string, state: 'active' | 'deleted' | 'archived'): string {
+  const who = safeName(name) || 'another contact';
+  switch (state) {
+    case 'deleted': return `That key belongs to ${who}, a contact you deleted. Nothing was added.`;
+    case 'archived': return `That key belongs to ${who}, a contact you archived. Nothing was added.`;
+    default: return `Already in your contacts as ${who}`;
+  }
+}
 export const NIP05_ADDRESS_INVALID_COPY = 'Enter a NIP-05 address in the format name@domain.com, or just domain.com.';
 export function alreadyInContactsCopy(name: string): string {
   return `Already in your contacts as ${safeName(name)}`;

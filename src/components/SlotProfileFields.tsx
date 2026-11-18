@@ -112,6 +112,13 @@ export interface SlotProfileFieldsProps {
   onNip05Checked?: (result: Nip05CheckResult, checkedAt: number) => void;
 }
 
+/** What the form would save for the NIP-05 field: canonical, or the saved value when it is the same address. */
+function nip05Value(typed: string, saved: string | undefined): string | undefined {
+  const canonical = canonicalNip05(typed);
+  if (canonical !== null) return saved && canonicalNip05(saved) === canonical ? saved : canonical;
+  return typed.trim() || undefined;
+}
+
 // Lightning-address (LUD-16) shape. NIP-05 no longer shares it: LUD-16 allows
 // `+` in the local part, NIP-05 does not, so the NIP-05 field is validated by
 // `canonicalNip05` (parseNip05 itself) so the two can never drift apart.
@@ -340,7 +347,9 @@ export function SlotProfileFields({
       bannerBlossomHash: bannerForSave === bannerUrl ? bannerBlossomHash : undefined,
       // Canonical form (`_@domain` for a bare domain) so a published kind-0
       // never carries a bare domain. An invalid value can't reach Save.
-      nip05: canonicalNip05(nip05) ?? (nip05.trim() || undefined),
+      // A saved value that is the same address in another case is kept as it
+      // is, so an untouched form never reads as edited.
+      nip05: nip05Value(nip05, config.nip05),
       lud16: lud16.trim() || undefined,
       website: website.trim() || undefined,
     };
@@ -354,7 +363,7 @@ export function SlotProfileFields({
   // that's actually persisted. "Dirty" here is scoped to the NIP-05 field
   // only (not the whole form) so editing an unrelated field (About, say)
   // doesn't block a check on an already-saved NIP-05.
-  const nip05Dirty = (canonicalNip05(nip05) ?? nip05.trim()) !== (config.nip05 ?? '');
+  const nip05Dirty = (nip05Value(nip05, config.nip05) ?? '') !== (config.nip05 ?? '');
   const nip05Empty = nip05.trim().length === 0;
   // Save now uses parseNip05 too, but a value stored by an older build (with
   // a `+`, say) can still fail it. Gate the Check button on the parser, or

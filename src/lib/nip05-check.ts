@@ -24,6 +24,11 @@ const NAME_RE = /^[a-z0-9._-]+$/;
 // alphanumeric with internal hyphens only (no leading/trailing hyphen).
 const HOSTNAME_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*$/;
 
+// The last label must be letters (2-63) or punycode, as kenspeckle's resolver
+// insists, so an address the app accepts is one the resolver will take. This
+// also rules out every spelling of an IPv4 literal (`127.1`, `0x7f.1`).
+const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
+
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 const HEX64_RE = /^[0-9a-f]{64}$/i;
@@ -75,6 +80,7 @@ export function parseNip05(identifier: string): ParsedNip05 | null {
   if (IPV4_RE.test(domain)) return null; // IP literals are never valid NIP-05 domains
   if (!domain.includes('.')) return null; // require at least one dot — no bare/single-label hosts
   if (!HOSTNAME_RE.test(domain)) return null;
+  if (!TLD_RE.test(domain.slice(domain.lastIndexOf('.') + 1))) return null;
   if (isPrivateOrInternalHost(domain)) return null;
 
   return { name, domain };

@@ -191,6 +191,34 @@ describe('SlotProfileFields', () => {
     expect((onSave.mock.calls[0][0] as PublicProfileConfig).nip05).toBe('_@alex.example.org');
   });
 
+  it('a mixed-case saved NIP-05 opens pristine: Save disabled, Check not stuck behind "Save first"', () => {
+    render(
+      <SlotProfileFields
+        pubkey={PUBKEY}
+        config={baseConfig({ nip05: 'Alex@Example.com' })}
+        slotKind="natural-person"
+        onSaveConfig={vi.fn().mockResolvedValue(undefined)}
+        onNip05Checked={vi.fn()}
+      />,
+    );
+    expect((screen.getByRole('button', { name: /^save$/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/save first/i)).toBeNull();
+    expect((screen.getByRole('button', { name: /^check$/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('an unchanged legacy NIP-05 with a + does not block saving another field', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SlotProfileFields pubkey={PUBKEY} config={baseConfig({ nip05: 'alice+tag@example.com' })} slotKind="natural-person" onSaveConfig={onSave} />,
+    );
+    fireEvent.change(screen.getByDisplayValue('A line about Alex'), { target: { value: 'New about' } });
+    const saveBtn = screen.getByRole('button', { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0][0] as PublicProfileConfig).nip05).toBe('alice+tag@example.com');
+  });
+
   it('Save button stays disabled when form is pristine', () => {
     render(
       <SlotProfileFields
