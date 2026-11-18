@@ -44,7 +44,10 @@ export interface ContactInviteOutbox {
  * (D5): the dependant's endpoint pubkey and its authorised client pubkey. */
 export interface ChildExchangePairing { endpoint: string; client: string }
 export interface HandshakeRecord { startedAt: number; inviteId?: string; opticalAcceptanceAt?: number; opticalAcceptanceSent?: boolean; strength?: 'mutual' | 'tapped' | 'proven'; confirmedAt?: number; sigil?: string }
-export interface StoredContactExchange extends ContactExchangeState { handshake?: HandshakeRecord; app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing }
+/** `actedAsChild` is stamped when the exchange STARTS in child mode on the guardian's phone (the
+ * child is the actor), and read at completion, which can happen after the page has closed. It only
+ * ever restricts: a stamped exchange completes as the dependant, so the child ceiling applies. */
+export interface StoredContactExchange extends ContactExchangeState { handshake?: HandshakeRecord; app?: ContactInviteAppOrigin; origin?: ContactOrigin; contactId?: string; wordsConfirmedAt?: number; wordsRecordedAt?: number; pairing?: ChildExchangePairing; actedAsChild?: true }
 /** Child-originated: stamped at `requestChildPlan`, or an older unstamped row
  * written by that path (requester with an accepted-request origin). */
 export function isChildContactExchange(exchange: StoredContactExchange): boolean {
@@ -82,6 +85,7 @@ function checkExchange(state: StoredContactExchange): boolean {
       || (state.handshake.strength === undefined && (state.handshake.confirmedAt !== undefined || state.handshake.sigil !== undefined)) || (state.handshake.strength !== undefined
       && (!['mutual', 'tapped', 'proven'].includes(state.handshake.strength) || !stamp(state.handshake.confirmedAt)
         || state.phase !== 'complete' || state.handshake.sigil !== handshakeSigil(state))))) return false;
+    if (state.actedAsChild !== undefined && state.actedAsChild !== true) return false;
     if (state.wordsRecordedAt !== undefined && (!stamp(state.wordsRecordedAt) || state.wordsRecordedAt !== state.wordsConfirmedAt)) return false;
     if ((state.contactId !== undefined && !ID.test(state.contactId)) || (state.wordsConfirmedAt !== undefined && !stamp(state.wordsConfirmedAt))) return false;
     const request = parseContactExchangeMessage(JSON.stringify(state.request));
@@ -300,7 +304,8 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
       || (old.acceptance && row.acceptance && contactMessageHash(old.acceptance) !== contactMessageHash(row.acceptance))
       || (old.reveal && row.reveal && contactMessageHash(old.reveal) !== contactMessageHash(row.reveal)))) {
       retainConflict(old); retainConflict(row);
-      exchanges.set(contactExchangeKey(row.request), JSON.stringify(old) < JSON.stringify(row) ? old : row);
+      const kept = JSON.stringify(old) < JSON.stringify(row) ? old : row;
+      exchanges.set(contactExchangeKey(row.request), old.actedAsChild || row.actedAsChild ? { ...kept, actedAsChild: true as const } : kept);
       continue;
     }
     if (!old || rank[row.phase] > rank[old.phase]) exchanges.set(contactExchangeKey(row.request), row);
@@ -319,7 +324,7 @@ export function mergeContactInviteVault(local: ContactInviteVault, remote: Conta
     // "Not them" is final for a handshake nobody confirmed: an older or remote copy still
     // saying `complete` must not bring it back. A confirmed one (strength) still wins.
     const unconfirmedDecline = chosen.phase === 'complete' && !!handshake && !handshake.strength && (old?.phase === 'declined' || row.phase === 'declined');
-    exchanges.set(contactExchangeKey(row.request), { ...chosen, ...(unconfirmedDecline ? { phase: 'declined' as const } : {}), ...(handshake ? { handshake } : {}), origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
+    exchanges.set(contactExchangeKey(row.request), { ...chosen, ...(old?.actedAsChild || row.actedAsChild ? { actedAsChild: true as const } : {}), ...(unconfirmedDecline ? { phase: 'declined' as const } : {}), ...(handshake ? { handshake } : {}), origin: [old?.origin, row.origin].filter((origin): origin is ContactOrigin => !!origin).map(normaliseContactOrigin).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)[0], contactId: [old?.contactId, row.contactId].filter((id): id is string => !!id).sort()[0],
       wordsConfirmedAt: Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) || undefined,
       wordsRecordedAt: Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) === Math.max(old?.wordsConfirmedAt ?? 0, row.wordsConfirmedAt ?? 0) ? Math.max(old?.wordsRecordedAt ?? 0, row.wordsRecordedAt ?? 0) || undefined : undefined });
   }

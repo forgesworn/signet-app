@@ -1,6 +1,7 @@
 import { beforeEach, expect, it } from 'vitest';
 import { createContactRequest, beginContactExchange, acceptContactExchange, receiveContactAcceptance, confirmContactRevealSent } from '@forgesworn/signet-contacts';
-import { recordCompletedContactExchange, contactPeerAllowed } from './contact-exchange-record';
+import { recordCompletedContactExchange, contactPeerAllowed, exchangeCompletionActor } from './contact-exchange-record';
+import { resolveEffectiveDirectory } from './contacts-v2-effective';
 import { listContactOperationsV2, saveContactOperationsV2, purgeAllUserData } from './db';
 import { applyOperations } from './contacts-v2-reducer';
 import { buildOperation } from './contacts-v2-mutations';
@@ -295,4 +296,28 @@ it('a tapped handshake proves the key (one rung below mutual) and records the ta
   const check = applyOperations(await listContactOperationsV2('owner', key)).get(`owner/${contactId}`)!.checks![0];
   expect(check.method).toBe('in-person');
   expect(readHandshakeEvidence(check.evidence)).toEqual({ strength: 'tapped', sigil });
+});
+
+it('stamps an exchange the child started in child mode as the dependant, so the child ceiling applies', async () => {
+  const kid = 'd'.repeat(64), guardian = '8'.repeat(64), device = '3'.repeat(32), directoryId = `dependant:${kid}`;
+  const asChild = exchangeCompletionActor({ directoryId, exchange: { actedAsChild: true }, guardianPubkey: guardian, actorDeviceId: device });
+  expect(asChild).toEqual({ actorPubkey: kid, actorRole: 'dependant', actorDeviceId: device });
+  const asGuardian = exchangeCompletionActor({ directoryId, exchange: {}, guardianPubkey: guardian, actorDeviceId: device });
+  expect(asGuardian).toEqual({ actorPubkey: guardian, actorRole: 'guardian', actorDeviceId: device });
+  const contactId = await recordCompletedContactExchange({ directoryId, key, actor: asChild, exchange: exchange(), isCurrent: () => true });
+  const record = applyOperations(await listContactOperationsV2(directoryId, key)).get(`${directoryId}/${contactId}`)!;
+  expect(record.createdByActorRole).toBe('dependant');
+  const [effective] = resolveEffectiveDirectory([record], { activeGuardianPubkeys: [guardian], defaultChildCeiling: 'ken', directoryIsDependant: true });
+  expect(record.tier).toBe('kith');
+  expect(effective.effectiveTier).toBe('ken');
+  expect((await listContactOperationsV2(directoryId, key)).every(op => op.actorPubkey === kid && op.actorRole === 'dependant')).toBe(true);
+});
+
+it('fails closed: an exchange stamped as the child never completes as the guardian when the directory is not a dependant one', () => {
+  const guardian = '8'.repeat(64), device = '3'.repeat(32);
+  for (const directoryId of ['owner', 'dependant:short', `Dependant:${'d'.repeat(64)}`, `dependant:${'D'.repeat(64)}`, '']) {
+    expect(() => exchangeCompletionActor({ directoryId, exchange: { actedAsChild: true }, guardianPubkey: guardian, actorDeviceId: device }), directoryId).toThrow();
+  }
+  // Unstamped exchanges keep the guardian's stamp everywhere.
+  expect(exchangeCompletionActor({ directoryId: 'owner', exchange: {}, guardianPubkey: guardian, actorDeviceId: device }).actorRole).toBe('owner');
 });

@@ -58,6 +58,9 @@ export class ContactInviteService {
     appAllowed?(app: ContactInviteAppOrigin, identity: string, action: 'create' | 'receive', automatic: boolean): Promise<boolean>;
     automaticAttempts?: Set<string>;
     onCompleted?(exchange: StoredContactExchange): Promise<string>;
+    /** This service acts for the child in child mode on the guardian's phone: every
+     * exchange it starts is stamped `actedAsChild`, and completes as the dependant. */
+    actAsChild?: boolean;
     /** Dependant directories only (D5): the dependant's live pairing, or null
      * when it is no longer paired. Throw when the session itself changed. */
     childPairing?(): Promise<ChildExchangePairing | null>;
@@ -227,7 +230,7 @@ export class ContactInviteService {
     const event = await wrapContactExchange(request, parsed.secret, signer); this.check();
     if (!await this.options.mayConnect(parsed.recipient)) throw new Error('The contact policy changed');
     if (app && !await this.options.appAllowed?.(app, identityPubkey, 'receive', false)) throw new Error('App invitation permission ended');
-    const exchange: StoredContactExchange = { ...beginContactExchange(request, nonce), ...(handshake ? { handshake: { startedAt: now } } : {}), ...(app ? { app } : {}), origin: { id: contactExchangeKey(request), ownerIdentityPubkey: identityPubkey, method: app ? 'app' : 'link', addedAt: now * 1000, ...(app ? { appName: app.appName } : {}), ...(parsed.caption ? { caption: parsed.caption } : {}) } };
+    const exchange: StoredContactExchange = { ...beginContactExchange(request, nonce), ...(this.options.actAsChild ? { actedAsChild: true as const } : {}), ...(handshake ? { handshake: { startedAt: now } } : {}), ...(app ? { app } : {}), origin: { id: contactExchangeKey(request), ownerIdentityPubkey: identityPubkey, method: app ? 'app' : 'link', addedAt: now * 1000, ...(app ? { appName: app.appName } : {}), ...(parsed.caption ? { caption: parsed.caption } : {}) } };
     await this.update(state => {
       if (app) {
         const old = state.exchanges.find(e => e.app?.grantId === app.grantId && e.app.requestId === app.requestId);
@@ -432,7 +435,7 @@ export class ContactInviteService {
     assertContactMailboxCapacity(state, request.to, now, replyRelays, 'exchange');
     // Every refusal above has passed; only now may the card be built (M3).
     const card = await resolveCard(cardSource); this.check();
-    const next: StoredContactExchange = { ...acceptContactExchange(request, bytesToHex(randomBytes(32)), now, card), ...(handshake ? { handshake: { startedAt: now, ...(invite ? { inviteId: invite.id } : {}) } } : {}), ...(invite?.app ? { app: invite.app } : {}),
+    const next: StoredContactExchange = { ...acceptContactExchange(request, bytesToHex(randomBytes(32)), now, card), ...(this.options.actAsChild ? { actedAsChild: true as const } : {}), ...(handshake ? { handshake: { startedAt: now, ...(invite ? { inviteId: invite.id } : {}) } } : {}), ...(invite?.app ? { app: invite.app } : {}),
       origin: { id: contactExchangeKey(request), ownerIdentityPubkey: request.to, method: invite?.app ? 'app' : 'accepted-request', addedAt: now * 1000, ...(invite?.app ? { appName: invite.app.appName } : {}),
         ...(invite ? { inviteId: invite.id, inviteName: invite.name } : {}) } };
     const signer = await this.options.signer(request.to); this.check();

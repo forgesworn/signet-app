@@ -65,6 +65,26 @@ export async function recordPartnerCardPhoto(args: { exchange: ContactExchangeSt
   return { peer, hash: photo.hash, server: photo.server };
 }
 
+/**
+ * Who authors the contact an exchange completes into. An exchange the child
+ * started in child mode on the guardian's phone carries `actedAsChild` (fixed
+ * when it started, so completing it after the page has closed or in a
+ * background service still counts as the child): its ops are stamped with the
+ * dependant's id and role `dependant`, exactly what a paired child authors, so
+ * the child ceiling applies. Every other exchange keeps the guardian's stamp. A
+ * stamped exchange in a directory that is not the dependant's throws instead.
+ */
+export function exchangeCompletionActor(args: { directoryId: string; exchange: { actedAsChild?: boolean };
+  guardianPubkey: string; actorDeviceId: string }): MutationActor {
+  const dependant = /^dependant:([0-9a-f]{64})$/.exec(args.directoryId);
+  if (args.exchange.actedAsChild === true) {
+    // Fail closed: a child-stamped exchange in any other directory must never fall back to the guardian's stamp.
+    if (!dependant) throw new Error('A child exchange can only complete in the dependant\'s directory');
+    return { actorPubkey: dependant[1], actorRole: 'dependant', actorDeviceId: args.actorDeviceId };
+  }
+  return { actorPubkey: args.guardianPubkey, actorRole: args.directoryId === 'owner' ? 'owner' : 'guardian', actorDeviceId: args.actorDeviceId };
+}
+
 /** Semantic completion markers prevent replay after removal. Operation IDs hash
  * their full payload so concurrent devices never reuse an ID with different bytes. */
 export function recordCompletedContactExchange(args: { directoryId: string; key: string; actor: MutationActor;
