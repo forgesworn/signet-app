@@ -106,11 +106,22 @@ describe('app-permission wiring in App.tsx', () => {
     expect(branch).toContain('confirmRealIdentity={appPermissionNeedsRealIdentityConfirm(appPermissionRoute, identity, requireNpConfirmation)}');
   });
 
+  it('child mode: refused before any unlock prompt, after preferences and identity load', () => {
+    const effect = between('// After unlock, show a pending app-permission request.', 'const handleSetupComplete = useCallback(');
+    const unknown = effect.indexOf("if (childModeNow === 'unknown') return;");
+    const on = effect.indexOf("if (childModeNow === 'on') { navigateReplace('approve-app-permission'); return; }");
+    expect(unknown).toBeGreaterThan(effect.indexOf('if (prefsLoading || identityLoading) return;'));
+    expect(on).toBeGreaterThan(unknown);
+    expect(on).toBeLessThan(effect.indexOf('requestAuth('));
+    expect(effect).toMatch(/\}, \[[^\]]*childModeNow[^\]]*\]\);/);
+  });
+
   it('M9: on a paired-child install, routing also waits for the paired-child record to load', () => {
     const effect = between('// After unlock, show a pending app-permission request.', 'const handleSetupComplete = useCallback(');
     const wait = "if (preferences.signingMode === 'paired-child' && pairedChildLoadedFor !== identity?.id) return;";
     expect(effect).toContain(wait);
-    expect(effect.indexOf(wait)).toBeLessThan(effect.indexOf("navigateReplace('approve-app-permission')"));
+    // The last navigate is the adult/child route; the earlier one is child mode's refusal (below).
+    expect(effect.indexOf(wait)).toBeLessThan(effect.lastIndexOf("navigateReplace('approve-app-permission')"));
     expect(effect).toMatch(/\}, \[[^\]]*pairedChildLoadedFor[^\]]*\]\);/);
     // The marker is set only once a load for this identity has settled, and cleared when it cannot be current.
     const load = between('const [pairedChildClientKeypair, setPairedChildClientKeypair]', '// Child-direct Heartwood pairing');

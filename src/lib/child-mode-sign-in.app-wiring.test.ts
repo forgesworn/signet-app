@@ -29,7 +29,7 @@ describe('child-mode sign-in gate in App.tsx', () => {
     expect(app).toContain('if (approveAuthHeld) return; // refused in child mode, sign-in or connect: no PIN');
     expect(app).toContain('if (childSignInHold) return; // refused in child mode: no PIN, and the refusal stays on home');
     // Scoped: the hold settling at start-up must not re-run another page's prompt.
-    expect(app).toContain('}, [page, encryptionKey, requestAuth, approveAuthHeld]);');
+    expect(app).toContain('}, [page, encryptionKey, requestAuth, approveAuthHeld, childModePage]);');
     expect(app).toContain('}, [encryptionKey, pendingAuthRequest, urlAuthSiteName, page, requestAuth, cancelSignInReview, childSignInHold]);');
   });
 

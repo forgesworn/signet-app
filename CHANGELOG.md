@@ -5,6 +5,12 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Child mode: the child's settings page, your security settings and Shamir backup are now refused while the phone is in child mode, so the child can no longer change their own autonomy level or remove themselves (which used to drop the phone out of child mode with no PIN). The backup reminder and the Heartwood "approve again" and "Finish now" prompts are hidden in child mode too. Opening Contacts, Settings or a handshake from the child's cards no longer switches the phone over to your own contacts and settings; a page that is not the child's own is refused with no PIN. Pairing, permissions and family pages are refused too, even if you reach them with Back; paired children's contact requests, your contact approval and the private-backups notice (with its "Turn off relay" button) are hidden in child mode, and a contact your guardian has not approved reads as waiting for them
+- Companion apps: connecting an app no longer offers your real identity until you have set it up
+- Child mode: after a restart, an app permission request or a contact invite that arrives before child mode is restored no longer reaches your own identities. The app permission request is refused with no PIN asked for; the contact invite waits for child mode to end
+- Child mode: Get Verified no longer shows your recovery words or marks you backed up while the phone is in child mode
+- Child mode: age verification requests are now refused while the phone is in child mode, because they could answer with your own credential. Leave child mode with your PIN first
+- Child mode: connecting a companion app, giving an app access to contacts, adding a dependant and Advanced settings are now refused while the phone is in child mode, with no PIN asked for. Leave child mode with the guardian's PIN first
 - While a sign-in waits on your Heartwood for more than a few seconds, the approval screen now says to press its button if it's showing a card
 - Shamir backup now asks for your PIN (or fingerprint) before it shows the shares, as the recovery words already do
 - Child mode no longer switches itself back on mid-session when a dependant record that was missing at start-up is restored later by a sync

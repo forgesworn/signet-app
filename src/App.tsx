@@ -179,6 +179,9 @@ import { Layout } from './components/Layout';
 import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
+import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
+import { childModePageDecision } from './lib/child-mode-guardian-pages';
+import { companionGrantPersonas } from './lib/companion-grant-personas';
 import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
@@ -2946,12 +2949,9 @@ function AppContent() {
     sendPageOpenRef.current = false;
     setPendingContactInvite(undefined); setPendingInviteSender(undefined);
   }, [page]);
-  useEffect(() => {
-    if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
-    // D6: a paired-child install asks the guardian instead of connecting.
-    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
-  }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId]);
+  // The effect that opens the invite page lives below `nip55ChildMode`: it also
+  // waits for child mode, which is declared further down (a dependency read here
+  // would be in its temporal dead zone).
 
   // C1: `useContactsV2`'s own mount-time `reload()` and the cold
   // `useContactsV2Import` above are two independent async effects racing
@@ -4368,6 +4368,20 @@ function AppContent() {
   const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
   // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
   const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
+
+  // A contact invite (scanned or linked) waits while the phone is in child mode,
+  // live or only saved on a locked cold start (the restore runs after the unlock,
+  // so `activeDependantId` is still null then and the invite would open for the
+  // guardian's lists). It stays pending and opens after the PIN exit. This is
+  // declared here, below `nip55ChildMode`, rather than beside the invite state:
+  // a dependency read up there would be a TDZ error.
+  useEffect(() => {
+    if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
+    if (nip55ChildMode !== 'off') return;
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    // D6: a paired-child install asks the guardian instead of connecting.
+    navigateTo(isPairedChild ? 'child-contact-ask' : 'contact-invite-send');
+  }, [!!identity, !!encryptionKey, isPairedChild, pendingContactInvite, activeDependantId, nip55ChildMode]);
 
   // NIP-55: requests from other apps on this phone (Amethyst, KithMoot,
   // anything Amber-shaped), served by the same owner-persona backends the
@@ -6532,6 +6546,13 @@ function AppContent() {
   const childModeOffer = childModeApprovalOffer({ childMode: signInChildMode, dependant: signInChildDependant });
   const signInChildModeRef = useRef({ childMode: signInChildMode, dependant: signInChildDependant });
   signInChildModeRef.current = { childMode: signInChildMode, dependant: signInChildDependant };
+  // Pages that act as the guardian are refused in child mode, with no PIN.
+  // `nip55ChildMode` is the three-way state: unknown until saved child mode is read.
+  const childModeNow = nip55ChildMode;
+  const childModePage = childModePageDecision({
+    page, childMode: childModeNow,
+    liveChild: carousel.childMode ? { childDependantId: carousel.childDependant?.id ?? null, activeDependantId } : null,
+  });
 
   const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
     if (pendingAuthRequestRef.current !== request) return;
@@ -6581,6 +6602,7 @@ function AppContent() {
     // Approve silently failed with "No pending pairing request" instead of
     // prompting for the PIN).
     if (approveAuthHeld) return; // refused in child mode, sign-in or connect: no PIN
+    if (childModePage !== 'allow') return; // a guardian-only page in child mode: refused (or held), no PIN
     const pagePurpose = PAGE_AUTH_CONTEXTS[page];
     // Capture the request label when entering/re-unlocking its review page.
     // Labels alone must not re-run this effect and contend with an open prompt.
@@ -6602,7 +6624,7 @@ function AppContent() {
         if (!key && page !== 'contacts-grant-code' && page !== 'contacts-grant-approve') navigateReplace('home'); // user cancelled or auth not set up — go back
       });
     }
-  }, [page, encryptionKey, requestAuth, approveAuthHeld]);
+  }, [page, encryptionKey, requestAuth, approveAuthHeld, childModePage]);
 
   // A picker choice belongs to one request; drop it once that request is gone.
   useEffect(() => {
@@ -6664,6 +6686,13 @@ function AppContent() {
   useEffect(() => {
     if (!pendingAddDependantRequest) return;
     if (page === 'approve-add-dependant' && addDependantRequestAllowed(preferences.signingMode)) return; // already there
+    // Child mode: this mints under the guardian, so it is never asked for a PIN.
+    // Unknown waits (the effect re-runs once it is read); on, the refusal shows.
+    if (childModeNow === 'unknown') return;
+    if (childModeNow === 'on') {
+      if (page !== 'approve-add-dependant') navigateReplace('approve-add-dependant');
+      return;
+    }
     if (!encryptionKey) {
       // No identity / not unlocked yet. If auth is set up, prompt the user.
       // Otherwise wait — the !identity onboarding branch will eventually
@@ -6689,7 +6718,7 @@ function AppContent() {
       return;
     }
     navigateReplace('approve-add-dependant');
-  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode]);
+  }, [encryptionKey, pendingAddDependantRequest, page, requestAuth, navigateReplace, preferences.signingMode, childModeNow]);
 
   // After unlock, show a pending app-permission request. Mirrors the
   // add-dependant effect, plus one wait: a child's phone and an adult's take
@@ -6700,6 +6729,10 @@ function AppContent() {
     if (page === 'approve-app-permission') return;
     if (appPermissionMarksRef.current.get(pendingAppPermissionRequest) === 'answered') return; // its answer is on its way
     if (prefsLoading || identityLoading) return;
+    // Child mode: refused on this phone, so never asked for the guardian's PIN.
+    // Unknown waits (the effect re-runs once it is read); on, the refusal shows.
+    if (childModeNow === 'unknown') return;
+    if (childModeNow === 'on') { navigateReplace('approve-app-permission'); return; }
     if (!encryptionKey) {
       if (!isAuthSetUp()) return;
       // A startup/page unlock may already own the auth slot. Its busy result
@@ -6722,7 +6755,7 @@ function AppContent() {
     // legacy, and the child's persona): wait until it has loaded.
     if (preferences.signingMode === 'paired-child' && pairedChildLoadedFor !== identity?.id) return;
     navigateReplace('approve-app-permission');
-  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id, showAuthPrompt]);
+  }, [encryptionKey, pendingAppPermissionRequest, page, requestAuth, navigateReplace, prefsLoading, identityLoading, preferences.signingMode, pairedChildLoadedFor, identity?.id, showAuthPrompt, childModeNow]);
 
   const handleSetupComplete = useCallback(() => {
     if (pendingEncryptionKey) {
@@ -10384,9 +10417,9 @@ function AppContent() {
       ].filter(Boolean),
       dependantPersonas: dependants.flatMap(dependantPersonaPubkeys),
       childPersonas: childBunkerPersonasCsv ? childBunkerPersonasCsv.split(',') : [],
-      guardianActingAsChild: carousel.childMode,
+      guardianActingAsChild: signInChildMode,
     });
-  }, [pendingAppPermissionRequest, identity, preferences.signingMode, childDirect, npActive, dependants, childBunkerPersonasCsv, carousel.childMode]);
+  }, [pendingAppPermissionRequest, identity, preferences.signingMode, childDirect, npActive, dependants, childBunkerPersonasCsv, signInChildMode]);
 
   /** The display name of the key the permission is for. */
   const appPermissionPersonaName = useMemo(() => {
@@ -10749,6 +10782,36 @@ function AppContent() {
     else navigateReplace('home');
   }, [pendingAddDependantRequest, navigateReplace]);
 
+  // Decline on the child-mode refusal of a guardian-only page. Signs and
+  // publishes nothing (no verify rejection either): it only clears the request and leaves the page. Home,
+  // never `companion-apps` (the normal deny's target), which is a guardian page.
+  const declineChildModeGuardianPage = useCallback(() => {
+    if (page === 'approve-add-dependant') {
+      handleDenyAddDependant(); // only redirects to the consumer's error callback
+      return;
+    }
+    if (page === 'approve-app-permission') {
+      handleCancelAppPermission(); // answers with a throwaway key, never a person's
+      return;
+    }
+    if (page === 'approve-companion-grant') setPendingPairingRequest(null);
+    else if (page === 'settings-advanced') setPendingOperatorImportText(null); // the scanned link must not wait for the guardian
+    else if (page === 'contacts-grant-approve') setPendingContactsGrantV2(null);
+    else if (page === 'approve-verification') {
+      // Like Deny, minus the relay rejection: in local child mode that would
+      // be signed with the child's key.
+      const callback = pendingVerifyRequest?.callbackUrl;
+      const viaUrl = verifyArrivedViaUrl;
+      setPendingVerifyRequest(null);
+      setVerifyArrivedViaUrl(false);
+      if (viaUrl && callback) {
+        window.location.href = buildVerifyDeniedUrl(callback);
+        return;
+      }
+    }
+    navigateReplace('home');
+  }, [page, handleDenyAddDependant, handleCancelAppPermission, navigateReplace, pendingVerifyRequest, verifyArrivedViaUrl]);
+
   // Carousel helpers — child mode, QR routing, and inline approval from current row
 
   const handleEnterChildMode = useCallback((dependantId: string) => {
@@ -10766,6 +10829,11 @@ function AppContent() {
     // NP row.
     childModeRestoredRef.current = true;
   }, [carousel.enterChildMode, chooseDependantScope]);
+
+  // The scope a card's page opens under: in child mode always the child's (the
+  // child's persona rows are not `isDependant`, and the guardian's scope is null).
+  const cardPageScopeId = (resolved: { isDependant: boolean; dependantId?: string | null }): string | null =>
+    carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;
 
   const handleExitChildMode = useCallback(async () => {
     // Load-bearing safety boundary: exit requires the guardian's PIN/biometric.
@@ -11692,10 +11760,13 @@ function AppContent() {
     </div>
   ) : null;
 
+  // Neither banner shows in child mode: their buttons re-run the guardian's
+  // backup jobs or open the guardian's Advanced settings, and the child has no
+  // use for either.
   // The device refused a private-backup request (denied, card timed out or
   // busy), so the vault jobs stopped retrying for this unlock rather than put
   // the same cards back up. One quiet line; the button runs them once more.
-  const privateVaultApprovalBanner = (!isPairedChild && privateVaultSupported
+  const privateVaultApprovalBanner = (!isPairedChild && !signInChildMode && privateVaultSupported
     && privateVaultHealth.needsApproval && !privateVaultApprovalDismissed
     // The "approve again" banner below says the same words; one at a time.
     && !ownerAgainOffer) ? (
@@ -11709,7 +11780,7 @@ function AppContent() {
   // pairing was edited, restored or had its approvals forgotten), or a private
   // backup request was refused. One quiet line; the button opens the choice
   // screen in Settings, where the owner checks the five words first.
-  const ownerAgainBanner = (!isPairedChild && ownerAgainOffer) ? (
+  const ownerAgainBanner = (!isPairedChild && !signInChildMode && ownerAgainOffer) ? (
     <div className="vault-approval-banner">
       <span className="vault-approval-banner-text">{ownerLost ? 'This phone no longer has full access on your Heartwood.' : PRIVATE_VAULT_NEEDS_APPROVAL_COPY}</span>
       <span className="vault-approval-banner-actions">
@@ -11871,7 +11942,8 @@ function AppContent() {
     const next = relayListWithDisabled(preferences, url);
     if (next) void setRelays(next);
   };
-  const privateVaultBanner = !isPairedChild && encryptionKey ? <PrivateVaultStatus key={privateVaultSession}
+  // Never in child mode: it names the guardian's backup rails and edits the guardian's relay list.
+  const privateVaultBanner = !isPairedChild && childModeNow === 'off' && encryptionKey ? <PrivateVaultStatus key={privateVaultSession}
     onRotate={privateVaultSupported && !activeDependant && supportsPrivateVaultRotationLock() ? rotatePrivateBackup : undefined}
     onDisableRelay={disableVaultRelay}
     canDisableRelay={url => relayListWithDisabled(preferences, url) !== null}
@@ -12060,6 +12132,22 @@ function AppContent() {
 
   // Authenticated page routing, wrapped by <AppShell> (persistent nav) below.
   const renderPage = (): React.ReactNode => {
+
+  // A guardian-only page in child mode: a refusal with no PIN, even while
+  // locked. Held blank until saved child mode is read, so nothing of the
+  // guardian shows first. Placed before every page branch it covers.
+  if (childModePage !== 'allow') {
+    return (
+      <>
+        <Layout title={childModePage === 'refuse' ? 'Child mode is on' : ''} showBack={childModePage === 'refuse'} onBack={declineChildModeGuardianPage}>
+          {childModePage === 'refuse' && (
+            <ChildModeGuardianRefusal child={signInChildDependant?.displayName ?? ''} onDecline={declineChildModeGuardianPage} />
+          )}
+        </Layout>
+        {authOverlay}{nip55Overlay}
+      </>
+    );
+  }
 
   if (page === 'venue-entry' && identity && !activeDependant && !npActive) {
     return renderRealIdentityGate(
@@ -14013,7 +14101,9 @@ function AppContent() {
           infoFor: persona => contactCardInfoFor(identity, persona, { pairedChild: isPairedChild }),
           build: contactCardFor,
         }}
-        onApproveContact={activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved' ? async peer => {
+        // The guardian's approval is never offered in child mode (live, saved or not yet known).
+        guardianApproves={childModeNow !== 'off' && !!activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved'}
+        onApproveContact={childModeNow === 'off' && activeDependant && childSettingsMap.get(activeDependant.id)?.contactPolicy === 'approved' ? async peer => {
           if (!encryptionKey || !identity || isPairedChild) throw new Error('Unlock the guardian identity first.');
           const guardian = identity.naturalPerson.publicKey;
           const dep = (await loadFreshDependants(encryptionKey)).find(dep => dep.id === activeDependant.id && dep.guardianPubkey === guardian);
@@ -14054,10 +14144,10 @@ function AppContent() {
             : pairedContactPolicy.policy === 'approved' ? 'New contacts need your guardian’s approval.'
             : 'Your guardian allows contact requests. Blocked contacts are still excluded.'}
         </p>}
-        {!isPairedChild && pendingGuardianChildRequests.pendingCount > 0 && <p role="status" className="field-hint">
+        {!isPairedChild && childModeNow === 'off' && pendingGuardianChildRequests.pendingCount > 0 && <p role="status" className="field-hint">
           {pendingGuardianChildRequests.pendingCount} paired-child contact request{pendingGuardianChildRequests.pendingCount === 1 ? '' : 's'} waiting for review.
         </p>}
-        {!isPairedChild && <PairedChildRequestReview requests={pendingGuardianChildRequests.pending} stuck={pendingGuardianChildRequests.stuck}
+        {!isPairedChild && childModeNow === 'off' && <PairedChildRequestReview requests={pendingGuardianChildRequests.pending} stuck={pendingGuardianChildRequests.stuck}
           history={pendingGuardianChildRequests.history}
           keyMaterial={encryptionKey!} now={() => Math.floor(Date.now() / 1000)} current={guardianChildReviewCurrent} mayConnect={guardianChildMayConnect}
           childName={child => dependants.find(dep => dep.id === child)?.displayName ?? 'your child'}
@@ -14172,6 +14262,8 @@ function AppContent() {
           // (child) context — a child's pubkey → tier mapping must not
           // be placed on a public relay (UK GDPR / AADC).
           allowPublish={!activeDependant}
+          // Child mode: `identity` is the guardian's, and so would be its recovery words.
+          skipBackup={childModeNow !== 'off'}
           onRegisterSavedInjector={
             (import.meta as any).env?.DEV
               ? (fn: (eventJsons: string[]) => void) => { getVerifiedSavedInjectorRef.current = fn; }
@@ -14603,16 +14695,7 @@ function AppContent() {
   // native signet-grant:// scheme (appUrlOpen) — see Task 12.
   if (page === 'approve-companion-grant' && pendingPairingRequest && identity) {
     const bunkerMode = !identity.mnemonic;
-    const personas: Array<{ pubkey: string; label: string }> = [
-      { pubkey: identity.naturalPerson.publicKey, label: identity.naturalPerson.displayName || 'Natural Person' },
-      ...(identity.persona.publicKey
-        ? [{ pubkey: identity.persona.publicKey, label: identity.persona.displayName || 'Persona' }]
-        : []),
-      // Skip hidden extras — same soft-delete semantics as ApproveConnect/ApproveAuth.
-      ...(identity.extraPersonas ?? [])
-        .filter(ep => !ep.hidden)
-        .map(ep => ({ pubkey: ep.publicKey, label: ep.displayName || 'Persona' })),
-    ];
+    const personas = companionGrantPersonas(identity);
     return (
       <>
         <Layout title="Connect companion app" showBack onBack={handleDenyCompanionGrant}>
@@ -15502,7 +15585,8 @@ function AppContent() {
           }}
         />
       )}
-      {showBackupNudge && (
+      {/* Not in child mode: its button leads to the guardian's security settings and Shamir split. */}
+      {showBackupNudge && !signInChildMode && (
         <BackupCard
           {...backupNudgeCopy(dependants.map(d => d.displayName))}
           onBackup={() => { navigateTo('settings-security'); }}
@@ -15534,7 +15618,7 @@ function AppContent() {
           const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
           // The persona exchanging rides on the entry with the scope whose
           // directory it writes to, so back/forward cannot pair them wrongly.
-          openDependantPage('contact-handshake', resolved.isDependant ? resolved.dependantId ?? null : null,
+          openDependantPage('contact-handshake', cardPageScopeId(resolved),
             { persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
         }}
         renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
@@ -15599,7 +15683,7 @@ function AppContent() {
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
             setContactsOpenFollows(action === 'follows');
-            openDependantPage(action === 'new' ? 'contact-new' : 'contacts', resolved.isDependant ? resolved.dependantId ?? null : null);
+            openDependantPage(action === 'new' ? 'contact-new' : 'contacts', cardPageScopeId(resolved));
           }} />}
         row={carousel.row}
         col={carousel.col}
@@ -15658,7 +15742,7 @@ function AppContent() {
         onPairAgain={() => navigateTo('paired-child-repair')}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
-        readyNoticeFor={isPairedChild ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
+        readyNoticeFor={isPairedChild || signInChildMode ? undefined : (id) => { const d = dependants.find(x => x.id === id); return d ? guardianReadyNotice(d, true) : null; }}
         proAnchorActive={!!proAnchor}
         onProPillTap={() => navigateTo('pro-dashboard')}
         recentSignInAck={recentSignInAck}
@@ -15950,7 +16034,7 @@ function AppContent() {
                 if (!key) return;
               }
               setContactsIdentityChoice(current.publicKey || null);
-              openDependantPage(target, current.isDependant ? current.dependantId ?? null : null);
+              openDependantPage(target, cardPageScopeId(current));
               return;
             }
             navigateTo(target);

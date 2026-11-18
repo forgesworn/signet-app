@@ -390,3 +390,63 @@ describe('useAppNavigation: pairing a phone from Add Dependant', () => {
     expect(result.current.activeDependantId).toBe('dep-b');
   });
 });
+
+describe('useAppNavigation: live child mode keeps the child scope', () => {
+  beforeEach(() => {
+    window.history.replaceState(null, '');
+  });
+
+  /** A guardian hands the phone to `kid`: the scope is chosen, then child mode is live. */
+  const inChildMode = () => {
+    const hook = setup({ dependants: ['kid', 'dep-b'] });
+    act(() => hook.result.current.chooseDependantScope('kid'));
+    hook.rerender({ ...hook.props, childMode: true });
+    return hook;
+  };
+
+  it("a page opened for the owner (null) leaves the child's scope, and the pages after it, in place", () => {
+    const { result } = inChildMode();
+    act(() => result.current.openDependantPage('contacts', null));
+    expect(result.current.page).toBe('contacts');
+    expect(result.current.activeDependantId).toBe('kid');
+    expect(result.current.tabs).not.toContain('bunker');
+    expect(window.history.state).toMatchObject({ page: 'contacts', dependantId: 'kid' });
+    act(() => result.current.navigateTo('settings'));
+    expect(result.current.activeDependantId).toBe('kid');
+    act(() => result.current.navigateTo('home'));
+    expect(result.current.activeDependantId).toBe('kid');
+    expect(result.current.tabs).not.toContain('bunker');
+  });
+
+  it("a page opened for a sibling, or a borrowed id, does not take the child's scope either", () => {
+    const { result } = inChildMode();
+    act(() => result.current.openDependantPage('settings', 'dep-b'));
+    expect(result.current.activeDependantId).toBe('kid');
+    act(() => result.current.borrowActiveDependantId(null));
+    expect(result.current.activeDependantId).toBe('kid');
+    act(() => result.current.borrowActiveDependantId('dep-b'));
+    expect(result.current.activeDependantId).toBe('kid');
+    act(() => result.current.navigateTo('home'));
+    expect(result.current.activeDependantId).toBe('kid');
+  });
+
+  it("exit still clears the scope: handleExitChildMode's choice lands while the lock is still on", () => {
+    const { result } = inChildMode();
+    act(() => result.current.openDependantPage('contacts', null));
+    act(() => result.current.chooseDependantScope(null));
+    expect(result.current.activeDependantId).toBeNull();
+    expect(result.current.tabs).toContain('bunker');
+  });
+
+  it('switching child mode to a sibling still sets the sibling', () => {
+    const { result } = inChildMode();
+    act(() => result.current.chooseDependantScope('dep-b'));
+    expect(result.current.activeDependantId).toBe('dep-b');
+  });
+
+  it('entering child mode still sets the scope (the lock is not on yet)', () => {
+    const { result } = setup({ dependants: ['kid'] });
+    act(() => result.current.chooseDependantScope('kid'));
+    expect(result.current.activeDependantId).toBe('kid');
+  });
+});
