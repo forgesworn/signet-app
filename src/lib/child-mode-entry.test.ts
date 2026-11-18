@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHILD_MODE_GENERIC_NOTIFICATION, childModeHoldsRoute, notificationForChildMode } from './child-mode-entry';
+import { CHILD_MODE_GENERIC_NOTIFICATION, childModeHoldsRoute, notificationForChildMode, takeDeliveredRequestNotificationIds } from './child-mode-entry';
 
 const named = { title: 'Mia is waiting for a sign-in approval', body: 'Open Signet to review it.' };
 
@@ -23,5 +23,16 @@ describe('childModeHoldsRoute', () => {
   it('never holds a dependant route or a child\'s own route', () => {
     expect(childModeHoldsRoute({ dependantId: 'd1' }, 'on')).toBe(false);
     expect(childModeHoldsRoute({ childGate: {} }, 'unknown')).toBe(false);
+  });
+});
+
+describe('takeDeliveredRequestNotificationIds', () => {
+  it('returns every delivered approval and child-ask notification id, and forgets them', () => {
+    const handles = new Set([7, 9]);
+    const asks = new Map([['ask-a', 0x40000001], ['ask-b', 0x40000002]]);
+    expect(takeDeliveredRequestNotificationIds(handles, asks).sort((a, b) => a - b)).toEqual([7, 9, 0x40000001, 0x40000002]);
+    expect(handles.size).toBe(0);
+    expect(asks.size).toBe(0);
+    expect(takeDeliveredRequestNotificationIds(handles, asks)).toEqual([]);
   });
 });

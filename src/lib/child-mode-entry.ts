@@ -29,3 +29,15 @@ export function notificationForChildMode(
 export function childModeHoldsRoute(route: { dependantId?: string; childGate?: unknown }, childMode: ChildModeState): boolean {
   return !route.dependantId && !route.childGate && childMode !== 'off';
 }
+
+/**
+ * The ids of request notifications already delivered (phone-served approvals and a
+ * child's asks), emptied from their trackers. Entering child mode cancels them: they
+ * were posted with names and app text, and would stay in the shade.
+ */
+export function takeDeliveredRequestNotificationIds(approvalHandles: Set<number>, childAskIds: Map<string, number>): number[] {
+  const ids = [...approvalHandles, ...childAskIds.values()];
+  approvalHandles.clear();
+  childAskIds.clear();
+  return ids;
+}

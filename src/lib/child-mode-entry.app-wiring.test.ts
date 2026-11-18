@@ -61,4 +61,9 @@ describe('native notifications', () => {
     const esc = app.indexOf('const handleLiveEscalationNotice = useCallback');
     expect(app.slice(esc, esc + 600)).toContain('notificationForChildMode(childModeNowRef.current, escalationNotificationText(');
   });
+
+  it('entering child mode cancels the request notifications already delivered', () => {
+    expect(app).toContain('useOnChildModeEntered(childModeNow, () => {');
+    expect(app).toContain('takeDeliveredRequestNotificationIds(notifiedApprovalHandlesRef.current, notifiedChildAsksRef.current)');
+  });
 });

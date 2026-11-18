@@ -132,7 +132,7 @@ import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublish
 import { usePersonaInventory } from './hooks/usePersonaInventory';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
-import { notificationForChildMode } from './lib/child-mode-entry';
+import { notificationForChildMode, takeDeliveredRequestNotificationIds } from './lib/child-mode-entry';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
@@ -183,6 +183,7 @@ import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
 import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY, CHILD_MODE_LINK_INVITE_COPY } from './lib/child-mode-page-allowlist';
 import { useDropInviteInChildMode } from './hooks/useDropInviteInChildMode';
+import { useOnChildModeEntered } from './hooks/useOnChildModeEntered';
 import { useOnLeaveRefusedPage } from './hooks/useOnLeaveRefusedPage';
 import { readOnlyPlaceActions } from './lib/known-place-read-only';
 import { companionGrantPersonas } from './lib/companion-grant-personas';
@@ -5496,6 +5497,13 @@ function AppContent() {
       void LocalNotifications.cancel({ notifications: toCancel.map((id) => ({ id })) }).catch(() => { /* already dismissed */ });
     }
   }, [childAsks.asks]);
+  // Entering child mode takes back the request notifications already delivered (they
+  // were posted with names and app text, before the generic line applied).
+  useOnChildModeEntered(childModeNow, () => {
+    if (!isNativeApp()) return;
+    const ids = takeDeliveredRequestNotificationIds(notifiedApprovalHandlesRef.current, notifiedChildAsksRef.current);
+    if (ids.length > 0) void LocalNotifications.cancel({ notifications: ids.map(id => ({ id })) }).catch(() => { /* already dismissed */ });
+  });
   // A37: asks the guardian put off with "Later" leave the sheet (they stay in
   // the Bunker panel until they expire); a new ask raises the sheet again.
   const [laterChildAskIds, setLaterChildAskIds] = useState<ReadonlySet<string>>(() => new Set());
