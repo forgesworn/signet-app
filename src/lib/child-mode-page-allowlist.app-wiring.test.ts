@@ -35,11 +35,19 @@ describe('child-mode guardian-page gate in App.tsx', () => {
   });
 
   it('a card page opens under the child in child mode, never the guardian scope', () => {
-    expect(app).toContain('carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;');
+    expect(app).toContain("childModeNow !== 'off' ? stableChildId : resolved.isDependant ? resolved.dependantId ?? null : null;");
     expect(app).toContain("openDependantPage('contact-handshake', cardPageScopeId(resolved),");
     expect(app).toContain("openDependantPage(action === 'new' ? 'contact-new' : 'contacts', cardPageScopeId(resolved));");
     expect(app).toContain('openDependantPage(target, cardPageScopeId(current));');
     expect(app).not.toMatch(/openDependantPage\([^;]*isDependant \? [a-z]+\.dependantId \?\? null : null/);
+  });
+
+  it('clears the staged request state on any way off a refused page, not only Decline', () => {
+    expect(app).toContain("page, decision: childModePage, childModeOn: childModeNow !== 'off',");
+    expect(app).toContain('onLeave: () => clearChildModeStagedRequestsRef.current(),');
+    const decline = app.slice(idx('const declineChildModeGuardianPage = useCallback(() => {'));
+    expect(decline.indexOf('clearChildModeStagedRequestsRef.current();')).toBeGreaterThan(-1);
+    expect(decline.indexOf('clearChildModeStagedRequestsRef.current();')).toBeLessThan(decline.indexOf("if (page === 'approve-add-dependant')"));
   });
 
   it('holds the page-auth prompt on it, with the dependency', () => {
@@ -73,20 +81,24 @@ describe('child-mode guardian-page gate in App.tsx', () => {
   });
 
   it('Decline signs and publishes nothing and never lands on a guardian page', () => {
-    const start = idx('const declineChildModeGuardianPage = useCallback(() => {');
-    const handler = app.slice(start, app.indexOf('}, [page,', start));
+    const start = idx('const clearChildModeStagedRequests = () => {');
+    const handler = app.slice(start, app.indexOf('}, [page,', idx('const declineChildModeGuardianPage = useCallback(() => {')));
     expect(handler).toContain('handleDenyAddDependant()');
     expect(handler).toContain('setPendingPairingRequest(null)');
     expect(handler).toContain('setPendingContactsGrantV2(null)');
     expect(handler).toContain("navigateReplace('home')");
-    expect(handler).not.toContain('companion-apps');
-    expect(handler).not.toMatch(/signEvent|publish\w*\(|requestAuth\(|activeBackend|Backend/);
-    expect(handler).not.toContain('publishVerifyRejectionToRelay');
+    const declineStart = idx('const declineChildModeGuardianPage = useCallback(() => {');
+    const decline = app.slice(declineStart, app.indexOf('}, [page,', declineStart));
+    for (const code of [handler.slice(0, handler.indexOf('const declineChildModeGuardianPage')), decline]) {
+      expect(code.replace(/\/\/.*$/gm, '')).not.toContain('companion-apps');
+      expect(code).not.toMatch(/signEvent|publish\w*\(|requestAuth\(|activeBackend|Backend/);
+      expect(code).not.toContain('publishVerifyRejectionToRelay');
+    }
   });
 
   it('the verification decline clears the request and redirects like Deny, without the relay rejection', () => {
-    const start = idx('const declineChildModeGuardianPage = useCallback(() => {');
-    const handler = app.slice(start, app.indexOf('}, [page,', start));
+    const start = idx('const clearChildModeStagedRequests = () => {');
+    const handler = app.slice(start, app.indexOf('}, [page,', idx('const declineChildModeGuardianPage = useCallback(() => {')));
     expect(handler).toContain("page === 'approve-verification'");
     expect(handler).toContain('setPendingVerifyRequest(null)');
     expect(handler).toContain('setVerifyArrivedViaUrl(false)');
@@ -165,8 +177,8 @@ describe('child-mode page allowlist wiring', () => {
   });
 
   it('Decline clears every piece of request state a navigation to a refused page can stage', () => {
-    const start = idx('const declineChildModeGuardianPage = useCallback(() => {');
-    const handler = app.slice(start, app.indexOf('}, [page,', start));
+    const start = idx('const clearChildModeStagedRequests = () => {');
+    const handler = app.slice(start, app.indexOf('}, [page,', idx('const declineChildModeGuardianPage = useCallback(() => {')));
     for (const setter of [
       'setPendingPublicProfileTarget(null)', 'setPendingPersonaFocus(null)', 'setPendingSecurityFocus(null)',
       'setSelectedContactId(null)', 'setSelectedKenPubkey(null)', 'setSelectedCredential(null)',
@@ -175,7 +187,7 @@ describe('child-mode page allowlist wiring', () => {
       'setPendingPairingRequest(null)', 'setPendingContactsGrantV2(null)', 'setHeldContactsGrantV2(null)',
     ]) expect(handler, setter).toContain(setter);
     // clearing is not conditional on the page: it runs before the page-specific answers
-    expect(handler.indexOf('setPendingPublicProfileTarget(null)')).toBeLessThan(handler.indexOf("if (page === 'approve-add-dependant')"));
+    expect(handler.indexOf('clearChildModeStagedRequestsRef.current();')).toBeLessThan(handler.indexOf("if (page === 'approve-add-dependant')"));
     expect(handler).toContain("navigateReplace('home')");
   });
 

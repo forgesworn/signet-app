@@ -182,6 +182,7 @@ import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
 import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY } from './lib/child-mode-page-allowlist';
+import { useOnLeaveRefusedPage } from './hooks/useOnLeaveRefusedPage';
 import { readOnlyPlaceActions } from './lib/known-place-read-only';
 import { companionGrantPersonas } from './lib/companion-grant-personas';
 import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, readSavedChildMode, CHILD_MODE_UNRESOLVED, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
@@ -10840,13 +10841,11 @@ function AppContent() {
     else navigateReplace('home');
   }, [pendingAddDependantRequest, navigateReplace]);
 
-  // Decline on the child-mode refusal of a guardian-only page. Signs and
-  // publishes nothing (no verify rejection either): it only clears the request and leaves the page. Home,
-  // never `companion-apps` (the normal deny's target), which is a guardian page.
-  const declineChildModeGuardianPage = useCallback(() => {
-    // Whatever a navigation to a refused page staged is dropped, whichever page
-    // this is: foci, selections, scanned links and invites, and requests that
-    // need no answer. Nothing is left to be picked up after the guardian exits.
+  // Whatever a navigation to a refused page staged is dropped: foci, selections,
+  // scanned links and invites, and requests that need no answer. Nothing is left
+  // to be picked up after the guardian exits. Run by Decline and by any other way
+  // the child leaves a refused page (`useOnLeaveRefusedPage`).
+  const clearChildModeStagedRequests = () => {
     setPendingPublicProfileTarget(null);
     setPendingPersonaFocus(null);
     setPendingSecurityFocus(null);
@@ -10862,6 +10861,21 @@ function AppContent() {
     setPendingPairingRequest(null);
     setPendingContactsGrantV2(null);
     setHeldContactsGrantV2(null);
+    setPendingVerifyRequest(null); // answered by nothing: Decline alone redirects a URL-arrived one
+    setVerifyArrivedViaUrl(false);
+  };
+  const clearChildModeStagedRequestsRef = useRef(clearChildModeStagedRequests);
+  clearChildModeStagedRequestsRef.current = clearChildModeStagedRequests;
+  useOnLeaveRefusedPage({
+    page, decision: childModePage, childModeOn: childModeNow !== 'off',
+    onLeave: () => clearChildModeStagedRequestsRef.current(),
+  });
+
+  // Decline on the child-mode refusal of a guardian-only page. Signs and
+  // publishes nothing (no verify rejection either): it only clears the request and leaves the page. Home,
+  // never `companion-apps` (the normal deny's target), which is a guardian page.
+  const declineChildModeGuardianPage = useCallback(() => {
+    clearChildModeStagedRequestsRef.current();
     if (page === 'approve-add-dependant') {
       handleDenyAddDependant(); // only redirects to the consumer's error callback
       return;
@@ -10904,9 +10918,10 @@ function AppContent() {
   }, [carousel.enterChildMode, chooseDependantScope]);
 
   // The scope a card's page opens under: in child mode always the child's (the
-  // child's persona rows are not `isDependant`, and the guardian's scope is null).
+  // child's persona rows are not `isDependant`, and the guardian's scope is null),
+  // by the lock-proof id so a tap in the lock-reload window is not scoped to null.
   const cardPageScopeId = (resolved: { isDependant: boolean; dependantId?: string | null }): string | null =>
-    carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;
+    childModeNow !== 'off' ? stableChildId : resolved.isDependant ? resolved.dependantId ?? null : null;
 
   const handleExitChildMode = useCallback(async () => {
     // Load-bearing safety boundary: exit requires the guardian's PIN/biometric.
