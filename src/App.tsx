@@ -2882,6 +2882,7 @@ function AppContent() {
       },
       mayConnect: async peer => await peerDecision(peer) === 'allow',
       mayReceive: async peer => await peerDecision(peer) !== 'deny',
+      needsGuardian: async peer => await peerDecision(peer) === 'guardian-review',
       ...(directoryId.startsWith('dependant:') ? { childPairing, onChildExchangeCancelled, childAuthority } : {}),
       onCompleted: async exchange => {
         if (!key || !owner || !current()) throw new Error('Contacts are not ready.');

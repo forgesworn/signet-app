@@ -10,19 +10,27 @@ import type { ContactCardChoice, ContactCardInfo } from '../lib/contact-card-sha
 import { ShareCardChips } from '../components/ShareCardChips';
 import { shortNpub } from '../lib/nostr-follows';
 import { ACCEPT_WITHOUT_PHOTO_LABEL, CARD_PHOTO_FAILED_COPY, GUARDIAN_APPROVES_NOTE_COPY, WAITING_FOR_GUARDIAN_COPY, requestFromNamedCopy } from '../lib/contacts-v2-copy';
+import { NEEDS_GUARDIAN_ERROR } from '../lib/contact-invite-service';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import { conflictedContactExchanges } from '../lib/contact-invite-store';
 import type { ContactInviteVault } from '../lib/contact-invite-store';
 
-/** What the invite service throws when the contact policy refuses a peer (`contact-invite-service.ts`). */
-const POLICY_REFUSALS = ['Request cannot be accepted', 'This contact is not allowed by the contact policy', 'The contact policy changed'];
+/**
+ * The page's copy for a refusal. Only a peer that waits on the guardian's approval
+ * (NEEDS_GUARDIAN_ERROR, decided in App from the contact policy) reads as waiting for
+ * them, and only where they approve; a blocked or closed-out peer keeps its own message.
+ */
+function refusalCopy(message: string, guardianApproves: boolean | undefined): string {
+  if (message !== NEEDS_GUARDIAN_ERROR) return message;
+  return guardianApproves ? WAITING_FOR_GUARDIAN_COPY : 'Request cannot be accepted';
+}
 
 export function ContactInvites({ service, identityPubkey, identityName, relays, version, initialInvite,
   onAddContact, onBack, onApproveContact, guardianApproves, cards }: { service: ContactInviteService; identityPubkey: string; identityName: string;
   relays: string[]; version: number; initialInvite?: string;
   onAddContact(exchange: ContactExchangeState): Promise<void>; onBack(): void;
   onApproveContact?(peer: string): Promise<void>;
-  /** The contact policy needs the guardian's approval and it cannot be given on this page (child mode on the guardian's phone). A refused request reads as waiting for them. */
+  /** The contact policy needs the guardian's approval and it cannot be given on this page (child mode on the guardian's phone). A request that waits on their approval reads as waiting for them; a blocked one does not. */
   guardianApproves?: boolean;
   /** "They'll see:" on an opened request. Absent (a paired child, a dependant's list) means no chips and no card.
    * `build` uploads the share copy and publishes its pointer, so it runs only when Accept is pressed. */
@@ -53,7 +61,7 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
     try { await action(); const value = await service.read(); if (mounted.current) setState(value); }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : 'The invite could not be updated.';
-      if (mounted.current) setError(guardianApproves && POLICY_REFUSALS.includes(message) ? WAITING_FOR_GUARDIAN_COPY : message);
+      if (mounted.current) setError(refusalCopy(message, guardianApproves));
     }
     finally { if (mounted.current) setBusy(false); }
   };

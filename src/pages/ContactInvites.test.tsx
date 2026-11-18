@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ContactInvites } from './ContactInvites';
 import { ContactCardPhotoError } from '../lib/contact-card-share';
 import { shortNpub } from '../lib/nostr-follows';
+import { NEEDS_GUARDIAN_ERROR } from '../lib/contact-invite-service';
 
 const avatarHook = vi.hoisted(() => vi.fn());
 const fetchAvatar = vi.hoisted(() => vi.fn());
@@ -106,10 +107,16 @@ describe('child mode on the guardian\'s phone (guardian approval not offered)', 
     expect(screen.getByText('Your guardian approves new contacts. Anything they have not approved yet waits for them.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Approve and/ })).toBeNull();
   });
-  it('reads a policy refusal on accept as waiting for the guardian', async () => {
-    setupChildMode(async () => { throw new Error('Request cannot be accepted'); });
+  it('reads a refusal that waits on the guardian as waiting for the guardian', async () => {
+    setupChildMode(async () => { throw new Error(NEEDS_GUARDIAN_ERROR); });
     fireEvent.click(await screen.findByRole('button', { name: 'Accept request' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Waiting for your guardian to approve this contact.'));
+  });
+  it('does not read a blocked peer\'s refusal as waiting for the guardian', async () => {
+    setupChildMode(async () => { throw new Error('Request cannot be accepted'); });
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept request' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Request cannot be accepted'));
+    expect(screen.queryByText(/Waiting for your guardian/)).toBeNull();
   });
   it('reads a policy refusal on send as waiting for the guardian', async () => {
     setupChildMode(async () => {});

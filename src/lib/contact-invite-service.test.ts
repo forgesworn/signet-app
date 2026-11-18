@@ -5,7 +5,7 @@ import { nip44 } from 'nostr-tools';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { ContactIdentityDecryptBudget, contactVerificationWords } from '@forgesworn/signet-contacts';
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
-import { ContactInviteService, evidenceStrength, type RevealEvidence } from './contact-invite-service';
+import { ContactInviteService, evidenceStrength, NEEDS_GUARDIAN_ERROR, type RevealEvidence } from './contact-invite-service';
 import { recordContactArrival, updateContactInviteVault } from './contact-invite-store';
 import { purgeAllUserData, listContactOperationsV2 } from './db';
 import { recordCompletedContactExchange, exchangeCompletionActor } from './contact-exchange-record';
@@ -510,6 +510,39 @@ it('M3: a refused accept builds no card; an allowed one builds it once and sends
   await b.service.accept(outbox.id, now + 4, false, false, builder);
   expect(builder).toHaveBeenCalledTimes(1);
   expect((await b.service.read()).exchanges[0].acceptance?.card).toEqual({ name: 'Bea' });
+});
+
+describe('a refusal tells a blocked peer apart from one that needs the guardian', () => {
+  const now = 1700000000;
+  async function arrived(needsGuardian?: (peer: string) => boolean) {
+    const a = party('01'.repeat(32), 'owner');
+    const dir = `dependant:${'b'.repeat(64)}`;
+    const refusing = party('02'.repeat(32), dir, { mayConnect: () => false, ...(needsGuardian ? { needsGuardian } : {}) });
+    const b = party('02'.repeat(32), dir);
+    const invite = await b.service.create(b.pubkey, 'Conference', ['wss://relay.example'], 'single-use', now);
+    await a.service.request(a.pubkey, invite.invite, now + 1);
+    const outbox = (await a.service.read()).outbox[0];
+    await recordContactArrival(dir, KEY, { id: outbox.id, inviteId: invite.id, identityPubkey: b.pubkey, packet: openContactMailboxWrap(outbox.event, invite.invite.secret)!, receivedAt: now + 2 });
+    await b.service.openInbox(now + 3);
+    return { a, refusing, outbox, invite };
+  }
+  it('accept: a peer that needs the guardian throws NEEDS_GUARDIAN_ERROR', async () => {
+    const h = await arrived(() => true);
+    await expect(h.refusing.service.accept(h.outbox.id, now + 4)).rejects.toThrow(NEEDS_GUARDIAN_ERROR);
+  });
+  it('accept: a blocked peer (not one that needs the guardian) keeps the plain refusal', async () => {
+    const h = await arrived(() => false);
+    await expect(h.refusing.service.accept(h.outbox.id, now + 4)).rejects.toThrow('Request cannot be accepted');
+    await expect(h.refusing.service.accept(h.outbox.id, now + 4)).rejects.not.toThrow(NEEDS_GUARDIAN_ERROR);
+  });
+  it('request: the same split on the send side', async () => {
+    const target = party('02'.repeat(32), 'owner');
+    const invite = await target.service.create(target.pubkey, 'Conference', ['wss://relay.example'], 'single-use', now);
+    const needs = party('01'.repeat(32), 'owner', { mayConnect: () => false, needsGuardian: () => true });
+    const blocked = party('01'.repeat(32), 'owner', { mayConnect: () => false, needsGuardian: () => false });
+    await expect(needs.service.request(needs.pubkey, invite.invite, now + 1)).rejects.toThrow(NEEDS_GUARDIAN_ERROR);
+    await expect(blocked.service.request(blocked.pubkey, invite.invite, now + 1)).rejects.toThrow('contact policy');
+  });
 });
 
 it('an owner directory spends no vault read on the child guard; a dependant directory still guards', async () => {

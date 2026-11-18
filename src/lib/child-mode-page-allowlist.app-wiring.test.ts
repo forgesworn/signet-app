@@ -66,6 +66,10 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain('{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}');
   });
 
+  it('the invite service tells a peer that needs the guardian apart from a blocked one', () => {
+    expect(app).toContain("needsGuardian: async peer => await peerDecision(peer) === 'guardian-review',");
+  });
+
   it('holds the page-auth prompt on it, with the dependency', () => {
     expect(app).toContain("if (childModePage !== 'allow') return;");
     expect(app).toContain('}, [page, encryptionKey, requestAuth, approveAuthHeld, childModePage]);');
