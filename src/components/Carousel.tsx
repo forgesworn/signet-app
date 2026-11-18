@@ -17,6 +17,7 @@ import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
+import { childModeBannerAction } from '../lib/child-mode-sign-in';
 import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
@@ -73,6 +74,11 @@ interface CarouselProps {
    * (child mode on with no child), or the phone is unlocked yet the restore never took.
    */
   childModeSavedExitable?: boolean;
+  /**
+   * Saved child mode while locked (cold start, no ring): the banner's "Unlock (PIN)"
+   * button. The unlock restores the session as live child mode, with its Exit.
+   */
+  onUnlockSavedChildMode?: () => void;
   /**
    * Add a persona. Caller does the freshAuth + IDB write. Throws on
    * failure so AddCard can surface the error inline.
@@ -454,25 +460,32 @@ interface IncomingCard {
 /**
  * "Viewing as: <child> / Exit (PIN)". Shown whenever child mode is on, even
  * without the child's full record, so the PIN exit is always reachable. With no
- * `onExit` (child mode only saved, still locked) there is no button: the PIN
- * exit needs the live, unlocked child mode, which unlocking restores.
+ * `onExit` (child mode only saved, still locked) it offers `onUnlock` instead:
+ * the PIN exit needs the live, unlocked child mode, which unlocking restores.
  */
-export function ChildModeBanner({ name, blur, onExit }: { name: string; blur: boolean; onExit?: () => void }) {
+export function ChildModeBanner({ name, blur, onExit, onUnlock }: { name: string; blur: boolean; onExit?: () => void; onUnlock?: () => void }) {
   return (
     <div className="child-banner">
       <span>Viewing as:{' '}
         <span style={blur ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{name || 'a child'}</span>
       </span>
-      {onExit && (
+      {onExit ? (
         <button className="child-banner-exit" onClick={onExit}>
           Exit (PIN)
         </button>
-      )}
+      ) : onUnlock ? (
+        <button className="child-banner-exit" onClick={onUnlock}>
+          Unlock (PIN)
+        </button>
+      ) : null}
     </div>
   );
 }
 
 export function Carousel(props: CarouselProps) {
+  const bannerAction = childModeBannerAction({
+    live: props.childMode, saved: !!props.childModeSaved, savedExitable: !!props.childModeSavedExitable,
+  });
   const { row, col, rows, animating, onCommit, onAnimatingChange, swipeLocked } = props;
 
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -909,7 +922,8 @@ export function Carousel(props: CarouselProps) {
         <ChildModeBanner
           name={props.childDependant?.displayName || props.childModeName || ''}
           blur={!!props.blurIdentityNames}
-          onExit={props.childMode || props.childModeSavedExitable ? props.onExitChildMode : undefined}
+          onExit={bannerAction === 'exit' ? props.onExitChildMode : undefined}
+          onUnlock={bannerAction === 'unlock' ? props.onUnlockSavedChildMode : undefined}
         />
       )}
 

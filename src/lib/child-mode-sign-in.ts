@@ -171,3 +171,17 @@ export function childModeSessionStale(input: {
   if (!input.sessionDependantId) return false;
   return !input.dependantIds.includes(input.sessionDependantId);
 }
+
+/**
+ * What the child-mode banner's button does. Exit (PIN) whenever child mode is live
+ * or the saved session can be cleared (read failed, or unlocked with no restore);
+ * Unlock (PIN) when it is only saved and the phone is still locked, since the
+ * restore after the unlock makes it live, with its Exit. 'none' only when child
+ * mode is not on at all, where no banner shows.
+ */
+export type ChildModeBannerAction = 'exit' | 'unlock' | 'none';
+export function childModeBannerAction(s: { live: boolean; saved: boolean; savedExitable: boolean }): ChildModeBannerAction {
+  if (s.live) return 'exit';
+  if (!s.saved) return 'none';
+  return s.savedExitable ? 'exit' : 'unlock';
+}

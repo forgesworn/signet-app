@@ -15808,6 +15808,7 @@ function AppContent() {
         childModeName={signInChildDependant?.displayName}
         childModeSaved={!carousel.childMode && !!savedChildMode}
         childModeSavedExitable={!carousel.childMode && (savedChildMode === CHILD_MODE_UNRESOLVED || (!!savedChildMode && !!encryptionKey))}
+        onUnlockSavedChildMode={() => { void requestAuth({ purpose: 'unlock-app' }); }}
         onAddPersona={async (displayName) => {
           // Fresh-auth gate so a child who's shoulder-surfed the PIN can't
           // mint new personas on the guardian's identity. Same pattern as
