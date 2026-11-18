@@ -15,13 +15,14 @@ const between = (from: string, to: string) => app.slice(idx(from), app.indexOf(t
 
 describe('contacts scope reads the three-state child-mode signal', () => {
   it('feeds the scope the saved-aware state and the live child id, from below their declarations', () => {
-    expect(app).toContain('childModeNow: nip55ChildMode,');
+    expect(app).toContain('    childModeNow,\n    childDependantId: carousel.childDependant?.id ?? null,');
     expect(app).toContain('childDependantId: carousel.childDependant?.id ?? null,');
     expect(app).not.toContain('childMode: carousel.childMode,\n    dependantCount');
     // No TDZ: the saved state and nip55ChildMode are declared before the scope memo reads them.
     const scope = idx('const contactsScope = useMemo(() => resolveContactsScope({');
     expect(idx('const [savedChildMode, setSavedChildMode]')).toBeLessThan(scope);
     expect(idx('const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });')).toBeLessThan(scope);
+    expect(idx('const childModeNow = nip55ChildMode;')).toBeLessThan(scope);
   });
 });
 
@@ -72,7 +73,7 @@ describe('guardian data stays out of child mode', () => {
     expect(detail).toContain('hasKenEntry: !childContactsMode && kens.some(');
     expect(detail).toContain('const pictureBackupEnv = encryptionKey && !childContactsMode');
     expect(app).toContain('onRefreshPictures={!isPairedChild && !childContactsMode && encryptionKey');
-    expect(app).toContain("const childContactsMode = !isPairedChild && nip55ChildMode !== 'off';");
+    expect(app).toContain("const childContactsMode = !isPairedChild && childModeNow !== 'off';");
   });
 });
 

@@ -14,10 +14,10 @@ const count = (needle: string) => app.split(needle).length - 1;
 
 describe('child-mode sign-in gate in App.tsx', () => {
   it('reads child mode as last saved without the key, and drops it once child mode is live', () => {
-    expect(app).toContain('.then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))');
+    expect(app).toContain('readSavedChildMode({ loadSession: loadChildModeSession, loadFacts: loadDependantSignInFacts })');
     expect(app).toContain('if (carousel.childMode) setSavedChildMode(null);');
     // Held through a lock, when dependants empty for a moment.
-    expect(app).toContain('else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;');
+    expect(app).toContain('else if (carousel.childDependant) childModeDependantRef.current = childModeFacts(carousel.childDependant);');
     expect(app).toContain('carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;');
     expect(app).toContain('const signInChildMode = carousel.childMode || !!savedChildMode;');
     expect(app).toContain('const childSignIn = childModeSignInRefusal({ childMode: signInChildMode, dependant: signInChildDependant });');
@@ -106,7 +106,7 @@ describe('child-mode sign-in gate in App.tsx', () => {
     // Child mode as saved is read before the NIP-55 server is set up.
     expect(app.indexOf('const [savedChildMode, setSavedChildMode]')).toBeLessThan(app.indexOf('const nip55 = useNip55Server({'));
     expect(app).toContain("const nip55Overlay = nip55.pending && nip55ChildMode === 'off' && !showAuthPrompt && !bunkerPendingApproval ? (");
-    expect(app).toContain('const bunkerApprovalOverlay = bunkerPanelOpen || signInChildMode ? null : (bunkerPendingApproval ? (');
+    expect(app).toContain("const bunkerApprovalOverlay = bunkerPanelOpen || childModeNow !== 'off' ? null : (bunkerPendingApproval ? (");
   });
 
   it('a saved session that can never restore is cleared once unlocked and read with the key, lifting every restriction', () => {

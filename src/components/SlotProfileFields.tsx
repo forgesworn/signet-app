@@ -78,6 +78,8 @@ export interface SlotProfileFieldsProps {
   imported?: boolean;
   /** Disables all inputs; renders §6.6.11 framing. Used on paired-child surface. */
   pairedChildView?: boolean;
+  /** Replaces the read-only note's text (child mode on the guardian's phone: the guardian edits after exiting). */
+  readOnlyNote?: string;
   /** Blossom server URL for Upload buttons. From preferences.defaultBlossomUrl. */
   defaultBlossomUrl?: string;
   /** User consent for Blossom uploads. From preferences.blossomConsent. */
@@ -188,6 +190,7 @@ export function SlotProfileFields({
   slotKind,
   imported = false,
   pairedChildView = false,
+  readOnlyNote,
   onSaveConfig,
   onPublishNow,
   onUploadPicture,
@@ -618,7 +621,7 @@ export function SlotProfileFields({
               fontSize: '0.85rem',
             }}
           >
-            <Icon name="key" size={14} className="icon-inline" /><strong>Your guardian set this up.</strong> Editing happens on their device.
+            {readOnlyNote ? readOnlyNote : <><Icon name="key" size={14} className="icon-inline" /><strong>Your guardian set this up.</strong> Editing happens on their device.</>}
           </div>
         )}
 

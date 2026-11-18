@@ -10,19 +10,29 @@ import type { ContactCardChoice, ContactCardInfo } from '../lib/contact-card-sha
 import { ShareCardChips } from '../components/ShareCardChips';
 import { shortNpub } from '../lib/nostr-follows';
 import { ACCEPT_WITHOUT_PHOTO_LABEL, CARD_PHOTO_FAILED_COPY, GUARDIAN_APPROVES_NOTE_COPY, WAITING_FOR_GUARDIAN_COPY, requestFromNamedCopy } from '../lib/contacts-v2-copy';
+import { NEEDS_GUARDIAN_ERROR } from '../lib/contact-invite-service';
 import type { ContactInviteService } from '../lib/contact-invite-service';
 import { conflictedContactExchanges } from '../lib/contact-invite-store';
 import type { ContactInviteVault } from '../lib/contact-invite-store';
 
-/** What the invite service throws when the contact policy refuses a peer (`contact-invite-service.ts`). */
-const POLICY_REFUSALS = ['Request cannot be accepted', 'This contact is not allowed by the contact policy', 'The contact policy changed'];
+/**
+ * The page's copy for a refusal. Only a peer that waits on the guardian's approval
+ * (NEEDS_GUARDIAN_ERROR, decided in App from the contact policy) reads as waiting for
+ * them, and only where they approve; a blocked or closed-out peer keeps its own message.
+ */
+function refusalCopy(message: string, guardianApproves: boolean | undefined, action: 'send' | 'accept'): string {
+  if (message !== NEEDS_GUARDIAN_ERROR) return message;
+  if (guardianApproves) return WAITING_FOR_GUARDIAN_COPY;
+  // What the service said for a refused peer before the guardian case had its own message.
+  return action === 'send' ? 'This contact is not allowed by the contact policy' : 'Request cannot be accepted';
+}
 
 export function ContactInvites({ service, identityPubkey, identityName, relays, version, initialInvite,
   onAddContact, onBack, onApproveContact, guardianApproves, cards }: { service: ContactInviteService; identityPubkey: string; identityName: string;
   relays: string[]; version: number; initialInvite?: string;
   onAddContact(exchange: ContactExchangeState): Promise<void>; onBack(): void;
   onApproveContact?(peer: string): Promise<void>;
-  /** The contact policy needs the guardian's approval and it cannot be given on this page (child mode on the guardian's phone). A refused request reads as waiting for them. */
+  /** The contact policy needs the guardian's approval and it cannot be given on this page (child mode on the guardian's phone). A request that waits on their approval reads as waiting for them; a blocked one does not. */
   guardianApproves?: boolean;
   /** "They'll see:" on an opened request. Absent (a paired child, a dependant's list) means no chips and no card.
    * `build` uploads the share copy and publishes its pointer, so it runs only when Accept is pressed. */
@@ -47,13 +57,13 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
     void service.read().then(value => { if (!cancelled) setState(value); }).catch(() => { if (!cancelled) setError('Could not load private invites.'); });
     return () => { cancelled = true; };
   }, [service, version]);
-  const run = async (action: () => Promise<unknown>) => {
+  const run = async (action: () => Promise<unknown>, kind: 'send' | 'accept' = 'accept') => {
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
     try { await action(); const value = await service.read(); if (mounted.current) setState(value); }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : 'The invite could not be updated.';
-      if (mounted.current) setError(guardianApproves && POLICY_REFUSALS.includes(message) ? WAITING_FOR_GUARDIAN_COPY : message);
+      if (mounted.current) setError(refusalCopy(message, guardianApproves, kind));
     }
     finally { if (mounted.current) setBusy(false); }
   };
@@ -119,7 +129,7 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
       if (onApproveContact) await onApproveContact(invite.recipient);
       await service.request(identityPubkey, invite, now()); setIncoming(''); setNotice('Request queued.');
       await service.flush(now());
-    })}>{onApproveContact ? 'Approve and send contact request' : 'Send contact request'}</button>
+    }, 'send')}>{onApproveContact ? 'Approve and send contact request' : 'Send contact request'}</button>
     {onApproveContact && <p>Approving adds this public key to the dependant’s approved contacts. Requests stay pending until you approve them.</p>}
     <h3>Requests ({arrivals.length})</h3>
     <button className="btn btn-secondary" disabled={busy || !arrivals.some(a => !a.request)} onClick={() => void run(() => service.openInbox(now(), false, identityPubkey))}>Open request list</button>

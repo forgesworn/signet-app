@@ -132,10 +132,12 @@ interface RowProps {
   expanded: boolean;
   onToggle: () => void;
   actions: KnownPlaceActions;
+  /** Child mode: the facts and Open only. Nothing that changes a record, a grant or the Heartwood. */
+  readOnly?: boolean;
 }
 
 /** One place: a summary line that expands in place into facts, then actions. */
-export function KnownPlaceRow({ place, ctx, identityName, identityType, last, now, badges, expanded, onToggle, actions }: RowProps) {
+export function KnownPlaceRow({ place, ctx, identityName, identityType, last, now, badges, expanded, onToggle, actions, readOnly = false }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [confirm, setConfirm] = useState<'forget' | 'disconnect' | 'forget-here' | null>(null);
@@ -236,7 +238,9 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             <div><dt>Used</dt><dd>{place.uses} {place.uses === 1 ? 'time' : 'times'}</dd></div>
           </dl>
 
-          {editing ? (
+          {readOnly ? (
+            place.alias ? <div className="kp-alias"><span>Alias: <strong>{place.alias}</strong></span></div> : null
+          ) : editing ? (
             <div className="kp-alias-edit">
               <input
                 className="kp-input"
@@ -260,7 +264,14 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             </div>
           )}
 
-          {confirm ? (
+          {readOnly ? (
+            openable && (
+              <div className="kp-actions">
+                <button type="button" className="btn btn-secondary kp-btn" disabled={busy}
+                  onClick={() => void run(() => actions.open(place))}>Open</button>
+              </div>
+            )
+          ) : confirm ? (
             <div className="kp-confirm" role="group" aria-label="Confirm">
               <p>{confirm === 'forget'
                 ? (heartwoodSignIn

@@ -23,6 +23,19 @@ export interface ChildModeSignInDependant {
   childDevice?: { mode?: string } | null;
 }
 
+/**
+ * The facts kept of the child across a lock, in the same shape as the saved
+ * session's: id, name and device mode, never a key. App holds this instead of the
+ * decrypted record, which carries the child's private keys.
+ */
+export function childModeFacts(dep: { id: string; displayName: string; childDevice?: { mode?: unknown } | null }): ChildModeSignInDependant {
+  return {
+    id: dep.id,
+    displayName: dep.displayName,
+    ...(dep.childDevice?.mode === 'heartwood-direct' ? { childDevice: { mode: 'heartwood-direct' } } : {}),
+  };
+}
+
 export interface ChildModeSignInInput {
   /** The phone is in child mode (live, or as last saved while it is still locked). */
   childMode: boolean;
@@ -79,7 +92,7 @@ export interface ChildModeApprovalOffer {
 export function childModeApprovalOffer(input: ChildModeSignInInput): ChildModeApprovalOffer {
   if (!input.childMode) return { refuse: null, guardian: true, offersDependant: () => true };
   const refuse = childModeSignInRefusal(input);
-  const onlyId = refuse ? null : input.dependant?.id ?? null;
+  const onlyId = refuse ? null : input.dependant?.id || null;
   return { refuse, guardian: false, offersDependant: id => onlyId !== null && id === onlyId };
 }
 
@@ -89,6 +102,32 @@ export function childModeApprovalOffer(input: ChildModeSignInInput): ChildModeAp
  * saved and not yet restored, `off` otherwise.
  */
 export type ChildModeState = 'on' | 'off' | 'unknown';
+
+/**
+ * The saved session could not be read at start-up (IndexedDB failed). That is
+ * not "no session": child mode stays on, with no child to resolve, so only home
+ * renders and nothing is offered, until the PIN exit clears it (or a later read
+ * succeeds after unlock and restores the real session). An empty id never
+ * matches a dependant.
+ */
+export const CHILD_MODE_UNRESOLVED: ChildModeSignInDependant = Object.freeze({ id: '', displayName: '' });
+
+/**
+ * Child mode as last saved, read at start-up: the child's facts, null when
+ * there is no session or its dependant is missing or independent (that drop is
+ * deliberate), or `CHILD_MODE_UNRESOLVED` when either read fails.
+ */
+export async function readSavedChildMode(deps: {
+  loadSession: () => Promise<{ activeDependantId: string } | null>;
+  loadFacts: (dependantId: string) => Promise<ChildModeSignInDependant | null>;
+}): Promise<ChildModeSignInDependant | null> {
+  try {
+    const session = await deps.loadSession();
+    return session ? await deps.loadFacts(session.activeDependantId) : null;
+  } catch {
+    return CHILD_MODE_UNRESOLVED;
+  }
+}
 
 export function childModeState(input: { live: boolean; saved: ChildModeSignInDependant | null | undefined }): ChildModeState {
   if (input.live || input.saved) return 'on';
@@ -144,4 +183,18 @@ export function childModeSessionStale(input: {
   if (!input.unlocked || !input.dependantsLoadedWithKey || input.childModeLive) return false;
   if (!input.sessionDependantId) return false;
   return !input.dependantIds.includes(input.sessionDependantId);
+}
+
+/**
+ * What the child-mode banner's button does. Exit (PIN) whenever child mode is live
+ * or the saved session can be cleared (read failed, or unlocked with no restore);
+ * Unlock (PIN) when it is only saved and the phone is still locked, since the
+ * restore after the unlock makes it live, with its Exit. 'none' only when child
+ * mode is not on at all, where no banner shows.
+ */
+export type ChildModeBannerAction = 'exit' | 'unlock' | 'none';
+export function childModeBannerAction(s: { live: boolean; saved: boolean; savedExitable: boolean }): ChildModeBannerAction {
+  if (s.live) return 'exit';
+  if (!s.saved) return 'none';
+  return s.savedExitable ? 'exit' : 'unlock';
 }

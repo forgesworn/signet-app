@@ -2,7 +2,7 @@ import { CAROUSEL_COLUMNS } from '../types';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { DependantIdentity, CarouselColumn, CarouselRow, PublicProfileConfig } from '../types';
-import { wrapIndex, clampIndex, resolveActiveIdentity, resolveRenameTarget } from '../lib/carousel-utils';
+import { wrapIndex, clampIndex, resolveActiveIdentity, resolveRenameTarget, childModeRowScope } from '../lib/carousel-utils';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
 import { shouldShowPairingStatus } from '../lib/carousel-routing';
@@ -17,6 +17,7 @@ import { CameraCard } from './CameraCard';
 import { AddCard } from './AddCard';
 import { useRegisterCarouselArrows } from './CarouselArrowContext';
 import { computeArrowState } from '../lib/carousel-arrows';
+import { childModeBannerAction } from '../lib/child-mode-sign-in';
 import type { PictureCrop } from '../lib/picture-crop';
 
 interface CarouselProps {
@@ -55,6 +56,12 @@ interface CarouselProps {
   childMode: boolean;
   childDependant: DependantIdentity | null;
   /**
+   * The lock-proof id of the child while child mode is on. A row is the child's
+   * only if it carries this dependant; any other row (the guardian's, a sibling's)
+   * offers no action in child mode. Null: no child resolved, so no row is the child's.
+   */
+  stableChildId?: string | null;
+  /**
    * The child-mode child's name when the full record is not to hand (a record
    * that will not decrypt): the exit banner still shows, so child mode always
    * has a way out.
@@ -62,6 +69,16 @@ interface CarouselProps {
   childModeName?: string;
   /** Child mode is only SAVED (locked cold start), not live: show the banner without Exit. */
   childModeSaved?: boolean;
+  /**
+   * Saved child mode that the PIN exit must be able to clear: the saved read failed
+   * (child mode on with no child), or the phone is unlocked yet the restore never took.
+   */
+  childModeSavedExitable?: boolean;
+  /**
+   * Saved child mode while locked (cold start, no ring): the banner's "Unlock (PIN)"
+   * button. The unlock restores the session as live child mode, with its Exit.
+   */
+  onUnlockSavedChildMode?: () => void;
   /**
    * Add a persona. Caller does the freshAuth + IDB write. Throws on
    * failure so AddCard can surface the error inline.
@@ -259,6 +276,33 @@ function identityCardKey(row: CarouselRow): string {
   return (_exhaustive as CarouselRow).type;
 }
 
+/**
+ * Every handler the settings column has for changing a name, an avatar or a
+ * public profile (and for uploading or checking one). In child mode the column
+ * is handed none of them: the child sees it read only, and a stale call has
+ * nothing to reach. Spreading the object keeps the guardian's props unchanged.
+ */
+function writers(props: CarouselProps) {
+  return {
+    onSavePersonaConfig: props.onSavePersonaConfig,
+    onRepublishProfile: props.onRepublishProfile,
+    onUploadPersonaPicture: props.onUploadPersonaPicture,
+    onDeletePublicBlob: props.onDeletePublicBlob,
+    onUpdateOwnPersonaName: props.onUpdateOwnPersonaName,
+    onSetPersonaAvatar: props.onSetPersonaAvatar,
+    onClearPersonaAvatar: props.onClearPersonaAvatar,
+    onNip05Checked: props.onNip05Checked,
+    onSaveDepPersonaConfig: props.onSaveDepPersonaConfig,
+    onRepublishDepProfile: props.onRepublishDepProfile,
+    onUploadDepPersonaPicture: props.onUploadDepPersonaPicture,
+    onUpdateDepName: props.onUpdateDepName,
+    onUpdateDepPersonaName: props.onUpdateDepPersonaName,
+    onSetDepPersonaAvatar: props.onSetDepPersonaAvatar,
+    onClearDepPersonaAvatar: props.onClearDepPersonaAvatar,
+    onDepNip05Checked: props.onDepNip05Checked,
+  };
+}
+
 function renderCard(
   row: CarouselRow,
   col: CarouselColumn,
@@ -278,6 +322,11 @@ function renderCard(
   //                     and arrive via the persona-inventory sync. We render
   //                     this even when childDormant so the kid still sees an
   //                     explanation instead of a blank screen.
+  // A row that is not the child's, while the phone is in child mode (the
+  // guardian's ring can show for a moment around a lock): its card, and nothing
+  // behind it. No bot card, no QR, contacts, places, settings or camera.
+  const foreign = childModeRowScope(row, props.childMode, props.stableChildId ?? null) === 'foreign';
+  if (foreign && (col !== 0 || row.type === 'bot')) return null;
   if (row.type === 'bot') return props.renderBotCard?.(row, col) ?? null;
   if (row.type === 'add') {
     if (props.signingMode === 'paired-child') {
@@ -313,7 +362,8 @@ function renderCard(
           <IdentityCard
             key={identityCardKey(row)}
             row={row}
-            onHandshake={props.onHandshake ? choose => props.onHandshake!(resolved, choose) : undefined}
+            onHandshake={props.onHandshake && !foreign ? choose => props.onHandshake!(resolved, choose) : undefined}
+            foreign={foreign}
             resolved={resolved}
             childMode={props.childMode}
             childDormant={props.childDormant}
@@ -324,17 +374,17 @@ function renderCard(
             readyNotice={row.type === 'dependant' ? props.readyNoticeFor?.(row.dependant.id) : undefined}
             // TODO: resolve photoHash → URL via local cache or Blossom server. Tracked as follow-up.
             photoUrl={null}
-            proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
-            onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
-            knownPlaceItems={props.knownPlacesFor?.(resolved)}
+            proAnchorActive={row.type === 'natural-person' && !foreign ? props.proAnchorActive : false}
+            onProPillTap={row.type === 'natural-person' && !foreign ? props.onProPillTap : undefined}
+            knownPlaceItems={foreign ? undefined : props.knownPlacesFor?.(resolved)}
             placesLocked={props.placesLocked}
             onUnlockRequest={props.onUnlockRequest}
             onOpenPlace={props.onOpenPlace}
-            contactsCount={props.contactsCountFor?.(resolved) ?? null}
+            contactsCount={foreign ? null : props.contactsCountFor?.(resolved) ?? null}
             recentSignInLabel={recentSignInLabel}
             blurIdentityNames={props.blurIdentityNames}
             rowIndex={rowIndex}
-            onRenameActive={renameTarget && props.onRenameActive
+            onRenameActive={renameTarget && props.onRenameActive && !foreign
               ? (name: string) => props.onRenameActive!(renameTarget, name)
               : undefined}
           />
@@ -354,6 +404,9 @@ function renderCard(
             footer={slots?.footer}
           />
         );
+        // Child mode shows the child's npub as a plain QR: the invite card creates a
+        // standing invite in the guardian's own invite vault.
+        if (props.childMode) return renderPublicCard();
         return props.renderInviteCard?.(row, resolved, renderPublicCard) ?? renderPublicCard();
       }
       case 2:
@@ -371,22 +424,7 @@ function renderCard(
             dependantsCount={props.dependantsCount ?? 0}
             defaultBlossomUrl={props.defaultBlossomUrl}
             blossomConsent={props.blossomConsent}
-            onSavePersonaConfig={props.onSavePersonaConfig}
-            onRepublishProfile={props.onRepublishProfile}
-            onUploadPersonaPicture={props.onUploadPersonaPicture}
-            onDeletePublicBlob={props.onDeletePublicBlob}
-            onUpdateOwnPersonaName={props.onUpdateOwnPersonaName}
-            onSetPersonaAvatar={props.onSetPersonaAvatar}
-            onClearPersonaAvatar={props.onClearPersonaAvatar}
-            onNip05Checked={props.onNip05Checked}
-            onSaveDepPersonaConfig={props.onSaveDepPersonaConfig}
-            onRepublishDepProfile={props.onRepublishDepProfile}
-            onUploadDepPersonaPicture={props.onUploadDepPersonaPicture}
-            onUpdateDepName={props.onUpdateDepName}
-            onUpdateDepPersonaName={props.onUpdateDepPersonaName}
-            onSetDepPersonaAvatar={props.onSetDepPersonaAvatar}
-            onClearDepPersonaAvatar={props.onClearDepPersonaAvatar}
-            onDepNip05Checked={props.onDepNip05Checked}
+            {...(props.childMode ? {} : writers(props))}
           />
         );
       case 5:
@@ -422,25 +460,32 @@ interface IncomingCard {
 /**
  * "Viewing as: <child> / Exit (PIN)". Shown whenever child mode is on, even
  * without the child's full record, so the PIN exit is always reachable. With no
- * `onExit` (child mode only saved, still locked) there is no button: the PIN
- * exit needs the live, unlocked child mode, which unlocking restores.
+ * `onExit` (child mode only saved, still locked) it offers `onUnlock` instead:
+ * the PIN exit needs the live, unlocked child mode, which unlocking restores.
  */
-export function ChildModeBanner({ name, blur, onExit }: { name: string; blur: boolean; onExit?: () => void }) {
+export function ChildModeBanner({ name, blur, onExit, onUnlock }: { name: string; blur: boolean; onExit?: () => void; onUnlock?: () => void }) {
   return (
     <div className="child-banner">
       <span>Viewing as:{' '}
         <span style={blur ? { filter: 'blur(6px)', userSelect: 'none' } : undefined}>{name || 'a child'}</span>
       </span>
-      {onExit && (
+      {onExit ? (
         <button className="child-banner-exit" onClick={onExit}>
           Exit (PIN)
         </button>
-      )}
+      ) : onUnlock ? (
+        <button className="child-banner-exit" onClick={onUnlock}>
+          Unlock (PIN)
+        </button>
+      ) : null}
     </div>
   );
 }
 
 export function Carousel(props: CarouselProps) {
+  const bannerAction = childModeBannerAction({
+    live: props.childMode, saved: !!props.childModeSaved, savedExitable: !!props.childModeSavedExitable,
+  });
   const { row, col, rows, animating, onCommit, onAnimatingChange, swipeLocked } = props;
 
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -877,7 +922,8 @@ export function Carousel(props: CarouselProps) {
         <ChildModeBanner
           name={props.childDependant?.displayName || props.childModeName || ''}
           blur={!!props.blurIdentityNames}
-          onExit={props.childMode ? props.onExitChildMode : undefined}
+          onExit={bannerAction === 'exit' ? props.onExitChildMode : undefined}
+          onUnlock={bannerAction === 'unlock' ? props.onUnlockSavedChildMode : undefined}
         />
       )}
 

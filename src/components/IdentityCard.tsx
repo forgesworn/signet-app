@@ -37,6 +37,11 @@ export interface IdentityCardProps {
   resolved: ResolvedIdentity;
   childMode: boolean;
   /**
+   * Child mode is on and this card is not the child's (the guardian's ring can
+   * show for a moment around a lock): the card is shown with no action at all.
+   */
+  foreign?: boolean;
+  /**
    * On a paired-child install when the guardian has set
    * `autonomyStage: full-control`. Renders the dormant surface —
    * dependant card + soft indicator + "ask your guardian" copy.
@@ -128,7 +133,7 @@ const CHILD_NOTICE_STYLE: CSSProperties = {
   textAlign: 'center',
 };
 
-export function IdentityCard({ onHandshake, row, resolved, childMode, childDormant, childSignerKind, onPairAgain, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
+export function IdentityCard({ onHandshake, row, resolved, childMode, foreign = false, childDormant, childSignerKind, onPairAgain, cachedGuardianName, pairingStatus, readyNotice, photoUrl, proAnchorActive, onProPillTap, knownPlaceItems, placesLocked, onUnlockRequest, onOpenPlace, contactsCount, recentSignInLabel, blurIdentityNames, rowIndex, onRenameActive }: IdentityCardProps) {
   const isDependant = row.type === 'dependant';
   const isChildCard = isDependant && !childMode;
   const arrows = useCarouselArrows();
@@ -140,7 +145,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   const [backdropMenuOpen, setBackdropMenuOpen] = useState(false);
   const [backdropNote, setBackdropNote] = useState<string | null>(null);
   const backdropNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const canEditBackdrop = !isDependant && !childDormant;
+  const canEditBackdrop = !isDependant && !childDormant && !foreign;
   // The system picker hides the page; without the grace that hide locks the
   // app and unmounts this input before the pick lands.
   const openBackdropPicker = () => { armPickerGrace(); backdropInputRef.current?.click(); };
@@ -276,7 +281,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, childDorma
   }
 
   const initial = initialFromName(resolved.displayName);
-  const ownerCard = !isChildCard && !childDormant;
+  const ownerCard = !isChildCard && !childDormant && !foreign;
   // The role label doubles as the way into the identity switcher once the
   // ring has more than one row; on its own it stays a plain label.
   const canSwitch = !!arrows && arrows.rowCount > 1;

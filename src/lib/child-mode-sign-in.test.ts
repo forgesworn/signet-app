@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale } from './child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, readSavedChildMode, CHILD_MODE_UNRESOLVED, childModeFacts } from './child-mode-sign-in';
 import { buildChildRows } from './carousel-utils';
 import type { DependantIdentity } from '../types';
 import { CHILD_MODE_SIGN_IN_COPY } from './child-device-copy';
@@ -231,5 +231,57 @@ describe('loadDependantSignInFacts (read before unlock)', () => {
     await db.saveDependant(dep, KEY);
     expect(await db.loadDependantSignInFacts(dep.id)).toEqual({ id: dep.id, displayName: dep.displayName });
     expect(await db.loadDependantSignInFacts('9'.repeat(64))).toBeNull();
+  });
+});
+
+describe('readSavedChildMode (the start-up read of the session on disk)', () => {
+  const ok = (id: string) => Promise.resolve({ activeDependantId: id });
+
+  it('no session on disk reads as off', async () => {
+    expect(await readSavedChildMode({ loadSession: () => Promise.resolve(null), loadFacts: () => Promise.resolve(phoneServed) })).toBeNull();
+  });
+
+  it('a session whose dependant is missing or independent still drops (the facts read returns null)', async () => {
+    expect(await readSavedChildMode({ loadSession: () => ok(KID), loadFacts: () => Promise.resolve(null) })).toBeNull();
+  });
+
+  it('a session with its dependant resolves to the child', async () => {
+    expect(await readSavedChildMode({ loadSession: () => ok(KID), loadFacts: () => Promise.resolve(phoneServed) })).toEqual(phoneServed);
+  });
+
+  it('a failed session read fails closed: child mode stays on, with no child to resolve', async () => {
+    const saved = await readSavedChildMode({ loadSession: () => Promise.reject(new Error('idb')), loadFacts: () => Promise.resolve(phoneServed) });
+    expect(saved).toBe(CHILD_MODE_UNRESOLVED);
+    expect(childModeState({ live: false, saved })).toBe('on');
+    expect(CHILD_MODE_UNRESOLVED.id).toBe('');
+  });
+
+  it('a failed facts read fails closed too', async () => {
+    const saved = await readSavedChildMode({ loadSession: () => ok(KID), loadFacts: () => Promise.reject(new Error('idb')) });
+    expect(saved).toBe(CHILD_MODE_UNRESOLVED);
+  });
+
+  it('the unresolved child is never offered anything and never refused as a heartwood-direct child', () => {
+    const offer = childModeApprovalOffer({ childMode: true, dependant: CHILD_MODE_UNRESOLVED });
+    expect(offer.guardian).toBe(false);
+    expect(offer.refuse).toBeNull();
+    expect(offer.offersDependant('')).toBe(false);
+    expect(offer.offersDependant(KID)).toBe(false);
+  });
+});
+
+describe('childModeFacts: what App keeps of the child across a lock', () => {
+  it('is the id, name and device mode only, never a key', () => {
+    const dep = {
+      id: 'kid', displayName: 'Kid', childDevice: { mode: 'heartwood-direct', clientPubkey: 'cc' },
+      persona: { publicKey: 'pp', privateKey: 'priv-persona' }, naturalPerson: { publicKey: 'nn', privateKey: 'priv-np' },
+      bunkerEndpoint: { privateKey: 'priv-ep' },
+    } as unknown as DependantIdentity;
+    const facts = childModeFacts(dep);
+    expect(facts).toEqual({ id: 'kid', displayName: 'Kid', childDevice: { mode: 'heartwood-direct' } });
+    expect(JSON.stringify(facts)).not.toContain('priv-');
+  });
+  it('carries no childDevice when the dependant has none', () => {
+    expect(childModeFacts({ id: 'kid', displayName: 'Kid' } as unknown as DependantIdentity)).toEqual({ id: 'kid', displayName: 'Kid' });
   });
 });

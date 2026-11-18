@@ -65,6 +65,8 @@ import { isValidRelayUrl } from '../lib/relay-url';
 import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/persona-bunker-routes';
 import { describeCryptoRequest, runBunkerCrypto, type BunkerCryptoMethod } from '../lib/bunker-crypto-approval';
 import { childGateWireError, type ChildRouteGate } from '../lib/child-bunker';
+import { childModeHoldsRoute } from '../lib/child-mode-entry';
+import type { ChildModeState } from '../lib/child-mode-sign-in';
 import { withRequestCreatedAt } from '../lib/signing-backend';
 import * as db from '../lib/db';
 import { parseNip46Permissions, nip46PermissionAllows } from '../lib/nip46-permissions';
@@ -407,6 +409,15 @@ interface Options {
    */
   isOwnerServingActive?: () => boolean;
   /**
+   * The three-state child-mode signal, read fresh at request time. While it is
+   * `'on'` or `'unknown'` the phone may be in a dependant's hands, and a
+   * request on one of the guardian's OWN persona routes is answered exactly as
+   * when owner serving is paused: never auto-signed, never queued for approval
+   * (child-mode allowlist design, B3 and D6). Dependant routes and a child's
+   * own routes are unaffected. Optional: when omitted, child mode is off.
+   */
+  childModeNow?: () => ChildModeState;
+  /**
    * Apps handed to a Heartwood: the device answers them, so this server stays
    * silent. May answer later (a promise) while the stored list is still
    * loading; the request waits for it rather than being answered meanwhile.
@@ -509,7 +520,7 @@ async function publishResponseToSocket(
   }
 }
 
-export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey, isHandedOffClient }: Options) {
+export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes, onPairingComplete, onAppPairingComplete, appPairingsEncryptionKey, pendingAuthPairingsRef, onAuthFlowPairingComplete, onRateLimit, onApprovalPending, reconnectNonce, onAuditEvent, onGrantMutated, isOwnerServingActive, childModeNow, kinterestChildConsent, kinterestChildLabel, kinterestAuthorityPubkey, isHandedOffClient }: Options) {
   const isHandedOffClientRef = useRef(isHandedOffClient);
   isHandedOffClientRef.current = isHandedOffClient;
   const kinterestChildLabelRef = useRef(kinterestChildLabel);
@@ -526,6 +537,9 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   // Read isOwnerServingActive fresh at request time — never stale-capture.
   const isOwnerServingActiveRef = useRef(isOwnerServingActive);
   isOwnerServingActiveRef.current = isOwnerServingActive;
+  // Same for child mode: asked when the request is handled, not captured.
+  const childModeNowRef = useRef(childModeNow);
+  childModeNowRef.current = childModeNow;
   const onAuthFlowPairingCompleteRef = useRef(onAuthFlowPairingComplete);
   onAuthFlowPairingCompleteRef.current = onAuthFlowPairingComplete;
   const onAppPairingCompleteRef = useRef(onAppPairingComplete);
@@ -810,7 +824,8 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // owner-route method (connect / get_public_key / nip04_* / nip44_* /
     // sign_event).
     const ownerServingActive = isOwnerServingActiveRef.current ? isOwnerServingActiveRef.current() : true;
-    if (!route.dependantId && !route.childGate && !ownerServingActive) {
+    if (!route.dependantId && !route.childGate
+      && (!ownerServingActive || childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off'))) {
       await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
       return;
     }
@@ -1317,6 +1332,13 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // NOT the transport backend — the consumer's NIP-44 is addressed
       // to the dependant's signing pubkey (the one returned by
       // get_public_key for that route), not the transport pubkey.
+      // Asked again here, on the silent path: the awaits above can outlast the
+      // moment child mode started, and this is the last gate before the owner's
+      // key runs.
+      if (childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off')) {
+        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
+        return;
+      }
       const outcome = await runBunkerCrypto(route.signingBackend ?? route.backend, request.method as BunkerCryptoMethod, theirPubkey, payload);
       if (!outcome.ok) {
         await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
@@ -1473,6 +1495,13 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // makes a connected client's sign_event prompt while `allowAlways` keeps
       // meaning "connected" for the nip04/nip44 gate, so crypto stays silent.
       if (existing?.allowAlways && !existing.askToSign && !sensitiveForAllowAlways) {
+        // Asked again here, on the silent path: the awaits above can outlast
+        // the moment child mode started, and this is the last gate before a
+        // signature leaves the phone.
+        if (childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off')) {
+          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
+          return;
+        }
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
           await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));

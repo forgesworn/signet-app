@@ -109,6 +109,24 @@ export function buildRows(
  * without it a freshly-added child persona was written to IDB correctly
  * but never rendered — fixed as a follow-up.
  */
+/**
+ * The dependant with every secret blanked: only the id, names and public keys. The
+ * child's ring is kept in this form across a lock, so no private key outlives it.
+ */
+export function dependantDisplayView(dep: DependantIdentity): DependantIdentity {
+  const bare = <T extends { privateKey: string }>(slot: T): T => ({
+    ...slot, privateKey: '', avatarKey: undefined, contactAvatarKey: undefined,
+  });
+  const { bunkerEndpoint: _b, appBunkerEndpoint: _a, ...rest } = dep;
+  void _b; void _a;
+  return {
+    ...rest,
+    naturalPerson: bare(dep.naturalPerson),
+    persona: bare(dep.persona),
+    ...(dep.extraPersonas ? { extraPersonas: dep.extraPersonas.map(bare) } : {}),
+  };
+}
+
 export function buildChildRows(dependant: DependantIdentity): CarouselRow[] {
   const rows: CarouselRow[] = [];
   // The `dependant` row IS the real-name card. Omit it while the real identity
@@ -132,6 +150,32 @@ export function buildChildRows(dependant: DependantIdentity): CarouselRow[] {
   }
   rows.push({ type: 'add' });
   return rows;
+}
+
+/**
+ * Whether a carousel row carries a dependant's identity: the dependant card and
+ * both kinds of persona row. Not `resolved.isDependant`, which is false for the
+ * persona rows (they are styled as personas) and so let the child's persona
+ * cards reach owner-only surfaces.
+ */
+export function isChildScopedRow(row: CarouselRow): boolean {
+  return row.type === 'dependant' || row.type === 'dependant-persona' || row.type === 'dependant-extra-persona';
+}
+
+/**
+ * How one row is treated while child mode is on. `child`: the stable child's own
+ * row. `add`: the Add card, with its own PIN gate. `foreign`: anything else (a
+ * guardian row, a sibling, or any row when no child is resolved): it offers no
+ * action at all. `off`: child mode is not on, so nothing here applies.
+ * `childId` is the lock-proof child id, never the carousel's own state.
+ */
+export type ChildModeRowScope = 'off' | 'child' | 'add' | 'foreign';
+
+export function childModeRowScope(row: CarouselRow, childMode: boolean, childId: string | null): ChildModeRowScope {
+  if (!childMode) return 'off';
+  if (row.type === 'add') return 'add';
+  if (isChildScopedRow(row) && childId !== null && 'dependant' in row && row.dependant.id === childId) return 'child';
+  return 'foreign';
 }
 
 /** Circular index wrapping: wrapIndex(-1, 4) → 3, wrapIndex(4, 4) → 0 */

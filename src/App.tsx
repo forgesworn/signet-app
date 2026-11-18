@@ -132,6 +132,10 @@ import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublish
 import { usePersonaInventory } from './hooks/usePersonaInventory';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
+import {
+  ESCALATION_NOTIFICATION_ID_BASE, ESCALATION_NOTIFICATION_ID_RANGE, deliveredEscalationNotificationIds,
+  notificationForChildMode, takeDeliveredRequestNotificationIds,
+} from './lib/child-mode-entry';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
@@ -160,7 +164,7 @@ import { KnownPlacesCard, KnownPlacesDependantCard } from './components/KnownPla
 import { canOpenPlace } from './lib/known-place-open';
 import type { KnownPlaceIdentityType, KnownPlaceCtx, KnownPlaceActions } from './components/KnownPlaceRow';
 import type { ResolvedIdentity } from './lib/carousel-utils';
-import { resolveActiveIdentity } from './lib/carousel-utils';
+import { resolveActiveIdentity, childModeRowScope } from './lib/carousel-utils';
 import { updateConnectedClient } from './lib/db';
 import { primaryBadge, badgesFor } from './lib/known-place-badges';
 import { heartwoodEntriesFor } from './lib/known-place-heartwood';
@@ -180,9 +184,13 @@ import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
-import { childModePageDecision } from './lib/child-mode-guardian-pages';
+import { childModePageDecision, leaveRefusedPageOnExit, CHILD_MODE_SCAN_INVITE_COPY, CHILD_MODE_LINK_INVITE_COPY } from './lib/child-mode-page-allowlist';
+import { useDropInviteInChildMode } from './hooks/useDropInviteInChildMode';
+import { useOnChildModeEntered } from './hooks/useOnChildModeEntered';
+import { useOnLeaveRefusedPage } from './hooks/useOnLeaveRefusedPage';
+import { readOnlyPlaceActions } from './lib/known-place-read-only';
 import { companionGrantPersonas } from './lib/companion-grant-personas';
-import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeFacts, readSavedChildMode, CHILD_MODE_UNRESOLVED, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
 import { RateLimitBanner } from './components/RateLimitBanner';
@@ -516,13 +524,6 @@ const AUTH_FLOW_BUNKER_FALLBACK_RELAYS = [
   'wss://relay.primal.net',
   'wss://relay.ditto.pub',
 ] as const;
-
-// "Family asks" native-notification ids: hashed off the escalation notice's
-// `id` (opaque string) into a range well clear of the small sequential ints
-// `useBunkerServer`'s handleCounterRef hands out for pending-approval
-// notifications, so the two id spaces can never collide.
-const ESCALATION_NOTIFICATION_ID_BASE = 1_000_000;
-const ESCALATION_NOTIFICATION_ID_RANGE = 900_000;
 
 /** Deterministic small-int hash (FNV-1a, 32-bit) — id → notification id only, not security-sensitive. */
 function hashToUint32(s: string): number {
@@ -1024,7 +1025,11 @@ function AppContent() {
     () => (childCarouselAllowCsv === null ? null : new Set(childCarouselAllowCsv.split(',').filter(Boolean))),
     [childCarouselAllowCsv],
   );
-  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed, childCarouselBound);
+  // Child mode as last saved on this phone, read without the key (see the effect that reads it
+  // further down): `undefined` until read, null when there is none. Declared here because the
+  // ring must not be the guardian's while a saved child mode waits for its restore.
+  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
+  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed, childCarouselBound, savedChildMode !== null);
   // The identities whose cards list places in Where you're known (owner rows;
   // a dependant's card lists none). Read when a hand-off record is kept.
   const placeCardPubkeys = useMemo<ReadonlySet<string>>(() => new Set(carousel.rows
@@ -2449,13 +2454,13 @@ function AppContent() {
   // Set by that restore once it has decided (and by entering child mode): a
   // start-up read that lands after the decision must not put back what it dropped.
   const childModeRestoredRef = useRef(false);
-  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
-    loadChildModeSession()
-      .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
-      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current || childModeRestoredRef.current ? null : facts); })
-      .catch(() => { if (live) setSavedChildMode(null); });
+    // A failed read is not "no session": it stays child mode, with no child to
+    // resolve (home only), until the PIN exit clears it. A missing or
+    // independent dependant still drops the session (null).
+    readSavedChildMode({ loadSession: loadChildModeSession, loadFacts: loadDependantSignInFacts })
+      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current || childModeRestoredRef.current ? null : facts); });
     return () => { live = false; };
   }, []);
   useEffect(() => {
@@ -2466,15 +2471,21 @@ function AppContent() {
   // blink off and let a PIN prompt open over it.
   const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
   if (!carousel.childMode) childModeDependantRef.current = null;
-  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
+  else if (carousel.childDependant) childModeDependantRef.current = childModeFacts(carousel.childDependant);
   const signInChildMode = carousel.childMode || !!savedChildMode;
   const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
   // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
   const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
+  // The one three-state child-mode signal ('unknown' counts as on, D4): every
+  // child-mode gate reads this. The ref is for callbacks that run later (the
+  // hot NIP-46 request path, native notifications), which must see it fresh.
+  const childModeNow = nip55ChildMode;
+  const childModeNowRef = useRef(childModeNow);
+  childModeNowRef.current = childModeNow;
 
   // Which contacts directory this surface acts in, and as what role. Child mode
   // is the child acting (R-CHILD-MODE reversed 2026-11-18): the scope reads the
-  // three-state `nip55ChildMode` (live, or saved and not yet restored, or not
+  // three-state `childModeNow` (live, or saved and not yet restored, or not
   // yet known) plus the live child's id, so the saved-session window idles on
   // `directoryId: null` instead of resolving to the owner's directory.
   const contactsScope = useMemo(() => resolveContactsScope({
@@ -2483,10 +2494,10 @@ function AppContent() {
     activeDependant: activeDependant
       ? { id: activeDependant.id, displayName: activeDependant.displayName }
       : null,
-    childModeNow: nip55ChildMode,
+    childModeNow,
     childDependantId: carousel.childDependant?.id ?? null,
     dependantCount: dependants.length,
-  }), [preferences.signingMode, identity, activeDependant, nip55ChildMode, carousel.childDependant?.id, dependants.length]);
+  }), [preferences.signingMode, identity, activeDependant, childModeNow, carousel.childDependant?.id, dependants.length]);
 
   const contactsIdentityLists = useMemo(() => contactIdentityLists(identity, activeDependant), [identity, activeDependant]);
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
@@ -2587,14 +2598,14 @@ function AppContent() {
   // the family hook, the legacy import, the picture sweep and app proposals;
   // child mode must never re-stamp those.
   const contactsScopeActor = contactsScopeActorPubkey({
-    childModeNow: nip55ChildMode, childDependantId: carousel.childDependant?.id ?? null, isPairedChild, actorPubkey: contactsActorPubkey,
+    childModeNow, childDependantId: carousel.childDependant?.id ?? null, isPairedChild, actorPubkey: contactsActorPubkey,
   });
 
   // Child mode on the guardian's phone (live, saved, or not yet known: D4 treats
   // unknown as on). Gates the surfaces that would otherwise read the GUARDIAN's
   // data: legacy members/kens, the guardian's real name, picture refresh, the
   // own-picture controls.
-  const childContactsMode = !isPairedChild && nip55ChildMode !== 'off';
+  const childContactsMode = !isPairedChild && childModeNow !== 'off';
 
   // R-ACTOR: whose vouches and ceilings count in the acting
   // directory. Deliberately never the kid's own `naturalPerson.publicKey` —
@@ -2867,6 +2878,7 @@ function AppContent() {
       },
       mayConnect: async peer => await peerDecision(peer) === 'allow',
       mayReceive: async peer => await peerDecision(peer) !== 'deny',
+      needsGuardian: async peer => await peerDecision(peer) === 'guardian-review',
       ...(directoryId.startsWith('dependant:') ? { childPairing, onChildExchangeCancelled, childAuthority } : {}),
       onCompleted: async exchange => {
         if (!key || !owner || !current()) throw new Error('Contacts are not ready.');
@@ -4225,6 +4237,9 @@ function AppContent() {
     // Owner serving is time-boxed (stay-awake) or always-on (native background):
     // read live (via ref) at request time.
     isOwnerServingActive: () => backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
+    // Child mode: the guardian's own persona routes are answered as paused,
+    // read at request time. Dependant routes and a child's own are unaffected.
+    childModeNow: () => childModeNowRef.current,
     reconnectNonce: bunkerReconnectNonce,
     relayUrl: nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL,
     persistentRelayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
@@ -4265,13 +4280,15 @@ function AppContent() {
       const who = entry.route.dependantId
         ? (dependants.find(d => d.id === entry.route.dependantId)?.displayName ?? 'Your child')
         : entry.client.appName;
+      // Child mode: no names, apps or family details on a locked screen.
+      const text = notificationForChildMode(childModeNowRef.current, { title: `${who} needs an approval`, body: entry.description });
       notifiedApprovalHandlesRef.current.add(entry.handle);
       void LocalNotifications.schedule({
         notifications: [{
           id: entry.handle,
           channelId: 'signet-requests',
-          title: `${who} needs an approval`,
-          body: entry.description,
+          title: text.title,
+          body: text.body,
           smallIcon: 'ic_stat_signet',
           // Shown now, not scheduled: without this the plugin opens Android's
           // "Alarms & reminders" settings over whatever app is in front.
@@ -4397,12 +4414,21 @@ function AppContent() {
   });
 
 
-  // A contact invite (scanned or linked) waits while the phone is in child mode,
-  // live or only saved on a locked cold start (the restore runs after the unlock,
-  // so `activeDependantId` is still null then and the invite would open for the
-  // guardian's lists). It stays pending and opens after the PIN exit. This is
-  // declared here, below `nip55ChildMode`, rather than beside the invite state:
-  // a dependency read up there would be a TDZ error.
+  // A contact invite that arrives by link or hash is dropped while the phone is in
+  // child mode (live, or only saved on a locked cold start), as a scanned one is
+  // refused: nothing waits for the guardian's exit, and the child gets the same
+  // refusal. While child mode is still `unknown` (the start-up read) it waits for
+  // the answer. This is declared here, below `nip55ChildMode`, rather than beside
+  // the invite state: a dependency read up there would be a TDZ error.
+  const [childModeInviteDropped, setChildModeInviteDropped] = useState(false);
+  useDropInviteInChildMode({
+    childMode: nip55ChildMode, pendingInvite: pendingContactInvite,
+    onDrop: () => {
+      setPendingContactInvite(undefined); setPendingInviteSender(undefined);
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setChildModeInviteDropped(true);
+    },
+  });
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
     if (nip55ChildMode !== 'off') return;
@@ -4707,7 +4733,7 @@ function AppContent() {
   // notification id spaces can't collide.
   const handleLiveEscalationNotice = useCallback((notice: EscalationNotice) => {
     if (notice.kind !== 'approval' || !isNativeApp()) return;
-    const { title, body } = escalationNotificationText(resolveEscalationOwner(notice.identityPubkey), notice.identityPubkey.slice(0, 8));
+    const { title, body } = notificationForChildMode(childModeNowRef.current, escalationNotificationText(resolveEscalationOwner(notice.identityPubkey), notice.identityPubkey.slice(0, 8)));
     void LocalNotifications.schedule({
       notifications: [{
         id: ESCALATION_NOTIFICATION_ID_BASE + (hashToUint32(notice.id) % ESCALATION_NOTIFICATION_ID_RANGE),
@@ -5340,6 +5366,10 @@ function AppContent() {
     };
   }, [reconcileSignInLinksNow, knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, revokeSignInLinksOfPlace, signInLinksOfPlace, changeSignInLinks, heldHandoffsFor, showStoredHandoffs]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
+    // Child mode: a row that is not the child's gets nothing, and the child's own rows are read only (Open).
+    const rowScope = childModeRowScope(row, carousel.childMode, signInChildDependant?.id ?? null);
+    if (rowScope === 'foreign') return null;
+    const inChildMode = rowScope === 'child';
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
     const names = new Map(carousel.rows.filter(r => r.type !== 'add').map(r => { const x = resolveActiveIdentity(r); return [x.publicKey.toLowerCase(), x.displayName] as const; }));
@@ -5360,7 +5390,8 @@ function AppContent() {
         heartwoodClients={heartwoodSlots ? heartwoodEntriesFor(heartwoodSlots, resolved.publicKey, pk => names.get(pk)) : null}
         hideHeartwood={isPairedChild}
         canRevokeOnHeartwood={canRevokeClient(heartwoodOperator.status) !== false}
-        actions={knownPlaceActions}
+        readOnly={inChildMode}
+        actions={inChildMode ? readOnlyPlaceActions(knownPlaceActions) : knownPlaceActions}
       />
     );
   };
@@ -5437,12 +5468,13 @@ function AppContent() {
       if (!isNativeApp() || isAppInForeground()) return;
       const id = 0x40000000 + (parseInt(p.ask.id.slice(0, 7), 16) % 0x10000000);
       notifiedChildAsksRef.current.set(p.ask.id, id);
+      const text = notificationForChildMode(childModeNowRef.current, { title: CHILD_ASK_COPY.notificationTitle(p.dependantName), body: p.ask.targetLabel });
       void LocalNotifications.schedule({
         notifications: [{
           id,
           channelId: 'signet-requests',
-          title: CHILD_ASK_COPY.notificationTitle(p.dependantName),
-          body: p.ask.targetLabel,
+          title: text.title,
+          body: text.body,
           smallIcon: 'ic_stat_signet',
           // Shown now, not scheduled: without this the plugin opens Android's
           // "Alarms & reminders" settings over whatever app is in front.
@@ -5462,6 +5494,19 @@ function AppContent() {
       void LocalNotifications.cancel({ notifications: toCancel.map((id) => ({ id })) }).catch(() => { /* already dismissed */ });
     }
   }, [childAsks.asks]);
+  // Entering child mode takes back the request notifications already delivered (they
+  // were posted with names and app text, before the generic line applied).
+  useOnChildModeEntered(childModeNow, () => {
+    if (!isNativeApp()) return;
+    const ids = takeDeliveredRequestNotificationIds(notifiedApprovalHandlesRef.current, notifiedChildAsksRef.current);
+    if (ids.length > 0) void LocalNotifications.cancel({ notifications: ids.map(id => ({ id })) }).catch(() => { /* already dismissed */ });
+    // "Family asks" notices carry deterministic ids tracked nowhere, and a process that was
+    // killed since posting them has no tracker at all: ask the shade what it holds.
+    void LocalNotifications.getDeliveredNotifications().then(({ notifications }) => {
+      const escalationIds = deliveredEscalationNotificationIds(notifications);
+      if (escalationIds.length > 0) return LocalNotifications.cancel({ notifications: escalationIds.map(id => ({ id })) });
+    }).catch(() => { /* already dismissed, or the shade cannot be read */ });
+  });
   // A37: asks the guardian put off with "Later" leave the sheet (they stay in
   // the Bunker panel until they expire); a new ask raises the sheet again.
   const [laterChildAskIds, setLaterChildAskIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -6541,6 +6586,11 @@ function AppContent() {
   useEffect(() => {
     if (bunkerPanelOpen && isBarHiddenPage(page)) setBunkerPanelOpen(false);
   }, [bunkerPanelOpen, page]);
+  // The panel holds the guardian's family asks and signing controls: never open in
+  // child mode, however it was asked for (tab, arm link, always-on arm).
+  useEffect(() => {
+    if (bunkerPanelOpen && childModeNow !== 'off') setBunkerPanelOpen(false);
+  }, [bunkerPanelOpen, childModeNow]);
 
   // PWA update: auto-reload when update arrives while already locked
   useEffect(() => {
@@ -6575,11 +6625,13 @@ function AppContent() {
   const signInChildModeRef = useRef({ childMode: signInChildMode, dependant: signInChildDependant });
   signInChildModeRef.current = { childMode: signInChildMode, dependant: signInChildDependant };
   // Pages that act as the guardian are refused in child mode, with no PIN.
-  // `nip55ChildMode` is the three-way state: unknown until saved child mode is read.
-  const childModeNow = nip55ChildMode;
+  // `childModeNow` is the three-way state: unknown until saved child mode is read.
+  // The lock-proof child id (`signInChildDependant`), not `carousel.childDependant`,
+  // which goes null while the dependants list reloads after a lock.
+  const stableChildId = signInChildDependant?.id || null;
   const childModePage = childModePageDecision({
-    page, childMode: childModeNow,
-    liveChild: carousel.childMode ? { childDependantId: carousel.childDependant?.id ?? null, activeDependantId } : null,
+    page, childMode: childModeNow, live: carousel.childMode, stableChildId, activeDependantId,
+    activeDependantResolved: !!activeDependant,
   });
 
   const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
@@ -10810,10 +10862,44 @@ function AppContent() {
     else navigateReplace('home');
   }, [pendingAddDependantRequest, navigateReplace]);
 
+  // Whatever a navigation to a refused page staged is dropped: foci, selections,
+  // scanned links and invites, and requests that need no answer. Nothing is left
+  // to be picked up after the guardian exits. Run by Decline and by any other way
+  // the child leaves a refused page (`useOnLeaveRefusedPage`).
+  const clearChildModeStagedRequests = () => {
+    setPendingPublicProfileTarget(null);
+    setPendingPersonaFocus(null);
+    setPendingSecurityFocus(null);
+    setSelectedContactId(null);
+    setSelectedKenPubkey(null);
+    setSelectedCredential(null);
+    setPendingOperatorImportText(null); // the scanned link must not wait for the guardian
+    setPendingOwnerChoice(null);
+    setPendingBotContacts(undefined);
+    setPendingContactInvite(undefined);
+    setPendingInviteSender(undefined);
+    setFamilyContactsUnlocked(false);
+    setPendingPairingRequest(null);
+    setPendingContactsGrantV2(null);
+    setHeldContactsGrantV2(null);
+    setPendingVerifyRequest(null); // answered by nothing: Decline alone redirects a URL-arrived one
+    setVerifyArrivedViaUrl(false);
+  };
+  const clearChildModeStagedRequestsRef = useRef(clearChildModeStagedRequests);
+  clearChildModeStagedRequestsRef.current = clearChildModeStagedRequests;
+  // The decision as of the latest render, read after the PIN (an async step) in handleExitChildMode.
+  const childModePageRef = useRef(childModePage);
+  childModePageRef.current = childModePage;
+  useOnLeaveRefusedPage({
+    page, decision: childModePage, locked: !encryptionKey,
+    onLeave: () => clearChildModeStagedRequestsRef.current(),
+  });
+
   // Decline on the child-mode refusal of a guardian-only page. Signs and
   // publishes nothing (no verify rejection either): it only clears the request and leaves the page. Home,
   // never `companion-apps` (the normal deny's target), which is a guardian page.
   const declineChildModeGuardianPage = useCallback(() => {
+    clearChildModeStagedRequestsRef.current();
     if (page === 'approve-add-dependant') {
       handleDenyAddDependant(); // only redirects to the consumer's error callback
       return;
@@ -10822,10 +10908,7 @@ function AppContent() {
       handleCancelAppPermission(); // answers with a throwaway key, never a person's
       return;
     }
-    if (page === 'approve-companion-grant') setPendingPairingRequest(null);
-    else if (page === 'settings-advanced') setPendingOperatorImportText(null); // the scanned link must not wait for the guardian
-    else if (page === 'contacts-grant-approve') setPendingContactsGrantV2(null);
-    else if (page === 'approve-verification') {
+    if (page === 'approve-verification') {
       // Like Deny, minus the relay rejection: in local child mode that would
       // be signed with the child's key.
       const callback = pendingVerifyRequest?.callbackUrl;
@@ -10859,19 +10942,31 @@ function AppContent() {
   }, [carousel.enterChildMode, chooseDependantScope]);
 
   // The scope a card's page opens under: in child mode always the child's (the
-  // child's persona rows are not `isDependant`, and the guardian's scope is null).
+  // child's persona rows are not `isDependant`, and the guardian's scope is null),
+  // by the lock-proof id so a tap in the lock-reload window is not scoped to null.
   const cardPageScopeId = (resolved: { isDependant: boolean; dependantId?: string | null }): string | null =>
-    carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;
+    childModeNow !== 'off' ? stableChildId : resolved.isDependant ? resolved.dependantId ?? null : null;
 
   const handleExitChildMode = useCallback(async () => {
     // Load-bearing safety boundary: exit requires the guardian's PIN/biometric.
     // Without this, "child-mode" is just a UI state the child can flip. See spec §2.
     const key = await requestFreshAuth({ purpose: 'exit-child-mode', depName: activeDependant?.displayName || carousel.childDependant?.displayName || 'your dependant' });
     if (!key) return; // Cancelled or failed — stay in child-mode.
+    // A page the child was refused on (a scanned verify request, a pairing) must not
+    // become the guardian's own with the child's request staged on it: clear it, go home.
+    leaveRefusedPageOnExit(childModePageRef.current, {
+      clear: () => clearChildModeStagedRequestsRef.current(),
+      goHome: () => navigateReplace('home'),
+    });
+    setChildModeInviteDropped(false);
     carousel.exitChildMode();
     chooseDependantScope(null);
     clearChildModeSession().catch(() => {});
-  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, chooseDependantScope, requestFreshAuth]);
+    // Also lifts a session that was only saved (or whose read failed), which
+    // nothing else clears while still locked out of the restore.
+    childModeRestoredRef.current = true;
+    setSavedChildMode(null);
+  }, [carousel.exitChildMode, carousel.childDependant, activeDependant, chooseDependantScope, requestFreshAuth, navigateReplace]);
 
   // Publish current child-mode state + exit handler to useNavigation's refs so
   // hardware back / browser back can trigger the same gated exit while inside
@@ -10981,6 +11076,9 @@ function AppContent() {
     const action = routeQR(data);
     switch (action.type) {
       case 'contact-invite':
+        // Child mode: the invite would wait and open for the guardian after the PIN exit.
+        // Refused here, with nothing parked (the child never starts the guardian's contact flow).
+        if (childModeNow !== 'off') return CHILD_MODE_SCAN_INVITE_COPY;
         // D6: a paired-child install offers "Ask {guardian} to connect"
         // instead of connecting directly — see the navigation effect below.
         setPendingContactInvite(JSON.stringify(action.invite));
@@ -11046,7 +11144,7 @@ function AppContent() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild, contactsIdentityLists, identity, dependants, addScannedContact]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild, contactsIdentityLists, identity, dependants, addScannedContact, childModeNow]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;
@@ -11918,6 +12016,14 @@ function AppContent() {
       onDismiss={() => setContactsGrantPairedChildRequest(null)}
     />
   ) : null;
+  const childModeInviteDroppedBanner = childModeInviteDropped && childModeNow !== 'off' ? (
+    <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+      <span>{CHILD_MODE_LINK_INVITE_COPY}</span>
+      <button onClick={() => setChildModeInviteDropped(false)} className="btn btn-ghost" style={{ fontSize: 13, padding: '4px 12px' }}>
+        {CONTACTS_GRANT_DISMISS_LABEL}
+      </button>
+    </div>
+  ) : null;
   const nativeLinkNothingToOpenBanner = nativeLinkNothingToOpen ? (
     <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
       <span>{NATIVE_LINK_NOTHING_TO_OPEN_COPY}</span>
@@ -12035,14 +12141,17 @@ function AppContent() {
       {childReadyNotice}
     </>
   ) : null;
-  const topBanners = (updateBanner || signerBanner || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
+  const topBannersFor = (signer: React.ReactNode) => (updateBanner || signer || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner || appPermissionNoticeBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || childModeInviteDroppedBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
-    <div className="app-notices">{updateBanner}{signerBanner}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
+    <div className="app-notices">{updateBanner}{signer}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
+  const topBanners = topBannersFor(signerBanner);
+  // The child's Settings: never the banner that retries the guardian's signer.
+  const topBannersWithoutSigner = topBannersFor(null);
 
   // "Changed in another app" (#194) rides on the auth overlay, which every
   // page renders, so it shows wherever a publish was started.
@@ -12077,7 +12186,7 @@ function AppContent() {
   // per-page renders don't need to branch — they just drop it in.
   // Never in child mode, on any page: the child holds the phone. The guardian's
   // relay requests stay queued and show after the PIN exit.
-  const bunkerApprovalOverlay = bunkerPanelOpen || signInChildMode ? null : (bunkerPendingApproval ? (
+  const bunkerApprovalOverlay = bunkerPanelOpen || childModeNow !== 'off' ? null : (bunkerPendingApproval ? (
         <BunkerApprovalModal
           approval={bunkerPendingApproval}
           onApproveOnce={bunkerApproveOnce}
@@ -12404,6 +12513,11 @@ function AppContent() {
 
   // Settings page — guardian mode vs owner menu
   if (page === 'settings') {
+    // Child mode never shows the guardian's menu: with no child record in hand
+    // (the list is empty for a read after a lock) it is held blank.
+    if (!activeDependant && childModeNow !== 'off') {
+      return <><Layout title="">{null}</Layout>{authOverlay}{nip55Overlay}</>;
+    }
     if (activeDependant) {
       return (
         <Layout title="Settings" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
@@ -12411,7 +12525,7 @@ function AppContent() {
           {bunkerApprovalOverlay}
           {handoffPickerOverlay}
           {settingsBackupWarning}
-          {topBanners}
+          {carousel.childMode ? topBannersWithoutSigner : topBanners}
           <GuardianSettings
             activeDependant={activeDependant}
             onUpdateDependantName={handleUpdateDependantName}
@@ -12463,7 +12577,7 @@ function AppContent() {
             guardianHasMnemonic={!!identity?.mnemonic || !!heartwoodRequestFn}
             requestAuth={requestAuth}
             ownerTier={securityTier}
-            onUpdatePhoto={() => navigateTo('photo-capture')}
+            onUpdatePhoto={carousel.childMode ? undefined : () => navigateTo('photo-capture')}
             currentContactPolicy={childSettingsMap.get(activeDependant.id)?.contactPolicy ?? 'kin-only'}
             contactPolicyConflicted={childSettingsMap.get(activeDependant.id)?.contactPolicyConflicted}
             onUpdateContactPolicy={async (policy) => {
@@ -14058,7 +14172,7 @@ function AppContent() {
     // Child mode with no resolved child idles (directoryId null): never fall back to the owner's invites.
     if (childContactsMode && !contactsScope.directoryId) { navigateReplace('home'); return null; }
     const route = handshakeRoute;
-    return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack}>
+    return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack} {...guardianLayoutProps}>
       <ContactHandshake key={encryptionKey + route.persona} persona={route.persona}
         info={route.info} choose={route.choose} encryptionKey={encryptionKey}
         version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
@@ -14572,7 +14686,7 @@ function AppContent() {
     return (
       <>
         <Layout title={approveAuthTitle(pendingAuthRequest)} showBack onBack={handleDenyAuth}>
-          {signerBanner}
+          {childModeNow !== 'off' ? null : signerBanner}
           {/* Keyed by request: a new sign-in arriving while this page is up
               must get a fresh screen, never inherit the last one's
               "Signing…" state or error. */}
@@ -14690,7 +14804,7 @@ function AppContent() {
     return (
       <>
       <Layout title="Connect" showBack onBack={handleConnectDone}>
-        {signerBanner}
+        {childModeNow !== 'off' ? null : signerBanner}
         <ApproveConnect
           key={connectRequestKey}
           request={pendingConnectRequest}
@@ -15600,7 +15714,7 @@ function AppContent() {
           }}
         />
       )}
-      {rateLimitAlert && !showRepairBanner && (
+      {rateLimitAlert && !showRepairBanner && childModeNow === 'off' && (
         <RateLimitBanner
           dependantName={rateLimitAlert.name}
           onReview={() => {
@@ -15620,6 +15734,8 @@ function AppContent() {
           }}
         />
       )}
+      {/* Where the child is: a link invite dropped in child mode says so here, not only on Settings. */}
+      {childModeInviteDroppedBanner}
       {/* Not in child mode: its button leads to the guardian's security settings and Shamir split. */}
       {showBackupNudge && !signInChildMode && (
         <BackupCard
@@ -15656,7 +15772,7 @@ function AppContent() {
           openDependantPage('contact-handshake', cardPageScopeId(resolved),
             { persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
         }}
-        renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
+        renderInviteCard={(_row, resolved, renderPublicCard) => !signInChildMode && !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
             locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
@@ -15750,8 +15866,11 @@ function AppContent() {
         onExitChildMode={handleExitChildMode}
         childMode={carousel.childMode}
         childDependant={carousel.childDependant}
+        stableChildId={signInChildDependant?.id || null}
         childModeName={signInChildDependant?.displayName}
         childModeSaved={!carousel.childMode && !!savedChildMode}
+        childModeSavedExitable={!carousel.childMode && (savedChildMode === CHILD_MODE_UNRESOLVED || (!!savedChildMode && !!encryptionKey))}
+        onUnlockSavedChildMode={() => { void requestAuth({ purpose: 'unlock-app' }); }}
         onAddPersona={async (displayName) => {
           // Fresh-auth gate so a child who's shoulder-surfed the PIN can't
           // mint new personas on the guardian's identity. Same pattern as
@@ -16043,9 +16162,10 @@ function AppContent() {
     <>
       <AppShell
         page={page}
-        // Locked cold start: child mode is only saved, not live (no activeDependant yet).
-        // Still a hand-the-phone-to-a-child state, so the Bunker tab stays hidden.
-        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}
+        // Child mode, live or only saved (locked cold start, no activeDependant yet), or
+        // not yet known (the saved-session read is pending): a hand-the-phone-to-a-child
+        // state, so the Bunker tab stays hidden.
+        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || childModeNow !== 'off'}
         childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
         bunkerTint={bunkerTint({
@@ -16079,7 +16199,7 @@ function AppContent() {
       >
         {renderPage()}
       </AppShell>
-      {bunkerPanelOpen && !isBarHiddenPage(page) && (
+      {bunkerPanelOpen && childModeNow === 'off' && !isBarHiddenPage(page) && (
         <BunkerPanel
           onClose={() => setBunkerPanelOpen(false)}
           bunkerAllowed={bunkerServerEnabled}

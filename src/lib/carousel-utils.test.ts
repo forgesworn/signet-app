@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildRows, buildChildRows, wrapIndex, clampIndex, resolveActiveIdentity, resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, showNaturalPersonRow, resolveRenameTarget, resolveDependantCardSlot } from './carousel-utils';
+import { buildRows, buildChildRows, wrapIndex, clampIndex, resolveActiveIdentity, resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, showNaturalPersonRow, resolveRenameTarget, resolveDependantCardSlot, dependantDisplayView } from './carousel-utils';
 import type { SignetIdentity, DependantIdentity } from '../types';
 
 const mockIdentity: SignetIdentity = {
@@ -690,5 +690,36 @@ describe('bot inventory rows', () => {
     expect(findRowForGuardianKeypair(identity, 'natural-person', bots)).toBe(3);
     expect(findRowForDependant(identity, [mockDependant], mockDependant.id, bots)).toBe(4);
     expect(buildChildRows(mockDependant).some(row => row.type === 'bot')).toBe(false);
+  });
+});
+
+describe('dependantDisplayView: what is kept after a lock', () => {
+  const SECRET = 's3cr3t-'.padEnd(64, 'x');
+  const full = {
+    ...mockDependant,
+    naturalPerson: { publicKey: 'dep-np', privateKey: SECRET + '1', displayName: 'Ben Smith', avatarKey: SECRET + '2', contactAvatarKey: SECRET + '3' },
+    persona: { publicKey: 'dep-p', privateKey: SECRET + '4', displayName: 'BenGamer', avatarKey: SECRET + '5' },
+    extraPersonas: [{ publicKey: 'dep-x', privateKey: SECRET + '6', displayName: 'Extra', avatarKey: SECRET + '7', contactAvatarKey: SECRET + '8' }],
+    bunkerEndpoint: { publicKey: 'ep', privateKey: SECRET + '9', createdAt: 1, pairingSecret: SECRET + 'a' },
+    appBunkerEndpoint: { publicKey: 'ap', privateKey: SECRET + 'b', createdAt: 1, pairingSecret: SECRET + 'c', pairings: [] },
+  } as unknown as DependantIdentity;
+
+  it('carries no private key, avatar key or pairing secret', () => {
+    const view = dependantDisplayView(full);
+    expect(JSON.stringify(view)).not.toContain('s3cr3t-');
+  });
+
+  it('keeps the id, names and public keys, and still builds the child\'s ring', () => {
+    const view = dependantDisplayView(full);
+    expect(view.id).toBe('dep1');
+    expect(view.displayName).toBe('Ben Smith');
+    expect(view.persona.publicKey).toBe('dep-p');
+    expect(view.extraPersonas?.[0].publicKey).toBe('dep-x');
+    expect(buildChildRows(view).map(r => r.type)).toEqual(buildChildRows(full).map(r => r.type));
+  });
+
+  it('does not touch the original', () => {
+    dependantDisplayView(full);
+    expect(full.persona.privateKey).toBe(SECRET + '4');
   });
 });

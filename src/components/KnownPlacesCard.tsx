@@ -31,6 +31,8 @@ export interface KnownPlacesCardProps {
   hideHeartwood?: boolean;
   /** False when the device is known not to support revoking an app. Default true (unknown counts as available). */
   canRevokeOnHeartwood?: boolean;
+  /** Child mode: each row shows its facts and Open, never an action that changes anything. */
+  readOnly?: boolean;
   actions: KnownPlaceActions;
 }
 
@@ -44,7 +46,7 @@ interface Entry { place: KnownPlace; ctx: KnownPlaceCtx; last: number }
  * nothing here is a trust input.
  */
 export function KnownPlacesCard({
-  identityName, identityType, places, locked, onUnlock, focusId, onFocusConsumed, ctxFor, heartwoodClients, hideHeartwood, canRevokeOnHeartwood = true, actions,
+  identityName, identityType, places, locked, onUnlock, focusId, onFocusConsumed, ctxFor, heartwoodClients, hideHeartwood, canRevokeOnHeartwood = true, readOnly = false, actions,
 }: KnownPlacesCardProps) {
   const [query, setQuery] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -106,6 +108,7 @@ export function KnownPlacesCard({
             expanded={expandedId === e.place.id}
             onToggle={() => toggle(e.place.id)}
             actions={actions}
+            readOnly={readOnly}
           />
         ))}
       </ul>
@@ -158,7 +161,7 @@ export function KnownPlacesCard({
                         expanded={expandedId === `hw:${c.fingerprint}`}
                         onToggle={() => toggle(`hw:${c.fingerprint}`)}
                         onRevoke={actions.revokeOnHeartwood}
-                        canRevoke={canRevokeOnHeartwood}
+                        canRevoke={canRevokeOnHeartwood && !readOnly}
                       />
                     ))}
                   </ul>

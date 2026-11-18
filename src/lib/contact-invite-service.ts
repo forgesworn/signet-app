@@ -47,12 +47,25 @@ export function evidenceStrength(evidence: RevealEvidence | undefined): 'mutual'
   return evidence.via === 'camera' ? 'mutual' : 'tapped';
 }
 
+/**
+ * What a refusal says when the contact policy would let the peer in once the guardian
+ * approves them (child mode on the guardian's phone), as opposed to a block or a
+ * closed policy, which keep their own messages.
+ */
+export const NEEDS_GUARDIAN_ERROR = 'This contact needs the guardian to approve it';
+
 export class ContactInviteService {
+  /** The error for a peer `mayConnect` refused: NEEDS_GUARDIAN_ERROR if only the guardian's approval is missing. */
+  private async refusal(peer: string | undefined, message: string): Promise<Error> {
+    return new Error(peer && await this.options.needsGuardian?.(peer) ? NEEDS_GUARDIAN_ERROR : message);
+  }
   constructor(private options: {
     directoryId: string; encryptionKey: string; budget: ContactIdentityDecryptBudget;
     signer(pubkey: string): Promise<ContactIdentitySigner>; isCurrent(): boolean; onChanged(): void;
     /** Enforce dependant policy before either sending or accepting. */
     mayConnect(peer: string): boolean | Promise<boolean>;
+    /** Whether a peer `mayConnect` refused is waiting only on the guardian's approval (not blocked or closed out). */
+    needsGuardian?(peer: string): boolean | Promise<boolean>;
     /** Keep an opened request pending for guardian review without connecting. */
     mayReceive?(peer: string): boolean | Promise<boolean>;
     appAllowed?(app: ContactInviteAppOrigin, identity: string, action: 'create' | 'receive', automatic: boolean): Promise<boolean>;
@@ -207,7 +220,7 @@ export class ContactInviteService {
       }
     }
     const parsed = parseContactInvite(JSON.stringify(invite), now);
-    if (!parsed || !await this.options.mayConnect(parsed.recipient)) throw new Error('This contact is not allowed by the contact policy');
+    if (!parsed || !await this.options.mayConnect(parsed.recipient)) throw await this.refusal(parsed?.recipient, 'This contact is not allowed by the contact policy');
     // A handshake invite came from the other phone: publish only to its public relays.
     const relays = handshake ? handshakeRelays(parsed.relays) : parsed.relays;
     if (!relays.length) throw new Error('No public relay for this contact');
@@ -228,7 +241,7 @@ export class ContactInviteService {
       expiresAt: Math.min(now + 30 * 86400, parsed.expiresAt ?? Infinity), ...(card ? { card } : {}) });
     const signer = await this.options.signer(identityPubkey); this.check();
     const event = await wrapContactExchange(request, parsed.secret, signer); this.check();
-    if (!await this.options.mayConnect(parsed.recipient)) throw new Error('The contact policy changed');
+    if (!await this.options.mayConnect(parsed.recipient)) throw await this.refusal(parsed.recipient, 'The contact policy changed');
     if (app && !await this.options.appAllowed?.(app, identityPubkey, 'receive', false)) throw new Error('App invitation permission ended');
     const exchange: StoredContactExchange = { ...beginContactExchange(request, nonce), ...(this.options.actAsChild ? { actedAsChild: true as const } : {}), ...(handshake ? { handshake: { startedAt: now } } : {}), ...(app ? { app } : {}), origin: { id: contactExchangeKey(request), ownerIdentityPubkey: identityPubkey, method: app ? 'app' : 'link', addedAt: now * 1000, ...(app ? { appName: app.appName } : {}), ...(parsed.caption ? { caption: parsed.caption } : {}) } };
     await this.update(state => {
@@ -260,7 +273,7 @@ export class ContactInviteService {
     await livePairing();
     await this.cleanup(args.now);
     const parsed = parseContactInvite(JSON.stringify(args.invite), args.now);
-    if (!parsed || !await this.options.mayConnect(parsed.recipient)) throw new Error('This contact is not allowed by the contact policy');
+    if (!parsed || !await this.options.mayConnect(parsed.recipient)) throw await this.refusal(parsed?.recipient, 'This contact is not allowed by the contact policy');
     const storageId = contactExchangeKey({ id: args.exchangeId, from: args.identityPubkey, to: parsed.recipient });
     const existing = (await this.read()).exchanges.find(e => contactExchangeKey(e.request) === storageId);
     if (existing) {
@@ -274,7 +287,7 @@ export class ContactInviteService {
       expiresAt: Math.min(args.now + 30 * 86400, parsed.expiresAt ?? Infinity) });
     const signer = await this.options.signer(args.identityPubkey); this.check();
     const event = await wrapContactExchange(request, parsed.secret, signer); this.check();
-    if (!await this.options.mayConnect(parsed.recipient)) throw new Error('The contact policy changed');
+    if (!await this.options.mayConnect(parsed.recipient)) throw await this.refusal(parsed.recipient, 'The contact policy changed');
     await livePairing();
     const exchange: StoredContactExchange = { ...beginContactExchange(request, args.nonce), origin: { id: args.exchangeId,
       ownerIdentityPubkey: args.identityPubkey, method: 'accepted-request', addedAt: args.now * 1000, ...(parsed.caption ? { caption: parsed.caption } : {}) }, pairing };
@@ -427,7 +440,7 @@ export class ContactInviteService {
     if (invite?.app && !await this.options.appAllowed?.(invite.app, request!.to, 'create', automatic)) throw new Error('App invitation permission ended');
     if (automatic && (!invite?.enabled || invite.mode !== 'single-use' || !invite.app?.autoAcceptUntil || now >= invite.app.autoAcceptUntil)) throw new Error('Automatic acceptance ended');
     if (!acceptDifferentRecipient && invite?.intendedPubkey && invite.intendedPubkey !== request?.from) throw new Error('This invite is for a different contact');
-    if (!request || arrival.dismissedAt !== undefined || !await this.options.mayConnect(request.from)) throw new Error('Request cannot be accepted');
+    if (!request || arrival.dismissedAt !== undefined || !await this.options.mayConnect(request.from)) throw await this.refusal(request?.from, 'Request cannot be accepted');
     if (state.exchanges.some(e => contactExchangeKey(e.request) === contactExchangeKey(request))) return;
     // A handshake's reply relays came from the other phone: only its public ones.
     const replyRelays = handshake ? handshakeRelays(request.reply.relays) : request.reply.relays;
@@ -440,7 +453,7 @@ export class ContactInviteService {
         ...(invite ? { inviteId: invite.id, inviteName: invite.name } : {}) } };
     const signer = await this.options.signer(request.to); this.check();
     const event = await wrapContactExchange(next.acceptance!, request.reply.secret, signer); this.check();
-    if (!await this.options.mayConnect(request.from)) throw new Error('The contact policy changed');
+    if (!await this.options.mayConnect(request.from)) throw await this.refusal(request.from, 'The contact policy changed');
     if (invite?.app && !await this.options.appAllowed?.(invite.app, request.to, 'create', automatic)) throw new Error('App invitation permission ended');
     if (automatic && now + Math.floor(Math.max(0, Date.now() - startedAt) / 1000) >= invite!.app!.autoAcceptUntil!) throw new Error('Automatic acceptance ended while waiting for the signer');
     await this.update(fresh => {

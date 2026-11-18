@@ -80,7 +80,8 @@ interface Props {
   /** Owner's (guardian's) verification tier — mirrored read-only for the dependant. */
   ownerTier: string;
   /** Photo row in Profile — navigate to photo capture. */
-  onUpdatePhoto: () => void;
+  /** Absent for the child viewer: the child never re-photographs the verification photo. */
+  onUpdatePhoto?: () => void;
   /** Current contact policy for this dependant. */
   currentContactPolicy: ContactPolicy;
   contactPolicyConflicted?: boolean;
@@ -427,6 +428,7 @@ export function GuardianSettings({
         )}
 
         {/* Photo row */}
+        {onUpdatePhoto && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ fontSize: '0.9rem' }}>Verification photo</span>
           <button
@@ -436,6 +438,7 @@ export function GuardianSettings({
             {activeDependant.photoHash ? 'Change ›' : 'Set ›'}
           </button>
         </div>
+        )}
       </div>
 
       {/* §6.2 §2 — Phone & Pairing (guardian-only). The paired-or-not signal

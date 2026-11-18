@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { childModeGuardianRefusalCopy } from '../lib/child-mode-guardian-pages';
+import { childModeGuardianRefusalCopy } from '../lib/child-mode-page-allowlist';
 
 interface Props {
   /** The child-mode dependant's name; a plain fallback is used when it is empty. */
