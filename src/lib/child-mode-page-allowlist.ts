@@ -18,7 +18,8 @@
  *   child with no PIN (`venue-entry`, `vouch-someone`, `photo-capture`).
  *
  * The decision is pure. `unknown` (the saved session is still being read)
- * lets home render and holds the rest blank, never treated as off.
+ * lets home render and holds the rest blank, never treated as off; so does a
+ * live child whose record is not resolved.
  */
 import type { Page } from '../types';
 import type { ChildModeState } from './child-mode-sign-in';
@@ -110,13 +111,20 @@ export interface ChildModePageDecisionInput {
   stableChildId: string | null;
   /** Whose scope the page would open in. */
   activeDependantId: string | null;
+  /**
+   * The scope's dependant record is in hand (`activeDependant` is not null). It is not
+   * for one read after every lock, and for good if the child's record leaves the list;
+   * the pages that render from it would then fall through to the guardian's own screen.
+   */
+  activeDependantResolved: boolean;
 }
 
 export function childModePageDecision(input: ChildModePageDecisionInput): ChildModePageDecision {
   const { page } = input;
   if (input.childMode === 'off') return 'allow';
   if (input.childMode === 'unknown') return page === 'home' ? 'allow' : 'hold';
-  const rule: ChildModePageRule = CHILD_MODE_PAGE_RULES[page];
+  // A page missing from the table (a stale history entry from an older build) is refused, never allowed.
+  const rule: ChildModePageRule = (CHILD_MODE_PAGE_RULES as Partial<Record<Page, ChildModePageRule>>)[page] ?? 'refuse';
   if (rule === 'refuse') return 'refuse';
   if (rule === 'live-only' && !input.live) return 'refuse';
   if (page === 'home') return 'allow';
@@ -125,7 +133,11 @@ export function childModePageDecision(input: ChildModePageDecisionInput): ChildM
   // resolved child there is nothing to match. Saved state has no scope yet
   // (the restore waits for the key), so it only has to not be someone else's.
   if (input.stableChildId === null) return 'refuse';
-  if (input.live) return input.activeDependantId === input.stableChildId ? 'allow' : 'refuse';
+  if (input.live) {
+    if (input.activeDependantId !== input.stableChildId) return 'refuse';
+    // The child's scope, but no record to render from: hold blank, never the guardian's screen.
+    return input.activeDependantResolved ? 'allow' : 'hold';
+  }
   return input.activeDependantId === null || input.activeDependantId === input.stableChildId ? 'allow' : 'refuse';
 }
 

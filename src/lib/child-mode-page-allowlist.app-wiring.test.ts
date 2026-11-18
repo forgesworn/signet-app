@@ -23,6 +23,17 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).not.toContain('liveChild');
   });
 
+  it('resolves the decision with whether the scope\'s dependant record is in hand', () => {
+    expect(app).toContain('activeDependantResolved: !!activeDependant,');
+  });
+
+  it('the Settings page never renders the guardian\'s menu while child mode is on', () => {
+    const settings = app.slice(idx("if (page === 'settings') {"));
+    const guard = settings.indexOf("if (!activeDependant && childModeNow !== 'off') {");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(settings.indexOf("renderSettingsPage('settings', 'Settings'"));
+  });
+
   it('a card page opens under the child in child mode, never the guardian scope', () => {
     expect(app).toContain('carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;');
     expect(app).toContain("openDependantPage('contact-handshake', cardPageScopeId(resolved),");

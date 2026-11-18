@@ -6609,6 +6609,7 @@ function AppContent() {
   const stableChildId = signInChildDependant?.id || null;
   const childModePage = childModePageDecision({
     page, childMode: childModeNow, live: carousel.childMode, stableChildId, activeDependantId,
+    activeDependantResolved: !!activeDependant,
   });
 
   const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
@@ -12458,6 +12459,11 @@ function AppContent() {
 
   // Settings page — guardian mode vs owner menu
   if (page === 'settings') {
+    // Child mode never shows the guardian's menu: with no child record in hand
+    // (the list is empty for a read after a lock) it is held blank.
+    if (!activeDependant && childModeNow !== 'off') {
+      return <><Layout title="">{null}</Layout>{authOverlay}{nip55Overlay}</>;
+    }
     if (activeDependant) {
       return (
         <Layout title="Settings" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>

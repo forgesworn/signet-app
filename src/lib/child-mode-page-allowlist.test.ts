@@ -25,7 +25,7 @@ const LIVE_ONLY: Page[] = [
 ];
 
 const base = (over: Partial<ChildModePageDecisionInput> & { page: Page }): ChildModePageDecisionInput => ({
-  childMode: 'on', live: true, stableChildId: 'kid', activeDependantId: 'kid', ...over,
+  childMode: 'on', live: true, stableChildId: 'kid', activeDependantId: 'kid', activeDependantResolved: true, ...over,
 });
 
 describe('the page rule table', () => {
@@ -50,12 +50,12 @@ describe('the page rule table', () => {
 
 describe('childModePageDecision: off and unknown', () => {
   it.each(ALL)('%s is allowed when child mode is off, whatever the scope', (page) => {
-    expect(childModePageDecision({ page, childMode: 'off', live: false, stableChildId: null, activeDependantId: null })).toBe('allow');
-    expect(childModePageDecision({ page, childMode: 'off', live: false, stableChildId: null, activeDependantId: 'dep-b' })).toBe('allow');
+    expect(childModePageDecision({ page, childMode: 'off', live: false, stableChildId: null, activeDependantId: null, activeDependantResolved: false })).toBe('allow');
+    expect(childModePageDecision({ page, childMode: 'off', live: false, stableChildId: null, activeDependantId: 'dep-b', activeDependantResolved: false })).toBe('allow');
   });
 
   it.each(ALL)('%s while child mode is unknown: home renders, everything else holds', (page) => {
-    expect(childModePageDecision({ page, childMode: 'unknown', live: false, stableChildId: null, activeDependantId: null }))
+    expect(childModePageDecision({ page, childMode: 'unknown', live: false, stableChildId: null, activeDependantId: null, activeDependantResolved: false }))
       .toBe(page === 'home' ? 'allow' : 'hold');
   });
 });
@@ -76,12 +76,38 @@ describe('childModePageDecision: child mode on, live', () => {
     for (const activeDependantId of [null, 'dep-b', 'kid']) {
       expect(childModePageDecision(base({ page: 'home', activeDependantId }))).toBe('allow');
     }
-    expect(childModePageDecision(base({ page: 'home', stableChildId: null, activeDependantId: null }))).toBe('allow');
+    expect(childModePageDecision(base({ page: 'home', stableChildId: null, activeDependantId: null, activeDependantResolved: false }))).toBe('allow');
   });
 
   it.each(ALL.filter(p => p !== 'home'))('%s with no resolved child is refused, even when a scope is set', (page) => {
     expect(childModePageDecision(base({ page, stableChildId: null, activeDependantId: 'x' }))).toBe('refuse');
-    expect(childModePageDecision(base({ page, stableChildId: null, activeDependantId: null }))).toBe('refuse');
+    expect(childModePageDecision(base({ page, stableChildId: null, activeDependantId: null, activeDependantResolved: false }))).toBe('refuse');
+  });
+});
+
+describe('childModePageDecision: live, the scope is the child but its record is not resolved', () => {
+  // After a lock the dependants list is empty for one read, and for good if the
+  // child's record leaves it: `activeDependant` is null, so a page that renders
+  // from it would fall through to the guardian's own screen.
+  it.each(ALL.filter(p => p !== 'home' && CHILD_MODE_PAGE_RULES[p] !== 'refuse'))('%s holds (blank), never allows', (page) => {
+    expect(childModePageDecision(base({ page, activeDependantResolved: false }))).toBe('hold');
+  });
+  it('home still renders', () => {
+    expect(childModePageDecision(base({ page: 'home', activeDependantResolved: false }))).toBe('allow');
+  });
+  it.each(ALL.filter(p => CHILD_MODE_PAGE_RULES[p] === 'refuse'))('%s is still refused', (page) => {
+    expect(childModePageDecision(base({ page, activeDependantResolved: false }))).toBe('refuse');
+  });
+  it('a sibling or no scope is still refused, not held', () => {
+    expect(childModePageDecision(base({ page: 'settings', activeDependantId: 'dep-b', activeDependantResolved: false }))).toBe('refuse');
+    expect(childModePageDecision(base({ page: 'settings', activeDependantId: null, activeDependantResolved: false }))).toBe('refuse');
+  });
+});
+
+describe('childModePageDecision: a page missing from the table is refused', () => {
+  it('reads an unknown page name (stale history entry) as refuse, never allow', () => {
+    expect(childModePageDecision(base({ page: 'retired-page' as Page }))).toBe('refuse');
+    expect(childModePageDecision(base({ page: 'retired-page' as Page, live: false, activeDependantId: null }))).toBe('refuse');
   });
 });
 
@@ -99,7 +125,7 @@ describe('childModePageDecision: child mode on, saved (locked or cold-started)',
   });
 
   it.each(LIVE_AND_SAVED.filter(p => p !== 'home'))('%s is refused in saved state under a sibling', (page) => {
-    expect(childModePageDecision(saved({ page, activeDependantId: 'dep-b' }))).toBe('refuse');
+    expect(childModePageDecision(saved({ page, activeDependantId: 'dep-b', activeDependantResolved: false }))).toBe('refuse');
   });
 
   it.each(LIVE_AND_SAVED)('%s with the saved read unresolved (no child) is refused, except home', (page) => {
