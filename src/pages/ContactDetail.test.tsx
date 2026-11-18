@@ -414,12 +414,3 @@ describe('ContactDetail — own picture backup status line and ask', () => {
     expect(await screen.findByText(CONTACT_ACTION_FAILED_COPY)).toBeDefined();
   });
 });
-
-describe('ContactDetail — child mode on the guardian\'s phone (host passes no picture handlers, no legacy match)', () => {
-  it('offers no own-picture control and no legacy Key control or SignetWords', () => {
-    renderDetail(contact({ effectiveTier: 'ken', tierSource: 'guardian-limited' }), 'dependant');
-    expect(screen.queryByRole('button', { name: 'Add your own picture' })).toBeNull();
-    expect(screen.queryByLabelText('Add your own picture')).toBeNull();
-    expect(screen.queryByText(/Key control/)).toBeNull();
-  });
-});

@@ -177,3 +177,13 @@ it('an exchange the child started in child mode keeps that stamp through a merge
   }
   expect(mergeContactInviteVault({ ...base, exchanges: [plain] }, { ...base, exchanges: [plain] }).exchanges[0].actedAsChild).toBeUndefined();
 });
+it('keeps the child stamp when two copies of one exchange conflict (the retained copy is whichever sorts first)', async () => {
+  const base = await loadContactInviteVault('owner', KEY);
+  const plain = completeHandshake(null).exchange;
+  const stamped = { ...plain, nonce: 'e'.repeat(64), actedAsChild: true as const };
+  for (const [a, b] of [[plain, stamped], [stamped, plain]]) {
+    const merged = mergeContactInviteVault({ ...base, exchanges: [a] }, { ...base, exchanges: [b] });
+    expect(merged.conflicts?.length).toBeGreaterThan(0);
+    expect(merged.exchanges[0].actedAsChild).toBe(true);
+  }
+});

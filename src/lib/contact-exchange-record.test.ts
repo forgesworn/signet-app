@@ -304,9 +304,6 @@ it('stamps an exchange the child started in child mode as the dependant, so the 
   expect(asChild).toEqual({ actorPubkey: kid, actorRole: 'dependant', actorDeviceId: device });
   const asGuardian = exchangeCompletionActor({ directoryId, exchange: {}, guardianPubkey: guardian, actorDeviceId: device });
   expect(asGuardian).toEqual({ actorPubkey: guardian, actorRole: 'guardian', actorDeviceId: device });
-  // The flag means nothing on the owner's own directory.
-  expect(exchangeCompletionActor({ directoryId: 'owner', exchange: { actedAsChild: true }, guardianPubkey: guardian, actorDeviceId: device }))
-    .toEqual({ actorPubkey: guardian, actorRole: 'owner', actorDeviceId: device });
   const contactId = await recordCompletedContactExchange({ directoryId, key, actor: asChild, exchange: exchange(), isCurrent: () => true });
   const record = applyOperations(await listContactOperationsV2(directoryId, key)).get(`${directoryId}/${contactId}`)!;
   expect(record.createdByActorRole).toBe('dependant');
@@ -314,4 +311,13 @@ it('stamps an exchange the child started in child mode as the dependant, so the 
   expect(record.tier).toBe('kith');
   expect(effective.effectiveTier).toBe('ken');
   expect((await listContactOperationsV2(directoryId, key)).every(op => op.actorPubkey === kid && op.actorRole === 'dependant')).toBe(true);
+});
+
+it('fails closed: an exchange stamped as the child never completes as the guardian when the directory is not a dependant one', () => {
+  const guardian = '8'.repeat(64), device = '3'.repeat(32);
+  for (const directoryId of ['owner', 'dependant:short', `Dependant:${'d'.repeat(64)}`, `dependant:${'D'.repeat(64)}`, '']) {
+    expect(() => exchangeCompletionActor({ directoryId, exchange: { actedAsChild: true }, guardianPubkey: guardian, actorDeviceId: device }), directoryId).toThrow();
+  }
+  // Unstamped exchanges keep the guardian's stamp everywhere.
+  expect(exchangeCompletionActor({ directoryId: 'owner', exchange: {}, guardianPubkey: guardian, actorDeviceId: device }).actorRole).toBe('owner');
 });

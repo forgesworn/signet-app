@@ -7,7 +7,8 @@ import { ContactIdentityDecryptBudget, contactVerificationWords } from '@forgesw
 import { openContactMailboxWrap } from '@forgesworn/signet-contacts/adapters/invite-nostr-tools';
 import { ContactInviteService, evidenceStrength, type RevealEvidence } from './contact-invite-service';
 import { recordContactArrival, updateContactInviteVault } from './contact-invite-store';
-import { purgeAllUserData } from './db';
+import { purgeAllUserData, listContactOperationsV2 } from './db';
+import { recordCompletedContactExchange, exchangeCompletionActor } from './contact-exchange-record';
 const publish = vi.hoisted(() => vi.fn(async () => true));
 vi.mock('./sync-relays', () => ({ publishToRelays: publish }));
 const KEY = 'test exchange unlock';
@@ -607,5 +608,42 @@ describe('an exchange started in child mode on the guardian\'s phone is the chil
     const later = party('01'.repeat(32), `dependant:${KID}`, { onCompleted: async e => { completedWith.push(e.actedAsChild); return 'f'.repeat(32); } });
     await later.service.materialiseContact(exchangeId);
     expect(completedWith).toEqual([true]);
+  }, 30000);
+
+  it('completes through the background flush() as the child, from the stored stamp, in a plain service', async () => {
+    const guardian = '8'.repeat(64), directoryId = `dependant:${KID}`;
+    const owner = party('02'.repeat(32), 'owner');
+    const invite = await owner.service.create(owner.pubkey, 'Card', ['wss://relay.example'], 'standing', now);
+    const starter = party('01'.repeat(32), directoryId, { actAsChild: true });
+    await starter.service.request(starter.pubkey, invite.invite, now + 1);
+    const exchangeId = contactExchangeKey((await starter.service.read()).exchanges[0].request);
+    const sent = (await starter.service.read()).outbox[0];
+    await recordContactArrival(owner.directoryId, KEY, { id: sent.id, inviteId: invite.id, identityPubkey: owner.pubkey,
+      packet: openContactMailboxWrap(sent.event, invite.invite.secret)!, receivedAt: now + 2 });
+    await owner.service.openInbox(now + 3);
+    await owner.service.accept(sent.id, now + 4);
+    await owner.service.flush(now + 5);
+    const reply = await owner.service.read(), accepted = reply.exchanges[0];
+    await recordContactArrival(starter.directoryId, KEY, { id: reply.outbox[0].id, inviteId: exchangeId, identityPubkey: starter.pubkey,
+      packet: openContactMailboxWrap(reply.outbox[0].event, accepted.request.reply.secret)!, receivedAt: now + 6, channel: 'exchange' });
+    // The page that started it is gone. The starter only opens its inbox (no completion callback), so the
+    // completion is left for the background service below.
+    await starter.service.openInbox(now + 7);
+    await starter.service.flush(now + 8);
+    const stored = (await starter.service.read()).exchanges[0];
+    expect(stored.phase).toBe('complete');
+    expect(stored.actedAsChild).toBe(true);
+    expect(stored.contactId).toBeUndefined();
+    const completedWith: (boolean | undefined)[] = [];
+    const background = party('01'.repeat(32), directoryId, { onCompleted: async exchange => {
+      completedWith.push(exchange.actedAsChild);
+      return recordCompletedContactExchange({ directoryId, key: KEY, exchange, isCurrent: () => true,
+        actor: exchangeCompletionActor({ directoryId, exchange, guardianPubkey: guardian, actorDeviceId: '3'.repeat(32) }) });
+    } });
+    await background.service.flush(now + 9);
+    expect(completedWith).toEqual([true]);
+    const ops = await listContactOperationsV2(directoryId, KEY);
+    expect(ops.length).toBeGreaterThan(0);
+    expect(ops.every(op => op.actorRole === 'dependant' && op.actorPubkey === KID)).toBe(true);
   }, 30000);
 });
