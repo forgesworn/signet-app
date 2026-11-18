@@ -132,7 +132,10 @@ import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublish
 import { usePersonaInventory } from './hooks/usePersonaInventory';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
-import { notificationForChildMode, takeDeliveredRequestNotificationIds } from './lib/child-mode-entry';
+import {
+  ESCALATION_NOTIFICATION_ID_BASE, ESCALATION_NOTIFICATION_ID_RANGE, deliveredEscalationNotificationIds,
+  notificationForChildMode, takeDeliveredRequestNotificationIds,
+} from './lib/child-mode-entry';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
@@ -521,13 +524,6 @@ const AUTH_FLOW_BUNKER_FALLBACK_RELAYS = [
   'wss://relay.primal.net',
   'wss://relay.ditto.pub',
 ] as const;
-
-// "Family asks" native-notification ids: hashed off the escalation notice's
-// `id` (opaque string) into a range well clear of the small sequential ints
-// `useBunkerServer`'s handleCounterRef hands out for pending-approval
-// notifications, so the two id spaces can never collide.
-const ESCALATION_NOTIFICATION_ID_BASE = 1_000_000;
-const ESCALATION_NOTIFICATION_ID_RANGE = 900_000;
 
 /** Deterministic small-int hash (FNV-1a, 32-bit) — id → notification id only, not security-sensitive. */
 function hashToUint32(s: string): number {
@@ -5504,6 +5500,12 @@ function AppContent() {
     if (!isNativeApp()) return;
     const ids = takeDeliveredRequestNotificationIds(notifiedApprovalHandlesRef.current, notifiedChildAsksRef.current);
     if (ids.length > 0) void LocalNotifications.cancel({ notifications: ids.map(id => ({ id })) }).catch(() => { /* already dismissed */ });
+    // "Family asks" notices carry deterministic ids tracked nowhere, and a process that was
+    // killed since posting them has no tracker at all: ask the shade what it holds.
+    void LocalNotifications.getDeliveredNotifications().then(({ notifications }) => {
+      const escalationIds = deliveredEscalationNotificationIds(notifications);
+      if (escalationIds.length > 0) return LocalNotifications.cancel({ notifications: escalationIds.map(id => ({ id })) });
+    }).catch(() => { /* already dismissed, or the shade cannot be read */ });
   });
   // A37: asks the guardian put off with "Later" leave the sheet (they stay in
   // the Bunker panel until they expire); a new ask raises the sheet again.

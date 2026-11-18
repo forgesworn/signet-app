@@ -41,3 +41,19 @@ export function takeDeliveredRequestNotificationIds(approvalHandles: Set<number>
   childAskIds.clear();
   return ids;
 }
+
+// "Family asks" native-notification ids: hashed off the escalation notice's `id` (opaque
+// string) into a range well clear of the small sequential ints the pending-approval
+// notifications use, so the two id spaces can never collide.
+export const ESCALATION_NOTIFICATION_ID_BASE = 1_000_000;
+export const ESCALATION_NOTIFICATION_ID_RANGE = 900_000;
+
+/**
+ * The delivered notifications that are escalation notices, by id range. Their ids are
+ * deterministic but tracked nowhere, so entering child mode reads what is in the shade.
+ */
+export function deliveredEscalationNotificationIds(delivered: ReadonlyArray<{ id: number }>): number[] {
+  return delivered
+    .map(n => n.id)
+    .filter(id => id >= ESCALATION_NOTIFICATION_ID_BASE && id < ESCALATION_NOTIFICATION_ID_BASE + ESCALATION_NOTIFICATION_ID_RANGE);
+}

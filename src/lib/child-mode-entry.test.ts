@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CHILD_MODE_GENERIC_NOTIFICATION, childModeHoldsRoute, notificationForChildMode, takeDeliveredRequestNotificationIds } from './child-mode-entry';
+import {
+  CHILD_MODE_GENERIC_NOTIFICATION, ESCALATION_NOTIFICATION_ID_BASE, ESCALATION_NOTIFICATION_ID_RANGE,
+  childModeHoldsRoute, deliveredEscalationNotificationIds, notificationForChildMode, takeDeliveredRequestNotificationIds,
+} from './child-mode-entry';
 
 const named = { title: 'Mia is waiting for a sign-in approval', body: 'Open Signet to review it.' };
 
@@ -34,5 +37,16 @@ describe('takeDeliveredRequestNotificationIds', () => {
     expect(handles.size).toBe(0);
     expect(asks.size).toBe(0);
     expect(takeDeliveredRequestNotificationIds(handles, asks)).toEqual([]);
+  });
+});
+
+describe('deliveredEscalationNotificationIds', () => {
+  const at = (offset: number) => ({ id: ESCALATION_NOTIFICATION_ID_BASE + offset });
+  it('picks the delivered notifications in the escalation id range, however the process that posted them went', () => {
+    const delivered = [at(0), at(123_456), at(ESCALATION_NOTIFICATION_ID_RANGE - 1)];
+    expect(deliveredEscalationNotificationIds(delivered)).toEqual(delivered.map(n => n.id));
+  });
+  it('leaves every id outside the range (approval handles, child asks, anything else) alone', () => {
+    expect(deliveredEscalationNotificationIds([{ id: 7 }, { id: ESCALATION_NOTIFICATION_ID_BASE - 1 }, at(ESCALATION_NOTIFICATION_ID_RANGE), { id: 0x40000001 }])).toEqual([]);
   });
 });

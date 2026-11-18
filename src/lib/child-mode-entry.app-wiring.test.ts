@@ -66,4 +66,12 @@ describe('native notifications', () => {
     expect(app).toContain('useOnChildModeEntered(childModeNow, () => {');
     expect(app).toContain('takeDeliveredRequestNotificationIds(notifiedApprovalHandlesRef.current, notifiedChildAsksRef.current)');
   });
+
+  it('entering child mode also cancels the escalation notices in the shade, tracked or not', () => {
+    const entered = app.slice(app.indexOf('useOnChildModeEntered(childModeNow, () => {'));
+    const body = entered.slice(0, entered.indexOf('// A37'));
+    expect(body).toContain('LocalNotifications.getDeliveredNotifications()');
+    expect(body).toContain('deliveredEscalationNotificationIds(notifications)');
+    expect(app).toContain('id: ESCALATION_NOTIFICATION_ID_BASE + (hashToUint32(notice.id) % ESCALATION_NOTIFICATION_ID_RANGE),');
+  });
 });
