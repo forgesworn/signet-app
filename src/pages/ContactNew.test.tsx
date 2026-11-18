@@ -307,8 +307,37 @@ describe('ContactNew', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
       release(new Map([[KEY, { displayName: 'Late Name' }]]));
       await new Promise(r => setTimeout(r, 20));
-      expect(nameBox().value).toBe('alice');
+      // Clear empties the address and the name it auto-filled; the late name never lands.
+      expect(nameBox().value).toBe('');
       expect(screen.queryByText(/Found/)).toBeNull();
+    });
+
+    it('R1: Clear on the found key empties the address, so Save does not look it up again', async () => {
+      const onCreate = vi.fn(async () => {});
+      const { onDone } = renderPage(onCreate);
+      fireEvent.click(screen.getByLabelText('Get their name from their Nostr profile'));
+      lookUp('alice@example.com');
+      await waitFor(() => expect(screen.getByText(/Found/)).toBeDefined());
+      expect(mockResolve).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      expect((screen.getByLabelText('NIP-05 address (optional)') as HTMLInputElement).value).toBe('');
+      expect(nameBox().value).toBe('');
+      fireEvent.change(nameBox(), { target: { value: 'Alice' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+      await waitFor(() => expect(onDone).toHaveBeenCalled());
+      expect(mockResolve).toHaveBeenCalledTimes(1);
+      const [, methods, key] = onCreate.mock.calls[0] as unknown as [unknown, unknown[], unknown];
+      expect(methods).toEqual([]);
+      expect(key).toBeUndefined();
+    });
+
+    it('Clear keeps a name the person typed', async () => {
+      renderPage(vi.fn(async () => {}));
+      fireEvent.change(nameBox(), { target: { value: 'My Alice' } });
+      lookUp('alice@example.com');
+      await waitFor(() => expect(screen.getByText(/Found/)).toBeDefined());
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      expect(nameBox().value).toBe('My Alice');
     });
 
     it('unticking the box during the profile fetch keeps the address name', async () => {

@@ -98,6 +98,22 @@ export function ContactNew({ subjectName, onCreate, onDone, ownerPubkeyHex, ownK
     setLookupBusy(false);
   }
 
+  /**
+   * Clear on the found key also empties the address, so Save can't look it up
+   * again and re-attach the key that was just cleared (review R1). A name that
+   * is still the auto-filled one goes too; one the person typed stays.
+   */
+  function clearAddress() {
+    setAddress('');
+    setLookupError('');
+    dropKey();
+    if (draftRef.current.displayName === autoName.current && autoName.current !== '') {
+      draftRef.current = { ...draftRef.current, displayName: '' };
+      setDraft(d => ({ ...d, displayName: '' }));
+    }
+    autoName.current = '';
+  }
+
   function changeAddress(value: string) {
     setAddress(value);
     setLookupError('');
@@ -115,6 +131,7 @@ export function ContactNew({ subjectName, onCreate, onDone, ownerPubkeyHex, ownK
    * screen, or the lookup was cancelled.
    */
   async function runLookup(): Promise<{ key: NewContactKey; held: boolean } | null> {
+    if (lookupBusy) return null;
     const shapeError = validateNip05Shape(address);
     if (shapeError) { setLookupError(shapeError); return null; }
     const canonical = canonicalNip05(address)!;
@@ -209,7 +226,7 @@ export function ContactNew({ subjectName, onCreate, onDone, ownerPubkeyHex, ownK
         {found && !existing && (
           <p role="status" className="field-hint">
             {NIP05_FOUND_LABEL}: {shortNpub(found.pubkey)}{' '}
-            <button className="btn btn-ghost" onClick={dropKey}>{NIP05_CLEAR_LABEL}</button>
+            <button className="btn btn-ghost" onClick={clearAddress}>{NIP05_CLEAR_LABEL}</button>
           </p>
         )}
         {existing && (
@@ -220,7 +237,7 @@ export function ContactNew({ subjectName, onCreate, onDone, ownerPubkeyHex, ownK
                 {OPEN_CONTACT_LABEL}
               </button>
             )}{' '}
-            <button className="btn btn-ghost" onClick={dropKey}>{NIP05_CLEAR_LABEL}</button>
+            <button className="btn btn-ghost" onClick={clearAddress}>{NIP05_CLEAR_LABEL}</button>
           </p>
         )}
 

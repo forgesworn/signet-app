@@ -283,9 +283,6 @@ export function newContactKeyHeldCopy(name: string, state: 'active' | 'deleted' 
   }
 }
 export const NIP05_ADDRESS_INVALID_COPY = 'Enter a NIP-05 address in the format name@domain.com, or just domain.com.';
-export function alreadyInContactsCopy(name: string): string {
-  return `Already in your contacts as ${safeName(name)}`;
-}
 export const SAVE_CONTACT_LABEL = 'Save contact';
 export const SAVING_LABEL = 'Saving…';
 
