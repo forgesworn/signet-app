@@ -28,3 +28,21 @@ const CONTROL_BIDI_REGEX = new RegExp(
 export function safeAppName(name: string): string {
   return name.replace(CONTROL_BIDI_REGEX, '').slice(0, 100);
 }
+
+/** The name a queued request carries when there is no saved client and no pairing label. */
+export const UNKNOWN_APP_NAME = 'Unknown app';
+
+/**
+ * The origin of an app's URL plus the first 40 characters of its path, for
+ * display. Null when there is no URL or it does not parse. Plain text only:
+ * the result is never turned into a link.
+ */
+export function safeUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname.slice(0, 40);
+  } catch {
+    return null;
+  }
+}

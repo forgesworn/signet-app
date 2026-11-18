@@ -23,6 +23,8 @@ import { isKinterestAuthority, parseKinterestRequest, confirmKinterest, kinteres
  *   record (guardian routes only — dependant routes use the `grants` store
  *   instead).
  * - `deny(handle)` — publishes `error: "user denied"`. Not persisted.
+ * - `clearApproval(handle)` — drops the request and publishes `error:
+ *   "request expired"`; writes nothing (no row, grant, audit or lastSeenAt).
  *
  * **Routing:**
  * - `handleInboundEvent` finds the matching route by the event's `p` tag and
@@ -63,7 +65,7 @@ import type { AuditEventParams } from '../lib/audit';
 import { connectMetadataParam, parseConnectMetadata, pairingMatches } from '../lib/app-bunker-routing';
 import { isValidRelayUrl } from '../lib/relay-url';
 import { ownerRoutePubkeyMismatch, ownerRouteNip44Authorised } from '../lib/persona-bunker-routes';
-import { describeCryptoRequest, runBunkerCrypto, type BunkerCryptoMethod } from '../lib/bunker-crypto-approval';
+import { describeCryptoRequest, isDecryptMethod, runBunkerCrypto, type BunkerCryptoMethod } from '../lib/bunker-crypto-approval';
 import { childGateWireError, type ChildRouteGate } from '../lib/child-bunker';
 import { childModeHoldsRoute } from '../lib/child-mode-entry';
 import type { ChildModeState } from '../lib/child-mode-sign-in';
@@ -72,6 +74,8 @@ import * as db from '../lib/db';
 import { parseNip46Permissions, nip46PermissionAllows } from '../lib/nip46-permissions';
 import { isNativeApp } from '../lib/native';
 import { markAnswered, wasAnswered, subscribeAnswered } from '../lib/bunker-answered-store';
+import { parseDeclaredApp, previewOf, type DeclaredApp } from '../lib/bunker-request-detail';
+import { UNKNOWN_APP_NAME } from '../lib/bunker-display';
 
 /**
  * Dev-only diagnostics for the bunker-serve socket lifecycle. Stripped from
@@ -222,17 +226,41 @@ export interface PendingCryptoApproval extends Omit<PendingSignApproval, 'method
   method: BunkerCryptoMethod;
   /** The other party's pubkey (hex). Equal to the route pubkey for data encrypted to yourself. */
   peerPubkey: string;
+  /** Characters in the payload the app sent (plaintext to encrypt, or ciphertext to decrypt). */
+  payloadLength: number;
+  /**
+   * Encrypt only: the first 280 characters of the plaintext, sanitised to one
+   * line. A decrypt request carries no preview, only its size. The full payload
+   * stays in the hook's `activeRequestRef`; nothing here is persisted or logged.
+   */
+  payloadPreview?: string;
 }
 
 export interface PendingSignApproval {
   /** Opaque id — the hook's internal handle for resolving this request. */
   handle: number;
+  /**
+   * When the request reached this phone (epoch ms): the envelope's own time,
+   * never later than now. Bounded by the freshness gate (-300 s / +60 s), and
+   * stays honest when a request is re-queued after an unlock.
+   */
+  askedAt: number;
   /** Client identity recovered from the envelope sender pubkey. */
   client: {
     pubkey: string;
     appName: string;
     appUrl?: string;
     existing: boolean;
+    /**
+     * What an UNPAIRED client said about itself in an owner-route `connect`.
+     * UNAUTHENTICATED: anyone who knows a persona npub can claim any name. Set
+     * only when there is no saved client row; for display, never for a decision.
+     */
+    declaredName?: string;
+    declaredUrl?: string;
+    /** From the saved row, when there is one (unix seconds). */
+    connectedAt?: number;
+    lastSeenAt?: number;
   };
   /** Which route received this request — lets the UI frame it per-dependant. */
   route: {
@@ -268,6 +296,8 @@ interface ActiveSignRequest {
   /** Cached scope/origin so resolveApproval can persist a grant without re-inference. */
   scope: Scope | null;
   origin: string | null;
+  /** The unauthenticated self-declared name the card showed, saved by "Always" when no row exists. */
+  declaredName?: string;
   crypto?: undefined;
 }
 
@@ -277,6 +307,7 @@ interface ActiveCryptoRequest {
   inboundEventId: string;
   clientPubkey: string;
   route: BunkerRoute;
+  declaredName?: string;
   crypto: { method: BunkerCryptoMethod; peerPubkey: string; payload: string };
 }
 
@@ -567,6 +598,18 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   const fireAudit = useCallback((params: AuditEventParams) => {
     try { onAuditEventRef.current?.(params); } catch { /* non-fatal */ }
   }, []);
+  // What unpaired apps said about themselves in an owner-route `connect`, by
+  // lowercase client pubkey: the newest 50. In memory only and cleared on LOCK
+  // (the unlock key going away), not with the queue, which is wiped on any
+  // route-set change or serving restart while many clients send `connect` once
+  // per session. UNAUTHENTICATED display hints: read only when a queue entry
+  // is built, so it can never change who is prompted or who is signed for.
+  const declaredAppsRef = useRef<Map<string, DeclaredApp & { at: number }>>(new Map());
+  const DECLARED_APPS_CAP = 50;
+  useEffect(() => {
+    if (!appPairingsEncryptionKey) declaredAppsRef.current.clear();
+  }, [appPairingsEncryptionKey]);
+
   // Pending queue. Mobile renders only the head via the exposed
   // `pendingApproval` alias; desktop renders the full list via
   // `pendingApprovals`. Cap at
@@ -838,6 +881,26 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     if (!nip46PermissionAllows(scopedClient?.permissions, request.method, requestedKind)) {
       await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
       return;
+    }
+
+    // Remember what an owner-route app calls itself, whether or not its pairing
+    // secret matches and whatever the connect is answered with, so a later
+    // request from a client with no saved row can say it. Display hint only:
+    // the ACK and every decision below are unaffected. A connect carrying
+    // neither a name nor a url records nothing (it must not erase a known name).
+    if (request.method === 'connect' && !route.dependantId && !route.childGate) {
+      const declared = parseDeclaredApp(request.params);
+      if (declared.name || declared.url) {
+        const key = request.clientPubkey.toLowerCase();
+        const map = declaredAppsRef.current;
+        map.delete(key);
+        map.set(key, { ...declared, at: Date.now() });
+        while (map.size > DECLARED_APPS_CAP) {
+          const oldest = map.keys().next().value;
+          if (oldest === undefined) break;
+          map.delete(oldest);
+        }
+      }
     }
 
     // A fresh QR approval may select another persona while the consumer reuses
@@ -1221,24 +1284,32 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           if (shareAnswered && wasAnswered(event.id)) return;
           queueSizeRef.current += 1;
           const handle = ++handleCounterRef.current;
+          const declared = owner ? undefined : declaredAppsRef.current.get(request.clientPubkey.toLowerCase());
           activeRequestRef.current.set(handle, {
             requestId: request.id,
             inboundEventId: event.id,
             clientPubkey: request.clientPubkey,
             route,
+            ...(declared?.name ? { declaredName: declared.name } : {}),
             crypto: { method, peerPubkey, payload },
           });
           const entry: PendingCryptoApproval = {
             handle,
+            askedAt: Math.min(Date.now(), event.created_at * 1000),
             client: {
               pubkey: request.clientPubkey,
-              appName: owner?.appName ?? 'Unknown app',
+              appName: owner?.appName ?? UNKNOWN_APP_NAME,
               appUrl: owner?.appUrl,
               existing: !!owner,
+              ...(owner ? { connectedAt: owner.connectedAt, lastSeenAt: owner.lastSeenAt } : {}),
+              ...(declared?.name ? { declaredName: declared.name } : {}),
+              ...(declared?.url ? { declaredUrl: declared.url } : {}),
             },
             route: { pubkey: route.pubkey, dependantId: null },
             method,
             peerPubkey,
+            payloadLength: payload.length,
+            ...(isDecryptMethod(method) ? {} : { payloadPreview: previewOf(payload).text }),
             description: describeCryptoRequest(method, peerPubkey, (route.signingBackend ?? route.backend).activePublicKeyHex),
             alwaysAvailable: true,
           };
@@ -1737,6 +1808,8 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // inbound-in-the-same-tick sees the new length against the cap.
     queueSizeRef.current += 1;
     const handle = ++handleCounterRef.current;
+    const askedAt = Math.min(Date.now(), event.created_at * 1000);
+    const declaredHint = route.dependantId ? undefined : declaredAppsRef.current.get(request.clientPubkey.toLowerCase());
     activeRequestRef.current.set(handle, {
       requestId: request.id,
       inboundEventId: event.id,
@@ -1748,6 +1821,10 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       ...(kinterestChildName ? { kinterestChildName } : {}),
     });
     const existing = route.dependantId ? undefined : await db.getConnectedClient(request.clientPubkey);
+    // Only a name the card will show: none when a saved row names the app.
+    const declared = existing ? undefined : declaredHint;
+    const queued = activeRequestRef.current.get(handle);
+    if (queued && declared?.name) queued.declaredName = declared.name;
     // Another view can answer while this lookup is in flight, before the
     // approval has entered React state. Do not append an already-retired entry.
     if (shareAnswered && wasAnswered(event.id)) {
@@ -1757,15 +1834,19 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       if (inboundEventByRequestRef.current.get(key) === event.id) inboundEventByRequestRef.current.delete(key);
       return;
     }
-    const appName = authorizedAppPairing?.label ?? existing?.appName ?? 'Unknown app';
+    const appName = authorizedAppPairing?.label ?? existing?.appName ?? UNKNOWN_APP_NAME;
     const appUrl = authorizedAppPairing?.origin ?? existing?.appUrl;
     const entry: PendingApproval = {
       handle,
+      askedAt,
       client: {
         pubkey: request.clientPubkey,
         appName,
         appUrl,
         existing: !!existing,
+        ...(existing ? { connectedAt: existing.connectedAt, lastSeenAt: existing.lastSeenAt } : {}),
+        ...(declared?.name ? { declaredName: declared.name } : {}),
+        ...(declared?.url ? { declaredUrl: declared.url } : {}),
       },
       route: {
         pubkey: route.pubkey,
@@ -1832,7 +1913,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             await db.saveConnectedClient({
               ...(client?.permissions !== undefined ? { permissions: client.permissions } : {}),
               clientPubkey: req.clientPubkey,
-              appName: client?.appName ?? 'Unknown app',
+              appName: client?.appName ?? req.declaredName ?? 'Unnamed app',
               appUrl: client?.appUrl,
               connectedAt: client?.connectedAt ?? now,
               lastSeenAt: now,
@@ -1968,7 +2049,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             await db.saveConnectedClient({
               ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
               clientPubkey: req.clientPubkey,
-              appName: existing?.appName ?? 'Unknown app',
+              appName: existing?.appName ?? req.declaredName ?? 'Unnamed app',
               appUrl: existing?.appUrl,
               connectedAt: existing?.connectedAt ?? now,
               lastSeenAt: now,
@@ -1978,6 +2059,35 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           }
         } catch { /* allowAlways persistence is best-effort; never leak internals */ }
       }
+    },
+    [publishResponse, shareAnswered],
+  );
+
+  /**
+   * Take a request off the queue WITHOUT refusing it: the app gets
+   * `request expired` (never `user denied`) and nothing is written: no
+   * ConnectedClient row, no deny grant on a dependant route, no audit event, no
+   * `lastSeenAt` bump. For a request the app has probably stopped waiting for.
+   */
+  const clearApproval = useCallback(
+    async (handle: number) => {
+      const req = activeRequestRef.current.get(handle);
+      if (!req) return;
+      const key = `${req.clientPubkey}:${req.requestId}`;
+      const alreadyAnswered = shareAnswered && wasAnswered(req.inboundEventId);
+      const generation = responseGenerationRef.current;
+      activeRequestRef.current.delete(handle);
+      setPendingApprovals(prev => {
+        const next = prev.filter(p => p.handle !== handle);
+        queueSizeRef.current = next.length;
+        return next;
+      });
+      if (alreadyAnswered) {
+        if (inboundEventByRequestRef.current.get(key) === req.inboundEventId) inboundEventByRequestRef.current.delete(key);
+        return;
+      }
+      if (generation !== responseGenerationRef.current) return;
+      await publishResponse(req.route.backend, req.clientPubkey, req.requestId, undefined, 'request expired', req.inboundEventId);
     },
     [publishResponse, shareAnswered],
   );
@@ -2198,5 +2308,5 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   // BunkerApprovalModal (one-modal-at-a-time). `pendingApprovals` is the
   // full queue, consumed by the BunkerPanel pending-requests list.
   const pendingApproval = pendingApprovals[0] ?? null;
-  return { pendingApproval, pendingApprovals, approveOnce, approveAlways, deny, serveStatus };
+  return { pendingApproval, pendingApprovals, approveOnce, approveAlways, deny, clearApproval, serveStatus };
 }

@@ -1,5 +1,8 @@
 import { BunkerApprovalModal } from './BunkerApprovalModal';
+import { PendingRequestDetail, DetailToggle, DEPENDANT_FALLBACK, appHeadline, siteHost } from './PendingRequestDetail';
 import { isKinterestAuthority } from '../lib/kinterest-authority';
+import { shortPubkey, safeAppName } from '../lib/bunker-display';
+import { ageText, isLate, lateNote, lookalikeNote, pairedLookalike } from '../lib/bunker-request-detail';
 import { shortNpub } from '../lib/signet';
 import { escalationSectionTitle, type EscalationOwner } from '../lib/escalation-owner';
 // src/components/BunkerPanel.tsx
@@ -52,8 +55,17 @@ interface Props {
   onApproveOnce: (handle: number) => void;
   onApproveAlways: (handle: number) => void;
   onDeny: (handle: number) => void;
+  /**
+   * Take a request off the list WITHOUT refusing it (the app is told it
+   * expired). Offered on a request older than five minutes. Absent: no Clear.
+   */
+  onClear?: (handle: number) => void;
   /** Resolve a dependant id to a display name, or undefined for the owner. */
   dependantNameFor: (dependantId: string | null) => string | undefined;
+  /** The display label of the owner persona (persona, extra, Pro, or the real identity when active) a request addresses, by its route pubkey. Absent or no label: "You". */
+  ownerLabelFor?: (routePubkey: string) => string | undefined;
+  /** Saved clients, to warn when an unpaired app calls itself by a paired app's name. */
+  connectedClients?: readonly { clientPubkey: string; appName: string }[];
   /** True when the guardian has at least one dependant — shows a note about always-on reachability. */
   hasDependants: boolean;
   /** Live socket truth from useBunkerServer — what the subscription is ACTUALLY doing. */
@@ -111,7 +123,7 @@ interface Props {
 export function BunkerPanel({
   onClose, bunkerAllowed, onGoToSecurity, onSetBunkerAllowed,
   stayAwakeUntil, onArmStayAwake, onCloseStayAwake, wakeLockSupported,
-  pendingApprovals, onApproveOnce, onApproveAlways, onDeny, dependantNameFor,
+  pendingApprovals, onApproveOnce, onApproveAlways, onDeny, onClear, dependantNameFor, ownerLabelFor, connectedClients,
   hasDependants, serveStatus, locked, onRequestUnlockWithPendingArm, onRequestUnlockForAlwaysOn,
   isNative, backgroundServing, alwaysOnWanted, onSetBackgroundServing, alwaysOnNote,
   escalationNotices, onDismissEscalation, resolveEscalationOwner,
@@ -159,7 +171,7 @@ export function BunkerPanel({
   // (dependant routes keep it alive with no session), OR there are "Family
   // asks" rows to age — drives the countdown, the "last frame Xs ago"
   // status line, and each ask's "Xs/Xm ago" age.
-  const ticking = stayAwakeUntil !== null || serveStatus.phase === 'open' || serveStatus.phase === 'reconnecting' || hasEscalations;
+  const ticking = stayAwakeUntil !== null || serveStatus.phase === 'open' || serveStatus.phase === 'reconnecting' || hasEscalations || pendingApprovals.length > 0;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!ticking) return;
@@ -168,7 +180,13 @@ export function BunkerPanel({
     return () => clearInterval(id);
   }, [ticking]);
   const remaining = stayAwakeRemainingMs(stayAwakeUntil, now);
-
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const toggleExpanded = (handle: number) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(handle)) next.delete(handle); else next.add(handle);
+    return next;
+  });
+  const lateHandles = onClear ? pendingApprovals.filter((a) => isLate(a.askedAt, now)).map((a) => a.handle) : [];
 
   function handleTimeButtonClick(minutes: number) {
     if (locked) {
@@ -299,6 +317,9 @@ export function BunkerPanel({
 
   if (reviewed && reviewed.method === 'sign_event' && isKinterestAuthority(reviewed.template)) {
     return <BunkerApprovalModal approval={reviewed}
+      dependantName={dependantNameFor(reviewed.route.dependantId)}
+      ownerLabel={ownerLabelFor?.(reviewed.route.pubkey)}
+      connectedClients={connectedClients}
       onApproveOnce={handle => { onApproveOnce(handle); setReviewHandle(null); }}
       onApproveAlways={handle => { onApproveOnce(handle); setReviewHandle(null); }}
       onDeny={handle => { onDeny(handle); setReviewHandle(null); }}
@@ -386,22 +407,51 @@ export function BunkerPanel({
         )}
 
         {/* Pending queue */}
-        <div style={sectionTitle}>Pending requests</div>
+        <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span>Pending requests</span>
+          {lateHandles.length >= 2 && (
+            <button type="button" className="btn btn-ghost" onClick={() => lateHandles.forEach((h) => onClear?.(h))}
+              style={{ fontSize: 12, padding: '2px 6px', width: 'auto', textTransform: 'none', letterSpacing: 0, color: 'var(--text-secondary)' }}>
+              Clear late requests ({lateHandles.length})
+            </button>
+          )}
+        </div>
         {pendingApprovals.length === 0 ? (
           <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>No pending requests.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {pendingApprovals.map((a) => {
-              const target = dependantNameFor(a.route.dependantId) ?? 'You';
+              const ownerLabel = a.route.dependantId ? undefined : ownerLabelFor?.(a.route.pubkey);
+              const depName = dependantNameFor(a.route.dependantId);
+              const target = a.route.dependantId ? (depName ? safeAppName(depName) : DEPENDANT_FALLBACK) : (ownerLabel ? safeAppName(ownerLabel) : 'You');
+              const headline = appHeadline(a);
+              const host = siteHost(a.client);
+              const late = isLate(a.askedAt, now);
+              const open = expanded.has(a.handle);
+              const lookalike = headline.declared !== undefined
+                ? pairedLookalike(a.client.declaredName, a.client.pubkey, connectedClients) : undefined;
               return (
                 <div key={a.handle} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{a.client.appName}</div>
-                  {a.client.appUrl && (
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{a.client.appUrl}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere' }}>
+                      {headline.declared !== undefined ? `${headline.name} · calls itself "${headline.declared}"` : headline.name}
+                    </div>
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{ageText(a.askedAt, now)}</span>
+                    <DetailToggle expanded={open} onToggle={() => toggleExpanded(a.handle)} />
+                  </div>
+                  {lookalike && (
+                    <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 2 }}>{lookalikeNote(lookalike)}</div>
                   )}
                   <div style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '4px 0' }}>
                     {a.description} · {a.method === 'sign_event' ? 'signing as' : 'as'} <strong>{target}</strong>
                   </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>
+                    {host ? `${host} · ` : ''}app key {shortPubkey(a.client.pubkey)}
+                  </div>
+                  {late && (
+                    <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 4 }}>{lateNote(a.askedAt, now)}</div>
+                  )}
+                  {open && <PendingRequestDetail approval={a} now={now} dependantName={depName} ownerLabel={ownerLabel} />}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     {a.method === 'sign_event' && isKinterestAuthority(a.template) ? (
                       <button type="button" className="btn btn-primary" onClick={() => setReviewHandle(a.handle)}
@@ -416,6 +466,10 @@ export function BunkerPanel({
                     </>}
                     <button type="button" className="btn btn-ghost" onClick={() => onDeny(a.handle)}
                       style={{ fontSize: 13, padding: '6px 10px', color: 'var(--danger)' }}>Deny</button>
+                    {late && onClear && (
+                      <button type="button" className="btn btn-ghost" onClick={() => onClear(a.handle)}
+                        style={{ fontSize: 12, padding: '6px 8px', color: 'var(--text-secondary)' }}>Clear</button>
+                    )}
                   </div>
                 </div>
               );

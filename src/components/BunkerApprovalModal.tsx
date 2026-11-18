@@ -3,10 +3,13 @@ import { fetchAvatar } from '../lib/avatar';
 import { isKinterestAuthority, parseKinterestRequest } from '../lib/kinterest-authority';
 import type { PendingApproval } from '../hooks/useBunkerServer';
 import type { PendingChildAsk } from '../hooks/useChildAsks';
-import { shortPubkey, safeAppName } from '../lib/bunker-display';
+import { shortPubkey, safeAppName, safeUrl } from '../lib/bunker-display';
 import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
 import { CHILD_ASK_COPY, CHILD_DEVICE_COPY } from '../lib/child-device-copy';
 import { isDecryptMethod } from '../lib/bunker-crypto-approval';
+import { PendingRequestDetail, DetailToggle, DEPENDANT_FALLBACK, appHeadline } from './PendingRequestDetail';
+import { ageText, lookalikeNote, pairedLookalike } from '../lib/bunker-request-detail';
+import { useNow } from '../hooks/useNow';
 
 /**
  * Modal surfaced when a NIP-46 client has asked the bunker server to
@@ -32,20 +35,18 @@ interface Props {
   onDeny: (handle: number) => void;
   /** Return to the list without answering the request (Escape does the same). Omitted: no Back button. */
   onBack?: () => void;
+  /** Name of the dependant this request is for, when it is on a dependant route. */
+  dependantName?: string;
+  /** Display label of the owner persona the request addresses. Absent: "You". */
+  ownerLabel?: string;
+  /** Saved clients, to warn when an unpaired app calls itself by a paired app's name. */
+  connectedClients?: readonly { clientPubkey: string; appName: string }[];
 }
 
-function safeUrl(url: string | undefined): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    return u.origin + u.pathname.slice(0, 40);
-  } catch {
-    return null;
-  }
-}
-
-export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny, onBack }: Props) {
+export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny, onBack, dependantName, ownerLabel, connectedClients }: Props) {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const now = useNow();
   const sign = approval.method === 'sign_event' ? approval : null;
   const avatar = sign?.kinterestChildAvatar;
   useEffect(() => {
@@ -65,6 +66,10 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
   const decrypt = approval.method !== 'sign_event' && isDecryptMethod(approval.method);
   const name = safeAppName(approval.client.appName);
   const url = safeUrl(approval.client.appUrl);
+  const headline = appHeadline(approval);
+  const lookalike = headline.declared !== undefined
+    ? pairedLookalike(approval.client.declaredName, approval.client.pubkey, connectedClients) : undefined;
+  const asPerson = approval.route.dependantId ? (dependantName ? safeAppName(dependantName) : DEPENDANT_FALLBACK) : (ownerLabel ? safeAppName(ownerLabel) : 'You');
 
   return (
     <div
@@ -109,6 +114,25 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
         </div>
 
         <div className="card" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: 12, borderRadius: 8, fontSize: '0.85rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+            <span>
+              <span style={{ color: 'var(--text-muted)' }}>Asked: </span>
+              <span>{ageText(approval.askedAt, now)}</span>
+            </span>
+            <DetailToggle expanded={detailOpen} onToggle={() => setDetailOpen(o => !o)} />
+          </div>
+          {headline.declared !== undefined && (
+            <div style={{ marginBottom: 6, overflowWrap: 'anywhere' }}>{`Unknown app · calls itself "${headline.declared}"`}</div>
+          )}
+          {lookalike && (
+            <div style={{ marginBottom: 6, color: 'var(--warning)' }}>{lookalikeNote(lookalike)}</div>
+          )}
+          {asPerson && (
+            <div style={{ marginBottom: 6 }}>
+              <span style={{ color: 'var(--text-muted)' }}>{approval.route.dependantId ? 'For: ' : sign ? 'Signing as: ' : 'As: '}</span>
+              <span>{asPerson}</span>
+            </div>
+          )}
           {url && (
             <div style={{ marginBottom: 6 }}>
               <span style={{ color: 'var(--text-muted)' }}>App URL: </span>
@@ -132,6 +156,12 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
             </div>
           )}
         </div>
+
+        {detailOpen && (
+          <div className="card" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: 12, borderRadius: 8, marginTop: -4 }}>
+            <PendingRequestDetail approval={approval} now={now} dependantName={dependantName} ownerLabel={approval.route.dependantId ? undefined : ownerLabel} />
+          </div>
+        )}
 
         {authority && <div className="card">
           <strong>{authority.parentPresence ? 'Confirm parent PIN setup or reset' : authority.child ? 'Add this child and authorise their Kinterest device' : 'Authorise this Kinterest family'}</strong>
