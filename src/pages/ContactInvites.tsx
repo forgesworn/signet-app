@@ -20,9 +20,11 @@ import type { ContactInviteVault } from '../lib/contact-invite-store';
  * (NEEDS_GUARDIAN_ERROR, decided in App from the contact policy) reads as waiting for
  * them, and only where they approve; a blocked or closed-out peer keeps its own message.
  */
-function refusalCopy(message: string, guardianApproves: boolean | undefined): string {
+function refusalCopy(message: string, guardianApproves: boolean | undefined, action: 'send' | 'accept'): string {
   if (message !== NEEDS_GUARDIAN_ERROR) return message;
-  return guardianApproves ? WAITING_FOR_GUARDIAN_COPY : 'Request cannot be accepted';
+  if (guardianApproves) return WAITING_FOR_GUARDIAN_COPY;
+  // What the service said for a refused peer before the guardian case had its own message.
+  return action === 'send' ? 'This contact is not allowed by the contact policy' : 'Request cannot be accepted';
 }
 
 export function ContactInvites({ service, identityPubkey, identityName, relays, version, initialInvite,
@@ -55,13 +57,13 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
     void service.read().then(value => { if (!cancelled) setState(value); }).catch(() => { if (!cancelled) setError('Could not load private invites.'); });
     return () => { cancelled = true; };
   }, [service, version]);
-  const run = async (action: () => Promise<unknown>) => {
+  const run = async (action: () => Promise<unknown>, kind: 'send' | 'accept' = 'accept') => {
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
     try { await action(); const value = await service.read(); if (mounted.current) setState(value); }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : 'The invite could not be updated.';
-      if (mounted.current) setError(refusalCopy(message, guardianApproves));
+      if (mounted.current) setError(refusalCopy(message, guardianApproves, kind));
     }
     finally { if (mounted.current) setBusy(false); }
   };
@@ -127,7 +129,7 @@ export function ContactInvites({ service, identityPubkey, identityName, relays, 
       if (onApproveContact) await onApproveContact(invite.recipient);
       await service.request(identityPubkey, invite, now()); setIncoming(''); setNotice('Request queued.');
       await service.flush(now());
-    })}>{onApproveContact ? 'Approve and send contact request' : 'Send contact request'}</button>
+    }, 'send')}>{onApproveContact ? 'Approve and send contact request' : 'Send contact request'}</button>
     {onApproveContact && <p>Approving adds this public key to the dependant’s approved contacts. Requests stay pending until you approve them.</p>}
     <h3>Requests ({arrivals.length})</h3>
     <button className="btn btn-secondary" disabled={busy || !arrivals.some(a => !a.request)} onClick={() => void run(() => service.openInbox(now(), false, identityPubkey))}>Open request list</button>
