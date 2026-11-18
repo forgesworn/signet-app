@@ -9,6 +9,8 @@
  */
 export const SIGNER_TIMEOUT_COPY =
   "Your family's Heartwood didn't answer in time. If it's showing a card, press its button, then try again.";
+/** Shown after a few seconds of "Signing…" while a sign waits on the Heartwood, which may be holding a card for a button press. */
+export const SIGNER_WAITING_COPY = "Waiting for your Heartwood. If it's showing a card, press its button.";
 export const SIGNER_DENIED_COPY = 'Your Heartwood turned that down, so nothing was signed.';
 export const SIGNER_BUSY_COPY = 'Your Heartwood is busy with another request. Give it a moment, then try again.';
 export const SIGNER_NEEDS_DEVICE_COPY = 'This needs approving on your Heartwood first. Press its button, then try again.';

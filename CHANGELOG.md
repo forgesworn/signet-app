@@ -11,6 +11,9 @@ section for the version being published (`release_notes` in zapstore.yaml).
 - Child mode: Get Verified no longer shows your recovery words or marks you backed up while the phone is in child mode
 - Child mode: age verification requests are now refused while the phone is in child mode, because they could answer with your own credential. Leave child mode with your PIN first
 - Child mode: connecting a companion app, giving an app access to contacts, adding a dependant and Advanced settings are now refused while the phone is in child mode, with no PIN asked for. Leave child mode with the guardian's PIN first
+- While a sign-in waits on your Heartwood for more than a few seconds, the approval screen now says to press its button if it's showing a card
+- Shamir backup now asks for your PIN (or fingerprint) before it shows the shares, as the recovery words already do
+- Child mode no longer switches itself back on mid-session when a dependant record that was missing at start-up is restored later by a sync
 - Sign in with Signet from another device: signing in as a child no longer hands the site a connection to My Signet's Nostr Connect server, so it cannot go on signing as them afterwards
 - Adding a child: after pairing their phone, Done (or Back) now returns to their card on the home screen instead of an empty Add Dependant form
 - Child mode: after a restart the "Viewing as" banner shows while My Signet is locked, and the Bunker tab stays hidden, instead of looking like your own phone

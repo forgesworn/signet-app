@@ -17,6 +17,7 @@ import { detectDrift } from '../lib/drift-detection';
 import { KeypairBadge } from '../components/KeypairBadge';
 import { PairedChildApprovalWaiting } from '../components/PairedChildApprovalWaiting';
 import { NaturalPersonConfirmSection } from '../components/NaturalPersonConfirmSection';
+import { HeartwoodWaitHint } from '../components/HeartwoodWaitHint';
 import { SignInOnlinePlay } from '../components/SignInOnlinePlay';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 import { handoffWarning } from '../lib/heartwood-handoff';
@@ -93,6 +94,8 @@ interface Props {
    * effective choice (pre-selected or picked); every other approval is the same call it always was.
    */
   onApprove: (selection: AuthSelection, shareHandle: boolean, includeOnlinePlay?: boolean, signOnHeartwood?: boolean) => Promise<void> | void;
+  /** Signing goes through a paired Heartwood: after a few seconds of Signing…, say to press its button. */
+  heartwoodSigner?: boolean;
   onDeny: () => void;
   /**
    * Whether the site can be given a link straight to the Heartwood that holds
@@ -232,6 +235,7 @@ export function ApproveAuth({
   onAddPersona,
   onActivateRealIdentity,
   onApprove,
+  heartwoodSigner,
   canSignOnHeartwood,
   heartwoodNeedsUpdate,
   heartwoodByDefault = true,
@@ -689,6 +693,7 @@ export function ApproveAuth({
               <button className="btn btn-ghost" onClick={onDeny} disabled={approving}>
                 Cancel
               </button>
+              <HeartwoodWaitHint active={approving && (!!heartwoodSigner || signOnHeartwood)} />
             </>
           )}
         </div>
@@ -1042,6 +1047,7 @@ export function ApproveAuth({
             <button className="btn btn-ghost" onClick={onDeny} disabled={approving}>
               Deny
             </button>
+            <HeartwoodWaitHint active={approving && (!!heartwoodSigner || signOnHeartwood)} />
           </>
         )}
       </div>
