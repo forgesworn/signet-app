@@ -160,7 +160,7 @@ import { KnownPlacesCard, KnownPlacesDependantCard } from './components/KnownPla
 import { canOpenPlace } from './lib/known-place-open';
 import type { KnownPlaceIdentityType, KnownPlaceCtx, KnownPlaceActions } from './components/KnownPlaceRow';
 import type { ResolvedIdentity } from './lib/carousel-utils';
-import { resolveActiveIdentity } from './lib/carousel-utils';
+import { resolveActiveIdentity, childModeRowScope } from './lib/carousel-utils';
 import { updateConnectedClient } from './lib/db';
 import { primaryBadge, badgesFor } from './lib/known-place-badges';
 import { heartwoodEntriesFor } from './lib/known-place-heartwood';
@@ -180,7 +180,8 @@ import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
-import { childModePageDecision } from './lib/child-mode-page-allowlist';
+import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY } from './lib/child-mode-page-allowlist';
+import { readOnlyPlaceActions } from './lib/known-place-read-only';
 import { companionGrantPersonas } from './lib/companion-grant-personas';
 import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, readSavedChildMode, CHILD_MODE_UNRESOLVED, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
@@ -1024,7 +1025,11 @@ function AppContent() {
     () => (childCarouselAllowCsv === null ? null : new Set(childCarouselAllowCsv.split(',').filter(Boolean))),
     [childCarouselAllowCsv],
   );
-  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed, childCarouselBound);
+  // Child mode as last saved on this phone, read without the key (see the effect that reads it
+  // further down): `undefined` until read, null when there is none. Declared here because the
+  // ring must not be the guardian's while a saved child mode waits for its restore.
+  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
+  const carousel = useCarousel(identity, dependants, botInventory, childCarouselAllowed, childCarouselBound, savedChildMode !== null);
   // The identities whose cards list places in Where you're known (owner rows;
   // a dependant's card lists none). Read when a hand-off record is kept.
   const placeCardPubkeys = useMemo<ReadonlySet<string>>(() => new Set(carousel.rows
@@ -2449,7 +2454,6 @@ function AppContent() {
   // Set by that restore once it has decided (and by entering child mode): a
   // start-up read that lands after the decision must not put back what it dropped.
   const childModeRestoredRef = useRef(false);
-  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
     // A failed read is not "no session": it stays child mode, with no child to
@@ -5341,6 +5345,10 @@ function AppContent() {
     };
   }, [reconcileSignInLinksNow, knownPlaces, setOriginPinned, nip55, disconnectClient, operatorForPlaces, heartwoodSlots, refreshHeartwoodSlots, revokeHeartwoodHandoff, revokeSignInLinksOfPlace, signInLinksOfPlace, changeSignInLinks, heldHandoffsFor, showStoredHandoffs]);
   const knownPlacesColumn = (row: CarouselRow, resolved: ResolvedIdentity): React.ReactNode => {
+    // Child mode: a row that is not the child's gets nothing, and the child's own rows are read only (Open).
+    const rowScope = childModeRowScope(row, carousel.childMode, signInChildDependant?.id ?? null);
+    if (rowScope === 'foreign') return null;
+    const inChildMode = rowScope === 'child';
     if (resolved.isDependant) return <KnownPlacesDependantCard key={resolved.publicKey || resolved.displayName} name={resolved.displayName} />;
     if (!resolved.publicKey) return null;
     const names = new Map(carousel.rows.filter(r => r.type !== 'add').map(r => { const x = resolveActiveIdentity(r); return [x.publicKey.toLowerCase(), x.displayName] as const; }));
@@ -5361,7 +5369,8 @@ function AppContent() {
         heartwoodClients={heartwoodSlots ? heartwoodEntriesFor(heartwoodSlots, resolved.publicKey, pk => names.get(pk)) : null}
         hideHeartwood={isPairedChild}
         canRevokeOnHeartwood={canRevokeClient(heartwoodOperator.status) !== false}
-        actions={knownPlaceActions}
+        readOnly={inChildMode}
+        actions={inChildMode ? readOnlyPlaceActions(knownPlaceActions) : knownPlaceActions}
       />
     );
   };
@@ -11003,6 +11012,9 @@ function AppContent() {
     const action = routeQR(data);
     switch (action.type) {
       case 'contact-invite':
+        // Child mode: the invite would wait and open for the guardian after the PIN exit.
+        // Refused here, with nothing parked (the child never starts the guardian's contact flow).
+        if (childModeNow !== 'off') return CHILD_MODE_SCAN_INVITE_COPY;
         // D6: a paired-child install offers "Ask {guardian} to connect"
         // instead of connecting directly — see the navigation effect below.
         setPendingContactInvite(JSON.stringify(action.invite));
@@ -11068,7 +11080,7 @@ function AppContent() {
         navigateTo('web-verify');
         break;
     }
-  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild, contactsIdentityLists, identity, dependants, addScannedContact]);
+  }, [navigateTo, handleNostrConnect, carousel.rows, carousel.row, carousel.activeIdentity.publicKey, resolveSigningSelection, preferences.signingMode, isPairedChild, contactsIdentityLists, identity, dependants, addScannedContact, childModeNow]);
 
   const handleApproveFromCarousel = useCallback(() => {
     if (!pendingAuthRequest) return;
@@ -14083,7 +14095,7 @@ function AppContent() {
     // Child mode with no resolved child idles (directoryId null): never fall back to the owner's invites.
     if (childContactsMode && !contactsScope.directoryId) { navigateReplace('home'); return null; }
     const route = handshakeRoute;
-    return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack}>
+    return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack} {...guardianLayoutProps}>
       <ContactHandshake key={encryptionKey + route.persona} persona={route.persona}
         info={route.info} choose={route.choose} encryptionKey={encryptionKey}
         version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
@@ -15681,7 +15693,7 @@ function AppContent() {
           openDependantPage('contact-handshake', cardPageScopeId(resolved),
             { persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
         }}
-        renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
+        renderInviteCard={(_row, resolved, renderPublicCard) => !signInChildMode && !resolved.isDependant && !isPairedChild && resolved.publicKey
           ? <ContactInviteQRCard key={resolved.publicKey} service={ownerInviteService} identityPubkey={resolved.publicKey}
             resolved={resolved} relays={syncRelays.write.filter(url => url.startsWith('wss:'))} version={contactsV2Version} renderPublicCard={renderPublicCard}
             locked={!encryptionKey} onRequestUnlock={() => { void requestFreshAuth({ purpose: 'unlock-app' }); }}
@@ -15775,6 +15787,7 @@ function AppContent() {
         onExitChildMode={handleExitChildMode}
         childMode={carousel.childMode}
         childDependant={carousel.childDependant}
+        stableChildId={signInChildDependant?.id || null}
         childModeName={signInChildDependant?.displayName}
         childModeSaved={!carousel.childMode && !!savedChildMode}
         childModeSavedExitable={!carousel.childMode && (savedChildMode === CHILD_MODE_UNRESOLVED || (!!savedChildMode && !!encryptionKey))}

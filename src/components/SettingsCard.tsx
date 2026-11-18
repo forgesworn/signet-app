@@ -557,6 +557,9 @@ function InlineNameEditor({
   );
 }
 
+/** Child mode on the guardian's phone: the profile is for the guardian to change, after exiting with the PIN. */
+export const CHILD_MODE_PROFILE_NOTE = 'Your guardian changes this. Ask them to exit child mode first.';
+
 export function SettingsCard({
   resolved,
   row,
@@ -616,10 +619,11 @@ export function SettingsCard({
 
   // Render the inline SlotProfileFields block for any persona row.
   // `pairedChildViewForSlot` is true for the paired-child surface on dep
-  // rows (read-only §6.6.11 framing). Guardian-acting-as in child-mode is
-  // editable — `isPairedChild` only flips true when the install IS the
-  // kid's device.
-  const pairedChildViewForSlot = isPairedChild && isDepRow;
+  // rows (read-only §6.6.11 framing) and in child mode, where the guardian's
+  // unlocked phone is in the dependant's hands: renaming, the avatar, the
+  // public profile and its publishing spend the guardian's consent and
+  // network and need no PIN, so the child sees them read only.
+  const pairedChildViewForSlot = (isPairedChild || childMode) && isDepRow;
 
   function renderInlineSlotEditor() {
     if (!slot) return null;
@@ -670,6 +674,7 @@ export function SettingsCard({
         slotKind={slot.slotKind}
         imported={slot.imported}
         pairedChildView={pairedChildViewForSlot}
+        readOnlyNote={childMode && !isPairedChild ? CHILD_MODE_PROFILE_NOTE : undefined}
         defaultBlossomUrl={defaultBlossomUrl}
         blossomConsent={blossomConsent}
         onSaveConfig={onSaveConfig}
@@ -823,10 +828,8 @@ export function SettingsCard({
           </button>
         </>
       ) : isChildModeDepRow ? (
-        // Child-mode (guardian-acting-as OR paired-child) dep persona row.
-        // For paired-child: read-only §6.6.11 framing (handled inside
-        // SlotProfileFields via pairedChildView). For guardian-acting-as:
-        // editable inline.
+        // Child-mode dep row: read-only §6.6.11 framing (handled inside
+        // SlotProfileFields via pairedChildView), as on the paired-child surface.
         <>
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">

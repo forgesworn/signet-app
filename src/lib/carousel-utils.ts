@@ -134,6 +134,32 @@ export function buildChildRows(dependant: DependantIdentity): CarouselRow[] {
   return rows;
 }
 
+/**
+ * Whether a carousel row carries a dependant's identity: the dependant card and
+ * both kinds of persona row. Not `resolved.isDependant`, which is false for the
+ * persona rows (they are styled as personas) and so let the child's persona
+ * cards reach owner-only surfaces.
+ */
+export function isChildScopedRow(row: CarouselRow): boolean {
+  return row.type === 'dependant' || row.type === 'dependant-persona' || row.type === 'dependant-extra-persona';
+}
+
+/**
+ * How one row is treated while child mode is on. `child`: the stable child's own
+ * row. `add`: the Add card, with its own PIN gate. `foreign`: anything else (a
+ * guardian row, a sibling, or any row when no child is resolved): it offers no
+ * action at all. `off`: child mode is not on, so nothing here applies.
+ * `childId` is the lock-proof child id, never the carousel's own state.
+ */
+export type ChildModeRowScope = 'off' | 'child' | 'add' | 'foreign';
+
+export function childModeRowScope(row: CarouselRow, childMode: boolean, childId: string | null): ChildModeRowScope {
+  if (!childMode) return 'off';
+  if (row.type === 'add') return 'add';
+  if (isChildScopedRow(row) && childId !== null && 'dependant' in row && row.dependant.id === childId) return 'child';
+  return 'foreign';
+}
+
 /** Circular index wrapping: wrapIndex(-1, 4) → 3, wrapIndex(4, 4) → 0 */
 export function wrapIndex(index: number, length: number): number {
   return ((index % length) + length) % length;

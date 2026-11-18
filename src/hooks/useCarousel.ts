@@ -70,6 +70,12 @@ export function useCarousel(
   allowedPersonas: ReadonlySet<string> | null = null,
   /** A direct child's install: the bound persona, shown when the card on screen is no longer allowed. */
   boundPersona: string | null = null,
+  /**
+   * Child mode is on but this hook is not in it (yet): the saved session is
+   * waiting for the unlock restore, or is still being read. The guardian's ring
+   * is never built then, because the phone is in a child's hands.
+   */
+  childModeHeld = false,
 ): CarouselState {
   // Keyed on content: a new Set with the same keys is the same list.
   const allowKey = allowedPersonas ? [...allowedPersonas].map(k => k.toLowerCase()).sort().join(',') : null;
@@ -131,13 +137,20 @@ export function useCarousel(
   // Build rows — recomputes when identity or dependants change.
   // Returns [] when identity is null (pre-unlock), so the hook is safe to call
   // unconditionally before App.tsx's identity guard runs.
+  //
+  // While child mode is on the ring is only ever the child's. A lock empties the
+  // dependants list for one read, so the child last shown is kept until it is
+  // back (and an empty ring, not the guardian's, when there never was one).
+  const lastChildRef = useRef<DependantIdentity | null>(null);
+  if (!childMode) lastChildRef.current = null;
+  else if (childDependant) lastChildRef.current = childDependant;
+  const shownChild = childMode ? childDependant ?? lastChildRef.current : null;
+  const childRing = childMode || childModeHeld;
   const rows = useMemo(() => {
     if (!identity) return [];
-    if (childMode && childDependant) {
-      return buildChildRows(childDependant);
-    }
+    if (childRing) return shownChild ? buildChildRows(shownChild) : [];
     return buildRows(identity, dependants, bots, allowed);
-  }, [identity, dependants, childMode, childDependant, bots, allowed]);
+  }, [identity, dependants, childRing, shownChild, bots, allowed]);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
 

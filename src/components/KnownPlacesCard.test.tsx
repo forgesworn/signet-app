@@ -507,3 +507,42 @@ describe('KnownPlacesCard', () => {
     expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 });
+
+describe('KnownPlacesCard in child mode (readOnly)', () => {
+  const buttons = () => screen.queryAllByRole('button').map(b => b.textContent ?? '');
+  it('a sign-in place offers Open and nothing that changes it', () => {
+    setup({ readOnly: true, places: [place('alpha', { alias: 'Home' })], ctxFor: () => ({ signInLinkRecords: true, heartwoodSignIn: true }) });
+    expand('Home');
+    const labels = buttons();
+    expect(labels).toContain('Open');
+    for (const banned of [/^Pin$/, /^Unpin$/, /alias/i, /Sign automatically/, /Stop signing/, /^Forget/, /^Disconnect/, /Revoke/]) {
+      expect(labels.filter(l => banned.test(l)), String(banned)).toEqual([]);
+    }
+    expect(screen.getByText(/Alias:/)).toBeDefined();
+  });
+
+  it('a paired app and a phone app offer no signing or disconnect control', () => {
+    setup({
+      readOnly: true,
+      places: [place('zeta', { kind: 'nip46', placeKey: 'nc:' + PK }), place('amber', { kind: 'nip55', nativePackage: 'com.example.app', channel: 'nip55' })],
+      ctxFor: p => p.kind === 'nip55' ? { nip55Grant: { allowAlways: true, denyAlways: false } } : { askToSign: false },
+    });
+    for (const name of ['zeta', 'amber']) {
+      expand(name);
+      expect(buttons().filter(l => /^(Pin|Unpin|Add alias|Edit alias|Sign automatically|Stop signing automatically|Ask each time|Disconnect|Forget.*)$/.test(l)), name).toEqual([]);
+    }
+  });
+
+  it('an app on the Heartwood cannot be revoked from the child\'s screen', () => {
+    setup({ readOnly: true, heartwoodClients: [{ fingerprint: 'ab12', label: 'Game', boundIdentity: 'Alice', policySummary: 'Asks' }] });
+    expand('Game');
+    expect(screen.queryByRole('button', { name: /Revoke on Heartwood/ })).toBeNull();
+  });
+
+  it('without readOnly the same row still offers them (guardian)', () => {
+    setup({ places: [place('alpha')] });
+    expand('alpha');
+    expect(screen.getByRole('button', { name: 'Pin' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Forget' })).toBeDefined();
+  });
+});

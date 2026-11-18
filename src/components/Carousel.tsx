@@ -2,7 +2,7 @@ import { CAROUSEL_COLUMNS } from '../types';
 import { useRef, useCallback, useState, useEffect, useLayoutEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { DependantIdentity, CarouselColumn, CarouselRow, PublicProfileConfig } from '../types';
-import { wrapIndex, clampIndex, resolveActiveIdentity, resolveRenameTarget } from '../lib/carousel-utils';
+import { wrapIndex, clampIndex, resolveActiveIdentity, resolveRenameTarget, childModeRowScope } from '../lib/carousel-utils';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
 import { shouldShowPairingStatus } from '../lib/carousel-routing';
@@ -54,6 +54,12 @@ interface CarouselProps {
   onExitChildMode: () => void;
   childMode: boolean;
   childDependant: DependantIdentity | null;
+  /**
+   * The lock-proof id of the child while child mode is on. A row is the child's
+   * only if it carries this dependant; any other row (the guardian's, a sibling's)
+   * offers no action in child mode. Null: no child resolved, so no row is the child's.
+   */
+  stableChildId?: string | null;
   /**
    * The child-mode child's name when the full record is not to hand (a record
    * that will not decrypt): the exit banner still shows, so child mode always
@@ -264,6 +270,33 @@ function identityCardKey(row: CarouselRow): string {
   return (_exhaustive as CarouselRow).type;
 }
 
+/**
+ * Every handler the settings column has for changing a name, an avatar or a
+ * public profile (and for uploading or checking one). In child mode the column
+ * is handed none of them: the child sees it read only, and a stale call has
+ * nothing to reach. Spreading the object keeps the guardian's props unchanged.
+ */
+function writers(props: CarouselProps) {
+  return {
+    onSavePersonaConfig: props.onSavePersonaConfig,
+    onRepublishProfile: props.onRepublishProfile,
+    onUploadPersonaPicture: props.onUploadPersonaPicture,
+    onDeletePublicBlob: props.onDeletePublicBlob,
+    onUpdateOwnPersonaName: props.onUpdateOwnPersonaName,
+    onSetPersonaAvatar: props.onSetPersonaAvatar,
+    onClearPersonaAvatar: props.onClearPersonaAvatar,
+    onNip05Checked: props.onNip05Checked,
+    onSaveDepPersonaConfig: props.onSaveDepPersonaConfig,
+    onRepublishDepProfile: props.onRepublishDepProfile,
+    onUploadDepPersonaPicture: props.onUploadDepPersonaPicture,
+    onUpdateDepName: props.onUpdateDepName,
+    onUpdateDepPersonaName: props.onUpdateDepPersonaName,
+    onSetDepPersonaAvatar: props.onSetDepPersonaAvatar,
+    onClearDepPersonaAvatar: props.onClearDepPersonaAvatar,
+    onDepNip05Checked: props.onDepNip05Checked,
+  };
+}
+
 function renderCard(
   row: CarouselRow,
   col: CarouselColumn,
@@ -283,6 +316,11 @@ function renderCard(
   //                     and arrive via the persona-inventory sync. We render
   //                     this even when childDormant so the kid still sees an
   //                     explanation instead of a blank screen.
+  // A row that is not the child's, while the phone is in child mode (the
+  // guardian's ring can show for a moment around a lock): its card, and nothing
+  // behind it. No bot card, no QR, contacts, places, settings or camera.
+  const foreign = childModeRowScope(row, props.childMode, props.stableChildId ?? null) === 'foreign';
+  if (foreign && (col !== 0 || row.type === 'bot')) return null;
   if (row.type === 'bot') return props.renderBotCard?.(row, col) ?? null;
   if (row.type === 'add') {
     if (props.signingMode === 'paired-child') {
@@ -318,7 +356,8 @@ function renderCard(
           <IdentityCard
             key={identityCardKey(row)}
             row={row}
-            onHandshake={props.onHandshake ? choose => props.onHandshake!(resolved, choose) : undefined}
+            onHandshake={props.onHandshake && !foreign ? choose => props.onHandshake!(resolved, choose) : undefined}
+            foreign={foreign}
             resolved={resolved}
             childMode={props.childMode}
             childDormant={props.childDormant}
@@ -329,17 +368,17 @@ function renderCard(
             readyNotice={row.type === 'dependant' ? props.readyNoticeFor?.(row.dependant.id) : undefined}
             // TODO: resolve photoHash → URL via local cache or Blossom server. Tracked as follow-up.
             photoUrl={null}
-            proAnchorActive={row.type === 'natural-person' ? props.proAnchorActive : false}
-            onProPillTap={row.type === 'natural-person' ? props.onProPillTap : undefined}
-            knownPlaceItems={props.knownPlacesFor?.(resolved)}
+            proAnchorActive={row.type === 'natural-person' && !foreign ? props.proAnchorActive : false}
+            onProPillTap={row.type === 'natural-person' && !foreign ? props.onProPillTap : undefined}
+            knownPlaceItems={foreign ? undefined : props.knownPlacesFor?.(resolved)}
             placesLocked={props.placesLocked}
             onUnlockRequest={props.onUnlockRequest}
             onOpenPlace={props.onOpenPlace}
-            contactsCount={props.contactsCountFor?.(resolved) ?? null}
+            contactsCount={foreign ? null : props.contactsCountFor?.(resolved) ?? null}
             recentSignInLabel={recentSignInLabel}
             blurIdentityNames={props.blurIdentityNames}
             rowIndex={rowIndex}
-            onRenameActive={renameTarget && props.onRenameActive
+            onRenameActive={renameTarget && props.onRenameActive && !foreign
               ? (name: string) => props.onRenameActive!(renameTarget, name)
               : undefined}
           />
@@ -359,6 +398,9 @@ function renderCard(
             footer={slots?.footer}
           />
         );
+        // Child mode shows the child's npub as a plain QR: the invite card creates a
+        // standing invite in the guardian's own invite vault.
+        if (props.childMode) return renderPublicCard();
         return props.renderInviteCard?.(row, resolved, renderPublicCard) ?? renderPublicCard();
       }
       case 2:
@@ -376,22 +418,7 @@ function renderCard(
             dependantsCount={props.dependantsCount ?? 0}
             defaultBlossomUrl={props.defaultBlossomUrl}
             blossomConsent={props.blossomConsent}
-            onSavePersonaConfig={props.onSavePersonaConfig}
-            onRepublishProfile={props.onRepublishProfile}
-            onUploadPersonaPicture={props.onUploadPersonaPicture}
-            onDeletePublicBlob={props.onDeletePublicBlob}
-            onUpdateOwnPersonaName={props.onUpdateOwnPersonaName}
-            onSetPersonaAvatar={props.onSetPersonaAvatar}
-            onClearPersonaAvatar={props.onClearPersonaAvatar}
-            onNip05Checked={props.onNip05Checked}
-            onSaveDepPersonaConfig={props.onSaveDepPersonaConfig}
-            onRepublishDepProfile={props.onRepublishDepProfile}
-            onUploadDepPersonaPicture={props.onUploadDepPersonaPicture}
-            onUpdateDepName={props.onUpdateDepName}
-            onUpdateDepPersonaName={props.onUpdateDepPersonaName}
-            onSetDepPersonaAvatar={props.onSetDepPersonaAvatar}
-            onClearDepPersonaAvatar={props.onClearDepPersonaAvatar}
-            onDepNip05Checked={props.onDepNip05Checked}
+            {...(props.childMode ? {} : writers(props))}
           />
         );
       case 5:

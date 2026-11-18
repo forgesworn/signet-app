@@ -104,3 +104,40 @@ describe('useCarousel — a direct child\'s allow-list changing under the card o
     expect(h.result.current.rows[h.result.current.row].type).toBe('add');
   });
 });
+
+describe('useCarousel: the ring while child mode is on', () => {
+  const kid = {
+    id: 'kid-1', guardianPubkey: P, displayName: 'Kid',
+    naturalPerson: { publicKey: 'e1'.repeat(32), privateKey: '', displayName: 'Kid' },
+    persona: { publicKey: 'f1'.repeat(32), privateKey: '', displayName: 'Kid persona' },
+    derivationPath: 'dependant-0', createdAt: 0, autonomyStage: 'full-control', primaryKeypair: 'natural-person',
+  } as unknown as import('../types').DependantIdentity;
+  const guardianIdentity = { ...identity, isChild: false } as SignetIdentity;
+  const types = (rows: { type: string }[]) => rows.map(r => r.type);
+
+  it('keeps the child\'s rows while the dependants list reloads empty after a lock', () => {
+    const h = renderHook(({ deps }) => useCarousel(guardianIdentity, deps, [], null, null), { initialProps: { deps: [kid] } });
+    act(() => { h.result.current.enterChildMode(kid.id); });
+    expect(types(h.result.current.rows)).toEqual(['dependant', 'dependant-persona', 'add']);
+    h.rerender({ deps: [] });
+    expect(h.result.current.childMode).toBe(true);
+    expect(h.result.current.rows.every(r => r.type === 'dependant' || r.type === 'dependant-persona' || r.type === 'add')).toBe(true);
+    expect(h.result.current.rows.some(r => r.type === 'persona' || r.type === 'extra-persona' || r.type === 'natural-person')).toBe(false);
+    h.rerender({ deps: [kid] });
+    expect(types(h.result.current.rows)).toEqual(['dependant', 'dependant-persona', 'add']);
+  });
+
+  it('builds no guardian ring while child mode is held (saved, not yet restored)', () => {
+    const h = renderHook(({ held }) => useCarousel(guardianIdentity, [kid], [], null, null, held), { initialProps: { held: true } });
+    expect(h.result.current.rows).toEqual([]);
+    h.rerender({ held: false });
+    expect(h.result.current.rows.some(r => r.type === 'persona')).toBe(true);
+  });
+
+  it('an exit puts the guardian ring back', () => {
+    const h = renderHook(() => useCarousel(guardianIdentity, [kid], [], null, null));
+    act(() => { h.result.current.enterChildMode(kid.id); });
+    act(() => { h.result.current.exitChildMode(); });
+    expect(h.result.current.rows.some(r => r.type === 'persona')).toBe(true);
+  });
+});
