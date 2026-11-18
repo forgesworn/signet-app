@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Child mode: apps connected to your own identities wait until you exit child mode, and the Bunker tab, approval pop-ups and notifications no longer show your family or apps while the phone is handed over
 - Child mode: only the child's own screens open while the phone is handed over; everything else asks you to exit child mode first
 - Child mode: the child's cards are read only. Where they are known can be opened but not changed, the settings column can be viewed but not edited, and a contact invite scanned with the camera in child mode is refused instead of waiting for you. The card ring never shows your own cards while the phone is handed over
 - Child mode: contacts the child adds or changes now count as the child's own, so their contact limits apply; your decisions (raising a contact, vouching, lifting a block you made) wait until you exit child mode
