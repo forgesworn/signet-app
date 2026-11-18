@@ -153,3 +153,6 @@ export function childModeGuardianRefusalCopy(displayName: string): { title: stri
 
 /** A contact invite scanned in child mode: refused on the camera card, nothing parked for the guardian. */
 export const CHILD_MODE_SCAN_INVITE_COPY = "This needs the guardian. Exit child mode with the guardian's PIN, then scan it again.";
+
+/** A contact invite opened by link in child mode: dropped the same way, nothing parked for after the exit. */
+export const CHILD_MODE_LINK_INVITE_COPY = "This needs the guardian. Exit child mode with the guardian's PIN, then open the link again.";

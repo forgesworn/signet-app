@@ -60,6 +60,12 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain("{rateLimitAlert && !showRepairBanner && childModeNow === 'off' && (");
   });
 
+  it('a contact invite that arrives by link or hash is dropped in child mode, not parked for the exit', () => {
+    expect(app).toContain('useDropInviteInChildMode({');
+    expect(app).toContain('childMode: nip55ChildMode, pendingInvite: pendingContactInvite,');
+    expect(app).toContain('{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}');
+  });
+
   it('holds the page-auth prompt on it, with the dependency', () => {
     expect(app).toContain("if (childModePage !== 'allow') return;");
     expect(app).toContain('}, [page, encryptionKey, requestAuth, approveAuthHeld, childModePage]);');

@@ -181,7 +181,8 @@ import { Carousel } from './components/Carousel';
 import { ApprovalOverlay } from './components/ApprovalOverlay';
 import { ChildSignInRefusal } from './components/ChildSignInRefusal';
 import { ChildModeGuardianRefusal } from './components/ChildModeGuardianRefusal';
-import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY } from './lib/child-mode-page-allowlist';
+import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY, CHILD_MODE_LINK_INVITE_COPY } from './lib/child-mode-page-allowlist';
+import { useDropInviteInChildMode } from './hooks/useDropInviteInChildMode';
 import { useOnLeaveRefusedPage } from './hooks/useOnLeaveRefusedPage';
 import { readOnlyPlaceActions } from './lib/known-place-read-only';
 import { companionGrantPersonas } from './lib/companion-grant-personas';
@@ -4415,12 +4416,21 @@ function AppContent() {
   });
 
 
-  // A contact invite (scanned or linked) waits while the phone is in child mode,
-  // live or only saved on a locked cold start (the restore runs after the unlock,
-  // so `activeDependantId` is still null then and the invite would open for the
-  // guardian's lists). It stays pending and opens after the PIN exit. This is
-  // declared here, below `nip55ChildMode`, rather than beside the invite state:
-  // a dependency read up there would be a TDZ error.
+  // A contact invite that arrives by link or hash is dropped while the phone is in
+  // child mode (live, or only saved on a locked cold start), as a scanned one is
+  // refused: nothing waits for the guardian's exit, and the child gets the same
+  // refusal. While child mode is still `unknown` (the start-up read) it waits for
+  // the answer. This is declared here, below `nip55ChildMode`, rather than beside
+  // the invite state: a dependency read up there would be a TDZ error.
+  const [childModeInviteDropped, setChildModeInviteDropped] = useState(false);
+  useDropInviteInChildMode({
+    childMode: nip55ChildMode, pendingInvite: pendingContactInvite,
+    onDrop: () => {
+      setPendingContactInvite(undefined); setPendingInviteSender(undefined);
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setChildModeInviteDropped(true);
+    },
+  });
   useEffect(() => {
     if (!pendingContactInvite || !identity || !encryptionKey || activeDependantId) return;
     if (nip55ChildMode !== 'off') return;
@@ -11985,6 +11995,14 @@ function AppContent() {
       onDismiss={() => setContactsGrantPairedChildRequest(null)}
     />
   ) : null;
+  const childModeInviteDroppedBanner = childModeInviteDropped && childModeNow !== 'off' ? (
+    <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+      <span>{CHILD_MODE_LINK_INVITE_COPY}</span>
+      <button onClick={() => setChildModeInviteDropped(false)} className="btn btn-ghost" style={{ fontSize: 13, padding: '4px 12px' }}>
+        {CONTACTS_GRANT_DISMISS_LABEL}
+      </button>
+    </div>
+  ) : null;
   const nativeLinkNothingToOpenBanner = nativeLinkNothingToOpen ? (
     <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
       <span>{NATIVE_LINK_NOTHING_TO_OPEN_COPY}</span>
@@ -12104,10 +12122,10 @@ function AppContent() {
   ) : null;
   const topBannersFor = (signer: React.ReactNode) => (updateBanner || signer || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || addDependantRefusedBanner || appPermissionNoticeBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || childModeInviteDroppedBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <div className="app-notices">{updateBanner}{signer}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
   const topBanners = topBannersFor(signerBanner);
