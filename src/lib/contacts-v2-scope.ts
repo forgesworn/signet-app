@@ -1,16 +1,21 @@
 /**
  * Which contacts directory the current surface is acting in, and as what.
  *
- * Three cases, and only three:
+ * Four cases:
  *
  *  - the owner on their own device  -> `owner` directory, actor role `owner`;
- *  - a guardian who has scoped the app to a dependant (carousel dep row, or
- *    child mode) -> that dependant's directory, actor role `guardian`.
- *    CHILD MODE ON THE GUARDIAN'S DEVICE IS THE GUARDIAN ACTING (controller
- *    ruling R-CHILD-MODE): the guardian unlocked this device, so what is done
- *    here is a guardian act and the implicit child ceiling does not apply to
- *    it. That ceiling is for operations a dependant authors on their OWN
- *    paired device, which is the case below;
+ *  - a guardian who has scoped the app to a dependant row WITHOUT handing the
+ *    phone over (child mode off) -> that dependant's directory, actor role
+ *    `guardian` (D2: only child mode flips);
+ *  - CHILD MODE on the guardian's device (R-CHILD-MODE, reversed 2026-11-18):
+ *    the child is the actor. The scoped dependant, when it is the child, gives
+ *    that dependant's directory with actor role `dependant`, exactly what a
+ *    paired-child install of the same dependant authors, so the child ceiling,
+ *    the guardian's blocks and the `set-picture` refusal apply. Guardian
+ *    decisions wait for the PIN exit. Child mode with no resolved child (the
+ *    saved-session window before the restore, the lock flash) or a state not
+ *    yet known is treated as child mode and idles on `directoryId: null`:
+ *    never the owner directory (D4, fail closed);
  *  - a paired-child install -> that SAME dependant's directory, actor role
  *    `dependant`.
  *
@@ -33,6 +38,7 @@
 import { OWNER_DIRECTORY_ID, type ContactActorRole, type ContactCeilingTier, type Page } from '../types';
 import type { EffectiveContext } from './contacts-v2-effective';
 import { directoryIdForDependant } from './contacts-v2-ids';
+import type { ChildModeState } from './child-mode-sign-in';
 
 export interface ContactsScopeInput {
   /** `AppPreferences.signingMode`. */
@@ -40,8 +46,14 @@ export interface ContactsScopeInput {
   /** The local identity's own record id — only consulted in `paired-child` mode. */
   identityId: string | null;
   activeDependant: { id: string; displayName: string } | null;
-  /** True when the guardian has handed the device over (carousel child mode). */
-  childMode: boolean;
+  /**
+   * Child mode as the guardian's phone knows it (`childModeState`): `'on'`
+   * while live or still saved and not yet restored, `'unknown'` until the saved
+   * session has been read, `'off'` otherwise. Anything but `'off'` is child mode.
+   */
+  childModeNow: ChildModeState;
+  /** The live child-mode dependant's id, when one is resolved. */
+  childDependantId: string | null;
   dependantCount: number;
 }
 
@@ -68,6 +80,21 @@ export function resolveContactsScope(input: ContactsScopeInput): ContactsScope {
     };
   }
 
+  if (input.childModeNow !== 'off') {
+    // Child mode: the child acts. Only the scoped dependant that IS the child
+    // resolves; anything else idles (never the owner directory).
+    const dep = input.activeDependant;
+    const childId = input.childDependantId?.trim().toLowerCase();
+    const isChild = !!dep && !!childId && dep.id.toLowerCase() === childId && input.childModeNow === 'on';
+    return {
+      directoryId: isChild ? directoryIdForDependant(dep) : null,
+      actorRole: 'dependant',
+      directoryIsDependant: true,
+      subjectName: isChild ? dep.displayName : null,
+      canManageFamily: false,
+    };
+  }
+
   const dep = input.activeDependant;
   if (dep) {
     return {
@@ -84,8 +111,33 @@ export function resolveContactsScope(input: ContactsScopeInput): ContactsScope {
     actorRole: 'owner',
     directoryIsDependant: false,
     subjectName: null,
-    canManageFamily: !input.childMode && input.dependantCount > 0,
+    canManageFamily: input.dependantCount > 0,
   };
+}
+
+/**
+ * The pubkey that authors ops for THIS surface (the `useContactsV2` actor,
+ * contact rights, own-block checks, the Rolodex). In child mode that is the
+ * child's id (the dependant's primary pubkey, lowercased), exactly what a
+ * paired-child install stamps; with child mode on but no resolved child, or
+ * not yet known, it is empty (no actor, so nothing can be written). Otherwise
+ * it is `actorPubkey`.
+ *
+ * It is NOT the install-wide guardian identity: the owner directory's guardian
+ * set, the family hook, the legacy import, the picture-backup sweep and app
+ * proposals keep reading `contactsActorPubkey` in App.tsx, which child mode
+ * must never re-stamp.
+ */
+export function contactsScopeActorPubkey(input: {
+  childModeNow: ChildModeState;
+  childDependantId: string | null;
+  isPairedChild: boolean;
+  /** `contactsActorPubkey`: the paired child's id, or the guardian's stable pubkey. */
+  actorPubkey: string;
+}): string {
+  if (input.isPairedChild || input.childModeNow === 'off') return input.actorPubkey;
+  if (input.childModeNow === 'unknown') return '';
+  return input.childDependantId?.trim().toLowerCase() ?? '';
 }
 
 /** Normalised guardian pubkeys: lowercase hex, de-duplicated, empties dropped. */
@@ -106,8 +158,8 @@ function normalisePubkeys(raw: string[]): string[] {
  * be loaded for the current page/scope.
  *
  * Pulled out of App.tsx's `familyContacts` `enabled` expression because that
- * expression had the R-CHILD-MODE bug: `resolveContactsScope` returns
- * `canManageFamily: false` whenever `activeDependant` is set (child mode),
+ * expression had a bug: `resolveContactsScope` returns
+ * `canManageFamily: false` whenever `activeDependant` is set (a dependant row),
  * but the ceremony page (and the PersonaAdvanced dependant-removal route)
  * only ever render WITH `activeDependant` set — `onNavigateDeepPage` sets
  * `activeDependantId` before navigating to either. Gating those two routes
@@ -115,12 +167,12 @@ function normalisePubkeys(raw: string[]): string[] {
  * actually needed, leaving `resolveIndependenceGate` and
  * `planDependantContactRemoval` reading an empty directory.
  *
- * The fix is `actorRole === 'guardian'` for both routes: child mode on the
- * guardian's own device IS the guardian acting (R-CHILD-MODE, see the module
- * docstring above), so the family log is needed exactly when a guardian —
- * never a paired-child install, which gets `actorRole: 'dependant'` — is
- * looking at either route, regardless of whether a specific dependant is
- * currently scoped in.
+ * The fix is `actorRole === 'guardian'` for both routes: a guardian picking
+ * a dependant row (child mode off) is the guardian acting, so
+ * the family log is needed exactly when a guardian actor — never a paired-child
+ * install nor child mode, which get `actorRole: 'dependant'` (and refuse both
+ * pages anyway) — is looking at either route, regardless of whether a specific
+ * dependant is currently scoped in.
  *
  * `family-contacts` keeps the original `canManageFamily` gate (plus the
  * explicit unlock) — that page is the owner-only cross-family table, never
@@ -130,7 +182,7 @@ function normalisePubkeys(raw: string[]): string[] {
  * the inverse mistake: the OWNER'S OWN slot entries into that page (Personas
  * page "Manage persona" / "Real identity advanced") never set or clear
  * `activeDependantId`, so a guardian who was just looking at a dependant
- * (carousel child mode, or a prior dependant-scoped route) and then opens
+ * (a prior dependant-scoped route, or child mode just exited) and then opens
  * their OWN persona's Advanced page keeps a STALE `activeDependant` —
  * `scope.actorRole` reads 'guardian' from that leftover state even though
  * this visit has nothing to do with any dependant, and the family log would

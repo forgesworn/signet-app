@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveContactsScope, scopeEffectiveContext, familyLogNeeded, familyLogEnabled,
-  dependantIdsMissingChildSettings,
+  dependantIdsMissingChildSettings, contactsScopeActorPubkey,
 } from './contacts-v2-scope';
 
 const GUARDIAN = '1'.repeat(64);
@@ -11,7 +11,7 @@ const KID = 'd'.repeat(64);
 describe('resolveContactsScope', () => {
   it('puts the owner in the owner directory as owner', () => {
     const scope = resolveContactsScope({
-      signingMode: 'local', identityId: null, activeDependant: null, childMode: false, dependantCount: 2,
+      signingMode: 'local', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 2,
     });
     expect(scope).toEqual({
       directoryId: 'owner',
@@ -24,7 +24,7 @@ describe('resolveContactsScope', () => {
 
   it('hides the family manager when there are no dependants', () => {
     const scope = resolveContactsScope({
-      signingMode: 'local', identityId: null, activeDependant: null, childMode: false, dependantCount: 0,
+      signingMode: 'local', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
     });
     expect(scope.canManageFamily).toBe(false);
   });
@@ -34,7 +34,7 @@ describe('resolveContactsScope', () => {
       signingMode: 'local',
       identityId: null,
       activeDependant: { id: DEP, displayName: 'Sam' },
-      childMode: false,
+      childModeNow: 'off', childDependantId: null,
       dependantCount: 1,
     });
     expect(scope.directoryId).toBe(`dependant:${DEP}`);
@@ -45,21 +45,85 @@ describe('resolveContactsScope', () => {
     expect(scope.canManageFamily).toBe(false);
   });
 
-  it('never offers the family manager in child mode', () => {
+  it('child mode makes the scoped dependant the actor: dependant directory, role dependant, no family manager', () => {
     const scope = resolveContactsScope({
       signingMode: 'local',
       identityId: null,
       activeDependant: { id: DEP, displayName: 'Sam' },
-      childMode: true,
+      childModeNow: 'on', childDependantId: DEP,
       dependantCount: 3,
     });
-    expect(scope.canManageFamily).toBe(false);
+    expect(scope).toEqual({
+      directoryId: `dependant:${DEP}`,
+      actorRole: 'dependant',
+      directoryIsDependant: true,
+      subjectName: 'Sam',
+      canManageFamily: false,
+    });
+  });
+
+  it('child mode resolves to the same scope a paired-child install of that dependant gets', () => {
+    const childMode = resolveContactsScope({
+      signingMode: 'local', identityId: null, activeDependant: { id: DEP, displayName: 'Sam' },
+      childModeNow: 'on', childDependantId: DEP, dependantCount: 1,
+    });
+    const paired = resolveContactsScope({
+      signingMode: 'paired-child', identityId: DEP, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
+    });
+    expect({ ...childMode, subjectName: null }).toEqual(paired);
+  });
+
+  it('a guardian on a dependant row with child mode off is still the guardian (D2)', () => {
+    const scope = resolveContactsScope({
+      signingMode: 'local', identityId: null, activeDependant: { id: DEP, displayName: 'Sam' },
+      childModeNow: 'off', childDependantId: null, dependantCount: 3,
+    });
     expect(scope.actorRole).toBe('guardian');
+    expect(scope.directoryId).toBe(`dependant:${DEP}`);
+    expect(scope.canManageFamily).toBe(false);
+  });
+
+  it('child mode with no resolved child (saved-session window, lock flash) idles: directory null, never owner', () => {
+    for (const childModeNow of ['on', 'unknown'] as const) {
+      const noDependant = resolveContactsScope({
+        signingMode: 'local', identityId: null, activeDependant: null,
+        childModeNow, childDependantId: null, dependantCount: 2,
+      });
+      expect(noDependant.directoryId).toBeNull();
+      expect(noDependant.actorRole).toBe('dependant');
+      expect(noDependant.canManageFamily).toBe(false);
+    }
+  });
+
+  it('an unknown child-mode state is treated as child mode even with a dependant row scoped', () => {
+    const scope = resolveContactsScope({
+      signingMode: 'local', identityId: null, activeDependant: { id: DEP, displayName: 'Sam' },
+      childModeNow: 'unknown', childDependantId: null, dependantCount: 2,
+    });
+    expect(scope.directoryId).toBeNull();
+    expect(scope.canManageFamily).toBe(false);
+  });
+
+  it('child mode never lands on a dependant who is not the child (stale scope)', () => {
+    const scope = resolveContactsScope({
+      signingMode: 'local', identityId: null, activeDependant: { id: DEP, displayName: 'Sam' },
+      childModeNow: 'on', childDependantId: KID, dependantCount: 2,
+    });
+    expect(scope.directoryId).toBeNull();
+  });
+
+  it('matches the child id case-insensitively', () => {
+    const scope = resolveContactsScope({
+      signingMode: 'local', identityId: null, activeDependant: { id: DEP.toUpperCase(), displayName: 'Sam' },
+      childModeNow: 'on', childDependantId: DEP, dependantCount: 2,
+    });
+    expect(scope.directoryId).toBe(`dependant:${DEP}`);
+    expect(scope.actorRole).toBe('dependant');
   });
 
   it('resolves a paired-child install to its own dependant directory, matching the guardian device', () => {
     const scope = resolveContactsScope({
-      signingMode: 'paired-child', identityId: KID, activeDependant: null, childMode: false, dependantCount: 0,
+      signingMode: 'paired-child', identityId: KID, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
     });
     expect(scope.directoryId).toBe(`dependant:${KID}`);
     expect(scope.actorRole).toBe('dependant');
@@ -72,7 +136,7 @@ describe('resolveContactsScope', () => {
       signingMode: 'paired-child',
       identityId: KID,
       activeDependant: { id: DEP, displayName: 'Sam' },
-      childMode: false,
+      childModeNow: 'off', childDependantId: null,
       dependantCount: 1,
     });
     expect(scope.actorRole).toBe('dependant');
@@ -82,7 +146,7 @@ describe('resolveContactsScope', () => {
   it('yields null directoryId for unresolvable paired-child with null or empty identity', () => {
     // null case
     const scopeNull = resolveContactsScope({
-      signingMode: 'paired-child', identityId: null, activeDependant: null, childMode: false, dependantCount: 0,
+      signingMode: 'paired-child', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
     });
     expect(scopeNull.directoryId).toBe(null);
     expect(scopeNull.actorRole).toBe('dependant');
@@ -91,13 +155,13 @@ describe('resolveContactsScope', () => {
 
     // empty string case
     const scopeEmpty = resolveContactsScope({
-      signingMode: 'paired-child', identityId: '', activeDependant: null, childMode: false, dependantCount: 0,
+      signingMode: 'paired-child', identityId: '', activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
     });
     expect(scopeEmpty.directoryId).toBe(null);
 
     // whitespace-only case
     const scopeWhitespace = resolveContactsScope({
-      signingMode: 'paired-child', identityId: '  \t\n', activeDependant: null, childMode: false, dependantCount: 0,
+      signingMode: 'paired-child', identityId: '  \t\n', activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
     });
     expect(scopeWhitespace.directoryId).toBe(null);
   });
@@ -109,7 +173,7 @@ describe('scopeEffectiveContext', () => {
       signingMode: 'local',
       identityId: null,
       activeDependant: { id: DEP, displayName: 'Lily' },
-      childMode: false,
+      childModeNow: 'off', childDependantId: null,
       dependantCount: 1,
     });
     expect(scopeEffectiveContext(scope, [GUARDIAN], 'ken')).toEqual({
@@ -121,7 +185,7 @@ describe('scopeEffectiveContext', () => {
 
   it('lowercases and de-duplicates the guardian list', () => {
     const scope = resolveContactsScope({
-      signingMode: 'local', identityId: null, activeDependant: null, childMode: false, dependantCount: 0,
+      signingMode: 'local', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
     });
     const ctx = scopeEffectiveContext(scope, [GUARDIAN.toUpperCase(), GUARDIAN, ''], 'kith');
     expect(ctx.activeGuardianPubkeys).toEqual([GUARDIAN]);
@@ -131,22 +195,23 @@ describe('scopeEffectiveContext', () => {
 
 describe('familyLogNeeded', () => {
   const ownerScope = () => resolveContactsScope({
-    signingMode: 'local', identityId: null, activeDependant: null, childMode: false, dependantCount: 2,
+    signingMode: 'local', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 2,
   });
   const ownerScopeNoDependants = () => resolveContactsScope({
-    signingMode: 'local', identityId: null, activeDependant: null, childMode: false, dependantCount: 0,
+    signingMode: 'local', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
   });
-  // Child mode on the guardian's own device — R-CHILD-MODE: the guardian is
-  // still the actor, `activeDependant` is set, `canManageFamily` is false.
+  // A guardian who picked a dependant's row WITHOUT child mode (D2): the guardian
+  // is still the actor, `activeDependant` is set, `canManageFamily` is false.
+  // (Child mode itself is the dependant acting and never needs the family log.)
   const guardianChildModeScope = () => resolveContactsScope({
     signingMode: 'local',
     identityId: null,
     activeDependant: { id: DEP, displayName: 'Sam' },
-    childMode: false,
+    childModeNow: 'off', childDependantId: null,
     dependantCount: 1,
   });
   const pairedChildScope = () => resolveContactsScope({
-    signingMode: 'paired-child', identityId: KID, activeDependant: null, childMode: false, dependantCount: 0,
+    signingMode: 'paired-child', identityId: KID, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
   });
 
   it('family-contacts: needs the log only when unlocked AND the owner can manage the family — personaAdvancedForDependant is irrelevant', () => {
@@ -159,13 +224,13 @@ describe('familyLogNeeded', () => {
   });
 
   it('persona-advanced: needs the log for a guardian actor ONLY when this visit is actually for a dependant slot — unlockedness is irrelevant', () => {
-    // R-CHILD-MODE: activeDependant set (a dependant's slot is being managed)
+    // activeDependant set (a dependant's slot is being managed)
     // AND this visit is for that dependant (`personaAdvancedForDependant`)
     // must resolve true, even though canManageFamily is false here — this is
     // the case the App.tsx bug disabled the log for.
     expect(familyLogNeeded('persona-advanced', guardianChildModeScope(), false, true)).toBe(true);
 
-    // N2: a STALE `activeDependant` (leftover from having been child-mode
+    // N2: a STALE `activeDependant` (leftover from having been dependant-
     // scoped a moment ago) must NOT enable the log for an owner-slot visit —
     // `personaAdvancedForDependant: false` (no depPubkey on THIS route) wins
     // over `scope.actorRole === 'guardian'` reading true off the stale state.
@@ -192,17 +257,17 @@ describe('familyLogNeeded', () => {
 describe('familyLogEnabled', () => {
   const KEY = 'unlock-key';
   const ownerScope = () => resolveContactsScope({
-    signingMode: 'local', identityId: null, activeDependant: null, childMode: false, dependantCount: 2,
+    signingMode: 'local', identityId: null, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 2,
   });
   const guardianChildModeScope = () => resolveContactsScope({
     signingMode: 'local',
     identityId: null,
     activeDependant: { id: DEP, displayName: 'Sam' },
-    childMode: false,
+    childModeNow: 'off', childDependantId: null,
     dependantCount: 1,
   });
   const pairedChildScope = () => resolveContactsScope({
-    signingMode: 'paired-child', identityId: KID, activeDependant: null, childMode: false, dependantCount: 0,
+    signingMode: 'paired-child', identityId: KID, activeDependant: null, childModeNow: 'off', childDependantId: null, dependantCount: 0,
   });
 
   it('requires an unlock key on top of familyLogNeeded, matching the call site\'s original expression', () => {
@@ -236,5 +301,22 @@ describe('dependantIdsMissingChildSettings', () => {
 
   it('returns everything when nothing is loaded yet', () => {
     expect(dependantIdsMissingChildSettings(['a', 'b'], [])).toEqual(['a', 'b']);
+  });
+});
+
+describe('contactsScopeActorPubkey', () => {
+  const NP = '1'.repeat(64);
+  it('is the guardian actor pubkey outside child mode', () => {
+    expect(contactsScopeActorPubkey({ childModeNow: 'off', childDependantId: null, isPairedChild: false, actorPubkey: NP })).toBe(NP);
+  });
+  it('is the child id, lowercased, in child mode', () => {
+    expect(contactsScopeActorPubkey({ childModeNow: 'on', childDependantId: DEP.toUpperCase(), isPairedChild: false, actorPubkey: NP })).toBe(DEP);
+  });
+  it('is empty (no actor, no writes) when child mode has no resolved child or is unknown', () => {
+    expect(contactsScopeActorPubkey({ childModeNow: 'on', childDependantId: null, isPairedChild: false, actorPubkey: NP })).toBe('');
+    expect(contactsScopeActorPubkey({ childModeNow: 'unknown', childDependantId: DEP, isPairedChild: false, actorPubkey: NP })).toBe('');
+  });
+  it('is untouched on a paired-child install, whatever the saved child-mode state says', () => {
+    expect(contactsScopeActorPubkey({ childModeNow: 'unknown', childDependantId: null, isPairedChild: true, actorPubkey: KID })).toBe(KID);
   });
 });

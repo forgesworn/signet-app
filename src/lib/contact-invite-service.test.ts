@@ -525,3 +525,87 @@ it('an owner directory spends no vault read on the child guard; a dependant dire
   await child.service.flush(now);
   expect(childRead).toHaveBeenCalledTimes(4);
 });
+
+describe('an exchange started in child mode on the guardian\'s phone is the child\'s (R-CHILD-MODE reversed)', () => {
+  const now = 1700000000;
+  const KID = 'b'.repeat(64);
+  async function arrive(b: ReturnType<typeof party>, invite: { id: string; invite: { secret: string } }, from: ReturnType<typeof party>) {
+    const sent = (await from.service.read()).outbox[0];
+    await recordContactArrival(b.directoryId, KEY, { id: sent.id, inviteId: invite.id, identityPubkey: b.pubkey,
+      packet: openContactMailboxWrap(sent.event, invite.invite.secret)!, receivedAt: now + 2 });
+    await b.service.openInbox(now + 3);
+    return sent.id;
+  }
+
+  it('stamps the requester row when the child-mode service starts the exchange, and only then', async () => {
+    const owner = party('02'.repeat(32), 'owner');
+    const invite = await owner.service.create(owner.pubkey, 'Card', ['wss://relay.example'], 'standing', now);
+    const asChild = party('01'.repeat(32), `dependant:${KID}`, { actAsChild: true });
+    await asChild.service.request(asChild.pubkey, invite.invite, now + 1);
+    expect((await asChild.service.read()).exchanges[0].actedAsChild).toBe(true);
+    const asGuardian = party('03'.repeat(32), `dependant:${'c'.repeat(64)}`);
+    await asGuardian.service.request(asGuardian.pubkey, invite.invite, now + 1);
+    expect((await asGuardian.service.read()).exchanges[0].actedAsChild).toBeUndefined();
+  });
+
+  it('stamps the recipient row when the child-mode service accepts', async () => {
+    const a = party('01'.repeat(32), 'owner');
+    const child = party('02'.repeat(32), `dependant:${KID}`, { actAsChild: true });
+    const invite = await child.service.create(child.pubkey, 'Card', ['wss://relay.example'], 'single-use', now);
+    await a.service.request(a.pubkey, invite.invite, now + 1);
+    const id = await arrive(child, invite, a);
+    await child.service.accept(id, now + 4);
+    expect((await child.service.read()).exchanges[0].actedAsChild).toBe(true);
+  });
+
+  it('keeps the recipient stamp through the reveal to completion, and onCompleted sees it', async () => {
+    const a = party('01'.repeat(32), 'owner');
+    const completedWith: (boolean | undefined)[] = [];
+    const child = party('02'.repeat(32), `dependant:${KID}`, { actAsChild: true, onCompleted: async e => { completedWith.push(e.actedAsChild); return 'f'.repeat(32); } });
+    const invite = await child.service.create(child.pubkey, 'Card', ['wss://relay.example'], 'single-use', now);
+    await a.service.request(a.pubkey, invite.invite, now + 1);
+    const requestId = await arrive(child, invite, a);
+    await child.service.accept(requestId, now + 4);
+    await child.service.flush(now + 5);
+    const receiver = await child.service.read(), exchange = receiver.exchanges[0];
+    const exchangeId = contactExchangeKey(exchange.request);
+    await recordContactArrival(a.directoryId, KEY, { id: receiver.outbox[0].id, inviteId: exchangeId, identityPubkey: a.pubkey,
+      packet: openContactMailboxWrap(receiver.outbox[0].event, exchange.request.reply.secret)!, receivedAt: now + 6, channel: 'exchange' });
+    await a.service.openInbox(now + 7);
+    await a.service.flush(now + 8);
+    const reveal = (await a.service.read()).outbox[1];
+    await recordContactArrival(child.directoryId, KEY, { id: reveal.id, inviteId: exchangeId, identityPubkey: child.pubkey,
+      packet: openContactMailboxWrap(reveal.event, exchange.request.reply.secret)!, receivedAt: now + 10, channel: 'exchange' });
+    await child.service.openInbox(now + 11);
+    const complete = (await child.service.read()).exchanges[0];
+    expect(complete.phase).toBe('complete');
+    expect(complete.actedAsChild).toBe(true);
+    await child.service.materialiseContact(exchangeId);
+    expect(completedWith).toEqual([true]);
+  }, 30000);
+
+  it('carries the stamp to completion in a service that was not made in child mode (the page has closed)', async () => {
+    const owner = party('02'.repeat(32), 'owner');
+    const invite = await owner.service.create(owner.pubkey, 'Card', ['wss://relay.example'], 'standing', now);
+    const starter = party('01'.repeat(32), `dependant:${KID}`, { actAsChild: true });
+    await starter.service.request(starter.pubkey, invite.invite, now + 1);
+    const exchangeId = contactExchangeKey((await starter.service.read()).exchanges[0].request);
+    const sent = (await starter.service.read()).outbox[0];
+    await recordContactArrival(owner.directoryId, KEY, { id: sent.id, inviteId: invite.id, identityPubkey: owner.pubkey,
+      packet: openContactMailboxWrap(sent.event, invite.invite.secret)!, receivedAt: now + 2 });
+    await owner.service.openInbox(now + 3);
+    await owner.service.accept(sent.id, now + 4);
+    await owner.service.flush(now + 5);
+    const reply = await owner.service.read(), accepted = reply.exchanges[0];
+    await recordContactArrival(starter.directoryId, KEY, { id: reply.outbox[0].id, inviteId: exchangeId, identityPubkey: starter.pubkey,
+      packet: openContactMailboxWrap(reply.outbox[0].event, accepted.request.reply.secret)!, receivedAt: now + 6, channel: 'exchange' });
+    await starter.service.openInbox(now + 7);
+    await starter.service.flush(now + 8);
+    expect((await starter.service.read()).exchanges[0].phase).toBe('complete');
+    // The page is gone. A plain service for the same directory (the background mailbox one) finishes it.
+    const completedWith: (boolean | undefined)[] = [];
+    const later = party('01'.repeat(32), `dependant:${KID}`, { onCompleted: async e => { completedWith.push(e.actedAsChild); return 'f'.repeat(32); } });
+    await later.service.materialiseContact(exchangeId);
+    expect(completedWith).toEqual([true]);
+  }, 30000);
+});

@@ -54,7 +54,7 @@ import { deriveExtraPersonaPubkey, decodeNsec, bytesToHex } from './lib/signet';
 import { nip19 } from 'nostr-tools';
 import { ContactsCard } from './components/ContactsCard';
 import { parseContactInviteLink } from './lib/contact-invite-link';
-import { contactPeerAllowed, recordCompletedContactExchange } from './lib/contact-exchange-record';
+import { contactPeerAllowed, recordCompletedContactExchange, exchangeCompletionActor } from './lib/contact-exchange-record';
 import { buildContactCard, contactCardInfoFor, partnerCardOf, shareCopyReady } from './lib/contact-card-share';
 import { seedContactAvatarPointer } from './hooks/useContactAvatar';
 import { ContactInvites } from './pages/ContactInvites';
@@ -101,7 +101,7 @@ import { useContactsV2Import } from './hooks/useContactsV2Import';
 import { shouldMintContactsDeviceId, directoryIdForDependant } from './lib/contacts-v2-ids';
 import { ownerSlotPubkeys, dependantImportRefs, pairedChildImportRefs, stableActorPubkey, guardianPubkeysFor } from './lib/contacts-v2-directories';
 import {
-  resolveContactsScope, scopeEffectiveContext, familyLogEnabled,
+  resolveContactsScope, scopeEffectiveContext, familyLogEnabled, contactsScopeActorPubkey,
   dependantIdsMissingChildSettings,
 } from './lib/contacts-v2-scope';
 import { resolveActorRights, ownBlocks } from './lib/contacts-v2-rights';
@@ -2440,16 +2440,53 @@ function AppContent() {
     return () => { cancelled = true; };
   }, [childBunkerPersonasCsv, encryptionKey]);
 
-  // Which contacts directory this surface acts in, and as what role.
+  // Child mode for sign-ins, connects and phone apps (device run 2026-11-17,
+  // F12). The child-mode restore below waits for the key, so child mode as last
+  // saved is read here without it: a request that cold-starts the app in child
+  // mode must not ask for the guardian's PIN or list the guardian's identities
+  // first. `undefined` until read; dropped once child mode is live again, or
+  // once unlocked it can never be restored (`useChildModeSessionRestore` below).
+  // Set by that restore once it has decided (and by entering child mode): a
+  // start-up read that lands after the decision must not put back what it dropped.
+  const childModeRestoredRef = useRef(false);
+  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    loadChildModeSession()
+      .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
+      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current || childModeRestoredRef.current ? null : facts); })
+      .catch(() => { if (live) setSavedChildMode(null); });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (carousel.childMode) setSavedChildMode(null);
+  }, [carousel.childMode]);
+  // A lock empties `dependants` for a moment (identity → null → reload), so the
+  // child-mode dependant is held while child mode lasts: the refusal must not
+  // blink off and let a PIN prompt open over it.
+  const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
+  if (!carousel.childMode) childModeDependantRef.current = null;
+  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
+  const signInChildMode = carousel.childMode || !!savedChildMode;
+  const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
+  // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
+  const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
+
+  // Which contacts directory this surface acts in, and as what role. Child mode
+  // is the child acting (R-CHILD-MODE reversed 2026-11-18): the scope reads the
+  // three-state `nip55ChildMode` (live, or saved and not yet restored, or not
+  // yet known) plus the live child's id, so the saved-session window idles on
+  // `directoryId: null` instead of resolving to the owner's directory.
   const contactsScope = useMemo(() => resolveContactsScope({
     signingMode: preferences.signingMode ?? 'local',
     identityId: identity?.id ?? null,
     activeDependant: activeDependant
       ? { id: activeDependant.id, displayName: activeDependant.displayName }
       : null,
-    childMode: carousel.childMode,
+    childModeNow: nip55ChildMode,
+    childDependantId: carousel.childDependant?.id ?? null,
     dependantCount: dependants.length,
-  }), [preferences.signingMode, identity, activeDependant, carousel.childMode, dependants.length]);
+  }), [preferences.signingMode, identity, activeDependant, nip55ChildMode, carousel.childDependant?.id, dependants.length]);
 
   const contactsIdentityLists = useMemo(() => contactIdentityLists(identity, activeDependant), [identity, activeDependant]);
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
@@ -2543,16 +2580,33 @@ function AppContent() {
   // `actorPubkey` above exactly — `validateOperation` requires strict
   // lowercase 64-hex, and the two must stay value-identical.
   const contactsActorPubkey = isPairedChild ? (identity?.id?.toLowerCase() ?? '') : (stableActorPubkey(identity) ?? '');
+  // The pubkey that authors THIS surface's contact ops and is read for its
+  // rights: the child's id in child mode (what a paired child stamps), empty
+  // while child mode has no resolved child. `contactsActorPubkey` above stays
+  // the install-wide guardian identity for the owner directory's guardian set,
+  // the family hook, the legacy import, the picture sweep and app proposals;
+  // child mode must never re-stamp those.
+  const contactsScopeActor = contactsScopeActorPubkey({
+    childModeNow: nip55ChildMode, childDependantId: carousel.childDependant?.id ?? null, isPairedChild, actorPubkey: contactsActorPubkey,
+  });
 
-  // R-ACTOR / R-CHILD-MODE: whose vouches and ceilings count in the acting
+  // Child mode on the guardian's phone (live, saved, or not yet known: D4 treats
+  // unknown as on). Gates the surfaces that would otherwise read the GUARDIAN's
+  // data: legacy members/kens, the guardian's real name, picture refresh, the
+  // own-picture controls.
+  const childContactsMode = !isPairedChild && nip55ChildMode !== 'off';
+
+  // R-ACTOR: whose vouches and ceilings count in the acting
   // directory. Deliberately never the kid's own `naturalPerson.publicKey` —
   // that is the kid's own (possibly dormant) slot, not a guardian, and using
   // it would make every guardian vouch/ceiling invisible on the kid's own
   // device. Three cases, matching `resolveContactsScope`:
   //   - paired-child: the guardian pinned on this device's pairing record
   //     (`pairedChildClientKeypair.guardianPubkey`, from the PairedChildRecord);
-  //   - guardian device scoped to a dependant (child mode or a picked dep
-  //     row): that dependant's own `guardianPubkey` field;
+  //   - guardian device scoped to a dependant (child mode, or a picked dep
+  //     row): that dependant's own `guardianPubkey` field. In child mode the
+  //     child is the actor and this guardian's vouches and ceilings still
+  //     bind it, exactly as on a paired child;
   //   - the owner's own directory: this install's one stable actor pubkey.
   const contactsActiveGuardianPubkeys = useMemo(() => {
     if (isPairedChild) {
@@ -2582,9 +2636,9 @@ function AppContent() {
     ownerIdentityPubkey: contactsListIdentity === 'all' ? undefined : contactsWriteIdentity || undefined,
     directoryId: encryptionKey ? contactsScope.directoryId : null,
     encryptionKey,
-    actor: encryptionKey && contactsActorPubkey && preferences.contactsDeviceId
+    actor: encryptionKey && contactsScopeActor && preferences.contactsDeviceId
       ? {
-          actorPubkey: contactsActorPubkey,
+          actorPubkey: contactsScopeActor,
           actorRole: contactsScope.actorRole,
           actorDeviceId: preferences.contactsDeviceId,
         }
@@ -2702,7 +2756,7 @@ function AppContent() {
     ? [{ directoryId: 'owner', identities: contactIdentityLists(identity, null).map(i => i.ownerIdentityPubkey) },
       ...dependants.map(dep => ({ directoryId: `dependant:${dep.id}`, identities: contactIdentityLists(identity, dep).map(i => i.ownerIdentityPubkey) }))] : [],
   [identity, isPairedChild, dependants]);
-  const makeInviteService = useCallback((directoryId: string, valid: () => boolean, authority?: () => Promise<boolean>) => {
+  const makeInviteService = useCallback((directoryId: string, valid: () => boolean, authority?: () => Promise<boolean>, actAsChild = false) => {
     const key = encryptionKey, owner = identity?.naturalPerson.publicKey;
     const current = () => valid() && !!key && inviteSession.current.key === key && inviteSession.current.owner === owner && inviteSession.current.mode === preferences.signingMode;
     const freshDependant = async () => {
@@ -2800,6 +2854,9 @@ function AppContent() {
     };
     return new ContactInviteService({ directoryId, encryptionKey: key ?? '', budget: inviteBudget, isCurrent: current,
       onChanged: bumpContactsV2, direct: handshakeDirect,
+      // Child mode: the child starts these exchanges (stamped on the exchange, so completing it
+      // later, from any service, still counts as the child).
+      ...(actAsChild && directoryId.startsWith('dependant:') ? { actAsChild: true } : {}),
       automaticAttempts: inviteAutomaticAttempts,
       appAllowed: async (app, own, action, automatic) => {
         if (!key || !current() || directoryId !== 'owner') return false;
@@ -2819,7 +2876,7 @@ function AppContent() {
         const actorDeviceId = await getOrCreateContactsDeviceId();
         if (!current()) throw new Error('Unlock this identity first.');
         const contactId = await recordCompletedContactExchange({ directoryId, key, exchange, isCurrent: current,
-          actor: { actorPubkey: owner, actorRole: directoryId === 'owner' ? 'owner' : 'guardian', actorDeviceId } });
+          actor: exchangeCompletionActor({ directoryId, exchange, guardianPubkey: owner, actorDeviceId }) });
         // Their shared photo (key and fallback) was stored with the contact; let
         // the avatar hook find it without a relay round trip for the first minute.
         const sharedPhoto = partnerCardOf(exchange)?.photo;
@@ -2848,7 +2905,9 @@ function AppContent() {
     });
   }, [encryptionKey, identity, inviteBudget, inviteAutomaticAttempts, preferences.signingMode, preferences.contactsDeviceId, nip07Backend, bunkerBackend, bunkerRouter, slotResolveOpts, bumpContactsV2, contactsV2.reload, isPairedChild, loadFreshDependants, guardianChildInScope, syncRelays.write]);
   const ownerInviteService = useMemo(() => makeInviteService('owner', () => true), [makeInviteService]);
-  const inviteService = useMemo(() => makeInviteService(contactsScope.directoryId ?? 'owner', () => true), [makeInviteService, contactsScope.directoryId]);
+  // The page's own service acts as the child while the scope is the child's (child mode).
+  const scopeActsAsChild = !isPairedChild && contactsScope.actorRole === 'dependant';
+  const inviteService = useMemo(() => makeInviteService(contactsScope.directoryId ?? 'owner', () => true, undefined, scopeActsAsChild), [makeInviteService, contactsScope.directoryId, scopeActsAsChild]);
   const guardianChildService = useCallback((child: string, peer: string, request: ChildContactRequest) =>
     makeInviteService(`dependant:${child}`, guardianChildReviewCurrent, () => guardianChildPeerAllowed(peer, request, child)),
   [makeInviteService, guardianChildReviewCurrent, guardianChildPeerAllowed]);
@@ -4337,37 +4396,6 @@ function AppContent() {
     },
   });
 
-  // Child mode for sign-ins, connects and phone apps (device run 2026-11-17,
-  // F12). The child-mode restore below waits for the key, so child mode as last
-  // saved is read here without it: a request that cold-starts the app in child
-  // mode must not ask for the guardian's PIN or list the guardian's identities
-  // first. `undefined` until read; dropped once child mode is live again, or
-  // once unlocked it can never be restored (`useChildModeSessionRestore` below).
-  // Set by that restore once it has decided (and by entering child mode): a
-  // start-up read that lands after the decision must not put back what it dropped.
-  const childModeRestoredRef = useRef(false);
-  const [savedChildMode, setSavedChildMode] = useState<ChildModeSignInDependant | null | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    loadChildModeSession()
-      .then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))
-      .then(facts => { if (live) setSavedChildMode(childModeActiveRef.current || childModeRestoredRef.current ? null : facts); })
-      .catch(() => { if (live) setSavedChildMode(null); });
-    return () => { live = false; };
-  }, []);
-  useEffect(() => {
-    if (carousel.childMode) setSavedChildMode(null);
-  }, [carousel.childMode]);
-  // A lock empties `dependants` for a moment (identity → null → reload), so the
-  // child-mode dependant is held while child mode lasts: the refusal must not
-  // blink off and let a PIN prompt open over it.
-  const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
-  if (!carousel.childMode) childModeDependantRef.current = null;
-  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
-  const signInChildMode = carousel.childMode || !!savedChildMode;
-  const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
-  // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
-  const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
 
   // A contact invite (scanned or linked) waits while the phone is in child mode,
   // live or only saved on a locked cold start (the restore runs after the unlock,
@@ -13888,19 +13916,24 @@ function AppContent() {
     if (!record) { navigateReplace('contacts'); return null; }
     const rights = resolveActorRights(record, {
       actorRole: contactsScope.actorRole,
-      actorPubkey: contactsActorPubkey,
+      actorPubkey: contactsScopeActor,
     }, contactsActiveGuardianPubkeys);
     const recordPubkeys = new Set(record.identities.map(i => i.pubkey.toLowerCase()));
-    const legacyContact = members.find(m => recordPubkeys.has(m.pubkey.toLowerCase()));
+    // The legacy `members`/`kens` stores are the GUARDIAN's (keyed by their primary
+    // pubkey): in child mode a matching row would show the guardian's SignetWords
+    // and offer to edit the guardian's kens, so nothing matches there.
+    const legacyContact = childContactsMode ? undefined : members.find(m => recordPubkeys.has(m.pubkey.toLowerCase()));
     const legacyMatch = {
       hasSharedSecret: !!legacyContact?.sharedSecret,
-      hasKenEntry: kens.some(k => recordPubkeys.has(k.pubkey.toLowerCase())),
+      hasKenEntry: !childContactsMode && kens.some(k => recordPubkeys.has(k.pubkey.toLowerCase())),
     };
     // Own-picture backup: the pointer comes from the hook's `records` (EffectiveContact carries none).
     const pictureRecord = contactsV2.records.find(r => r.directoryId === record.directoryId && r.contactId === record.contactId);
     const pictureRef = pictureRecord ? backupRefOf(pictureRecord) : undefined;
     const pictureKey = `${record.directoryId}/${record.contactId}`;
-    const pictureBackupEnv = encryptionKey
+    // Child mode is a dependant acting: the reducer refuses `set-picture` from a
+    // dependant, so the own-picture controls are not offered (no env, no handlers).
+    const pictureBackupEnv = encryptionKey && !childContactsMode
       ? { encryptionKey, pairedChild: isPairedChild, server: contactPictureServer, pref: preferences.contactPictureBackup }
       : null;
     // `contactsV2.setPicture` is bound to the hook's directory: refuse to write if the scope moved on mid-upload
@@ -13959,8 +13992,8 @@ function AppContent() {
           sections={detailSections(record, rights, legacyMatch)}
           legacy={legacyMatch}
           legacyContact={legacyContact}
-          actorPubkey={contactsActorPubkey}
-          guardianName={activeDependant ? (identity?.naturalPerson.displayName || null) : null}
+          actorPubkey={contactsScopeActor}
+          guardianName={activeDependant && !childContactsMode ? (identity?.naturalPerson.displayName || null) : null}
           wordCount={wordCount}
           onRename={(displayName) => contactsV2.renameContact(record.contactId, displayName)}
           onSetTier={(tier) => contactsV2.setTier(record.contactId, tier)}
@@ -13994,7 +14027,7 @@ function AppContent() {
             // M5: only a block this actor actually lifted is a safety change.
             // With nothing to lift, an immediate dedupe-bypassing publish
             // would go out for a directory that did not change.
-            const lifted = ownBlocks(record, contactsActorPubkey);
+            const lifted = ownBlocks(record, contactsScopeActor);
             for (const b of lifted) {
               await contactsV2.unblock(record.contactId, b.operationId);
             }
@@ -14022,12 +14055,14 @@ function AppContent() {
   }
 
   if (page === 'contact-handshake' && handshakeRoute && encryptionKey) {
+    // Child mode with no resolved child idles (directoryId null): never fall back to the owner's invites.
+    if (childContactsMode && !contactsScope.directoryId) { navigateReplace('home'); return null; }
     const route = handshakeRoute;
     return <Layout title={HANDSHAKE_COPY.title} showBack onBack={navigateBack}>
       <ContactHandshake key={encryptionKey + route.persona} persona={route.persona}
         info={route.info} choose={route.choose} encryptionKey={encryptionKey}
         version={contactsV2Version} relays={syncRelays.write.filter(url => url.startsWith('wss:'))}
-        service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid)}
+        service={valid => makeInviteService(contactsScope.directoryId ?? 'owner', valid, undefined, scopeActsAsChild)}
         warm={() => { void contactPeerAllowed(contactsScope.directoryId ?? 'owner', encryptionKey, route.persona).catch(() => {}); }}
         buildCard={choice => contactCardFor(route.persona, choice)} pairedChild={isPairedChild}
         onChildInvite={raw => { setPendingContactInvite(raw); setPendingInviteSender(route.persona); }}
@@ -14200,11 +14235,11 @@ function AppContent() {
           onSelectList={setContactsIdentityChoice}
           loading={contactsV2.loading}
           // Explicit, consented downloads only — and never on a paired-child install.
-          onRefreshPictures={!isPairedChild && encryptionKey
+          onRefreshPictures={!isPairedChild && !childContactsMode && encryptionKey
             ? () => refreshContactPictures(encryptionKey, { fetchProfiles: (pubkeys) => fetchKind0Profiles(pubkeys, syncRelays.read) })
             : undefined}
-          actorPubkey={contactsActorPubkey}
-          guardianName={activeDependant ? (identity?.naturalPerson.displayName || null) : null}
+          actorPubkey={contactsScopeActor}
+          guardianName={activeDependant && !childContactsMode ? (identity?.naturalPerson.displayName || null) : null}
           subjectName={contactsScope.subjectName}
           relayUrl={preferences.relayUrl ?? DEFAULT_RELAY_URL}
           encryptionKey={encryptionKey}

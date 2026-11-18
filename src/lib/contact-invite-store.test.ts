@@ -168,3 +168,12 @@ it('restoring a vault records the partner photo key only for exchanges that are 
   expect(await restoreWith(null)).toMatchObject({ shareKey: '8'.repeat(64) });
   expect(await restoreWith({ strength: 'tapped', confirmedAt: 110 })).toMatchObject({ shareKey: '8'.repeat(64) });
 });
+it('an exchange the child started in child mode keeps that stamp through a merge, whichever copy is richer', async () => {
+  const base = await loadContactInviteVault('owner', KEY);
+  const plain = completeHandshake(null).exchange;
+  const stamped = { ...plain, actedAsChild: true as const };
+  for (const [a, b] of [[plain, stamped], [stamped, plain], [stamped, { ...plain, phase: 'declined' as const }]]) {
+    expect(mergeContactInviteVault({ ...base, exchanges: [a] }, { ...base, exchanges: [b] }).exchanges[0].actedAsChild).toBe(true);
+  }
+  expect(mergeContactInviteVault({ ...base, exchanges: [plain] }, { ...base, exchanges: [plain] }).exchanges[0].actedAsChild).toBeUndefined();
+});
