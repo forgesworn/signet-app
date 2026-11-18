@@ -53,8 +53,22 @@ export const CHILD_MODE_GUARDIAN_PAGES: readonly Page[] = [
 /** `refuse`: show the refusal, no PIN. `hold`: child mode not yet known, show and ask nothing. */
 export type ChildModePageDecision = 'allow' | 'hold' | 'refuse';
 
-export function childModePageDecision(input: { page: Page; childMode: ChildModeState }): ChildModePageDecision {
-  if (!CHILD_MODE_GUARDIAN_PAGES.includes(input.page)) return 'allow';
+/**
+ * Set only while child mode is live (not saved or locked, which have no active
+ * dependant): who the child is, and whose scope the page is in.
+ */
+export interface LiveChildScope { childDependantId: string | null; activeDependantId: string | null }
+
+export function childModePageDecision(
+  input: { page: Page; childMode: ChildModeState; liveChild?: LiveChildScope | null },
+): ChildModePageDecision {
+  if (!CHILD_MODE_GUARDIAN_PAGES.includes(input.page)) {
+    // Backstop: whatever moved the scope, a page outside home that is not the
+    // child's own never shows in live child mode.
+    const live = input.liveChild;
+    if (input.childMode === 'on' && live && input.page !== 'home' && live.activeDependantId !== live.childDependantId) return 'refuse';
+    return 'allow';
+  }
   if (input.childMode === 'on') return 'refuse';
   return input.childMode === 'unknown' ? 'hold' : 'allow';
 }

@@ -6545,7 +6545,10 @@ function AppContent() {
   // Pages that act as the guardian are refused in child mode, with no PIN.
   // `nip55ChildMode` is the three-way state: unknown until saved child mode is read.
   const childModeNow = nip55ChildMode;
-  const childModePage = childModePageDecision({ page, childMode: childModeNow });
+  const childModePage = childModePageDecision({
+    page, childMode: childModeNow,
+    liveChild: carousel.childMode ? { childDependantId: carousel.childDependant?.id ?? null, activeDependantId } : null,
+  });
 
   const cancelSignInReview = useCallback((request: AuthRequest | LoginRequest) => {
     if (pendingAuthRequestRef.current !== request) return;
@@ -10822,6 +10825,11 @@ function AppContent() {
     // NP row.
     childModeRestoredRef.current = true;
   }, [carousel.enterChildMode, chooseDependantScope]);
+
+  // The scope a card's page opens under: in child mode always the child's (the
+  // child's persona rows are not `isDependant`, and the guardian's scope is null).
+  const cardPageScopeId = (resolved: { isDependant: boolean; dependantId?: string | null }): string | null =>
+    carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;
 
   const handleExitChildMode = useCallback(async () => {
     // Load-bearing safety boundary: exit requires the guardian's PIN/biometric.
@@ -15624,7 +15632,7 @@ function AppContent() {
           const info = contactCardInfoFor(identity, resolved.publicKey, { pairedChild: isPairedChild });
           // The persona exchanging rides on the entry with the scope whose
           // directory it writes to, so back/forward cannot pair them wrongly.
-          openDependantPage('contact-handshake', resolved.isDependant ? resolved.dependantId ?? null : null,
+          openDependantPage('contact-handshake', cardPageScopeId(resolved),
             { persona: resolved.publicKey, choose, info: info ?? { name: '', hasPhoto: false } });
         }}
         renderInviteCard={(_row, resolved, renderPublicCard) => !resolved.isDependant && !isPairedChild && resolved.publicKey
@@ -15689,7 +15697,7 @@ function AppContent() {
             setContactsIdentityChoice(resolved.publicKey || null);
             setContactCardSearch(query);
             setContactsOpenFollows(action === 'follows');
-            openDependantPage(action === 'new' ? 'contact-new' : 'contacts', resolved.isDependant ? resolved.dependantId ?? null : null);
+            openDependantPage(action === 'new' ? 'contact-new' : 'contacts', cardPageScopeId(resolved));
           }} />}
         row={carousel.row}
         col={carousel.col}
@@ -16039,7 +16047,7 @@ function AppContent() {
                 if (!key) return;
               }
               setContactsIdentityChoice(current.publicKey || null);
-              openDependantPage(target, current.isDependant ? current.dependantId ?? null : null);
+              openDependantPage(target, cardPageScopeId(current));
               return;
             }
             navigateTo(target);

@@ -9,7 +9,12 @@ import {
 export interface AppNavigationOptions {
   /** Whether a dependant with this id exists now. */
   isLive: (dependantId: string) => boolean;
-  /** Deliberate child mode: history never re-scopes it (it goes home instead). */
+  /**
+   * Live child mode: history never re-scopes it (it goes home instead), and a
+   * `borrow` leaves it alone. A `set` still lands, because entering, leaving
+   * (the PIN exit) and switching to a sibling are all `set`s made while this
+   * still reads true: App assigns it at render time.
+   */
   isScopeLocked: () => boolean;
   /** Whether `page` needs a dependant in scope on this install (`pageNeedsDependant`). */
   needsDependant: (page: Page) => boolean;
@@ -83,6 +88,10 @@ export function useAppNavigation(opts: AppNavigationOptions): AppNavigation {
   optsRef.current = opts;
 
   const apply = useCallback((action: DependantScopeAction) => {
+    // A page opened "for" someone must not move child mode onto the guardian
+    // or a sibling. Only `borrow` is refused: `set` is how child mode is
+    // entered, left and switched.
+    if (action.type === 'borrow' && optsRef.current.isScopeLocked()) return;
     const next = dependantScopeReducer(scopeRef.current, action);
     if (next === scopeRef.current) return;
     scopeRef.current = next;

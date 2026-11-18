@@ -18,7 +18,16 @@ const idx = (needle: string) => {
 describe('child-mode guardian-page gate in App.tsx', () => {
   it('reads the three-way child mode through the same state phone apps use', () => {
     expect(app).toContain('const childModeNow = nip55ChildMode;');
-    expect(app).toContain('const childModePage = childModePageDecision({ page, childMode: childModeNow });');
+    expect(app).toContain('const childModePage = childModePageDecision({');
+    expect(app).toContain('liveChild: carousel.childMode ? { childDependantId: carousel.childDependant?.id ?? null, activeDependantId } : null,');
+  });
+
+  it('a card page opens under the child in child mode, never the guardian scope', () => {
+    expect(app).toContain('carousel.childMode ? carousel.childDependant?.id ?? null : resolved.isDependant ? resolved.dependantId ?? null : null;');
+    expect(app).toContain("openDependantPage('contact-handshake', cardPageScopeId(resolved),");
+    expect(app).toContain("openDependantPage(action === 'new' ? 'contact-new' : 'contacts', cardPageScopeId(resolved));");
+    expect(app).toContain('openDependantPage(target, cardPageScopeId(current));');
+    expect(app).not.toMatch(/openDependantPage\([^;]*isDependant \? [a-z]+\.dependantId \?\? null : null/);
   });
 
   it('holds the page-auth prompt on it, with the dependency', () => {

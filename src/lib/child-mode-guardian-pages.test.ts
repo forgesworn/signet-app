@@ -35,6 +35,41 @@ describe('childModePageDecision', () => {
   );
 });
 
+describe('childModePageDecision: live child mode, other scopes', () => {
+  const live = (activeDependantId: string | null, childDependantId: string | null = 'kid') => ({ childDependantId, activeDependantId });
+
+  it.each(['contacts', 'settings', 'contact-handshake', 'bots', 'settings-signing'] as Page[])(
+    '%s under the guardian or a sibling is refused, with no PIN',
+    (page) => {
+      expect(childModePageDecision({ page, childMode: 'on', liveChild: live(null) })).toBe('refuse');
+      expect(childModePageDecision({ page, childMode: 'on', liveChild: live('dep-b') })).toBe('refuse');
+    },
+  );
+
+  it.each(['contacts', 'settings', 'contact-handshake'] as Page[])('%s under the child is allowed', (page) => {
+    expect(childModePageDecision({ page, childMode: 'on', liveChild: live('kid') })).toBe('allow');
+  });
+
+  it('home is never refused, whatever the scope', () => {
+    expect(childModePageDecision({ page: 'home', childMode: 'on', liveChild: live(null) })).toBe('allow');
+  });
+
+  it('with no child to match, every page but home is refused', () => {
+    expect(childModePageDecision({ page: 'settings', childMode: 'on', liveChild: live('kid', null) })).toBe('refuse');
+  });
+
+  it('saved (locked) or unknown child mode is unchanged: no live scope is read', () => {
+    for (const childMode of ['off', 'unknown'] as ChildModeState[]) {
+      for (const page of ['contacts', 'approve-auth', 'approve-connect', 'settings'] as Page[]) {
+        expect(childModePageDecision({ page, childMode, liveChild: live(null) })).toBe('allow');
+        expect(childModePageDecision({ page, childMode })).toBe('allow');
+      }
+    }
+    expect(childModePageDecision({ page: 'approve-auth', childMode: 'on', liveChild: null })).toBe('allow');
+    expect(childModePageDecision({ page: 'contacts', childMode: 'on' })).toBe('allow');
+  });
+});
+
 describe('childModeGuardianRefusalCopy', () => {
   it('names the child and sends the guardian to the PIN', () => {
     expect(childModeGuardianRefusalCopy('RunKid')).toEqual({
