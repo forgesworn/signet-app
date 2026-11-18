@@ -109,6 +109,24 @@ export function buildRows(
  * without it a freshly-added child persona was written to IDB correctly
  * but never rendered — fixed as a follow-up.
  */
+/**
+ * The dependant with every secret blanked: only the id, names and public keys. The
+ * child's ring is kept in this form across a lock, so no private key outlives it.
+ */
+export function dependantDisplayView(dep: DependantIdentity): DependantIdentity {
+  const bare = <T extends { privateKey: string }>(slot: T): T => ({
+    ...slot, privateKey: '', avatarKey: undefined, contactAvatarKey: undefined,
+  });
+  const { bunkerEndpoint: _b, appBunkerEndpoint: _a, ...rest } = dep;
+  void _b; void _a;
+  return {
+    ...rest,
+    naturalPerson: bare(dep.naturalPerson),
+    persona: bare(dep.persona),
+    ...(dep.extraPersonas ? { extraPersonas: dep.extraPersonas.map(bare) } : {}),
+  };
+}
+
 export function buildChildRows(dependant: DependantIdentity): CarouselRow[] {
   const rows: CarouselRow[] = [];
   // The `dependant` row IS the real-name card. Omit it while the real identity

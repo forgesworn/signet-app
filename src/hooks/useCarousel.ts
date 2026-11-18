@@ -1,7 +1,7 @@
 import type { BotMetadata } from './useBotInventory';
 import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { SignetIdentity, DependantIdentity, CarouselRow, CarouselColumn } from '../types';
-import { buildRows, buildChildRows, resolveActiveIdentity, findRowForGuardianKeypair } from '../lib/carousel-utils';
+import { buildRows, buildChildRows, resolveActiveIdentity, findRowForGuardianKeypair, dependantDisplayView } from '../lib/carousel-utils';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
 import { resolveLandingKeypair } from '../lib/identity-display';
 
@@ -141,9 +141,11 @@ export function useCarousel(
   // While child mode is on the ring is only ever the child's. A lock empties the
   // dependants list for one read, so the child last shown is kept until it is
   // back (and an empty ring, not the guardian's, when there never was one).
+  // Kept in display form only (names and public keys): no private key outlives the lock in it.
   const lastChildRef = useRef<DependantIdentity | null>(null);
+  const childView = useMemo(() => (childDependant ? dependantDisplayView(childDependant) : null), [childDependant]);
   if (!childMode) lastChildRef.current = null;
-  else if (childDependant) lastChildRef.current = childDependant;
+  else if (childView) lastChildRef.current = childView;
   const shownChild = childMode ? childDependant ?? lastChildRef.current : null;
   const childRing = childMode || childModeHeld;
   const rows = useMemo(() => {

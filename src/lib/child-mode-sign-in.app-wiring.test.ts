@@ -17,7 +17,7 @@ describe('child-mode sign-in gate in App.tsx', () => {
     expect(app).toContain('readSavedChildMode({ loadSession: loadChildModeSession, loadFacts: loadDependantSignInFacts })');
     expect(app).toContain('if (carousel.childMode) setSavedChildMode(null);');
     // Held through a lock, when dependants empty for a moment.
-    expect(app).toContain('else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;');
+    expect(app).toContain('else if (carousel.childDependant) childModeDependantRef.current = childModeFacts(carousel.childDependant);');
     expect(app).toContain('carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;');
     expect(app).toContain('const signInChildMode = carousel.childMode || !!savedChildMode;');
     expect(app).toContain('const childSignIn = childModeSignInRefusal({ childMode: signInChildMode, dependant: signInChildDependant });');

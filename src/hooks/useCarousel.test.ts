@@ -127,6 +127,19 @@ describe('useCarousel: the ring while child mode is on', () => {
     expect(types(h.result.current.rows)).toEqual(['dependant', 'dependant-persona', 'add']);
   });
 
+  it('keeps no private key of the child once it is no longer in the list (display fields only)', () => {
+    const secretKid = {
+      ...kid,
+      persona: { ...kid.persona, privateKey: 'c0ffee'.repeat(10) + 'abcd' },
+      naturalPerson: { ...kid.naturalPerson, privateKey: 'beef00'.repeat(10) + 'abcd' },
+    } as import('../types').DependantIdentity;
+    const h = renderHook(({ deps }) => useCarousel(guardianIdentity, deps, [], null, null), { initialProps: { deps: [secretKid] } });
+    act(() => { h.result.current.enterChildMode(secretKid.id); });
+    h.rerender({ deps: [] });
+    expect(h.result.current.rows.map(r => r.type)).toEqual(['dependant', 'dependant-persona', 'add']);
+    expect(JSON.stringify(h.result.current.rows)).not.toMatch(/c0ffee|beef00/);
+  });
+
   it('builds no guardian ring while child mode is held (saved, not yet restored)', () => {
     const h = renderHook(({ held }) => useCarousel(guardianIdentity, [kid], [], null, null, held), { initialProps: { held: true } });
     expect(h.result.current.rows).toEqual([]);

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, readSavedChildMode, CHILD_MODE_UNRESOLVED } from './child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeSessionStale, readSavedChildMode, CHILD_MODE_UNRESOLVED, childModeFacts } from './child-mode-sign-in';
 import { buildChildRows } from './carousel-utils';
 import type { DependantIdentity } from '../types';
 import { CHILD_MODE_SIGN_IN_COPY } from './child-device-copy';
@@ -267,5 +267,21 @@ describe('readSavedChildMode (the start-up read of the session on disk)', () => 
     expect(offer.refuse).toBeNull();
     expect(offer.offersDependant('')).toBe(false);
     expect(offer.offersDependant(KID)).toBe(false);
+  });
+});
+
+describe('childModeFacts: what App keeps of the child across a lock', () => {
+  it('is the id, name and device mode only, never a key', () => {
+    const dep = {
+      id: 'kid', displayName: 'Kid', childDevice: { mode: 'heartwood-direct', clientPubkey: 'cc' },
+      persona: { publicKey: 'pp', privateKey: 'priv-persona' }, naturalPerson: { publicKey: 'nn', privateKey: 'priv-np' },
+      bunkerEndpoint: { privateKey: 'priv-ep' },
+    } as unknown as DependantIdentity;
+    const facts = childModeFacts(dep);
+    expect(facts).toEqual({ id: 'kid', displayName: 'Kid', childDevice: { mode: 'heartwood-direct' } });
+    expect(JSON.stringify(facts)).not.toContain('priv-');
+  });
+  it('carries no childDevice when the dependant has none', () => {
+    expect(childModeFacts({ id: 'kid', displayName: 'Kid' } as unknown as DependantIdentity)).toEqual({ id: 'kid', displayName: 'Kid' });
   });
 });

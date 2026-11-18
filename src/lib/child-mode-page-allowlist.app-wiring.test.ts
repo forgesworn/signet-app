@@ -50,6 +50,16 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(decline.indexOf('clearChildModeStagedRequestsRef.current();')).toBeLessThan(decline.indexOf("if (page === 'approve-add-dependant')"));
   });
 
+  it('shows no banner that retries the guardian\'s signer on the sign-in and connect pages in child mode', () => {
+    expect(app).toContain('<Layout title={approveAuthTitle(pendingAuthRequest)} showBack onBack={handleDenyAuth}>\n          {childModeNow !== \'off\' ? null : signerBanner}');
+    expect(app).toContain('<Layout title="Connect" showBack onBack={handleConnectDone}>\n        {childModeNow !== \'off\' ? null : signerBanner}');
+    expect(app).not.toMatch(/\n\s*\{signerBanner\}\n/);
+  });
+
+  it('the rate-limit banner, which names a dependant, is not shown on home in child mode', () => {
+    expect(app).toContain("{rateLimitAlert && !showRepairBanner && childModeNow === 'off' && (");
+  });
+
   it('holds the page-auth prompt on it, with the dependency', () => {
     expect(app).toContain("if (childModePage !== 'allow') return;");
     expect(app).toContain('}, [page, encryptionKey, requestAuth, approveAuthHeld, childModePage]);');

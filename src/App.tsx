@@ -185,7 +185,7 @@ import { childModePageDecision, CHILD_MODE_SCAN_INVITE_COPY } from './lib/child-
 import { useOnLeaveRefusedPage } from './hooks/useOnLeaveRefusedPage';
 import { readOnlyPlaceActions } from './lib/known-place-read-only';
 import { companionGrantPersonas } from './lib/companion-grant-personas';
-import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, readSavedChildMode, CHILD_MODE_UNRESOLVED, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
+import { childModeSignInRefusal, childModeSelectionRefused, childModeApprovalOffer, childModeState, childModeAlignStep, childRingRowFor, childModeFacts, readSavedChildMode, CHILD_MODE_UNRESOLVED, type ChildModeSignInDependant } from './lib/child-mode-sign-in';
 import { GuardianBanner } from './components/GuardianBanner';
 import { RepairBanner } from './components/RepairBanner';
 import { RateLimitBanner } from './components/RateLimitBanner';
@@ -2473,7 +2473,7 @@ function AppContent() {
   // blink off and let a PIN prompt open over it.
   const childModeDependantRef = useRef<ChildModeSignInDependant | null>(null);
   if (!carousel.childMode) childModeDependantRef.current = null;
-  else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;
+  else if (carousel.childDependant) childModeDependantRef.current = childModeFacts(carousel.childDependant);
   const signInChildMode = carousel.childMode || !!savedChildMode;
   const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
   // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
@@ -14647,7 +14647,7 @@ function AppContent() {
     return (
       <>
         <Layout title={approveAuthTitle(pendingAuthRequest)} showBack onBack={handleDenyAuth}>
-          {signerBanner}
+          {childModeNow !== 'off' ? null : signerBanner}
           {/* Keyed by request: a new sign-in arriving while this page is up
               must get a fresh screen, never inherit the last one's
               "Signing…" state or error. */}
@@ -14765,7 +14765,7 @@ function AppContent() {
     return (
       <>
       <Layout title="Connect" showBack onBack={handleConnectDone}>
-        {signerBanner}
+        {childModeNow !== 'off' ? null : signerBanner}
         <ApproveConnect
           key={connectRequestKey}
           request={pendingConnectRequest}
@@ -15675,7 +15675,7 @@ function AppContent() {
           }}
         />
       )}
-      {rateLimitAlert && !showRepairBanner && (
+      {rateLimitAlert && !showRepairBanner && childModeNow === 'off' && (
         <RateLimitBanner
           dependantName={rateLimitAlert.name}
           onReview={() => {

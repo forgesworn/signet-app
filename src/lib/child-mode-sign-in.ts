@@ -23,6 +23,19 @@ export interface ChildModeSignInDependant {
   childDevice?: { mode?: string } | null;
 }
 
+/**
+ * The facts kept of the child across a lock, in the same shape as the saved
+ * session's: id, name and device mode, never a key. App holds this instead of the
+ * decrypted record, which carries the child's private keys.
+ */
+export function childModeFacts(dep: { id: string; displayName: string; childDevice?: { mode?: unknown } | null }): ChildModeSignInDependant {
+  return {
+    id: dep.id,
+    displayName: dep.displayName,
+    ...(dep.childDevice?.mode === 'heartwood-direct' ? { childDevice: { mode: 'heartwood-direct' } } : {}),
+  };
+}
+
 export interface ChildModeSignInInput {
   /** The phone is in child mode (live, or as last saved while it is still locked). */
   childMode: boolean;
