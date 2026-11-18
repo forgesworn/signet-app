@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   absoluteTimeText, ageText, cryptoRequestLabel, declaredNameForDisplay, dTagOf, hostOf, isLate, LATE_AFTER_MS,
-  lateNote, lookalikeNote, looksEncrypted, oneLine, pairedLookalike, parseDeclaredApp, previewOf, signRequestLabel,
-  summariseContent, tagSummary,
+  lateNote, lookalikeNote, looksEncrypted, normaliseName, oneLine, pairedLookalike, declaredAppOf, previewOf, signRequestLabel,
+  stripInvisible, summariseContent, tagSummary,
 } from './bunker-request-detail';
 
 const NOW = new Date(2026, 10, 18, 15, 0, 0).getTime();
@@ -114,31 +114,68 @@ describe('site and declared names', () => {
     expect(declaredNameForDisplay(`A${BIDI}B`)).toBe('AB');
     expect(declaredNameForDisplay('n'.repeat(90))).toBe('n'.repeat(40) + '…');
   });
+  it('cuts a declared name by code points, never inside a surrogate pair', () => {
+    const cut = declaredNameForDisplay('\u{1F600}'.repeat(90));
+    expect(Array.from(cut)).toHaveLength(41); // 40 emoji and the ellipsis
+    expect(cut).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+    expect(oneLine('x'.repeat(1023) + '\u{1F600}'.repeat(5), 2000)).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+  it('strips invisible characters from a displayed declared name', () => {
+    expect(declaredNameForDisplay('Kith\u2060Moot')).toBe('KithMoot');
+    expect(declaredNameForDisplay('Kith\u00adMoot\u3164')).toBe('KithMoot');
+  });
+  it('cannot be made to close the quotes the card puts around it', () => {
+    for (const q of ['"', '\u201c', '\u201d', '\uff02']) {
+      expect(declaredNameForDisplay(`KithMoot${q} · paired`)).toBe("KithMoot' · paired");
+    }
+  });
   it('finds a paired app of the same name under another key only', () => {
     const clients = [{ clientPubkey: 'a'.repeat(64), appName: ' KithMoot ' }, { clientPubkey: 'b'.repeat(64), appName: 'Other' }];
-    expect(pairedLookalike('kithmoot', 'c'.repeat(64), clients)).toBe(' KithMoot ');
-    expect(pairedLookalike('KITHMOOT', 'A'.repeat(64), clients)).toBeUndefined();
-    expect(pairedLookalike('Nobody', 'c'.repeat(64), clients)).toBeUndefined();
-    expect(pairedLookalike(undefined, 'c'.repeat(64), clients)).toBeUndefined();
-    expect(pairedLookalike('x', 'c'.repeat(64), undefined)).toBeUndefined();
+    expect(pairedLookalike({ name: 'kithmoot' }, 'c'.repeat(64), clients)).toBe(' KithMoot ');
+    expect(pairedLookalike({ name: 'KITHMOOT' }, 'A'.repeat(64), clients)).toBeUndefined();
+    expect(pairedLookalike({ name: 'Nobody' }, 'c'.repeat(64), clients)).toBeUndefined();
+    expect(pairedLookalike({}, 'c'.repeat(64), clients)).toBeUndefined();
+    expect(pairedLookalike({ name: 'x' }, 'c'.repeat(64), undefined)).toBeUndefined();
     expect(lookalikeNote('KithMoot')).toBe('Not the KithMoot paired on this phone: different app key.');
+  });
+  it('is not beaten by invisible characters or width forms (word joiner, soft hyphen, fullwidth)', () => {
+    const clients = [{ clientPubkey: 'a'.repeat(64), appName: 'KithMoot' }];
+    for (const name of ['Kith\u2060Moot', 'Kith\u00adMoot', 'Kith\u200bMoot', '\ufeffKithMoot', '\uff2b\uff49\uff54\uff48Moot', 'Kith  Moot'.replace('  ', '\u2060')]) {
+      expect(pairedLookalike({ name }, 'c'.repeat(64), clients), JSON.stringify(name)).toBe('KithMoot');
+    }
+    expect(stripInvisible('a\u2060b\u00adc\u034fd\u180be\u{e0041}f')).toBe('abcdef');
+    expect(normaliseName(' Kith\u2060 Moot ')).toBe('kith moot');
+  });
+  it('also fires when the declared site is a paired app\'s site under another key', () => {
+    const clients = [
+      { clientPubkey: 'a'.repeat(64), appName: 'Paired Game', appUrl: 'https://game.example/play' },
+      { clientPubkey: 'b'.repeat(64), appName: 'Other', appUrl: 'https://other.example' },
+    ];
+    expect(pairedLookalike({ url: 'https://game.example' }, 'c'.repeat(64), clients)).toBe('Paired Game');
+    expect(pairedLookalike({ name: 'Different', url: 'https://GAME.example' }, 'c'.repeat(64), clients)).toBe('Paired Game');
+    expect(pairedLookalike({ url: 'https://game.example' }, 'a'.repeat(64), clients)).toBeUndefined();
+    expect(pairedLookalike({ url: 'https://elsewhere.example' }, 'c'.repeat(64), clients)).toBeUndefined();
   });
 });
 
-describe('parseDeclaredApp', () => {
+describe('declaredAppOf', () => {
   it('reads name and url from the fourth or third param, like a saved client', () => {
     const meta = JSON.stringify({ name: `Kith${BIDI}Moot`, url: 'https://kithmoot.example/some/path' });
-    expect(parseDeclaredApp(['pk', 'secret', 'sign_event', meta])).toEqual({ name: 'KithMoot', url: 'https://kithmoot.example' });
-    expect(parseDeclaredApp(['pk', 'secret', meta])).toEqual({ name: 'KithMoot', url: 'https://kithmoot.example' });
+    expect(declaredAppOf(['pk', 'secret', 'sign_event', meta])).toEqual({ name: 'KithMoot', url: 'https://kithmoot.example' });
+    expect(declaredAppOf(['pk', 'secret', meta])).toEqual({ name: 'KithMoot', url: 'https://kithmoot.example' });
   });
   it('applies the ConnectedClient limits', () => {
     const meta = JSON.stringify({ name: 'n'.repeat(500), url: 'http://plain.example' });
-    expect(parseDeclaredApp(['pk', 's', '', meta])).toEqual({ name: 'n'.repeat(100) });
+    expect(declaredAppOf(['pk', 's', '', meta])).toEqual({ name: 'n'.repeat(100) });
+  });
+  it('takes invisible characters out of the name, and a name that is only those is no name', () => {
+    expect(declaredAppOf(['pk', 's', '', JSON.stringify({ name: 'Kith\u2060Moot' })])).toEqual({ name: 'KithMoot' });
+    expect(declaredAppOf(['pk', 's', '', JSON.stringify({ name: '\u2060\u00ad' })])).toEqual({});
   });
   it('returns nothing for junk, arrays, oversize or no blob', () => {
-    expect(parseDeclaredApp(['pk', 's', '', '{nope'])).toEqual({});
-    expect(parseDeclaredApp(['pk', 's', '', '[1]'])).toEqual({});
-    expect(parseDeclaredApp(['pk', 's', '', `{"name":"${'a'.repeat(5000)}"}`])).toEqual({});
-    expect(parseDeclaredApp(['pk', 's', 'sign_event'])).toEqual({});
+    expect(declaredAppOf(['pk', 's', '', '{nope'])).toEqual({});
+    expect(declaredAppOf(['pk', 's', '', '[1]'])).toEqual({});
+    expect(declaredAppOf(['pk', 's', '', `{"name":"${'a'.repeat(5000)}"}`])).toEqual({});
+    expect(declaredAppOf(['pk', 's', 'sign_event'])).toEqual({});
   });
 });

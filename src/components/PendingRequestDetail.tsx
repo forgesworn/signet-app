@@ -35,24 +35,37 @@ type AppSubject = Pick<PendingApproval, 'client' | 'route'>;
  * A saved client row; a dependant's app pairing (named by its label, no row);
  * a dependant's own bound device (no row, no label: it already passed the
  * route's client binding, so it is NOT an unpaired stranger); or an owner-route
- * client with no row, which is the one that reads "Unknown app".
+ * client with no row, which is the one that reads "Unknown app". Decided from
+ * the route and the row, never from the name's text.
  */
 export function appKindOf({ client, route }: AppSubject): AppKind {
   if (client.existing) return 'row';
-  if (route.dependantId) return client.appName !== UNKNOWN_APP_NAME ? 'pairing' : 'device';
-  return client.appName !== UNKNOWN_APP_NAME ? 'pairing' : 'none';
+  if (route.dependantId) return route.routeKind === 'app' ? 'pairing' : 'device';
+  return 'none';
 }
+
+/** The title of a request that comes from a dependant's own paired device. */
+export const DEVICE_TITLE = 'Their paired device';
 
 /** The text on line 1 of the card: the app's name. A declared name only ever follows "Unknown app". */
 export function appHeadline(subject: AppSubject): { name: string; declared?: string } {
   const { client } = subject;
-  if (appKindOf(subject) !== 'none') return { name: safeAppName(client.appName) };
+  const kind = appKindOf(subject);
+  if (kind === 'device') return { name: DEVICE_TITLE };
+  if (kind !== 'none') return { name: safeAppName(client.appName) };
   return { name: UNKNOWN_APP_NAME, ...(client.declaredName ? { declared: declaredNameForDisplay(client.declaredName) } : {}) };
 }
 
-/** The site's hostname for the card (from the saved URL, else the declared one), plain text. */
-export function siteHost(client: PendingApproval['client']): string | undefined {
-  return hostOf(client.appUrl) ?? hostOf(client.declaredUrl);
+/**
+ * The site part of the card's third line, plain text: the saved hostname, or
+ * what the app SAYS its site is ("says it's from <host>"), since that url is as
+ * unauthenticated as the name.
+ */
+export function siteLine(client: PendingApproval['client']): string | undefined {
+  const saved = hostOf(client.appUrl);
+  if (saved) return saved;
+  const declared = hostOf(client.declaredUrl);
+  return declared ? `says it's from ${declared}` : undefined;
 }
 
 /** What a request on a dependant route calls the dependant when its name does not resolve. */

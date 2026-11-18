@@ -50,7 +50,7 @@ describe('collapsed card', () => {
     expect(screen.getByText('just now')).toBeTruthy();
     expect(screen.getByText('Poppy')).toBeTruthy();
     expect(screen.getByText(/signing as/)).toBeTruthy();
-    expect(screen.getByText(`axolittle.example · app key ${CLIENT.slice(0, 10)}…${CLIENT.slice(-6)}`)).toBeTruthy();
+    expect(screen.getByText(`says it's from axolittle.example · app key ${CLIENT.slice(0, 10)}…${CLIENT.slice(-6)}`)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'More about this request' }).getAttribute('aria-expanded')).toBe('false');
   });
   it('falls back to "You" with no persona label, and to a bare "Unknown app" with no declared name', () => {
@@ -61,7 +61,7 @@ describe('collapsed card', () => {
   });
   it('prints a saved app name sanitised, and a dependant pairing label as it is', () => {
     renderPanel([sign({ handle: 1, client: { pubkey: CLIENT, appName: `Pa${BIDI}ired`, existing: true } }),
-      sign({ handle: 3, route: { pubkey: OWNER, dependantId: 'd'.repeat(64) }, client: { pubkey: 'e'.repeat(64), appName: 'Lego Game', existing: false } })],
+      sign({ handle: 3, route: { pubkey: OWNER, dependantId: 'd'.repeat(64), routeKind: 'app' }, client: { pubkey: 'e'.repeat(64), appName: 'Lego Game', existing: false } })],
       { dependantNameFor: (id) => (id ? 'Wren' : undefined) });
     expect(screen.getByText('Paired')).toBeTruthy();
     expect(screen.getByText('Lego Game')).toBeTruthy();
@@ -69,12 +69,25 @@ describe('collapsed card', () => {
     expect(screen.queryByText(/calls itself/)).toBeNull();
   });
   it('does not call a dependant\'s own bound device an unpaired stranger', () => {
-    renderPanel([sign({ route: { pubkey: OWNER, dependantId: 'd'.repeat(64) } })]);
+    renderPanel([sign({ route: { pubkey: OWNER, dependantId: 'd'.repeat(64), routeKind: 'device' } })]);
     expect(screen.getByText('A dependant')).toBeTruthy();
+    expect(screen.getByText('Their paired device')).toBeTruthy(); // the card's title, not "Unknown app"
+    expect(screen.queryByText('Unknown app')).toBeNull();
     expect(screen.queryByText(/calls itself/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'More about this request' }));
     expect(screen.getByText("The dependant's paired device")).toBeTruthy();
     expect(screen.queryByText(/Not paired on this phone/)).toBeNull();
+  });
+  it('does not mistake an app pairing labelled "Unknown app" for the dependant\'s own device', () => {
+    renderPanel([sign({ route: { pubkey: OWNER, dependantId: 'd'.repeat(64), routeKind: 'app' }, client: { pubkey: CLIENT, appName: 'Unknown app', existing: false } })]);
+    expect(screen.queryByText('Their paired device')).toBeNull();
+    expect(screen.getByText('Unknown app')).toBeTruthy();
+  });
+  it('frames a site the app only claims, and a saved site as it is', () => {
+    renderPanel([sign({ handle: 1, client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredUrl: 'https://kithmoot.example' } }),
+      sign({ handle: 2, client: { pubkey: 'e'.repeat(64), appName: 'Saved', existing: true, appUrl: 'https://saved.example/x' } })]);
+    expect(screen.getByText(`says it's from kithmoot.example · app key ${CLIENT.slice(0, 10)}…${CLIENT.slice(-6)}`)).toBeTruthy();
+    expect(screen.getByText(`saved.example · app key ${'e'.repeat(10)}…${'e'.repeat(6)}`)).toBeTruthy();
   });
   it('never turns a declared URL into a link', () => {
     renderPanel([sign({ client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredUrl: 'https://axolittle.example' } })]);
@@ -84,6 +97,18 @@ describe('collapsed card', () => {
     renderPanel([sign({ client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredName: 'kithmoot' } })],
       { connectedClients: [{ clientPubkey: 'a'.repeat(64), appName: 'KithMoot' }] });
     expect(screen.getByText('Not the KithMoot paired on this phone: different app key.')).toBeTruthy();
+  });
+  it('still warns when the declared name hides an invisible character, and when the site is a paired app\'s', () => {
+    const paired = [{ clientPubkey: 'a'.repeat(64), appName: 'KithMoot', appUrl: 'https://kithmoot.example/play' }];
+    const { unmount } = renderPanel([sign({ client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredName: 'Kith\u2060Moot' } })], { connectedClients: paired });
+    expect(screen.getByText('Not the KithMoot paired on this phone: different app key.')).toBeTruthy();
+    unmount();
+    renderPanel([sign({ client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredName: 'Something Else', declaredUrl: 'https://kithmoot.example' } })], { connectedClients: paired });
+    expect(screen.getByText('Not the KithMoot paired on this phone: different app key.')).toBeTruthy();
+  });
+  it('cannot be made to break out of the quotes around a declared name', () => {
+    renderPanel([sign({ client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredName: 'KithMoot" · paired' } })]);
+    expect(screen.getByText(`Unknown app · calls itself "KithMoot' · paired"`)).toBeTruthy();
   });
   it('does not warn for the same key or a different name', () => {
     renderPanel([sign({ client: { pubkey: CLIENT, appName: 'Unknown app', existing: false, declaredName: 'kithmoot' } })],
@@ -201,11 +226,22 @@ describe('Kinterest authority card', () => {
       tags: [['d', `kin-jar/family-authorisation/v2/${family}`], ['scope', 'kin-jar:family:v2'], ['family', family], ['challenge', 'd'.repeat(64)], ['approval', 'request']] },
     ...over,
   });
-  it('keeps "Review authorisation" with no Approve or Always', () => {
-    renderPanel([kinterest()]);
+  it('keeps "Review authorisation" with no Approve or Always, and now shows the age, the down-arrow and its rows', () => {
+    renderPanel([kinterest({ askedAt: NOW - 125_000 })]);
     expect(screen.getByRole('button', { name: 'Review authorisation' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Always' })).toBeNull();
+    expect(screen.getByText('2 min ago')).toBeTruthy();
+    expect(screen.queryByText('Asked')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More about this request' }));
+    expect(screen.getByText('Asked')).toBeTruthy();
+    expect(screen.getByText('Paired on this phone')).toBeTruthy();
+  });
+  it('"Review authorisation" still opens the review modal', () => {
+    renderPanel([kinterest()]);
+    fireEvent.click(screen.getByRole('button', { name: 'Review authorisation' }));
+    expect(screen.getByText(`Family key: ${family}`)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approve this Kinterest authorisation' })).toBeTruthy();
   });
   it('gets the late note and Clear too, and counts in the header', () => {
     const p = renderPanel([kinterest({ handle: 5, askedAt: NOW - 400_000 }), kinterest({ handle: 6, askedAt: NOW - 500_000 })]);

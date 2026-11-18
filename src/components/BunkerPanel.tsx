@@ -1,5 +1,5 @@
 import { BunkerApprovalModal } from './BunkerApprovalModal';
-import { PendingRequestDetail, DetailToggle, DEPENDANT_FALLBACK, appHeadline, siteHost } from './PendingRequestDetail';
+import { PendingRequestDetail, DetailToggle, DEPENDANT_FALLBACK, appHeadline, appKindOf, siteLine } from './PendingRequestDetail';
 import { isKinterestAuthority } from '../lib/kinterest-authority';
 import { shortPubkey, safeAppName } from '../lib/bunker-display';
 import { ageText, isLate, lateNote, lookalikeNote, pairedLookalike } from '../lib/bunker-request-detail';
@@ -65,7 +65,7 @@ interface Props {
   /** The display label of the owner persona (persona, extra, Pro, or the real identity when active) a request addresses, by its route pubkey. Absent or no label: "You". */
   ownerLabelFor?: (routePubkey: string) => string | undefined;
   /** Saved clients, to warn when an unpaired app calls itself by a paired app's name. */
-  connectedClients?: readonly { clientPubkey: string; appName: string }[];
+  connectedClients?: readonly { clientPubkey: string; appName: string; appUrl?: string }[];
   /** True when the guardian has at least one dependant — shows a note about always-on reachability. */
   hasDependants: boolean;
   /** Live socket truth from useBunkerServer — what the subscription is ACTUALLY doing. */
@@ -425,11 +425,11 @@ export function BunkerPanel({
               const depName = dependantNameFor(a.route.dependantId);
               const target = a.route.dependantId ? (depName ? safeAppName(depName) : DEPENDANT_FALLBACK) : (ownerLabel ? safeAppName(ownerLabel) : 'You');
               const headline = appHeadline(a);
-              const host = siteHost(a.client);
+              const site = siteLine(a.client);
               const late = isLate(a.askedAt, now);
               const open = expanded.has(a.handle);
-              const lookalike = headline.declared !== undefined
-                ? pairedLookalike(a.client.declaredName, a.client.pubkey, connectedClients) : undefined;
+              const lookalike = appKindOf(a) === 'none'
+                ? pairedLookalike({ name: a.client.declaredName, url: a.client.declaredUrl }, a.client.pubkey, connectedClients) : undefined;
               return (
                 <div key={a.handle} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -446,7 +446,7 @@ export function BunkerPanel({
                     {a.description} · {a.method === 'sign_event' ? 'signing as' : 'as'} <strong>{target}</strong>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>
-                    {host ? `${host} · ` : ''}app key {shortPubkey(a.client.pubkey)}
+                    {site ? `${site} · ` : ''}app key {shortPubkey(a.client.pubkey)}
                   </div>
                   {late && (
                     <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 4 }}>{lateNote(a.askedAt, now)}</div>

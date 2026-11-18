@@ -29,7 +29,7 @@ function cryptoApproval(over: Partial<PendingCryptoApproval> = {}): PendingCrypt
     route: { pubkey: 'b'.repeat(64), dependantId: null },
     method: 'nip44_decrypt',
     peerPubkey: 'b'.repeat(64),
-    client: { appName: 'Stash', existing: false, pubkey: 'c'.repeat(64) },
+    client: { appName: 'Stash', existing: true, pubkey: 'c'.repeat(64) },
     description: 'Decrypt data you encrypted to yourself',
     alwaysAvailable: true,
     ...over,
@@ -153,6 +153,23 @@ describe('request detail in the modal', () => {
   it('names the dependant a request is for', () => {
     render(<BunkerApprovalModal approval={approval({ dependantId: 'd'.repeat(64), askedAt: Date.now() })} dependantName="Wren" onApproveOnce={() => {}} onApproveAlways={() => {}} onDeny={() => {}} />);
     expect(screen.getByText('Wren')).toBeTruthy();
+  });
+
+  it('heads a dependant\'s own paired device as the device, not as an unknown app', () => {
+    render(<BunkerApprovalModal approval={approval({ dependantId: 'd'.repeat(64), client: { appName: 'Unknown app', existing: false, pubkey: 'c'.repeat(64) } })}
+      dependantName="Wren" onApproveOnce={() => {}} onApproveAlways={() => {}} onDeny={() => {}} />);
+    expect(screen.getByRole('heading').textContent).toBe('Their paired device wants to sign a note.');
+    expect(screen.queryByText(/calls itself/)).toBeNull();
+  });
+
+  it('warns on a look-alike name written with an invisible character, and on a paired app\'s site', () => {
+    const { unmount } = render(<BunkerApprovalModal approval={unknown({ client: { appName: 'Unknown app', existing: false, pubkey: 'c'.repeat(64), declaredName: 'Kith\u2060Moot' } })}
+      connectedClients={[{ clientPubkey: 'a'.repeat(64), appName: 'KithMoot' }]} onApproveOnce={() => {}} onApproveAlways={() => {}} onDeny={() => {}} />);
+    expect(screen.getByText('Not the KithMoot paired on this phone: different app key.')).toBeTruthy();
+    unmount();
+    render(<BunkerApprovalModal approval={unknown({ client: { appName: 'Unknown app', existing: false, pubkey: 'c'.repeat(64), declaredUrl: 'https://kithmoot.example' } })}
+      connectedClients={[{ clientPubkey: 'a'.repeat(64), appName: 'KithMoot', appUrl: 'https://kithmoot.example/play' }]} onApproveOnce={() => {}} onApproveAlways={() => {}} onDeny={() => {}} />);
+    expect(screen.getByText('Not the KithMoot paired on this phone: different app key.')).toBeTruthy();
   });
 
   it('shows a decrypt request\'s size and no preview', () => {

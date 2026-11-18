@@ -7,7 +7,7 @@ import { shortPubkey, safeAppName, safeUrl } from '../lib/bunker-display';
 import { ChildAskCard, childAskOutcomeText, type ChildAskDecide } from './ChildAskCard';
 import { CHILD_ASK_COPY, CHILD_DEVICE_COPY } from '../lib/child-device-copy';
 import { isDecryptMethod } from '../lib/bunker-crypto-approval';
-import { PendingRequestDetail, DetailToggle, DEPENDANT_FALLBACK, appHeadline } from './PendingRequestDetail';
+import { PendingRequestDetail, DetailToggle, DEPENDANT_FALLBACK, appHeadline, appKindOf } from './PendingRequestDetail';
 import { ageText, lookalikeNote, pairedLookalike } from '../lib/bunker-request-detail';
 import { useNow } from '../hooks/useNow';
 
@@ -40,7 +40,7 @@ interface Props {
   /** Display label of the owner persona the request addresses. Absent: "You". */
   ownerLabel?: string;
   /** Saved clients, to warn when an unpaired app calls itself by a paired app's name. */
-  connectedClients?: readonly { clientPubkey: string; appName: string }[];
+  connectedClients?: readonly { clientPubkey: string; appName: string; appUrl?: string }[];
 }
 
 export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, onDeny, onBack, dependantName, ownerLabel, connectedClients }: Props) {
@@ -67,8 +67,8 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
   const name = safeAppName(approval.client.appName);
   const url = safeUrl(approval.client.appUrl);
   const headline = appHeadline(approval);
-  const lookalike = headline.declared !== undefined
-    ? pairedLookalike(approval.client.declaredName, approval.client.pubkey, connectedClients) : undefined;
+  const lookalike = appKindOf(approval) === 'none'
+    ? pairedLookalike({ name: approval.client.declaredName, url: approval.client.declaredUrl }, approval.client.pubkey, connectedClients) : undefined;
   const asPerson = approval.route.dependantId ? (dependantName ? safeAppName(dependantName) : DEPENDANT_FALLBACK) : (ownerLabel ? safeAppName(ownerLabel) : 'You');
 
   return (
@@ -108,8 +108,8 @@ export function BunkerApprovalModal({ approval, onApproveOnce, onApproveAlways, 
           </div>
           <h2 id="bunker-approval-title" style={{ margin: 0, fontSize: '1.2rem', lineHeight: 1.3 }}>
             {sign
-              ? <><strong>{name}</strong> wants to sign a {approval.description}.</>
-              : <><strong>{name}</strong> wants to: {approval.description}.</>}
+              ? <><strong>{headline.name}</strong> wants to sign a {approval.description}.</>
+              : <><strong>{headline.name}</strong> wants to: {approval.description}.</>}
           </h2>
         </div>
 

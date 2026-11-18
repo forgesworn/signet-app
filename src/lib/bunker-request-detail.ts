@@ -8,7 +8,7 @@
  * a fixed length. Callers render the results as React text only.
  */
 import { sanitizeDisplayName } from './text-sanitize';
-import { connectMetadataParam, extractAppOrigin, sanitiseAppLabel } from './app-bunker-routing';
+import { connectMetadataParam, parseConnectMetadata } from './app-bunker-routing';
 import { looksLikeNip44V2 } from './vault-envelope';
 import { describeEventTemplate } from './nip46-server';
 import type { UnsignedEvent } from 'signet-protocol';
@@ -21,8 +21,6 @@ export const PREVIEW_MAX_CHARS = 280;
 export const D_TAG_MAX_CHARS = 80;
 /** A name an app gives itself is cut to about this many characters on a card. */
 export const DECLARED_NAME_DISPLAY_CHARS = 40;
-/** Cap on the raw metadata blob read from a `connect` (same as ConnectedClient parsing). */
-const MAX_METADATA_JSON_LEN = 4096;
 /** At most this many raw characters are examined for a preview, however large the payload. */
 const PREVIEW_SCAN_CHARS = 1024;
 
@@ -31,11 +29,53 @@ function flatten(raw: string): string {
   return raw.replace(/\s+/g, ' ');
 }
 
+/** The first `n` code points of `s`, without scanning the rest and never splitting a surrogate pair. */
+function takeCodePoints(s: string, n: number): string {
+  let out = '';
+  let taken = 0;
+  for (const ch of s) {
+    if (taken++ >= n) break;
+    out += ch;
+  }
+  return out;
+}
+
 /** One sanitised line, cut to `max` code points. Never contains a line break. */
 export function oneLine(raw: unknown, max: number): string {
   if (typeof raw !== 'string') return '';
-  return sanitizeDisplayName(flatten(raw.slice(0, Math.max(max * 4, PREVIEW_SCAN_CHARS))), max);
+  return sanitizeDisplayName(flatten(takeCodePoints(raw, Math.max(max * 4, PREVIEW_SCAN_CHARS))), max);
 }
+
+/**
+ * Characters that draw nothing: the Unicode Default_Ignorable set (soft
+ * hyphen, word joiner, zero-width and bidi marks, variation selectors, Hangul
+ * fillers, tag characters...). `sanitizeDisplayName` strips only part of this
+ * class, so an app could otherwise put one inside a name and keep it from
+ * matching a paired app's name while it still LOOKS identical.
+ */
+const INVISIBLE = new RegExp(
+  '[\\p{Default_Ignorable_Code_Point}\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f'
+  + '\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0'
+  + '\\u{1bca0}-\\u{1bca3}\\u{e0000}-\\u{e0fff}]',
+  'gu',
+);
+
+/** `s` without any invisible character. */
+export function stripInvisible(s: string): string {
+  return s.replace(INVISIBLE, '');
+}
+
+/**
+ * A name as compared against another: NFKC, invisible characters gone,
+ * whitespace collapsed, trimmed, lowercase. Look-alike scripts (a Cyrillic
+ * letter for a Latin one) are NOT folded: that needs a confusables table.
+ */
+export function normaliseName(raw: string): string {
+  return stripInvisible(stripInvisible(raw).normalize('NFKC')).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** Quotation marks, which would let a declared name end its own quoted span. */
+const QUOTES = /["\u201c\u201d\u201e\u201f\u2033\u3003\uff02]/g;
 
 /** True once a request has waited longer than `LATE_AFTER_MS`. */
 export function isLate(askedAt: number | undefined, now: number): boolean {
@@ -162,10 +202,15 @@ export function hostOf(url: string | undefined): string | undefined {
   }
 }
 
-/** A name an app gives itself, cut for the one-line card. */
+/**
+ * A name an app gives itself, cut for the one-line card: invisible characters
+ * gone, and any double quote turned into an apostrophe so the name can never
+ * close the quotes the card puts around it.
+ */
 export function declaredNameForDisplay(name: string): string {
-  const flat = oneLine(name, 100);
-  return flat.length > DECLARED_NAME_DISPLAY_CHARS ? `${flat.slice(0, DECLARED_NAME_DISPLAY_CHARS)}…` : flat;
+  const flat = oneLine(stripInvisible(name), 100).replace(QUOTES, "'");
+  const points = Array.from(flat);
+  return points.length > DECLARED_NAME_DISPLAY_CHARS ? `${points.slice(0, DECLARED_NAME_DISPLAY_CHARS).join('')}…` : flat;
 }
 
 /** The sentence a card or modal adds when a declared name matches an app paired under another key. */
@@ -173,21 +218,33 @@ export function lookalikeNote(pairedName: string): string {
   return `Not the ${declaredNameForDisplay(pairedName)} paired on this phone: different app key.`;
 }
 
+/** The origin of a URL, lowercase, or undefined when it does not parse. */
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try { return new URL(url).origin.toLowerCase(); } catch { return undefined; }
+}
+
 /**
  * The name of a paired app (a ConnectedClient row under a DIFFERENT client
- * key) that equals the name an unpaired client calls itself, trimmed and
- * case-insensitive. Display only: the declared name is unauthenticated, so a
- * match is a warning about a look-alike, never a link to the paired app.
+ * key) that an unpaired client looks like: the name it calls itself equals the
+ * row's name once both are normalised (see `normaliseName`), or the site it
+ * names has the same origin as the row's. Display only: both are
+ * unauthenticated, so a match is a warning about a look-alike, never a link to
+ * the paired app.
  */
 export function pairedLookalike(
-  declaredName: string | undefined,
+  declared: { name?: string; url?: string },
   clientPubkey: string,
-  clients: readonly { clientPubkey: string; appName: string }[] | undefined,
+  clients: readonly { clientPubkey: string; appName: string; appUrl?: string }[] | undefined,
 ): string | undefined {
-  const wanted = declaredName?.trim().toLowerCase();
-  if (!wanted || !clients) return undefined;
+  if (!clients) return undefined;
+  const wantedName = declared.name ? normaliseName(declared.name) : '';
+  const wantedOrigin = originOf(declared.url);
+  if (!wantedName && !wantedOrigin) return undefined;
   const me = clientPubkey.toLowerCase();
-  const hit = clients.find(c => c.clientPubkey.toLowerCase() !== me && c.appName.trim().toLowerCase() === wanted);
+  const hit = clients.find(c => c.clientPubkey.toLowerCase() !== me
+    && ((wantedName !== '' && normaliseName(c.appName) === wantedName)
+      || (wantedOrigin !== undefined && originOf(c.appUrl) === wantedOrigin)));
   return hit?.appName;
 }
 
@@ -198,18 +255,13 @@ export interface DeclaredApp {
 }
 
 /**
- * Read the name and url from a `connect`'s metadata blob with the same parser
- * and limits as a saved ConnectedClient: name sanitised and at most 100
- * characters, url an https origin (or localhost http) of at most 200.
+ * What a `connect` says about the app, read with the same parser and limits as
+ * a saved ConnectedClient (name sanitised, at most 100 characters; url an
+ * https origin, or localhost http, of at most 200) but with no default name,
+ * and with invisible characters taken out of the name.
  */
-export function parseDeclaredApp(params: readonly unknown[]): DeclaredApp {
-  const blob = connectMetadataParam(params);
-  if (!blob || blob.length > MAX_METADATA_JSON_LEN) return {};
-  let parsed: unknown;
-  try { parsed = JSON.parse(blob); } catch { return {}; }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-  const m = parsed as Record<string, unknown>;
-  const name = sanitiseAppLabel(m.name, '');
-  const url = extractAppOrigin(m.url);
-  return { ...(name ? { name } : {}), ...(url ? { url } : {}) };
+export function declaredAppOf(params: readonly unknown[]): DeclaredApp {
+  const { label, origin } = parseConnectMetadata(connectMetadataParam(params), '');
+  const name = stripInvisible(label).trim();
+  return { ...(name ? { name } : {}), ...(origin ? { url: origin } : {}) };
 }

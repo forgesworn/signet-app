@@ -24,7 +24,8 @@ import { isKinterestAuthority, parseKinterestRequest, confirmKinterest, kinteres
  *   instead).
  * - `deny(handle)` — publishes `error: "user denied"`. Not persisted.
  * - `clearApproval(handle)` — drops the request and publishes `error:
- *   "request expired"`; writes nothing (no row, grant, audit or lastSeenAt).
+ *   "request expired"`; writes no row, grant, audit event or lastSeenAt (on
+ *   Android, sending the answer also records it as answered).
  *
  * **Routing:**
  * - `handleInboundEvent` finds the matching route by the event's `p` tag and
@@ -74,8 +75,32 @@ import * as db from '../lib/db';
 import { parseNip46Permissions, nip46PermissionAllows } from '../lib/nip46-permissions';
 import { isNativeApp } from '../lib/native';
 import { markAnswered, wasAnswered, subscribeAnswered } from '../lib/bunker-answered-store';
-import { parseDeclaredApp, previewOf, type DeclaredApp } from '../lib/bunker-request-detail';
+import { declaredAppOf, normaliseName, previewOf, type DeclaredApp } from '../lib/bunker-request-detail';
 import { UNKNOWN_APP_NAME } from '../lib/bunker-display';
+
+/** What unpaired apps said about themselves are remembered for at most this many clients. */
+const DECLARED_APPS_CAP = 50;
+
+/**
+ * The name "Always" saves for a client with NO saved row. What an app calls
+ * itself is unauthenticated, so it is kept only when it is not also the name of
+ * an app already paired under a different key (compared as the card compares it,
+ * see `normaliseName`): saving it would give a look-alike the paired app's name
+ * and drop every warning the card showed. Otherwise, or when the paired apps
+ * cannot be read, "Unnamed app".
+ */
+async function nameForNewRow(declaredName: string | undefined, clientPubkey: string): Promise<string> {
+  if (!declaredName) return 'Unnamed app';
+  try {
+    const wanted = normaliseName(declaredName);
+    const me = clientPubkey.toLowerCase();
+    const clients = await db.listConnectedClients();
+    if (clients.some(c => c.clientPubkey.toLowerCase() !== me && normaliseName(c.appName) === wanted)) return 'Unnamed app';
+  } catch {
+    return 'Unnamed app';
+  }
+  return declaredName;
+}
 
 /**
  * Dev-only diagnostics for the bunker-serve socket lifecycle. Stripped from
@@ -267,6 +292,11 @@ export interface PendingSignApproval {
     pubkey: string;
     /** Null when the request hit the guardian's own bunker endpoint. */
     dependantId: string | null;
+    /**
+     * Dependant routes only: 'app' for a guardian-installed app pairing (named
+     * by its label), 'device' (the default) for the dependant's own bound device.
+     */
+    routeKind?: 'device' | 'app';
   };
   method: 'sign_event';
   /** Event template the client wants signed. */
@@ -604,10 +634,14 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
   // route-set change or serving restart while many clients send `connect` once
   // per session. UNAUTHENTICATED display hints: read only when a queue entry
   // is built, so it can never change who is prompted or who is signed for.
-  const declaredAppsRef = useRef<Map<string, DeclaredApp & { at: number }>>(new Map());
-  const DECLARED_APPS_CAP = 50;
+  const declaredAppsRef = useRef<Map<string, DeclaredApp>>(new Map());
+  // Bumped on every lock, so a request still being handled across one can tell.
+  const lockGenerationRef = useRef(0);
   useEffect(() => {
-    if (!appPairingsEncryptionKey) declaredAppsRef.current.clear();
+    if (!appPairingsEncryptionKey) {
+      lockGenerationRef.current += 1;
+      declaredAppsRef.current.clear();
+    }
   }, [appPairingsEncryptionKey]);
 
   // Pending queue. Mobile renders only the head via the exposed
@@ -761,6 +795,14 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
 
   /** Dispatch an inbound kind-24133 event to the right handler. */
   const handleInboundEvent = useCallback(async (event: NostrEvent) => {
+    // A request is handled across many awaits. If the serving session ends or
+    // the phone locks meanwhile, the queue and the declared-app hints have
+    // already been cleared: whatever this call would still add (a queue entry
+    // holding a plaintext preview, a hint, an answer) must leave no trace.
+    const serveGeneration = responseGenerationRef.current;
+    const lockGeneration = lockGenerationRef.current;
+    const stale = () => serveGeneration !== responseGenerationRef.current || lockGeneration !== lockGenerationRef.current;
+    const reply = (...args: Parameters<typeof publishResponse>): Promise<void> => (stale() ? Promise.resolve() : publishResponse(...args));
     // Structural validation — the event is an untyped cast from a relay
     // message. A malicious or buggy relay could send anything, and we
     // access .tags before verifyEvent runs below. Without these guards,
@@ -850,7 +892,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     }
 
     const request = await parseInboundRequest(event, route.backend);
-    if (!request) return;
+    if (!request || stale()) return;
     if (shareAnswered) {
       const inbound = inboundEventByRequestRef.current;
       inbound.set(`${request.clientPubkey}:${request.id}`, event.id);
@@ -869,17 +911,18 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     const ownerServingActive = isOwnerServingActiveRef.current ? isOwnerServingActiveRef.current() : true;
     if (!route.dependantId && !route.childGate
       && (!ownerServingActive || childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off'))) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
       return;
     }
 
     // Apply explicit connection scopes before every dispatch, including crypto
     // and manual approvals. Reconnecting cannot widen a saved ceiling.
     const scopedClient = await db.getConnectedClient(request.clientPubkey);
+    if (stale()) return;
     const requestedKind = request.method === 'sign_event'
       ? parseSignEventTemplate(request.params[0] ?? '')?.kind : undefined;
     if (!nip46PermissionAllows(scopedClient?.permissions, request.method, requestedKind)) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
       return;
     }
 
@@ -887,14 +930,18 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // secret matches and whatever the connect is answered with, so a later
     // request from a client with no saved row can say it. Display hint only:
     // the ACK and every decision below are unaffected. A connect carrying
-    // neither a name nor a url records nothing (it must not erase a known name).
+    // neither a name nor a url records nothing (it must not erase a known name),
+    // and one with only a url adds to what an earlier connect said.
     if (request.method === 'connect' && !route.dependantId && !route.childGate) {
-      const declared = parseDeclaredApp(request.params);
+      const declared = declaredAppOf(request.params);
       if (declared.name || declared.url) {
         const key = request.clientPubkey.toLowerCase();
         const map = declaredAppsRef.current;
+        // A url-only connect keeps the name an earlier connect gave; the
+        // newest entry moves to the back so the oldest is the one dropped.
+        const merged = { ...map.get(key), ...declared };
         map.delete(key);
-        map.set(key, { ...declared, at: Date.now() });
+        map.set(key, merged);
         while (map.size > DECLARED_APPS_CAP) {
           const oldest = map.keys().next().value;
           if (oldest === undefined) break;
@@ -947,7 +994,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         const [method, kind] = p.split(':');
         return !scopedClient.permissions!.includes(p) && !nip46PermissionAllows(scopedClient.permissions, method, kind === undefined ? undefined : Number(kind));
       })) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'approve requested permissions with nostrconnect');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'approve requested permissions with nostrconnect');
         return;
       }
     }
@@ -963,7 +1010,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       const meta = parseConnectMetadata(connectMetadataParam(request.params));
       try { route.childGate.onConnect?.(request.clientPubkey.toLowerCase(), { label: meta.label ?? '', ...(meta.origin ? { url: meta.origin } : {}) }); }
       catch { /* bookkeeping only */ }
-      await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+      await reply(route.backend, request.clientPubkey, request.id, 'ack');
       return;
     }
 
@@ -982,24 +1029,24 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             try {
               const pairings = await db.listAppBunkerPairings(route.dependantId, key);
               if (pairingMatches(pairings, request.clientPubkey)) {
-                await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+                await reply(route.backend, request.clientPubkey, request.id, 'ack');
                 return;
               }
             } catch { /* fail closed; only a valid new pairing secret may bind */ }
           }
           if (!route.pairingSecret) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing not active');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'pairing not active');
             return;
           }
           const clientSecret = typeof request.params[1] === 'string' ? request.params[1] : '';
           if (!constantTimeStringEqual(clientSecret, route.pairingSecret)) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid secret');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'invalid secret');
             return;
           }
           // Defence against in-flight double-bind, same pattern as device routes.
           const flightKey = `app:${route.dependantId}`;
           if (bindingInFlightRef.current.has(flightKey)) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing in progress');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'pairing in progress');
             return;
           }
           bindingInFlightRef.current.add(flightKey);
@@ -1021,10 +1068,10 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             // Surface the cap rejection (and any other persistence error)
             // back to the client so the consumer-side pair UI can render
             // a clear message rather than silently timing out.
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, bindError);
+            await reply(route.backend, request.clientPubkey, request.id, undefined, bindError);
             return;
           }
-          await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+          await reply(route.backend, request.clientPubkey, request.id, 'ack');
           return;
         }
         // Device route: secret-verified binding flow.
@@ -1040,14 +1087,14 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         if (route.pairingSecret) {
           const clientSecret = typeof request.params[1] === 'string' ? request.params[1] : '';
           if (!constantTimeStringEqual(clientSecret, route.pairingSecret)) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid secret');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'invalid secret');
             return;
           }
           // Match. But guard against a concurrent `connect` that arrived
           // in the same microtask as this one and would double-bind under
           // the stale `routesRef.current` snapshot.
           if (bindingInFlightRef.current.has(route.dependantId)) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing in progress');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'pairing in progress');
             return;
           }
           bindingInFlightRef.current.add(route.dependantId);
@@ -1071,23 +1118,23 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           }
           bindingInFlightRef.current.delete(dependantId);
           if (bindFailed) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'bind failed — try again');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'bind failed — try again');
             return;
           }
-          await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+          await reply(route.backend, request.clientPubkey, request.id, 'ack');
           return;
         }
         if (route.authorizedClientPubkey) {
           // No pair window open — enforce existing binding.
           if (request.clientPubkey.toLowerCase() !== route.authorizedClientPubkey.toLowerCase()) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
             return;
           }
-          await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+          await reply(route.backend, request.clientPubkey, request.id, 'ack');
           return;
         }
         // No pair in flight, no bound client — reject.
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing not active');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'pairing not active');
         return;
       }
       // Guardian route — unconditional ACK (existing behaviour),
@@ -1116,13 +1163,13 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             // nip44_decrypt fails as "not connected" and cannot retry the
             // one-shot secret. Keep the secret until TTL so the consumer can
             // retry after a transient IndexedDB/version problem.
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pairing failed — try again');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'pairing failed — try again');
             return;
           }
         }
         register.delete(authPairing.secret);
       }
-      await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+      await reply(route.backend, request.clientPubkey, request.id, 'ack');
       return;
     }
 
@@ -1140,7 +1187,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         // closed.
         const key = appPairingsKeyRef.current;
         if (!key) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
           return;
         }
         let pairings: import('../types').TrustedAppPairing[] = [];
@@ -1151,7 +1198,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         }
         authorizedAppPairing = pairings.find(p => p.clientPubkey.toLowerCase() === request.clientPubkey.toLowerCase());
         if (!authorizedAppPairing) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
           return;
         }
         // Note `lastSeenAt` for this pairing. Per-request DB write is
@@ -1162,17 +1209,17 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         db.touchAppBunkerPairing(route.dependantId, request.clientPubkey, key).catch(() => { /* non-fatal */ });
       } else if (route.authorizedClientPubkey) {
         if (request.clientPubkey.toLowerCase() !== route.authorizedClientPubkey.toLowerCase()) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
           return;
         }
       } else {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'not paired');
         return;
       }
     }
 
     if (request.method === 'ping') {
-      await publishResponse(route.backend, request.clientPubkey, request.id, 'pong');
+      await reply(route.backend, request.clientPubkey, request.id, 'pong');
       return;
     }
 
@@ -1186,7 +1233,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // the persistent relay proves the client already reaches it, so that
       // answers null, and the client's own same-set check covers the rest.
       const relays = switchRelaysAnswer(persistentRelayUrlRef.current, liveConnectionConfigRef.current.relayUrl);
-      await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(relays));
+      await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(relays));
       return;
     }
 
@@ -1194,7 +1241,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // Per NIP-46, ACK before removing session state so the client receives a
       // definite result. Deletes are best-effort: failure should not make the
       // already-acknowledged logout look like a timeout.
-      await publishResponse(route.backend, request.clientPubkey, request.id, 'ack');
+      await reply(route.backend, request.clientPubkey, request.id, 'ack');
       if (!route.dependantId) {
         db.deleteConnectedClient(request.clientPubkey).catch(() => { /* non-fatal */ });
       } else if (route.routeKind === 'app') {
@@ -1211,7 +1258,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // the client thinks it's paired with) — not the endpoint pubkey
       // which is just transport. For guardian routes the two are equal.
       const signingBackend = route.signingBackend ?? route.backend;
-      await publishResponse(route.backend, request.clientPubkey, request.id, signingBackend.activePublicKeyHex);
+      await reply(route.backend, request.clientPubkey, request.id, signingBackend.activePublicKeyHex);
       return;
     }
 
@@ -1225,19 +1272,19 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       const payload = request.params[1];
       if (typeof theirPubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(theirPubkey)
           || typeof payload !== 'string') {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid params');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'invalid params');
         return;
       }
       if (route.childGate) {
         if (request.method !== 'nip44_encrypt' && request.method !== 'nip44_decrypt') {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'method not supported');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'method not supported');
           return;
         }
         const outcome = await route.childGate.authorise({
           clientPubkey: request.clientPubkey.toLowerCase(), method: request.method, peer: theirPubkey.toLowerCase(),
         });
         if (!outcome.ok) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, childGateWireError(outcome.error));
+          await reply(route.backend, request.clientPubkey, request.id, undefined, childGateWireError(outcome.error));
           return;
         }
         try {
@@ -1245,9 +1292,9 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           const result = request.method === 'nip44_encrypt'
             ? await calls.nip44Encrypt(theirPubkey, payload)
             : await calls.nip44Decrypt(theirPubkey, payload);
-          await publishResponse(route.backend, request.clientPubkey, request.id, result);
+          await reply(route.backend, request.clientPubkey, request.id, result);
         } catch {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined,
+          await reply(route.backend, request.clientPubkey, request.id, undefined,
             request.method === 'nip44_encrypt' ? 'encryption failed' : 'decryption failed');
         }
         return;
@@ -1265,8 +1312,9 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         let owner: import('../types').ConnectedClient | undefined;
         try { owner = await db.getConnectedClient(request.clientPubkey); }
         catch { owner = undefined; }
+        if (stale()) return;
         if (!nip46PermissionAllows(owner?.permissions, request.method)) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
           return;
         }
         if (!ownerRouteNip44Authorised(route.dependantId, owner)) {
@@ -1276,7 +1324,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           // a bare "not connected" it could not recover from. The oracle
           // stays closed: nothing runs until the owner approves.
           if (queueSizeRef.current >= PENDING_APPROVALS_CAP) {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'busy');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'busy');
             return;
           }
           const method = request.method as BunkerCryptoMethod;
@@ -1339,7 +1387,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             rateLimitNotifiedRef.current.set(route.dependantId, nowMs);
             try { onRateLimitRef.current?.(route.dependantId); } catch { /* non-fatal */ }
           }
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'rate limited');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'rate limited');
           return;
         }
         // Charter clause #1: schedule check. Silent crypto has no per-origin grant,
@@ -1351,7 +1399,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               ? 'paused'
               : 'outside-allowed-hours';
             const wireReason = reason === 'paused' ? 'paused' : 'outside_allowed_hours';
-            await publishResponse(
+            await reply(
               route.backend,
               request.clientPubkey,
               request.id,
@@ -1379,7 +1427,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         if (policy !== 'auto' && policy !== 'auto-alert' && policy !== 'auto-log') {
           // blocked / ask-origin / ask-every — deny + audit. We don't
           // surface a prompt for silent crypto yet; deny is the conservative call.
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'ask your guardian — this account cannot do that');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'ask your guardian — this account cannot do that');
           fireAudit({
             dependantPubkey: route.dependantId,
             method: request.method,
@@ -1407,15 +1455,15 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // moment child mode started, and this is the last gate before the owner's
       // key runs.
       if (childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off')) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
         return;
       }
       const outcome = await runBunkerCrypto(route.signingBackend ?? route.backend, request.method as BunkerCryptoMethod, theirPubkey, payload);
       if (!outcome.ok) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
+        await reply(route.backend, request.clientPubkey, request.id, undefined, outcome.error);
         return;
       }
-      await publishResponse(route.backend, request.clientPubkey, request.id, outcome.result);
+      await reply(route.backend, request.clientPubkey, request.id, outcome.result);
       // `connectedClients` rows only exist for guardian-route NIP-46
       // sessions (the guardian-route server). Dependant routes (device + app)
       // have their own lastSeenAt mechanisms and never have a
@@ -1438,7 +1486,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // the client gets a definite answer rather than timing out. sign_event
     // is the 80% case for today's pairings.
     if (request.method !== 'sign_event') {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'method not supported');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'method not supported');
       return;
     }
 
@@ -1458,7 +1506,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
           rateLimitNotifiedRef.current.set(route.dependantId, nowMs);
           try { onRateLimitRef.current?.(route.dependantId); } catch { /* non-fatal */ }
         }
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'rate limited');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'rate limited');
         return;
       }
     }
@@ -1471,29 +1519,29 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // via the `pendingApproval` alias below, so its behaviour is
     // unchanged. Overflow past the cap still rejects with `busy`.
     if (queueSizeRef.current >= PENDING_APPROVALS_CAP) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'busy');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'busy');
       return;
     }
 
     const rawTemplate = request.params[0];
     if (typeof rawTemplate !== 'string') {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'missing template');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'missing template');
       return;
     }
     const template = parseSignEventTemplate(rawTemplate);
     if (!template) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid template');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'invalid template');
       return;
     }
 
     // This reserved authority ceremony is never a generic or remembered signature.
     const kinterest = isKinterestAuthority(template);
     if (kinterest && (route.dependantId || !parseKinterestRequest(template))) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'invalid Kinterest authority request');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'invalid Kinterest authority request');
       return;
     }
     if (kinterest && !isKinterestAuthorityRoute(route.pubkey)) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'Kinterest authority needs your real identity');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'Kinterest authority needs your real identity');
       return;
     }
 
@@ -1501,7 +1549,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     const kinterestChildProfile = selectedChild ? kinterestChildLabelRef.current?.(selectedChild.identityPk) : undefined;
     const kinterestChildName = kinterestChildProfile?.name;
     if (selectedChild && !kinterestChildName) {
-      await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'Activate your real identity and select an existing named dependant');
+      await reply(route.backend, request.clientPubkey, request.id, undefined, 'Activate your real identity and select an existing named dependant');
       return;
     }
 
@@ -1514,21 +1562,21 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     if (route.childGate) {
       const signing = route.signingBackend ?? route.backend;
       if (ownerRoutePubkeyMismatch(signing.activePublicKeyHex, template.pubkey)) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pubkey mismatch');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'pubkey mismatch');
         return;
       }
       const outcome = await route.childGate.authorise({
         clientPubkey: request.clientPubkey.toLowerCase(), method: 'sign_event', template,
       });
       if (!outcome.ok) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, childGateWireError(outcome.error));
+        await reply(route.backend, request.clientPubkey, request.id, undefined, childGateWireError(outcome.error));
         return;
       }
       try {
         const signed = await withRequestCreatedAt(signing, outcome.requestCreatedAt).signEvent(outcome.template ?? template);
-        await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
+        await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
       } catch {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
       }
       return;
     }
@@ -1545,12 +1593,12 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // runs before both the allow-always auto-approve and the manual-approval
       // enqueue, so a mismatched request is never signed by either path.
       if (ownerRoutePubkeyMismatch(route.pubkey, template.pubkey)) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'pubkey mismatch');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'pubkey mismatch');
         return;
       }
       const existing = await db.getConnectedClient(request.clientPubkey);
       if (!nip46PermissionAllows(existing?.permissions, 'sign_event', template.kind)) {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'permission not granted');
         return;
       }
       // Identity-sensitive scopes (pairing new NIP-46 clients, mutating the
@@ -1570,18 +1618,18 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         // the moment child mode started, and this is the last gate before a
         // signature leaves the phone.
         if (childModeHoldsRoute(route, childModeNowRef.current?.() ?? 'off')) {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'serving paused');
           return;
         }
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
-          await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
+          await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
           await db.saveConnectedClient({
             ...existing,
             lastSeenAt: Math.floor(Date.now() / 1000),
           });
         } catch {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
         }
         return;
       }
@@ -1646,7 +1694,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             const personaBackend = route.personaSigningBackendByPubkey?.(effectivePubkey) ?? null;
             const signingBackend = personaBackend ?? route.signingBackend ?? route.backend;
             const signed = await signingBackend.signEvent(template);
-            await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
+            await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
             fireAudit({
               dependantPubkey: route.dependantId,
               eventKind: template.kind,
@@ -1655,7 +1703,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               outcome: 'auto-approved',
             });
           } catch {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
           }
           return;
         }
@@ -1691,7 +1739,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               ? 'paused'
               : 'outside-allowed-hours';
             const wireReason = reason === 'paused' ? 'paused' : 'outside_allowed_hours';
-            await publishResponse(
+            await reply(
               route.backend,
               request.clientPubkey,
               request.id,
@@ -1733,7 +1781,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         if (grant?.decision === 'allow' && route.autonomyStage !== 'full-control') {
           try {
             const signed = await (route.signingBackend ?? route.backend).signEvent(template);
-            await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
+            await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
             await db.saveGrant({ ...grant, lastUsedAt: Math.floor(Date.now() / 1000) });
             fireGrantMutated();
             fireAudit({
@@ -1744,12 +1792,12 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               outcome: 'auto-approved',
             });
           } catch {
-            await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+            await reply(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
           }
           return;
         }
         if (grant?.decision === 'deny') {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'user denied');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'user denied');
           fireAudit({
             dependantPubkey: route.dependantId,
             eventKind: template.kind,
@@ -1764,7 +1812,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // 2) Stage policy for this scope (or the null-scope fallback).
       const policy = resolvePolicy(route.autonomyStage, scope);
       if (policy === 'blocked') {
-        await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'ask your guardian — this account cannot sign this');
+        await reply(route.backend, request.clientPubkey, request.id, undefined, 'ask your guardian — this account cannot sign this');
         fireAudit({
           dependantPubkey: route.dependantId,
           eventKind: template.kind,
@@ -1777,7 +1825,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       if (policy === 'auto' || policy === 'auto-alert' || policy === 'auto-log') {
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
-          await publishResponse(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
+          await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
           // `auto-log` and `auto-alert` both emit an audit record — the
           // difference is whether the guardian's app also surfaces a
           // push-style notification (future UI concern, not the publisher's
@@ -1795,7 +1843,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             });
           }
         } catch {
-          await publishResponse(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+          await reply(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
         }
         return;
       }
@@ -1806,6 +1854,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // queue holds up to PENDING_APPROVALS_CAP entries; bump the
     // sync-visible ref alongside the React state update so the next
     // inbound-in-the-same-tick sees the new length against the cap.
+    if (stale()) return;
     queueSizeRef.current += 1;
     const handle = ++handleCounterRef.current;
     const askedAt = Math.min(Date.now(), event.created_at * 1000);
@@ -1821,6 +1870,8 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       ...(kinterestChildName ? { kinterestChildName } : {}),
     });
     const existing = route.dependantId ? undefined : await db.getConnectedClient(request.clientPubkey);
+    // The queue was cleared while that lookup ran: nothing of this request may land.
+    if (stale()) { activeRequestRef.current.delete(handle); return; }
     // Only a name the card will show: none when a saved row names the app.
     const declared = existing ? undefined : declaredHint;
     const queued = activeRequestRef.current.get(handle);
@@ -1851,6 +1902,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       route: {
         pubkey: route.pubkey,
         dependantId: route.dependantId ?? null,
+        ...(route.dependantId ? { routeKind: route.routeKind === 'app' ? 'app' as const : 'device' as const } : {}),
       },
       method: 'sign_event',
       template,
@@ -1913,7 +1965,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             await db.saveConnectedClient({
               ...(client?.permissions !== undefined ? { permissions: client.permissions } : {}),
               clientPubkey: req.clientPubkey,
-              appName: client?.appName ?? req.declaredName ?? 'Unnamed app',
+              appName: client?.appName ?? await nameForNewRow(req.declaredName, req.clientPubkey),
               appUrl: client?.appUrl,
               connectedAt: client?.connectedAt ?? now,
               lastSeenAt: now,
@@ -2049,7 +2101,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
             await db.saveConnectedClient({
               ...(existing?.permissions !== undefined ? { permissions: existing.permissions } : {}),
               clientPubkey: req.clientPubkey,
-              appName: existing?.appName ?? req.declaredName ?? 'Unnamed app',
+              appName: existing?.appName ?? await nameForNewRow(req.declaredName, req.clientPubkey),
               appUrl: existing?.appUrl,
               connectedAt: existing?.connectedAt ?? now,
               lastSeenAt: now,
@@ -2065,28 +2117,32 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
 
   /**
    * Take a request off the queue WITHOUT refusing it: the app gets
-   * `request expired` (never `user denied`) and nothing is written: no
-   * ConnectedClient row, no deny grant on a dependant route, no audit event, no
-   * `lastSeenAt` bump. For a request the app has probably stopped waiting for.
+   * `request expired` (never `user denied`). For a request the app has probably
+   * stopped waiting for. It writes no ConnectedClient row, no deny grant on a
+   * dependant route, no audit event and no `lastSeenAt` bump. The ONE write is
+   * on Android: sending the answer records the inbound event id as answered
+   * (`markAnswered`, via `flushResponses`), so another page of the app cannot
+   * queue the same request again after a reload.
+   *
+   * It always removes the card, even when the handle is no longer active (a
+   * request that went stale across a lock, say): removing a card is its job.
    */
   const clearApproval = useCallback(
     async (handle: number) => {
       const req = activeRequestRef.current.get(handle);
-      if (!req) return;
-      const key = `${req.clientPubkey}:${req.requestId}`;
-      const alreadyAnswered = shareAnswered && wasAnswered(req.inboundEventId);
-      const generation = responseGenerationRef.current;
       activeRequestRef.current.delete(handle);
       setPendingApprovals(prev => {
         const next = prev.filter(p => p.handle !== handle);
+        if (next.length === prev.length) return prev;
         queueSizeRef.current = next.length;
         return next;
       });
-      if (alreadyAnswered) {
+      if (!req) return;
+      const key = `${req.clientPubkey}:${req.requestId}`;
+      if (shareAnswered && wasAnswered(req.inboundEventId)) {
         if (inboundEventByRequestRef.current.get(key) === req.inboundEventId) inboundEventByRequestRef.current.delete(key);
         return;
       }
-      if (generation !== responseGenerationRef.current) return;
       await publishResponse(req.route.backend, req.clientPubkey, req.requestId, undefined, 'request expired', req.inboundEventId);
     },
     [publishResponse, shareAnswered],

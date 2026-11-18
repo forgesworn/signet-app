@@ -47,7 +47,11 @@ beforeAll(() => {
   vi.stubGlobal('indexedDB', new IDBFactory());
   vi.stubGlobal('WebSocket', MockRelaySocket);
 });
-afterEach(() => { cleanup(); MockRelaySocket.instances = []; vi.restoreAllMocks(); });
+afterEach(async () => {
+  cleanup(); MockRelaySocket.instances = []; vi.restoreAllMocks();
+  // One database serves the whole file: saved clients must not leak between tests.
+  for (const c of await db.listConnectedClients()) await db.deleteConnectedClient(c.clientPubkey);
+});
 afterAll(() => { vi.unstubAllGlobals(); });
 
 function request(input: { clientSk: Uint8Array; target: string; id: string; method: string; params: string[]; createdAt?: number }): NostrEvent {
@@ -197,6 +201,25 @@ describe('what an app says about itself in connect', () => {
     expect(h.hook.result.current.pendingApprovals[0].client.declaredName).toBe('KithMoot');
   });
 
+  it('keeps the name an earlier connect gave when a later one carries only a url', async () => {
+    const h = await ownerServer();
+    const c = h.client();
+    await h.connect(c, { name: 'KithMoot' }, 'first');
+    await h.connect(c, { url: 'https://kithmoot.example' }, 'second');
+    await h.send(c, 's1', 'sign_event', [note()]);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    expect(h.hook.result.current.pendingApprovals[0].client).toMatchObject({ declaredName: 'KithMoot', declaredUrl: 'https://kithmoot.example' });
+  });
+
+  it('takes invisible characters out of a declared name', async () => {
+    const h = await ownerServer();
+    const c = h.client();
+    await h.connect(c, { name: 'Kith\u2060Moot\u00ad' });
+    await h.send(c, 's1', 'sign_event', [note()]);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    expect(h.hook.result.current.pendingApprovals[0].client.declaredName).toBe('KithMoot');
+  });
+
   it('never saves a name the card did not show: a row present at queue time wins even if it is deleted before Always', async () => {
     const h = await ownerServer();
     const c = h.client();
@@ -248,6 +271,34 @@ describe('"Always" with no saved row', () => {
     await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
     await act(async () => { await h.hook.result.current.approveAlways(h.hook.result.current.pendingApprovals[0].handle); });
     await waitFor(async () => expect(await db.getConnectedClient(c.pk)).toMatchObject({ appName: 'Unnamed app', allowAlways: true }));
+  });
+});
+
+describe('"Always" and a name that is already paired under another key', () => {
+  it.each([
+    ['sign_event', 'KithMoot'],
+    ['nip44_encrypt', 'KithMoot'],
+    ['sign_event', 'kith\u2060moot'],
+    ['nip44_encrypt', ' Kith\u00adMoot '],
+  ])('saves "Unnamed app", not the look-alike name, on %s (declared %j)', async (method, declared) => {
+    const h = await ownerServer();
+    await db.saveConnectedClient(row(peer(), { appName: 'KithMoot' }));
+    const c = h.client();
+    await h.connect(c, { name: declared });
+    await h.send(c, 'a1', method, method === 'sign_event' ? [note()] : [peer(), 'data']);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { await h.hook.result.current.approveAlways(h.hook.result.current.pendingApprovals[0].handle); });
+    await waitFor(async () => expect(await db.getConnectedClient(c.pk)).toMatchObject({ appName: 'Unnamed app', allowAlways: true }));
+  });
+  it.each(['sign_event', 'nip44_encrypt'])('still saves a declared name nobody else has on %s, even with other apps paired', async method => {
+    const h = await ownerServer();
+    await db.saveConnectedClient(row(peer(), { appName: 'Some Other App' }));
+    const c = h.client();
+    await h.connect(c, { name: 'KithMoot' });
+    await h.send(c, 'a1', method, method === 'sign_event' ? [note()] : [peer(), 'data']);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    await act(async () => { await h.hook.result.current.approveAlways(h.hook.result.current.pendingApprovals[0].handle); });
+    await waitFor(async () => expect(await db.getConnectedClient(c.pk)).toMatchObject({ appName: 'KithMoot', allowAlways: true }));
   });
 });
 
@@ -320,31 +371,124 @@ describe('clearApproval', () => {
     expect(await db.getConnectedClient(c.pk)).toEqual(queued);
   });
 
-  it('writes no deny grant and no audit event on a dependant route (where Deny would)', async () => {
-    const transportSk = generateSecretKey(), personaSk = generateSecretKey(), clientSk = generateSecretKey();
-    const persona = getPublicKey(personaSk);
-    const transport = new LocalSigningBackend(bytesToHex(transportSk));
-    const route: BunkerRoute = {
-      pubkey: transport.activePublicKeyHex, backend: transport, signingBackend: new LocalSigningBackend(bytesToHex(personaSk)),
-      dependantId: persona, autonomyStage: 'request-approve', authorizedClientPubkey: getPublicKey(clientSk),
-    };
-    const onAuditEvent = vi.fn();
-    const onGrantMutated = vi.fn();
-    const relayUrl = `wss://detail-dep-${++relayCounter}.example`;
-    const hook = renderHook(() => useBunkerServer({
-      enabled: true, relayUrl, routes: [route], isOwnerServingActive: () => true, onAuditEvent, onGrantMutated,
-    }));
-    await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
-    const ws = MockRelaySocket.instances.at(-1)!;
-    const origin = 'https://game.example';
-    const signIn = JSON.stringify({ kind: 21236, created_at: 1_800_000_000, tags: [['origin', origin]], content: '' });
-    await act(async () => { ws.deliver(request({ clientSk, target: transport.activePublicKeyHex, id: 'dep1', method: 'sign_event', params: [signIn] })); });
-    await waitFor(() => expect(hook.result.current.pendingApprovals).toHaveLength(1));
-    await act(async () => { await hook.result.current.clearApproval(hook.result.current.pendingApprovals[0].handle); });
-    await waitFor(() => expect(ws.published).toHaveLength(1));
-    expect(reply(clientSk, ws.published[0])).toMatchObject({ id: 'dep1', error: 'request expired' });
-    expect(await db.lookupGrant(persona, 'sign-in', origin)).toBeUndefined();
-    expect(onAuditEvent).not.toHaveBeenCalled();
-    expect(onGrantMutated).not.toHaveBeenCalled();
+  describe('on a dependant route', () => {
+    async function queuedDependantRequest() {
+      const transportSk = generateSecretKey(), personaSk = generateSecretKey(), clientSk = generateSecretKey();
+      const persona = getPublicKey(personaSk);
+      const transport = new LocalSigningBackend(bytesToHex(transportSk));
+      const route: BunkerRoute = {
+        pubkey: transport.activePublicKeyHex, backend: transport, signingBackend: new LocalSigningBackend(bytesToHex(personaSk)),
+        dependantId: persona, autonomyStage: 'request-approve', authorizedClientPubkey: getPublicKey(clientSk),
+      };
+      const onAuditEvent = vi.fn();
+      const onGrantMutated = vi.fn();
+      const relayUrl = `wss://detail-dep-${++relayCounter}.example`;
+      const hook = renderHook(() => useBunkerServer({
+        enabled: true, relayUrl, routes: [route], isOwnerServingActive: () => true, onAuditEvent, onGrantMutated,
+      }));
+      await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
+      const ws = MockRelaySocket.instances.at(-1)!;
+      const origin = 'https://game.example';
+      const signIn = JSON.stringify({ kind: 21236, created_at: 1_800_000_000, tags: [['origin', origin]], content: '' });
+      await act(async () => { ws.deliver(request({ clientSk, target: transport.activePublicKeyHex, id: 'dep1', method: 'sign_event', params: [signIn] })); });
+      await waitFor(() => expect(hook.result.current.pendingApprovals).toHaveLength(1));
+      return { hook, ws, clientSk, persona, origin, onAuditEvent, onGrantMutated };
+    }
+
+    it('control: Deny DOES write its deny grant and audit event in this setup', async () => {
+      const d = await queuedDependantRequest();
+      await act(async () => { await d.hook.result.current.deny(d.hook.result.current.pendingApprovals[0].handle); });
+      await waitFor(() => expect(d.ws.published).toHaveLength(1));
+      expect(reply(d.clientSk, d.ws.published[0])).toMatchObject({ id: 'dep1', error: 'user denied' });
+      expect(await db.lookupGrant(d.persona, 'sign-in', d.origin)).toMatchObject({ decision: 'deny' });
+      expect(d.onAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'denied' }));
+      expect(d.onGrantMutated).toHaveBeenCalled();
+    });
+
+    it('Clear writes no deny grant and no audit event (where Deny would)', async () => {
+      const d = await queuedDependantRequest();
+      await act(async () => { await d.hook.result.current.clearApproval(d.hook.result.current.pendingApprovals[0].handle); });
+      await waitFor(() => expect(d.ws.published).toHaveLength(1));
+      expect(reply(d.clientSk, d.ws.published[0])).toMatchObject({ id: 'dep1', error: 'request expired' });
+      expect(await db.lookupGrant(d.persona, 'sign-in', d.origin)).toBeUndefined();
+      expect(d.onAuditEvent).not.toHaveBeenCalled();
+      expect(d.onGrantMutated).not.toHaveBeenCalled();
+      expect(d.hook.result.current.pendingApprovals).toHaveLength(0);
+    });
+
+    it('tells a dependant\'s own device from an app pairing on the queued entry', async () => {
+      const d = await queuedDependantRequest();
+      expect(d.hook.result.current.pendingApprovals[0].route.routeKind).toBe('device');
+    });
   });
+
+  it.each([['Clear first', true], ['Approve first', false]])('answers exactly once when Clear and Approve hit the same handle (%s)', async (_name, clearFirst) => {
+    const h = await ownerServer();
+    const c = h.client();
+    await h.send(c, 'r1', 'sign_event', [note()]);
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    const handle = h.hook.result.current.pendingApprovals[0].handle;
+    const { clearApproval, approveOnce } = h.hook.result.current;
+    await act(async () => {
+      await Promise.all(clearFirst ? [clearApproval(handle), approveOnce(handle)] : [approveOnce(handle), clearApproval(handle)]);
+    });
+    await waitFor(() => expect(h.ws.published).toHaveLength(1));
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+    expect(h.ws.published).toHaveLength(1);
+    const answer = reply(c.sk, h.ws.published[0]);
+    if (clearFirst) expect(answer.error).toBe('request expired'); else expect(JSON.parse(answer.result!)).toMatchObject({ kind: 1 });
+    expect(h.hook.result.current.pendingApprovals).toHaveLength(0);
+  });
+});
+
+describe('a request still being handled when the phone locks', () => {
+  it('leaves no queue entry, preview, active request or hint behind', async () => {
+    const h = await ownerServer({ appPairingsEncryptionKey: 'unlock-key' });
+    const real = db.getConnectedClient;
+    const calls = new Map<string, number>();
+    const holdOn = new Map<string, number>(); // client pubkey -> the call (1-based) to hold
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    vi.spyOn(db, 'getConnectedClient').mockImplementation(async pk => {
+      const n = (calls.get(pk) ?? 0) + 1;
+      calls.set(pk, n);
+      if (holdOn.get(pk) === n) await gate;
+      return real(pk);
+    });
+    const connecting = h.client(), encrypting = h.client(), signing = h.client();
+    holdOn.set(connecting.pk, 1);
+    holdOn.set(encrypting.pk, 1);
+    holdOn.set(signing.pk, 2); // past the permission lookup, into the queue's own
+    await h.send(connecting, 'c1', 'connect', [h.owner, '', '', JSON.stringify({ name: 'Ghost App', url: 'https://ghost.example' })]);
+    await h.send(encrypting, 'e1', 'nip44_encrypt', [peer(), 'meet at 6, door code 4471']);
+    await h.send(signing, 's1', 'sign_event', [note('door code 4471')]);
+    await waitFor(() => {
+      expect(calls.get(connecting.pk)).toBe(1);
+      expect(calls.get(encrypting.pk)).toBe(1);
+      expect(calls.get(signing.pk)).toBe(2);
+    });
+
+    h.hook.rerender({ enabled: false, appPairingsEncryptionKey: null }); // lock
+    await act(async () => { release(); await new Promise(r => setTimeout(r, 50)); });
+
+    expect(h.hook.result.current.pendingApprovals).toHaveLength(0);
+    // No handle (the handler's own counter starts at 1) names a live request: answering any of them writes nothing.
+    for (const handle of [1, 2, 3, 4]) {
+      await act(async () => { await h.hook.result.current.approveAlways(handle); await h.hook.result.current.approveOnce(handle); });
+    }
+    expect(await db.listConnectedClients()).toEqual([]);
+    expect(h.ws.published).toHaveLength(0); // not even the connect's ACK
+
+    // Unlocked again: the connect's name was not remembered across the lock.
+    h.hook.rerender({ enabled: true, appPairingsEncryptionKey: 'unlock-key-2' });
+    await waitFor(() => expect(MockRelaySocket.instances.at(-1)?.subId).toBeTruthy());
+    const ws2 = MockRelaySocket.instances.at(-1)!;
+    expect(ws2).not.toBe(h.ws);
+    await act(async () => { ws2.deliver(request({ clientSk: connecting.sk, target: h.owner, id: 'after', method: 'sign_event', params: [note()] })); });
+    await waitFor(() => expect(h.hook.result.current.pendingApprovals).toHaveLength(1));
+    const { client } = h.hook.result.current.pendingApprovals[0];
+    expect(client.declaredName).toBeUndefined();
+    expect(client.declaredUrl).toBeUndefined();
+    expect(h.hook.result.current.pendingApprovals[0].askedAt).toBeGreaterThan(0);
+  }, 30_000);
 });
