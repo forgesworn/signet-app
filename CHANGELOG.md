@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Child mode: apps connected to your own identities wait until you exit child mode, and the Bunker tab, approval pop-ups and notifications no longer show your family or apps while the phone is handed over
 - Child mode: only the child's own screens open while the phone is handed over; everything else asks you to exit child mode first
 - Child mode: contacts the child adds or changes now count as the child's own, so their contact limits apply; your decisions (raising a contact, vouching, lifting a block you made) wait until you exit child mode
 - Child mode: the child's settings page, your security settings and Shamir backup are now refused while the phone is in child mode, so the child can no longer change their own autonomy level or remove themselves (which used to drop the phone out of child mode with no PIN). The backup reminder and the Heartwood "approve again" and "Finish now" prompts are hidden in child mode too. Opening Contacts, Settings or a handshake from the child's cards no longer switches the phone over to your own contacts and settings; a page that is not the child's own is refused with no PIN. Pairing, permissions and family pages are refused too, even if you reach them with Back; paired children's contact requests, your contact approval and the private-backups notice (with its "Turn off relay" button) are hidden in child mode, and a contact your guardian has not approved reads as waiting for them

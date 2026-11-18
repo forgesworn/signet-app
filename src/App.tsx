@@ -132,6 +132,7 @@ import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublish
 import { usePersonaInventory } from './hooks/usePersonaInventory';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
+import { notificationForChildMode } from './lib/child-mode-entry';
 import { escalationOwner, escalationNotificationText, type EscalationOwner } from './lib/escalation-owner';
 import { useHeartwoodOperator } from './hooks/useHeartwoodOperator';
 import { usePolicyPush } from './hooks/usePolicyPush';
@@ -2472,10 +2473,16 @@ function AppContent() {
   const signInChildDependant: ChildModeSignInDependant | null = carousel.childMode ? childModeDependantRef.current : savedChildMode ?? null;
   // Phone apps (NIP-55) only ever get the owner's keys: refused outright in child mode.
   const nip55ChildMode = childModeState({ live: carousel.childMode, saved: savedChildMode });
+  // The one three-state child-mode signal ('unknown' counts as on, D4): every
+  // child-mode gate reads this. The ref is for callbacks that run later (the
+  // hot NIP-46 request path, native notifications), which must see it fresh.
+  const childModeNow = nip55ChildMode;
+  const childModeNowRef = useRef(childModeNow);
+  childModeNowRef.current = childModeNow;
 
   // Which contacts directory this surface acts in, and as what role. Child mode
   // is the child acting (R-CHILD-MODE reversed 2026-11-18): the scope reads the
-  // three-state `nip55ChildMode` (live, or saved and not yet restored, or not
+  // three-state `childModeNow` (live, or saved and not yet restored, or not
   // yet known) plus the live child's id, so the saved-session window idles on
   // `directoryId: null` instead of resolving to the owner's directory.
   const contactsScope = useMemo(() => resolveContactsScope({
@@ -2484,10 +2491,10 @@ function AppContent() {
     activeDependant: activeDependant
       ? { id: activeDependant.id, displayName: activeDependant.displayName }
       : null,
-    childModeNow: nip55ChildMode,
+    childModeNow,
     childDependantId: carousel.childDependant?.id ?? null,
     dependantCount: dependants.length,
-  }), [preferences.signingMode, identity, activeDependant, nip55ChildMode, carousel.childDependant?.id, dependants.length]);
+  }), [preferences.signingMode, identity, activeDependant, childModeNow, carousel.childDependant?.id, dependants.length]);
 
   const contactsIdentityLists = useMemo(() => contactIdentityLists(identity, activeDependant), [identity, activeDependant]);
   const defaultContactsIdentity = contactsIdentityLists.find(l => l.ownerIdentityPubkey === carousel.activeIdentity.publicKey)?.ownerIdentityPubkey
@@ -2588,14 +2595,14 @@ function AppContent() {
   // the family hook, the legacy import, the picture sweep and app proposals;
   // child mode must never re-stamp those.
   const contactsScopeActor = contactsScopeActorPubkey({
-    childModeNow: nip55ChildMode, childDependantId: carousel.childDependant?.id ?? null, isPairedChild, actorPubkey: contactsActorPubkey,
+    childModeNow, childDependantId: carousel.childDependant?.id ?? null, isPairedChild, actorPubkey: contactsActorPubkey,
   });
 
   // Child mode on the guardian's phone (live, saved, or not yet known: D4 treats
   // unknown as on). Gates the surfaces that would otherwise read the GUARDIAN's
   // data: legacy members/kens, the guardian's real name, picture refresh, the
   // own-picture controls.
-  const childContactsMode = !isPairedChild && nip55ChildMode !== 'off';
+  const childContactsMode = !isPairedChild && childModeNow !== 'off';
 
   // R-ACTOR: whose vouches and ceilings count in the acting
   // directory. Deliberately never the kid's own `naturalPerson.publicKey` —
@@ -4226,6 +4233,9 @@ function AppContent() {
     // Owner serving is time-boxed (stay-awake) or always-on (native background):
     // read live (via ref) at request time.
     isOwnerServingActive: () => backgroundServingRef.current || (stayAwakeUntilRef.current !== null && Date.now() < stayAwakeUntilRef.current),
+    // Child mode: the guardian's own persona routes are answered as paused,
+    // read at request time. Dependant routes and a child's own are unaffected.
+    childModeNow: () => childModeNowRef.current,
     reconnectNonce: bunkerReconnectNonce,
     relayUrl: nostrConnectServeRelayUrl ?? preferences.relayUrl ?? DEFAULT_RELAY_URL,
     persistentRelayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
@@ -4266,13 +4276,15 @@ function AppContent() {
       const who = entry.route.dependantId
         ? (dependants.find(d => d.id === entry.route.dependantId)?.displayName ?? 'Your child')
         : entry.client.appName;
+      // Child mode: no names, apps or family details on a locked screen.
+      const text = notificationForChildMode(childModeNowRef.current, { title: `${who} needs an approval`, body: entry.description });
       notifiedApprovalHandlesRef.current.add(entry.handle);
       void LocalNotifications.schedule({
         notifications: [{
           id: entry.handle,
           channelId: 'signet-requests',
-          title: `${who} needs an approval`,
-          body: entry.description,
+          title: text.title,
+          body: text.body,
           smallIcon: 'ic_stat_signet',
           // Shown now, not scheduled: without this the plugin opens Android's
           // "Alarms & reminders" settings over whatever app is in front.
@@ -4708,7 +4720,7 @@ function AppContent() {
   // notification id spaces can't collide.
   const handleLiveEscalationNotice = useCallback((notice: EscalationNotice) => {
     if (notice.kind !== 'approval' || !isNativeApp()) return;
-    const { title, body } = escalationNotificationText(resolveEscalationOwner(notice.identityPubkey), notice.identityPubkey.slice(0, 8));
+    const { title, body } = notificationForChildMode(childModeNowRef.current, escalationNotificationText(resolveEscalationOwner(notice.identityPubkey), notice.identityPubkey.slice(0, 8)));
     void LocalNotifications.schedule({
       notifications: [{
         id: ESCALATION_NOTIFICATION_ID_BASE + (hashToUint32(notice.id) % ESCALATION_NOTIFICATION_ID_RANGE),
@@ -5438,12 +5450,13 @@ function AppContent() {
       if (!isNativeApp() || isAppInForeground()) return;
       const id = 0x40000000 + (parseInt(p.ask.id.slice(0, 7), 16) % 0x10000000);
       notifiedChildAsksRef.current.set(p.ask.id, id);
+      const text = notificationForChildMode(childModeNowRef.current, { title: CHILD_ASK_COPY.notificationTitle(p.dependantName), body: p.ask.targetLabel });
       void LocalNotifications.schedule({
         notifications: [{
           id,
           channelId: 'signet-requests',
-          title: CHILD_ASK_COPY.notificationTitle(p.dependantName),
-          body: p.ask.targetLabel,
+          title: text.title,
+          body: text.body,
           smallIcon: 'ic_stat_signet',
           // Shown now, not scheduled: without this the plugin opens Android's
           // "Alarms & reminders" settings over whatever app is in front.
@@ -6542,6 +6555,11 @@ function AppContent() {
   useEffect(() => {
     if (bunkerPanelOpen && isBarHiddenPage(page)) setBunkerPanelOpen(false);
   }, [bunkerPanelOpen, page]);
+  // The panel holds the guardian's family asks and signing controls: never open in
+  // child mode, however it was asked for (tab, arm link, always-on arm).
+  useEffect(() => {
+    if (bunkerPanelOpen && childModeNow !== 'off') setBunkerPanelOpen(false);
+  }, [bunkerPanelOpen, childModeNow]);
 
   // PWA update: auto-reload when update arrives while already locked
   useEffect(() => {
@@ -6576,8 +6594,7 @@ function AppContent() {
   const signInChildModeRef = useRef({ childMode: signInChildMode, dependant: signInChildDependant });
   signInChildModeRef.current = { childMode: signInChildMode, dependant: signInChildDependant };
   // Pages that act as the guardian are refused in child mode, with no PIN.
-  // `nip55ChildMode` is the three-way state: unknown until saved child mode is read.
-  const childModeNow = nip55ChildMode;
+  // `childModeNow` is the three-way state: unknown until saved child mode is read.
   // The lock-proof child id (`signInChildDependant`), not `carousel.childDependant`,
   // which goes null while the dependants list reloads after a lock.
   const stableChildId = signInChildDependant?.id || null;
@@ -12102,7 +12119,7 @@ function AppContent() {
   // per-page renders don't need to branch — they just drop it in.
   // Never in child mode, on any page: the child holds the phone. The guardian's
   // relay requests stay queued and show after the PIN exit.
-  const bunkerApprovalOverlay = bunkerPanelOpen || signInChildMode ? null : (bunkerPendingApproval ? (
+  const bunkerApprovalOverlay = bunkerPanelOpen || childModeNow !== 'off' ? null : (bunkerPendingApproval ? (
         <BunkerApprovalModal
           approval={bunkerPendingApproval}
           onApproveOnce={bunkerApproveOnce}
@@ -16069,9 +16086,10 @@ function AppContent() {
     <>
       <AppShell
         page={page}
-        // Locked cold start: child mode is only saved, not live (no activeDependant yet).
-        // Still a hand-the-phone-to-a-child state, so the Bunker tab stays hidden.
-        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}
+        // Child mode, live or only saved (locked cold start, no activeDependant yet), or
+        // not yet known (the saved-session read is pending): a hand-the-phone-to-a-child
+        // state, so the Bunker tab stays hidden.
+        isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || childModeNow !== 'off'}
         childBunker={childDirect && !activeDependant}
         bunkerPanelOpen={bunkerPanelOpen}
         bunkerTint={bunkerTint({
@@ -16105,7 +16123,7 @@ function AppContent() {
       >
         {renderPage()}
       </AppShell>
-      {bunkerPanelOpen && !isBarHiddenPage(page) && (
+      {bunkerPanelOpen && childModeNow === 'off' && !isBarHiddenPage(page) && (
         <BunkerPanel
           onClose={() => setBunkerPanelOpen(false)}
           bunkerAllowed={bunkerServerEnabled}

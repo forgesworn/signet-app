@@ -34,7 +34,7 @@ describe('child mode always has a way out', () => {
     expect(carousel).toContain('onExit={props.childMode || props.childModeSavedExitable ? props.onExitChildMode : undefined}');
     const app = readFileSync(join(here, '..', 'App.tsx'), 'utf8');
     expect(app).toContain('childModeSaved={!carousel.childMode && !!savedChildMode}');
-    expect(app).toContain("isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}");
+    expect(app).toContain("isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || childModeNow !== 'off'}");
     // childMode itself still drives only live child mode.
     expect(app).toContain('childMode={carousel.childMode}');
   });

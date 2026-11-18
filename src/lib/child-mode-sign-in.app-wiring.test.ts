@@ -106,7 +106,7 @@ describe('child-mode sign-in gate in App.tsx', () => {
     // Child mode as saved is read before the NIP-55 server is set up.
     expect(app.indexOf('const [savedChildMode, setSavedChildMode]')).toBeLessThan(app.indexOf('const nip55 = useNip55Server({'));
     expect(app).toContain("const nip55Overlay = nip55.pending && nip55ChildMode === 'off' && !showAuthPrompt && !bunkerPendingApproval ? (");
-    expect(app).toContain('const bunkerApprovalOverlay = bunkerPanelOpen || signInChildMode ? null : (bunkerPendingApproval ? (');
+    expect(app).toContain("const bunkerApprovalOverlay = bunkerPanelOpen || childModeNow !== 'off' ? null : (bunkerPendingApproval ? (");
   });
 
   it('a saved session that can never restore is cleared once unlocked and read with the key, lifting every restriction', () => {
