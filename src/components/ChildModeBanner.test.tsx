@@ -27,11 +27,11 @@ describe('child mode always has a way out', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('the carousel shows it for saved child mode too, with Exit only when live', () => {
+  it('the carousel shows it for saved child mode too, with Exit only when live or the saved read failed', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const carousel = readFileSync(join(here, 'Carousel.tsx'), 'utf8');
     expect(carousel).toMatch(/\{\(props\.childMode \|\| props\.childModeSaved\) && \(\s*<ChildModeBanner/);
-    expect(carousel).toContain('onExit={props.childMode ? props.onExitChildMode : undefined}');
+    expect(carousel).toContain('onExit={props.childMode || props.childModeSavedExitable ? props.onExitChildMode : undefined}');
     const app = readFileSync(join(here, '..', 'App.tsx'), 'utf8');
     expect(app).toContain('childModeSaved={!carousel.childMode && !!savedChildMode}');
     expect(app).toContain("isDependantContext={!!activeDependant || preferences.signingMode === 'paired-child' || (!carousel.childMode && !!savedChildMode)}");

@@ -4,8 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * App.tsx is too large to render in a unit test, so this pins how the
- * guardian-only pages are refused in child mode: no PIN, one refusal page that
+ * App.tsx is too large to render in a unit test, so this pins how pages off
+ * the child-mode allowlist are refused in child mode: no PIN, one refusal page that
  * renders even when locked, and a Decline that signs and publishes nothing.
  */
 const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'), 'utf8');
@@ -19,7 +19,8 @@ describe('child-mode guardian-page gate in App.tsx', () => {
   it('reads the three-way child mode through the same state phone apps use', () => {
     expect(app).toContain('const childModeNow = nip55ChildMode;');
     expect(app).toContain('const childModePage = childModePageDecision({');
-    expect(app).toContain('liveChild: carousel.childMode ? { childDependantId: carousel.childDependant?.id ?? null, activeDependantId } : null,');
+    expect(app).toContain('page, childMode: childModeNow, live: carousel.childMode, stableChildId, activeDependantId,');
+    expect(app).not.toContain('liveChild');
   });
 
   it('a card page opens under the child in child mode, never the guardian scope', () => {
@@ -140,5 +141,55 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     // every other use goes through that one banner, so the Settings warning and Security & Backup follow it
     expect(app.match(/<PrivateVaultStatus/g)).toHaveLength(1);
     expect(app).toContain('const settingsBackupWarning = privateVaultBanner && privateVaultWarning');
+  });
+});
+
+describe('child-mode page allowlist wiring', () => {
+  it('the stable child id is the lock-proof one, not the carousel\'s', () => {
+    expect(app).toContain('const stableChildId = signInChildDependant?.id || null;');
+    expect(idx('const stableChildId = ')).toBeGreaterThan(idx('const signInChildDependant: ChildModeSignInDependant | null ='));
+    expect(idx('const stableChildId = ')).toBeLessThan(idx('const childModePage = childModePageDecision({'));
+    const call = app.slice(idx('const childModePage = childModePageDecision({'), idx('const cancelSignInReview'));
+    expect(call).not.toContain('carousel.childDependant');
+  });
+
+  it('Decline clears every piece of request state a navigation to a refused page can stage', () => {
+    const start = idx('const declineChildModeGuardianPage = useCallback(() => {');
+    const handler = app.slice(start, app.indexOf('}, [page,', start));
+    for (const setter of [
+      'setPendingPublicProfileTarget(null)', 'setPendingPersonaFocus(null)', 'setPendingSecurityFocus(null)',
+      'setSelectedContactId(null)', 'setSelectedKenPubkey(null)', 'setSelectedCredential(null)',
+      'setPendingOperatorImportText(null)', 'setPendingOwnerChoice(null)', 'setPendingBotContacts(undefined)',
+      'setPendingContactInvite(undefined)', 'setPendingInviteSender(undefined)', 'setFamilyContactsUnlocked(false)',
+      'setPendingPairingRequest(null)', 'setPendingContactsGrantV2(null)', 'setHeldContactsGrantV2(null)',
+    ]) expect(handler, setter).toContain(setter);
+    // clearing is not conditional on the page: it runs before the page-specific answers
+    expect(handler.indexOf('setPendingPublicProfileTarget(null)')).toBeLessThan(handler.indexOf("if (page === 'approve-add-dependant')"));
+    expect(handler).toContain("navigateReplace('home')");
+  });
+
+  it('the start-up read of the saved session fails closed', () => {
+    expect(app).toContain('readSavedChildMode({ loadSession: loadChildModeSession, loadFacts: loadDependantSignInFacts })');
+    const start = idx('readSavedChildMode({ loadSession');
+    const read = app.slice(start, app.indexOf('return () => { live = false; };', start));
+    expect(read).not.toContain('.catch');
+    expect(read).not.toContain('setSavedChildMode(null); });');
+  });
+
+  it('the PIN exit clears a saved (or unresolved) child mode, and the banner offers it then', () => {
+    const start = idx('const handleExitChildMode = useCallback(async () => {');
+    const handler = app.slice(start, app.indexOf('}, [carousel.exitChildMode', start));
+    expect(handler.indexOf('requestFreshAuth')).toBeLessThan(handler.indexOf('setSavedChildMode(null)'));
+    expect(handler).toContain('childModeRestoredRef.current = true;');
+    expect(app).toContain('childModeSavedExitable={!carousel.childMode && (savedChildMode === CHILD_MODE_UNRESOLVED || (!!savedChildMode && !!encryptionKey))}');
+  });
+
+  it('the child viewer of Settings has no Verification photo row and no signer banner', () => {
+    const start = idx("if (page === 'settings') {");
+    const block = app.slice(start, app.indexOf('return renderSettingsPage(', start));
+    expect(block).toContain("onUpdatePhoto={carousel.childMode ? undefined : () => navigateTo('photo-capture')}");
+    expect(block).toContain('{carousel.childMode ? topBannersWithoutSigner : topBanners}');
+    expect(app).toContain('const topBannersFor = (signer: React.ReactNode)');
+    expect(app).toContain('const topBannersWithoutSigner = topBannersFor(null);');
   });
 });

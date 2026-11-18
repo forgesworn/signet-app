@@ -14,7 +14,7 @@ const count = (needle: string) => app.split(needle).length - 1;
 
 describe('child-mode sign-in gate in App.tsx', () => {
   it('reads child mode as last saved without the key, and drops it once child mode is live', () => {
-    expect(app).toContain('.then(session => (session ? loadDependantSignInFacts(session.activeDependantId) : null))');
+    expect(app).toContain('readSavedChildMode({ loadSession: loadChildModeSession, loadFacts: loadDependantSignInFacts })');
     expect(app).toContain('if (carousel.childMode) setSavedChildMode(null);');
     // Held through a lock, when dependants empty for a moment.
     expect(app).toContain('else if (carousel.childDependant) childModeDependantRef.current = carousel.childDependant;');

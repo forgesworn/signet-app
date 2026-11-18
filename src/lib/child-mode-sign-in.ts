@@ -79,7 +79,7 @@ export interface ChildModeApprovalOffer {
 export function childModeApprovalOffer(input: ChildModeSignInInput): ChildModeApprovalOffer {
   if (!input.childMode) return { refuse: null, guardian: true, offersDependant: () => true };
   const refuse = childModeSignInRefusal(input);
-  const onlyId = refuse ? null : input.dependant?.id ?? null;
+  const onlyId = refuse ? null : input.dependant?.id || null;
   return { refuse, guardian: false, offersDependant: id => onlyId !== null && id === onlyId };
 }
 
@@ -89,6 +89,32 @@ export function childModeApprovalOffer(input: ChildModeSignInInput): ChildModeAp
  * saved and not yet restored, `off` otherwise.
  */
 export type ChildModeState = 'on' | 'off' | 'unknown';
+
+/**
+ * The saved session could not be read at start-up (IndexedDB failed). That is
+ * not "no session": child mode stays on, with no child to resolve, so only home
+ * renders and nothing is offered, until the PIN exit clears it (or a later read
+ * succeeds after unlock and restores the real session). An empty id never
+ * matches a dependant.
+ */
+export const CHILD_MODE_UNRESOLVED: ChildModeSignInDependant = Object.freeze({ id: '', displayName: '' });
+
+/**
+ * Child mode as last saved, read at start-up: the child's facts, null when
+ * there is no session or its dependant is missing or independent (that drop is
+ * deliberate), or `CHILD_MODE_UNRESOLVED` when either read fails.
+ */
+export async function readSavedChildMode(deps: {
+  loadSession: () => Promise<{ activeDependantId: string } | null>;
+  loadFacts: (dependantId: string) => Promise<ChildModeSignInDependant | null>;
+}): Promise<ChildModeSignInDependant | null> {
+  try {
+    const session = await deps.loadSession();
+    return session ? await deps.loadFacts(session.activeDependantId) : null;
+  } catch {
+    return CHILD_MODE_UNRESOLVED;
+  }
+}
 
 export function childModeState(input: { live: boolean; saved: ChildModeSignInDependant | null | undefined }): ChildModeState {
   if (input.live || input.saved) return 'on';

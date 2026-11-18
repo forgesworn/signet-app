@@ -63,6 +63,11 @@ interface CarouselProps {
   /** Child mode is only SAVED (locked cold start), not live: show the banner without Exit. */
   childModeSaved?: boolean;
   /**
+   * Saved child mode that the PIN exit must be able to clear: the saved read failed
+   * (child mode on with no child), or the phone is unlocked yet the restore never took.
+   */
+  childModeSavedExitable?: boolean;
+  /**
    * Add a persona. Caller does the freshAuth + IDB write. Throws on
    * failure so AddCard can surface the error inline.
    */
@@ -877,7 +882,7 @@ export function Carousel(props: CarouselProps) {
         <ChildModeBanner
           name={props.childDependant?.displayName || props.childModeName || ''}
           blur={!!props.blurIdentityNames}
-          onExit={props.childMode ? props.onExitChildMode : undefined}
+          onExit={props.childMode || props.childModeSavedExitable ? props.onExitChildMode : undefined}
         />
       )}
 
