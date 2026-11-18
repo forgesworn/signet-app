@@ -14233,9 +14233,13 @@ function AppContent() {
   // Shamir Backup
   if (page === 'shamir') {
     return (
-      <Layout title="Shamir Backup" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
-        <ShamirBackup identity={identity} onBack={() => navigateBack()} onRequestFreshAuth={requestFreshAuth} />
-      </Layout>
+      <>
+        <Layout title="Shamir Backup" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
+          <ShamirBackup identity={identity} onBack={() => navigateBack()} onRequestFreshAuth={requestFreshAuth} />
+        </Layout>
+        {/* The fresh-unlock prompt for "Split my backup" renders here; without it the split waits forever. */}
+        {authOverlay}{nip55Overlay}
+      </>
     );
   }
 
