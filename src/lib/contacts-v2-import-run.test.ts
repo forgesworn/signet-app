@@ -206,3 +206,43 @@ it('keeps deleted imported history deleted if saving succeeded before its marker
   const record = [...applyOperations([...existing, ...retry.saved]).values()][0];
   expect(record.origins).toEqual([]);
 });
+
+// Review S1/N4 (2026-11-19): a paired child's own import is now stamped
+// 'dependant'. History written by an older build under 'guardian' must never be
+// re-stamped, whether its sources were marked or a crash left them unmarked.
+describe('a paired child re-running the import over older guardian-stamped history', () => {
+  const CHILD_ID = 'b'.repeat(64);
+  const CHILD_DIR = `dependant:${CHILD_ID}`;
+  const childInput = (over: Partial<ImportInput> = {}) => input({
+    ownerPubkeys: [], actorPubkey: CHILD_ID,
+    dependants: [{ directoryId: CHILD_DIR, slotPubkeys: [DEP_SLOT] }],
+    contacts: [{ ...contact(PEER_1), ownerPubkey: DEP_SLOT }], ...over,
+  });
+  async function olderBuildOps(): Promise<ContactOperation[]> {
+    const first = io();
+    await runContactsV2Import(childInput(), first.spec);
+    // What an older build wrote: the same deterministic ops, stamped 'guardian'.
+    return first.saved.map(op => ({ ...op, actorRole: 'guardian' as const }));
+  }
+
+  it('leaves marked sources alone', async () => {
+    const existing = await olderBuildOps();
+    const retry = io([importSourceKey('contact', PEER_1)]);
+    retry.spec.listExistingOps = async () => existing;
+    await runContactsV2Import(childInput(), retry.spec);
+    expect(retry.saved).toEqual([]);
+  });
+
+  it('does not re-send or re-stamp ops already saved when a crash left the sources unmarked', async () => {
+    const { applyOperations } = await import('./contacts-v2-reducer');
+    const existing = await olderBuildOps();
+    const retry = io();
+    retry.spec.listExistingOps = async () => existing;
+    await runContactsV2Import(childInput(), retry.spec);
+    const existingIds = new Set(existing.map(op => op.operationId));
+    expect(retry.saved.some(op => existingIds.has(op.operationId))).toBe(false);
+    expect(retry.marked).toContain(importSourceKey('contact', PEER_1));
+    const record = [...applyOperations([...existing, ...retry.saved]).values()][0];
+    expect(record.createdByActorRole).toBe('guardian');
+  });
+});

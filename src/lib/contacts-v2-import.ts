@@ -412,6 +412,7 @@ async function runImport(input: ImportInput, io: ImportIo): Promise<ImportRunRes
 
   const existingOps = await io.listExistingOps?.() ?? [];
   const existing = [...applyOperations(existingOps).values()];
+  const existingIds = new Set(existingOps.map(op => op.operationId));
   const clock = frontierOf(existingOps).maxClock + 1;
   const ops = routed.flatMap(entry => {
     const identity = entry.ops.find(op => op.action === 'add-identity')?.value as AddIdentityValue | undefined;
@@ -429,8 +430,15 @@ async function runImport(input: ImportInput, io: ImportIo): Promise<ImportRunRes
         value: { id, ownerIdentityPubkey, method: 'import',
           // Legacy contacts and kens store Unix seconds; history uses millis.
           addedAt: Math.min(253402300799999, Math.max(0, Math.floor(op.createdAt * 1000))) } };
-    }).filter(op => !existingOps.some(old => old.operationId === op.operationId));
-    if (!record || record.contactId === entry.contactId) return [...entry.ops, ...origins];
+    }).filter(op => !existingIds.has(op.operationId));
+    // Never re-send an operation the log already holds. An import that saved
+    // its ops but crashed before `markSources` re-runs here; re-sending would
+    // overwrite those stored ops under the current role rule and silently
+    // re-stamp history (review S1, 2026-11-19). Records already imported stay
+    // exactly as they were.
+    if (!record || record.contactId === entry.contactId) {
+      return [...entry.ops.filter(op => !existingIds.has(op.operationId)), ...origins];
+    }
     // A new legacy source links into the existing record, never a duplicate
     // or an implicit resurrection of a contact the owner removed.
     if (record.lifecycle === 'removed') return [];
