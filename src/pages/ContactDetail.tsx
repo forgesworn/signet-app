@@ -45,7 +45,7 @@ import type { ActorRights } from '../lib/contacts-v2-rights';
 import {
   BLOCK_REASON_MAX, METHOD_KINDS, METHOD_KIND_LABELS, METHOD_LABEL_MAX, METHOD_VALUE_MAX,
   NOTE_MAX, ROLE_MAX, addRole, normaliseBlockReason, normaliseNote, removeRole,
-  validateMethodDraft, type DetailSection, type LegacyMatch,
+  methodDisplayValue, validateMethodDraft, type DetailSection, type LegacyMatch,
 } from '../lib/contacts-v2-detail';
 import { armPickerGrace } from '../lib/picker-grace';
 
@@ -470,7 +470,7 @@ export function ContactDetail(props: Props) {
             <div className="row" key={m.itemId}>
               <span className="row-main">
                 <span className="row-label">{m.label || METHOD_KIND_LABELS[m.kind]}</span>
-                <span className="row-sub">{m.value}</span>
+                <span className="row-sub">{methodDisplayValue(m)}</span>
               </span>
               {rights.canEditMethods && props.onMethodSharingChange && <label>
                 <input type="checkbox" checked={m.sharingPolicy === 'grantable'} disabled={busy}

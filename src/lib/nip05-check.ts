@@ -24,6 +24,11 @@ const NAME_RE = /^[a-z0-9._-]+$/;
 // alphanumeric with internal hyphens only (no leading/trailing hyphen).
 const HOSTNAME_RE = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*$/;
 
+// The last label must be letters (2-63) or punycode, as kenspeckle's resolver
+// insists, so an address the app accepts is one the resolver will take. This
+// also rules out every spelling of an IPv4 literal (`127.1`, `0x7f.1`).
+const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
+
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 const HEX64_RE = /^[0-9a-f]{64}$/i;
@@ -37,13 +42,15 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY_BYTES = 64 * 1024;
 
 /**
- * Parse a NIP-05 identifier (`name@domain`). Returns null for anything that
+ * Parse a NIP-05 identifier (`name@domain`, or a bare `domain`, which is the
+ * root name `_@domain`). Returns null for anything that
  * isn't a well-formed, public, hostname-addressed identifier — empty input,
  * multiple `@`, whitespace, an IP literal (v4 dotted-quad or bracketed v6),
  * a domain carrying a scheme/path/port/userinfo, a single-label domain (no
  * dot — e.g. `alice@intranet`), a trailing-dot domain, an identifier over
  * 320 chars or a domain over 253 chars, or a private/internal host (via
- * `isPrivateOrInternalHost`). Trims and lowercases first, so callers
+ * `isPrivateOrInternalHost`). A local part with `+` (or any character outside
+ * the NIP-05 set) is refused. Trims and lowercases first, so callers
  * never need to normalise the input themselves.
  */
 export function parseNip05(identifier: string): ParsedNip05 | null {
@@ -53,11 +60,13 @@ export function parseNip05(identifier: string): ParsedNip05 | null {
   if (trimmed.length > MAX_IDENTIFIER_LEN) return null;
 
   const atCount = (trimmed.match(/@/g) ?? []).length;
-  if (atCount !== 1) return null;
+  if (atCount > 1) return null;
 
+  // No `@`: a bare domain stands for the root name `_@domain`. The domain
+  // checks below still apply (it must contain a dot, so a lone word fails).
   const atIndex = trimmed.indexOf('@');
-  const name = trimmed.slice(0, atIndex);
-  const domain = trimmed.slice(atIndex + 1);
+  const name = atIndex === -1 ? '_' : trimmed.slice(0, atIndex);
+  const domain = atIndex === -1 ? trimmed : trimmed.slice(atIndex + 1);
   if (!name || !domain) return null;
   if (!NAME_RE.test(name)) return null;
   if (domain.length > MAX_DOMAIN_LEN) return null;
@@ -71,9 +80,33 @@ export function parseNip05(identifier: string): ParsedNip05 | null {
   if (IPV4_RE.test(domain)) return null; // IP literals are never valid NIP-05 domains
   if (!domain.includes('.')) return null; // require at least one dot — no bare/single-label hosts
   if (!HOSTNAME_RE.test(domain)) return null;
+  if (!TLD_RE.test(domain.slice(domain.lastIndexOf('.') + 1))) return null;
   if (isPrivateOrInternalHost(domain)) return null;
 
   return { name, domain };
+}
+
+/**
+ * The stored/published form of a NIP-05 identifier: `name@domain`, lowercased,
+ * with a bare domain written as `_@domain`. Null when it doesn't parse. Every
+ * writer (profile Save, the Ken form, the New contact lookup) stores this, so
+ * a bare domain never reaches a kind-0 or a resolver.
+ */
+export function canonicalNip05(text: string): string | null {
+  const parsed = parseNip05(text);
+  return parsed ? `${parsed.name}@${parsed.domain}` : null;
+}
+
+/**
+ * How to SHOW an identifier as text: a local part of exactly `_` (any case)
+ * shows as the domain alone; anything else is unchanged. Display only: never
+ * put this in an input's value, and stored values stay `_@domain`.
+ */
+export function displayNip05(id: string): string {
+  if (typeof id !== 'string') return id;
+  const at = id.indexOf('@');
+  if (at === 1 && id[0] === '_' && id.indexOf('@', 2) === -1 && id.length > 2) return id.slice(2);
+  return id;
 }
 
 /** Build the `.well-known/nostr.json` lookup URL. Always https. */

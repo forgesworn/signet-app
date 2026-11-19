@@ -6,6 +6,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 ## Unreleased
 
 - Bunker: each pending request now shows when it was asked, which app and site, and who it is signing as, with a down-arrow for the rest (what it is for, its tags, and a short preview of what the app sent). A request older than five minutes is marked as probably abandoned and has a Clear button that removes it without refusing the app
+- New contact can look someone up by their NIP-05 address (or just their domain) and fill in their key and, if you leave it ticked, their name from their Nostr profile; an address on its own domain now shows as the domain, a bare domain works everywhere a NIP-05 address does, and a NIP-05 name with a plus sign is refused; saving a contact is now one step, and a key that belongs to a contact you deleted or archived is named instead of creating a duplicate
 - Child mode: apps connected to your own identities wait until you exit child mode, and the Bunker tab, approval pop-ups and notifications no longer show your family or apps while the phone is handed over
 - Child mode: only the child's own screens open while the phone is handed over; everything else asks you to exit child mode first
 - Child mode: the child's cards are read only. Where they are known can be opened but not changed, the settings column can be viewed but not edited, and a contact invite opened in child mode (scanned with the camera, or from a link) is refused instead of waiting for you. The card ring never shows your own cards while the phone is handed over

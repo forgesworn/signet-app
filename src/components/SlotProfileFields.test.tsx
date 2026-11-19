@@ -155,6 +155,70 @@ describe('SlotProfileFields', () => {
     expect(passed.nip05).toBe('alex@example.com');
   });
 
+  it('Save refuses a NIP-05 name with a + (lud16 keeps its own +)', () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SlotProfileFields pubkey={PUBKEY} config={baseConfig()} slotKind="natural-person" onSaveConfig={onSave} />,
+    );
+    fireEvent.change(screen.getByDisplayValue('alex@example.com'), { target: { value: 'alex+tag@example.com' } });
+    expect(screen.getByText(/NIP-05 looks like name@example.com/)).toBeDefined();
+    expect((screen.getByRole('button', { name: /^save$/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a lightning address with a +', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SlotProfileFields pubkey={PUBKEY} config={baseConfig()} slotKind="natural-person" onSaveConfig={onSave} />,
+    );
+    fireEvent.change(screen.getByDisplayValue('alex@walletofsatoshi.com'), { target: { value: 'alex+tips@walletofsatoshi.com' } });
+    expect(screen.queryByText(/NIP-05 looks like/)).toBeNull();
+    const saveBtn = screen.getByRole('button', { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0][0] as PublicProfileConfig).lud16).toBe('alex+tips@walletofsatoshi.com');
+  });
+
+  it('saves a bare domain in its canonical _@domain form', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SlotProfileFields pubkey={PUBKEY} config={baseConfig()} slotKind="natural-person" onSaveConfig={onSave} />,
+    );
+    fireEvent.change(screen.getByDisplayValue('alex@example.com'), { target: { value: 'Alex.Example.org' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0][0] as PublicProfileConfig).nip05).toBe('_@alex.example.org');
+  });
+
+  it('a mixed-case saved NIP-05 opens pristine: Save disabled, Check not stuck behind "Save first"', () => {
+    render(
+      <SlotProfileFields
+        pubkey={PUBKEY}
+        config={baseConfig({ nip05: 'Alex@Example.com' })}
+        slotKind="natural-person"
+        onSaveConfig={vi.fn().mockResolvedValue(undefined)}
+        onNip05Checked={vi.fn()}
+      />,
+    );
+    expect((screen.getByRole('button', { name: /^save$/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/save first/i)).toBeNull();
+    expect((screen.getByRole('button', { name: /^check$/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('an unchanged legacy NIP-05 with a + does not block saving another field', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SlotProfileFields pubkey={PUBKEY} config={baseConfig({ nip05: 'alice+tag@example.com' })} slotKind="natural-person" onSaveConfig={onSave} />,
+    );
+    fireEvent.change(screen.getByDisplayValue('A line about Alex'), { target: { value: 'New about' } });
+    const saveBtn = screen.getByRole('button', { name: /^save$/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect((onSave.mock.calls[0][0] as PublicProfileConfig).nip05).toBe('alice+tag@example.com');
+  });
+
   it('Save button stays disabled when form is pristine', () => {
     render(
       <SlotProfileFields
@@ -392,9 +456,8 @@ describe('SlotProfileFields — NIP-05 check', () => {
   });
 
   it('Check button is disabled with "can\'t be checked" hint for a saved value that passes the loose Save-time regex but fails the strict parser (review fix important-2)', () => {
-    // NIP05_RE (the Save-time validator) allows `+` in the local part;
-    // parseNip05 (the strict parser checkNip05 actually uses) does not.
-    // Without gating Check on parseNip05 too, tapping Check here would
+    // An older build's Save-time check allowed `+` in the local part; the
+    // parser checkNip05 uses does not. Without gating Check on parseNip05, tapping Check here would
     // silently no-fetch to 'unreachable' via checkNip05's own internal
     // guard, and the result line would render with an empty domain.
     render(

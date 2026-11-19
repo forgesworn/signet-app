@@ -3,6 +3,7 @@ import { MANAGE_FAMILY_CONTACTS_LABEL } from '../lib/contacts-v2-copy';
 import { Icon } from '../components/Icon';
 import type { IndependenceArchive } from '../lib/independence-store';
 import { shortNpub } from '../lib/signet';
+import { methodDisplayValue } from '../lib/contacts-v2-detail';
 
 interface Props {
   dependants: DependantIdentity[];
@@ -41,7 +42,7 @@ export function FamilyList({ dependants, onSelect, onAddDependant, onAddKen, onM
           {contact.displayName || 'Unnamed contact'} — {contact.tier}
           {contact.blocks.some(b => !b.liftedByOperationId) ? ' (Blocked)' : ''}
           {contact.identities.map(identity => <p key={identity.itemId}>{identity.label ? `${identity.label}: ` : ''}{shortNpub(identity.pubkey)}</p>)}
-          {contact.contactMethods.map(method => <p key={method.itemId}>{method.label || method.kind}: {method.value}</p>)}
+          {contact.contactMethods.map(method => <p key={method.itemId}>{method.label || method.kind}: {methodDisplayValue(method)}</p>)}
           {contact.notes && <p>{contact.notes}</p>}
         </li>)}</ul>
       </>}
