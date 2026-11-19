@@ -38,6 +38,7 @@ import {
   signInLinkUnavailableCopy,
   signInLinkRoute,
   uncertainSignInLinks,
+  checkDeviceLinkTarget,
   signInLinkRevokePath,
   isUncertainSignInLink,
   reconcileDeviceSignInLinks,
@@ -215,6 +216,21 @@ describe('signInLinkRevokePath', () => {
   });
   it('no current pairing is not a mismatch: the call fails on its own as no answer', () => {
     expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: null })).toBe('device');
+  });
+});
+
+describe('checkDeviceLinkTarget (run inside the device-link lock)', () => {
+  const rec = { deviceHex: 'd'.repeat(64) };
+  it('ok only when connected and the pairing reaches the Heartwood the link was made on', () => {
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: 'D'.repeat(64) })).toBe('ok');
+  });
+  it('a different Heartwood is the other-heartwood case', () => {
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: 'e'.repeat(64) })).toBe('other-heartwood');
+  });
+  it('a reconnect gap or no pairing yet can\'t be checked now: no-answer, never a mismatch', () => {
+    expect(checkDeviceLinkTarget(rec, { connected: false, primaryDeviceHex: 'e'.repeat(64) })).toBe('no-answer');
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: null })).toBe('no-answer');
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: '' })).toBe('no-answer');
   });
 });
 

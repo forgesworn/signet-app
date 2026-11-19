@@ -241,6 +241,20 @@ export function isOnPrimaryHeartwood(rec: Pick<HeartwoodSignInLinkRecord, 'devic
   return primaryDeviceHex === null || primaryDeviceHex === '' || rec.deviceHex.toLowerCase() === primaryDeviceHex.toLowerCase();
 }
 
+export type DeviceLinkTarget = 'ok' | 'no-answer' | 'other-heartwood';
+
+/**
+ * Whether the phone's pairing can speak for a device link right now. Run INSIDE the
+ * device-link lock, at the moment of sending (a revoke can queue behind a create for
+ * minutes, and a re-pair or a reconnect can happen meanwhile). A pairing that isn't
+ * connected, or whose Heartwood isn't known yet, can't be checked now (`no-answer`: keep
+ * the record); only a known, different Heartwood is a mismatch.
+ */
+export function checkDeviceLinkTarget(rec: Pick<HeartwoodSignInLinkRecord, 'deviceHex'>, p: { connected: boolean; primaryDeviceHex: string | null }): DeviceLinkTarget {
+  if (!p.connected || !p.primaryDeviceHex) return 'no-answer';
+  return rec.deviceHex.toLowerCase() === p.primaryDeviceHex.toLowerCase() ? 'ok' : 'other-heartwood';
+}
+
 /**
  * A device record goes over the phone's pairing when it was made on the Heartwood
  * this phone is paired with now. An operator record goes over its operator key;

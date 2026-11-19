@@ -340,6 +340,7 @@ import {
   signInLinkByDefault,
   signInLinkRoute,
   signInLinkRevokePath,
+  checkDeviceLinkTarget,
   reconcileDeviceSignInLinks,
   signInRequestCanCarryLink,
   type SignInLinkEligibility,
@@ -4885,12 +4886,17 @@ function AppContent() {
   // The name this phone shows for an identity (the device's refusal copy names it).
   const identityNameRef = useRef<(pubkey: string) => string>(() => '');
   /** The primary pairing's raw request, for the site-link methods; null when there is no primary. */
-  const primarySiteLinkRequest = useCallback((): SiteLinkRequest | null => {
+  const primarySiteLinkRequest = useCallback((expectedDeviceHex?: string): SiteLinkRequest | null => {
     if (!bunkerBackendRef.current) return null;
-    // Read on every call: a backend rebuilt mid-wait must carry the later polls and the resend.
+    // Read on every call: a backend rebuilt mid-wait must carry the later polls and the resend. With an
+    // expected Heartwood, a call goes only to a pairing that reaches exactly it (empty while reconnecting
+    // included), so a re-paired phone never speaks for a link to some other board.
     return (method, params, timeoutMs) => {
       const bunker = bunkerBackendRef.current;
-      return bunker ? bunker.request(method, params, timeoutMs) : Promise.reject(new Error('Not connected to bunker'));
+      if (!bunker || (expectedDeviceHex !== undefined && bunker.activePublicKeyHex.toLowerCase() !== expectedDeviceHex.toLowerCase())) {
+        return Promise.reject(new Error('Not connected to bunker'));
+      }
+      return bunker.request(method, params, timeoutMs);
     };
   }, []);
   /** Revoke a sign-in link's slot on its Heartwood; throws (keep the record) unless it is gone. */
@@ -4899,15 +4905,24 @@ function AppContent() {
     const path = signInLinkRevokePath(rec, {
       hasOperatorClient: !!client,
       deviceRouteForIdentity: signInLinkRouteRef.current(rec.persona).kind === 'device',
-      primaryDeviceHex: bunkerBackendRef.current?.activePublicKeyHex || null,
+      // Which Heartwood the pairing reaches is checked below, inside the lock, when sending.
+      primaryDeviceHex: null,
     });
-    // A device link on a Heartwood this phone is no longer paired with: this pairing can't speak for it.
-    if (path === 'unmanaged' && rec.route === 'device') throw new SignInLinkUnmanagedError(SIGN_IN_LINK_OTHER_HEARTWOOD_COPY);
     if (path === 'device') {
       // Over the phone's own pairing, by fingerprint (a link made by an operator key goes too), after any create in flight.
-      const request = primarySiteLinkRequest();
-      if (!request) throw new HeartwoodCopyError(SITE_LINK_NO_ANSWER_COPY);
-      await siteLinkLock.run(() => revokeSiteLinkOnDevice(request, rec, identityNameRef.current(rec.persona)));
+      // Which Heartwood the pairing reaches is read INSIDE the lock, at the moment of sending: a revoke can queue
+      // behind a create for minutes, and a re-pair or a reconnect can land meanwhile.
+      await siteLinkLock.run(async () => {
+        const gate = checkDeviceLinkTarget(rec, {
+          connected: signerStatusRef.current === 'connected',
+          primaryDeviceHex: bunkerBackendRef.current?.activePublicKeyHex || null,
+        });
+        if (gate === 'no-answer') throw new HeartwoodCopyError(SITE_LINK_NO_ANSWER_COPY);
+        if (gate === 'other-heartwood') throw new SignInLinkUnmanagedError(SIGN_IN_LINK_OTHER_HEARTWOOD_COPY);
+        const request = primarySiteLinkRequest(rec.deviceHex);
+        if (!request) throw new HeartwoodCopyError(SITE_LINK_NO_ANSWER_COPY);
+        await revokeSiteLinkOnDevice(request, rec, identityNameRef.current(rec.persona));
+      });
       return;
     }
     if (!client) {
@@ -4965,8 +4980,8 @@ function AppContent() {
         putRecord: rec => changeSignInLinks(key, list => [...list.filter(r => r.label !== rec.label), rec]),
         dropRecord: rec => changeSignInLinks(key, list => list.filter(r => r.label !== rec.label)),
         revokeRecord: revokeSignInLinkOnDevice,
-        mint: (_holder, label, policy) => {
-          const request = primarySiteLinkRequest();
+        mint: (holder, label, policy) => {
+          const request = primarySiteLinkRequest(holder.deviceHex);
           // Nothing was sent, so nothing can have been made: the pending record goes.
           if (!request) return Promise.reject(new SiteLinkRefusedError(SITE_LINK_NO_ANSWER_COPY));
           return mintSiteLinkUnderLock({
@@ -5073,18 +5088,24 @@ function AppContent() {
         });
         // Links made over the phone's own pairing: by fingerprint over the primary, never beside a create.
         const deviceRecords = records.filter(r => r.route === 'device');
-        const request = primarySiteLinkRequest();
-        if (deviceRecords.length > 0 && request && signerStatusRef.current === 'connected') {
-          await siteLinkLock.run(() => reconcileDeviceSignInLinks(deviceRecords, {
-            nowMs: () => Date.now(),
-            primaryDeviceHex: bunkerBackendRef.current?.activePublicKeyHex || null,
-            status: rec => siteLinkStatusOnDevice(request, rec),
-            revoke: rec => revokeSiteLinkOnDevice(request, rec),
-            dropRecord: async rec => {
-              if (encryptionKeyRef.current !== key) throw new Error('locked');
-              await changeSignInLinks(key, list => list.filter(l => l.label !== rec.label));
-            },
-          }));
+        if (deviceRecords.length > 0 && signerStatusRef.current === 'connected') {
+          await siteLinkLock.run(async () => {
+            // Read INSIDE the lock, when sending: a reconnect gap or no pairing yet can't be checked now, so
+            // nothing is touched (a record is never dropped because the primary was momentarily absent).
+            const hex = bunkerBackendRef.current?.activePublicKeyHex || '';
+            const request = hex && signerStatusRef.current === 'connected' ? primarySiteLinkRequest(hex) : null;
+            if (!request) return;
+            await reconcileDeviceSignInLinks(deviceRecords, {
+              nowMs: () => Date.now(),
+              primaryDeviceHex: hex,
+              status: rec => siteLinkStatusOnDevice(request, rec),
+              revoke: rec => revokeSiteLinkOnDevice(request, rec),
+              dropRecord: async rec => {
+                if (encryptionKeyRef.current !== key) throw new Error('locked');
+                await changeSignInLinks(key, list => list.filter(l => l.label !== rec.label));
+              },
+            });
+          });
         }
       } while (signInReconcileQueued.current && encryptionKeyRef.current);
     } catch { /* a pass never throws out; the next one looks again */ }
