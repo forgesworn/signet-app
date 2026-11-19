@@ -2777,6 +2777,12 @@ export interface HeartwoodSignInLinkRecord {
   /** Empty until the device has answered the mint. */
   secretFingerprint: string;
   createdAt: number;
+  /**
+   * How the link was made. `device`: over this phone's own NIP-46 pairing
+   * (`heartwood_link_create`); then `deviceHex` is the primary pairing's
+   * remote pubkey and `targetHex` the identity. Absent = the operator route.
+   */
+  route?: 'device' | 'operator';
 }
 
 function isSignInLinkRecord(v: unknown): v is HeartwoodSignInLinkRecord {
@@ -2785,7 +2791,8 @@ function isSignInLinkRecord(v: unknown): v is HeartwoodSignInLinkRecord {
   return typeof r.origin === 'string' && typeof r.appName === 'string' && typeof r.persona === 'string'
     && typeof r.deviceHex === 'string' && typeof r.targetHex === 'string' && typeof r.label === 'string' && r.label.length > 0
     && (r.slotIndex === undefined || (typeof r.slotIndex === 'number' && Number.isInteger(r.slotIndex) && r.slotIndex >= 0))
-    && typeof r.secretFingerprint === 'string' && typeof r.createdAt === 'number';
+    && typeof r.secretFingerprint === 'string' && typeof r.createdAt === 'number'
+    && (r.route === undefined || r.route === 'device' || r.route === 'operator');
 }
 
 export async function saveHeartwoodSignInLinks(records: HeartwoodSignInLinkRecord[], encryptionKey: string): Promise<void> {

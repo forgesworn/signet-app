@@ -3,7 +3,7 @@ import type { ResolvedIdentity } from '../lib/carousel-utils';
 import type { AuthRequest, LoginRequest } from '../lib/qr-router';
 import type { ConsumerHint, KeypairToken } from '../types';
 import { shortNpub } from '../lib/signet';
-import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY } from '../lib/heartwood-signin-link';
+import { signInLinkUnavailableCopy, type SignInLinkUnavailableReason } from '../lib/heartwood-signin-link';
 import { SharePreview } from './SharePreview';
 import { PairedChildApprovalWaiting } from './PairedChildApprovalWaiting';
 import { HeartwoodWaitHint } from './HeartwoodWaitHint';
@@ -44,11 +44,12 @@ interface Props {
    */
   heartwoodLinkOffered?: boolean;
   /**
-   * "Straight to my Heartwood" would be offered except that this phone holds no
-   * operator key for the Heartwood: a non-interactive line says why. Never
-   * changes what Approve does.
+   * "Straight to my Heartwood" would be offered except that there is no way to
+   * make the link (the Heartwood needs an update, this phone's pairing lacks
+   * full access, or it isn't answering): a non-interactive line says why.
+   * Never changes what Approve does.
    */
-  heartwoodNeedsUpdate?: boolean;
+  heartwoodUnavailable?: SignInLinkUnavailableReason | null;
   /** "Straight to my Heartwood" is pre-selected where offered. Default true. */
   heartwoodByDefault?: boolean;
   /** Signing goes through a paired Heartwood: after a few seconds of Signing…, say to press its button. */
@@ -87,7 +88,7 @@ export function ApprovalOverlay({
   isPairedChild = false,
   childDirect = false,
   heartwoodLinkOffered = false,
-  heartwoodNeedsUpdate = false,
+  heartwoodUnavailable = null,
   heartwoodByDefault = true,
   heartwoodSigner = false,
 }: Props) {
@@ -258,12 +259,13 @@ export function ApprovalOverlay({
             Let it sign on my Heartwood…
           </button>
         )}
-        {heartwoodNeedsUpdate && !heartwoodLinkOffered && !approving && activeAllowed && !npCeilingBlocks && (
+        {heartwoodUnavailable && !heartwoodLinkOffered && !approving && activeAllowed && !npCeilingBlocks && (
           <div
-            data-testid="overlay-straight-needs-update"
+            data-testid="overlay-straight-unavailable"
+            data-reason={heartwoodUnavailable}
             style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'center' }}
           >
-            {SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY}
+            {signInLinkUnavailableCopy(heartwoodUnavailable, 'overlay')}
           </div>
         )}
       </div>

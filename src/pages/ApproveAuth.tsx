@@ -21,7 +21,8 @@ import { HeartwoodWaitHint } from '../components/HeartwoodWaitHint';
 import { SignInOnlinePlay } from '../components/SignInOnlinePlay';
 import type { SignInAppPermission } from '../lib/sign-in-app-permission';
 import { handoffWarning } from '../lib/heartwood-handoff';
-import { SIGN_IN_LINK_NEEDS_UPDATE_COPY, signInLinkUnverifiedOriginCopy, signInRequestCanCarryLink, signInRequestIsRelay, type SignInRequestShape } from '../lib/heartwood-signin-link';
+import { SIGN_IN_LINK_DECRYPT_NOTE, signInLinkCanDecrypt, signInLinkUnavailableCopy, signInLinkUnverifiedOriginCopy, signInRequestCanCarryLink, signInRequestIsRelay, type SignInLinkUnavailableReason, type SignInRequestShape } from '../lib/heartwood-signin-link';
+import { signInLinkHoldCopy } from '../lib/heartwood-site-link';
 
 /**
  * Resolve the display name for SharePreview. Returns `'(anonymous)'` when a
@@ -106,11 +107,19 @@ interface Props {
    */
   canSignOnHeartwood?: (pubkey: string, keypairType: string) => boolean;
   /**
-   * True where "Straight to my Heartwood" would be offered except that this
-   * phone holds no operator key for the Heartwood. The option is then shown
-   * greyed out with the reason, never honoured.
+   * Why "Straight to my Heartwood" can't be offered for this pubkey where
+   * everything else for it holds (no way to make the link: the Heartwood needs
+   * an update, this phone's pairing lacks full access, or the Heartwood isn't
+   * answering). The option is then shown greyed out with that line, never
+   * honoured. Null: offered, or not shown at all.
    */
-  heartwoodNeedsUpdate?: (pubkey: string, keypairType: string) => boolean;
+  heartwoodUnavailable?: (pubkey: string, keypairType: string) => SignInLinkUnavailableReason | null;
+  /**
+   * The site's host while the Heartwood waits for the hold that makes the
+   * link (over this phone's own pairing): the hold line is shown at once, in
+   * place of the generic "press its button" hint.
+   */
+  heartwoodHoldHost?: string | null;
   /**
    * Whether "Straight to my Heartwood" is pre-selected where it is offered
    * (false when the one managed Heartwood definitely can't mint the link).
@@ -237,7 +246,8 @@ export function ApproveAuth({
   onApprove,
   heartwoodSigner,
   canSignOnHeartwood,
-  heartwoodNeedsUpdate,
+  heartwoodUnavailable,
+  heartwoodHoldHost = null,
   heartwoodByDefault = true,
   bunkerServerOn = false,
   appPermission,
@@ -420,9 +430,10 @@ export function ApproveAuth({
     ? resolveSelectedPubkey(selection, identity, dependants) : null;
   const heartwoodOffered = !appPermission && signInRequestCanCarryLink(requestShape)
     && !!selectedGuardianPubkey && !!selection && !!canSignOnHeartwood?.(selectedGuardianPubkey, selection.keypairType);
-  // Shown greyed out, never honoured: only the operator key is missing.
-  const heartwoodShownDisabled = !heartwoodOffered && !appPermission && signInRequestCanCarryLink(requestShape)
-    && !!selectedGuardianPubkey && !!selection && !!heartwoodNeedsUpdate?.(selectedGuardianPubkey, selection.keypairType);
+  // Shown greyed out, never honoured, with the reason: there is no way to make the link.
+  const heartwoodUnavailableReason = !heartwoodOffered && !appPermission && signInRequestCanCarryLink(requestShape)
+    && !!selectedGuardianPubkey && !!selection ? heartwoodUnavailable?.(selectedGuardianPubkey, selection.keypairType) ?? null : null;
+  const heartwoodShownDisabled = heartwoodUnavailableReason !== null;
   // What the radios display: a greyed-out Straight is never the checked one, whatever the default says.
   const shownChoice = heartwoodOffered ? effectiveSignChoice : 'other';
   // A relay or QR request names its own origin and nothing proves it; a redirect callback is held to the origin.
@@ -693,7 +704,11 @@ export function ApproveAuth({
               <button className="btn btn-ghost" onClick={onDeny} disabled={approving}>
                 Cancel
               </button>
-              <HeartwoodWaitHint active={approving && (!!heartwoodSigner || signOnHeartwood)} />
+              {approving && signOnHeartwood && heartwoodHoldHost ? (
+              <p role="status" aria-live="polite" data-testid="sign-in-straight-hold" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '8px 0 0' }}>
+                {signInLinkHoldCopy(heartwoodHoldHost)}
+              </p>
+            ) : <HeartwoodWaitHint active={approving && (!!heartwoodSigner || signOnHeartwood)} />}
             </>
           )}
         </div>
@@ -956,9 +971,9 @@ export function ApproveAuth({
             />
             <span>
               Straight to my Heartwood
-              {heartwoodShownDisabled && (
-                <span data-testid="sign-in-straight-needs-update" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  {SIGN_IN_LINK_NEEDS_UPDATE_COPY}
+              {heartwoodUnavailableReason && (
+                <span data-testid="sign-in-straight-unavailable" data-reason={heartwoodUnavailableReason} style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {signInLinkUnavailableCopy(heartwoodUnavailableReason, 'page')}
                 </span>
               )}
               {heartwoodOffered && (
@@ -974,6 +989,11 @@ export function ApproveAuth({
               {heartwoodOffered && shownChoice === 'heartwood' && (
                 <span role="note" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
                   {handoffWarning({ kind: 'wide', covers: 'everything' })}
+                </span>
+              )}
+              {heartwoodOffered && shownChoice === 'heartwood' && selectedGuardianPubkey && signInLinkCanDecrypt(selectedGuardianPubkey) && (
+                <span data-testid="sign-in-straight-decrypt" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--warning)', marginTop: 4 }}>
+                  {SIGN_IN_LINK_DECRYPT_NOTE}
                 </span>
               )}
             </span>
@@ -1047,7 +1067,11 @@ export function ApproveAuth({
             <button className="btn btn-ghost" onClick={onDeny} disabled={approving}>
               Deny
             </button>
-            <HeartwoodWaitHint active={approving && (!!heartwoodSigner || signOnHeartwood)} />
+            {approving && signOnHeartwood && heartwoodHoldHost ? (
+              <p role="status" aria-live="polite" data-testid="sign-in-straight-hold" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '8px 0 0' }}>
+                {signInLinkHoldCopy(heartwoodHoldHost)}
+              </p>
+            ) : <HeartwoodWaitHint active={approving && (!!heartwoodSigner || signOnHeartwood)} />}
           </>
         )}
       </div>
