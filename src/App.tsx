@@ -324,6 +324,7 @@ import {
   SignInLinkUnmanagedError,
   SIGN_IN_LINK_OTHER_HEARTWOOD_COPY,
   uncertainSignInLinks,
+  isUncertainSignInLink,
   ackStateAfterLock,
   assertSignedByLinkPersona,
   failedAckCarriesLink,
@@ -5537,7 +5538,7 @@ function AppContent() {
         // The owner has looked in Sapwood: this phone stops tracking the record (nothing on the Heartwood is touched).
         const key = encryptionKeyRef.current;
         if (!key) throw new Error('Unlock My Signet first.');
-        await changeSignInLinks(key, list => list.filter(l => l.label !== label));
+        await changeSignInLinks(key, list => list.filter(l => !(l.label === label && isUncertainSignInLink(l))));
       },
       forgetSignInLinksHere: async (place, forgetPlace) => {
         // Offered once a Forget or Disconnect on a sign-in row has failed to take its link off the
