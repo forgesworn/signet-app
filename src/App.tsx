@@ -323,6 +323,7 @@ import {
   SIGN_IN_LINK_UNSUPPORTED_COPY,
   SignInLinkUnmanagedError,
   SIGN_IN_LINK_OTHER_HEARTWOOD_COPY,
+  uncertainSignInLinks,
   ackStateAfterLock,
   assertSignedByLinkPersona,
   failedAckCarriesLink,
@@ -5442,9 +5443,10 @@ function AppContent() {
     // A site that signs straight on the Heartwood: the device answers it, not this phone.
     if (place.kind === 'sign-in' && place.origin) {
       const mine = heartwoodSignInLinks.filter(l => l.origin.toLowerCase() === place.origin!.toLowerCase() && l.persona === place.pubkey.toLowerCase());
-      if (mine.some(l => isConfirmedSignInLink(l))) return { heartwoodSignIn: true, signInLinkRecords: true, signedBy: 'heartwood', appLabel, appIcon };
+      const signInLinkUncertain = uncertainSignInLinks(mine, { creating: siteLinkCreating }).length > 0;
+      if (mine.some(l => isConfirmedSignInLink(l))) return { heartwoodSignIn: true, signInLinkRecords: true, signInLinkUncertain, signedBy: 'heartwood', appLabel, appIcon };
       // Only a pending record (a mint that never answered): not shown as held, but Forget can have to deal with it.
-      if (mine.length > 0) return { signInLinkRecords: true, appLabel, appIcon };
+      if (mine.length > 0) return { signInLinkRecords: true, signInLinkUncertain, appLabel, appIcon };
     }
     if (place.kind === 'nip55') {
       // A grant is pinned to one identity; a row for another identity gets no say over it.
@@ -5460,7 +5462,7 @@ function AppContent() {
     }
     return { appLabel, appIcon };
     // placeIconVersion: an app label that has just landed must reach the rows.
-  }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion, heartwoodHandoffs, heartwoodSignInLinks, identity, preferences.signingMode, bunkerRouter]);
+  }, [connectedClients, connectedClientsLoading, nip55.grants, placeIconVersion, heartwoodHandoffs, heartwoodSignInLinks, siteLinkCreating, identity, preferences.signingMode, bunkerRouter]);
   const knownPlaceActions = useMemo<KnownPlaceActions>(() => {
     const clientOf = (place: KnownPlace) => place.placeKey.startsWith('nc:') ? place.placeKey.slice(3) : '';
     // Every delete is awaited; one that fails reaches the row's error line, none is left running.
@@ -5503,6 +5505,12 @@ function AppContent() {
         // leave a live slot with nothing in the app that can reach it. A failure stops here, row intact.
         if (place.kind === 'sign-in') await revokeSignInLinksOfPlace(place);
         await forgetPlaceRows(place);
+      },
+      dismissUncertainLink: async label => {
+        // The owner has looked in Sapwood: this phone stops tracking the record (nothing on the Heartwood is touched).
+        const key = encryptionKeyRef.current;
+        if (!key) throw new Error('Unlock My Signet first.');
+        await changeSignInLinks(key, list => list.filter(l => l.label !== label));
       },
       forgetSignInLinksHere: async (place, forgetPlace) => {
         // Offered once a Forget or Disconnect on a sign-in row has failed to take its link off the
@@ -5568,6 +5576,11 @@ function AppContent() {
     const names = new Map(carousel.rows.filter(r => r.type !== 'add').map(r => { const x = resolveActiveIdentity(r); return [x.publicKey.toLowerCase(), x.displayName] as const; }));
     const identityType: KnownPlaceIdentityType = row.type === 'natural-person' ? 'natural-person' : row.type === 'extra-persona' ? 'extra' : row.type === 'bot' ? 'bot' : 'persona';
     const places = knownPlacesFor(resolved.publicKey);
+    // Unconfirmed device links for a site this identity has no place row for (a site with a row says so inside it).
+    const uncertainLinks = uncertainSignInLinks(heartwoodSignInLinks, { creating: siteLinkCreating })
+      .filter(l => l.persona === resolved.publicKey.toLowerCase()
+        && !places.some(p => p.kind === 'sign-in' && !!p.origin && p.origin.toLowerCase() === l.origin.toLowerCase()))
+      .map(l => ({ label: l.label, origin: l.origin }));
     return (
       <KnownPlacesCard
         key={resolved.publicKey}
@@ -5584,6 +5597,7 @@ function AppContent() {
         hideHeartwood={isPairedChild}
         canRevokeOnHeartwood={canRevokeClient(heartwoodOperator.status) !== false}
         readOnly={inChildMode}
+        uncertainLinks={isPairedChild ? [] : uncertainLinks}
         actions={inChildMode ? readOnlyPlaceActions(knownPlaceActions) : knownPlaceActions}
       />
     );

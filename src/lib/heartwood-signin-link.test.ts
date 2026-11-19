@@ -37,6 +37,7 @@ import {
   signInLinkUnavailableReason,
   signInLinkUnavailableCopy,
   signInLinkRoute,
+  uncertainSignInLinks,
   signInLinkRevokePath,
   isUncertainSignInLink,
   reconcileDeviceSignInLinks,
@@ -221,6 +222,19 @@ describe('isUncertainSignInLink', () => {
     expect(isUncertainSignInLink(rec({ route: 'device' }))).toBe(true);
     expect(isUncertainSignInLink(rec({ route: 'device', slotIndex: 1, secretFingerprint: 'fp' }))).toBe(false);
     expect(isUncertainSignInLink(rec({}))).toBe(false);
+  });
+});
+
+describe('uncertainSignInLinks', () => {
+  const base = { origin: ORIGIN, appName: 'K', persona: PERSONA, deviceHex: 'd'.repeat(64), targetHex: PERSONA, createdAt: 1 };
+  const uncertain: HeartwoodSignInLinkRecord = { ...base, label: 'u', secretFingerprint: '', route: 'device' };
+  const confirmedRec: HeartwoodSignInLinkRecord = { ...base, label: 'c', slotIndex: 2, secretFingerprint: 'fp', route: 'device' };
+  const operatorPending: HeartwoodSignInLinkRecord = { ...base, label: 'o', secretFingerprint: '' };
+  it('lists unconfirmed device records, not confirmed or operator ones', () => {
+    expect(uncertainSignInLinks([uncertain, confirmedRec, operatorPending], { creating: false }).map(r => r.label)).toEqual(['u']);
+  });
+  it('lists nothing while a create is in flight (the record is the mint on its way)', () => {
+    expect(uncertainSignInLinks([uncertain], { creating: true })).toEqual([]);
   });
 });
 

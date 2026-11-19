@@ -7,7 +7,7 @@ import { canOpenPlace } from '../lib/known-place-open';
 import { isNativeApp } from '../lib/native';
 import { heartwoodMgmtErrorCopy } from '../lib/heartwood-mgmt-error-copy';
 import type { KeyHome } from '../lib/key-home';
-import { SIGN_IN_LINK_FORGET_HERE_COPY } from '../lib/heartwood-signin-link';
+import { SIGN_IN_LINK_FORGET_HERE_COPY, SIGN_IN_LINK_MAY_BE_ON_HEARTWOOD_COPY } from '../lib/heartwood-signin-link';
 
 export type KnownPlaceIdentityType = 'persona' | 'natural-person' | 'extra' | 'dependant' | 'bot';
 
@@ -32,6 +32,8 @@ export interface KnownPlaceCtx {
   heartwoodSignIn?: boolean;
   /** sign-in: this phone holds link records for the place (even one still waiting for the mint's answer), so a failed Forget or Disconnect has a way out. */
   signInLinkRecords?: boolean;
+  /** sign-in: a link for this place was asked for and never confirmed, so it may be on the Heartwood. */
+  signInLinkUncertain?: boolean;
   /** What actually signs for this place's key, read live; wins over what was recorded at approval. */
   signedBy?: KeyHome;
 }
@@ -51,6 +53,8 @@ export interface KnownPlaceActions {
    * and the place itself when `forgetPlace` (the failed action was Forget).
    */
   forgetSignInLinksHere?(place: KnownPlace, forgetPlace: boolean): void | Promise<void>;
+  /** An uncertain link with no place row: the owner has looked in Sapwood, so this phone drops its record. */
+  dismissUncertainLink?(label: string): void | Promise<void>;
 }
 
 /** Disconnecting a site that signs on the Heartwood. */
@@ -232,6 +236,7 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
             {place.kind === 'nip46' && ctx.askToSign && <div><dt>Signing</dt><dd>{ASK_EACH_TIME_SUMMARY}</dd></div>}
             {place.kind === 'nip46' && ctx.heartwoodHeld && <div><dt>Signing</dt><dd>{HEARTWOOD_HELD_SIGNING}</dd></div>}
             {heartwoodSignIn && <div><dt>Signing</dt><dd>{HEARTWOOD_HELD_SIGNING}</dd></div>}
+            {place.kind === 'sign-in' && ctx.signInLinkUncertain && <div><dt>Heartwood link</dt><dd>{SIGN_IN_LINK_MAY_BE_ON_HEARTWOOD_COPY}</dd></div>}
             {grant?.denyAlways && <div><dt>Signing</dt><dd>Refused every time</dd></div>}
             <div><dt>First seen</dt><dd>{dateOf(place.firstAt)}</dd></div>
             <div><dt>Last used</dt><dd>{relativeTime(last, now)}</dd></div>
@@ -320,6 +325,44 @@ export function KnownPlaceRow({ place, ctx, identityName, identityType, last, no
           {error && <p className="kp-error" role="alert">{error}</p>}
         </div>
       )}
+    </li>
+  );
+}
+
+interface UncertainLinkRowProps {
+  label: string;
+  origin: string;
+  onDismiss: (label: string) => void | Promise<void>;
+}
+
+/**
+ * A link this phone asked for and never heard back about, for a site with no place
+ * row yet. Always open: the point is the line and the one way to clear it.
+ */
+export function UncertainLinkRow({ label, origin, onDismiss }: UncertainLinkRowProps) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const host = hostnameOf(origin) || origin;
+  return (
+    <li className="kp-row kp-row--open" data-kp-row={`ul:${label}`}>
+      <div className="kp-row-head">
+        <span className="kp-row-tile kp-row-tile--hw" aria-hidden="true">{host.charAt(0).toUpperCase() || 'H'}</span>
+        <span className="kp-row-text">
+          <span className="kp-row-name">{host}</span>
+        </span>
+      </div>
+      <div className="kp-panel">
+        <p className="kp-note">{SIGN_IN_LINK_MAY_BE_ON_HEARTWOOD_COPY}</p>
+        <div className="kp-actions">
+          <button type="button" className="btn btn-ghost kp-btn" disabled={busy}
+            onClick={async () => {
+              if (busy) return;
+              setBusy(true); setError('');
+              try { await onDismiss(label); } catch (e) { setError(heartwoodMgmtErrorCopy(e)); } finally { setBusy(false); }
+            }}>I've checked</button>
+        </div>
+        {error && <p className="kp-error" role="alert">{error}</p>}
+      </div>
     </li>
   );
 }

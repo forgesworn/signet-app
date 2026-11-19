@@ -256,6 +256,18 @@ export function isUncertainSignInLink(r: HeartwoodSignInLinkRecord): boolean {
   return r.route === 'device' && !isConfirmedSignInLink(r);
 }
 
+/** Said wherever an uncertain device link shows: Where you're known, on a place row or on its own. */
+export const SIGN_IN_LINK_MAY_BE_ON_HEARTWOOD_COPY = 'A link for this site may be on your Heartwood. Remove it in Sapwood if you see it there.';
+
+/**
+ * The records Where you're known must show as "may be on your Heartwood": device
+ * links whose creation was never confirmed, once no create is in flight (while one
+ * is, the record is simply the mint still on its way).
+ */
+export function uncertainSignInLinks(records: readonly HeartwoodSignInLinkRecord[], p: { creating: boolean }): HeartwoodSignInLinkRecord[] {
+  return p.creating ? [] : records.filter(isUncertainSignInLink);
+}
+
 /** The device can mint this only if it has not definitely said otherwise (a truncated status is unverified: try). */
 export function signInLinkSupported(status: DeviceStatus | null): boolean {
   if (!status) return true;
