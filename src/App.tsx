@@ -347,6 +347,7 @@ import {
 } from './lib/heartwood-signin-link';
 import {
   SITE_LINK_NO_ANSWER_COPY,
+  SiteLinkRefusedError,
   mintSiteLinkUnderLock,
   revokeSiteLinkOnDevice,
   siteLinkDeadline,
@@ -4958,7 +4959,8 @@ function AppContent() {
         revokeRecord: revokeSignInLinkOnDevice,
         mint: (_holder, label, policy) => {
           const request = primarySiteLinkRequest();
-          if (!request) return Promise.reject(new HeartwoodCopyError(SITE_LINK_NO_ANSWER_COPY));
+          // Nothing was sent, so nothing can have been made: the pending record goes.
+          if (!request) return Promise.reject(new SiteLinkRefusedError(SITE_LINK_NO_ANSWER_COPY));
           return mintSiteLinkUnderLock({
             lock: siteLinkLock,
             ownerBusy: () => heartwoodOwnerBusyRef.current,
@@ -14880,6 +14882,8 @@ function AppContent() {
       canSignOnHeartwood: (pk: string, keypairType: string) => signInLinkOfferedFor(pk, 'guardian', keypairType, false, pendingAuthRequest),
       heartwoodUnavailable: (pk: string, keypairType: string) => signInLinkUnavailableFor(pk, 'guardian', keypairType, false, pendingAuthRequest),
       heartwoodByDefault: signInLinkDefault,
+      // Over the phone's own pairing the hold comes when Approve is tapped, not at the site's first signature.
+      heartwoodHoldOnApprove: (pk: string) => signInLinkRouteFor(pk).kind === 'device',
       // Shown at once while the device waits for the hold, in place of the generic hint.
       heartwoodHoldHost: signInLinkHoldHost,
       bunkerServerOn: bunkerServerEnabled,

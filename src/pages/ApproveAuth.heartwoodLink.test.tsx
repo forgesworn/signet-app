@@ -380,3 +380,15 @@ describe('ApproveAuth — what the link may do mentions decrypting (decision 10)
     expect(screen.getByTestId('sign-in-straight-decrypt').textContent).toBe(SIGN_IN_LINK_DECRYPT_NOTE);
   });
 });
+
+describe('ApproveAuth — when the hold comes', () => {
+  it('over the phone\'s own pairing, the option says the hold comes at Approve', () => {
+    renderPage({ canSignOnHeartwood: () => true, heartwoodHoldOnApprove: () => true });
+    expect(screen.getByText(/When you approve, your Heartwood asks you to hold its button for 2 seconds\./)).toBeTruthy();
+    expect(screen.queryByText(/The first time it signs/)).toBeNull();
+  });
+  it('over an operator key, it still says the first signature asks', () => {
+    renderPage({ canSignOnHeartwood: () => true, heartwoodHoldOnApprove: () => false });
+    expect(screen.getByText(/The first time it signs/)).toBeTruthy();
+  });
+});

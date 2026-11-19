@@ -120,6 +120,8 @@ interface Props {
    * place of the generic "press its button" hint.
    */
   heartwoodHoldHost?: string | null;
+  /** For this pubkey the link is made over this phone's own pairing: the hold comes at Approve. */
+  heartwoodHoldOnApprove?: (pubkey: string) => boolean;
   /**
    * Whether "Straight to my Heartwood" is pre-selected where it is offered
    * (false when the one managed Heartwood definitely can't mint the link).
@@ -248,6 +250,7 @@ export function ApproveAuth({
   canSignOnHeartwood,
   heartwoodUnavailable,
   heartwoodHoldHost = null,
+  heartwoodHoldOnApprove,
   heartwoodByDefault = true,
   bunkerServerOn = false,
   appPermission,
@@ -978,7 +981,9 @@ export function ApproveAuth({
               )}
               {heartwoodOffered && (
                 <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  {originDisplay} signs with your Heartwood directly, and My Signet can be closed. The first time it signs, your Heartwood asks you to hold its button down once.
+                  {originDisplay} signs with your Heartwood directly, and My Signet can be closed. {selectedGuardianPubkey && heartwoodHoldOnApprove?.(selectedGuardianPubkey)
+                    ? 'When you approve, your Heartwood asks you to hold its button for 2 seconds.'
+                    : 'The first time it signs, your Heartwood asks you to hold its button down once.'}
                 </span>
               )}
               {heartwoodOffered && relayRequest && (

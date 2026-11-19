@@ -4,7 +4,7 @@ import type { DeviceClientSlot, DeviceStatus } from './heartwood-mgmt-types';
 import type { HeartwoodSignInLinkRecord } from './db';
 import { HeartwoodCopyError } from './heartwood-mgmt-error-copy';
 import { handoffPolicy } from './heartwood-handoff';
-import { SiteLinkRefusedError, SiteLinkUncertainError } from './heartwood-site-link';
+import { SiteLinkRefusedError, SiteLinkUncertainError, parseSiteLinkCreateReply } from './heartwood-site-link';
 import {
   SIGN_IN_LINK_LABEL_MAX,
   SIGN_IN_LINK_MISMATCH_COPY,
@@ -1024,5 +1024,21 @@ describe('reconcileDeviceSignInLinks', () => {
       dropRecord: async () => { throw new Error('must not drop'); },
     });
     expect(listed).toEqual([]);
+  });
+});
+
+describe('device reply into the echo check', () => {
+  it('a device create reply (sorted, de-duplicated, no note) passes the echo check', () => {
+    const policy = signInLinkPolicy(PERSONA);
+    const raw = JSON.stringify({
+      slot_index: 5, label: 'mysignet:kithmoot.com:cafef00d', secret: SECRET, secret_fingerprint: 'F00D', npub_hex: PERSONA,
+      bunker_uri: `bunker://${PERSONA}?relay=wss%3A%2F%2Frelay.example&secret=${SECRET}`,
+      allowed_methods: [...policy.allowedMethods, 'sign_event'].sort(), allowed_kinds: [], auto_approve: true,
+      signing_approved: false, policy_version: 2,
+    });
+    const reply = parseSiteLinkCreateReply(raw);
+    expect(reply).not.toBeNull();
+    const echo = checkSignInLinkEcho(reply!, { persona: PERSONA, policy, label: 'mysignet:kithmoot.com:cafef00d' });
+    expect(echo).toMatchObject({ ok: true, slotIndex: 5, secretFingerprint: 'f00d' });
   });
 });
