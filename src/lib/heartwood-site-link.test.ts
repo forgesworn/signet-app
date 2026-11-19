@@ -459,6 +459,16 @@ describe('createSiteLinkOnDevice', () => {
     });
   });
 
+  // F2: the up-front refusal while the signer is not connected.
+  it('mintSiteLinkUnderLock: a signer that is not connected is refused at once, touching nothing', async () => {
+    const dev = device();
+    const lock = new SiteLinkLock();
+    const err = await mintSiteLinkUnderLock({ lock, ownerBusy: () => false, connected: () => false, args: args(dev) }).catch(e => e);
+    expect(err).toBeInstanceOf(SiteLinkRefusedError);
+    expect(err.message).toBe(SITE_LINK_NO_ANSWER_COPY);
+    expect(dev.request).not.toHaveBeenCalled();
+    expect(lock.createInFlight).toBe(false);
+  });
 });
 
 // ─── The device-link lock ───────────────────────────────────────────────────

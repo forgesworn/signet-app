@@ -549,14 +549,18 @@ export function siteLinkDeadline(startMs: number, requestTimestampSec: number | 
 /**
  * One device create under the device-link lock: refused at once while a
  * full-access bundle is waiting on the Heartwood (its card would sit beside
- * this one), and the lock is kept while the LINK card may still be up.
+ * this one) or the signer is not connected, and the lock is kept while the LINK card may still be up.
  */
 export function mintSiteLinkUnderLock(p: {
   lock: SiteLinkLock;
   ownerBusy: () => boolean;
+  /** The primary signer is connected (checked once the lock is ours); absent = not checked. */
+  connected?: () => boolean;
   args: Omit<SiteLinkCreateArgs, 'holdLock'>;
 }): Promise<CreateClientV2Reply> {
   return p.lock.run(async ({ holdUntil }) => {
+    // Nothing is sent to a signer that is not connected: no wait, no uncertain record.
+    if (p.connected && !p.connected()) throw new SiteLinkRefusedError(SITE_LINK_NO_ANSWER_COPY);
     if (p.ownerBusy()) throw new SiteLinkRefusedError(SITE_LINK_BUSY_COPY);
     return createSiteLinkOnDevice({ ...p.args, holdLock: holdUntil });
   }, { create: true });

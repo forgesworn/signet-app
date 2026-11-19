@@ -4972,6 +4972,8 @@ function AppContent() {
           return mintSiteLinkUnderLock({
             lock: siteLinkLock,
             ownerBusy: () => heartwoodOwnerBusyRef.current,
+            // The same signal as the rest of the Heartwood requests: nothing is sent to a signer that is not connected.
+            connected: () => signerStatusRef.current === 'connected',
             args: {
               request,
               identity: req.persona,
