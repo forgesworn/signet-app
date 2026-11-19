@@ -5,28 +5,13 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## 0.30.0
 
-- Connecting an app: if the phone locks while a request is being answered, it now comes back showing how it ended (connected, or the message about a pairing your Heartwood may still hold) with only Close, instead of offering Approve and Deny again
-- Child's own phone: contacts carried over from the older contacts list now count as the child's own, so the child's contact limits apply to them (contacts already carried over are unchanged)
-- Bunker: each pending request now shows when it was asked, which app and site, and who it is signing as, with a down-arrow for the rest (what it is for, its tags, and a short preview of what the app sent). A request older than five minutes is marked as probably abandoned and has a Clear button that removes it without refusing the app
-- New contact can look someone up by their NIP-05 address (or just their domain) and fill in their key and, if you leave it ticked, their name from their Nostr profile; an address on its own domain now shows as the domain, a bare domain works everywhere a NIP-05 address does, and a NIP-05 name with a plus sign is refused; saving a contact is now one step, and a key that belongs to a contact you deleted or archived is named instead of creating a duplicate
-- Child mode: apps connected to your own identities wait until you exit child mode, and the Bunker tab, approval pop-ups and notifications no longer show your family or apps while the phone is handed over
-- Child mode: only the child's own screens open while the phone is handed over; everything else asks you to exit child mode first
-- Child mode: the child's cards are read only. Where they are known can be opened but not changed, the settings column can be viewed but not edited, and a contact invite opened in child mode (scanned with the camera, or from a link) is refused instead of waiting for you. The card ring never shows your own cards while the phone is handed over
-- Child mode: contacts the child adds or changes now count as the child's own, so their contact limits apply; your decisions (raising a contact, vouching, lifting a block you made) wait until you exit child mode; a block the child makes in child mode is theirs to lift
-- Child mode: the child's settings page, your security settings and Shamir backup are now refused while the phone is in child mode, so the child can no longer change their own autonomy level or remove themselves (which used to drop the phone out of child mode with no PIN). The backup reminder and the Heartwood "approve again" and "Finish now" prompts are hidden in child mode too. Opening Contacts, Settings or a handshake from the child's cards no longer switches the phone over to your own contacts and settings; a page that is not the child's own is refused with no PIN. Pairing, permissions and family pages are refused too, even if you reach them with Back; paired children's contact requests, your contact approval and the private-backups notice (with its "Turn off relay" button) are hidden in child mode, and a contact your guardian has not approved reads as waiting for them
-- Companion apps: connecting an app no longer offers your real identity until you have set it up
-- Child mode: after a restart, an app permission request or a contact invite that arrives before child mode is restored no longer reaches your own identities. Both are refused with no PIN asked for; nothing waits for you to exit child mode
-- Child mode: Get Verified no longer shows your recovery words or marks you backed up while the phone is in child mode
-- Child mode: age verification requests are now refused while the phone is in child mode, because they could answer with your own credential. Leave child mode with your PIN first
-- Child mode: connecting a companion app, giving an app access to contacts, adding a dependant and Advanced settings are now refused while the phone is in child mode, with no PIN asked for. Leave child mode with the guardian's PIN first
-- While a sign-in waits on your Heartwood for more than a few seconds, the approval screen now says to press its button if it's showing a card
-- Shamir backup now asks for your PIN (or fingerprint) before it shows the shares, as the recovery words already do
-- Child mode no longer switches itself back on mid-session when a dependant record that was missing at start-up is restored later by a sync
-- Sign in with Signet from another device: signing in as a child no longer hands the site a connection to My Signet's Nostr Connect server, so it cannot go on signing as them afterwards
-- Adding a child: after pairing their phone, Done (or Back) now returns to their card on the home screen instead of an empty Add Dependant form
-- Child mode: after a restart the "Viewing as" banner shows while My Signet is locked, and the Bunker tab stays hidden, instead of looking like your own phone
-- Sign in with Signet: a child whose keys are on your Heartwood can now sign in with their own persona, signed through the Heartwood, instead of showing "No matching identity"
-- Sign in with Signet and Nostr Connect: "Straight to my Heartwood" now shows greyed out with the reason when your Heartwood can't take it yet, instead of being hidden
+- Child mode is locked down: while the phone is handed over, only the child's own screens open and their cards are read only. Your identities, apps, Bunker tab, notifications, backups and settings stay out of reach until you exit with your PIN, and requests that could answer as you are refused, including straight after a restart
+- Contacts the child adds or changes in child mode, or carries over from the older contacts list on their own phone, count as the child's own, so their contact limits apply
+- Bunker: each pending request shows when it was asked, by which app and site, and who it signs as, with more behind a down-arrow. A request older than five minutes can be cleared without refusing the app
+- New contact can look someone up by their NIP-05 address or domain and fill in their key and name
+- Shamir backup now asks for your PIN or fingerprint before it shows the shares
+- Sign in with Signet: a child whose keys are on your Heartwood can sign in with their own persona, and signing in as a child from another device no longer leaves the site a lasting connection. "Straight to my Heartwood" shows greyed out with the reason when it isn't available yet
+- Fixes: connecting an app across a phone lock, Done after pairing a child's phone, the Heartwood "press its button" hint, and companion apps no longer offering your real identity before you have set it up
 
 ## 0.29.0
 
