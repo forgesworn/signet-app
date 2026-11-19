@@ -4221,7 +4221,7 @@ function AppContent() {
     return () => { cancelled = true; };
   }, [encryptionKey]);
 
-  const { pendingApproval: bunkerPendingApproval, pendingApprovals: bunkerPendingApprovals, approveOnce: bunkerApproveOnce, approveAlways: bunkerApproveAlways, deny: bunkerDeny, serveStatus: bunkerServeStatus } = useBunkerServer({
+  const { pendingApproval: bunkerPendingApproval, pendingApprovals: bunkerPendingApprovals, approveOnce: bunkerApproveOnce, approveAlways: bunkerApproveAlways, deny: bunkerDeny, clearApproval: bunkerClearApproval, serveStatus: bunkerServeStatus } = useBunkerServer({
     isHandedOffClient: (pk) => {
       const held = () => heartwoodHandoffsRef.current.some(h => h.clientPubkey === pk.toLowerCase());
       const load = handoffsLoadRef.current;
@@ -4722,6 +4722,24 @@ function AppContent() {
     ] : [];
     return escalationOwner(identityPubkey, family, own);
   }, [dependants, identity, bunkerBackend]);
+
+  // The display label of the owner persona a Bunker request addresses, by its
+  // route pubkey: the persona, an extra persona, the Professional persona, or
+  // the real identity once it is active. Shown on the request card and in the
+  // approval modal only; the native notification never carries it (the real
+  // identity's label can be a legal name, and the lock screen is public).
+  const bunkerOwnerLabelFor = useCallback((routePubkey: string): string | undefined => {
+    if (!identity) return undefined;
+    const pk = routePubkey.toLowerCase();
+    const slots = [
+      { publicKey: identity.persona.publicKey, displayName: identity.persona.displayName },
+      ...(identity.extraPersonas ?? []).map((ep) => ({ publicKey: ep.publicKey, displayName: ep.displayName })),
+      ...(identity.professionalPersona ? [{ publicKey: identity.professionalPersona.publicKey, displayName: identity.professionalPersona.displayName }] : []),
+      ...(isNaturalPersonActive(identity) ? [{ publicKey: identity.naturalPerson.publicKey, displayName: identity.naturalPerson.displayName }] : []),
+    ];
+    const hit = slots.find((slot) => slot.publicKey && slot.publicKey.toLowerCase() === pk);
+    return hit?.displayName?.trim() || undefined;
+  }, [identity]);
 
   // Native nudge — fired by the hook itself, ONLY for a genuinely-new LIVE
   // notice (never the backlog; see useEscalations.ts's header comment for
@@ -12190,6 +12208,9 @@ function AppContent() {
   const bunkerApprovalOverlay = bunkerPanelOpen || childModeNow !== 'off' ? null : (bunkerPendingApproval ? (
         <BunkerApprovalModal
           approval={bunkerPendingApproval}
+          dependantName={bunkerPendingApproval.route.dependantId ? dependants.find((d) => d.id === bunkerPendingApproval.route.dependantId)?.displayName : undefined}
+          ownerLabel={bunkerPendingApproval.route.dependantId ? undefined : bunkerOwnerLabelFor(bunkerPendingApproval.route.pubkey)}
+          connectedClients={connectedClients}
           onApproveOnce={bunkerApproveOnce}
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
@@ -16219,6 +16240,9 @@ function AppContent() {
           onApproveOnce={bunkerApproveOnce}
           onApproveAlways={bunkerApproveAlways}
           onDeny={bunkerDeny}
+          onClear={bunkerClearApproval}
+          ownerLabelFor={bunkerOwnerLabelFor}
+          connectedClients={connectedClients}
           dependantNameFor={(depId) => (depId ? dependants.find((d) => d.id === depId)?.displayName : undefined)}
           hasDependants={hasDependantRoutes}
           serveStatus={bunkerServeStatus}

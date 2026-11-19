@@ -15,7 +15,7 @@ const MAX_LABEL_LEN = 100;
  * 2026-06-15). The blob arrives in a NIP-46 `connect` request param from an
  * untrusted client; an oversized value is a parse-time DoS.
  */
-const MAX_METADATA_JSON_LEN = 4096;
+export const MAX_METADATA_JSON_LEN = 4096;
 
 /**
  * Sanitise the human-readable label captured from a connecting app's
@@ -63,19 +63,21 @@ export function connectMetadataParam(params: readonly unknown[]): string | undef
 /**
  * Parse the NIP-46 `connect` request's metadata blob into
  * sanitised `{ label, origin }`. The blob is JSON; both fields are
- * optional. Always returns a label (defaulted) and an optional origin.
+ * optional. Always returns a label and an optional origin. The label is
+ * `fallbackLabel` ("App" by default) when the blob gives no usable name; a
+ * caller that must tell "no name" from a name passes `''`.
  */
-export function parseConnectMetadata(metadataParam: unknown): { label: string; origin?: string } {
+export function parseConnectMetadata(metadataParam: unknown, fallbackLabel = 'App'): { label: string; origin?: string } {
   if (typeof metadataParam !== 'string' || metadataParam.length === 0 || metadataParam.length > MAX_METADATA_JSON_LEN) {
-    return { label: 'App' };
+    return { label: fallbackLabel };
   }
   let parsed: unknown;
   try { parsed = JSON.parse(metadataParam); }
-  catch { return { label: 'App' }; }
-  if (typeof parsed !== 'object' || parsed === null) return { label: 'App' };
+  catch { return { label: fallbackLabel }; }
+  if (typeof parsed !== 'object' || parsed === null) return { label: fallbackLabel };
   const m = parsed as Record<string, unknown>;
   return {
-    label: sanitiseAppLabel(m.name),
+    label: sanitiseAppLabel(m.name, fallbackLabel),
     origin: extractAppOrigin(m.url),
   };
 }

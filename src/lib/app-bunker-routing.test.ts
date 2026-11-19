@@ -78,6 +78,14 @@ describe('parseConnectMetadata', () => {
     const blob = JSON.stringify({ name: 'Y'.repeat(5000) });
     expect(parseConnectMetadata(blob)).toEqual({ label: 'App' });
   });
+
+  it('uses the fallback label it is given, in every case that would have said "App"', () => {
+    expect(parseConnectMetadata(undefined, '')).toEqual({ label: '' });
+    expect(parseConnectMetadata('{not json', '')).toEqual({ label: '' });
+    expect(parseConnectMetadata(JSON.stringify({ url: 'https://x.example' }), '')).toEqual({ label: '', origin: 'https://x.example' });
+    expect(parseConnectMetadata(JSON.stringify({ name: 'Y'.repeat(5000) }), '')).toEqual({ label: '' });
+    expect(parseConnectMetadata(JSON.stringify({ name: 'Real' }), '')).toEqual({ label: 'Real' });
+  });
 });
 
 describe('pairingMatches', () => {
