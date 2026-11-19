@@ -4,6 +4,14 @@
 
 Websites integrate through a redirect (or relay) sign-in flow. The redirect callback returns a signed kind 21236 Nostr event split across query parameters. The README section below states exactly what is signed and how to verify it.
 
+## ForgeSworn ecosystem
+
+- [ForgeSworn library guide](https://forgesworn.dev/llms.txt): Find related libraries, tools and integration guides by task and runtime.
+- [ForgeSworn on GitHub](https://github.com/forgesworn): Browse the organisation’s public repositories.
+- [Project source](https://github.com/forgesworn/signet-app): Canonical source repository, documentation and release information.
+- [signet-login](https://github.com/forgesworn/signet-login): Integrate browser sign-in with Nostr signers.
+- [signet-verify](https://github.com/forgesworn/signet-verify): Verify Signet age credentials in a website.
+
 ## Integrating a website
 
 - [Sign in with Signet](README.md#sign-in-with-signet): request parameters, redirect flow, callback parameters
