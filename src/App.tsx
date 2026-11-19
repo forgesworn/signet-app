@@ -4886,9 +4886,12 @@ function AppContent() {
   const identityNameRef = useRef<(pubkey: string) => string>(() => '');
   /** The primary pairing's raw request, for the site-link methods; null when there is no primary. */
   const primarySiteLinkRequest = useCallback((): SiteLinkRequest | null => {
-    const bunker = bunkerBackendRef.current;
-    if (!bunker) return null;
-    return (method, params, timeoutMs) => bunker.request(method, params, timeoutMs);
+    if (!bunkerBackendRef.current) return null;
+    // Read on every call: a backend rebuilt mid-wait must carry the later polls and the resend.
+    return (method, params, timeoutMs) => {
+      const bunker = bunkerBackendRef.current;
+      return bunker ? bunker.request(method, params, timeoutMs) : Promise.reject(new Error('Not connected to bunker'));
+    };
   }, []);
   /** Revoke a sign-in link's slot on its Heartwood; throws (keep the record) unless it is gone. */
   const revokeSignInLinkOnDevice = useCallback(async (rec: HeartwoodSignInLinkRecord) => {
@@ -5178,7 +5181,7 @@ function AppContent() {
   // another master of the same Heartwood is not in it (see `signInLinkRoute`).
   const [primaryIdentityList, setPrimaryIdentityList] = useState<{ router: BunkerBackendRouter; pubkeys: ReadonlySet<string> | null } | null>(null);
   const primaryIdentityListWanted = !!encryptionKey && preferences.signingMode === 'bunker' && !isPairedChild
-    && signerStatus === 'connected' && signInLinkDeviceRouteUp;
+    && signerStatus === 'connected' && signInLinkDeviceRouteUp && signInLinkOwnerPairing === true;
   useEffect(() => {
     if (!primaryIdentityListWanted || !bunkerRouter || !bunkerBackend) return;
     if (primaryIdentityList?.router === bunkerRouter) return;

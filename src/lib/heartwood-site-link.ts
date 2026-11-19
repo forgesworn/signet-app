@@ -451,7 +451,9 @@ async function oneAttempt(a: SiteLinkCreateArgs, params: string, windowMs: numbe
  */
 export async function createSiteLinkOnDevice(a: SiteLinkCreateArgs): Promise<CreateClientV2Reply> {
   const now = a.now ?? Date.now;
-  const params = siteLinkCreateParams(a);
+  // Nothing is sent when the request can't be built, so the caller's pending record goes.
+  let params: string;
+  try { params = siteLinkCreateParams(a); } catch (e) { throw new SiteLinkRefusedError(signInLinkDeviceErrorCopy(e instanceof Error ? e.message : 'malformed link request', a.name)); }
   let changedOnce = false;
   try {
     for (;;) {

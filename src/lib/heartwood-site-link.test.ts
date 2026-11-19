@@ -395,6 +395,13 @@ describe('createSiteLinkOnDevice', () => {
     expect(err.message).toBe(SITE_LINK_NO_ANSWER_COPY);
   });
 
+  it('N5: a request this phone cannot even build sends nothing and is refused (the pending record goes)', async () => {
+    const dev = device();
+    const err = await createSiteLinkOnDevice(args(dev, { label: 'not ascii é' })).catch(e => e);
+    expect(err).toBeInstanceOf(SiteLinkRefusedError);
+    expect(dev.request).not.toHaveBeenCalled();
+  });
+
   // S3: a request that never reached a relay must not wait out the hold window.
   describe('nothing published fails at once (no wait, no lock, nothing left behind)', () => {
     const failsAtOnce = async (reject: () => unknown) => {
