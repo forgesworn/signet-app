@@ -131,4 +131,9 @@ export class AuthRequestSettlement {
   isInFlight(key: string): boolean {
     return this.state.get(key) === 'in-flight';
   }
+
+  /** The request has been answered (delivery claimed, or denied): it can never be approved again. */
+  isAnswered(key: string): boolean {
+    return this.state.get(key) === 'settled';
+  }
 }

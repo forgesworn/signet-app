@@ -165,6 +165,32 @@ describe('AuthRequestSettlement — one answer per sign-in request', () => {
   });
 });
 
+describe('AuthRequestSettlement.isAnswered', () => {
+  it('is false while open or in flight, true once delivery is claimed or the request is denied', () => {
+    const s = new AuthRequestSettlement();
+    expect(s.isAnswered('a')).toBe(false);
+    expect(s.beginApproval('a')).toBe('ok');
+    expect(s.isAnswered('a')).toBe(false);
+    s.claimDelivery('a');
+    expect(s.isAnswered('a')).toBe(true);
+    s.endApproval('a');
+    expect(s.isAnswered('a')).toBe(true);
+    s.deny('b');
+    expect(s.isAnswered('b')).toBe(true);
+  });
+
+  it('is false again when a failed send gives the claim back, and after a failed approval ends', () => {
+    const s = new AuthRequestSettlement();
+    s.beginApproval('a');
+    s.claimDelivery('a');
+    s.unclaimDelivery('a');
+    expect(s.isAnswered('a')).toBe(false);
+    s.endApproval('a');
+    expect(s.isAnswered('a')).toBe(false);
+    expect(s.beginApproval('a')).toBe('ok');
+  });
+});
+
 describe('shouldRedirectDenial — a normal Deny of a URL sign-in hands back error=denied', () => {
   it('redirects a URL-auth request even when the consumer sent no name=', () => {
     expect(shouldRedirectDenial({ fromUrlAuth: true, siteName: '', callbackUrl: 'http://localhost:5175/callback.html' })).toBe(true);
