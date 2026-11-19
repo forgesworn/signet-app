@@ -219,16 +219,14 @@ class NotSentError extends Error {
 }
 
 /**
- * The event never reached a relay, so no card can be on the device: the backend
- * had no signer, the signer was closed, the request threw before sending, or
- * every relay publish failed. A publish that TIMED OUT may still have been
- * delivered, so an `AggregateError` holding one is not "not sent".
+ * Only causes that PROVE nothing reached a relay: the backend had no signer, the
+ * signer was already closed, or the request threw before it was published. Any
+ * error that comes back from a publish attempt (every relay closed or failed, a
+ * timeout, a refusal) may follow an event a relay already stored and forwarded,
+ * so it counts as possibly sent.
  */
 function notSent(e: unknown): boolean {
   if (e instanceof NotSentError) return true;
-  if (e instanceof AggregateError) {
-    return !e.errors.some(c => c instanceof Error && /publish timed out/i.test(c.message));
-  }
   return e instanceof Error && (e.message === 'Not connected to bunker' || /^this signer is not open/.test(e.message));
 }
 

@@ -402,8 +402,8 @@ describe('createSiteLinkOnDevice', () => {
     expect(dev.request).not.toHaveBeenCalled();
   });
 
-  // S3: a request that never reached a relay must not wait out the hold window.
-  describe('nothing published fails at once (no wait, no lock, nothing left behind)', () => {
+  // S3/F1: only causes that PROVE nothing reached a relay fail at once.
+  describe('nothing could have been published fails at once (no wait, no lock, nothing left behind)', () => {
     const failsAtOnce = async (reject: () => unknown) => {
       const dev = device();
       dev.request.mockImplementationOnce(() => reject() as Promise<string>);
@@ -414,23 +414,51 @@ describe('createSiteLinkOnDevice', () => {
       expect(hold).not.toHaveBeenCalled();
       expect(dev.creates).toHaveLength(0);
     };
+    it('no signer (the backend has none)', () => failsAtOnce(() => Promise.reject(new Error('Not connected to bunker'))));
     it('the signer is closed but the backend is not nulled', () =>
       failsAtOnce(() => Promise.reject(new Error('this signer is not open anymore, create a new one'))));
-    it('every relay publish failed (connection failures and relay refusals)', () =>
-      failsAtOnce(() => Promise.reject(new AggregateError(['connection failure: Error: down', 'blocked: no'], 'All promises were rejected'))));
     it('the request throws synchronously', () =>
       failsAtOnce(() => { throw new Error('boom'); }));
-    it('a publish that timed out may have been delivered: still waits', async () => {
+  });
+
+  // F1: any error that comes back from a publish attempt may have followed a delivered event.
+  describe('an error from a publish attempt may have reached the device: it waits like a lost reply', () => {
+    class SendingOnClosedConnection extends Error { constructor() { super('sending on closed connection'); this.name = 'SendingOnClosedConnection'; } }
+    it.each<[string, () => unknown]>([
+      ['relay connection closed after the EVENT was written', () => new AggregateError([new Error('relay connection closed')], 'All promises were rejected')],
+      ['relay connection failed', () => new AggregateError(['relay connection failed'], 'All promises were rejected')],
+      ['publish timed out', () => new AggregateError([new Error('publish timed out')], 'All promises were rejected')],
+      ['a relay refusal (OK false)', () => new AggregateError([new Error('blocked: not on the allowlist')], 'All promises were rejected')],
+      ['sending on a closed connection', () => new AggregateError([new SendingOnClosedConnection()], 'All promises were rejected')],
+      ['an unknown rejection', () => new Error('something else')],
+    ])('%s', async (_name, make) => {
       const dev = device();
-      dev.request.mockImplementationOnce(() => Promise.reject(new AggregateError([new Error('publish timed out')], 'All promises were rejected')));
+      dev.request.mockImplementationOnce(() => Promise.reject(make()));
+      const holds: number[] = [];
       let settled = false;
-      const p = createSiteLinkOnDevice(args(dev)).then(() => { settled = true; }, () => { settled = true; });
+      const p = createSiteLinkOnDevice(args(dev, { holdLock: ms => holds.push(ms) })).catch(e => e).then(e => { settled = true; return e; });
       await vi.advanceTimersByTimeAsync(3_000);
       expect(settled).toBe(false);
+      // The status-by-label looks run as for a lost reply.
+      expect(dev.statuses.length).toBeGreaterThan(0);
       await vi.advanceTimersByTimeAsync(SITE_LINK_CREATE_TIMEOUT_MS);
-      await p;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const err = await p;
+      expect(err).toBeInstanceOf(SiteLinkUncertainError);
+      expect(holds).toEqual([T0 + SITE_LINK_CREATE_TIMEOUT_MS]);
+    });
+    it('a status that finds the hold still gets its link back', async () => {
+      const dev = device();
+      dev.request.mockImplementationOnce(() => Promise.reject(new AggregateError([new Error('relay connection closed')], 'x')));
+      dev.setStatus(async () => '{"exists":true,"bound":false}');
+      const p = createSiteLinkOnDevice(args(dev));
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(dev.creates).toHaveLength(1);
+      dev.creates[0].d.resolve(goodReplyJson());
+      await expect(p).resolves.toMatchObject({ slotIndex: 7 });
     });
   });
+
 });
 
 // ─── The device-link lock ───────────────────────────────────────────────────
