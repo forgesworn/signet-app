@@ -394,6 +394,36 @@ describe('createSiteLinkOnDevice', () => {
     expect(err).toBeInstanceOf(SiteLinkRefusedError);
     expect(err.message).toBe(SITE_LINK_NO_ANSWER_COPY);
   });
+
+  // S3: a request that never reached a relay must not wait out the hold window.
+  describe('nothing published fails at once (no wait, no lock, nothing left behind)', () => {
+    const failsAtOnce = async (reject: () => unknown) => {
+      const dev = device();
+      dev.request.mockImplementationOnce(() => reject() as Promise<string>);
+      const hold = vi.fn();
+      const err = await createSiteLinkOnDevice(args(dev, { holdLock: hold })).catch(e => e);
+      expect(err).toBeInstanceOf(SiteLinkRefusedError);
+      expect(err.message).toBe(SITE_LINK_NO_ANSWER_COPY);
+      expect(hold).not.toHaveBeenCalled();
+      expect(dev.creates).toHaveLength(0);
+    };
+    it('the signer is closed but the backend is not nulled', () =>
+      failsAtOnce(() => Promise.reject(new Error('this signer is not open anymore, create a new one'))));
+    it('every relay publish failed (connection failures and relay refusals)', () =>
+      failsAtOnce(() => Promise.reject(new AggregateError(['connection failure: Error: down', 'blocked: no'], 'All promises were rejected'))));
+    it('the request throws synchronously', () =>
+      failsAtOnce(() => { throw new Error('boom'); }));
+    it('a publish that timed out may have been delivered: still waits', async () => {
+      const dev = device();
+      dev.request.mockImplementationOnce(() => Promise.reject(new AggregateError([new Error('publish timed out')], 'All promises were rejected')));
+      let settled = false;
+      const p = createSiteLinkOnDevice(args(dev)).then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(SITE_LINK_CREATE_TIMEOUT_MS);
+      await p;
+    });
+  });
 });
 
 // ─── The device-link lock ───────────────────────────────────────────────────

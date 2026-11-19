@@ -213,9 +213,23 @@ function isUnknownLink(msg: string): boolean { return msg.trim().startsWith('unk
 function isStaleSlot(msg: string): boolean { return msg.trim().startsWith('stale_client_slot'); }
 function isApprovalChanged(msg: string): boolean { return msg.trim().startsWith('approval_changed'); }
 
-/** The primary's signer was gone before anything was sent. */
+/** The request threw before it could leave this phone (wrapped so it is told apart from a publish that may have gone). */
+class NotSentError extends Error {
+  constructor(readonly cause: unknown) { super('request not sent'); this.name = 'NotSentError'; }
+}
+
+/**
+ * The event never reached a relay, so no card can be on the device: the backend
+ * had no signer, the signer was closed, the request threw before sending, or
+ * every relay publish failed. A publish that TIMED OUT may still have been
+ * delivered, so an `AggregateError` holding one is not "not sent".
+ */
 function notSent(e: unknown): boolean {
-  return e instanceof Error && e.message === 'Not connected to bunker';
+  if (e instanceof NotSentError) return true;
+  if (e instanceof AggregateError) {
+    return !e.errors.some(c => c instanceof Error && /publish timed out/i.test(c.message));
+  }
+  return e instanceof Error && (e.message === 'Not connected to bunker' || /^this signer is not open/.test(e.message));
 }
 
 // ── The device-link lock ────────────────────────────────────────────────────
@@ -364,7 +378,7 @@ async function oneAttempt(a: SiteLinkCreateArgs, params: string, windowMs: numbe
   const sends = new Sends();
   const send = (timeoutMs: number) => {
     let p: Promise<string>;
-    try { p = a.request(SITE_LINK_CREATE, [params], timeoutMs); } catch (e) { p = Promise.reject(e); }
+    try { p = a.request(SITE_LINK_CREATE, [params], timeoutMs); } catch (e) { p = Promise.reject(new NotSentError(e)); }
     sends.add(p);
   };
   send(windowMs);
