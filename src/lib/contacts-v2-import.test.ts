@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildImportOps, importOps, type ImportInput } from './contacts-v2-import';
 import { applyOperations, recordKey, validateOperation } from './contacts-v2-reducer';
+import { resolveEffective } from './contacts-v2-effective';
 import { importContactId, importSourceKey } from './contacts-v2-ids';
 import type { Contact } from '../types';
 import type { KenEntry } from '@forgesworn/kenspeckle';
@@ -129,6 +130,52 @@ describe('buildImportOps — actor role by directory', () => {
   it('stamps quarantined operations as owner, not guardian', () => {
     const ops = importOps(buildImportOps(input({ contacts: [contact({ ownerPubkey: STRANGER })] })));
     expect(ops.every(o => o.actorRole === 'owner')).toBe(true);
+  });
+
+  // A paired-child install authors as its own dependant record id (R-ACTOR),
+  // and its legacy rows route into its own `dependant:<id>` directory. That is
+  // the child acting, so the child ceiling must apply (owner ruling
+  // 2026-11-18, the same rule as child mode on the guardian's phone).
+  const CHILD_ID = 'b'.repeat(64);
+  const pairedChild = (over: Partial<ImportInput> = {}) => input({
+    ownerPubkeys: [], actorPubkey: CHILD_ID,
+    dependants: [{ directoryId: DEP_DIR, slotPubkeys: [DEP_NP] }], ...over,
+  });
+
+  it('stamps a paired child importing into its OWN directory as dependant, not guardian', () => {
+    const ops = importOps(buildImportOps(pairedChild({
+      contacts: [contact({ ownerPubkey: DEP_NP, relationship: 'parent' })],
+      kens: [ken({ ownerPubkey: DEP_NP })],
+    })));
+    expect(ops.length).toBeGreaterThan(0);
+    expect(ops.every(o => o.directoryId === DEP_DIR && o.actorRole === 'dependant')).toBe(true);
+    expect(ops.every(o => o.actorPubkey === CHILD_ID)).toBe(true);
+    expect(ops.every(o => validateOperation(o))).toBe(true);
+  });
+
+  it('matches the child id case-insensitively', () => {
+    const ops = importOps(buildImportOps(pairedChild({
+      actorPubkey: CHILD_ID.toUpperCase(),
+      contacts: [contact({ ownerPubkey: DEP_NP })],
+    })));
+    expect(ops.every(o => o.actorRole === 'dependant')).toBe(true);
+  });
+
+  it('a guardian importing into a dependant directory is still the guardian', () => {
+    const ops = importOps(buildImportOps(input({ contacts: [contact({ ownerPubkey: DEP_NP })] })));
+    expect(ops.every(o => o.actorRole === 'guardian')).toBe(true);
+  });
+
+  it('a paired child\'s imported Kin is capped at the child ceiling; the guardian\'s is not', () => {
+    const ctx = { activeGuardianPubkeys: [OWNER_NP], defaultChildCeiling: 'ken' as const, directoryIsDependant: true };
+    const childPlan = buildImportOps(pairedChild({ contacts: [contact({ ownerPubkey: DEP_NP, relationship: 'parent' })] }));
+    const childRecord = applyOperations(importOps(childPlan)).get(recordKey(DEP_DIR, childPlan.entries[0].contactId))!;
+    expect(childRecord.tier).toBe('kin');
+    expect(resolveEffective(childRecord, ctx).effectiveTier).toBe('ken');
+
+    const guardianPlan = buildImportOps(input({ contacts: [contact({ ownerPubkey: DEP_NP, relationship: 'parent' })] }));
+    const guardianRecord = applyOperations(importOps(guardianPlan)).get(recordKey(DEP_DIR, guardianPlan.entries[0].contactId))!;
+    expect(resolveEffective(guardianRecord, ctx).effectiveTier).toBe('kin');
   });
 });
 

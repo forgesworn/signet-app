@@ -39,11 +39,14 @@ import { contactsMutationQueue } from './contacts-v2-queue';
  * authored operation, which is correct: a legacy row is the oldest fact this
  * device holds about that contact.
  *
- * `actorRole` on every produced operation follows WHERE it lands, not who
+ * `actorRole` on every produced operation follows WHERE it lands and WHO
  * runs the import: `'owner'` for the owner's own directory and for
- * quarantine (nobody has been vouched for by a guardian there), `'guardian'`
- * for a dependant's directory (the owner is acting in a guardian capacity
- * over the child's contacts).
+ * quarantine (nobody has been vouched for by a guardian there); for a
+ * dependant's directory, `'dependant'` when the importer IS that dependant (a
+ * paired child importing its own legacy contacts — the child acting, so the
+ * child ceiling applies, owner ruling 2026-11-18 as for child mode), otherwise
+ * `'guardian'` (the owner acting in a guardian capacity over the child's
+ * contacts).
  *
  * Pure: `buildImportOps` touches no storage and no clock.
  */
@@ -59,6 +62,7 @@ import {
   type ContactOperation,
 } from '../types';
 import {
+  directoryIdForDependant,
   importContactId,
   importOperationId,
   importSourceKey,
@@ -86,7 +90,11 @@ export interface ImportInput {
   ownerPubkeys: string[];
   dependants: ImportDependantRef[];
   deviceId: string;
-  /** The owner identity authoring the import. */
+  /**
+   * The install's stable actor id authoring the import: the owner's NP on a
+   * guardian install, the child's own dependant record id on a paired-child
+   * install (which makes its own directory's imports `'dependant'`).
+   */
   actorPubkey: string;
   /** Fallback timestamp for a legacy row with no usable one. */
   now: number;
@@ -135,9 +143,15 @@ function resolveDirectory(ownerPubkey: string, input: ImportInput): { directoryI
   return { directoryId: QUARANTINE_DIRECTORY_ID, quarantined: true };
 }
 
-/** A dependant directory is anything but the owner's own directory and quarantine. */
-function actorRoleFor(directoryId: string): ContactActorRole {
-  return directoryId === OWNER_DIRECTORY_ID || directoryId === QUARANTINE_DIRECTORY_ID ? 'owner' : 'guardian';
+/**
+ * A dependant directory is anything but the owner's own directory and
+ * quarantine. Importing into it is the guardian acting, unless the importer's
+ * own actor id IS that dependant (a paired-child install authors as its own
+ * dependant record id), which is the child acting.
+ */
+function actorRoleFor(directoryId: string, actorPubkey: string): ContactActorRole {
+  if (directoryId === OWNER_DIRECTORY_ID || directoryId === QUARANTINE_DIRECTORY_ID) return 'owner';
+  return directoryId === directoryIdForDependant({ id: actorPubkey }) ? 'dependant' : 'guardian';
 }
 
 function baseOp(
@@ -155,7 +169,7 @@ function baseOp(
     directoryId,
     contactId,
     actorPubkey: input.actorPubkey.toLowerCase(),
-    actorRole: actorRoleFor(directoryId),
+    actorRole: actorRoleFor(directoryId, input.actorPubkey),
     actorDeviceId: input.deviceId,
     logicalClock: clock,
     createdAt,
