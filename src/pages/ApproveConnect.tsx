@@ -13,6 +13,7 @@ import { endsConnectRequest, handoffReach, handoffWarning } from '../lib/heartwo
 import { HeartwoodWaitHint } from '../components/HeartwoodWaitHint';
 import { SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
 import { CHILD_MODE_SIGN_IN_COPY } from '../lib/child-device-copy';
+import type { ConnectOutcome } from '../lib/connect-outcome';
 
 interface Props {
   request: NostrConnectRequest;
@@ -57,6 +58,12 @@ interface Props {
    * dependant in `dependants`.
    */
   childModeOnly?: boolean;
+  /**
+   * Where this request's approval ended, held by App so it survives a lock
+   * remount. When present it decides what is shown (an answered request never
+   * offers Approve or Deny again); the page's own state covers the rest.
+   */
+  outcome?: ConnectOutcome;
   /** Signing goes through a paired Heartwood: after a few seconds of Sending…, say to press its button. */
   heartwoodSigner?: boolean;
 }
@@ -82,6 +89,7 @@ export function ApproveConnect({
   heartwoodNeedsUpdate,
   childModeOnly = false,
   heartwoodSigner = false,
+  outcome,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -192,7 +200,8 @@ export function ApproveConnect({
   const [showNpConfirm, setShowNpConfirm] = useState(false);
   // 'closed': failed in a way that answered the request (the Heartwood already
   // told the app something), so it can't be tried again, only closed.
-  const [status, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error' | 'closed'>('pending');
+  const [localStatus, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error' | 'closed'>('pending');
+  const status = outcome?.status ?? localStatus;
   // Crypto (nip44 / nip04) stays automatic either way; this only decides
   // whether sign_event asks each time.
   const [signMode, setSignMode] = useState<SignMode | null>(null);
@@ -218,7 +227,8 @@ export function ApproveConnect({
   // a key whose route is only coming back doesn't hold Approve. A choice that
   // has dropped off the list still does.
   const waitBlocksApprove = selectionWaiting && !(mode === 'heartwood' && handOffOffered && !chosenGuardianMissing);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setError] = useState<string | null>(null);
+  const error = outcome ? (outcome.error ?? null) : localError;
 
   const isGuardianSelected = (keypairType: string) =>
     selection?.source === 'guardian' && selection.keypairType === keypairType;
@@ -555,6 +565,11 @@ export function ApproveConnect({
       {status === 'sent' && (
         <div className="section" style={{ textAlign: 'center' }}>
           <p style={{ color: 'var(--success)', fontWeight: 600 }}>Connected!</p>
+          {/* This mount never ran the approval (App held the result across a
+              lock), so nothing here will dismiss it: Close does, sending no callback. */}
+          {localStatus !== 'sent' && (
+            <button className="btn btn-primary" onClick={onDeny}>Close</button>
+          )}
         </div>
       )}
     </div>

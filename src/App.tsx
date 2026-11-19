@@ -266,6 +266,7 @@ import { IdentityBridge } from './pages/IdentityBridge';
 import { CredentialDetail } from './pages/CredentialDetail';
 import { ApproveVerification } from './pages/ApproveVerification';
 import { ApproveConnect } from './pages/ApproveConnect';
+import { trackApproval, type ConnectOutcome } from './lib/connect-outcome';
 import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
 import { MyKeep } from './pages/MyKeep';
@@ -1379,6 +1380,9 @@ function AppContent() {
   const [routeWaitLapsed, setRouteWaitLapsed] = useState(false);
   // Same per-request choice for the NIP-46 connect picker.
   const [connectPickerChoice, setConnectPickerChoice] = useState<{ key: string; selection: AuthSelection | null } | null>(null);
+  // Where this connect request's approval ended. Held here, not in the page: a
+  // lock remounts the page, and the request must not come back looking unanswered.
+  const [connectOutcome, setConnectOutcome] = useState<ConnectOutcome | null>(null);
   // Requests that arrived as a Sign in with Signet URL (web ?auth=1 or the
   // native App Link). Their denial goes back to the consumer's callback even
   // when the consumer sent no name= (an empty urlAuthSiteName).
@@ -6733,7 +6737,10 @@ function AppContent() {
     }
   }, [pendingAuthRequest]);
   useEffect(() => {
-    if (!pendingConnectRequest) setConnectPickerChoice(null);
+    if (!pendingConnectRequest) {
+      setConnectPickerChoice(null);
+      setConnectOutcome(null);
+    }
   }, [pendingConnectRequest]);
 
   // Bounded "waiting for your Heartwood" on the approval page: while unlocked
@@ -9322,7 +9329,13 @@ function AppContent() {
     }
     if (began === 'in-flight') throw new Error('Already connecting this request.');
     try {
-      await approveConnectUnguarded(sel, connectOptions);
+      await trackApproval({
+        key,
+        settlement: connectSettlementRef.current,
+        isCurrent: () => pendingConnectRequestRef.current === request,
+        record: setConnectOutcome,
+        run: () => approveConnectUnguarded(sel, connectOptions),
+      });
     } finally {
       connectSettlementRef.current.endApproval(key);
     }
@@ -14834,6 +14847,7 @@ function AppContent() {
         <ApproveConnect
           key={connectRequestKey}
           request={pendingConnectRequest}
+          outcome={connectOutcome?.key === connectRequestKey ? connectOutcome : undefined}
           identity={identity}
           canSwitchGuardianPersona={canSwitchGuardianPersona}
           availableGuardianPubkeys={availableGuardianPubkeys}

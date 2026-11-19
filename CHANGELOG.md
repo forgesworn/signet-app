@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- Connecting an app: if the phone locks while a request is being answered, it now comes back showing how it ended (connected, or the message about a pairing your Heartwood may still hold) with only Close, instead of offering Approve and Deny again
 - Child's own phone: contacts carried over from the older contacts list now count as the child's own, so the child's contact limits apply to them (contacts already carried over are unchanged)
 - Bunker: each pending request now shows when it was asked, which app and site, and who it is signing as, with a down-arrow for the rest (what it is for, its tags, and a short preview of what the app sent). A request older than five minutes is marked as probably abandoned and has a Clear button that removes it without refusing the app
 - New contact can look someone up by their NIP-05 address (or just their domain) and fill in their key and, if you leave it ticked, their name from their Nostr profile; an address on its own domain now shows as the domain, a bare domain works everywhere a NIP-05 address does, and a NIP-05 name with a plus sign is refused; saving a contact is now one step, and a key that belongs to a contact you deleted or archived is named instead of creating a duplicate
