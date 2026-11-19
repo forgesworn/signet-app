@@ -3,7 +3,7 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.30.0
 
 - Connecting an app: if the phone locks while a request is being answered, it now comes back showing how it ended (connected, or the message about a pairing your Heartwood may still hold) with only Close, instead of offering Approve and Deny again
 - Child's own phone: contacts carried over from the older contacts list now count as the child's own, so the child's contact limits apply to them (contacts already carried over are unchanged)
