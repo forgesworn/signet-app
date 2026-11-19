@@ -184,6 +184,8 @@ export interface SignInLinkRouteInput {
    * after a restart), so `not-listed` proves nothing: it never demotes the device route.
    */
   primaryList: 'listed' | 'not-listed' | 'unknown';
+  /** A key-less identity held on a Heartwood (`heartwoodKey`): possibly another master of the same device. Every other identity of this phone is on the paired master. */
+  heartwoodKeyIdentity: boolean;
   /** The owner pairing's style on file (`heartwood_owner_status`), null when unknown. */
   ownerStyle: 'everyday' | 'careful' | 'custom' | null;
   operatorClientCount: number;
@@ -199,8 +201,9 @@ export interface SignInLinkRouteInput {
  *   before any card, and the copy says so.
  * - An operator key is held: `device` when the primary lists the identity,
  *   else `operator` (an identity on another Heartwood keeps working as today).
- * - An Extra careful owner pairing and an identity the primary lists: never the device
- *   route (it would be refused every time); `operator` if a key is held, else unavailable.
+ * - An Extra careful owner pairing and an identity on the paired master (anything but a
+ *   `heartwoodKey` identity), listed or not: never the device route (it would be refused
+ *   every time); `operator` if a key is held, else unavailable.
  * - The device route needs the link methods and a pairing not definitely
  *   non-owner (unknown is tried: the device refuses before any card).
  */
@@ -210,8 +213,9 @@ export function signInLinkRoute(i: SignInLinkRouteInput): SignInLinkRoute {
   if (deviceCan) {
     // An Extra careful pairing signs only a few kinds silently, so the device refuses a link
     // for any kind (`wider than this phone's access`) for an identity on the same master as
-    // the pairing. Another master's identity is not decided by the style.
-    if (i.ownerStyle === 'careful' && i.primaryList === 'listed') {
+    // the pairing. That is every identity but a `heartwoodKey` one (possibly master 1); the
+    // identity list is not consulted (it is empty after a restart).
+    if (i.ownerStyle === 'careful' && !i.heartwoodKeyIdentity) {
       return hasOperator ? { kind: 'operator' } : { kind: 'unavailable', reason: 'careful' };
     }
     if (!hasOperator || i.primaryList === 'listed') return { kind: 'device' };

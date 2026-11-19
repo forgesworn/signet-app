@@ -134,7 +134,7 @@ describe('signInLinkRoute', () => {
   const LINK_METHODS = ['heartwood_capabilities', 'heartwood_link_create', 'heartwood_link_status', 'heartwood_link_revoke'];
   const base: SignInLinkRouteInput = {
     router: 'ready', routerMethods: LINK_METHODS, ownerPairing: true, primaryList: 'listed',
-    ownerStyle: 'everyday', operatorClientCount: 0,
+    heartwoodKeyIdentity: false, ownerStyle: 'everyday', operatorClientCount: 0,
   };
   const route = (over: Partial<SignInLinkRouteInput>) => signInLinkRoute({ ...base, ...over });
   it.each<[string, Partial<SignInLinkRouteInput>, ReturnType<typeof signInLinkRoute>]>([
@@ -148,7 +148,11 @@ describe('signInLinkRoute', () => {
     // S2: an Extra careful pairing is refused `wider than this phone's access` for a same-master identity.
     ['operator: Extra careful pairing, listed identity, operator key held', { ownerStyle: 'careful', operatorClientCount: 1 }, { kind: 'operator' }],
     ['careful: Extra careful pairing, listed identity, no operator key', { ownerStyle: 'careful' }, { kind: 'unavailable', reason: 'careful' }],
-    ['device: Extra careful pairing, identity not in the list (another master), no operator key', { ownerStyle: 'careful', primaryList: 'not-listed' }, { kind: 'device' }],
+    // F3: the list is empty after a restart, so careful must not depend on it.
+    ['careful: Extra careful pairing, identity not in the list (empty after a restart), no operator key', { ownerStyle: 'careful', primaryList: 'not-listed' }, { kind: 'unavailable', reason: 'careful' }],
+    ['careful: Extra careful pairing, list not read, no operator key', { ownerStyle: 'careful', primaryList: 'unknown' }, { kind: 'unavailable', reason: 'careful' }],
+    ['operator: Extra careful pairing, identity not in the list, operator key held', { ownerStyle: 'careful', primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['device: Extra careful pairing, a heartwoodKey (second-master) identity', { ownerStyle: 'careful', primaryList: 'not-listed', heartwoodKeyIdentity: true }, { kind: 'device' }],
     ['device: custom style is not decided here', { ownerStyle: 'custom' }, { kind: 'device' }],
     ['device: style unknown is tried', { ownerStyle: null }, { kind: 'device' }],
     ['operator: firmware without the link methods', { routerMethods: ['heartwood_capabilities'], operatorClientCount: 1 }, { kind: 'operator' }],

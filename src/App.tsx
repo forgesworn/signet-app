@@ -5204,10 +5204,11 @@ function AppContent() {
       routerMethods: bunkerRouter?.capabilities.methods ?? null,
       ownerPairing: signInLinkOwnerPairing,
       primaryList: primaryIdentities === null ? 'unknown' : primaryIdentities.has(pk) ? 'listed' : 'not-listed',
+      heartwoodKeyIdentity: !!identity?.extraPersonas?.some(ep => ep.heartwoodKey && ep.publicKey.toLowerCase() === pk),
       ownerStyle: heartwoodOwner.status?.owner ? heartwoodOwner.status.style : null,
       operatorClientCount: handoffClients.length,
     });
-  }, [bunkerRouter, routerProbeState, signInLinkOwnerPairing, primaryIdentities, heartwoodOwner.status, handoffClients.length]);
+  }, [bunkerRouter, routerProbeState, signInLinkOwnerPairing, primaryIdentities, identity?.extraPersonas, heartwoodOwner.status, handoffClients.length]);
   signInLinkRouteRef.current = signInLinkRouteFor;
   identityNameRef.current = (pubkey: string) => {
     const pk = pubkey.toLowerCase();
