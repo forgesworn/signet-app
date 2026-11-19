@@ -23,6 +23,7 @@
 
 import type { PersonaPublicProfile, PublicProfileConfig } from '../types';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
+import { displayNip05 } from '../lib/nip05-check';
 import { Icon } from '../components/Icon';
 
 export type EditPublicProfileViewerMode = 'paired-child' | 'race-recover';
@@ -128,7 +129,7 @@ function PairedChildReadOnly({
         <ReadOnlyImage label="Banner" url={safeBanner} aspect="wide" />
       )}
 
-      {config.nip05 && <ReadOnlyField label="NIP-05" value={config.nip05} />}
+      {config.nip05 && <ReadOnlyField label="NIP-05" value={displayNip05(config.nip05)} />}
       {config.lud16 && <ReadOnlyField label="Lightning address" value={config.lud16} />}
       {safeWebsite && <ReadOnlyField label="Website" value={safeWebsite} />}
 

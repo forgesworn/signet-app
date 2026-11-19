@@ -10,6 +10,8 @@ import {
 import type { KenEntry } from '@forgesworn/kenspeckle';
 import { encodeNpub, hexToBytes, shortNpub, isValidHexKey } from '../lib/signet';
 import { parsePubkeyInput } from '../lib/pubkey-input';
+import { canonicalNip05 } from '../lib/nip05-check';
+import { humaniseKenAddError, validateNip05Shape } from '../lib/nip05-lookup';
 import { parseContactQR, resolveScannedContactName } from '../lib/contact-qr';
 import { useContactAvatar } from '../hooks/useContactAvatar';
 import { useContactPicture } from '../hooks/useContactPicture';
@@ -33,38 +35,10 @@ function hexToNpub(hex: string): string {
   return isValidHexKey(hex) ? encodeNpub(hexToBytes(hex)) : hex;
 }
 
-/** Returns `null` if valid NIP-05 shape, or an error string. */
-function validateNip05Shape(value: string): string | null {
-  // NIP-05: local@domain (domain required)
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim())) {
-    return 'Enter a NIP-05 address in the format name@domain.com.';
-  }
-  return null;
-}
-
 /** True when `hex` (already lowercase-normalised) is the owner's own key —
  *  kenspeckle 0.2.0's `pinKen` throws rather than pinning it. */
 function isOwnKey(hex: string, ownerPubkeyHex: string): boolean {
   return hex === ownerPubkeyHex.toLowerCase();
-}
-
-/** Map a kenspeckle throw to calm, human copy — the library's own message
- *  text (an internal field name, an HTTP status) is never shown to the
- *  user. `pinKen`/`pinKenFromNip05` throw "…must not equal ownerPubkeyHex"
- *  when the resolved key turns out to be the owner's own, so that case is
- *  named even though the hex/QR paths already check for it up front. */
-function humaniseKenAddError(e: unknown): string {
-  const msg = e instanceof Error ? e.message : '';
-  if (msg.includes('must not equal ownerPubkeyHex')) {
-    return "That's your own key — you can't add yourself as a ken.";
-  }
-  if (msg.includes('HTTP')) {
-    return 'Could not reach that address right now. Check it is correct and try again.';
-  }
-  if (msg.includes('response') || msg.includes('did not resolve')) {
-    return 'That NIP-05 address did not resolve to a key. Check it is correct and try again.';
-  }
-  return 'Could not add that key. Check the details and try again.';
 }
 
 export function KenAdd({ ownerPubkeyHex, onAddKen, onDone, onBack, relayUrl, encryptionKey, onSaveContactAvatar }: Props) {
@@ -220,9 +194,10 @@ export function KenAdd({ ownerPubkeyHex, onAddKen, onDone, onBack, relayUrl, enc
   async function handleNip05Submit() {
     if (nip05Busy) return;
     setError('');
-    const shaped = nip05Input.trim();
-    const shapeErr = validateNip05Shape(shaped);
+    const shapeErr = validateNip05Shape(nip05Input);
     if (shapeErr) { setError(shapeErr); return; }
+    // The resolver only ever sees the canonical form (`_@domain` for a bare domain).
+    const shaped = canonicalNip05(nip05Input)!;
 
     setNip05Busy(true);
     try {
@@ -308,7 +283,7 @@ export function KenAdd({ ownerPubkeyHex, onAddKen, onDone, onBack, relayUrl, enc
       <div className="fade-in" role="main">
         <h2 style={{ marginBottom: 8 }}>NIP-05 address</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 16 }}>
-          Enter their NIP-05 identifier. The key it resolves to is pinned automatically.
+          Enter their NIP-05 identifier (or just their domain). The key it resolves to is pinned automatically.
         </p>
         {error && (
           <div style={{ padding: 8, background: 'var(--danger-light)', borderRadius: 'var(--radius-sm)', marginBottom: 12, color: 'var(--danger)', fontSize: '0.9rem' }}>

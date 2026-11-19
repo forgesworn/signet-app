@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detailSections, validateMethodDraft, normaliseRole, addRole, removeRole,
   normaliseNote, normaliseBlockReason, METHOD_KINDS, METHOD_KIND_LABELS,
-  ROLES_CAP, ROLE_MAX, METHOD_VALUE_MAX, NOTE_MAX, BLOCK_REASON_MAX,
+  methodDisplayValue, ROLES_CAP, ROLE_MAX, METHOD_VALUE_MAX, NOTE_MAX, BLOCK_REASON_MAX,
 } from './contacts-v2-detail';
 import type { ActorRights } from './contacts-v2-rights';
 import type { EffectiveContact } from '../types';
@@ -126,5 +126,14 @@ describe('roles and free text', () => {
 
   it('keeps a newline in a note while still stripping a control character', () => {
     expect(normaliseNote('Met at\nschool gate')).toBe('Met at\nschool gate');
+  });
+});
+
+describe('methodDisplayValue', () => {
+  it('shows a NIP-05 method _@domain as the domain, and leaves everything else alone', () => {
+    expect(methodDisplayValue({ kind: 'other', label: 'NIP-05', value: '_@example.com' })).toBe('example.com');
+    expect(methodDisplayValue({ kind: 'other', label: 'NIP-05', value: 'alice@example.com' })).toBe('alice@example.com');
+    expect(methodDisplayValue({ kind: 'other', label: 'Other', value: '_@example.com' })).toBe('_@example.com');
+    expect(methodDisplayValue({ kind: 'email', value: '_@example.com' })).toBe('_@example.com');
   });
 });

@@ -133,4 +133,27 @@ describe('KenAdd — adding your own key', () => {
     expect(screen.getByText('Could not reach that address right now. Check it is correct and try again.')).toBeDefined();
     expect(screen.queryByText('ken: nip05 lookup failed (HTTP 404)')).toBeNull();
   });
+
+  it('nip05 path: a bare domain is resolved as _@domain, lowercased', async () => {
+    mockPinKenFromNip05.mockRejectedValue(new Error('ken: nip05 lookup failed (HTTP 404)'));
+    renderPage();
+    fireEvent.click(screen.getByText('NIP-05 address (name@domain.com)'));
+    fireEvent.change(screen.getByPlaceholderText('name@domain.com'), { target: { value: ' Example.COM ' } });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Resolve & pin'));
+    });
+    expect(mockPinKenFromNip05).toHaveBeenCalledTimes(1);
+    expect(mockPinKenFromNip05.mock.calls[0][0]).toBe('_@example.com');
+  });
+
+  it('nip05 path: a + in the name is refused before any lookup', async () => {
+    renderPage();
+    fireEvent.click(screen.getByText('NIP-05 address (name@domain.com)'));
+    fireEvent.change(screen.getByPlaceholderText('name@domain.com'), { target: { value: 'a+b@example.com' } });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Resolve & pin'));
+    });
+    expect(mockPinKenFromNip05).not.toHaveBeenCalled();
+    expect(screen.getByText(/Enter a NIP-05 address/)).toBeDefined();
+  });
 });

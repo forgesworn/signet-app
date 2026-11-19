@@ -13,6 +13,7 @@ import { ContactAvatar } from '../components/ContactAvatar';
 import { useContactAvatar } from '../hooks/useContactAvatar';
 import { useContactPicture } from '../hooks/useContactPicture';
 import { fetchPublicProfile, safeImageOrLinkUrl } from '../lib/public-profile-publish';
+import { displayNip05 } from '../lib/nip05-check';
 
 interface Props {
   entry: KenEntry;
@@ -647,12 +648,12 @@ export function KenDetail({ entry, onAddKen, onRemoveKen, onBack, relayUrl, encr
 
         <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
           <strong>Source:</strong> {provenanceLabel(entry.provenance.source)}{' '}
-          &middot; <strong>Locator:</strong> {truncStr(entry.provenance.locator, 80)}
+          &middot; <strong>Locator:</strong> {truncStr(entry.provenance.source === 'nip05' ? displayNip05(entry.provenance.locator) : entry.provenance.locator, 80)}
         </div>
 
         {entry.nip05 && (
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
-            <strong>NIP-05:</strong> {truncStr(entry.nip05, 100)}
+            <strong>NIP-05:</strong> {truncStr(displayNip05(entry.nip05), 100)}
           </div>
         )}
 

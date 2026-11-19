@@ -44,4 +44,19 @@ describe('planNewContact', () => {
     expect(plan.ok).toBe(true);
     if (plan.ok) expect(plan.contact.displayName).toHaveLength(100);
   });
+
+  it('adds a typed NIP-05 address as a private unverified "NIP-05" method, canonical', () => {
+    const plan = planNewContact({ ...EMPTY_NEW_CONTACT_DRAFT, displayName: 'Dave', phone: '07700 900123' }, ' Example.COM ');
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.methods).toEqual([
+      { kind: 'phone', value: '07700 900123', verification: 'unverified', sharingPolicy: 'private' },
+      { kind: 'other', label: 'NIP-05', value: '_@example.com', verification: 'unverified', sharingPolicy: 'private' },
+    ]);
+  });
+
+  it('rejects a malformed NIP-05 address rather than dropping it', () => {
+    expect(planNewContact({ ...EMPTY_NEW_CONTACT_DRAFT, displayName: 'Dave' }, 'a+b@example.com').ok).toBe(false);
+    expect(planNewContact({ ...EMPTY_NEW_CONTACT_DRAFT, displayName: 'Dave' }, 'nope').ok).toBe(false);
+  });
 });

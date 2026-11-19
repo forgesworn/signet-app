@@ -221,6 +221,7 @@ import { ContactsRolodex } from './pages/ContactsRolodex';
 import { ContactDetail } from './pages/ContactDetail';
 import { applyConfirmSteps } from './lib/contacts-v2-confirm';
 import { ContactNew } from './pages/ContactNew';
+import { findContactHoldingKey, saveNewContact } from './lib/contacts-v2-new-contact-save';
 import { AddMember } from './pages/AddMember';
 import { SettingsMenu } from './pages/SettingsMenu';
 import { GuardianSettings } from './pages/GuardianSettings';
@@ -14372,10 +14373,14 @@ function AppContent() {
       <Layout title="New contact" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <ContactNew
           subjectName={contactsIdentityLists.find(l => l.ownerIdentityPubkey === contactsWriteIdentity)?.label ?? contactsScope.subjectName}
-          onCreate={async (contact, methods) => {
+          ownerPubkeyHex={contactsWriteIdentity || undefined}
+          ownKeys={contactsIdentityLists.map(l => l.ownerIdentityPubkey)}
+          profileRelays={syncRelays.read}
+          findExistingContact={(pubkey) => findContactHoldingKey(contactsV2.records, pubkey)}
+          onOpenContact={(contactId) => { setSelectedContactId(contactId); navigateReplace('contact-detail'); }}
+          onCreate={async (contact, methods, key) => {
             if (!contactsWriteIdentity) throw new Error('Choose an identity for this contact.');
-            const contactId = await contactsV2.addContact({ ...contact, ownerIdentityPubkey: contactsWriteIdentity });
-            for (const m of methods) await contactsV2.addContactMethod(contactId, m);
+            await saveNewContact(contactsV2, contactsWriteIdentity, contact, methods, key);
           }}
           onDone={() => navigateReplace('contacts')}
         />

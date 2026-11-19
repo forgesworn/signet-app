@@ -11,6 +11,15 @@ import {
   METHOD_EMAIL_INVALID_COPY, METHOD_VALUE_REQUIRED_COPY, METHOD_WEBSITE_INVALID_COPY,
 } from './contacts-v2-copy';
 import { sanitizeDisplayName, sanitizeNote } from './text-sanitize';
+import { displayNip05 } from './nip05-check';
+
+/** The label a NIP-05 address gets as a contact method (kind `other`). */
+export const NIP05_METHOD_LABEL = 'NIP-05';
+
+/** The text to SHOW for a method's value: a NIP-05 address `_@domain` reads as the domain. The stored value is unchanged. */
+export function methodDisplayValue(m: { kind: ContactMethodKind; label?: string; value: string }): string {
+  return m.kind === 'other' && m.label === NIP05_METHOD_LABEL ? displayNip05(m.value) : m.value;
+}
 
 export type DetailSection =
   | 'identities' | 'methods' | 'roles' | 'tier' | 'note' | 'block' | 'remove'
