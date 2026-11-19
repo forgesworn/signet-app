@@ -173,24 +173,23 @@ export interface SignInLinkRouteInput {
   /**
    * Whether the primary's own master lists this identity (`heartwood_list_identities`
    * over the primary): `listed`, `not-listed`, or `unknown` (not read yet, or no answer).
-   * The list shows only the paired master, so an identity on another master of the
-   * same device is `not-listed`.
+   * The list shows only the paired master, and only what the device has in RAM (empty
+   * after a restart), so `not-listed` proves nothing: it never demotes the device route.
    */
   primaryList: 'listed' | 'not-listed' | 'unknown';
-  /** A key-less identity held on a Heartwood (`heartwoodKey`): possibly another master of the same device. */
-  heartwoodKeyIdentity: boolean;
   operatorClientCount: number;
 }
 
 /**
  * How "Straight to my Heartwood" would make the link for one identity.
  *
- * - `device` beats `operator` only for an identity the primary's master lists.
- * - Not listed, or not known: the operator route when an operator key is held
- *   (an identity on another Heartwood keeps working as today); otherwise the
- *   device route is still tried when it may hold the identity (unknown list, or
- *   a `heartwoodKey` identity, e.g. on master 1): the device refuses
- *   `identity not served` before any card.
+ * The device's identity list is RAM-only (empty after a restart, filled by
+ * derives), so it can only ever PROMOTE the device route, never demote it:
+ * - No operator key: the device route whenever it can run at all, listed or
+ *   not. An identity the device does not serve is refused `identity not served`
+ *   before any card, and the copy says so.
+ * - An operator key is held: `device` when the primary lists the identity,
+ *   else `operator` (an identity on another Heartwood keeps working as today).
  * - The device route needs the link methods and a pairing not definitely
  *   non-owner (unknown is tried: the device refuses before any card).
  */
@@ -198,10 +197,8 @@ export function signInLinkRoute(i: SignInLinkRouteInput): SignInLinkRoute {
   const deviceCan = i.router === 'ready' && supportsSiteLinks(i.routerMethods) && i.ownerPairing !== false;
   const hasOperator = i.operatorClientCount > 0;
   if (deviceCan) {
-    if (i.primaryList === 'listed') return { kind: 'device' };
-    if (hasOperator) return { kind: 'operator' };
-    if (i.primaryList === 'unknown' || i.heartwoodKeyIdentity) return { kind: 'device' };
-    return { kind: 'unavailable', reason: 'needs-update' };
+    if (!hasOperator || i.primaryList === 'listed') return { kind: 'device' };
+    return { kind: 'operator' };
   }
   if (hasOperator) return { kind: 'operator' };
   if (i.router === 'generic') return { kind: 'unavailable', reason: null };

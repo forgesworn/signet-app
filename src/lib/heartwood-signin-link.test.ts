@@ -131,7 +131,7 @@ describe('signInLinkRoute', () => {
   const LINK_METHODS = ['heartwood_capabilities', 'heartwood_link_create', 'heartwood_link_status', 'heartwood_link_revoke'];
   const base: SignInLinkRouteInput = {
     router: 'ready', routerMethods: LINK_METHODS, ownerPairing: true, primaryList: 'listed',
-    heartwoodKeyIdentity: false, operatorClientCount: 0,
+    operatorClientCount: 0,
   };
   const route = (over: Partial<SignInLinkRouteInput>) => signInLinkRoute({ ...base, ...over });
   it.each<[string, Partial<SignInLinkRouteInput>, ReturnType<typeof signInLinkRoute>]>([
@@ -139,13 +139,16 @@ describe('signInLinkRoute', () => {
     ['device: owner status unknown is tried (the device refuses before any card)', { ownerPairing: null }, { kind: 'device' }],
     ['device beats operator for an identity the primary lists', { operatorClientCount: 2 }, { kind: 'device' }],
     ['device: identity list not read yet, no operator key', { primaryList: 'unknown' }, { kind: 'device' }],
-    ['device: a key-less Heartwood identity not on the primary\'s master (master 1), no operator key', { primaryList: 'not-listed', heartwoodKeyIdentity: true }, { kind: 'device' }],
+    ['device: a key-less Heartwood identity not on the primary\'s master (master 1), no operator key', { primaryList: 'not-listed' }, { kind: 'device' }],
     ['operator: identity not listed and an operator key is held (another Heartwood keeps working)', { primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: list unknown and an operator key is held', { primaryList: 'unknown', operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: firmware without the link methods', { routerMethods: ['heartwood_capabilities'], operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: no router yet, but an operator key', { router: 'pending', routerMethods: null, operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: not an owner pairing, but an operator key', { ownerPairing: false, operatorClientCount: 1 }, { kind: 'operator' }],
-    ['needs-update: identity on another Heartwood, no operator key', { primaryList: 'not-listed' }, { kind: 'unavailable', reason: 'needs-update' }],
+    // B1: the device lists identities from RAM only, so an empty list after a restart must not demote the device route.
+    ['device: empty list (restart) and no operator key, a plain persona', { primaryList: 'not-listed' }, { kind: 'device' }],
+    ['operator: empty list (restart) and an operator key', { primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['device: listed and an operator key', { primaryList: 'listed', operatorClientCount: 1 }, { kind: 'device' }],
     ['needs-update: Heartwood without the link methods, no operator key', { routerMethods: ['heartwood_capabilities'] }, { kind: 'unavailable', reason: 'needs-update' }],
     ['not-owner: methods listed, owner status definitely false', { ownerPairing: false }, { kind: 'unavailable', reason: 'not-owner' }],
     ['no-answer: the probe is pending or failing', { router: 'pending', routerMethods: null }, { kind: 'unavailable', reason: 'no-answer' }],
@@ -164,7 +167,7 @@ describe('signInLinkRoute', () => {
     expect(signInLinkOffered({ ...device, hasActiveDependant: true })).toBe(false);
   });
   it('offers a second-master identity: it is not an imported persona', () => {
-    const device = { ...eligible, importedPersona: false, route: route({ primaryList: 'not-listed', heartwoodKeyIdentity: true }) };
+    const device = { ...eligible, importedPersona: false, route: route({ primaryList: 'not-listed' }) };
     expect(signInLinkOffered(device)).toBe(true);
   });
 });
