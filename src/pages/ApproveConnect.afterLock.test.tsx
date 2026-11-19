@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useRef, useState } from 'react';
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react';
 import { ApproveConnect, type ConnectSignMode } from './ApproveConnect';
 import type { SignetIdentity } from '../types';
 import type { NostrConnectRequest } from '../lib/nip46';
@@ -457,5 +457,57 @@ describe('an error from this mount wins over an older one App kept', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Refused in child mode')).toBeTruthy();
     expect(screen.queryByText('older failure')).toBeNull();
+  });
+});
+
+describe('a saved "Straight to my Heartwood" never pairs through the phone', () => {
+  const failed: ConnectOutcome = { key: 'k', status: 'error', error: 'The device did not answer' };
+  function page(over: Partial<React.ComponentProps<typeof ApproveConnect>>, onApprove: React.ComponentProps<typeof ApproveConnect>['onApprove'] = async () => {}) {
+    return (
+      <ApproveConnect
+        request={request}
+        outcome={failed}
+        signChoice="heartwood"
+        identity={identity}
+        canSwitchGuardianPersona={true}
+        availableGuardianPubkeys={[PERSONA]}
+        requireNpConfirmation={true}
+        onApprove={onApprove}
+        onDeny={() => {}}
+        {...over}
+      />
+    );
+  }
+
+  it('while the link is coming back: the choice stays checked but waiting, and Try again is held until it is up', async () => {
+    const calls: Array<{ askToSign: boolean; viaHeartwood?: boolean }> = [];
+    const onApprove = async (_s: unknown, o: { askToSign: boolean; viaHeartwood?: boolean }) => { calls.push(o); };
+    const { rerender } = render(page({ heartwoodLinkPending: true, canHandOffToHeartwood: () => false }, onApprove));
+    const straight = screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement;
+    expect(straight.checked).toBe(true);
+    expect(straight.disabled).toBe(true);
+    expect(screen.getByTestId('connect-straight-waiting').textContent).toBe('Waiting for your Heartwood…');
+    expect((screen.getByLabelText('Through My Signet, automatically') as HTMLInputElement).checked).toBe(false);
+    const retry = screen.getByRole('button', { name: 'Try again' }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(true);
+    fireEvent.click(retry);
+    expect(calls).toEqual([]);
+
+    rerender(page({ heartwoodLinkPending: false, canHandOffToHeartwood: () => true }, onApprove));
+    const ready = screen.getByRole('button', { name: 'Try again' }) as HTMLButtonElement;
+    expect(ready.disabled).toBe(false);
+    fireEvent.click(ready);
+    await waitFor(() => expect(calls).toEqual([{ askToSign: false, viaHeartwood: true }]));
+  });
+
+  it('nothing is held when no Heartwood choice was saved', () => {
+    render(page({ heartwoodLinkPending: true, canHandOffToHeartwood: () => false, signChoice: undefined, outcome: undefined }));
+    expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('without a pending link a saved Heartwood choice that is on offer works as before', () => {
+    render(page({ canHandOffToHeartwood: () => true }));
+    expect((screen.getByLabelText(/Straight to my Heartwood/) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('button', { name: 'Try again' }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

@@ -14853,6 +14853,7 @@ function AppContent() {
           outcome={connectOutcome?.key === connectRequestKey ? connectOutcome : undefined}
           signChoice={connectSignChoice?.key === connectRequestKey ? connectSignChoice.mode : undefined}
           onSignChoice={(mode) => setConnectSignChoice({ key: connectRequestKey, mode })}
+          heartwoodLinkPending={preferences.signingMode === 'bunker' && !activeDependant && handoffClients.length === 0 && heartwoodOperator.loading}
           identity={identity}
           canSwitchGuardianPersona={canSwitchGuardianPersona}
           availableGuardianPubkeys={availableGuardianPubkeys}

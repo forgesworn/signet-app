@@ -71,6 +71,12 @@ interface Props {
    */
   signChoice?: ConnectSignMode | null;
   onSignChoice?: (mode: ConnectSignMode) => void;
+  /**
+   * The Heartwood's link is not back yet after an unlock (its operator channel
+   * is still loading). A "Straight to my Heartwood" choice then waits for it:
+   * it never falls back to signing through this phone.
+   */
+  heartwoodLinkPending?: boolean;
   /** Signing goes through a paired Heartwood: after a few seconds of Sending…, say to press its button. */
   heartwoodSigner?: boolean;
 }
@@ -100,6 +106,7 @@ export function ApproveConnect({
   outcome,
   signChoice,
   onSignChoice,
+  heartwoodLinkPending = false,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -227,20 +234,27 @@ export function ApproveConnect({
   // A chosen persona no longer on the list (deleted while this was open) is never handed off.
   const handOffOffered = !!selectedPubkey && !chosenGuardianMissing && !!canHandOffToHeartwood?.(selectedPubkey);
   const handOffShownDisabled = !handOffOffered && !!selectedPubkey && !chosenGuardianMissing && !!heartwoodNeedsUpdate?.(selectedPubkey);
-  const handOffWording = handOffOffered || handOffShownDisabled;
   // The Heartwood can only list the kinds it signs, never ask about one, so an
   // app whose grant reaches what this phone would ask about is warned about.
   const reach = useMemo(() => handoffReach(request.permissions), [request.permissions]);
   const reachWarning = handoffWarning(reach);
   // Straight to the Heartwood is the default where it is offered and asks for
   // nothing this phone would ask about; otherwise the phone stays the default.
-  const mode: SignMode = signMode === 'heartwood' && !handOffOffered ? 'auto'
-    : (signMode ?? (handOffOffered && reach.kind === 'safe' ? 'heartwood' : 'auto'));
+  // A chosen "Straight to my Heartwood" whose hand-off is not on offer right now
+  // because the link is still coming back (or has gone) is held, never turned
+  // into signing through this phone: the person picks another option to do that.
+  const heartwoodHeld = signMode === 'heartwood' && !handOffOffered && !chosenGuardianMissing
+    && (heartwoodLinkPending || handOffShownDisabled);
+  const mode: SignMode = heartwoodHeld ? 'heartwood'
+    : signMode === 'heartwood' && !handOffOffered ? 'auto'
+      : (signMode ?? (handOffOffered && reach.kind === 'safe' ? 'heartwood' : 'auto'));
   const askToSign = mode === 'ask';
+  const handOffWording = handOffOffered || handOffShownDisabled || heartwoodHeld;
   // Handing the app to the Heartwood doesn't use this phone's signing link, so
   // a key whose route is only coming back doesn't hold Approve. A choice that
   // has dropped off the list still does.
-  const waitBlocksApprove = selectionWaiting && !(mode === 'heartwood' && handOffOffered && !chosenGuardianMissing);
+  const waitBlocksApprove = heartwoodHeld
+    || (selectionWaiting && !(mode === 'heartwood' && handOffOffered && !chosenGuardianMissing));
   const [localError, setError] = useState<string | null>(null);
   // The latest failure this mount saw wins (a refusal thrown before App records
   // anything); otherwise the one App kept across a remount.
@@ -260,6 +274,8 @@ export function ApproveConnect({
     if (!selection || status === 'sending' || waitBlocksApprove) return;
     setStatus('sending');
     setError(null);
+    // Pin the mode actually used (a default included), so a remount can't swap it.
+    onSignChoice?.(mode);
     try {
       await onApprove(selection, { askToSign, viaHeartwood: mode === 'heartwood' });
       setStatus('sent');
@@ -486,13 +502,13 @@ export function ApproveConnect({
       )}
 
       <div className="card section" role="radiogroup" aria-label="How this app signs">
-        {(handOffOffered || handOffShownDisabled) && (
+        {(handOffOffered || handOffShownDisabled || heartwoodHeld) && (
           <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
             <input
               type="radio"
               name="connect-sign-mode"
               checked={mode === 'heartwood'}
-              disabled={handOffShownDisabled || status === 'sending' || status === 'sent' || status === 'closed'}
+              disabled={handOffShownDisabled || heartwoodHeld || status === 'sending' || status === 'sent' || status === 'closed'}
               onChange={() => setSignMode('heartwood')}
             />
             <span>
@@ -500,6 +516,11 @@ export function ApproveConnect({
               {handOffShownDisabled && (
                 <span data-testid="connect-straight-needs-update" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                   {SIGN_IN_LINK_NEEDS_UPDATE_COPY}
+                </span>
+              )}
+              {heartwoodHeld && !handOffShownDisabled && (
+                <span data-testid="connect-straight-waiting" style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {WAITING_FOR_SIGNER_COPY}
                 </span>
               )}
               {handOffOffered && (

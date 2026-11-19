@@ -27,6 +27,7 @@ describe('connect approval outcome wiring', () => {
     expect(block).toContain('outcome={connectOutcome?.key === connectRequestKey ? connectOutcome : undefined}');
     expect(block).toContain('signChoice={connectSignChoice?.key === connectRequestKey ? connectSignChoice.mode : undefined}');
     expect(block).toContain('onSignChoice={(mode) => setConnectSignChoice({ key: connectRequestKey, mode })}');
+    expect(block).toContain("heartwoodLinkPending={preferences.signingMode === 'bunker' && !activeDependant && handoffClients.length === 0 && heartwoodOperator.loading}");
     expect(block).toContain('onDeny={handleConnectDone}');
   });
 
@@ -64,7 +65,11 @@ describe('connect approval outcome wiring', () => {
   });
 
   it('closing an answered request sends no callback and returns to no app', () => {
-    const branch = between("if (outcome === 'already-answered') {", 'return;');
+    // Sliced to handleConnectDone: the sign-in deny has a branch with the same first line.
+    const done = between('const handleConnectDone = useCallback(', 'const handleDenyCompanionGrant');
+    const from = done.indexOf("if (outcome === 'already-answered') {");
+    expect(from).toBeGreaterThan(-1);
+    const branch = done.slice(from, done.indexOf('return;', from));
     expect(branch).not.toContain('buildCallbackRedirect');
     expect(branch).not.toContain('returnToPreviousApp');
     expect(branch).toContain('setPendingConnectRequest(null);');
