@@ -124,6 +124,8 @@ describe('signInLinkUnavailableReason', () => {
     expect(signInLinkUnavailableCopy('no-answer', 'page')).toBe("Your Heartwood isn't answering.");
     expect(signInLinkUnavailableCopy('not-owner', 'overlay')).toMatch(/full access/);
     expect(signInLinkUnavailableCopy('no-answer', 'overlay')).toMatch(/isn't answering/);
+    expect(signInLinkUnavailableCopy('careful', 'page')).toBe("This phone's pairing with your Heartwood is set to Extra careful, so it can't give a site more.");
+    expect(signInLinkUnavailableCopy('careful', 'overlay')).toMatch(/Extra careful/);
   });
 });
 
@@ -131,7 +133,7 @@ describe('signInLinkRoute', () => {
   const LINK_METHODS = ['heartwood_capabilities', 'heartwood_link_create', 'heartwood_link_status', 'heartwood_link_revoke'];
   const base: SignInLinkRouteInput = {
     router: 'ready', routerMethods: LINK_METHODS, ownerPairing: true, primaryList: 'listed',
-    operatorClientCount: 0,
+    ownerStyle: 'everyday', operatorClientCount: 0,
   };
   const route = (over: Partial<SignInLinkRouteInput>) => signInLinkRoute({ ...base, ...over });
   it.each<[string, Partial<SignInLinkRouteInput>, ReturnType<typeof signInLinkRoute>]>([
@@ -142,6 +144,12 @@ describe('signInLinkRoute', () => {
     ['device: a key-less Heartwood identity not on the primary\'s master (master 1), no operator key', { primaryList: 'not-listed' }, { kind: 'device' }],
     ['operator: identity not listed and an operator key is held (another Heartwood keeps working)', { primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: list unknown and an operator key is held', { primaryList: 'unknown', operatorClientCount: 1 }, { kind: 'operator' }],
+    // S2: an Extra careful pairing is refused `wider than this phone's access` for a same-master identity.
+    ['operator: Extra careful pairing, listed identity, operator key held', { ownerStyle: 'careful', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['careful: Extra careful pairing, listed identity, no operator key', { ownerStyle: 'careful' }, { kind: 'unavailable', reason: 'careful' }],
+    ['device: Extra careful pairing, identity not in the list (another master), no operator key', { ownerStyle: 'careful', primaryList: 'not-listed' }, { kind: 'device' }],
+    ['device: custom style is not decided here', { ownerStyle: 'custom' }, { kind: 'device' }],
+    ['device: style unknown is tried', { ownerStyle: null }, { kind: 'device' }],
     ['operator: firmware without the link methods', { routerMethods: ['heartwood_capabilities'], operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: no router yet, but an operator key', { router: 'pending', routerMethods: null, operatorClientCount: 1 }, { kind: 'operator' }],
     ['operator: not an owner pairing, but an operator key', { ownerPairing: false, operatorClientCount: 1 }, { kind: 'operator' }],

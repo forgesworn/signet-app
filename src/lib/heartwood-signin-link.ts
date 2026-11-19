@@ -65,12 +65,16 @@ export const SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY = 'Straight to my Heartwood 
 /** Under the greyed-out option: the Heartwood can make links, but this phone's pairing is not an owner pairing. */
 export const SIGN_IN_LINK_NOT_OWNER_LINE_COPY = "This phone isn't paired with full access to your Heartwood.";
 export const SIGN_IN_LINK_NOT_OWNER_OVERLAY_COPY = 'Straight to my Heartwood needs this phone paired with full access to your Heartwood.';
+/** Under the greyed-out option: an Extra careful owner pairing signs only a few kinds silently, so the device refuses a link for any kind. */
+export const SIGN_IN_LINK_CAREFUL_LINE_COPY = "This phone's pairing with your Heartwood is set to Extra careful, so it can't give a site more.";
+export const SIGN_IN_LINK_CAREFUL_OVERLAY_COPY = "Straight to my Heartwood isn't available: this phone's pairing with your Heartwood is set to Extra careful, so it can't give a site more.";
 /** Under the greyed-out option: the signer has not answered the capabilities check (yet). */
 export const SIGN_IN_LINK_NO_ANSWER_LINE_COPY = "Your Heartwood isn't answering.";
 export const SIGN_IN_LINK_NO_ANSWER_OVERLAY_COPY = "Straight to my Heartwood isn't available: your Heartwood isn't answering.";
 
 /** The line under a greyed-out Straight option, on the full screen or the overlay. */
-export function signInLinkUnavailableCopy(reason: 'needs-update' | 'not-owner' | 'no-answer', surface: 'page' | 'overlay'): string {
+export function signInLinkUnavailableCopy(reason: 'needs-update' | 'not-owner' | 'no-answer' | 'careful', surface: 'page' | 'overlay'): string {
+  if (reason === 'careful') return surface === 'page' ? SIGN_IN_LINK_CAREFUL_LINE_COPY : SIGN_IN_LINK_CAREFUL_OVERLAY_COPY;
   if (reason === 'not-owner') return surface === 'page' ? SIGN_IN_LINK_NOT_OWNER_LINE_COPY : SIGN_IN_LINK_NOT_OWNER_OVERLAY_COPY;
   if (reason === 'no-answer') return surface === 'page' ? SIGN_IN_LINK_NO_ANSWER_LINE_COPY : SIGN_IN_LINK_NO_ANSWER_OVERLAY_COPY;
   return surface === 'page' ? SIGN_IN_LINK_NEEDS_UPDATE_COPY : SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY;
@@ -153,7 +157,7 @@ export function signInLinkUnavailableReason(i: SignInLinkEligibility): SignInLin
   return i.route.reason;
 }
 
-export type SignInLinkUnavailableReason = 'needs-update' | 'not-owner' | 'no-answer';
+export type SignInLinkUnavailableReason = 'needs-update' | 'not-owner' | 'no-answer' | 'careful';
 
 export type SignInLinkRoute =
   /** Over this phone's own owner pairing (`heartwood_link_create`, one hold on the device). */
@@ -177,6 +181,8 @@ export interface SignInLinkRouteInput {
    * after a restart), so `not-listed` proves nothing: it never demotes the device route.
    */
   primaryList: 'listed' | 'not-listed' | 'unknown';
+  /** The owner pairing's style on file (`heartwood_owner_status`), null when unknown. */
+  ownerStyle: 'everyday' | 'careful' | 'custom' | null;
   operatorClientCount: number;
 }
 
@@ -190,6 +196,8 @@ export interface SignInLinkRouteInput {
  *   before any card, and the copy says so.
  * - An operator key is held: `device` when the primary lists the identity,
  *   else `operator` (an identity on another Heartwood keeps working as today).
+ * - An Extra careful owner pairing and an identity the primary lists: never the device
+ *   route (it would be refused every time); `operator` if a key is held, else unavailable.
  * - The device route needs the link methods and a pairing not definitely
  *   non-owner (unknown is tried: the device refuses before any card).
  */
@@ -197,6 +205,12 @@ export function signInLinkRoute(i: SignInLinkRouteInput): SignInLinkRoute {
   const deviceCan = i.router === 'ready' && supportsSiteLinks(i.routerMethods) && i.ownerPairing !== false;
   const hasOperator = i.operatorClientCount > 0;
   if (deviceCan) {
+    // An Extra careful pairing signs only a few kinds silently, so the device refuses a link
+    // for any kind (`wider than this phone's access`) for an identity on the same master as
+    // the pairing. Another master's identity is not decided by the style.
+    if (i.ownerStyle === 'careful' && i.primaryList === 'listed') {
+      return hasOperator ? { kind: 'operator' } : { kind: 'unavailable', reason: 'careful' };
+    }
     if (!hasOperator || i.primaryList === 'listed') return { kind: 'device' };
     return { kind: 'operator' };
   }

@@ -5193,9 +5193,10 @@ function AppContent() {
       routerMethods: bunkerRouter?.capabilities.methods ?? null,
       ownerPairing: signInLinkOwnerPairing,
       primaryList: primaryIdentities === null ? 'unknown' : primaryIdentities.has(pk) ? 'listed' : 'not-listed',
+      ownerStyle: heartwoodOwner.status?.owner ? heartwoodOwner.status.style : null,
       operatorClientCount: handoffClients.length,
     });
-  }, [bunkerRouter, routerProbeState, signInLinkOwnerPairing, primaryIdentities, handoffClients.length]);
+  }, [bunkerRouter, routerProbeState, signInLinkOwnerPairing, primaryIdentities, heartwoodOwner.status, handoffClients.length]);
   signInLinkRouteRef.current = signInLinkRouteFor;
   identityNameRef.current = (pubkey: string) => {
     const pk = pubkey.toLowerCase();
