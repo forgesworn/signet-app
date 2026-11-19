@@ -3,6 +3,10 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+
+- Sign in with Signet: Straight to my Heartwood no longer needs an operator key on the phone. A Heartwood with its latest software asks for one 2-second hold on its button when the link is made
+
 ## 0.30.0
 
 - Child mode is locked down: while the phone is handed over, only the child's own screens open and their cards are read only. Your identities, apps, Bunker tab, notifications, backups and settings stay out of reach until you exit with your PIN, and requests that could answer as you are refused, including straight after a restart
