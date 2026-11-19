@@ -322,6 +322,7 @@ import {
   SIGN_IN_LINK_NO_ANSWER_COPY,
   SIGN_IN_LINK_UNSUPPORTED_COPY,
   SignInLinkUnmanagedError,
+  SIGN_IN_LINK_OTHER_HEARTWOOD_COPY,
   ackStateAfterLock,
   assertSignedByLinkPersona,
   failedAckCarriesLink,
@@ -4894,7 +4895,10 @@ function AppContent() {
     const path = signInLinkRevokePath(rec, {
       hasOperatorClient: !!client,
       deviceRouteForIdentity: signInLinkRouteRef.current(rec.persona).kind === 'device',
+      primaryDeviceHex: bunkerBackendRef.current?.activePublicKeyHex || null,
     });
+    // A device link on a Heartwood this phone is no longer paired with: this pairing can't speak for it.
+    if (path === 'unmanaged' && rec.route === 'device') throw new SignInLinkUnmanagedError(SIGN_IN_LINK_OTHER_HEARTWOOD_COPY);
     if (path === 'device') {
       // Over the phone's own pairing, by fingerprint (a link made by an operator key goes too), after any create in flight.
       const request = primarySiteLinkRequest();
@@ -5067,6 +5071,7 @@ function AppContent() {
         if (deviceRecords.length > 0 && request && signerStatusRef.current === 'connected') {
           await siteLinkLock.run(() => reconcileDeviceSignInLinks(deviceRecords, {
             nowMs: () => Date.now(),
+            primaryDeviceHex: bunkerBackendRef.current?.activePublicKeyHex || null,
             status: rec => siteLinkStatusOnDevice(request, rec),
             revoke: rec => revokeSiteLinkOnDevice(request, rec),
             dropRecord: async rec => {

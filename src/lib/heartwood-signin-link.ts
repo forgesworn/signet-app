@@ -49,11 +49,14 @@ export const SIGNIN_LINK_UNBOUND_TTL_MS = 10 * 60 * 1000;
 /** How long after a hand-over the app looks again at the slot it made. */
 export const SIGNIN_LINK_RECONCILE_DELAY_MS = SIGNIN_LINK_UNBOUND_TTL_MS + 30_000;
 
+/** A link made over the phone's pairing on a Heartwood this phone is no longer paired with. */
+export const SIGN_IN_LINK_OTHER_HEARTWOOD_COPY = "This link was made on a different Heartwood from the one this phone is paired with now. Remove it in Sapwood, or choose Forget on this phone.";
+
 /** A revoke that can't be attempted: this phone holds no operator key for the link's Heartwood. */
 export class SignInLinkUnmanagedError extends HeartwoodCopyError {
   readonly unmanaged = true;
-  constructor() {
-    super(SIGN_IN_LINK_NO_OPERATOR_COPY);
+  constructor(copy: string = SIGN_IN_LINK_NO_OPERATOR_COPY) {
+    super(copy);
     this.name = 'SignInLinkUnmanagedError';
   }
 }
@@ -225,15 +228,26 @@ export function signInLinkRoute(i: SignInLinkRouteInput): SignInLinkRoute {
 export type SignInLinkRevokePath = 'device' | 'operator' | 'unmanaged';
 
 /**
- * A device record always goes over the phone's pairing. An operator record goes
- * over its operator key; with none, over the phone's pairing by fingerprint when
- * the device route serves its identity (the firmware revokes operator-made links
- * too), else it can't be managed from here.
+ * Whether a device-route link is on the Heartwood this phone is paired with now.
+ * Only then may the phone's pairing speak for it (a status or revoke addressed to
+ * some other board would answer "no such link" and read as gone). No current
+ * pairing (`null`) is not a mismatch: the call fails on its own as "no answer".
  */
-export function signInLinkRevokePath(rec: Pick<HeartwoodSignInLinkRecord, 'route' | 'slotIndex' | 'secretFingerprint'>, p: { hasOperatorClient: boolean; deviceRouteForIdentity: boolean }): SignInLinkRevokePath {
-  if (rec.route === 'device') return 'device';
+export function isOnPrimaryHeartwood(rec: Pick<HeartwoodSignInLinkRecord, 'deviceHex'>, primaryDeviceHex: string | null): boolean {
+  return primaryDeviceHex === null || primaryDeviceHex === '' || rec.deviceHex.toLowerCase() === primaryDeviceHex.toLowerCase();
+}
+
+/**
+ * A device record goes over the phone's pairing when it was made on the Heartwood
+ * this phone is paired with now. An operator record goes over its operator key;
+ * with none, over the phone's pairing by fingerprint when the device route serves
+ * its identity and that is the same Heartwood (the firmware revokes operator-made
+ * links too), else it can't be managed from here.
+ */
+export function signInLinkRevokePath(rec: Pick<HeartwoodSignInLinkRecord, 'route' | 'slotIndex' | 'secretFingerprint' | 'deviceHex'>, p: { hasOperatorClient: boolean; deviceRouteForIdentity: boolean; primaryDeviceHex: string | null }): SignInLinkRevokePath {
+  if (rec.route === 'device') return isOnPrimaryHeartwood(rec, p.primaryDeviceHex) ? 'device' : 'unmanaged';
   if (p.hasOperatorClient) return 'operator';
-  if (p.deviceRouteForIdentity && rec.secretFingerprint && rec.slotIndex !== undefined) return 'device';
+  if (p.deviceRouteForIdentity && rec.secretFingerprint && rec.slotIndex !== undefined && isOnPrimaryHeartwood(rec, p.primaryDeviceHex)) return 'device';
   return 'unmanaged';
 }
 
@@ -624,6 +638,8 @@ export async function reconcileSignInLinks(records: readonly HeartwoodSignInLink
 
 export interface DeviceReconcileIo {
   nowMs: () => number;
+  /** The Heartwood this phone's pairing reaches now; records made on another one are left alone. */
+  primaryDeviceHex: string | null;
   /** The link's state over the phone's own pairing, by fingerprint; throws when there is no usable answer. */
   status: (rec: HeartwoodSignInLinkRecord) => Promise<{ exists: boolean; bound: boolean }>;
   /** Revoke by fingerprint; throws unless it is gone. */
@@ -637,13 +653,14 @@ export interface DeviceReconcileIo {
  * - never bound and older than {@link SIGNIN_LINK_UNBOUND_TTL_MS}: revoke, then drop;
  * - a record with no fingerprint (creation never confirmed) can't be looked up
  *   (the device forgets labels 60 s after the hold): left alone, for Sapwood.
- * Operator records are left to {@link reconcileSignInLinks}. Never throws.
+ * Operator records are left to {@link reconcileSignInLinks}; so are device records made on
+ * a Heartwood other than the one paired now. Never throws.
  */
 export async function reconcileDeviceSignInLinks(records: readonly HeartwoodSignInLinkRecord[], io: DeviceReconcileIo): Promise<ReconcileResult> {
   const out: ReconcileResult = { dropped: 0, revoked: 0, skipped: 0 };
   const now = io.nowMs();
   for (const rec of records) {
-    if (rec.route !== 'device' || !isConfirmedSignInLink(rec)) { out.skipped++; continue; }
+    if (rec.route !== 'device' || !isConfirmedSignInLink(rec) || !isOnPrimaryHeartwood(rec, io.primaryDeviceHex)) { out.skipped++; continue; }
     try {
       const st = await io.status(rec);
       if (!st.exists) {

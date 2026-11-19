@@ -181,21 +181,35 @@ describe('signInLinkRoute', () => {
 });
 
 describe('signInLinkRevokePath', () => {
-  const confirmed = { slotIndex: 3, secretFingerprint: 'fp' };
+  const DEV = 'd'.repeat(64);
+  const confirmed = { slotIndex: 3, secretFingerprint: 'fp', deviceHex: DEV };
   it('a device record always goes over the phone\'s pairing', () => {
-    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: true, deviceRouteForIdentity: false })).toBe('device');
-    expect(signInLinkRevokePath({ secretFingerprint: '', route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: false })).toBe('device');
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: true, deviceRouteForIdentity: false, primaryDeviceHex: DEV })).toBe('device');
+    expect(signInLinkRevokePath({ secretFingerprint: '', route: 'device', deviceHex: DEV }, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: DEV })).toBe('device');
   });
   it('an operator record uses its operator key when there is one', () => {
-    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: true, deviceRouteForIdentity: true })).toBe('operator');
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: true, deviceRouteForIdentity: true, primaryDeviceHex: DEV })).toBe('operator');
   });
   it('an operator record with no operator key goes over the device route by fingerprint, when that route serves its identity', () => {
-    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: true })).toBe('device');
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: DEV })).toBe('device');
   });
   it('otherwise it cannot be managed from here', () => {
-    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: false })).toBe('unmanaged');
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: DEV })).toBe('unmanaged');
     // Pending operator record: nothing to name by fingerprint.
-    expect(signInLinkRevokePath({ secretFingerprint: '' }, { hasOperatorClient: false, deviceRouteForIdentity: true })).toBe('unmanaged');
+    expect(signInLinkRevokePath({ secretFingerprint: '', deviceHex: DEV }, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: DEV })).toBe('unmanaged');
+  });
+  // S4: the phone's pairing speaks only for the Heartwood it reaches now.
+  it('a device record made on another Heartwood cannot be managed from here', () => {
+    const other = 'e'.repeat(64);
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: true, deviceRouteForIdentity: true, primaryDeviceHex: other })).toBe('unmanaged');
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: other.toUpperCase() })).toBe('unmanaged');
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: DEV.toUpperCase() })).toBe('device');
+  });
+  it('an operator record without an operator key goes over the pairing only on the same Heartwood', () => {
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: 'e'.repeat(64) })).toBe('unmanaged');
+  });
+  it('no current pairing is not a mismatch: the call fails on its own as no answer', () => {
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: null })).toBe('device');
   });
 });
 
@@ -999,6 +1013,7 @@ describe('reconcileDeviceSignInLinks', () => {
       log,
       io: {
         nowMs: () => NOW,
+        primaryDeviceHex: 'd'.repeat(64) as string | null,
         status: async (r: HeartwoodSignInLinkRecord) => { log.push(`status ${r.label}`); const s = states.get(r.label); if (!s || s instanceof Error) throw s ?? new Error('none'); return s; },
         revoke: async (r: HeartwoodSignInLinkRecord) => { log.push(`revoke ${r.label}`); },
         dropRecord: async (r: HeartwoodSignInLinkRecord) => { log.push(`drop ${r.label}`); },
@@ -1025,6 +1040,12 @@ describe('reconcileDeviceSignInLinks', () => {
     ], t.io);
     expect(t.log).toEqual(['status x']);
     expect(out.skipped).toBe(3);
+  });
+  it('S4: leaves a record made on another Heartwood alone (never asks the current one, never drops it)', async () => {
+    const t = io(new Map([['elsewhere', { exists: false, bound: false }], ['here', { exists: false, bound: false }]]));
+    const out = await reconcileDeviceSignInLinks([rec({ label: 'elsewhere', deviceHex: 'e'.repeat(64) }), rec({ label: 'here' })], t.io);
+    expect(t.log).toEqual(['status here', 'drop here']);
+    expect(out).toMatchObject({ dropped: 1, skipped: 1 });
   });
   it('the operator reconcile skips device records (never looked up through an operator key)', async () => {
     const listed: string[] = [];
