@@ -265,7 +265,7 @@ import { ShamirBackup } from './pages/ShamirBackup';
 import { IdentityBridge } from './pages/IdentityBridge';
 import { CredentialDetail } from './pages/CredentialDetail';
 import { ApproveVerification } from './pages/ApproveVerification';
-import { ApproveConnect } from './pages/ApproveConnect';
+import { ApproveConnect, type ConnectSignMode } from './pages/ApproveConnect';
 import { trackApproval, type ConnectOutcome } from './lib/connect-outcome';
 import { ApproveCompanionGrant } from './pages/ApproveCompanionGrant';
 import { CompanionApps } from './pages/CompanionApps';
@@ -1383,6 +1383,8 @@ function AppContent() {
   // Where this connect request's approval ended. Held here, not in the page: a
   // lock remounts the page, and the request must not come back looking unanswered.
   const [connectOutcome, setConnectOutcome] = useState<ConnectOutcome | null>(null);
+  // The sign mode chosen for this request: a remount must not swap it ("Ask me each time" never becomes automatic).
+  const [connectSignChoice, setConnectSignChoice] = useState<{ key: string; mode: ConnectSignMode } | null>(null);
   // Requests that arrived as a Sign in with Signet URL (web ?auth=1 or the
   // native App Link). Their denial goes back to the consumer's callback even
   // when the consumer sent no name= (an empty urlAuthSiteName).
@@ -6740,6 +6742,7 @@ function AppContent() {
     if (!pendingConnectRequest) {
       setConnectPickerChoice(null);
       setConnectOutcome(null);
+      setConnectSignChoice(null);
     }
   }, [pendingConnectRequest]);
 
@@ -14848,6 +14851,8 @@ function AppContent() {
           key={connectRequestKey}
           request={pendingConnectRequest}
           outcome={connectOutcome?.key === connectRequestKey ? connectOutcome : undefined}
+          signChoice={connectSignChoice?.key === connectRequestKey ? connectSignChoice.mode : undefined}
+          onSignChoice={(mode) => setConnectSignChoice({ key: connectRequestKey, mode })}
           identity={identity}
           canSwitchGuardianPersona={canSwitchGuardianPersona}
           availableGuardianPubkeys={availableGuardianPubkeys}

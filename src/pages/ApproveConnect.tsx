@@ -64,11 +64,19 @@ interface Props {
    * offers Approve or Deny again); the page's own state covers the rest.
    */
   outcome?: ConnectOutcome;
+  /**
+   * The sign mode chosen for THIS request, held by App (survives a lock
+   * remount), so "Try again" after a lock uses the mode the person picked and
+   * the radios of an answered request show the mode that was used.
+   */
+  signChoice?: ConnectSignMode | null;
+  onSignChoice?: (mode: ConnectSignMode) => void;
   /** Signing goes through a paired Heartwood: after a few seconds of Sending…, say to press its button. */
   heartwoodSigner?: boolean;
 }
 
-type SignMode = 'heartwood' | 'auto' | 'ask';
+export type ConnectSignMode = 'heartwood' | 'auto' | 'ask';
+type SignMode = ConnectSignMode;
 
 export function ApproveConnect({
   request,
@@ -90,6 +98,8 @@ export function ApproveConnect({
   childModeOnly = false,
   heartwoodSigner = false,
   outcome,
+  signChoice,
+  onSignChoice,
 }: Props) {
   // Shared builder — same ring order and dormant-NP exclusion as ApproveAuth,
   // then bound to the keys this signing route can actually reach.
@@ -201,10 +211,14 @@ export function ApproveConnect({
   // 'closed': failed in a way that answered the request (the Heartwood already
   // told the app something), so it can't be tried again, only closed.
   const [localStatus, setStatus] = useState<'pending' | 'sending' | 'sent' | 'error' | 'closed'>('pending');
+  // App's outcome wins whenever it has one (it survives a lock remount); the
+  // page's own state covers hosts that pass none.
   const status = outcome?.status ?? localStatus;
   // Crypto (nip44 / nip04) stays automatic either way; this only decides
   // whether sign_event asks each time.
-  const [signMode, setSignMode] = useState<SignMode | null>(null);
+  const [localSignMode, setLocalSignMode] = useState<SignMode | null>(null);
+  const signMode = signChoice ?? localSignMode;
+  const setSignMode = (m: SignMode) => { setLocalSignMode(m); onSignChoice?.(m); };
   // The guardian key a hand-off would bind: never one in child mode.
   const selectedPubkey = childModeOnly || selection?.source !== 'guardian' ? null
     : selection.keypairType === 'natural-person' ? identity.naturalPerson.publicKey
@@ -228,7 +242,9 @@ export function ApproveConnect({
   // has dropped off the list still does.
   const waitBlocksApprove = selectionWaiting && !(mode === 'heartwood' && handOffOffered && !chosenGuardianMissing);
   const [localError, setError] = useState<string | null>(null);
-  const error = outcome ? (outcome.error ?? null) : localError;
+  // The latest failure this mount saw wins (a refusal thrown before App records
+  // anything); otherwise the one App kept across a remount.
+  const error = status === 'sending' ? null : (localError ?? outcome?.error ?? null);
 
   const isGuardianSelected = (keypairType: string) =>
     selection?.source === 'guardian' && selection.keypairType === keypairType;
@@ -566,7 +582,8 @@ export function ApproveConnect({
         <div className="section" style={{ textAlign: 'center' }}>
           <p style={{ color: 'var(--success)', fontWeight: 600 }}>Connected!</p>
           {/* This mount never ran the approval (App held the result across a
-              lock), so nothing here will dismiss it: Close does, sending no callback. */}
+              lock). App's own timer still closes the request after "Connected!";
+              Close here just dismisses it sooner, sending no callback. */}
           {localStatus !== 'sent' && (
             <button className="btn btn-primary" onClick={onDeny}>Close</button>
           )}

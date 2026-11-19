@@ -52,5 +52,7 @@ export async function trackApproval(a: TrackedApproval): Promise<void> {
     throw e;
   }
   // Returned without answering (withdrawn, taken over): nothing to show.
+  // A normal return after a claim always follows an answer, never a denial: a
+  // Cancel clears the request (isCurrent() false) before anything reaches here.
   put(settlement.isAnswered(key) ? { key, status: 'sent' } : null);
 }
