@@ -3,7 +3,7 @@ import type { KnownPlace } from '../types/known-places';
 import { badgesFor, DORMANT_SECONDS } from '../lib/known-place-badges';
 import { placeLabel, sortPlaces, hostnameOf } from '../lib/known-place-label';
 import {
-  HeartwoodRow, KnownPlaceRow, type KnownPlaceActions, type KnownPlaceCtx, type KnownPlaceIdentityType,
+  HeartwoodRow, KnownPlaceRow, UncertainLinkRow, type KnownPlaceActions, type KnownPlaceCtx, type KnownPlaceIdentityType,
 } from './KnownPlaceRow';
 
 export type { KnownPlaceActions, KnownPlaceCtx, KnownPlaceIdentityType } from './KnownPlaceRow';
@@ -14,6 +14,9 @@ export interface HeartwoodAppEntry {
   boundIdentity: string;
   policySummary: string;
 }
+
+/** A device link this phone asked for and never confirmed, for a site that has no place row. */
+export interface UncertainLinkEntry { label: string; origin: string }
 
 export interface KnownPlacesCardProps {
   identityName: string;
@@ -33,6 +36,8 @@ export interface KnownPlacesCardProps {
   canRevokeOnHeartwood?: boolean;
   /** Child mode: each row shows its facts and Open, never an action that changes anything. */
   readOnly?: boolean;
+  /** Unconfirmed device links whose site has no place row (a site that has one says so inside the row). */
+  uncertainLinks?: UncertainLinkEntry[];
   actions: KnownPlaceActions;
 }
 
@@ -46,7 +51,7 @@ interface Entry { place: KnownPlace; ctx: KnownPlaceCtx; last: number }
  * nothing here is a trust input.
  */
 export function KnownPlacesCard({
-  identityName, identityType, places, locked, onUnlock, focusId, onFocusConsumed, ctxFor, heartwoodClients, hideHeartwood, canRevokeOnHeartwood = true, readOnly = false, actions,
+  identityName, identityType, places, locked, onUnlock, focusId, onFocusConsumed, ctxFor, heartwoodClients, hideHeartwood, canRevokeOnHeartwood = true, readOnly = false, uncertainLinks = [], actions,
 }: KnownPlacesCardProps) {
   const [query, setQuery] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -147,6 +152,16 @@ export function KnownPlacesCard({
             {renderGroup('Pinned', pinned)}
             {renderGroup('Recent', recent)}
             {renderGroup('Not used in 3 months', dormant)}
+            {!readOnly && actions.dismissUncertainLink && uncertainLinks.length > 0 && (
+              <section className="kp-group" aria-label="May be on your Heartwood">
+                <h3 className="kp-group-title">May be on your Heartwood</h3>
+                <ul className="kp-list">
+                  {uncertainLinks.map(l => (
+                    <UncertainLinkRow key={l.label} label={l.label} origin={l.origin} onDismiss={actions.dismissUncertainLink!} />
+                  ))}
+                </ul>
+              </section>
+            )}
             {hideHeartwood ? null : heartwoodClients !== null ? (
               heartwoodClients.length === 0 && !needle ? (
                 <p className="kp-note">No apps are paired straight to your Heartwood.</p>

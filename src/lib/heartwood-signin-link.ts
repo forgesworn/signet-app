@@ -24,6 +24,7 @@ import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from './heartwood-mgmt-err
 import { isNoSuchSlotError, isStaleClientSlotMessage } from './child-device-pairing';
 import { isValidRelayUrl } from './relay-url';
 import type { HeartwoodSignInLinkRecord } from './db';
+import { SiteLinkRefusedError, SiteLinkUncertainError, supportsSiteLinks } from './heartwood-site-link';
 
 /** Longest label this phone asks for. The firmware stores a label as given and sets no smaller limit that could be found. */
 export const SIGN_IN_LINK_LABEL_MAX = 48;
@@ -48,11 +49,14 @@ export const SIGNIN_LINK_UNBOUND_TTL_MS = 10 * 60 * 1000;
 /** How long after a hand-over the app looks again at the slot it made. */
 export const SIGNIN_LINK_RECONCILE_DELAY_MS = SIGNIN_LINK_UNBOUND_TTL_MS + 30_000;
 
+/** A link made over the phone's pairing on a Heartwood this phone is no longer paired with. */
+export const SIGN_IN_LINK_OTHER_HEARTWOOD_COPY = "This link was made on a different Heartwood from the one this phone is paired with now. Remove it in Sapwood, or choose Forget on this phone.";
+
 /** A revoke that can't be attempted: this phone holds no operator key for the link's Heartwood. */
 export class SignInLinkUnmanagedError extends HeartwoodCopyError {
   readonly unmanaged = true;
-  constructor() {
-    super(SIGN_IN_LINK_NO_OPERATOR_COPY);
+  constructor(copy: string = SIGN_IN_LINK_NO_OPERATOR_COPY) {
+    super(copy);
     this.name = 'SignInLinkUnmanagedError';
   }
 }
@@ -61,6 +65,29 @@ export class SignInLinkUnmanagedError extends HeartwoodCopyError {
 export const SIGN_IN_LINK_NEEDS_UPDATE_COPY = 'Your Heartwood needs a software update for this.';
 /** The same, as one line under the approval overlay. */
 export const SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY = 'Straight to my Heartwood needs a software update on your Heartwood.';
+/** Under the greyed-out option: the Heartwood can make links, but this phone's pairing is not an owner pairing. */
+export const SIGN_IN_LINK_NOT_OWNER_LINE_COPY = "This phone isn't paired with full access to your Heartwood.";
+export const SIGN_IN_LINK_NOT_OWNER_OVERLAY_COPY = 'Straight to my Heartwood needs this phone paired with full access to your Heartwood.';
+/** Under the greyed-out option: an Extra careful owner pairing signs only a few kinds silently, so the device refuses a link for any kind. */
+export const SIGN_IN_LINK_CAREFUL_LINE_COPY = "This phone's pairing with your Heartwood is set to Extra careful, so it can't give a site more.";
+export const SIGN_IN_LINK_CAREFUL_OVERLAY_COPY = "Straight to my Heartwood isn't available: this phone's pairing with your Heartwood is set to Extra careful, so it can't give a site more.";
+/** Under the greyed-out option: the signer has not answered the capabilities check (yet). */
+export const SIGN_IN_LINK_NO_ANSWER_LINE_COPY = "Your Heartwood isn't answering.";
+export const SIGN_IN_LINK_NO_ANSWER_OVERLAY_COPY = "Straight to my Heartwood isn't available: your Heartwood isn't answering.";
+
+/** The line under a greyed-out Straight option, on the full screen or the overlay. */
+export function signInLinkUnavailableCopy(reason: 'needs-update' | 'not-owner' | 'no-answer' | 'careful', surface: 'page' | 'overlay'): string {
+  if (reason === 'careful') return surface === 'page' ? SIGN_IN_LINK_CAREFUL_LINE_COPY : SIGN_IN_LINK_CAREFUL_OVERLAY_COPY;
+  if (reason === 'not-owner') return surface === 'page' ? SIGN_IN_LINK_NOT_OWNER_LINE_COPY : SIGN_IN_LINK_NOT_OWNER_OVERLAY_COPY;
+  if (reason === 'no-answer') return surface === 'page' ? SIGN_IN_LINK_NO_ANSWER_LINE_COPY : SIGN_IN_LINK_NO_ANSWER_OVERLAY_COPY;
+  return surface === 'page' ? SIGN_IN_LINK_NEEDS_UPDATE_COPY : SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY;
+}
+/** "What it may do", where the link's policy lets the site decrypt (the device's card leads DECRYPT for it). */
+export const SIGN_IN_LINK_DECRYPT_NOTE = 'It can also read messages sent to you (decrypt), without a press.';
+/** The link's policy includes decrypting, so the screen must say so. */
+export function signInLinkCanDecrypt(persona: string): boolean {
+  return signInLinkPolicy(persona).allowedMethods.includes('nip44_decrypt');
+}
 
 export const SIGN_IN_LINK_NOT_OFFERED_COPY = "Straight to my Heartwood isn't available for this identity. Choose the other option.";
 export const SIGN_IN_LINK_MISMATCH_COPY = "Your Heartwood answered with a link this phone didn't ask for, so it wasn't used. Try again, or choose the other option.";
@@ -78,7 +105,8 @@ export interface SignInLinkEligibility {
   selectionSource: 'guardian' | 'dependant' | undefined;
   /** An imported persona is not on the device, so no device can sign for it. */
   importedPersona: boolean;
-  hasOperatorClient: boolean;
+  /** How a link would be made for this identity, or why it can't be ({@link signInLinkRoute}). */
+  route: SignInLinkRoute;
   /** The combined app-permission sign-in keeps its own answer. */
   combinedPermission: boolean;
   /** The picked identity's kind; the real identity (`natural-person`) is never handed over. */
@@ -105,22 +133,157 @@ export function assertSignedByLinkPersona(signerPubkey: string, persona: string)
   if (signerPubkey.toLowerCase() !== persona.toLowerCase()) throw new HeartwoodCopyError(SIGN_IN_LINK_SIGNER_MISMATCH_COPY);
 }
 
-export function signInLinkOffered(i: SignInLinkEligibility): boolean {
+/** Everything for the offer holds apart from the route. */
+function offerConditionsHold(i: SignInLinkEligibility): boolean {
   return i.signingMode === 'bunker'
     && !i.isPairedChild
     && !i.childDirect
     && !i.hasActiveDependant
     && i.selectionSource === 'guardian'
     && !i.importedPersona
-    && i.hasOperatorClient
     && !i.combinedPermission
     && i.selectionKeypairType !== 'natural-person'
     && i.requestCanCarryLink;
 }
 
-/** Shown greyed out rather than hidden: everything for the offer holds except an operator key, and the signer is a Heartwood. */
-export function signInLinkNeedsUpdate(i: SignInLinkEligibility, heartwoodSigner: boolean): boolean {
-  return heartwoodSigner && !i.hasOperatorClient && signInLinkOffered({ ...i, hasOperatorClient: true });
+export function signInLinkOffered(i: SignInLinkEligibility): boolean {
+  return offerConditionsHold(i) && i.route.kind !== 'unavailable';
+}
+
+/**
+ * Shown greyed out rather than hidden, with the reason: everything for the
+ * offer holds except a way to make the link. Null when it is offered, or when
+ * it should not be shown at all (a generic signer, any other condition).
+ */
+export function signInLinkUnavailableReason(i: SignInLinkEligibility): SignInLinkUnavailableReason | null {
+  if (!offerConditionsHold(i) || i.route.kind !== 'unavailable') return null;
+  return i.route.reason;
+}
+
+export type SignInLinkUnavailableReason = 'needs-update' | 'not-owner' | 'no-answer' | 'careful';
+
+export type SignInLinkRoute =
+  /** Over this phone's own owner pairing (`heartwood_link_create`, one hold on the device). */
+  | { kind: 'device' }
+  /** Over an operator key (`create_client_v2`, no hold). */
+  | { kind: 'operator' }
+  /** `reason` null: not a Heartwood at all, so nothing is shown. */
+  | { kind: 'unavailable'; reason: SignInLinkUnavailableReason | null };
+
+export interface SignInLinkRouteInput {
+  /** The primary router's state: `generic` = a signer that is not a Heartwood (probe said unsupported). */
+  router: 'ready' | 'pending' | 'generic';
+  /** `heartwood_capabilities` methods of the primary; null without a router. */
+  routerMethods: readonly string[] | null;
+  /** `heartwood_owner_status`: true / false, or null when unknown. */
+  ownerPairing: boolean | null;
+  /**
+   * Whether the primary's own master lists this identity (`heartwood_list_identities`
+   * over the primary): `listed`, `not-listed`, or `unknown` (not read yet, or no answer).
+   * The list shows only the paired master, and only what the device has in RAM (empty
+   * after a restart), so `not-listed` proves nothing: it never demotes the device route.
+   */
+  primaryList: 'listed' | 'not-listed' | 'unknown';
+  /** A key-less identity held on a Heartwood (`heartwoodKey`): possibly another master of the same device. Every other identity of this phone is on the paired master. */
+  heartwoodKeyIdentity: boolean;
+  /** The owner pairing's style on file (`heartwood_owner_status`), null when unknown. */
+  ownerStyle: 'everyday' | 'careful' | 'custom' | null;
+  operatorClientCount: number;
+}
+
+/**
+ * How "Straight to my Heartwood" would make the link for one identity.
+ *
+ * The device's identity list is RAM-only (empty after a restart, filled by
+ * derives), so it can only ever PROMOTE the device route, never demote it:
+ * - No operator key: the device route whenever it can run at all, listed or
+ *   not. An identity the device does not serve is refused `identity not served`
+ *   before any card, and the copy says so.
+ * - An operator key is held: `device` when the primary lists the identity,
+ *   else `operator` (an identity on another Heartwood keeps working as today).
+ * - An Extra careful owner pairing and an identity on the paired master (anything but a
+ *   `heartwoodKey` identity), listed or not: never the device route (it would be refused
+ *   every time); `operator` if a key is held, else unavailable.
+ * - The device route needs the link methods and a pairing not definitely
+ *   non-owner (unknown is tried: the device refuses before any card).
+ */
+export function signInLinkRoute(i: SignInLinkRouteInput): SignInLinkRoute {
+  const deviceCan = i.router === 'ready' && supportsSiteLinks(i.routerMethods) && i.ownerPairing !== false;
+  const hasOperator = i.operatorClientCount > 0;
+  if (deviceCan) {
+    // An Extra careful pairing signs only a few kinds silently, so the device refuses a link
+    // for any kind (`wider than this phone's access`) for an identity on the same master as
+    // the pairing. That is every identity but a `heartwoodKey` one (possibly master 1); the
+    // identity list is not consulted (it is empty after a restart).
+    if (i.ownerStyle === 'careful' && !i.heartwoodKeyIdentity) {
+      return hasOperator ? { kind: 'operator' } : { kind: 'unavailable', reason: 'careful' };
+    }
+    if (!hasOperator || i.primaryList === 'listed') return { kind: 'device' };
+    return { kind: 'operator' };
+  }
+  if (hasOperator) return { kind: 'operator' };
+  if (i.router === 'generic') return { kind: 'unavailable', reason: null };
+  if (i.router === 'pending') return { kind: 'unavailable', reason: 'no-answer' };
+  if (supportsSiteLinks(i.routerMethods) && i.ownerPairing === false) return { kind: 'unavailable', reason: 'not-owner' };
+  return { kind: 'unavailable', reason: 'needs-update' };
+}
+
+/** Which way a stored link is taken off its Heartwood. */
+export type SignInLinkRevokePath = 'device' | 'operator' | 'unmanaged';
+
+/**
+ * Whether a device-route link is on the Heartwood this phone is paired with now.
+ * Only then may the phone's pairing speak for it (a status or revoke addressed to
+ * some other board would answer "no such link" and read as gone). No current
+ * pairing (`null`) is not a mismatch: the call fails on its own as "no answer".
+ */
+export function isOnPrimaryHeartwood(rec: Pick<HeartwoodSignInLinkRecord, 'deviceHex'>, primaryDeviceHex: string | null): boolean {
+  return primaryDeviceHex === null || primaryDeviceHex === '' || rec.deviceHex.toLowerCase() === primaryDeviceHex.toLowerCase();
+}
+
+export type DeviceLinkTarget = 'ok' | 'no-answer' | 'other-heartwood';
+
+/**
+ * Whether the phone's pairing can speak for a device link right now. Run INSIDE the
+ * device-link lock, at the moment of sending (a revoke can queue behind a create for
+ * minutes, and a re-pair or a reconnect can happen meanwhile). A pairing that isn't
+ * connected, or whose Heartwood isn't known yet, can't be checked now (`no-answer`: keep
+ * the record); only a known, different Heartwood is a mismatch.
+ */
+export function checkDeviceLinkTarget(rec: Pick<HeartwoodSignInLinkRecord, 'deviceHex'>, p: { connected: boolean; primaryDeviceHex: string | null }): DeviceLinkTarget {
+  if (!p.connected || !p.primaryDeviceHex) return 'no-answer';
+  return rec.deviceHex.toLowerCase() === p.primaryDeviceHex.toLowerCase() ? 'ok' : 'other-heartwood';
+}
+
+/**
+ * A device record goes over the phone's pairing when it was made on the Heartwood
+ * this phone is paired with now. An operator record goes over its operator key;
+ * with none, over the phone's pairing by fingerprint when the device route serves
+ * its identity and that is the same Heartwood (the firmware revokes operator-made
+ * links too), else it can't be managed from here.
+ */
+export function signInLinkRevokePath(rec: Pick<HeartwoodSignInLinkRecord, 'route' | 'slotIndex' | 'secretFingerprint' | 'deviceHex'>, p: { hasOperatorClient: boolean; deviceRouteForIdentity: boolean; primaryDeviceHex: string | null }): SignInLinkRevokePath {
+  if (rec.route === 'device') return isOnPrimaryHeartwood(rec, p.primaryDeviceHex) ? 'device' : 'unmanaged';
+  if (p.hasOperatorClient) return 'operator';
+  if (p.deviceRouteForIdentity && rec.secretFingerprint && rec.slotIndex !== undefined && isOnPrimaryHeartwood(rec, p.primaryDeviceHex)) return 'device';
+  return 'unmanaged';
+}
+
+/** A device-route link whose creation was never confirmed (and none is in flight): only Sapwood can remove it. */
+export function isUncertainSignInLink(r: HeartwoodSignInLinkRecord): boolean {
+  return r.route === 'device' && !isConfirmedSignInLink(r);
+}
+
+/** Said wherever an uncertain device link shows: Where you're known, on a place row or on its own. */
+export const SIGN_IN_LINK_MAY_BE_ON_HEARTWOOD_COPY = 'A link for this site may be on your Heartwood. Remove it in Sapwood if you see it there.';
+
+/**
+ * The records Where you're known must show as "may be on your Heartwood": device
+ * links whose creation was never confirmed, once no create is in flight (while one
+ * is, the record is simply the mint still on its way).
+ */
+export function uncertainSignInLinks(records: readonly HeartwoodSignInLinkRecord[], p: { creating: boolean }): HeartwoodSignInLinkRecord[] {
+  return p.creating ? [] : records.filter(isUncertainSignInLink);
 }
 
 /** The device can mint this only if it has not definitely said otherwise (a truncated status is unverified: try). */
@@ -135,8 +298,8 @@ export function signInLinkSupported(status: DeviceStatus | null): boolean {
  * is not pre-selected only when the primary operator's status definitely lacks what a link needs
  * (unknown = pre-select, which includes a lone client that is an extra, whose status is not consulted).
  */
-export function signInLinkByDefault(operatorClientCount: number, primaryStatus: DeviceStatus | null): boolean {
-  return operatorClientCount > 1 || signInLinkSupported(primaryStatus);
+export function signInLinkByDefault(operatorClientCount: number, primaryStatus: DeviceStatus | null, deviceRoute = false): boolean {
+  return deviceRoute || operatorClientCount > 1 || signInLinkSupported(primaryStatus);
 }
 
 function randomSuffix(): string {
@@ -154,7 +317,8 @@ export function signInLinkLabel(origin: string, suffix: () => string = randomSuf
   let host = '';
   try { host = new URL(origin).hostname; } catch { /* no usable host */ }
   const room = SIGN_IN_LINK_LABEL_MAX - LABEL_PREFIX.length - 1 - SUFFIX_LEN;
-  const clean = host.replace(/[^\p{L}\p{N}.-]/gu, '').slice(0, room) || 'site';
+  // Printable ASCII only: the device refuses anything else (`URL` already gives a punycode host).
+  const clean = host.toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, room) || 'site';
   const tail = suffix().toLowerCase().replace(/[^0-9a-f]/g, '').padEnd(SUFFIX_LEN, '0').slice(0, SUFFIX_LEN);
   return `${LABEL_PREFIX}${clean}:${tail}`;
 }
@@ -292,6 +456,8 @@ export function signInHolderError(e: unknown): HeartwoodCopyError {
 
 export interface SignInLinkIo {
   request: { origin: string; appName: string; persona: string };
+  /** `device`: made over the phone's own pairing; the record says so. Absent = the operator route. */
+  route?: 'device';
   now: () => number;
   label: () => string;
   /** Throws a {@link HeartwoodCopyError} when no Heartwood holds the identity or none answers. */
@@ -336,6 +502,7 @@ export async function runSignInLinkApproval(io: SignInLinkIo): Promise<{ record:
     origin, appName, persona: persona.toLowerCase(),
     deviceHex: holder.deviceHex, targetHex: holder.targetHex,
     label, secretFingerprint: '', createdAt: io.now(),
+    ...(io.route === 'device' ? { route: 'device' as const } : {}),
   };
   await io.putRecord(pending);
 
@@ -344,6 +511,14 @@ export async function runSignInLinkApproval(io: SignInLinkIo): Promise<{ record:
   try {
     reply = await io.mint(holder, label, policy);
   } catch (e) {
+    // The device answered and made nothing: the record goes, with no revoke.
+    if (e instanceof SiteLinkRefusedError) {
+      await quietly(io.dropRecord(pending));
+      throw e;
+    }
+    // No answer that can be trusted, and the device forgets the label 60 s after the hold:
+    // the record stays (uncertain) so Where you're known can say where to remove it.
+    if (e instanceof SiteLinkUncertainError) throw e;
     // The device may have made the slot and told no one: its own list decides.
     let gone = false;
     try { await io.revokeRecord(pending); gone = true; } catch { /* can't tell: the record stays, and the next sign-in looks again */ }
@@ -453,6 +628,8 @@ export async function reconcileSignInLinks(records: readonly HeartwoodSignInLink
   const lists = new Map<string, DeviceClientSlot[] | null>();
   const now = io.nowMs();
   for (const rec of records) {
+    // A device-route record is never looked up through an operator key ({@link reconcileDeviceSignInLinks}).
+    if (rec.route === 'device') { out.skipped++; continue; }
     try {
       const target = { deviceHex: rec.deviceHex, targetHex: rec.targetHex };
       const key = `${rec.deviceHex}:${rec.targetHex}`;
@@ -476,6 +653,53 @@ export async function reconcileSignInLinks(records: readonly HeartwoodSignInLink
       }
       if (old && isUnboundSlot(slot)) {
         await io.revokeSlot(target, { slotIndex: slot.slotIndex, secretFingerprint: slot.secretFingerprint });
+        out.revoked++;
+        await io.dropRecord(rec);
+        out.dropped++;
+        continue;
+      }
+      out.skipped++;
+    } catch {
+      out.skipped++;
+    }
+  }
+  return out;
+}
+
+export interface DeviceReconcileIo {
+  nowMs: () => number;
+  /** The Heartwood this phone's pairing reaches now; records made on another one are left alone. */
+  primaryDeviceHex: string | null;
+  /** The link's state over the phone's own pairing, by fingerprint; throws when there is no usable answer. */
+  status: (rec: HeartwoodSignInLinkRecord) => Promise<{ exists: boolean; bound: boolean }>;
+  /** Revoke by fingerprint; throws unless it is gone. */
+  revoke: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
+  dropRecord: (rec: HeartwoodSignInLinkRecord) => Promise<void>;
+}
+
+/**
+ * The 10-minute rule for links made over the phone's own pairing, by fingerprint:
+ * - not on the device: drop the record;
+ * - never bound and older than {@link SIGNIN_LINK_UNBOUND_TTL_MS}: revoke, then drop;
+ * - a record with no fingerprint (creation never confirmed) can't be looked up
+ *   (the device forgets labels 60 s after the hold): left alone, for Sapwood.
+ * Operator records are left to {@link reconcileSignInLinks}; so are device records made on
+ * a Heartwood other than the one paired now. Never throws.
+ */
+export async function reconcileDeviceSignInLinks(records: readonly HeartwoodSignInLinkRecord[], io: DeviceReconcileIo): Promise<ReconcileResult> {
+  const out: ReconcileResult = { dropped: 0, revoked: 0, skipped: 0 };
+  const now = io.nowMs();
+  for (const rec of records) {
+    if (rec.route !== 'device' || !isConfirmedSignInLink(rec) || !isOnPrimaryHeartwood(rec, io.primaryDeviceHex)) { out.skipped++; continue; }
+    try {
+      const st = await io.status(rec);
+      if (!st.exists) {
+        await io.dropRecord(rec);
+        out.dropped++;
+        continue;
+      }
+      if (!st.bound && now - rec.createdAt * 1000 >= SIGNIN_LINK_UNBOUND_TTL_MS) {
+        await io.revoke(rec);
         out.revoked++;
         await io.dropRecord(rec);
         out.dropped++;

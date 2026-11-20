@@ -21,7 +21,7 @@ function place(key: string, over: Partial<KnownPlace> = {}): KnownPlace {
 }
 const actions = () => ({
   pin: vi.fn(), setAlias: vi.fn(), setAuto: vi.fn(), open: vi.fn(), forget: vi.fn(), disconnect: vi.fn(), revokeOnHeartwood: vi.fn(),
-  forgetHandoffHere: vi.fn(), forgetSignInLinksHere: vi.fn(),
+  forgetHandoffHere: vi.fn(), forgetSignInLinksHere: vi.fn(), dismissUncertainLink: vi.fn(),
 });
 
 function setup(over: Partial<KnownPlacesCardProps> = {}) {
@@ -505,6 +505,55 @@ describe('KnownPlacesCard', () => {
     expect(container.firstElementChild?.className).toContain('known-places-card');
     expect(screen.getByText('Where Sam is known shows on their Activity page.')).toBeDefined();
     expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+});
+
+describe('KnownPlacesCard: a link that may be on the Heartwood (S1)', () => {
+  const LINE = 'A link for this site may be on your Heartwood. Remove it in Sapwood if you see it there.';
+  const link = { label: 'mysignet:kithmoot.com:cafef00d', origin: 'https://kithmoot.com' };
+
+  it('shows a record with no place row under its own heading, with the host, the line and I\'ve checked', async () => {
+    const { a } = setup({ uncertainLinks: [link] });
+    const group = screen.getByRole('region', { name: 'May be on your Heartwood' });
+    expect(within(group).getByText('kithmoot.com')).toBeTruthy();
+    expect(within(group).getByText(LINE)).toBeTruthy();
+    fireEvent.click(within(group).getByRole('button', { name: "I've checked" }));
+    await settle();
+    expect(a.dismissUncertainLink).toHaveBeenCalledWith(link.label);
+  });
+
+  it('a failed drop shows an error and keeps the row', async () => {
+    const { a } = setup({ uncertainLinks: [link] });
+    a.dismissUncertainLink.mockRejectedValue(new Error('locked'));
+    fireEvent.click(screen.getByRole('button', { name: "I've checked" }));
+    await settle();
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('button', { name: "I've checked" })).toBeTruthy();
+  });
+
+  it('is not shown while locked, in child mode, or when there are none', () => {
+    const locked = setup({ uncertainLinks: [link], locked: true });
+    expect(screen.queryByText(LINE)).toBeNull();
+    locked.view.unmount();
+    const ro = setup({ uncertainLinks: [link], readOnly: true });
+    expect(screen.queryByText(LINE)).toBeNull();
+    ro.view.unmount();
+    setup({ uncertainLinks: [] });
+    expect(screen.queryByRole('region', { name: 'May be on your Heartwood' })).toBeNull();
+  });
+
+  it('a place row that already exists shows the same line inside the row instead', () => {
+    setup({ places: [place('kithmoot')], uncertainLinks: [], ctxFor: () => ({ signInLinkRecords: true, signInLinkUncertain: true }) });
+    expect(screen.queryByText(LINE)).toBeNull();
+    expand('kithmoot');
+    expect(screen.getByText(LINE)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'May be on your Heartwood' })).toBeNull();
+  });
+
+  it('a place row with no uncertain record does not say it', () => {
+    setup({ places: [place('kithmoot')], ctxFor: () => ({ signInLinkRecords: true }) });
+    expand('kithmoot');
+    expect(screen.queryByText(LINE)).toBeNull();
   });
 });
 

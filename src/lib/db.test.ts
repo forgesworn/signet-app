@@ -529,6 +529,15 @@ describe('Heartwood operator credential (C3 §5)', () => {
     expect(loaded[0].slotIndex).toBeUndefined();
   }, TIMEOUT);
 
+  it('sign-in link validator keeps the route (absent = operator) and drops an unknown one', async () => {
+    const db = await freshDb();
+    const ok = { origin: 'https://a.example', appName: 'A', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),
+      targetHex: 'd'.repeat(64), label: 'mysignet:a.example:00000001', secretFingerprint: '', createdAt: 1 };
+    const device = { ...ok, label: 'mysignet:a.example:00000002', route: 'device' as const };
+    await db.saveHeartwoodSignInLinks([ok, device, { ...ok, label: 'mysignet:a.example:00000003', route: 'phone' as unknown as 'device' }], PASSPHRASE);
+    expect(await db.loadHeartwoodSignInLinks(PASSPHRASE)).toEqual([ok, device]);
+  }, TIMEOUT);
+
   it('updateHeartwoodSignInLinks: concurrent writers both land, against what is stored', async () => {
     const db = await freshDb();
     const rec = (c: string) => ({ origin: `https://${c}.example`, appName: 'A', persona: 'd'.repeat(64), deviceHex: 'e'.repeat(64),

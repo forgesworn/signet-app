@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { AuthRequest } from '../lib/qr-router';
-import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY } from '../lib/heartwood-signin-link';
+import { SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY, signInLinkUnavailableCopy, type SignInLinkUnavailableReason } from '../lib/heartwood-signin-link';
 import { SIGNER_WAITING_COPY } from '../lib/signer-error-copy';
 import { HEARTWOOD_WAIT_HINT_DELAY_MS } from './HeartwoodWaitHint';
 import type { ResolvedIdentity } from '../lib/carousel-utils';
@@ -74,8 +74,8 @@ describe('ApprovalOverlay — let it sign on my Heartwood', () => {
 
 describe('ApprovalOverlay — straight to my Heartwood needs an update', () => {
   it('shows a non-interactive line and leaves Approve as it was', () => {
-    const { onApprove, onOpenFullPicker } = renderOverlay({ heartwoodNeedsUpdate: true });
-    expect(screen.getByTestId('overlay-straight-needs-update').textContent).toBe(SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY);
+    const { onApprove, onOpenFullPicker } = renderOverlay({ heartwoodUnavailable: 'needs-update' });
+    expect(screen.getByTestId('overlay-straight-unavailable').textContent).toBe(SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY);
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(onApprove).toHaveBeenCalledTimes(1);
@@ -83,16 +83,25 @@ describe('ApprovalOverlay — straight to my Heartwood needs an update', () => {
   });
 
   it('is hidden when the link is offered', () => {
-    renderOverlay({ heartwoodNeedsUpdate: true, heartwoodLinkOffered: true, heartwoodByDefault: false });
-    expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
+    renderOverlay({ heartwoodUnavailable: 'needs-update', heartwoodLinkOffered: true, heartwoodByDefault: false });
+    expect(screen.queryByTestId('overlay-straight-unavailable')).toBeNull();
   });
 
   it('is hidden when the prop is false or absent', () => {
-    renderOverlay({ heartwoodNeedsUpdate: false });
-    expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
+    renderOverlay({ heartwoodUnavailable: null });
+    expect(screen.queryByTestId('overlay-straight-unavailable')).toBeNull();
     cleanup();
     renderOverlay();
-    expect(screen.queryByTestId('overlay-straight-needs-update')).toBeNull();
+    expect(screen.queryByTestId('overlay-straight-unavailable')).toBeNull();
+  });
+});
+
+describe('ApprovalOverlay — each reason has its own line', () => {
+  it.each<SignInLinkUnavailableReason>(['needs-update', 'not-owner', 'no-answer'])('%s', reason => {
+    renderOverlay({ heartwoodUnavailable: reason });
+    const line = screen.getByTestId('overlay-straight-unavailable');
+    expect(line.textContent).toBe(signInLinkUnavailableCopy(reason, 'overlay'));
+    expect(line.getAttribute('data-reason')).toBe(reason);
   });
 });
 

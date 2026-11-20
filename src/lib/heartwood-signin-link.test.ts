@@ -4,6 +4,7 @@ import type { DeviceClientSlot, DeviceStatus } from './heartwood-mgmt-types';
 import type { HeartwoodSignInLinkRecord } from './db';
 import { HeartwoodCopyError } from './heartwood-mgmt-error-copy';
 import { handoffPolicy } from './heartwood-handoff';
+import { SiteLinkRefusedError, SiteLinkUncertainError, parseSiteLinkCreateReply } from './heartwood-site-link';
 import {
   SIGN_IN_LINK_LABEL_MAX,
   SIGN_IN_LINK_MISMATCH_COPY,
@@ -33,7 +34,17 @@ import {
   runSignInLinkApproval,
   signInHolderError,
   signInLinkLabel,
-  signInLinkNeedsUpdate,
+  signInLinkUnavailableReason,
+  signInLinkUnavailableCopy,
+  signInLinkRoute,
+  uncertainSignInLinks,
+  checkDeviceLinkTarget,
+  signInLinkRevokePath,
+  isUncertainSignInLink,
+  reconcileDeviceSignInLinks,
+  signInLinkCanDecrypt,
+  SIGN_IN_LINK_DECRYPT_NOTE,
+  type SignInLinkRouteInput,
   signInLinkOffered,
   signInLinkPolicy,
   signInLinkSupported,
@@ -52,7 +63,7 @@ const ORIGIN = 'https://kithmoot.com';
 
 const eligible: SignInLinkEligibility = {
   signingMode: 'bunker', isPairedChild: false, childDirect: false, hasActiveDependant: false,
-  selectionSource: 'guardian', importedPersona: false, hasOperatorClient: true, combinedPermission: false,
+  selectionSource: 'guardian', importedPersona: false, route: { kind: 'operator' }, combinedPermission: false,
   selectionKeypairType: 'persona', requestCanCarryLink: true,
 };
 
@@ -69,7 +80,8 @@ describe('signInLinkOffered', () => {
     ['a dependant is picked', { selectionSource: 'dependant' as const }],
     ['nothing picked', { selectionSource: undefined }],
     ['imported persona', { importedPersona: true }],
-    ['no operator client', { hasOperatorClient: false }],
+    ['no route (unavailable)', { route: { kind: 'unavailable' as const, reason: 'needs-update' as const } }],
+    ['no route (generic signer)', { route: { kind: 'unavailable' as const, reason: null } }],
     ['combined app-permission sign-in', { combinedPermission: true }],
     ['the real identity', { selectionKeypairType: 'natural-person' }],
     ['a request with nowhere to put a link', { requestCanCarryLink: false }],
@@ -78,16 +90,19 @@ describe('signInLinkOffered', () => {
   });
 });
 
-describe('signInLinkNeedsUpdate', () => {
-  const noOperator = { ...eligible, hasOperatorClient: false };
-  it('is true when only the operator key is missing and the signer is a Heartwood', () => {
-    expect(signInLinkNeedsUpdate(noOperator, true)).toBe(true);
+describe('signInLinkUnavailableReason', () => {
+  const unavailable = (reason: 'needs-update' | 'not-owner' | 'no-answer' | null) => ({ ...eligible, route: { kind: 'unavailable' as const, reason } });
+  it('is the route\'s reason when only the route is missing', () => {
+    expect(signInLinkUnavailableReason(unavailable('needs-update'))).toBe('needs-update');
+    expect(signInLinkUnavailableReason(unavailable('not-owner'))).toBe('not-owner');
+    expect(signInLinkUnavailableReason(unavailable('no-answer'))).toBe('no-answer');
   });
-  it('is false when an operator key is held (the option is offered instead)', () => {
-    expect(signInLinkNeedsUpdate(eligible, true)).toBe(false);
+  it('is null when it is offered (device or operator)', () => {
+    expect(signInLinkUnavailableReason(eligible)).toBeNull();
+    expect(signInLinkUnavailableReason({ ...eligible, route: { kind: 'device' } })).toBeNull();
   });
-  it('is false when the signer is not a Heartwood', () => {
-    expect(signInLinkNeedsUpdate(noOperator, false)).toBe(false);
+  it('is null for a signer that is not a Heartwood (nothing shown)', () => {
+    expect(signInLinkUnavailableReason(unavailable(null))).toBeNull();
   });
   it.each([
     ['not bunker mode', { signingMode: 'local' }],
@@ -99,12 +114,154 @@ describe('signInLinkNeedsUpdate', () => {
     ['combined app-permission sign-in', { combinedPermission: true }],
     ['the real identity', { selectionKeypairType: 'natural-person' }],
     ['a request with nowhere to put a link', { requestCanCarryLink: false }],
-  ])('is false: %s', (_name, over) => {
-    expect(signInLinkNeedsUpdate({ ...noOperator, ...over }, true)).toBe(false);
+  ])('is null: %s', (_name, over) => {
+    expect(signInLinkUnavailableReason({ ...unavailable('needs-update'), ...over })).toBeNull();
   });
-  it('carries the agreed copy', () => {
+  it('carries the agreed copy for each reason, on the page and the overlay', () => {
     expect(SIGN_IN_LINK_NEEDS_UPDATE_COPY).toBe('Your Heartwood needs a software update for this.');
     expect(SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY).toBe('Straight to my Heartwood needs a software update on your Heartwood.');
+    expect(signInLinkUnavailableCopy('needs-update', 'page')).toBe(SIGN_IN_LINK_NEEDS_UPDATE_COPY);
+    expect(signInLinkUnavailableCopy('needs-update', 'overlay')).toBe(SIGN_IN_LINK_NEEDS_UPDATE_OVERLAY_COPY);
+    expect(signInLinkUnavailableCopy('not-owner', 'page')).toBe("This phone isn't paired with full access to your Heartwood.");
+    expect(signInLinkUnavailableCopy('no-answer', 'page')).toBe("Your Heartwood isn't answering.");
+    expect(signInLinkUnavailableCopy('not-owner', 'overlay')).toMatch(/full access/);
+    expect(signInLinkUnavailableCopy('no-answer', 'overlay')).toMatch(/isn't answering/);
+    expect(signInLinkUnavailableCopy('careful', 'page')).toBe("This phone's pairing with your Heartwood is set to Extra careful, so it can't give a site more.");
+    expect(signInLinkUnavailableCopy('careful', 'overlay')).toMatch(/Extra careful/);
+  });
+});
+
+describe('signInLinkRoute', () => {
+  const LINK_METHODS = ['heartwood_capabilities', 'heartwood_link_create', 'heartwood_link_status', 'heartwood_link_revoke'];
+  const base: SignInLinkRouteInput = {
+    router: 'ready', routerMethods: LINK_METHODS, ownerPairing: true, primaryList: 'listed',
+    heartwoodKeyIdentity: false, ownerStyle: 'everyday', operatorClientCount: 0,
+  };
+  const route = (over: Partial<SignInLinkRouteInput>) => signInLinkRoute({ ...base, ...over });
+  it.each<[string, Partial<SignInLinkRouteInput>, ReturnType<typeof signInLinkRoute>]>([
+    ['device: methods listed, owner pairing, identity on the primary', {}, { kind: 'device' }],
+    ['device: owner status unknown is tried (the device refuses before any card)', { ownerPairing: null }, { kind: 'device' }],
+    ['device beats operator for an identity the primary lists', { operatorClientCount: 2 }, { kind: 'device' }],
+    ['device: identity list not read yet, no operator key', { primaryList: 'unknown' }, { kind: 'device' }],
+    ['device: a key-less Heartwood identity not on the primary\'s master (master 1), no operator key', { primaryList: 'not-listed' }, { kind: 'device' }],
+    ['operator: identity not listed and an operator key is held (another Heartwood keeps working)', { primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['operator: list unknown and an operator key is held', { primaryList: 'unknown', operatorClientCount: 1 }, { kind: 'operator' }],
+    // S2: an Extra careful pairing is refused `wider than this phone's access` for a same-master identity.
+    ['operator: Extra careful pairing, listed identity, operator key held', { ownerStyle: 'careful', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['careful: Extra careful pairing, listed identity, no operator key', { ownerStyle: 'careful' }, { kind: 'unavailable', reason: 'careful' }],
+    // F3: the list is empty after a restart, so careful must not depend on it.
+    ['careful: Extra careful pairing, identity not in the list (empty after a restart), no operator key', { ownerStyle: 'careful', primaryList: 'not-listed' }, { kind: 'unavailable', reason: 'careful' }],
+    ['careful: Extra careful pairing, list not read, no operator key', { ownerStyle: 'careful', primaryList: 'unknown' }, { kind: 'unavailable', reason: 'careful' }],
+    ['operator: Extra careful pairing, identity not in the list, operator key held', { ownerStyle: 'careful', primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['device: Extra careful pairing, a heartwoodKey (second-master) identity', { ownerStyle: 'careful', primaryList: 'not-listed', heartwoodKeyIdentity: true }, { kind: 'device' }],
+    ['device: custom style is not decided here', { ownerStyle: 'custom' }, { kind: 'device' }],
+    ['device: style unknown is tried', { ownerStyle: null }, { kind: 'device' }],
+    ['operator: firmware without the link methods', { routerMethods: ['heartwood_capabilities'], operatorClientCount: 1 }, { kind: 'operator' }],
+    ['operator: no router yet, but an operator key', { router: 'pending', routerMethods: null, operatorClientCount: 1 }, { kind: 'operator' }],
+    ['operator: not an owner pairing, but an operator key', { ownerPairing: false, operatorClientCount: 1 }, { kind: 'operator' }],
+    // B1: the device lists identities from RAM only, so an empty list after a restart must not demote the device route.
+    ['device: empty list (restart) and no operator key, a plain persona', { primaryList: 'not-listed' }, { kind: 'device' }],
+    ['operator: empty list (restart) and an operator key', { primaryList: 'not-listed', operatorClientCount: 1 }, { kind: 'operator' }],
+    ['device: listed and an operator key', { primaryList: 'listed', operatorClientCount: 1 }, { kind: 'device' }],
+    ['needs-update: Heartwood without the link methods, no operator key', { routerMethods: ['heartwood_capabilities'] }, { kind: 'unavailable', reason: 'needs-update' }],
+    ['not-owner: methods listed, owner status definitely false', { ownerPairing: false }, { kind: 'unavailable', reason: 'not-owner' }],
+    ['no-answer: the probe is pending or failing', { router: 'pending', routerMethods: null }, { kind: 'unavailable', reason: 'no-answer' }],
+    ['nothing shown: a generic (non-Heartwood) signer', { router: 'generic', routerMethods: null }, { kind: 'unavailable', reason: null }],
+  ])('%s', (_name, over, expected) => {
+    expect(route(over)).toEqual(expected);
+  });
+  it('needs all three link methods for the device route', () => {
+    expect(route({ routerMethods: ['heartwood_link_create', 'heartwood_link_status'] })).toEqual({ kind: 'unavailable', reason: 'needs-update' });
+  });
+  it('is never offered in child mode or on a paired child, whatever the route', () => {
+    const device = { ...eligible, route: route({}) };
+    expect(signInLinkOffered(device)).toBe(true);
+    expect(signInLinkOffered({ ...device, childDirect: true })).toBe(false);
+    expect(signInLinkOffered({ ...device, isPairedChild: true })).toBe(false);
+    expect(signInLinkOffered({ ...device, hasActiveDependant: true })).toBe(false);
+  });
+  it('offers a second-master identity: it is not an imported persona', () => {
+    const device = { ...eligible, importedPersona: false, route: route({ primaryList: 'not-listed' }) };
+    expect(signInLinkOffered(device)).toBe(true);
+  });
+});
+
+describe('signInLinkRevokePath', () => {
+  const DEV = 'd'.repeat(64);
+  const confirmed = { slotIndex: 3, secretFingerprint: 'fp', deviceHex: DEV };
+  it('a device record always goes over the phone\'s pairing', () => {
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: true, deviceRouteForIdentity: false, primaryDeviceHex: DEV })).toBe('device');
+    expect(signInLinkRevokePath({ secretFingerprint: '', route: 'device', deviceHex: DEV }, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: DEV })).toBe('device');
+  });
+  it('an operator record uses its operator key when there is one', () => {
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: true, deviceRouteForIdentity: true, primaryDeviceHex: DEV })).toBe('operator');
+  });
+  it('an operator record with no operator key goes over the device route by fingerprint, when that route serves its identity', () => {
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: DEV })).toBe('device');
+  });
+  it('otherwise it cannot be managed from here', () => {
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: DEV })).toBe('unmanaged');
+    // Pending operator record: nothing to name by fingerprint.
+    expect(signInLinkRevokePath({ secretFingerprint: '', deviceHex: DEV }, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: DEV })).toBe('unmanaged');
+  });
+  // S4: the phone's pairing speaks only for the Heartwood it reaches now.
+  it('a device record made on another Heartwood cannot be managed from here', () => {
+    const other = 'e'.repeat(64);
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: true, deviceRouteForIdentity: true, primaryDeviceHex: other })).toBe('unmanaged');
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: other.toUpperCase() })).toBe('unmanaged');
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: DEV.toUpperCase() })).toBe('device');
+  });
+  it('an operator record without an operator key goes over the pairing only on the same Heartwood', () => {
+    expect(signInLinkRevokePath(confirmed, { hasOperatorClient: false, deviceRouteForIdentity: true, primaryDeviceHex: 'e'.repeat(64) })).toBe('unmanaged');
+  });
+  it('no current pairing is not a mismatch: the call fails on its own as no answer', () => {
+    expect(signInLinkRevokePath({ ...confirmed, route: 'device' }, { hasOperatorClient: false, deviceRouteForIdentity: false, primaryDeviceHex: null })).toBe('device');
+  });
+});
+
+describe('checkDeviceLinkTarget (run inside the device-link lock)', () => {
+  const rec = { deviceHex: 'd'.repeat(64) };
+  it('ok only when connected and the pairing reaches the Heartwood the link was made on', () => {
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: 'D'.repeat(64) })).toBe('ok');
+  });
+  it('a different Heartwood is the other-heartwood case', () => {
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: 'e'.repeat(64) })).toBe('other-heartwood');
+  });
+  it('a reconnect gap or no pairing yet can\'t be checked now: no-answer, never a mismatch', () => {
+    expect(checkDeviceLinkTarget(rec, { connected: false, primaryDeviceHex: 'e'.repeat(64) })).toBe('no-answer');
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: null })).toBe('no-answer');
+    expect(checkDeviceLinkTarget(rec, { connected: true, primaryDeviceHex: '' })).toBe('no-answer');
+  });
+});
+
+describe('isUncertainSignInLink', () => {
+  const rec = (over: Partial<HeartwoodSignInLinkRecord>): HeartwoodSignInLinkRecord => ({
+    origin: ORIGIN, appName: 'K', persona: PERSONA, deviceHex: 'd'.repeat(64), targetHex: PERSONA, label: 'mysignet:x:00000000', secretFingerprint: '', createdAt: 1, ...over,
+  });
+  it('is a device record with no confirmed slot', () => {
+    expect(isUncertainSignInLink(rec({ route: 'device' }))).toBe(true);
+    expect(isUncertainSignInLink(rec({ route: 'device', slotIndex: 1, secretFingerprint: 'fp' }))).toBe(false);
+    expect(isUncertainSignInLink(rec({}))).toBe(false);
+  });
+});
+
+describe('uncertainSignInLinks', () => {
+  const base = { origin: ORIGIN, appName: 'K', persona: PERSONA, deviceHex: 'd'.repeat(64), targetHex: PERSONA, createdAt: 1 };
+  const uncertain: HeartwoodSignInLinkRecord = { ...base, label: 'u', secretFingerprint: '', route: 'device' };
+  const confirmedRec: HeartwoodSignInLinkRecord = { ...base, label: 'c', slotIndex: 2, secretFingerprint: 'fp', route: 'device' };
+  const operatorPending: HeartwoodSignInLinkRecord = { ...base, label: 'o', secretFingerprint: '' };
+  it('lists unconfirmed device records, not confirmed or operator ones', () => {
+    expect(uncertainSignInLinks([uncertain, confirmedRec, operatorPending], { creating: false }).map(r => r.label)).toEqual(['u']);
+  });
+  it('lists nothing while a create is in flight (the record is the mint on its way)', () => {
+    expect(uncertainSignInLinks([uncertain], { creating: true })).toEqual([]);
+  });
+});
+
+describe('decrypt note (decision 10)', () => {
+  it('the sign-in link policy lets the site decrypt, so the screen says so', () => {
+    expect(signInLinkCanDecrypt(PERSONA)).toBe(true);
+    expect(SIGN_IN_LINK_DECRYPT_NOTE).toMatch(/decrypt/);
   });
 });
 
@@ -135,6 +292,10 @@ describe('signInLinkByDefault', () => {
     expect(signInLinkByDefault(1, status(null))).toBe(true);
     expect(signInLinkByDefault(1, status(['client_policy_v2', 'pairing_identity_v1']))).toBe(true);
     expect(signInLinkByDefault(0, null)).toBe(true);
+  });
+  it('pre-selects where the device route is available, whatever the operator status says', () => {
+    expect(signInLinkByDefault(0, null, true)).toBe(true);
+    expect(signInLinkByDefault(1, status([]), true)).toBe(true);
   });
   it('does not pre-select for a lone Heartwood that definitely lacks either capability', () => {
     expect(signInLinkByDefault(1, status(['client_policy_v2']))).toBe(false);
@@ -829,5 +990,121 @@ describe('failedAckCarriesLink / ackStateAfterLock', () => {
     const approved = { status: 'approved' as const, siteName: 'KithMoot', carriesLink: true };
     expect(ackStateAfterLock(approved)).toBe(approved);
     expect(ackStateAfterLock(null)).toBeNull();
+  });
+});
+
+// ─── The device route (heartwood_link_create over the phone's own pairing) ───
+
+describe('runSignInLinkApproval — device route', () => {
+  it('records route device on the pending and the confirmed record', async () => {
+    const r = rig();
+    r.io.route = 'device';
+    const out = await runSignInLinkApproval(r.io);
+    expect(out.record.route).toBe('device');
+    expect(r.store[0].route).toBe('device');
+  });
+
+  it('a device refusal (no link made) drops the pending record with no revoke', async () => {
+    const r = rig();
+    r.io.route = 'device';
+    r.failure.mint = new SiteLinkRefusedError('You cancelled it on your Heartwood.');
+    await expect(runSignInLinkApproval(r.io)).rejects.toThrow('You cancelled it on your Heartwood.');
+    expect(r.log).not.toContain('revoke f00d');
+    expect(r.log.filter(l => l.startsWith('revoke'))).toEqual([]);
+    expect(r.store).toEqual([]);
+  });
+
+  it('a lost reply keeps the pending record (uncertain) and never tries a revoke', async () => {
+    const r = rig();
+    r.io.route = 'device';
+    r.failure.mint = new SiteLinkUncertainError('lost');
+    await expect(runSignInLinkApproval(r.io)).rejects.toBeInstanceOf(SiteLinkUncertainError);
+    expect(r.log.filter(l => l.startsWith('revoke') || l.startsWith('drop'))).toEqual([]);
+    expect(r.store).toHaveLength(1);
+    expect(r.store[0].route).toBe('device');
+    expect(isUncertainSignInLink(r.store[0])).toBe(true);
+  });
+
+  it('accepts the device\'s sorted, de-duplicated echo of the policy', async () => {
+    const r = rig();
+    r.io.route = 'device';
+    const policy = handoffPolicy(PERSONA);
+    r.failure.reply = { allowedMethods: [...policy.allowedMethods].sort(), allowedKinds: [] };
+    await expect(runSignInLinkApproval(r.io)).resolves.toBeTruthy();
+  });
+});
+
+describe('reconcileDeviceSignInLinks', () => {
+  const NOW = 2_000_000_000_000;
+  const rec = (over: Partial<HeartwoodSignInLinkRecord>): HeartwoodSignInLinkRecord => ({
+    origin: ORIGIN, appName: 'K', persona: PERSONA, deviceHex: 'd'.repeat(64), targetHex: PERSONA,
+    label: 'mysignet:x:00000001', slotIndex: 4, secretFingerprint: 'fp4', createdAt: NOW / 1000, route: 'device', ...over,
+  });
+  const old = NOW / 1000 - SIGNIN_LINK_UNBOUND_TTL_MS / 1000 - 1;
+  const io = (states: Map<string, { exists: boolean; bound: boolean } | Error>) => {
+    const log: string[] = [];
+    return {
+      log,
+      io: {
+        nowMs: () => NOW,
+        primaryDeviceHex: 'd'.repeat(64) as string | null,
+        status: async (r: HeartwoodSignInLinkRecord) => { log.push(`status ${r.label}`); const s = states.get(r.label); if (!s || s instanceof Error) throw s ?? new Error('none'); return s; },
+        revoke: async (r: HeartwoodSignInLinkRecord) => { log.push(`revoke ${r.label}`); },
+        dropRecord: async (r: HeartwoodSignInLinkRecord) => { log.push(`drop ${r.label}`); },
+      },
+    };
+  };
+  it('drops a record whose link is not on the device', async () => {
+    const t = io(new Map([['a', { exists: false, bound: false }]]));
+    const out = await reconcileDeviceSignInLinks([rec({ label: 'a' })], t.io);
+    expect(t.log).toEqual(['status a', 'drop a']);
+    expect(out.dropped).toBe(1);
+  });
+  it('revokes then drops a link nobody bound after 10 minutes, and leaves a young or bound one', async () => {
+    const t = io(new Map([['old', { exists: true, bound: false }], ['young', { exists: true, bound: false }], ['bound', { exists: true, bound: true }]]));
+    await reconcileDeviceSignInLinks([rec({ label: 'old', createdAt: old }), rec({ label: 'young' }), rec({ label: 'bound', createdAt: old })], t.io);
+    expect(t.log).toEqual(['status old', 'revoke old', 'drop old', 'status young', 'status bound']);
+  });
+  it('leaves operator records and uncertain device records alone, and never throws on no answer', async () => {
+    const t = io(new Map([['x', new Error('no answer')]]));
+    const out = await reconcileDeviceSignInLinks([
+      rec({ label: 'op', route: undefined }),
+      rec({ label: 'unsure', slotIndex: undefined, secretFingerprint: '' }),
+      rec({ label: 'x' }),
+    ], t.io);
+    expect(t.log).toEqual(['status x']);
+    expect(out.skipped).toBe(3);
+  });
+  it('S4: leaves a record made on another Heartwood alone (never asks the current one, never drops it)', async () => {
+    const t = io(new Map([['elsewhere', { exists: false, bound: false }], ['here', { exists: false, bound: false }]]));
+    const out = await reconcileDeviceSignInLinks([rec({ label: 'elsewhere', deviceHex: 'e'.repeat(64) }), rec({ label: 'here' })], t.io);
+    expect(t.log).toEqual(['status here', 'drop here']);
+    expect(out).toMatchObject({ dropped: 1, skipped: 1 });
+  });
+  it('the operator reconcile skips device records (never looked up through an operator key)', async () => {
+    const listed: string[] = [];
+    await reconcileSignInLinks([rec({ label: 'dev' })], {
+      nowMs: () => NOW,
+      listSlots: async t => { listed.push(t.targetHex); return []; },
+      revokeSlot: async () => {},
+      dropRecord: async () => { throw new Error('must not drop'); },
+    });
+    expect(listed).toEqual([]);
+  });
+});
+
+describe('device reply into the echo check', () => {
+  it('a device create reply (sorted, de-duplicated, no note) passes the echo check', () => {
+    const policy = signInLinkPolicy(PERSONA);
+    const raw = JSON.stringify({
+      slot_index: 5, label: 'mysignet:kithmoot.com:cafef00d', secret: SECRET, secret_fingerprint: 'F00D', npub_hex: PERSONA,
+      bunker_uri: `bunker://${PERSONA}?relay=wss%3A%2F%2Frelay.example&secret=${SECRET}`,
+      allowed_methods: [...policy.allowedMethods, 'sign_event'].sort(), allowed_kinds: [], auto_approve: true,
+      signing_approved: false, policy_version: 2,
+    });
+    const reply = parseSiteLinkCreateReply(raw);
+    expect(reply).not.toBeNull();
+    const echo = checkSignInLinkEcho(reply!, { persona: PERSONA, policy, label: 'mysignet:kithmoot.com:cafef00d' });
+    expect(echo).toMatchObject({ ok: true, slotIndex: 5, secretFingerprint: 'f00d' });
   });
 });
