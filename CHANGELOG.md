@@ -5,6 +5,7 @@ section for the version being published (`release_notes` in zapstore.yaml).
 
 ## Unreleased
 
+- NIP-05 Check now always fetches your site's current nostr.json, so after you fix the address on your website the Check shows the new answer straight away instead of the old one for up to a couple of days
 - Connecting an app: if the phone locks while a request is being answered, it now comes back showing how it ended (connected, or the message about a pairing your Heartwood may still hold) with only Close, instead of offering Approve and Deny again
 - Child's own phone: contacts carried over from the older contacts list now count as the child's own, so the child's contact limits apply to them (contacts already carried over are unchanged)
 - Bunker: each pending request now shows when it was asked, which app and site, and who it is signing as, with a down-arrow for the rest (what it is for, its tags, and a short preview of what the app sent). A request older than five minutes is marked as probably abandoned and has a Clear button that removes it without refusing the app
