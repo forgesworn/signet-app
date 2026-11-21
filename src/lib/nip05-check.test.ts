@@ -184,6 +184,15 @@ describe('checkNip05', () => {
     expect(init).toMatchObject({ redirect: 'error', credentials: 'omit', mode: 'cors' });
   });
 
+  it('bypasses the HTTP cache, so a Check after editing nostr.json sees the new file', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ names: { alice: PUBKEY } }), { status: 200 }),
+    );
+    await checkNip05('alice@example.com', PUBKEY, fetchImpl);
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init).toMatchObject({ cache: 'no-store' });
+  });
+
   it('never calls fetch for an identifier that fails to parse', async () => {
     const fetchImpl = vi.fn();
     const result = await checkNip05('alice@localhost', PUBKEY, fetchImpl);
