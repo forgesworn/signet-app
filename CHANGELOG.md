@@ -3,6 +3,10 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+
+- NIP-05 Check now always fetches your site's current nostr.json, so after you fix the address on your website the Check shows the new answer straight away instead of the old one for up to a couple of days
+
 ## 0.30.0
 
 - Child mode is locked down: while the phone is handed over, only the child's own screens open and their cards are read only. Your identities, apps, Bunker tab, notifications, backups and settings stay out of reach until you exit with your PIN, and requests that could answer as you are refused, including straight after a restart

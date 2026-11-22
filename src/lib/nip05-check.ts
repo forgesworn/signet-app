@@ -181,6 +181,10 @@ export async function checkNip05(
       redirect: 'error',
       credentials: 'omit',
       mode: 'cors',
+      // The user taps Check right after editing their nostr.json. Sites
+      // commonly serve it with a long max-age (days), and a cached copy
+      // would keep reporting the old answer until it expired.
+      cache: 'no-store',
     });
     if (!response.ok) return 'unreachable';
 
