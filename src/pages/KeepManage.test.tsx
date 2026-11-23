@@ -756,7 +756,7 @@ describe('opening a Keep from a keep-invite link', () => {
   };
   beforeEach(() => { backendFor.mockClear(); });
 
-  it('opens that Keep at Who can play with the game preselected, the contact list open, and sends nothing', async () => {
+  it('opens that Keep at Who can play with the game preselected, the contact list open, and creates and shares nothing', async () => {
     row = [pairedKeep(LINKED)];
     const { done } = renderRoute(route());
     const picker = await screen.findByTestId('share-game-picker');
@@ -770,7 +770,7 @@ describe('opening a Keep from a keep-invite link', () => {
     expect(localStorage.getItem(`signet:keep-game:${K}`)).toBeNull();
   });
 
-  it('a person who is a Kin or Kith contact is preselected, still without sending anything', async () => {
+  it('a person who is a Kin or Kith contact is preselected, and nothing is created or shared until the owner taps', async () => {
     row = [pairedKeep(LINKED)];
     renderRoute(route({ persona: FRIEND, name: 'Dave from the game' }));
     const option = await screen.findByTestId('contact-option');
@@ -799,6 +799,37 @@ describe('opening a Keep from a keep-invite link', () => {
     expect(published).toHaveLength(0);
     expect(share).not.toHaveBeenCalled();
     view.unmount();
+  });
+
+  it('a Kin contact who is blocked is not preselected, and the note says they are not in the contacts', async () => {
+    row = [pairedKeep(LINKED)];
+    const blocked = { ...contact('9', 'Blocked Bea', 'kin', 'ab'.repeat(32)), blocked: true, blockedBy: [O] };
+    renderRoute(route({ persona: 'ab'.repeat(32), name: 'Bea' }), prefilledHost({ contacts: [contact('1', 'Dave', 'kin', FRIEND), blocked] }));
+    expect(await screen.findByTestId('prefill-note')).toHaveTextContent('Bea isn’t in your contacts yet.');
+    expect(screen.queryByTestId('contact-suggested')).toBeNull();
+    expect(screen.queryByText('Blocked Bea')).toBeNull();
+  });
+
+  it('opening by the link sends exactly what opening the Keep by hand sends (the existing due request), and no invite', async () => {
+    // Nothing recorded as requested, so the existing "send what is due" step on opening a Keep has a passes request to send.
+    const quiet = { scope: 'one', rev: 0, seen: [O], links: { [O]: { sections: [], addedRev: 0, active: true } } };
+    const kinds = () => published.map(w => unwrapEvent(w as never, KEEP_SK).kind);
+    row = [pairedKeep(quiet)];
+    const byHand = renderKeep(prefilledHost());
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    await screen.findByTestId('share-game-picker');
+    await waitFor(() => expect(published.length).toBeGreaterThan(0));
+    const handKinds = kinds();
+    byHand.unmount();
+    published.length = 0; row = [pairedKeep(quiet)];
+    renderRoute(route());
+    await screen.findByTestId('share-game-picker');
+    await waitFor(() => expect(published.length).toBeGreaterThan(0));
+    expect(kinds()).toEqual(handKinds);
+    expect(kinds()).not.toContain(27661);
+    expect(kinds()).not.toContain(27662);
+    expect(share).not.toHaveBeenCalled();
+    expect((row as Array<{ invites: unknown[] }>)[0].invites).toEqual([]);
   });
 
   it('a person who is only a Ken contact is not preselected', async () => {

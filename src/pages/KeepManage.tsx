@@ -27,7 +27,7 @@ import { shareInviteLink } from '../lib/keep-share';
 import { relayHostLabel } from '../lib/relay-url';
 import { gamesOffered, keepGameName, loadGameChoice, pickGame, saveGameChoice } from '../lib/keep-games';
 
-/** What a `keep-invite` link pre-fills on a Keep's detail: the game and, maybe, who to invite. Nothing is sent from it. */
+/** What a `keep-invite` link pre-fills on a Keep's detail: the game and, maybe, who to invite. Nothing is created or shared from it. */
 export interface KeepPrefill {
   game: string;
   /** The persona the link names, 64 hex. */
@@ -408,7 +408,7 @@ function GamePicker({ games, value, onPick, testId, disabled }: {
 export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill }: {
   host: KeepHost; keep: StoredKeep; note?: string; setKeeps: (list: StoredKeep[]) => void;
   onBack: () => void; onGone: () => void;
-  /** From a `keep-invite` link: the game to start on and who it was meant for. Only pre-fills; sends nothing. */
+  /** From a `keep-invite` link: the game to start on and who it was meant for. Only pre-fills; creates and shares nothing. */
   prefill?: KeepPrefill;
 }) {
   // A pre-filled Who can play opens its contact list straight away; nothing is made until a contact or Guest pass is pressed.
