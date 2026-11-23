@@ -172,6 +172,7 @@ import { BunkerApprovalModal } from './components/BunkerApprovalModal';
 import { Nip55ApprovalModal } from './components/Nip55ApprovalModal';
 import { useNip55Server } from './hooks/useNip55Server';
 import { phoneAppsKeyExpired } from './lib/phone-apps-window';
+import { nip55GrantFor } from './lib/nip55';
 import { usePreferences } from './hooks/usePreferences';
 import { ScannerSettingsProvider, usePublishScannerSettings } from './components/ScannerSettingsContext';
 import { useDocuments } from './hooks/useDocuments';
@@ -4476,7 +4477,7 @@ function AppContent() {
   refuseHeldNip55Ref.current = nip55.refuseHeld;
   // The remembered NIP-55 decisions, as the Connected apps page lists them; grants keep milliseconds, the page reads seconds.
   const phoneApps = useMemo<PhoneApp[]>(() => Object.entries(nip55.grants)
-    .map(([packageName, g]) => ({ packageName, label: g.label ?? null, pubkey: g.pubkey, allowAlways: g.allowAlways, denyAlways: g.denyAlways, grantedAt: Math.floor(g.grantedAt / 1000) }))
+    .flatMap(([packageName, grants]) => grants.map(g => ({ packageName, label: g.label ?? null, pubkey: g.pubkey, allowAlways: g.allowAlways, denyAlways: g.denyAlways, grantedAt: Math.floor(g.grantedAt / 1000) })))
     .sort((a, b) => b.grantedAt - a.grantedAt), [nip55.grants]);
   const nip55Identities = useMemo(() => {
     if (!identity) return [];
@@ -5279,12 +5280,11 @@ function AppContent() {
       if (mine.length > 0) return { signInLinkRecords: true, appLabel, appIcon };
     }
     if (place.kind === 'nip55') {
-      // A grant is pinned to one identity; a row for another identity gets no say over it.
-      const grant = place.nativePackage ? nip55.grants[place.nativePackage] : undefined;
-      const mine = !!grant && grant.pubkey.toLowerCase() === place.pubkey.toLowerCase();
+      const appGrants = place.nativePackage ? nip55.grants[place.nativePackage] : undefined;
+      const grant = nip55GrantFor(appGrants, place.pubkey);
       return {
-        nip55Grant: grant && mine ? { allowAlways: grant.allowAlways, denyAlways: grant.denyAlways } : null,
-        nip55OtherIdentity: !!grant && !mine,
+        nip55Grant: grant ? { allowAlways: grant.allowAlways, denyAlways: grant.denyAlways } : null,
+        nip55OtherIdentity: !!appGrants?.length && !grant,
         signedBy,
         appLabel,
         appIcon,

@@ -49,6 +49,7 @@ class Nip55SignerActivity : Activity() {
             currentUser = intent?.getStringExtra(Nip55Wire.EXTRA_CURRENT_USER),
             pubkey = intent?.getStringExtra(Nip55Wire.EXTRA_PUBKEY) ?: intent?.getStringExtra(Nip55Wire.EXTRA_PUBKEY_ALT),
             permissions = intent?.getStringExtra(Nip55Wire.EXTRA_PERMISSIONS),
+            choosePersona = intent?.getBooleanExtra(Nip55Wire.EXTRA_CHOOSE_PERSONA, false) == true,
         )
         android.util.Log.i("Nip55", "intent ${request.type} from ${callingPackage} payload=${request.payload?.length ?: 0}")
         if (!Nip55Wire.supports(request.type)) {

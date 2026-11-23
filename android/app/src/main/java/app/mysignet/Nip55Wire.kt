@@ -23,6 +23,7 @@ object Nip55Wire {
     const val EXTRA_PUBKEY = "pubkey"
     const val EXTRA_PUBKEY_ALT = "pubKey"
     const val EXTRA_PERMISSIONS = "permissions"
+    const val EXTRA_CHOOSE_PERSONA = "app.mysignet.CHOOSE_PERSONA"
     const val EXTRA_RESULT = "result"
     const val EXTRA_EVENT = "event"
     const val EXTRA_SIGNATURE = "signature"
@@ -84,11 +85,13 @@ data class Nip55Incoming(
     val currentUser: String?,
     val permissions: String?,
     val viaProvider: Boolean,
+    val choosePersona: Boolean = false,
 ) {
     /** The fields as the web layer reads them; null stays null. Serialised by the plugin, which has the JSON library. */
     fun fields(): Map<String, Any?> = mapOf(
         "id" to id, "callerPackage" to callerPackage, "callerLabel" to callerLabel, "type" to type, "payload" to payload,
         "peerPubkey" to peerPubkey, "currentUser" to currentUser, "permissions" to permissions, "viaProvider" to viaProvider,
+        "choosePersona" to choosePersona,
     )
 
     companion object {
@@ -106,13 +109,14 @@ data class Nip55Incoming(
         fun fromIntent(
             id: String, callerPackage: String?, callerLabel: String?, dataString: String?,
             type: String?, currentUser: String?, pubkey: String?, permissions: String?,
+            choosePersona: Boolean = false,
         ): Nip55Incoming {
             val payload = dataString?.let { raw ->
                 val colon = raw.indexOf(':')
                 if (colon < 0 || !raw.substring(0, colon).equals(Nip55Wire.SCHEME, ignoreCase = true)) null
                 else percentDecoded(raw.substring(colon + 1)).takeIf { it.isNotEmpty() }
             }
-            return Nip55Incoming(id, callerPackage, callerLabel, type, payload, pubkey, currentUser, permissions, viaProvider = false)
+            return Nip55Incoming(id, callerPackage, callerLabel, type, payload, pubkey, currentUser, permissions, viaProvider = false, choosePersona = choosePersona)
         }
 
         /**

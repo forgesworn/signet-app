@@ -15,7 +15,7 @@ interface Props {
    *  `allowAlways` signs without a prompt, so it is listed and revocable here like a bunker client. */
   phoneApps?: PhoneApp[];
   /** Forget a phone app's decision, allow or deny; its next request asks again. */
-  onForgetPhoneApp?: (packageName: string) => void;
+  onForgetPhoneApp?: (packageName: string, pubkey: string) => void;
   onBack: () => void;
 }
 
@@ -157,10 +157,11 @@ export function Connections({ connectedClients, onDisconnectClient, phoneApps, o
           </div>
           <div className="card card-flush">
             {apps.map((app, i) => {
-              const isConfirming = confirmingApp === app.packageName;
+              const identity = `${app.packageName}:${app.pubkey}`;
+              const isConfirming = confirmingApp === identity;
               return (
                 <div
-                  key={app.packageName}
+                  key={identity}
                   style={{ padding: '14px 16px', borderBottom: i < apps.length - 1 ? '1px solid var(--border)' : 'none' }}
                 >
                   <div className="connections-row">
@@ -201,7 +202,7 @@ export function Connections({ connectedClients, onDisconnectClient, phoneApps, o
                     {onForgetPhoneApp && (!isConfirming ? (
                       <button
                         className="btn btn-ghost"
-                        onClick={() => setConfirmingApp(app.packageName)}
+                        onClick={() => setConfirmingApp(identity)}
                         style={{ color: 'var(--danger)', fontSize: '0.8rem', padding: '6px 12px', flexShrink: 0 }}
                       >
                         Forget
@@ -210,7 +211,7 @@ export function Connections({ connectedClients, onDisconnectClient, phoneApps, o
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                         <button
                           className="btn btn-ghost"
-                          onClick={() => { onForgetPhoneApp(app.packageName); setConfirmingApp(null); }}
+                          onClick={() => { onForgetPhoneApp(app.packageName, app.pubkey); setConfirmingApp(null); }}
                           style={{ color: '#fff', background: 'var(--danger)', fontSize: '0.8rem', padding: '6px 12px' }}
                         >
                           Confirm

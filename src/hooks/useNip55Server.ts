@@ -14,7 +14,7 @@ import type { UnsignedEvent } from 'signet-protocol';
 import { describeEventTemplate } from '../lib/nip46-server';
 import { isNativeApp, SignetNative, type Nip55Response } from '../lib/native';
 import {
-  NIP55_LAST_USED_THROTTLE_MS, defaultNip55Pubkey, describeNip55, loadNip55Grants, npubOf, parseNip55Request, planNip55, saveNip55Grants,
+  NIP55_LAST_USED_THROTTLE_MS, defaultNip55Pubkey, describeNip55, loadNip55Grants, nip55GrantFor, npubOf, parseNip55Request, planNip55, saveNip55Grants,
   type NativeNip55Request, type Nip55Grant, type Nip55Grants, type Nip55Method, type Nip55Plan, type ParsedNip55,
 } from '../lib/nip55';
 import type { BunkerRoute } from './useBunkerServer';
@@ -93,9 +93,10 @@ interface Waiting {
   pubkey: string | null;
 }
 
-/** A grant is pinned to one key; a caller that names another key must leave it alone. */
-function grantIsFor(grant: Nip55Grants[string], pubkey: string): boolean {
-  return !!pubkey && grant.pubkey.toLowerCase() === pubkey.toLowerCase();
+/** A standing app denial applies to every request from that package. */
+function grantForRequest(grants: Nip55Grants[string] | undefined, pubkey?: string): Nip55Grant | undefined {
+  const preferred = nip55GrantFor(grants);
+  return preferred?.denyAlways ? preferred : nip55GrantFor(grants, pubkey);
 }
 
 /** A stable default clock: a fresh function each render would re-register the native listeners. */
@@ -119,7 +120,6 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   const routesRef = useRef(routes);
   routesRef.current = routes;
   const grantsRef = useRef(grants);
-  grantsRef.current = grants;
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
   const activeRef = useRef(activePubkey);
@@ -138,25 +138,24 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     if (cameByIntent) { try { await SignetNative.returnToPreviousApp(); } catch { /* not native, or nothing behind us */ } }
   }, []);
 
+  const updateGrants = useCallback((change: (before: Nip55Grants) => Nip55Grants) => {
+    const next = change(grantsRef.current);
+    grantsRef.current = next;
+    saveNip55Grants(next);
+    setGrants(next);
+  }, []);
+
   /**
    * A request from `pkg` is being executed under its grant: note when, at most
-   * once an hour (the check reads the ref, so the hot path does no storage work
-   * until a write is due). The write goes through the functional updater so it
-   * lands on whatever grant is newest, never on a stale copy.
+   * once an hour. Keep the order of the grants when recording use.
    */
   const touchLastUsed = useCallback((pkg: string, pubkey: string) => {
-    const grant = grantsRef.current[pkg];
-    if (!grant || !grantIsFor(grant, pubkey)) return;
+    const grant = nip55GrantFor(grantsRef.current[pkg], pubkey);
+    if (!grant) return;
     const at = now();
     if (grant.lastUsedAt !== undefined && at - grant.lastUsedAt < NIP55_LAST_USED_THROTTLE_MS) return;
-    setGrants(g => {
-      const cur = g[pkg];
-      if (!cur || !grantIsFor(cur, pubkey)) return g;
-      const next = { ...g, [pkg]: { ...cur, lastUsedAt: at } };
-      saveNip55Grants(next);
-      return next;
-    });
-  }, [now]);
+    updateGrants(g => ({ ...g, [pkg]: g[pkg].map(row => row === grant ? { ...row, lastUsedAt: at } : row) }));
+  }, [now, updateGrants]);
 
   /** Signs, encrypts or decrypts with the route that holds `pubkey`, and answers. */
   const execute = useCallback(async (raw: NativeNip55Request, parsed: ParsedNip55, pubkey: string) => {
@@ -246,7 +245,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     }
     const parsed = parseNip55Request(raw);
     const pkg = raw.callerPackage ?? '';
-    const grant = pkg ? grantsRef.current[pkg] : undefined;
+    const grant = pkg ? grantForRequest(grantsRef.current[pkg], parsed?.currentUser) : undefined;
     const owned = lockedRef.current ? [] : routesRef.current.filter(r => !r.dependantId).map(r => r.pubkey);
     const plan = planFor(parsed, raw.viaProvider, grant, owned, activeRef.current);
     // Locked and asked by intent: the plan says "no identity" only because
@@ -348,7 +347,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     // here, it cannot switch under the person when more keys arrive later.
     const keyed = new Map<number, string>();
     for (const item of queue) {
-      const grant = item.raw.callerPackage ? grants[item.raw.callerPackage] : undefined;
+      const grant = item.raw.callerPackage ? grantForRequest(grants[item.raw.callerPackage], item.parsed.currentUser) : undefined;
       const plan = planFor(item.parsed, item.raw.viaProvider, grant, owned, activePubkey);
       if (plan.kind === 'forward') { settled.push(item.handle); void execute(item.raw, item.parsed, plan.pubkey); }
       else if (plan.kind === 'reject') { settled.push(item.handle); void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); }
@@ -364,9 +363,12 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     }
   }, [locked, queue, routes, grants, activePubkey, execute, respond, planFor, childMode]);
 
-  const remember = useCallback((pkg: string, grant: Nip55Grants[string]) => {
-    setGrants(g => { const next = { ...g, [pkg]: grant }; saveNip55Grants(next); return next; });
-  }, []);
+  const remember = useCallback((pkg: string, grant: Nip55Grant) => {
+    updateGrants(g => ({
+      ...g,
+      [pkg]: grant.denyAlways ? [grant] : [grant, ...(g[pkg] ?? []).filter(row => row.pubkey !== grant.pubkey && !row.denyAlways)],
+    }));
+  }, [updateGrants]);
 
   /** Display fact only: the app now has a row under the key that approved it. */
   const noteKnownPlace = useCallback((raw: { callerPackage: string | null; callerLabel?: string | null }, key: string) => {
@@ -397,6 +399,7 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   const approvedKey = useCallback((item: Waiting, pubkey?: string): string | null => {
     // In child mode (or before it is known) no owner key answers anything.
     if (childModeRef.current !== 'off') return null;
+    if (item.raw.callerPackage && nip55GrantFor(grantsRef.current[item.raw.callerPackage])?.denyAlways) return null;
     const key = (pubkey ?? item.pubkey)?.toLowerCase();
     if (!key) return null;
     if (item.parsed.currentUser && item.parsed.currentUser !== key) return null;
@@ -410,8 +413,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const key = approvedKey(item, pubkey);
     if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) {
-      const prior = grantsRef.current[item.raw.callerPackage];
-      remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true && prior.pubkey === key, denyAlways: false, grantedAt: now(), ...(prior?.lastUsedAt !== undefined && prior.pubkey === key ? { lastUsedAt: prior.lastUsedAt } : {}), label: item.raw.callerLabel ?? prior?.label });
+      const prior = nip55GrantFor(grantsRef.current[item.raw.callerPackage], key);
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: prior?.allowAlways === true, denyAlways: false, grantedAt: now(), lastUsedAt: prior?.lastUsedAt, label: item.raw.callerLabel ?? prior?.label });
       noteKnownPlace(item.raw, key);
     }
     void execute(item.raw, item.parsed, key);
@@ -423,8 +426,8 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const key = approvedKey(item, pubkey);
     if (!key) { void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider); return; }
     if (item.raw.callerPackage) {
-      const prior = grantsRef.current[item.raw.callerPackage];
-      remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), ...(prior?.lastUsedAt !== undefined && prior.pubkey === key ? { lastUsedAt: prior.lastUsedAt } : {}), label: item.raw.callerLabel ?? prior?.label });
+      const prior = nip55GrantFor(grantsRef.current[item.raw.callerPackage], key);
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: true, denyAlways: false, grantedAt: now(), lastUsedAt: prior?.lastUsedAt, label: item.raw.callerLabel ?? prior?.label });
       noteKnownPlace(item.raw, key);
     }
     void execute(item.raw, item.parsed, key);
@@ -439,9 +442,9 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
     const item = take(handle);
     if (!item) return;
     if (item.raw.callerPackage) {
-      const prior = grantsRef.current[item.raw.callerPackage];
       const key = item.pubkey ?? activeRef.current ?? '0'.repeat(64);
-      remember(item.raw.callerPackage, { pubkey: key, allowAlways: false, denyAlways: true, grantedAt: now(), ...(prior?.lastUsedAt !== undefined && prior.pubkey === key ? { lastUsedAt: prior.lastUsedAt } : {}), label: item.raw.callerLabel ?? prior?.label });
+      const prior = nip55GrantFor(grantsRef.current[item.raw.callerPackage], key);
+      remember(item.raw.callerPackage, { pubkey: key, allowAlways: false, denyAlways: true, grantedAt: now(), lastUsedAt: prior?.lastUsedAt, label: item.raw.callerLabel ?? prior?.label });
     }
     void respond({ id: item.raw.id, status: 'rejected' }, !item.raw.viaProvider);
   }, [take, remember, respond, now]);
@@ -466,17 +469,20 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
   useEffect(() => subscribePurge(() => { grantsRef.current = {}; setGrants({}); }), []);
 
   /**
-   * Forget a remembered app. With `forPubkey`, only if its grant is pinned to
-   * that key (a row for persona A must never delete persona B's pairing);
-   * returns whether a grant was removed.
+   * Forget one persona's decision, or all decisions if no key was supplied.
    */
   const forget = useCallback((pkg: string, forPubkey?: string): boolean => {
-    const grant = grantsRef.current[pkg];
+    const grant = nip55GrantFor(grantsRef.current[pkg], forPubkey);
     if (!grant) return false;
-    if (forPubkey !== undefined && !grantIsFor(grant, forPubkey)) return false;
-    setGrants(g => { const next = { ...g }; delete next[pkg]; saveNip55Grants(next); return next; });
+    updateGrants(g => {
+      const remaining = forPubkey === undefined ? [] : g[pkg].filter(row => row !== grant);
+      const next = { ...g };
+      if (remaining.length) next[pkg] = remaining;
+      else delete next[pkg];
+      return next;
+    });
     return true;
-  }, []);
+  }, [updateGrants]);
 
   /**
    * Change how a remembered app is treated from the known-places list:
@@ -486,11 +492,11 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
    * synchronous request path sees it at once.
    */
   const setAllowAlways = useCallback((pkg: string, allow: boolean, forPubkey: string): boolean => {
-    const grant = grantsRef.current[pkg];
-    if (!grant || !grantIsFor(grant, forPubkey)) return false;
-    remember(pkg, { ...grant, allowAlways: allow, denyAlways: false });
+    const grant = nip55GrantFor(grantsRef.current[pkg], forPubkey);
+    if (!grant) return false;
+    updateGrants(g => ({ ...g, [pkg]: g[pkg].map(row => row === grant ? { ...row, allowAlways: allow, denyAlways: false } : row) }));
     return true;
-  }, [remember]);
+  }, [updateGrants]);
 
   const pending = useMemo<PendingNip55 | null>(() => {
     const item = queue[0];
@@ -508,10 +514,10 @@ export function useNip55Server({ enabled, routes, locked, activePubkey, onNeedsU
       peer: item.parsed.peer,
       // A request held through an unlock gets its key fixed by the effect
       // above; for the one render before that, the same default it will pick.
-      pubkey: item.pubkey ?? defaultNip55Pubkey(routes.filter(r => !r.dependantId).map(r => r.pubkey), pkg ? grants[pkg] : undefined, activePubkey),
+      pubkey: item.pubkey ?? defaultNip55Pubkey(routes.filter(r => !r.dependantId).map(r => r.pubkey), pkg ? nip55GrantFor(grants[pkg]) : undefined, activePubkey),
       named: !!item.parsed.currentUser,
       permissions: item.parsed.permissions,
-      existing: !!(pkg && grants[pkg]),
+      existing: !!(pkg && nip55GrantFor(grants[pkg], item.parsed.currentUser)),
     };
   }, [queue, locked, grants, activePubkey, routes, childMode]);
 
