@@ -30,7 +30,7 @@ import { MYSIGNET_HOSTS, QR_MAX_PAYLOAD_SIZE, isCompanionPairAppLink } from './q
 import { sanitizeDisplayName } from './text-sanitize';
 import { isKeepGame } from './keep-games';
 
-/** What a `?keep-invite=1` link asks for: a Keep, a game and, optionally, who to invite. Pre-fill only. */
+/** What a `#keep-invite=1` link asks for: a Keep, a game and, optionally, who to invite. Pre-fill only. */
 export interface KeepInviteRoute {
   /** The Keep's key, 64 lowercase hex. */
   keep: string;
@@ -58,7 +58,7 @@ export type NativeUrlAction =
   | { type: 'contacts-pair-v2'; request: PairingRequestV2 }
   | { type: 'sign-in'; href: string }
   | { type: 'root-carrier'; href: string }
-  /** `https://mysignet.app/?keep-invite=1&k=…&g=…[&p=…][&n=…]`: open the Keep's invite screen pre-filled. */
+  /** `https://mysignet.app/#keep-invite=1&k=…&g=…[&p=…][&n=…]` (fragment): ask to open the Keep's invite screen pre-filled. */
   | { type: 'keep-invite'; invite: KeepInviteRoute }
   /** A `keep-invite` link that is malformed. Refused: it must NOT fall through to `root-carrier` or sign-in. */
   | { type: 'keep-invite-invalid' }
@@ -136,14 +136,19 @@ export function routeNativeUrl(url: string): NativeUrlAction {
   const raw = url.trim();
 
   // A Keep invite link, checked before anything else that reads the root-path query: whatever it holds, it is
-  // either this route or refused, never pairing, sign-in or a root carrier.
+  // either this route or refused, never pairing, sign-in or a root carrier. It lives in the URL fragment (like a
+  // contact invite), which a browser never sends to a server. The old query form (`?keep-invite=…`) was never released
+  // and is refused; so is a link with any query beside the fragment, and one that repeats or mixes the two forms.
   if (isMysignetRoot(raw)) {
     try {
-      const params = new URL(raw).searchParams;
-      if (params.has('keep-invite')) {
-        const invite = parseKeepInvite(params);
+      const u = new URL(raw);
+      const frag = new URLSearchParams(u.hash.slice(1));
+      if (frag.has('keep-invite')) {
+        if (u.search !== '' || frag.has('contact-invite')) return { type: 'keep-invite-invalid' };
+        const invite = parseKeepInvite(frag);
         return invite ? { type: 'keep-invite', invite } : { type: 'keep-invite-invalid' };
       }
+      if (u.searchParams.has('keep-invite')) return { type: 'keep-invite-invalid' };
     } catch { /* not a URL: handled below */ }
   }
 

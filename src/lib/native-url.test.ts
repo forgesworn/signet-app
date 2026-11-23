@@ -217,7 +217,9 @@ describe('contact invite App Link', () => {
 describe('Keep invite link (keep-invite)', () => {
   const K = 'ab'.repeat(32);
   const P = 'cd'.repeat(32);
-  const link = (q: string, base = 'https://mysignet.app/') => `${base}?${q}`;
+  // The route lives in the fragment, parsed like the contact invite's: `#keep-invite=1&k=…&g=…`.
+  const link = (q: string, base = 'https://mysignet.app/') => `${base}#${q}`;
+  const qlink = (q: string, base = 'https://mysignet.app/') => `${base}?${q}`;
   const valid = `keep-invite=1&k=${K}&g=axenstax`;
 
   it('routes a valid link to the Keep invite action with the Keep and the game', () => {
@@ -298,8 +300,42 @@ describe('Keep invite link (keep-invite)', () => {
   });
 
   it('other links are routed exactly as before', () => {
-    expect(routeNativeUrl(link('some=thing')).type).toBe('root-carrier');
-    expect(routeNativeUrl(link(`keep=${K}&game=axenstax`)).type).toBe('root-carrier');
+    expect(routeNativeUrl(qlink('some=thing')).type).toBe('root-carrier');
+    expect(routeNativeUrl(qlink(`keep=${K}&game=axenstax`)).type).toBe('root-carrier');
     expect(routeNativeUrl('https://mysignet.app/').type).toBe('none');
+    // A fragment that is not a keep-invite one changes nothing: a plain root link is still nothing, a carrier still a carrier.
+    expect(routeNativeUrl('https://mysignet.app/#something-else=1').type).toBe('none');
+    expect(routeNativeUrl(`${qlink('some=thing')}#something-else=1`).type).toBe('root-carrier');
+    expect(routeNativeUrl(signInUrl()).type).toBe('sign-in');
+  });
+
+  it('the old query form was never released and is refused, never read as a carrier, sign-in or pairing', () => {
+    expect(routeNativeUrl(qlink(valid))).toEqual({ type: 'keep-invite-invalid' });
+    expect(routeNativeUrl(qlink(`keep-invite=1&k=${K}&g=axenstax&p=${P}&n=Dave`))).toEqual({ type: 'keep-invite-invalid' });
+    expect(routeNativeUrl(qlink('keep-invite=1'))).toEqual({ type: 'keep-invite-invalid' });
+    expect(routeNativeUrl(signInUrl({ 'keep-invite': '1' }))).toEqual({ type: 'keep-invite-invalid' });
+  });
+
+  it('a keep-invite fragment together with any query is refused (pairing, sign-in, carriers or anything else)', () => {
+    for (const q of ['pair=1', 'auth=1', 'some=thing', `keep-invite=1&k=${K}&g=axenstax`, `nostrconnect=x`]) {
+      expect(routeNativeUrl(`https://mysignet.app/?${q}#${valid}`)).toEqual({ type: 'keep-invite-invalid' });
+    }
+    expect(routeNativeUrl(`${signInUrl()}#${valid}`)).toEqual({ type: 'keep-invite-invalid' });
+    expect(routeNativeUrl(`https://mysignet.app/pair?pair=1#${valid}`).type).not.toBe('keep-invite');
+  });
+
+  it('a keep-invite fragment that also carries a contact invite is refused', () => {
+    expect(routeNativeUrl(link(`${valid}&contact-invite=abc`))).toEqual({ type: 'keep-invite-invalid' });
+  });
+
+  it('is the shape a game builds: root, fragment, percent-encoded name, in any parameter order', () => {
+    const name = encodeURIComponent('Dave & Co #1 100%');
+    expect(routeNativeUrl(`https://mysignet.app/#n=${name}&g=gameflock&k=${K}&keep-invite=1&p=${P}`))
+      .toEqual({ type: 'keep-invite', invite: { keep: K, game: 'gameflock', persona: P, name: 'Dave & Co #1 100%' } });
+  });
+
+  it('the existing contact invite route is untouched by the keep-invite fragment', () => {
+    expect(contactInviteFromNativeUrl(link(valid))).toBeUndefined();
+    expect(routeNativeUrl(link(valid)).type).toBe('keep-invite');
   });
 });
