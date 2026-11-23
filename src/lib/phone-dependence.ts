@@ -74,12 +74,14 @@ export function phoneDependence(i: PhoneDependenceInput): PhoneDependence {
     if (i.nowS - c.lastSeenAt > PHONE_APP_RECENT_SECONDS) continue;
     apps.push({ name: c.appName.trim() || 'Unnamed app', usedS: c.lastSeenAt });
   }
-  for (const [pkg, g] of Object.entries(i.nip55Grants)) {
-    if (g.allowAlways !== true || g.denyAlways === true) continue;
-    // Grant times are milliseconds.
-    const usedS = (g.lastUsedAt ?? g.grantedAt) / 1000;
-    if (i.nowS - usedS > PHONE_APP_RECENT_SECONDS) continue;
-    apps.push({ name: g.label?.trim() || pkg, usedS });
+  for (const [pkg, grants] of Object.entries(i.nip55Grants)) {
+    const mostRecent = grants.reduce<{ name: string; usedS: number } | undefined>((latest, grant) => {
+      if (!grant.allowAlways || grant.denyAlways) return latest;
+      const usedS = (grant.lastUsedAt ?? grant.grantedAt) / 1000;
+      if (i.nowS - usedS > PHONE_APP_RECENT_SECONDS || (latest && latest.usedS >= usedS)) return latest;
+      return { name: grant.label?.trim() || pkg, usedS };
+    }, undefined);
+    if (mostRecent) apps.push(mostRecent);
   }
   apps.sort((a, b) => b.usedS - a.usedS);
   for (const a of apps) names.push(a.name);

@@ -48,7 +48,7 @@ describe('phoneDependence', () => {
     const r = phoneDependence(input({
       dependants: [{ displayName: 'Kid', childDevice: { mode: 'heartwood-direct' } as never }],
       connectedClients: [client('Old', 20, A), client('  ', 1, B)],
-      nip55Grants: { 'app.amethyst': grant({ lastUsedAt: (NOW - 5 * DAY) * 1000, label: ' Amethyst ' }) },
+      nip55Grants: { 'app.amethyst': [grant({ lastUsedAt: (NOW - 5 * DAY) * 1000, label: ' Amethyst ' })] },
     }));
     expect(r.names).toEqual(['Kid', 'Unnamed app', 'Amethyst', 'Old']);
   });
@@ -69,12 +69,12 @@ describe('phoneDependence', () => {
   it('counts only allow-always phone-app grants that were used recently', () => {
     const r = phoneDependence(input({
       nip55Grants: {
-        'ask.each.time': grant({ allowAlways: false, lastUsedAt: NOW * 1000 }),
-        'denied': grant({ denyAlways: true, lastUsedAt: NOW * 1000 }),
-        'old.grant': grant(),
-        'unused.since.upgrade': grant({ grantedAt: 0 }),
-        'used.recently': grant({ lastUsedAt: (NOW - 2 * DAY) * 1000 }),
-        'fresh.grant': grant({ grantedAt: (NOW - DAY) * 1000 }),
+        'ask.each.time': [grant({ allowAlways: false, lastUsedAt: NOW * 1000 })],
+        'denied': [grant({ denyAlways: true, lastUsedAt: NOW * 1000 })],
+        'old.grant': [grant()],
+        'unused.since.upgrade': [grant({ grantedAt: 0 })],
+        'used.recently': [grant({ lastUsedAt: (NOW - 2 * DAY) * 1000 })],
+        'fresh.grant': [grant({ grantedAt: (NOW - DAY) * 1000 })],
       },
     }));
     expect(r.names).toEqual(['fresh.grant', 'used.recently']);

@@ -41,6 +41,8 @@ export interface NativeNip55Request {
   currentUser: string | null;
   /** `get_public_key` only: the raw JSON `permissions` extra. */
   permissions: string | null;
+  /** Explicit foreground request to choose another persona. */
+  choosePersona?: boolean;
   /** True when this came through the content provider, which cannot show a screen. */
   viaProvider: boolean;
 }
@@ -57,6 +59,7 @@ export interface ParsedNip55 {
   currentUser?: string;
   /** `get_public_key`: what the app says it will ask for, display only. */
   permissions: string[];
+  choosePersona?: boolean;
 }
 
 /** What this phone remembers about one calling app. */
@@ -77,7 +80,12 @@ export interface Nip55Grant {
   label?: string;
 }
 
-export type Nip55Grants = Record<string, Nip55Grant>;
+/** The first grant is the app's preferred identity for requests that name no key. */
+export type Nip55Grants = Record<string, readonly Nip55Grant[]>;
+
+export function nip55GrantFor(grants: readonly Nip55Grant[] | undefined, pubkey?: string): Nip55Grant | undefined {
+  return pubkey === undefined ? grants?.[0] : grants?.find(grant => grant.pubkey === pubkey.toLowerCase());
+}
 
 /** How often a grant's `lastUsedAt` is rewritten. */
 export const NIP55_LAST_USED_THROTTLE_MS = 60 * 60 * 1000;
@@ -120,7 +128,8 @@ export function parseNip55Request(raw: NativeNip55Request): ParsedNip55 | null {
   if (raw.payload !== null && raw.payload.length > MAX_PAYLOAD) return null;
   switch (method) {
     case 'get_public_key':
-      return { method, currentUser, permissions: parsePermissions(raw.permissions) };
+      return { method, currentUser, permissions: parsePermissions(raw.permissions),
+        ...(!raw.viaProvider && !currentUser && raw.choosePersona === true ? { choosePersona: true } : {}) };
     case 'sign_event': {
       const template = parseTemplate(raw.payload);
       if (!template) return null;
@@ -177,21 +186,38 @@ export function parsePermissions(raw: string | null): string[] {
   return out;
 }
 
+function readGrant(value: unknown): Nip55Grant | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const g = value as Record<string, unknown>;
+  const pubkey = pubkeyHexFrom(typeof g.pubkey === 'string' ? g.pubkey : null);
+  if (!pubkey) return undefined;
+  return {
+    pubkey, allowAlways: g.allowAlways === true, denyAlways: g.denyAlways === true,
+    grantedAt: typeof g.grantedAt === 'number' ? g.grantedAt : 0,
+    ...(typeof g.lastUsedAt === 'number' && Number.isFinite(g.lastUsedAt) && g.lastUsedAt > 0 ? { lastUsedAt: g.lastUsedAt } : {}),
+    ...(typeof g.label === 'string' && g.label.trim() ? { label: g.label.trim().slice(0, 40) } : {}),
+  };
+}
+
 export function loadNip55Grants(storage: Pick<Storage, 'getItem'> = localStorage): Nip55Grants {
   try {
     const raw = storage.getItem(NIP55_GRANTS_KEY);
     if (!raw) return {};
     const json: unknown = JSON.parse(raw);
     if (!json || typeof json !== 'object' || Array.isArray(json)) return {};
-    const out: Nip55Grants = {};
+    const out: Nip55Grants = Object.create(null);
     for (const [pkg, value] of Object.entries(json as Record<string, unknown>)) {
-      if (!value || typeof value !== 'object') continue;
-      const g = value as Record<string, unknown>;
-      const pubkey = pubkeyHexFrom(typeof g.pubkey === 'string' ? g.pubkey : null);
-      if (!pubkey) continue;
-      out[pkg] = { pubkey, allowAlways: g.allowAlways === true, denyAlways: g.denyAlways === true, grantedAt: typeof g.grantedAt === 'number' ? g.grantedAt : 0 };
-      if (typeof g.lastUsedAt === 'number' && Number.isFinite(g.lastUsedAt) && g.lastUsedAt > 0) out[pkg].lastUsedAt = g.lastUsedAt;
-      if (typeof g.label === 'string' && g.label.trim()) out[pkg].label = g.label.trim().slice(0, 40);
+      const first = readGrant(value);
+      if (!first) continue;
+      const grants = new Map([[first.pubkey, first]]);
+      const others = (value as Record<string, unknown>).otherPersonas;
+      if (!first.denyAlways && Array.isArray(others)) {
+        for (const row of others) {
+          const grant = readGrant(row);
+          if (grant && !grant.denyAlways && !grants.has(grant.pubkey)) grants.set(grant.pubkey, grant);
+        }
+      }
+      out[pkg] = [...grants.values()];
     }
     return out;
   } catch { return {}; }
@@ -200,7 +226,12 @@ export function loadNip55Grants(storage: Pick<Storage, 'getItem'> = localStorage
 export function saveNip55Grants(grants: Nip55Grants, storage: Pick<Storage, 'setItem' | 'removeItem'> = localStorage): void {
   try {
     if (Object.keys(grants).length === 0) storage.removeItem(NIP55_GRANTS_KEY);
-    else storage.setItem(NIP55_GRANTS_KEY, JSON.stringify(grants));
+    else {
+      // Keep the preferred grant readable by earlier releases that knew one key per app.
+      const saved = Object.fromEntries(Object.entries(grants).map(([pkg, [first, ...others]]) =>
+        [pkg, { ...first, ...(others.length ? { otherPersonas: others } : {}) }]));
+      storage.setItem(NIP55_GRANTS_KEY, JSON.stringify(saved));
+    }
   } catch { /* storage full or blocked: the grant lasts this session */ }
 }
 
@@ -243,7 +274,7 @@ export function planNip55(
   const identity = named ?? remembered ?? (owned.length === 1 ? owned[0] : (activePubkey && owned.includes(activePubkey.toLowerCase()) ? activePubkey.toLowerCase() : null));
   // M6: a standing app permission (kind 30420) is asked for every time, a remembered grant or not.
   const appPermission = !!parsed.template && inferScope(parsed.template) === 'app-permission';
-  if (grant?.allowAlways && identity && grant.pubkey === identity && !appPermission) return { kind: 'forward', pubkey: identity };
+  if (grant?.allowAlways && identity && grant.pubkey === identity && !appPermission && !parsed.choosePersona) return { kind: 'forward', pubkey: identity };
   if (viaProvider) return { kind: 'defer' };
   return { kind: 'ask', pubkey: identity };
 }
