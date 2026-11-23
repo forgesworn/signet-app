@@ -242,6 +242,18 @@ describe('layering, bursts, locking and the dedupe entry', () => {
     await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
   });
 
+  it('while an approval page (connect, pairing, contacts grant, app permission, verification) has a pending request the link is held, and the question comes only after it is answered or left', async () => {
+    const h = mount(ready({ otherPromptOpen: true }));
+    act(() => h.result.current.hold(invite(), 'url-1'));
+    await new Promise(r => setTimeout(r, 30));
+    expect(h.result.current.confirm).toBeNull();
+    expect(h.result.current.pending).toBeNull();
+    expect(onOpen).not.toHaveBeenCalled();
+    h.rerender(ready({ otherPromptOpen: false }));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('a held link that outlives the prompt in front of it by more than ten minutes expires instead of opening', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-23T10:00:00Z'));

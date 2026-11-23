@@ -11560,7 +11560,17 @@ function AppContent() {
   const lastNativeUrlRef = useRef<string | null>(null);
   // A `keep-invite` link from another app: held until the app is open and unlocked, checked against the Keeps saved on this
   // phone (no network), then the owner is asked. Only their press opens My Keep (see useKeepInviteLink).
-  const keepInviteOtherPrompt = showAuthPrompt || !!relayProfileAsk || !!bunkerPendingApproval || sheetChildAsks.length > 0 || !!nip55.pending || !!pendingAuthRequest;
+  // The pages another app can open to ask for an answer (connect, pairing, contacts grant, app permission, add dependant,
+  // verification): while one has a pending request the Keep question waits, so it can neither cover the page nor let
+  // "Open Keep" walk away from the request.
+  const approvalPageOpen = (page === 'approve-auth' && !!pendingAuthRequest)
+    || (page === 'approve-connect' && !!pendingConnectRequest)
+    || (page === 'approve-companion-grant' && !!pendingPairingRequest)
+    || (page === 'contacts-grant-approve' && !!pendingContactsGrantV2)
+    || (page === 'approve-app-permission' && !!pendingAppPermissionRequest)
+    || (page === 'approve-add-dependant' && !!pendingAddDependantRequest)
+    || (page === 'approve-verification' && !!pendingVerifyRequest);
+  const keepInviteOtherPrompt = approvalPageOpen || showAuthPrompt || !!relayProfileAsk || !!bunkerPendingApproval || sheetChildAsks.length > 0 || !!nip55.pending || !!pendingAuthRequest;
   const keepInviteLink = useKeepInviteLink({
     loading: identityLoading || prefsLoading || dependantsLoading,
     hasIdentity: !!identity,
