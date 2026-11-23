@@ -31,7 +31,7 @@
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/playfair-display": "^5.3.0",
     "@forgesworn/kenspeckle": "^0.2.0",
-    "@forgesworn/qr": "^0.2.0",
+    "@forgesworn/qr": "^0.3.16",
     "@forgesworn/shamir-words": "^1.2.0",
     "@forgesworn/signet-contacts": "git+https://github.com/forgesworn/signet-contacts.git#83c7ccfe2afd5c2f710c96957fe05603d08ca2b2",
     "@forgesworn/tessera-kit": "^0.2.1",
@@ -44,9 +44,9 @@
     "nsec-tree": "1.7.0-alpha.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "signet-protocol": "^1.11.3",
+    "signet-protocol": "^1.12.0",
     "spoken-token": "^2.1.1",
-    "zxing-wasm": "^3.1.6"
+    "zxing-wasm": "^3.1.7"
   },
   "devDependencies": {
     "@capacitor/assets": "^4.0.0",
