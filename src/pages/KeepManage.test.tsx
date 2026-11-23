@@ -617,3 +617,268 @@ describe('return passes (K1f)', () => {
     expect(screen.queryByTestId('returning-players')).toBeNull();
   });
 });
+
+describe('one invite link per game', () => {
+  const nowS = () => Math.floor(Date.now() / 1000);
+  const gamesLinked = (over: object = {}) => pairedKeep({
+    scope: 'one', rev: 0, seen: [O], links: { [O]: { sections: ['games'], addedRev: 0, active: true } }, ...over,
+  });
+  const ownInvite = {
+    grant: '0a'.repeat(16), secret: 'aa'.repeat(32), kind: 'personal', persona: O, gamesFor: O, label: 'x (owner)',
+    createdAt: 1, sentAt: nowS(), expiration: nowS() + 300 * 86400, status: 'active',
+  };
+  const memberInvite = {
+    grant: '0c'.repeat(16), secret: 'cc'.repeat(32), kind: 'guest', label: 'Guest pass', createdAt: 5, sentAt: nowS(), expiration: nowS() + 3600, status: 'active',
+  };
+  const pickGame = (testId: string, name: string) => fireEvent.click(within(screen.getByTestId(testId)).getByRole('radio', { name }));
+  const open = async () => { fireEvent.click(await screen.findByTestId('stored-keep-row')); };
+
+  it('with no games stored, every allowlisted game is offered with Stampede first, and Stampede is the default link', async () => {
+    row = [pairedKeep()];
+    renderKeep();
+    await open();
+    const picker = await screen.findByTestId('share-game-picker');
+    expect(within(picker).getAllByRole('radio').map(r => r.getAttribute('aria-label'))).toEqual(['Stampede', 'Twang Thang', 'AxeNStax', 'Cluster Flock']);
+    expect(within(picker).getByRole('radio', { name: 'Stampede' })).toBeChecked();
+    fireEvent.click(await screen.findByRole('button', { name: 'Guest pass' }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0][0].text).toMatch(new RegExp(`^stampede://keep/${K}/[0-9a-f]{64}$`));
+  });
+
+  it('shows no picker when the Keep hosts exactly one game, and shares that game\'s link', async () => {
+    row = [pairedKeep({ games: ['axenstax'] })];
+    renderKeep();
+    await open();
+    await screen.findByRole('button', { name: 'Guest pass' });
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Guest pass' }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0][0].text).toMatch(new RegExp(`^axenstax://keep/${K}/[0-9a-f]{64}$`));
+  });
+
+  it('offers only the games the Keep says it hosts, and never one that is not allowlisted', async () => {
+    row = [pairedKeep({ games: ['https', 'twangthang', 'javascript', 'gameflock', 'intent', 'twangthang'] })];
+    renderKeep();
+    await open();
+    const picker = await screen.findByTestId('share-game-picker');
+    expect(within(picker).getAllByRole('radio').map(r => r.getAttribute('aria-label'))).toEqual(['Twang Thang', 'Cluster Flock']);
+  });
+
+  it('a stored record whose only games are not allowlisted offers the whole allowlist', async () => {
+    row = [pairedKeep({ games: ['https', 'javascript'] })];
+    renderKeep();
+    await open();
+    expect(within(await screen.findByTestId('share-game-picker')).getAllByRole('radio')).toHaveLength(4);
+  });
+
+  it('shares the game the owner picked, for each allowlisted game, and remembers the choice for this Keep', async () => {
+    row = [pairedKeep()];
+    const first = renderKeep();
+    await open();
+    await screen.findByTestId('share-game-picker');
+    pickGame('share-game-picker', 'Cluster Flock');
+    fireEvent.click(screen.getByRole('button', { name: 'Guest pass' }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0][0].text).toMatch(new RegExp(`^gameflock://keep/${K}/[0-9a-f]{64}$`));
+    first.unmount();
+    renderKeep();
+    await open();
+    expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'Cluster Flock' })).toBeChecked();
+  });
+
+  it('the per-invite Share link uses the chosen game', async () => {
+    row = [pairedKeep({ invites: [memberInvite] })];
+    renderKeep();
+    await open();
+    await screen.findByTestId('invite-row');
+    pickGame('share-game-picker', 'Twang Thang');
+    fireEvent.click(screen.getByRole('button', { name: 'Share link' }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share).toHaveBeenCalledWith({ text: `twangthang://keep/${K}/${'cc'.repeat(32)}` });
+  });
+
+  it('a saved choice that is not an allowlisted game, or not one this Keep offers, is ignored', async () => {
+    row = [pairedKeep({ games: ['axenstax', 'gameflock'] })];
+    localStorage.setItem(`signet:keep-game:${K}`, 'javascript');
+    const first = renderKeep();
+    await open();
+    expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
+    first.unmount();
+    localStorage.setItem(`signet:keep-game:${K}`, 'stampede');
+    renderKeep();
+    await open();
+    expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
+  });
+
+  it('Play here opens the chosen game\'s link and names it in the copy and the message', async () => {
+    const openApp = vi.fn();
+    row = [gamesLinked({ invites: [ownInvite] })];
+    renderKeep(host({ openApp }));
+    await open();
+    const block = await screen.findByTestId('play-here');
+    expect(block).toHaveTextContent('Stampede must be installed and signed in as Anon');
+    pickGame('play-game-picker', 'Twang Thang');
+    expect(block).toHaveTextContent('Opens Twang Thang on this phone. Twang Thang must be installed and signed in as Anon');
+    expect(block).not.toHaveTextContent('Stampede must be installed');
+    fireEvent.click(within(block).getByRole('button', { name: 'Play here' }));
+    expect(openApp).toHaveBeenCalledWith(`twangthang://keep/${K}/${'aa'.repeat(32)}`);
+    expect(await screen.findByText('Opening Twang Thang…')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('aa'.repeat(32));
+  });
+
+  it('Play here shows no picker when one game is hosted, and uses that game', async () => {
+    const openApp = vi.fn();
+    row = [gamesLinked({ invites: [ownInvite], games: ['axenstax'] })];
+    renderKeep(host({ openApp }));
+    await open();
+    const block = await screen.findByTestId('play-here');
+    expect(screen.queryByTestId('play-game-picker')).toBeNull();
+    expect(block).toHaveTextContent('AxeNStax must be installed');
+    fireEvent.click(within(block).getByRole('button', { name: 'Play here' }));
+    expect(openApp).toHaveBeenCalledWith(`axenstax://keep/${K}/${'aa'.repeat(32)}`);
+  });
+});
+
+describe('opening a Keep from a keep-invite link', () => {
+  const nowS = () => Math.floor(Date.now() / 1000);
+  // A passes request was sent a moment ago, so opening the Keep sends nothing of its own accord: whatever is published
+  // in these tests would be the route's doing.
+  const LINKED = { scope: 'one', rev: 0, seen: [O], passesRequestedAt: nowS(), links: { [O]: { sections: [], addedRev: 0, active: true } } };
+  const route = (over: object = {}) => ({ keep: K, game: 'twangthang', at: Date.now(), ...over });
+  const backendFor = vi.fn((p: string) => (p === O ? new LocalSigningBackend(OWNER_HEX) : null));
+  const prefilledHost = (over: Partial<KeepHost> = {}) => host({
+    deps: { encryptionKey: 'key', backendFor, eligiblePersonas: () => [O], personaName: () => 'Anon' }, ...over,
+  });
+  const renderRoute = (invitePrefill: object | null, h: KeepHost | null = prefilledHost(), extra: object = {}) => {
+    const done = vi.fn();
+    const view = render(<MyKeep scope="id1" onBack={vi.fn()} keepHost={h ?? undefined} invitePrefill={invitePrefill as never} onInvitePrefillDone={done} {...extra} />);
+    return { done, view };
+  };
+  beforeEach(() => { backendFor.mockClear(); });
+
+  it('opens that Keep at Who can play with the game preselected, the contact list open, and sends nothing', async () => {
+    row = [pairedKeep(LINKED)];
+    const { done } = renderRoute(route());
+    const picker = await screen.findByTestId('share-game-picker');
+    expect(within(picker).getByRole('radio', { name: 'Twang Thang' })).toBeChecked();
+    expect(screen.getByText('Who can play')).toBeInTheDocument();
+    expect(screen.getAllByTestId('contact-option')).toHaveLength(1);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(published).toHaveLength(0);
+    expect(share).not.toHaveBeenCalled();
+    expect((row as Array<{ invites: unknown[] }>)[0].invites).toEqual([]);
+    expect(localStorage.getItem(`signet:keep-game:${K}`)).toBeNull();
+  });
+
+  it('a person who is a Kin or Kith contact is preselected, still without sending anything', async () => {
+    row = [pairedKeep(LINKED)];
+    renderRoute(route({ persona: FRIEND, name: 'Dave from the game' }));
+    const option = await screen.findByTestId('contact-option');
+    expect(option).toHaveTextContent('Dave');
+    expect(option).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByTestId('contact-suggested')).toBeInTheDocument();
+    expect(screen.queryByTestId('prefill-note')).toBeNull();
+    expect(published).toHaveLength(0);
+    expect(share).not.toHaveBeenCalled();
+    // The owner's own tap is what creates, signs, sends and shares, with the game from the link.
+    fireEvent.click(option);
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0][0].text).toMatch(new RegExp(`^twangthang://keep/${K}/[0-9a-f]{64}$`));
+    expect(published).toHaveLength(1);
+  });
+
+  it('a person who is not in the contacts (or only a Ken, or unknown) leaves the picker unselected and says so, as text', async () => {
+    row = [pairedKeep(LINKED)];
+    const hostile = '<img src=x onerror=alert(1)> Mallory';
+    const { view } = renderRoute(route({ persona: 'ee'.repeat(32), name: hostile }));
+    const note = await screen.findByTestId('prefill-note');
+    expect(note.textContent).toBe(`${hostile} isn’t in your contacts yet. You can add them, or share a guest pass instead.`);
+    expect(note.querySelector('img')).toBeNull();
+    expect(screen.queryByTestId('contact-suggested')).toBeNull();
+    expect(screen.getAllByTestId('contact-option').every(o => o.getAttribute('aria-current') === null)).toBe(true);
+    expect(published).toHaveLength(0);
+    expect(share).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('a person who is only a Ken contact is not preselected', async () => {
+    row = [pairedKeep(LINKED)];
+    renderRoute(route({ persona: 'ee'.repeat(32), name: 'Kenny' }));
+    await screen.findByTestId('prefill-note');
+    expect(screen.queryByTestId('contact-suggested')).toBeNull();
+  });
+
+  it('without a name there is no note, even for someone who is not a contact', async () => {
+    row = [pairedKeep(LINKED)];
+    renderRoute(route({ persona: 'ee'.repeat(32) }));
+    await screen.findByTestId('share-game-picker');
+    expect(screen.queryByTestId('prefill-note')).toBeNull();
+  });
+
+  it('a Keep that is not this account\'s gets a short message and nothing else', async () => {
+    row = [pairedKeep({ ...LINKED, keep: 'ee'.repeat(32) })];
+    const { done } = renderRoute(route());
+    expect(await screen.findByTestId('keep-invite-notice')).toHaveTextContent('That link is for a Keep that isn’t one of yours.');
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    expect(screen.queryByText('Who can play')).toBeNull();
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(published).toHaveLength(0);
+    expect(share).not.toHaveBeenCalled();
+  });
+
+  it('a game the Keep does not host falls back to the last used, else the first it offers', async () => {
+    row = [pairedKeep({ ...LINKED, games: ['stampede', 'gameflock'] })];
+    renderRoute(route({ game: 'axenstax' }));
+    expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'Stampede' })).toBeChecked();
+  });
+
+  it('the game in the link wins over the last one used', async () => {
+    localStorage.setItem(`signet:keep-game:${K}`, 'gameflock');
+    row = [pairedKeep(LINKED)];
+    renderRoute(route({ game: 'axenstax' }));
+    expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
+  });
+
+  it('a link that waited too long is dropped rather than shown by surprise', async () => {
+    row = [pairedKeep(LINKED)];
+    const { done } = renderRoute(route({ at: Date.now() - 11 * 60 * 1000 }));
+    await screen.findByTestId('stored-keep-row');
+    await waitFor(() => expect(done).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    expect(screen.queryByTestId('keep-invite-notice')).toBeNull();
+  });
+
+  it('waits while the app is locked, then opens the Keep once it is open', async () => {
+    row = [pairedKeep(LINKED)];
+    const prefill = route();
+    const done = vi.fn();
+    const view = render(<MyKeep scope="id1" onBack={vi.fn()} lock={{ state: 'locked', onUnlock: vi.fn() }} invitePrefill={prefill as never} onInvitePrefillDone={done} />);
+    await new Promise(r => setTimeout(r, 30));
+    expect(done).not.toHaveBeenCalled();
+    view.rerender(<MyKeep scope="id1" onBack={vi.fn()} keepHost={prefilledHost()} invitePrefill={prefill as never} onInvitePrefillDone={done} />);
+    expect(await screen.findByTestId('share-game-picker')).toBeInTheDocument();
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(published).toHaveLength(0);
+  });
+
+  it('is dropped, with nothing opened, where Keeps are not managed', async () => {
+    row = [pairedKeep(LINKED)];
+    const { done } = renderRoute(route(), null);
+    await waitFor(() => expect(done).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    expect(published).toHaveLength(0);
+  });
+
+  it('is handled once: going back to the list does not reopen the Keep', async () => {
+    row = [pairedKeep(LINKED)];
+    const prefill = route();
+    const { done, view } = renderRoute(prefill);
+    await screen.findByTestId('share-game-picker');
+    fireEvent.click(screen.getByRole('button', { name: /back|Keep list|All Keeps/i }));
+    await screen.findByTestId('stored-keep-row');
+    view.rerender(<MyKeep scope="id1" onBack={vi.fn()} keepHost={prefilledHost()} invitePrefill={prefill as never} onInvitePrefillDone={done} />);
+    await new Promise(r => setTimeout(r, 30));
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+});
