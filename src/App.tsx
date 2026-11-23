@@ -350,6 +350,7 @@ import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/com
 import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
 import { openKeepGameLink } from './lib/keep-games';
 import { useKeepInviteLink } from './hooks/useKeepInviteLink';
+import { dedupeAfterSettled } from './lib/keep-invite-link';
 import { KeepInviteConfirm } from './components/KeepInviteConfirm';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
@@ -11559,18 +11560,21 @@ function AppContent() {
   const lastNativeUrlRef = useRef<string | null>(null);
   // A `keep-invite` link from another app: held until the app is open and unlocked, checked against the Keeps saved on this
   // phone (no network), then the owner is asked. Only their press opens My Keep (see useKeepInviteLink).
+  const keepInviteOtherPrompt = showAuthPrompt || !!relayProfileAsk || !!bunkerPendingApproval || sheetChildAsks.length > 0 || !!nip55.pending || !!pendingAuthRequest;
   const keepInviteLink = useKeepInviteLink({
     loading: identityLoading || prefsLoading || dependantsLoading,
     hasIdentity: !!identity,
     pairedChild: isPairedChild,
     dependantActive: !!activeDependant || childDirect,
     unlocked: !!encryptionKey && !!identity && !identity.encrypted,
+    // A PIN prompt, a sign-in or signing approval, or a phone app's request comes first; the question waits for them to go.
+    otherPromptOpen: keepInviteOtherPrompt,
     encryptionKey,
     identityId: identity?.id,
     onRefused: () => setNativeLinkNothingToOpen(true),
     onOpen: () => navigateReplace('my-keep'),
-    // The exact-URL dedupe must not stop the owner trying the same link again.
-    onSettled: () => { lastNativeUrlRef.current = null; },
+    // The exact-URL dedupe must not stop the owner trying the same link again: only that link's own entry is cleared.
+    onSettled: (url) => { lastNativeUrlRef.current = dedupeAfterSettled(lastNativeUrlRef.current, url); },
   });
   const holdKeepInvite = keepInviteLink.hold;
   // A `keep-invite` link that arrived while the app was locked: ask for the unlock once, as opening My Keep does. The
@@ -11621,7 +11625,7 @@ function AppContent() {
       case 'keep-invite':
         // Held, never routed from here, for the same reason as `contacts-pair-v2` above: this callback can run on the
         // first commit, before the account and its preferences have loaded. `useKeepInviteLink` carries on.
-        holdKeepInvite(action.invite);
+        holdKeepInvite(action.invite, url);
         return;
       case 'keep-invite-invalid':
         // A malformed Keep invite link is refused like any other mysignet.app link that holds nothing to open.
@@ -12247,7 +12251,8 @@ function AppContent() {
   ) : null;
 
   // On-demand auth prompt overlay — rendered on any page that triggers requestAuth
-  const keepInviteOverlay = keepInviteLink.confirm ? (
+  // Lowest of the prompts: never over, and never in place of, a PIN prompt or an approval.
+  const keepInviteOverlay = keepInviteLink.confirm && !keepInviteOtherPrompt ? (
     <KeepInviteConfirm
       keepName={keepInviteLink.confirm.keepName}
       gameName={keepInviteLink.confirm.gameName}
@@ -12255,7 +12260,7 @@ function AppContent() {
       onLater={keepInviteLink.decline}
     />
   ) : null;
-  const authOverlay = relayProfileOverlay ?? keepInviteOverlay ?? (showAuthPrompt ? (
+  const authOverlay = relayProfileOverlay ?? (showAuthPrompt ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: Z.overlay, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={(e) => { if (e.target === e.currentTarget) handleContextualAuthDeclined(); }}
@@ -12268,7 +12273,7 @@ function AppContent() {
         />
       </div>
     </div>
-  ) : null);
+  ) : keepInviteOverlay);
 
   // NIP-46 bunker server approval UI (Phase 2).
   // Rendered alongside authOverlay on every page so inbound sign_event

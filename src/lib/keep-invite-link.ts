@@ -30,3 +30,11 @@ export function decideHeldKeepInvite(i: {
   if (i.dependantActive) return 'dependant';
   return i.unlocked ? 'read' : 'wait';
 }
+
+/**
+ * The exact-URL dedupe entry after a link is dealt with: cleared only if it still holds that link's own URL, so a different
+ * URL that arrived in the meantime keeps its entry.
+ */
+export function dedupeAfterSettled(current: string | null, settledUrl: string | undefined): string | null {
+  return settledUrl && current === settledUrl ? null : current;
+}

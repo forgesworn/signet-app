@@ -1033,6 +1033,7 @@ describe('the whole route: link, question, press', () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(share).not.toHaveBeenCalled();
     expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Keep' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Open Keep' }));
     expect(await screen.findByTestId('share-game-picker')).toBeInTheDocument();
     expect(within(screen.getByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
@@ -1056,7 +1057,9 @@ describe('the whole route: link, question, press', () => {
     const fetch = await fetchMocked();
     fetch.mockClear();
     render(<Harness link={{ keep: K, game: 'axenstax' }} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
+    await screen.findByRole('dialog', { name: 'Open your Keep?' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Not now' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
     await new Promise(r => setTimeout(r, 50));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByTestId('share-game-picker')).toBeNull();

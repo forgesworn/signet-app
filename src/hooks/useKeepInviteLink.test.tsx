@@ -30,7 +30,7 @@ vi.mock('../lib/relay-publish', async () => {
 });
 
 import { useKeepInviteLink, type KeepInviteLinkInput } from './useKeepInviteLink';
-import { KEEP_INVITE_EXPIRED, KEEP_INVITE_LINK_TTL_MS, KEEP_INVITE_NOT_YOURS, KEEP_INVITE_OWN_ACCOUNT, KEEP_INVITE_UNREADABLE, decideHeldKeepInvite } from '../lib/keep-invite-link';
+import { KEEP_INVITE_EXPIRED, KEEP_INVITE_LINK_TTL_MS, KEEP_INVITE_NOT_YOURS, KEEP_INVITE_OWN_ACCOUNT, KEEP_INVITE_UNREADABLE, decideHeldKeepInvite, dedupeAfterSettled } from '../lib/keep-invite-link';
 import { setNickname } from '../lib/keep-nicknames';
 
 const K = getPublicKey(hexToBytes('0'.repeat(63) + '1'));
@@ -227,5 +227,90 @@ describe('a keep-invite link before the owner presses anything', () => {
     await waitFor(() => expect(h.result.current.notice).toBe(KEEP_INVITE_UNREADABLE));
     expect(h.result.current.confirm).toBeNull();
     nothingOnTheNetwork();
+  });
+});
+
+describe('layering, bursts, locking and the dedupe entry', () => {
+  it('while a PIN prompt, approval or other prompt is showing the link stays held, then the question appears once it has gone', async () => {
+    const h = mount(ready({ otherPromptOpen: true }));
+    act(() => h.result.current.hold(invite(), 'url-1'));
+    await new Promise(r => setTimeout(r, 30));
+    expect(h.result.current.confirm).toBeNull();
+    expect(loadKeepsRow).not.toHaveBeenCalled();
+    expect(onSettled).not.toHaveBeenCalled();
+    h.rerender(ready({ otherPromptOpen: false }));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+  });
+
+  it('a held link that outlives the prompt in front of it by more than ten minutes expires instead of opening', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-23T10:00:00Z'));
+    const h = mount(ready({ otherPromptOpen: true }));
+    act(() => h.result.current.hold(invite(), 'url-1'));
+    vi.setSystemTime(new Date('2026-11-23T10:11:00Z'));
+    h.rerender(ready({ otherPromptOpen: false }));
+    await waitFor(() => expect(h.result.current.notice).toBe(KEEP_INVITE_EXPIRED));
+    expect(h.result.current.confirm).toBeNull();
+  });
+
+  it('while a question is showing, a further link is dropped: the first stays, nothing is queued', async () => {
+    const OTHER = getPublicKey(hexToBytes('0'.repeat(63) + '6'));
+    row = [stored(K), stored(OTHER, 'Shed Keep')];
+    const h = mount(ready());
+    act(() => h.result.current.hold(invite(), 'url-1'));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+    onSettled.mockClear();
+    act(() => h.result.current.hold(invite({ keep: OTHER, game: 'axenstax' }), 'url-2'));
+    await new Promise(r => setTimeout(r, 30));
+    expect(h.result.current.confirm).toMatchObject({ keepName: 'Kitchen Keep', gameName: 'Twang Thang', url: 'url-1' });
+    expect(onSettled).toHaveBeenCalledWith('url-2');
+    // After the first is answered nothing from the dropped link follows.
+    act(() => h.result.current.decline());
+    await new Promise(r => setTimeout(r, 30));
+    expect(h.result.current.confirm).toBeNull();
+    expect(loadKeepsRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('a link arriving while the first is still being looked up is dropped too', async () => {
+    const h = mount(ready());
+    act(() => { h.result.current.hold(invite(), 'url-1'); });
+    await waitFor(() => expect(loadKeepsRow).toHaveBeenCalledTimes(1));
+    act(() => h.result.current.hold(invite({ game: 'axenstax' }), 'url-2'));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+    await new Promise(r => setTimeout(r, 30));
+    expect(h.result.current.confirm).toMatchObject({ url: 'url-1', gameName: 'Twang Thang' });
+  });
+
+  it('locking while the question shows closes it and lets that link go, so tapping it again after the unlock asks again', async () => {
+    const h = mount(ready());
+    act(() => h.result.current.hold(invite(), 'url-1'));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+    onSettled.mockClear();
+    h.rerender(ready({ unlocked: false, encryptionKey: null }));
+    await waitFor(() => expect(h.result.current.confirm).toBeNull());
+    expect(onSettled).toHaveBeenCalledWith('url-1');
+    expect(h.result.current.pending).toBeNull();
+    h.rerender(ready());
+    act(() => h.result.current.hold(invite(), 'url-1'));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+  });
+
+  it('hands the link\'s own URL back when it is opened, declined or refused', async () => {
+    const h = mount(ready());
+    act(() => h.result.current.hold(invite(), 'url-a'));
+    await waitFor(() => expect(h.result.current.confirm).not.toBeNull());
+    onSettled.mockClear();
+    act(() => h.result.current.accept());
+    expect(onSettled).toHaveBeenCalledWith('url-a');
+    act(() => h.result.current.hold(invite({ keep: OTHER_K }), 'url-b'));
+    await waitFor(() => expect(h.result.current.notice).toBe(KEEP_INVITE_NOT_YOURS));
+    expect(onSettled).toHaveBeenCalledWith('url-b');
+  });
+
+  it('dedupeAfterSettled clears only the settled link\'s own entry', () => {
+    expect(dedupeAfterSettled('url-a', 'url-a')).toBeNull();
+    expect(dedupeAfterSettled('https://mysignet.app/?auth=1&x=1', 'url-a')).toBe('https://mysignet.app/?auth=1&x=1');
+    expect(dedupeAfterSettled('url-a', undefined)).toBe('url-a');
+    expect(dedupeAfterSettled(null, 'url-a')).toBeNull();
   });
 });
