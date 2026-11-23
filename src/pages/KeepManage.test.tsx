@@ -699,12 +699,12 @@ describe('one invite link per game', () => {
 
   it('a saved choice that is not an allowlisted game, or not one this Keep offers, is ignored', async () => {
     row = [pairedKeep({ games: ['axenstax', 'gameflock'] })];
-    localStorage.setItem(`signet:keep-game:${K}`, 'javascript');
+    localStorage.setItem(`signet:keep-game:id1:${K}`, 'javascript');
     const first = renderKeep();
     await open();
     expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
     first.unmount();
-    localStorage.setItem(`signet:keep-game:${K}`, 'stampede');
+    localStorage.setItem(`signet:keep-game:id1:${K}`, 'stampede');
     renderKeep();
     await open();
     expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
@@ -767,7 +767,7 @@ describe('opening a Keep from a keep-invite link', () => {
     expect(published).toHaveLength(0);
     expect(share).not.toHaveBeenCalled();
     expect((row as Array<{ invites: unknown[] }>)[0].invites).toEqual([]);
-    expect(localStorage.getItem(`signet:keep-game:${K}`)).toBeNull();
+    expect(localStorage.length).toBe(0);
   });
 
   it('a person who is a Kin or Kith contact is preselected, and nothing is created or shared until the owner taps', async () => {
@@ -792,7 +792,7 @@ describe('opening a Keep from a keep-invite link', () => {
     const hostile = '<img src=x onerror=alert(1)> Mallory';
     const { view } = renderRoute(route({ persona: 'ee'.repeat(32), name: hostile }));
     const note = await screen.findByTestId('prefill-note');
-    expect(note.textContent).toBe(`${hostile} isn’t in your contacts yet. You can add them, or share a guest pass instead.`);
+    expect(note.textContent).toBe(`The link names “${hostile}”, who isn’t in your contacts yet. You can add them, or share a guest pass instead.`);
     expect(note.querySelector('img')).toBeNull();
     expect(screen.queryByTestId('contact-suggested')).toBeNull();
     expect(screen.getAllByTestId('contact-option').every(o => o.getAttribute('aria-current') === null)).toBe(true);
@@ -805,12 +805,12 @@ describe('opening a Keep from a keep-invite link', () => {
     row = [pairedKeep(LINKED)];
     const blocked = { ...contact('9', 'Blocked Bea', 'kin', 'ab'.repeat(32)), blocked: true, blockedBy: [O] };
     renderRoute(route({ persona: 'ab'.repeat(32), name: 'Bea' }), prefilledHost({ contacts: [contact('1', 'Dave', 'kin', FRIEND), blocked] }));
-    expect(await screen.findByTestId('prefill-note')).toHaveTextContent('Bea isn’t in your contacts yet.');
+    expect(await screen.findByTestId('prefill-note')).toHaveTextContent('The link names “Bea”, who isn’t in your contacts yet.');
     expect(screen.queryByTestId('contact-suggested')).toBeNull();
     expect(screen.queryByText('Blocked Bea')).toBeNull();
   });
 
-  it('opening by the link sends exactly what opening the Keep by hand sends (the existing due request), and no invite', async () => {
+  it('once the owner has pressed Open Keep, the page sends exactly what opening the Keep by hand sends (the existing due request), and no invite', async () => {
     // Nothing recorded as requested, so the existing "send what is due" step on opening a Keep has a passes request to send.
     const quiet = { scope: 'one', rev: 0, seen: [O], links: { [O]: { sections: [], addedRev: 0, active: true } } };
     const kinds = () => published.map(w => unwrapEvent(w as never, KEEP_SK).kind);
@@ -864,7 +864,7 @@ describe('opening a Keep from a keep-invite link', () => {
   });
 
   it('the game in the link wins over the last one used', async () => {
-    localStorage.setItem(`signet:keep-game:${K}`, 'gameflock');
+    localStorage.setItem(`signet:keep-game:id1:${K}`, 'gameflock');
     row = [pairedKeep(LINKED)];
     renderRoute(route({ game: 'axenstax' }));
     expect(within(await screen.findByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
@@ -873,10 +873,9 @@ describe('opening a Keep from a keep-invite link', () => {
   it('a link that waited too long is dropped rather than shown by surprise', async () => {
     row = [pairedKeep(LINKED)];
     const { done } = renderRoute(route({ at: Date.now() - 11 * 60 * 1000 }));
-    await screen.findByTestId('stored-keep-row');
     await waitFor(() => expect(done).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId('keep-invite-notice')).toHaveTextContent('That link has expired.');
     expect(screen.queryByTestId('share-game-picker')).toBeNull();
-    expect(screen.queryByTestId('keep-invite-notice')).toBeNull();
   });
 
   it('waits while the app is locked, then opens the Keep once it is open', async () => {
@@ -898,6 +897,7 @@ describe('opening a Keep from a keep-invite link', () => {
     await waitFor(() => expect(done).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('share-game-picker')).toBeNull();
     expect(published).toHaveLength(0);
+    expect(await screen.findByTestId('keep-invite-notice')).toHaveTextContent('from your own account');
   });
 
   it('is handled once: going back to the list does not reopen the Keep', async () => {
@@ -911,5 +911,89 @@ describe('opening a Keep from a keep-invite link', () => {
     await new Promise(r => setTimeout(r, 30));
     expect(screen.queryByTestId('share-game-picker')).toBeNull();
     expect(done).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('applying a link to a Keep page that is already open, and the remaining notes', () => {
+  const LINKED = { scope: 'one', rev: 0, seen: [O], passesRequestedAt: Math.floor(Date.now() / 1000), links: { [O]: { sections: [], addedRev: 0, active: true } } };
+  const arrive = (over: object = {}) => ({ keep: K, game: 'twangthang', at: Date.now(), ...over });
+  const pick = (name: string) => fireEvent.click(within(screen.getByTestId('share-game-picker')).getByRole('radio', { name }));
+  const el = (invitePrefill: object | null, h = host()) => <MyKeep scope="id1" onBack={vi.fn()} keepHost={h} invitePrefill={invitePrefill as never} onInvitePrefillDone={vi.fn()} />;
+
+  it('a link applied while the same Keep is open (game already picked by hand) wins: its game, its contact', async () => {
+    row = [pairedKeep(LINKED)];
+    const view = render(el(null));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    await screen.findByTestId('share-game-picker');
+    pick('AxeNStax');
+    expect(within(screen.getByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
+    expect(screen.queryAllByTestId('contact-option')).toHaveLength(0);
+    view.rerender(el(arrive({ persona: FRIEND, name: 'Dave' })));
+    await waitFor(() => expect(within(screen.getByTestId('share-game-picker')).getByRole('radio', { name: 'Twang Thang' })).toBeChecked());
+    expect(screen.getByTestId('contact-suggested')).toBeInTheDocument();
+    expect(screen.getAllByTestId('contact-option')[0]).toHaveTextContent('Dave');
+  });
+
+  it('a link for another Keep does not inherit the choice made on the Keep that was open', async () => {
+    const B = getPublicKey(hexToBytes('0'.repeat(63) + '9'));
+    row = [pairedKeep(LINKED), pairedKeep({ ...LINKED, keep: B, name: 'Shed Keep' })];
+    const view = render(el(null));
+    const rows = await screen.findAllByTestId('stored-keep-row');
+    fireEvent.click(rows.find(r => r.textContent?.includes('Shed Keep'))!);
+    await screen.findByTestId('share-game-picker');
+    pick('Cluster Flock');
+    view.rerender(el(arrive({ keep: K })));
+    await waitFor(() => expect(screen.getByText('Kitchen Keep')).toBeInTheDocument());
+    expect(within(screen.getByTestId('share-game-picker')).getByRole('radio', { name: 'Twang Thang' })).toBeChecked();
+  });
+
+  it('closing the contact list does not turn a contact from the link into "not in your contacts"', async () => {
+    row = [pairedKeep(LINKED)];
+    render(el(arrive({ persona: FRIEND, name: 'Dave' })));
+    await screen.findByTestId('contact-suggested');
+    fireEvent.click(screen.getByRole('button', { name: 'Invite a friend' }));
+    expect(screen.queryAllByTestId('contact-option')).toHaveLength(0);
+    expect(screen.queryByTestId('prefill-note')).toBeNull();
+  });
+
+  it('says so when the game the link asked for is not one this Keep hosts', async () => {
+    row = [pairedKeep({ ...LINKED, games: ['stampede'] })];
+    render(el(arrive({ game: 'axenstax' })));
+    expect(await screen.findByTestId('prefill-game-note')).toHaveTextContent('This Keep doesn’t host AxeNStax.');
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+  });
+
+  it('says so when the persona in use is not linked to that Keep', async () => {
+    row = [pairedKeep({ ...LINKED, links: {}, personas: [] })];
+    render(el(arrive(), host({ activePersona: { pubkey: FRIEND, name: 'Other' } })));
+    expect(await screen.findByTestId('prefill-not-linked')).toHaveTextContent('isn’t linked to this Keep');
+  });
+
+  it('writes no saved game choice unless the owner picks one, and forgetting the Keep clears it', async () => {
+    row = [pairedKeep(LINKED)];
+    const view = render(el(null));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guest pass' }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(localStorage.length).toBe(0);
+    pick('Twang Thang');
+    expect(localStorage.getItem(`signet:keep-game:id1:${K}`)).toBe('twangthang');
+    view.unmount();
+    row = [pairedKeep({ ...LINKED, games: ['axenstax'] })];
+    localStorage.clear();
+    render(el(null));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Guest pass' }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+    expect(localStorage.length).toBe(0);
+  });
+
+  it('Forget this Keep clears the saved game choice', async () => {
+    row = [pairedKeep({ status: 'pending', code: CODE })];
+    localStorage.setItem(`signet:keep-game:id1:${K}`, 'twangthang');
+    render(el(null));
+    fireEvent.click(await screen.findByTestId('stored-keep-row'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget this Keep' }));
+    await waitFor(() => expect(localStorage.getItem(`signet:keep-game:id1:${K}`)).toBeNull());
   });
 });

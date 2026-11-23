@@ -25,7 +25,8 @@ import { KEEP_MAX_OWNER_PERSONAS } from '../lib/keep-wire';
 import { inviteCandidates, passPlayerName } from '../lib/keep-personas';
 import { shareInviteLink } from '../lib/keep-share';
 import { relayHostLabel } from '../lib/relay-url';
-import { gamesOffered, keepGameName, loadGameChoice, pickGame, saveGameChoice } from '../lib/keep-games';
+import { forgetGameChoice, gamesOffered, keepGameName, loadGameChoice, pickGame, saveGameChoice } from '../lib/keep-games';
+import { KEEP_INVITE_NOT_LINKED } from '../lib/keep-invite-link';
 
 /** What a `keep-invite` link pre-fills on a Keep's detail: the game and, maybe, who to invite. Nothing is created or shared from it. */
 export interface KeepPrefill {
@@ -405,11 +406,13 @@ function GamePicker({ games, value, onPick, testId, disabled }: {
   );
 }
 
-export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill }: {
+export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill, scope }: {
   host: KeepHost; keep: StoredKeep; note?: string; setKeeps: (list: StoredKeep[]) => void;
   onBack: () => void; onGone: () => void;
   /** From a `keep-invite` link: the game to start on and who it was meant for. Only pre-fills; creates and shares nothing. */
   prefill?: KeepPrefill;
+  /** The identity the saved game choice belongs to. */
+  scope: string;
 }) {
   // A pre-filled Who can play opens its contact list straight away; nothing is made until a contact or Guest pass is pressed.
   const [picking, setPicking] = useState(!!prefill);
@@ -425,10 +428,10 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
   // The game: the one the owner picked here, else the one a link asked for, else the last used for this Keep, else the first offered.
   const offered = gamesOffered(keep);
   const [pickedGame, setPickedGame] = useState<string | null>(null);
-  const [lastGame] = useState(() => loadGameChoice(keep.keep));
+  const [lastGame] = useState(() => loadGameChoice(scope, keep.keep));
   const game = pickGame(offered, pickedGame ?? prefill?.game, lastGame);
   const gameName = keepGameName(game) ?? 'the game';
-  const pickGameNow = (g: string) => { setPickedGame(g); saveGameChoice(keep.keep, g); };
+  const pickGameNow = (g: string) => { setPickedGame(g); saveGameChoice(scope, keep.keep, g); };
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(note ?? '');
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -485,7 +488,6 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
     const made = await createInvite(host.deps, keep.keep, { ...req, actor: actor?.pubkey }, saved => {
       sharing = shareInviteLink(keepShareLink(keep.keep, saved.secret, game));
     });
-    saveGameChoice(keep.keep, game);
     await reload();
     setPicking(false);
     setPrefillOn(false);
@@ -498,14 +500,17 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
     const invite = actor ? playInvite(keep, actor.pubkey, Math.floor(Date.now() / 1000)) : null;
     if (!invite || !host.openApp) return;
     host.openApp(keepShareLink(keep.keep, invite.secret, game));
-    saveGameChoice(keep.keep, game);
     setMessage(`Opening ${gameName}…`);
   };
 
-  const candidates = picking && host.contacts && actor ? inviteCandidates(host.contacts, actor.pubkey) : [];
-  // From a link: the contact it names, when they are among the people this persona can invite. They go first and are marked.
-  const suggested = prefillOn && prefill?.persona ? candidates.find(c => c.persona === prefill.persona) : undefined;
+  const allCandidates = host.contacts && actor ? inviteCandidates(host.contacts, actor.pubkey) : [];
+  const candidates = picking ? allCandidates : [];
+  // From a link: the contact it names, when they are among the people this persona can invite (whether or not the list is
+  // open). They go first and are marked.
+  const suggested = prefillOn && prefill?.persona ? allCandidates.find(c => c.persona === prefill.persona) : undefined;
   const shownCandidates = suggested ? [suggested, ...candidates.filter(c => c !== suggested)] : candidates;
+  // The game the link asked for is not one this Keep hosts: say so, rather than quietly offering another.
+  const notHosted = prefillOn && !!prefill && !offered.includes(prefill.game);
   const notInContacts = prefillOn && !!prefill?.name && !!host.contacts && !suggested;
   // The owner personas' own games invites are managed by Used by, not listed as invites for members.
   const invites = keep.invites.filter(i => !i.gamesFor).sort((a, b) => b.createdAt - a.createdAt);
@@ -541,7 +546,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
               </button>
             )}
             <button className="btn btn-ghost" disabled={busy} style={{ width: 'auto' }}
-              onClick={() => { void run(async () => { setKeeps(await forgetKeep(host.deps, keep.keep)); onGone(); }); }}>
+              onClick={() => { void run(async () => { setKeeps(await forgetKeep(host.deps, keep.keep)); forgetGameChoice(scope, keep.keep); onGone(); }); }}>
               Forget this Keep
             </button>
           </div>
@@ -554,6 +559,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
               : `${actor ? name(actor.pubkey) : 'This persona'} isn’t linked to this Keep.`}
             {' '}It is used and managed from {keep.personas.map(name).join(', ')}.
           </p>
+          {prefill && <p role="status" data-testid="prefill-not-linked" style={{ ...muted, margin: '8px 0 0' }}>{KEEP_INVITE_NOT_LINKED}</p>}
         </div>
       ) : !canAct ? (
         <div className="card" style={{ padding: 16 }}>
@@ -648,7 +654,12 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
                 {offered.length > 1 && <GamePicker games={offered} value={game} onPick={pickGameNow} testId="share-game-picker" disabled={busy} />}
                 {notInContacts && (
                   <p role="status" data-testid="prefill-note" style={{ ...muted, margin: '0 0 10px' }}>
-                    {prefill!.name} isn’t in your contacts yet. You can add them, or share a guest pass instead.
+                    The link names “{prefill!.name}”, who isn’t in your contacts yet. You can add them, or share a guest pass instead.
+                  </p>
+                )}
+                {notHosted && (
+                  <p role="status" data-testid="prefill-game-note" style={{ ...muted, margin: '0 0 10px' }}>
+                    This Keep doesn’t host {keepGameName(prefill!.game)}.
                   </p>
                 )}
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

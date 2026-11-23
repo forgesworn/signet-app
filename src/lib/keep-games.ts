@@ -80,17 +80,26 @@ export function openKeepGameLink(link: unknown, open: (link: string) => void): b
 
 export const KEEP_GAME_CHOICE_PREFIX = 'signet:keep-game:';
 
-/** The game last chosen for this Keep on this device, if it is still an allowlisted one. A failing storage means none. */
-export function loadGameChoice(keep: string): string | null {
+/** One entry per identity and Keep, like the Keep nicknames, so another account on the device neither sees nor shares it. */
+const choiceKey = (scope: string, keep: string) => `${KEEP_GAME_CHOICE_PREFIX}${encodeURIComponent(scope)}:${keep}`;
+
+/** The game last picked for this Keep by this identity on this device, if it is still an allowlisted one. A failing storage means none. */
+export function loadGameChoice(scope: string, keep: string): string | null {
   try {
-    const v = localStorage.getItem(`${KEEP_GAME_CHOICE_PREFIX}${keep}`);
+    const v = localStorage.getItem(choiceKey(scope, keep));
     return isKeepGame(v) ? v : null;
   } catch { return null; }
 }
 
-export function saveGameChoice(keep: string, scheme: string): void {
+/** Only called when the owner picks a game from more than one. */
+export function saveGameChoice(scope: string, keep: string, scheme: string): void {
   if (!isKeepGame(scheme)) return;
-  try { localStorage.setItem(`${KEEP_GAME_CHOICE_PREFIX}${keep}`, scheme); } catch { /* storage unavailable: the choice lasts this visit only */ }
+  try { localStorage.setItem(choiceKey(scope, keep), scheme); } catch { /* storage unavailable: the choice lasts this visit only */ }
+}
+
+/** Forget the saved choice for one Keep (when the Keep is forgotten). Never throws. */
+export function forgetGameChoice(scope: string, keep: string): void {
+  try { localStorage.removeItem(choiceKey(scope, keep)); } catch { /* storage unavailable: nothing to forget */ }
 }
 
 /** Remove every saved game choice. Never throws. */

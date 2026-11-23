@@ -456,8 +456,9 @@ export function repairKeep(
   return {
     ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now,
     scope: a.scope ?? keep.scope,
-    // A new pairing link that names games replaces the list (and any ack may then replace it again); one that does not leaves it.
-    ...(a.games ? { games: cleanGames(a.games) } : gamesAt !== undefined ? { gamesAt } : {}),
+    // A new pairing link that names games replaces the list, and only an ack sent after the re-pair may replace it again;
+    // one that does not leaves the list as it was.
+    ...(a.games ? { games: cleanGames(a.games), gamesAt: a.now } : gamesAt !== undefined ? { gamesAt } : {}),
     // A reset Keep has forgotten the switch (default on): send the owner's choice again, as a new message. A Keep
     // that was not reset answers `refused stale`, which makes the next revision (see `applySettingsAck`).
     ...(settings ? { settings: restartedSettings(settings, a.now) } : {}),

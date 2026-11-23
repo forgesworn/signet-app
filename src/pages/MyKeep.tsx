@@ -23,6 +23,7 @@ import { NICKNAME_MAX, loadNicknames, setNickname } from '../lib/keep-nicknames'
 import { KEEP_PREVIEW_BANNER, keepPreviewEnabled, keepPreviewKeeps } from '../lib/keep-preview';
 import { AddKeep, KeepDetail, StoredKeepRows, useStoredKeeps, type KeepHost, type KeepPrefill } from './KeepManage';
 import type { KeepInviteRoute } from '../lib/native-url';
+import { KEEP_INVITE_EXPIRED, KEEP_INVITE_LINK_TTL_MS, KEEP_INVITE_NOT_YOURS, KEEP_INVITE_OWN_ACCOUNT } from '../lib/keep-invite-link';
 
 interface Props {
   /**
@@ -70,13 +71,9 @@ const previewOn = () => import.meta.env.DEV && keepPreviewEnabled(import.meta.en
 const FOOTNOTE = 'Managing a Keep from here is coming later.';
 const FOOTNOTE_WITH_HOST = 'Keeps set up outside My Signet can\u2019t be managed from here yet.';
 
-type View = { t: 'list' } | { t: 'add' } | { t: 'detail'; keep: string; note?: string; prefill?: KeepPrefill };
+/** `seq` counts the links applied, so a Keep page opened by a link starts afresh instead of keeping what the owner had picked there. */
+type View = { t: 'list' } | { t: 'add' } | { t: 'detail'; keep: string; note?: string; prefill?: KeepPrefill; seq?: number };
 
-/** A `keep-invite` link waits this long for the screen to be ready; after that it is dropped rather than shown by surprise. */
-export const KEEP_INVITE_LINK_TTL_MS = 10 * 60 * 1000;
-
-/** Shown when a `keep-invite` link names a Keep that is not one of this account's. */
-export const KEEP_INVITE_NOT_YOURS = 'That link is for a Keep that isn’t one of yours.';
 
 const INTRO = 'See the Keep you\u2019ve set up at home and whether it\u2019s online.';
 
@@ -225,6 +222,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   const epochRef = useRef(0);
   const notifiedRef = useRef(false);
   const handledPrefillRef = useRef<unknown>(null);
+  const prefillSeqRef = useRef(0);
 
   // The keys the person can look under now: the account's active personas, and the Heartwood master only while offered.
   const options = useMemo<LookupOption[]>(() => {
@@ -250,15 +248,20 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   useEffect(() => {
     if (!invitePrefill || locked || handledPrefillRef.current === invitePrefill) return;
     // Keeps are not managed on this screen (a dependant is acting, say): the link is dropped, nothing is opened.
-    if (!keepHost) { handledPrefillRef.current = invitePrefill; onInvitePrefillDone?.(); return; }
+    if (!keepHost) {
+      handledPrefillRef.current = invitePrefill; onInvitePrefillDone?.();
+      setInvitePrefillNotice(KEEP_INVITE_OWN_ACCOUNT);
+      return;
+    }
     if (!storedLoaded || unreadable) return;
     const link = invitePrefill;
     handledPrefillRef.current = link;
     onInvitePrefillDone?.();
-    if (Date.now() - link.at > KEEP_INVITE_LINK_TTL_MS) return;
+    if (Date.now() - link.at > KEEP_INVITE_LINK_TTL_MS) { setInvitePrefillNotice(KEEP_INVITE_EXPIRED); return; }
     if (stored.some(k => k.keep === link.keep)) {
       setInvitePrefillNotice(undefined);
-      setView({ t: 'detail', keep: link.keep, prefill: { game: link.game, persona: link.persona, name: link.name } });
+      prefillSeqRef.current += 1;
+      setView({ t: 'detail', keep: link.keep, prefill: { game: link.game, persona: link.persona, name: link.name }, seq: prefillSeqRef.current });
     } else {
       setInvitePrefillNotice(KEEP_INVITE_NOT_YOURS);
       setView({ t: 'list' });
@@ -371,6 +374,8 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   if (keepHost && openKeep) {
     return (
       <KeepDetail
+        key={`${openKeep.keep}:${view.t === 'detail' ? view.seq ?? 0 : 0}`}
+        scope={scope}
         host={keepHost}
         keep={openKeep}
         note={view.t === 'detail' ? view.note : undefined}

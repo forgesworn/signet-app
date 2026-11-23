@@ -44,6 +44,13 @@ export interface KeepInviteRoute {
 
 export const KEEP_INVITE_NAME_MAX = 64;
 const HEX64 = /^[0-9a-f]{64}$/;
+/**
+ * Marks the shared display-name cleaner leaves in: the Arabic letter mark (a bidi control), the zero-width no-break
+ * space, the word joiner and invisible operators, the soft hyphen, and double quotes (the screen puts the name in
+ * quotes, so a name cannot close them early). Removed here, for this untrusted text only.
+ */
+// eslint-disable-next-line no-misleading-character-class
+const EXTRA_INVISIBLE = /[\u061c\ufeff\u2060-\u2064\u00ad"\u201c\u201d\u201e\u201f]/g;
 
 export type NativeUrlAction =
   | { type: 'companion-pair'; request: PairingRequest }
@@ -120,7 +127,7 @@ function parseKeepInvite(params: URLSearchParams): KeepInviteRoute | null {
   if (!g || !isKeepGame(g)) return null;
   if (p === undefined || n === undefined) return null;
   if (p !== null && !HEX64.test(p)) return null;
-  const name = n === null ? '' : sanitizeDisplayName(n, KEEP_INVITE_NAME_MAX);
+  const name = n === null ? '' : sanitizeDisplayName(n.replace(EXTRA_INVISIBLE, ''), KEEP_INVITE_NAME_MAX);
   return { keep: k, game: g, ...(p ? { persona: p } : {}), ...(name ? { name } : {}) };
 }
 

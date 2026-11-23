@@ -242,6 +242,13 @@ describe('Keep invite link (keep-invite)', () => {
     expect(none).toEqual({ type: 'keep-invite', invite: { keep: K, game: 'axenstax' } });
   });
 
+  it('also strips the marks the shared cleaner leaves in, and double quotes, from the name', () => {
+    const dirty = 'Da\u061c\ufeff\u2060\u2061\u2064\u00adve "the\u201c man\u201d"';
+    expect(routeNativeUrl(link(`${valid}&n=${encodeURIComponent(dirty)}`))).toMatchObject({ invite: { name: 'Dave the man' } });
+    // A name made only of them is the same as no name.
+    expect(routeNativeUrl(link(`${valid}&n=${encodeURIComponent('\u061c\ufeff"')}`))).toEqual({ type: 'keep-invite', invite: { keep: K, game: 'axenstax' } });
+  });
+
   it('keeps a name that looks like markup as plain text for the screen to render as text', () => {
     const r = routeNativeUrl(link(`${valid}&n=${encodeURIComponent('<img src=x onerror=alert(1)>')}`));
     expect(r).toMatchObject({ type: 'keep-invite', invite: { name: '<img src=x onerror=alert(1)>' } });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  KEEP_GAMES, KEEP_GAMES_MAX, cleanGames, clearGameChoices, gamesOffered, isKeepGame, keepGameName, keepGameOfLink, loadGameChoice,
+  KEEP_GAMES, KEEP_GAMES_MAX, cleanGames, clearGameChoices, forgetGameChoice, gamesOffered, isKeepGame, keepGameName, keepGameOfLink, loadGameChoice,
   openKeepGameLink, parseGamesParam, pickGame, saveGameChoice,
 } from './keep-games';
 
@@ -72,16 +72,25 @@ describe('keepGameOfLink', () => {
 });
 
 describe('the last game chosen for a Keep', () => {
-  it('is remembered per Keep, ignores junk and is cleared on request', () => {
-    expect(loadGameChoice('k1')).toBeNull();
-    saveGameChoice('k1', 'axenstax');
-    saveGameChoice('k2', 'https');
-    expect(loadGameChoice('k1')).toBe('axenstax');
-    expect(loadGameChoice('k2')).toBeNull();
-    localStorage.setItem('signet:keep-game:k3', 'javascript');
-    expect(loadGameChoice('k3')).toBeNull();
+  it('is remembered per identity and Keep, ignores junk, and is cleared on request', () => {
+    expect(loadGameChoice('me', 'k1')).toBeNull();
+    saveGameChoice('me', 'k1', 'axenstax');
+    saveGameChoice('me', 'k2', 'https');
+    expect(loadGameChoice('me', 'k1')).toBe('axenstax');
+    expect(loadGameChoice('me', 'k2')).toBeNull();
+    // Another identity on the same device neither sees it nor shares it.
+    expect(loadGameChoice('someone-else', 'k1')).toBeNull();
+    localStorage.setItem('signet:keep-game:me:k3', 'javascript');
+    expect(loadGameChoice('me', 'k3')).toBeNull();
     clearGameChoices();
-    expect(loadGameChoice('k1')).toBeNull();
+    expect(loadGameChoice('me', 'k1')).toBeNull();
+  });
+  it('forgetting a Keep forgets only its choice', () => {
+    saveGameChoice('me', 'k1', 'axenstax');
+    saveGameChoice('me', 'k2', 'gameflock');
+    forgetGameChoice('me', 'k1');
+    expect(loadGameChoice('me', 'k1')).toBeNull();
+    expect(loadGameChoice('me', 'k2')).toBe('gameflock');
   });
   it('pickGame: requested, else last used, else first offered; each only if offered', () => {
     const offered = ['stampede', 'axenstax'];

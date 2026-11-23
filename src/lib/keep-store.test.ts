@@ -288,6 +288,9 @@ describe('games a Keep hosts', () => {
     expect(same.gamesAt).toBe(9);
     const changed = repairKeep(had, { name: 'New', relays: ['wss://z.example'], code: '44'.repeat(16), now: 999, games: ['twangthang', 'https'] });
     expect(changed.games).toEqual(['twangthang']);
-    expect(changed.gamesAt).toBeUndefined();
+    expect(changed.gamesAt).toBe(999);
+    // Only an ack sent after the re-pair may replace the list the new link gave.
+    expect(applyKeepGames([changed], { keep: K, status: 'paired', claim: true, at: 500, games: ['stampede'] }, 1000)).toEqual([changed]);
+    expect(applyKeepGames([changed], { keep: K, status: 'paired', claim: true, at: 1000, games: ['stampede'] }, 1000)[0].games).toEqual(['stampede']);
   });
 });
