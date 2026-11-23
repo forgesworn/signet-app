@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CLAIM_ACK_SKEW_S, KEEP_LOOKUP_CAP, applyAck, clampAckTime, inviteStatusLabel, markRevokeSent, newPendingKeep, parseKeepLookups, parseStoredKeeps,
+  CLAIM_ACK_SKEW_S, KEEP_LOOKUP_CAP, applyAck, applyKeepGames, clampAckTime, inviteStatusLabel, markRevokeSent, newPendingKeep, parseKeepLookups, parseStoredKeeps,
   repairKeep, withInvite, withKeep, withLookupKey,
   type StoredInvite, type StoredKeep,
 } from './keep-store';
@@ -235,5 +235,53 @@ describe('remembered lookup keys', () => {
     expect(withLookupKey(list, A)).toBe(list);
     expect(withLookupKey(list, 'nope')).toBe(list);
     expect(withLookupKey(list, B.toUpperCase())).toEqual([A, B]);
+  });
+});
+
+describe('games a Keep hosts', () => {
+  const gamesAck = (games: string[] | undefined, at = 1000) => ({ keep: K, status: 'paired' as const, claim: true, at, ...(games ? { games } : {}) });
+
+  it('an old record without games is read as before', () => {
+    expect('games' in pending()).toBe(false);
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify([paired()])))).toEqual([paired()]);
+  });
+
+  it('a record keeps its games through the parser', () => {
+    const list = [{ ...paired(), games: ['stampede', 'axenstax'], gamesAt: 5 }];
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify(list)))).toEqual(list);
+  });
+
+  it('a new pending Keep starts with the pairing link\'s allowlisted games only, and none when the link named none', () => {
+    const made = newPendingKeep({ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, code: '33'.repeat(16), now: 50, games: ['twangthang', 'https'] });
+    expect(made.games).toEqual(['twangthang']);
+  });
+
+  it('an ack with game tags replaces the list; an ack without them changes nothing', () => {
+    const list = [{ ...paired(), games: ['stampede'] }];
+    expect(applyKeepGames(list, gamesAck(undefined))).toBe(list);
+    const next = applyKeepGames(list, gamesAck(['axenstax', 'gameflock']));
+    expect(next[0].games).toEqual(['axenstax', 'gameflock']);
+    expect(applyKeepGames(next, gamesAck(['axenstax', 'gameflock']))).toBe(next);
+  });
+
+  it('only allowlisted games are stored, even if a caller passes others', () => {
+    expect(applyKeepGames([paired()], gamesAck(['https', 'axenstax', 'intent']))[0].games).toEqual(['axenstax']);
+  });
+
+  it('a repeated older ack does not undo a newer list, and an ack for another Keep is ignored', () => {
+    const newer = applyKeepGames([paired()], gamesAck(['axenstax'], 2000));
+    expect(applyKeepGames(newer, gamesAck(['stampede'], 1500))).toBe(newer);
+    expect(applyKeepGames(newer, gamesAck(['stampede'], 2500))[0].games).toEqual(['stampede']);
+    expect(applyKeepGames([paired()], { ...gamesAck(['stampede']), keep: 'ee'.repeat(32) }).length).toBe(1);
+  });
+
+  it('a new pairing link that names games replaces them; one that does not keeps them', () => {
+    const had = { ...paired(), games: ['stampede'], gamesAt: 9 };
+    const same = repairKeep(had, { name: 'New', relays: ['wss://z.example'], code: '44'.repeat(16), now: 999 });
+    expect(same.games).toEqual(['stampede']);
+    expect(same.gamesAt).toBe(9);
+    const changed = repairKeep(had, { name: 'New', relays: ['wss://z.example'], code: '44'.repeat(16), now: 999, games: ['twangthang', 'https'] });
+    expect(changed.games).toEqual(['twangthang']);
+    expect(changed.gamesAt).toBeUndefined();
   });
 });

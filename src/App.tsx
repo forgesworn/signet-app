@@ -347,7 +347,8 @@ import { useSignerLinkRecovery } from './hooks/useSignerLinkRecovery';
 import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createLocalBackends, createLocalBackendsFromKeyMaterial, generateBunkerClientSecret, CARD_REQUEST_TIMEOUT_MS } from './lib/signing-backend';
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
-import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY, type KeepInviteRoute } from './lib/native-url';
+import { keepGameOfLink } from './lib/keep-games';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
@@ -1194,6 +1195,9 @@ function AppContent() {
    * directory for an app that asked for a child's.
    */
   const [heldContactsGrantV2, setHeldContactsGrantV2] = useState<PairingRequestV2 | null>(null);
+  // A `keep-invite` link: held until the app has loaded, then handed to My Keep, which opens the Keep pre-filled.
+  const [heldKeepInvite, setHeldKeepInvite] = useState<KeepInviteRoute | null>(null);
+  const [pendingKeepInvite, setPendingKeepInvite] = useState<(KeepInviteRoute & { at: number }) | null>(null);
   /**
    * R-35: TWO grant counters, not one.
    *
@@ -11586,6 +11590,15 @@ function AppContent() {
         });
         return;
       }
+      case 'keep-invite':
+        // Held, never routed from here, for the same reason as `contacts-pair-v2` above: this callback can run on the
+        // first commit, before the account and its preferences have loaded. The held-link effect below carries on.
+        setHeldKeepInvite(action.invite);
+        return;
+      case 'keep-invite-invalid':
+        // A malformed Keep invite link is refused like any other mysignet.app link that holds nothing to open.
+        setNativeLinkNothingToOpen(true);
+        return;
       case 'root-carrier': {
         let search = '';
         try { search = new URL(action.href).search; } catch { return; }
@@ -11688,6 +11701,19 @@ function AppContent() {
     setPendingContactsGrantV2(heldContactsGrantV2);
     navigateReplace('contacts-grant-approve');
   }, [heldContactsGrantV2, prefsLoading, dependantsLoading, isPairedChild, navigateReplace]);
+
+  /**
+   * Apply a held `keep-invite` link once real state exists, as for the pairing request above. It only opens My Keep with
+   * the link's Keep, game and person ready to see: nothing is created, signed, sent or shared until the owner presses a button there.
+   */
+  useEffect(() => {
+    if (!heldKeepInvite) return;
+    if (identityLoading || prefsLoading || dependantsLoading) return;
+    setHeldKeepInvite(null);
+    if (isPairedChild || !identity) { setNativeLinkNothingToOpen(true); return; }
+    setPendingKeepInvite({ ...heldKeepInvite, at: Date.now() });
+    navigateReplace('my-keep');
+  }, [heldKeepInvite, identityLoading, prefsLoading, dependantsLoading, isPairedChild, identity, navigateReplace]);
 
   /**
    * B/M4: a staged request the approve page's own guard would refuse is
@@ -12502,10 +12528,11 @@ function AppContent() {
         deps: keepDepsFor(identity, encryptionKey),
         canSign: persona => holdsKeyFor(identity, persona),
         personas: accountPersonas(identity),
-        // Play here hands stampede://keep/<K>/<secret> to Android through the WebView: Capacitor's
+        // Play here hands <game>://keep/<K>/<secret> to Android through the WebView: Capacitor's
         // bridge sends a link to another host to ACTION_VIEW (Bridge.launchIntent). Same call as the other
         // external links in this app. Not offered on the web.
-        openApp: isNativeApp() ? (link: string) => { window.open(link, '_blank', 'noopener'); } : undefined,
+        // Only an allowlisted game's own link is ever passed on (see keep-games.ts).
+        openApp: isNativeApp() ? (link: string) => { if (keepGameOfLink(link)) window.open(link, '_blank', 'noopener'); } : undefined,
         activePersona: carousel.activeIdentity.publicKey
           ? { pubkey: carousel.activeIdentity.publicKey.toLowerCase(), name: personaNameMap(identity)[carousel.activeIdentity.publicKey.toLowerCase()] || 'this persona' }
           : null,
@@ -12522,6 +12549,8 @@ function AppContent() {
         liveSignerPubkey: bunkerBackend?.activePublicKeyHex,
       })}
       onKeepsFound={() => { void setShowMyKeep(true); }}
+      invitePrefill={pendingKeepInvite}
+      onInvitePrefillDone={() => setPendingKeepInvite(null)}
     />);
   }
 

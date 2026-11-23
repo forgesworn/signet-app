@@ -27,6 +27,23 @@ import {
 import { parseSignInRequest } from './url-auth';
 import { parseContactInviteLink } from './contact-invite-link';
 import { MYSIGNET_HOSTS, QR_MAX_PAYLOAD_SIZE, isCompanionPairAppLink } from './qr-router';
+import { sanitizeDisplayName } from './text-sanitize';
+import { isKeepGame } from './keep-games';
+
+/** What a `?keep-invite=1` link asks for: a Keep, a game and, optionally, who to invite. Pre-fill only. */
+export interface KeepInviteRoute {
+  /** The Keep's key, 64 lowercase hex. */
+  keep: string;
+  /** An allowlisted game scheme. */
+  game: string;
+  /** The persona to invite, 64 lowercase hex, when the link names one. */
+  persona?: string;
+  /** Untrusted display name from another app: trimmed, control characters stripped, at most 64 characters. Text only. */
+  name?: string;
+}
+
+export const KEEP_INVITE_NAME_MAX = 64;
+const HEX64 = /^[0-9a-f]{64}$/;
 
 export type NativeUrlAction =
   | { type: 'companion-pair'; request: PairingRequest }
@@ -34,6 +51,10 @@ export type NativeUrlAction =
   | { type: 'contacts-pair-v2'; request: PairingRequestV2 }
   | { type: 'sign-in'; href: string }
   | { type: 'root-carrier'; href: string }
+  /** `https://mysignet.app/?keep-invite=1&k=…&g=…[&p=…][&n=…]`: open the Keep's invite screen pre-filled. */
+  | { type: 'keep-invite'; invite: KeepInviteRoute }
+  /** A `keep-invite` link that is malformed. Refused: it must NOT fall through to `root-carrier` or sign-in. */
+  | { type: 'keep-invite-invalid' }
   | { type: 'none' };
 
 /** https, one of our hosts, exact root path. Parses `raw` itself (and swallows
@@ -84,9 +105,40 @@ export function contactInviteFromNativeUrl(url: string, now = Math.floor(Date.no
   return invite ? JSON.stringify(invite) : undefined;
 }
 
+/** Each of the link's parameters must appear at most once; a repeat is a malformed link. */
+function once(params: URLSearchParams, key: string): string | null | undefined {
+  const all = params.getAll(key);
+  if (all.length === 0) return null;
+  return all.length === 1 ? all[0] : undefined;
+}
+
+/** A `keep-invite` link's parameters, or null when it is not valid. Asks for nothing but a pre-filled screen. */
+function parseKeepInvite(params: URLSearchParams): KeepInviteRoute | null {
+  const k = once(params, 'k'), g = once(params, 'g'), p = once(params, 'p'), n = once(params, 'n');
+  if (once(params, 'keep-invite') !== '1') return null;
+  if (!k || !HEX64.test(k)) return null;
+  if (!g || !isKeepGame(g)) return null;
+  if (p === undefined || n === undefined) return null;
+  if (p !== null && !HEX64.test(p)) return null;
+  const name = n === null ? '' : sanitizeDisplayName(n, KEEP_INVITE_NAME_MAX);
+  return { keep: k, game: g, ...(p ? { persona: p } : {}), ...(name ? { name } : {}) };
+}
+
 export function routeNativeUrl(url: string): NativeUrlAction {
   if (typeof url !== 'string' || url.length === 0 || url.length > QR_MAX_PAYLOAD_SIZE) return { type: 'none' };
   const raw = url.trim();
+
+  // A Keep invite link, checked before anything else that reads the root-path query: whatever it holds, it is
+  // either this route or refused, never pairing, sign-in or a root carrier.
+  if (isMysignetRoot(raw)) {
+    try {
+      const params = new URL(raw).searchParams;
+      if (params.has('keep-invite')) {
+        const invite = parseKeepInvite(params);
+        return invite ? { type: 'keep-invite', invite } : { type: 'keep-invite-invalid' };
+      }
+    } catch { /* not a URL: handled below */ }
+  }
 
   // Companion pairing, any carrier — checked first so a /pair App Link that
   // happens to carry auth-looking params is never read as sign-in. A pairing

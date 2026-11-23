@@ -19,6 +19,7 @@ import { getEventHash, verifyEvent } from 'nostr-tools/pure';
 import type { NostrEvent, UnsignedEvent } from 'signet-protocol';
 import { giftWrap } from './relay-publish';
 import { sanitizeDisplayName } from './text-sanitize';
+import { cleanGames } from './keep-games';
 import type { DecryptingSigningBackend } from './signing-backend';
 import {
   KEEP_ACK_STATUSES, KEEP_INVITE_LABEL_MAX, KEEP_MAX_OWNER_PERSONAS, KEEP_MAX_REV, KEEP_MSG_ACCEPT_KIND, KEEP_MSG_ACK_KIND,
@@ -153,6 +154,11 @@ export interface KeepAck {
    */
   settings?: boolean;
   setrev?: number;
+  /**
+   * The games the Keep says it hosts, from zero or more `["game", "<scheme>"]` tags: only allowlisted schemes, no
+   * repeats. Present only when the ack carried at least one `game` tag (it may then be empty).
+   */
+  games?: string[];
 }
 
 export type PassState = typeof KEEP_PASS_STATES[number];
@@ -210,6 +216,14 @@ function parseSafeDecimal(text: string | undefined): number | undefined {
 
 /** The fields of an ack rumor that passed the Keep checks; null when it is not a well-formed ack for `keep`. */
 export function parseAckRumor(rumor: { kind: number; tags: string[][]; created_at: number }, keep: string): KeepAck | null {
+  const ack = parseAckCore(rumor, keep);
+  if (!ack) return null;
+  // Optional and tolerant: an old Keep sends none, and an entry that is not an allowlisted game is dropped.
+  const gameTags = rumor.tags.filter(t => Array.isArray(t) && t[0] === 'game' && typeof t[1] === 'string');
+  return gameTags.length > 0 ? { ...ack, games: cleanGames(gameTags.map(t => t[1])) } : ack;
+}
+
+function parseAckCore(rumor: { kind: number; tags: string[][]; created_at: number }, keep: string): KeepAck | null {
   if (rumor.kind !== KEEP_MSG_ACK_KIND || !Array.isArray(rumor.tags)) return null;
   const tags = rumor.tags.filter(t => Array.isArray(t) && t.every(x => typeof x === 'string'));
   const keepTag = single(tags, 'keep');

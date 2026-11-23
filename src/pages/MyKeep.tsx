@@ -21,7 +21,8 @@ import {
 } from '../lib/keep';
 import { NICKNAME_MAX, loadNicknames, setNickname } from '../lib/keep-nicknames';
 import { KEEP_PREVIEW_BANNER, keepPreviewEnabled, keepPreviewKeeps } from '../lib/keep-preview';
-import { AddKeep, KeepDetail, StoredKeepRows, useStoredKeeps, type KeepHost } from './KeepManage';
+import { AddKeep, KeepDetail, StoredKeepRows, useStoredKeeps, type KeepHost, type KeepPrefill } from './KeepManage';
+import type { KeepInviteRoute } from '../lib/native-url';
 
 interface Props {
   /**
@@ -36,6 +37,10 @@ interface Props {
   onBack: () => void;
   /** What adding and managing a Keep needs from the app. Absent where that is not offered. */
   keepHost?: KeepHost;
+  /** A `keep-invite` link (with the time it arrived, ms) to open pre-filled once the saved Keeps are known. */
+  invitePrefill?: (KeepInviteRoute & { at: number }) | null;
+  /** Called once the link has been dealt with (opened, or found not to be for one of this account's Keeps). */
+  onInvitePrefillDone?: () => void;
   /**
    * Set while the app is locked ('locked') or has the key and is still opening the saved identity
    * ('unlocking'). The saved Keeps are encrypted and a persona's key is needed to sign, so neither
@@ -65,12 +70,23 @@ const previewOn = () => import.meta.env.DEV && keepPreviewEnabled(import.meta.en
 const FOOTNOTE = 'Managing a Keep from here is coming later.';
 const FOOTNOTE_WITH_HOST = 'Keeps set up outside My Signet can\u2019t be managed from here yet.';
 
-type View = { t: 'list' } | { t: 'add' } | { t: 'detail'; keep: string; note?: string };
+type View = { t: 'list' } | { t: 'add' } | { t: 'detail'; keep: string; note?: string; prefill?: KeepPrefill };
+
+/** A `keep-invite` link waits this long for the screen to be ready; after that it is dropped rather than shown by surprise. */
+export const KEEP_INVITE_LINK_TTL_MS = 10 * 60 * 1000;
+
+/** Shown when a `keep-invite` link names a Keep that is not one of this account's. */
+export const KEEP_INVITE_NOT_YOURS = 'That link is for a Keep that isn’t one of yours.';
 
 const INTRO = 'See the Keep you\u2019ve set up at home and whether it\u2019s online.';
 
-function Intro() {
-  return <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>{INTRO}</p>;
+function Intro({ notice }: { notice?: string }) {
+  return (
+    <>
+      {notice && <p role="status" data-testid="keep-invite-notice" style={{ fontSize: '0.9rem', margin: '0 0 12px' }}>{notice}</p>}
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 16 }}>{INTRO}</p>
+    </>
+  );
 }
 
 function PreviewBanner() {
@@ -193,7 +209,7 @@ function LookupPicker({ options, onPick, onCancel }: { options: LookupOption[]; 
   );
 }
 
-export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lock }: Props) {
+export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lock, invitePrefill, onInvitePrefillDone }: Props) {
   const [state, setState] = useState<State>({ phase: 'loading' });
   const [nicknames, setNicknames] = useState<Record<string, string>>(() => loadNicknames(scope));
   const [attempt, setAttempt] = useState(0);
@@ -201,12 +217,14 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   const [view, setView] = useState<View>({ t: 'list' });
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [found, setFound] = useState<{ keeps: Keep[]; now: number }>({ keeps: [], now: 0 });
+  const [invitePrefillNotice, setInvitePrefillNotice] = useState<string | undefined>(undefined);
   const { keeps: stored, setKeeps: setStored, loaded: storedLoaded, unreadable } = useStoredKeeps(keepHost);
   const remembered = useRememberedLookups(keepHost);
   const locked = !!lock;
   // Bumped on lock so a lookup that was in flight cannot land after it.
   const epochRef = useRef(0);
   const notifiedRef = useRef(false);
+  const handledPrefillRef = useRef<unknown>(null);
 
   // The keys the person can look under now: the account's active personas, and the Heartwood master only while offered.
   const options = useMemo<LookupOption[]>(() => {
@@ -226,6 +244,23 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   );
   const groupsKey = JSON.stringify(groups);
   const ready = !keepHost || (storedLoaded && remembered.loaded);
+
+  // A `keep-invite` link waiting for this screen: once the saved Keeps are known, open that Keep pre-filled, or say it is
+  // not one of this account's. Nothing is made, signed or sent here; the owner presses the invite button.
+  useEffect(() => {
+    if (!invitePrefill || locked || !keepHost || !storedLoaded || unreadable || handledPrefillRef.current === invitePrefill) return;
+    const link = invitePrefill;
+    handledPrefillRef.current = link;
+    onInvitePrefillDone?.();
+    if (Date.now() - link.at > KEEP_INVITE_LINK_TTL_MS) return;
+    if (stored.some(k => k.keep === link.keep)) {
+      setInvitePrefillNotice(undefined);
+      setView({ t: 'detail', keep: link.keep, prefill: { game: link.game, persona: link.persona, name: link.name } });
+    } else {
+      setInvitePrefillNotice(KEEP_INVITE_NOT_YOURS);
+      setView({ t: 'list' });
+    }
+  }, [invitePrefill, locked, keepHost, storedLoaded, unreadable, stored, onInvitePrefillDone]);
 
   // Settings keeps its window scroll when this page opens; start at the top.
   useEffect(() => { try { window.scrollTo?.(0, 0); } catch { /* no scrolling here */ } }, []);
@@ -336,6 +371,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
         host={keepHost}
         keep={openKeep}
         note={view.t === 'detail' ? view.note : undefined}
+        prefill={view.t === 'detail' ? view.prefill : undefined}
         setKeeps={setStored}
         onBack={() => setView({ t: 'list' })}
         onGone={() => setView({ t: 'list' })}
@@ -362,7 +398,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   if (state.phase === 'loading' && keeps.length === 0) {
     return (
       <div className="fade-in" role="main">
-        <Intro />
+        <Intro notice={invitePrefillNotice} />
         {storedBlock}
         <p role="status" style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', textAlign: 'center', padding: 24 }}>
           Looking for your Keep&hellip;
@@ -374,7 +410,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   if (state.phase === 'error' && keeps.length === 0) {
     return (
       <div className="fade-in" role="main">
-        <Intro />
+        <Intro notice={invitePrefillNotice} />
         {storedBlock}
         <div className="empty-state">
           <p className="empty-state-text" role="alert">Couldn&apos;t reach the network. Try again.</p>
@@ -389,7 +425,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
     if (storedBlock) {
       return (
         <div className="fade-in" role="main">
-          <Intro />
+          <Intro notice={invitePrefillNotice} />
           {storedBlock}
           {addButton}
           <div style={{ textAlign: 'center', marginTop: 8 }}>
@@ -403,6 +439,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
       <div className="fade-in" role="main">
         <div className="empty-state">
           <div className="empty-state-icon"><Icon name="home" size={36} /></div>
+          {invitePrefillNotice && <p role="status" data-testid="keep-invite-notice" className="empty-state-text">{invitePrefillNotice}</p>}
           <h3 className="empty-state-title">No Keep yet.</h3>
           <p className="empty-state-text">
             A Keep is a small device at home that looks after your things.
@@ -429,7 +466,7 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   return (
     <div className="fade-in" role="main">
       {import.meta.env.DEV && preview && <PreviewBanner />}
-      <Intro />
+      <Intro notice={invitePrefillNotice} />
       {storedBlock}
       <div className="card card-flush">
         {keeps.map((keep, i) => (

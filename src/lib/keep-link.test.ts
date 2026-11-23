@@ -9,6 +9,16 @@ describe('parseKeepPairLink', () => {
   it('reads a Keep link', () => {
     expect(parseKeepPairLink(link())).toEqual({ keep: K, code: C, name: 'Home Keep', relays: ['wss://relay.example.com'] });
   });
+  it('reads the optional g parameter: allowlisted games kept, the rest dropped silently', () => {
+    expect(parseKeepPairLink(link('&g=stampede,twangthang'))?.games).toEqual(['stampede', 'twangthang']);
+    expect(parseKeepPairLink(link('&g=axenstax,https,javascript,intent,Stampede,bad-one,axenstax'))?.games).toEqual(['axenstax']);
+    expect(parseKeepPairLink(link('&g=gameflock&g=stampede'))?.games).toEqual(['gameflock', 'stampede']);
+    expect(parseKeepPairLink(link('&g=https,nope'))?.games).toEqual([]);
+  });
+  it('a link without g has no games key, and a bad g does not make the link invalid', () => {
+    expect('games' in parseKeepPairLink(link())!).toBe(false);
+    expect(parseKeepPairLink(link('&g=%00%ff,,'))).toMatchObject({ keep: K, games: [] });
+  });
   it('trims, lowercases the hex and takes up to three relays', () => {
     const text = `  signet-keep:pair?k=${K.toUpperCase()}&c=${C}&r=wss://a.example&r=wss://b.example&r=wss://c.example\n`;
     const parsed = parseKeepPairLink(text);
