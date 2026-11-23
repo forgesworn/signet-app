@@ -213,3 +213,86 @@ describe('contact invite App Link', () => {
     expect(contactInviteFromNativeUrl(link + 'x'.repeat(9000))).toBeUndefined();
   });
 });
+
+describe('Keep invite link (keep-invite)', () => {
+  const K = 'ab'.repeat(32);
+  const P = 'cd'.repeat(32);
+  const link = (q: string, base = 'https://mysignet.app/') => `${base}?${q}`;
+  const valid = `keep-invite=1&k=${K}&g=axenstax`;
+
+  it('routes a valid link to the Keep invite action with the Keep and the game', () => {
+    expect(routeNativeUrl(link(valid))).toEqual({ type: 'keep-invite', invite: { keep: K, game: 'axenstax' } });
+    expect(routeNativeUrl(link(valid, 'https://www.mysignet.app/')).type).toBe('keep-invite');
+  });
+
+  it('carries the person and the name when the link has them, for every allowlisted game', () => {
+    for (const game of ['stampede', 'twangthang', 'axenstax', 'gameflock']) {
+      expect(routeNativeUrl(link(`keep-invite=1&k=${K}&g=${game}&p=${P}&n=Dave`)))
+        .toEqual({ type: 'keep-invite', invite: { keep: K, game, persona: P, name: 'Dave' } });
+    }
+  });
+
+  it('trims the name, strips control characters and caps it at 64 characters', () => {
+    const a = routeNativeUrl(link(`${valid}&n=${encodeURIComponent('  Dave\u0000\u0007‮ Smith\n ')}`));
+    expect(a).toMatchObject({ type: 'keep-invite', invite: { name: 'Dave Smith' } });
+    const long = routeNativeUrl(link(`${valid}&n=${'x'.repeat(200)}`));
+    expect(long.type === 'keep-invite' && long.invite.name).toBe('x'.repeat(64));
+    // A name that is nothing but control characters is the same as no name.
+    const none = routeNativeUrl(link(`${valid}&n=${encodeURIComponent('\u0000\u0001 ')}`));
+    expect(none).toEqual({ type: 'keep-invite', invite: { keep: K, game: 'axenstax' } });
+  });
+
+  it('keeps a name that looks like markup as plain text for the screen to render as text', () => {
+    const r = routeNativeUrl(link(`${valid}&n=${encodeURIComponent('<img src=x onerror=alert(1)>')}`));
+    expect(r).toMatchObject({ type: 'keep-invite', invite: { name: '<img src=x onerror=alert(1)>' } });
+  });
+
+  it.each([
+    ['a missing k', 'keep-invite=1&g=axenstax'],
+    ['a short k', `keep-invite=1&k=${'ab'.repeat(31)}&g=axenstax`],
+    ['an uppercase k', `keep-invite=1&k=${K.toUpperCase()}&g=axenstax`],
+    ['a non-hex k', `keep-invite=1&k=${'zz'.repeat(32)}&g=axenstax`],
+    ['a missing g', `keep-invite=1&k=${K}`],
+    ['an empty g', `keep-invite=1&k=${K}&g=`],
+    ['a g that is not an allowlisted game', `keep-invite=1&k=${K}&g=unknowngame`],
+    ['g=https', `keep-invite=1&k=${K}&g=https`],
+    ['g=javascript', `keep-invite=1&k=${K}&g=javascript`],
+    ['g=intent', `keep-invite=1&k=${K}&g=intent`],
+    ['a g in capitals', `keep-invite=1&k=${K}&g=Stampede`],
+    ['a bad p', `${valid}&p=${'cd'.repeat(31)}`],
+    ['an uppercase p', `${valid}&p=${P.toUpperCase()}`],
+    ['an empty p', `${valid}&p=`],
+    ['a repeated k', `${valid}&k=${P}`],
+    ['a repeated g', `${valid}&g=stampede`],
+    ['a repeated n', `${valid}&n=a&n=b`],
+    ['a keep-invite that is not 1', `keep-invite=0&k=${K}&g=axenstax`],
+    ['a bare keep-invite', 'keep-invite'],
+  ])('refuses %s, and never falls through to root-carrier', (_name, q) => {
+    expect(routeNativeUrl(link(q))).toEqual({ type: 'keep-invite-invalid' });
+  });
+
+  it('a malformed keep-invite link that also looks like sign-in or a nostrconnect carrier is still refused', () => {
+    const si = signInUrl({ 'keep-invite': '1' });
+    expect(routeNativeUrl(si)).toEqual({ type: 'keep-invite-invalid' });
+    expect(routeNativeUrl(link(`keep-invite=1&nostrconnect=nostrconnect%3A%2F%2F${K}&g=https`))).toEqual({ type: 'keep-invite-invalid' });
+    expect(routeNativeUrl(link(`auth=1&keep-invite=1&k=${K}&g=intent`)).type).not.toBe('root-carrier');
+  });
+
+  it('a malformed link is not "none" either, so the app does not also say it held nothing', () => {
+    for (const url of [link(`keep-invite=1&k=${K}&g=https`), link(valid)]) {
+      expect(isUnactionableMysignetLink(url, routeNativeUrl(url))).toBe(false);
+    }
+  });
+
+  it('is only read on our own host at the root path', () => {
+    expect(routeNativeUrl(link(valid, 'https://example.com/')).type).toBe('none');
+    expect(routeNativeUrl(link(valid, 'https://mysignet.app/other')).type).toBe('none');
+    expect(routeNativeUrl(link(valid, 'http://mysignet.app/')).type).toBe('none');
+  });
+
+  it('other links are routed exactly as before', () => {
+    expect(routeNativeUrl(link('some=thing')).type).toBe('root-carrier');
+    expect(routeNativeUrl(link(`keep=${K}&game=axenstax`)).type).toBe('root-carrier');
+    expect(routeNativeUrl('https://mysignet.app/').type).toBe('none');
+  });
+});
