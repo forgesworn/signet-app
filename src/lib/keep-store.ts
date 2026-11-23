@@ -337,6 +337,8 @@ function migrateKeep(raw: Record<string, unknown>): StoredKeep {
     ...k,
     ...(update ? { update } : {}),
     ...(ackCursors ? { ackCursors } : {}),
+    // The games a Keep hosts are a mirror of what the Keep said: whatever is stored is read back through the allowlist.
+    ...(raw.games !== undefined ? { games: cleanGames(raw.games) } : {}),
     scope: (KEEP_SCOPES as readonly unknown[]).includes(raw.scope) ? raw.scope as KeepScope : 'one',
     rev: Number.isSafeInteger(raw.rev) ? raw.rev as number : 0,
     links,

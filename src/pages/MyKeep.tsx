@@ -248,7 +248,10 @@ export function MyKeep({ heartwoodKey, onKeepsFound, scope, onBack, keepHost, lo
   // A `keep-invite` link waiting for this screen: once the saved Keeps are known, open that Keep pre-filled, or say it is
   // not one of this account's. Nothing is made, signed or sent here; the owner presses the invite button.
   useEffect(() => {
-    if (!invitePrefill || locked || !keepHost || !storedLoaded || unreadable || handledPrefillRef.current === invitePrefill) return;
+    if (!invitePrefill || locked || handledPrefillRef.current === invitePrefill) return;
+    // Keeps are not managed on this screen (a dependant is acting, say): the link is dropped, nothing is opened.
+    if (!keepHost) { handledPrefillRef.current = invitePrefill; onInvitePrefillDone?.(); return; }
+    if (!storedLoaded || unreadable) return;
     const link = invitePrefill;
     handledPrefillRef.current = link;
     onInvitePrefillDone?.();

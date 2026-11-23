@@ -414,6 +414,14 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
   // A pre-filled Who can play opens its contact list straight away; nothing is made until a contact or Guest pass is pressed.
   const [picking, setPicking] = useState(!!prefill);
   const [prefillOn, setPrefillOn] = useState(!!prefill);
+  // From a link, bring Who can play into view once.
+  const whoCanPlayRef = useRef<HTMLDivElement | null>(null);
+  const scrolledRef = useRef(false);
+  useEffect(() => {
+    if (!prefill || scrolledRef.current || !whoCanPlayRef.current) return;
+    scrolledRef.current = true;
+    try { whoCanPlayRef.current.scrollIntoView?.({ block: 'start' }); } catch { /* no scrolling here */ }
+  });
   // The game: the one the owner picked here, else the one a link asked for, else the last used for this Keep, else the first offered.
   const offered = gamesOffered(keep);
   const [pickedGame, setPickedGame] = useState<string | null>(null);
@@ -634,7 +642,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill
                 </div>
               )}
 
-              <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
+              <div ref={whoCanPlayRef} style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
                 <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Who can play</div>
                 <p style={{ ...muted, margin: '0 0 10px' }}>Only people you invite can play on this Keep.</p>
                 {offered.length > 1 && <GamePicker games={offered} value={game} onPick={pickGameNow} testId="share-game-picker" disabled={busy} />}
