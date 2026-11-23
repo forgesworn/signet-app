@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
@@ -27,6 +28,8 @@ vi.mock('../lib/relay-publish', async () => {
 });
 
 import { MyKeep } from './MyKeep';
+import { useKeepInviteLink } from '../hooks/useKeepInviteLink';
+import { KeepInviteConfirm } from '../components/KeepInviteConfirm';
 import { LocalSigningBackend } from '../lib/signing-backend';
 import { expiryText, type KeepHost } from './KeepManage';
 
@@ -995,5 +998,70 @@ describe('applying a link to a Keep page that is already open, and the remaining
     fireEvent.click(await screen.findByTestId('stored-keep-row'));
     fireEvent.click(await screen.findByRole('button', { name: 'Forget this Keep' }));
     await waitFor(() => expect(localStorage.getItem(`signet:keep-game:id1:${K}`)).toBeNull());
+  });
+});
+
+describe('the whole route: link, question, press', () => {
+  const quiet = { scope: 'one', rev: 0, seen: [O], links: { [O]: { sections: [], addedRev: 0, active: true } } };
+  const fetchMocked = async () => (await import('../lib/relay-service')).fetchEventsWithReach as unknown as ReturnType<typeof vi.fn>;
+
+  function Harness({ link }: { link: { keep: string; game: string; persona?: string } }) {
+    const [page, setPage] = useState<'home' | 'my-keep'>('home');
+    const flow = useKeepInviteLink({
+      loading: false, hasIdentity: true, pairedChild: false, dependantActive: false, unlocked: true, encryptionKey: 'key', identityId: 'id1',
+      onRefused: () => undefined, onOpen: () => setPage('my-keep'), onSettled: () => undefined,
+    });
+    useEffect(() => { flow.hold(link); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+    return (
+      <div>
+        {flow.notice && <p data-testid="app-notice">{flow.notice}</p>}
+        {flow.confirm && <KeepInviteConfirm keepName={flow.confirm.keepName} gameName={flow.confirm.gameName} onOpen={flow.accept} onLater={flow.decline} />}
+        {page === 'my-keep' && <MyKeep scope="id1" onBack={vi.fn()} keepHost={host()} invitePrefill={flow.pending} onInvitePrefillDone={flow.clearPending} />}
+      </div>
+    );
+  }
+
+  it('a Keep that is not yet recorded as asked-for: nothing is signed, published or read from a relay until Open Keep is pressed', async () => {
+    row = [pairedKeep(quiet)];
+    const fetch = await fetchMocked();
+    fetch.mockClear();
+    render(<Harness link={{ keep: K, game: 'axenstax' }} />);
+    await screen.findByRole('dialog', { name: 'Open your Keep?' });
+    expect(screen.getByText(`A game asked to open Kitchen Keep so you can invite someone to play AxeNStax.`)).toBeInTheDocument();
+    await new Promise(r => setTimeout(r, 50));
+    expect(published).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(share).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Keep' }));
+    expect(await screen.findByTestId('share-game-picker')).toBeInTheDocument();
+    expect(within(screen.getByTestId('share-game-picker')).getByRole('radio', { name: 'AxeNStax' })).toBeChecked();
+  });
+
+  it('a Keep that is not the owner\'s: the short message, and still no signing, publishing or relay read', async () => {
+    row = [pairedKeep({ ...quiet, keep: 'ee'.repeat(32) })];
+    const fetch = await fetchMocked();
+    fetch.mockClear();
+    render(<Harness link={{ keep: K, game: 'axenstax' }} />);
+    expect(await screen.findByTestId('app-notice')).toHaveTextContent('isn’t one of yours');
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(published).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('Not now: nothing is opened, published or read', async () => {
+    row = [pairedKeep(quiet)];
+    const fetch = await fetchMocked();
+    fetch.mockClear();
+    render(<Harness link={{ keep: K, game: 'axenstax' }} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByTestId('share-game-picker')).toBeNull();
+    expect(screen.queryByTestId('app-notice')).toBeNull();
+    expect(published).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
