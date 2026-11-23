@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   KEEP_GAMES, KEEP_GAMES_MAX, cleanGames, clearGameChoices, gamesOffered, isKeepGame, keepGameName, keepGameOfLink, loadGameChoice,
-  parseGamesParam, pickGame, saveGameChoice,
+  openKeepGameLink, parseGamesParam, pickGame, saveGameChoice,
 } from './keep-games';
 
 beforeEach(() => { localStorage.clear(); });
@@ -89,5 +89,19 @@ describe('the last game chosen for a Keep', () => {
     expect(pickGame(offered, 'gameflock', 'axenstax')).toBe('axenstax');
     expect(pickGame(offered, null, 'twangthang')).toBe('stampede');
     expect(pickGame(offered, undefined, null)).toBe('stampede');
+  });
+});
+
+describe('openKeepGameLink', () => {
+  it('opens an allowlisted game\'s Keep link and nothing else', () => {
+    const open = vi.fn();
+    const ok = `axenstax://keep/${'ab'.repeat(32)}/${'cd'.repeat(32)}`;
+    expect(openKeepGameLink(ok, open)).toBe(true);
+    expect(open).toHaveBeenCalledExactlyOnceWith(ok);
+    open.mockClear();
+    for (const bad of ['https://example.com/keep/x', 'javascript://keep/x', 'intent://keep/x#Intent;end', 'unknowngame://keep/x', 'stampede://other/x', 'STAMPEDE://keep/x', '', 42, null, undefined]) {
+      expect(openKeepGameLink(bad, open)).toBe(false);
+    }
+    expect(open).not.toHaveBeenCalled();
   });
 });

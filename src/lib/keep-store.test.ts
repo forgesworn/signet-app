@@ -251,6 +251,12 @@ describe('games a Keep hosts', () => {
     expect(parseStoredKeeps(JSON.parse(JSON.stringify(list)))).toEqual(list);
   });
 
+  it('games read from storage go back through the allowlist', () => {
+    const stored = [{ ...paired(), games: ['https', 'axenstax', 'javascript', 'axenstax', 'Stampede', 7] }];
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify(stored)))![0].games).toEqual(['axenstax']);
+    expect(parseStoredKeeps(JSON.parse(JSON.stringify([{ ...paired(), games: 'stampede' }])))![0].games).toEqual([]);
+  });
+
   it('a new pending Keep starts with the pairing link\'s allowlisted games only, and none when the link named none', () => {
     const made = newPendingKeep({ keep: K, name: 'Home', relays: ['wss://a.example'], claimedBy: O, code: '33'.repeat(16), now: 50, games: ['twangthang', 'https'] });
     expect(made.games).toEqual(['twangthang']);

@@ -348,7 +348,7 @@ import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createL
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
 import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY, type KeepInviteRoute } from './lib/native-url';
-import { keepGameOfLink } from './lib/keep-games';
+import { openKeepGameLink } from './lib/keep-games';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
@@ -12532,7 +12532,7 @@ function AppContent() {
         // bridge sends a link to another host to ACTION_VIEW (Bridge.launchIntent). Same call as the other
         // external links in this app. Not offered on the web.
         // Only an allowlisted game's own link is ever passed on (see keep-games.ts).
-        openApp: isNativeApp() ? (link: string) => { if (keepGameOfLink(link)) window.open(link, '_blank', 'noopener'); } : undefined,
+        openApp: isNativeApp() ? (link: string) => { openKeepGameLink(link, l => { window.open(l, '_blank', 'noopener'); }); } : undefined,
         activePersona: carousel.activeIdentity.publicKey
           ? { pubkey: carousel.activeIdentity.publicKey.toLowerCase(), name: personaNameMap(identity)[carousel.activeIdentity.publicKey.toLowerCase()] || 'this persona' }
           : null,

@@ -69,6 +69,13 @@ export function keepGameOfLink(link: unknown): string | null {
   return m && isKeepGame(m[1]) ? m[1] : null;
 }
 
+/** Hand a link to the phone's app opener only if it is an allowlisted game's Keep link. Returns whether it was opened. */
+export function openKeepGameLink(link: unknown, open: (link: string) => void): boolean {
+  if (typeof link !== 'string' || !keepGameOfLink(link)) return false;
+  open(link);
+  return true;
+}
+
 // ---- the last game chosen for a Keep, on this device ----------------------------------------------------------
 
 export const KEEP_GAME_CHOICE_PREFIX = 'signet:keep-game:';
