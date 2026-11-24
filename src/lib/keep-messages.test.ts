@@ -308,6 +308,17 @@ describe('K1e messages', () => {
     expect(await unwrapKeepAck(ackWrap([['status', 'updated'], ['rev', '1']], { signer: ownerSk }), owner, keeps)).toBeNull();
   });
 
+  it('parseAckRumor reads optional game tags: allowlisted kept, the rest dropped, absent leaves the ack as it was', () => {
+    const base = [['keep', K], ['status', 'paired'], ['claim']];
+    const parse = (extra: string[][]) => parseAckRumor({ kind: 27663, created_at: NOW, tags: [...base, ...extra] }, K);
+    expect(parse([])).toEqual({ keep: K, status: 'paired', claim: true, at: NOW });
+    expect(parse([['game', 'stampede'], ['game', 'twangthang']])).toMatchObject({ claim: true, games: ['stampede', 'twangthang'] });
+    expect(parse([['game', 'https'], ['game', 'axenstax'], ['game', 'intent'], ['game', 'AxeNStax'], ['game'], ['game', 'axenstax']]))
+      .toMatchObject({ games: ['axenstax'] });
+    // A game tag with nothing allowlisted still says "the Keep named games": the list becomes empty.
+    expect(parse([['game', 'javascript']])).toMatchObject({ games: [] });
+  });
+
   it('parseAckRumor keeps the K1d acks as they were', () => {
     expect(parseAckRumor({ kind: 27663, created_at: NOW, tags: [['keep', K], ['status', 'refused'], ['claim']] }, K)).toBeNull();
     expect(parseAckRumor({ kind: 27663, created_at: NOW, tags: [['keep', K], ['status', 'active'], ['grant', GRANT]] }, K))

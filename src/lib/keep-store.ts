@@ -20,6 +20,7 @@
  * and the pure state changes; `keep-service.ts` does the sending.
  */
 import type { KeepAck, KeepPassReport, PassState, PassVia, RefusalReason } from './keep-messages';
+import { cleanGames } from './keep-games';
 import {
   KEEP_ACK_BACKDATE_S, KEEP_ACK_FIRST_LOOKBACK_S, KEEP_MAX_PASSES, KEEP_PASSES_REQUEST_AFTER_S, KEEP_PASS_STATES, KEEP_PASS_VIAS,
   KEEP_PASS_REVOKE_WINDOW_S, KEEP_REFUSAL_REASONS, KEEP_RESEND_AFTER_S, KEEP_SCOPES, KEEP_SECTION_GAMES,
@@ -185,6 +186,13 @@ export interface StoredKeep {
   settings?: KeepSettings;
   /** K1f: when a passes request was last sent, unix seconds. */
   passesRequestedAt?: number;
+  /**
+   * The games this Keep hosts, allowlisted schemes only (see `keep-games.ts`), at most 16. From the pairing link's `g`
+   * and, later, the `game` tags of an ack. Absent on older records and when the Keep never said: every game is then offered.
+   */
+  games?: string[];
+  /** The time of the ack that last set `games`, so a repeated older ack cannot undo a newer list. */
+  gamesAt?: number;
 }
 
 /** The stored Keeps are there but cannot be read; nothing may be saved over them. */
@@ -329,6 +337,8 @@ function migrateKeep(raw: Record<string, unknown>): StoredKeep {
     ...k,
     ...(update ? { update } : {}),
     ...(ackCursors ? { ackCursors } : {}),
+    // The games a Keep hosts are a mirror of what the Keep said: whatever is stored is read back through the allowlist.
+    ...(raw.games !== undefined ? { games: cleanGames(raw.games) } : {}),
     scope: (KEEP_SCOPES as readonly unknown[]).includes(raw.scope) ? raw.scope as KeepScope : 'one',
     rev: Number.isSafeInteger(raw.rev) ? raw.rev as number : 0,
     links,
@@ -404,7 +414,7 @@ export function withLookupKey(list: readonly string[], key: string): string[] {
 }
 
 export function newPendingKeep(a: {
-  keep: string; name: string; relays: string[]; claimedBy: string; code: string; now: number; scope?: KeepScope;
+  keep: string; name: string; relays: string[]; claimedBy: string; code: string; now: number; scope?: KeepScope; games?: string[];
 }): StoredKeep {
   return {
     keep: a.keep, name: a.name, relays: [...a.relays], claimedBy: a.claimedBy,
@@ -412,6 +422,7 @@ export function newPendingKeep(a: {
     links: { [a.claimedBy]: { sections: [KEEP_SECTION_GAMES], addedRev: 0, active: true } },
     seen: [a.claimedBy],
     status: 'pending', code: a.code, claimedAt: a.now, invites: [],
+    ...(a.games ? { games: cleanGames(a.games) } : {}),
   };
 }
 
@@ -428,9 +439,9 @@ export function newPendingKeep(a: {
  * lost either way, and nothing is linked that the owner had not linked.
  */
 export function repairKeep(
-  keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number; scope?: KeepScope },
+  keep: StoredKeep, a: { name: string; relays: string[]; code: string; now: number; scope?: KeepScope; games?: string[] },
 ): StoredKeep {
-  const { ackCursors: _cursors, update, passesRequestedAt: _requested, settings, ...rest } = keep; // a new pairing reads acks afresh
+  const { ackCursors: _cursors, update, passesRequestedAt: _requested, settings, gamesAt, ...rest } = keep; // a new pairing reads acks afresh
   const claimer = keep.claimedBy;
   const mine = keep.links[claimer];
   const links: Record<string, PersonaLink> = {
@@ -445,6 +456,9 @@ export function repairKeep(
   return {
     ...rest, name: a.name, relays: [...a.relays], code: a.code, status: 'pending', claimedAt: a.now,
     scope: a.scope ?? keep.scope,
+    // A new pairing link that names games replaces the list, and only an ack sent after the re-pair may replace it again;
+    // one that does not leaves the list as it was.
+    ...(a.games ? { games: cleanGames(a.games), gamesAt: a.now } : gamesAt !== undefined ? { gamesAt } : {}),
     // A reset Keep has forgotten the switch (default on): send the owner's choice again, as a new message. A Keep
     // that was not reset answers `refused stale`, which makes the next revision (see `applySettingsAck`).
     ...(settings ? { settings: restartedSettings(settings, a.now) } : {}),
@@ -552,6 +566,22 @@ export const CLAIM_ACK_SKEW_S = 600;
  */
 export function clampAckTime(at: number, now: number): number {
   return Math.min(at, now + CLAIM_ACK_SKEW_S);
+}
+
+/**
+ * The `game` tags of an authenticated ack from the Keep replace the stored list (allowlisted schemes only). An ack
+ * without any leaves it alone. Relays return old acks again, so an ack older than the one that set the list is ignored.
+ * Returns the same object when nothing changed.
+ */
+export function applyKeepGames(list: readonly StoredKeep[], ack: KeepAck, now: number = Math.floor(Date.now() / 1000)): StoredKeep[] {
+  if (ack.games === undefined) return list as StoredKeep[];
+  const keep = findKeep(list, ack.keep);
+  if (!keep) return list as StoredKeep[];
+  const at = clampAckTime(ack.at, now);
+  if (keep.gamesAt !== undefined && at < clampAckTime(keep.gamesAt, now)) return list as StoredKeep[];
+  const games = cleanGames(ack.games);
+  if (keep.gamesAt === at && JSON.stringify(keep.games) === JSON.stringify(games)) return list as StoredKeep[];
+  return withKeep(list, { ...keep, games, gamesAt: at });
 }
 
 /**

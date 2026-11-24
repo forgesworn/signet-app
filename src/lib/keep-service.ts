@@ -20,7 +20,7 @@ import {
   type InviteSpec, type KeepMessage,
 } from './keep-messages';
 import {
-  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, applyPassReport, applySettingsAck, canComposeSettings, composeSettings,
+  KeepsUnreadableError, ackReadSince, advanceAckCursors, applyAck, applyKeepGames, applyPassReport, applySettingsAck, canComposeSettings, composeSettings,
   findKeep, markInviteSent, markPassRevokeSent, markPassesRequested, markRevokeSent, markSettingsSent, newPendingKeep, parseStoredKeeps,
   parseKeepLookups, passRevokesDue, passesRequestDue, repairKeep, resendDue, returnPassesOn, settingsDue, withInvite, withKeep, withLookupKey,
   type KeepScope, type StoredInvite, type StoredKeep,
@@ -30,6 +30,7 @@ import {
   retryGames, setSection, unlinkPersona, type ReconcileContext,
 } from './keep-owners';
 import type { KeepPairLink } from './keep-link';
+import { DEFAULT_KEEP_GAME, isKeepGame } from './keep-games';
 import { KEEP_GUEST_PASS_S, KEEP_PERSONAL_INVITE_S, KEEP_SECTION_GAMES } from './keep-wire';
 
 export interface KeepDeps {
@@ -165,12 +166,12 @@ export async function claimKeep(deps: KeepDeps, link: KeepPairLink, claimedBy: s
       if (existing.status === 'pending' && existing.code === link.code) { out.kind = 'exists'; return list; }
       if (existing.claimedBy !== claimedBy) { out.kind = 'other-owner'; return list; }
       out.kind = 'repair';
-      const repaired = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps), scope });
+      const repaired = repairKeep(existing, { name: link.name, relays: link.relays, code: link.code, now: nowOf(deps), scope, games: link.games });
       // The list goes out again at a higher revision once the Keep has paired (see `repairKeep`).
       out.keep = (repaired.scope === 'all' || repaired.personas.length > 1) && canCompose(repaired) ? composeUpdate(repaired, claimedBy, nowOf(deps)) : repaired;
       return withKeep(list, out.keep);
     }
-    out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps), scope });
+    out.keep = newPendingKeep({ keep: link.keep, name: link.name, relays: link.relays, claimedBy, code: link.code, now: nowOf(deps), scope, games: link.games });
     return withKeep(list, out.keep);
   });
   if (out.kind === 'exists' || out.kind === 'other-owner') return { kind: out.kind, keep: out.keep! };
@@ -214,9 +215,14 @@ function specOf(keep: StoredKeep, invite: StoredInvite): InviteSpec {
   };
 }
 
-/** The link the share sheet gets: identical to the Keep's own `stampede://keep/<K>/<secret>`. */
-export function keepShareLink(keep: string, secret: string): string {
-  return `stampede://keep/${keep}/${secret}`;
+/**
+ * The link the share sheet gets: identical to the Keep's own `<scheme>://keep/<K>/<secret>` for that game.
+ * `game` must be an allowlisted scheme (see `keep-games.ts`); anything else throws, so no other link is ever built.
+ * Without a game it is Stampede's, as before.
+ */
+export function keepShareLink(keep: string, secret: string, game: string = DEFAULT_KEEP_GAME): string {
+  if (!isKeepGame(game)) throw new Error('Not a game this Keep can invite to');
+  return `${game}://keep/${keep}/${secret}`;
 }
 
 /**
@@ -508,8 +514,10 @@ export async function applyAckEvents(deps: KeepDeps, events: readonly NostrEvent
     read.reduce((l, { message }) => {
       if (message.kind === 'report') return applyPassReport(l, message.report, now);
       const { ack } = message;
-      if (ack.settings) return applySettingsAck(l, ack, now);
-      return ack.owners ? applyOwnersAck(l, ack, now) : applyAck(l, ack, now);
+      // The games an ack names are kept whatever else the ack is for.
+      const withGames = applyKeepGames(l, ack, now);
+      if (ack.settings) return applySettingsAck(withGames, ack, now);
+      return ack.owners ? applyOwnersAck(withGames, ack, now) : applyAck(withGames, ack, now);
     }, list),
     read.map(r => ({ keep: r.message.kind === 'report' ? r.message.report.keep : r.message.ack.keep, persona: r.persona, wrapAt: r.wrapAt })), now,
   ));

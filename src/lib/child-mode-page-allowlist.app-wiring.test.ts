@@ -66,6 +66,12 @@ describe('child-mode guardian-page gate in App.tsx', () => {
     expect(app).toContain('{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}');
   });
 
+  it('a keep-invite link is held for the start-up child-mode read and dropped once child mode is on', () => {
+    expect(app).toContain("loading: identityLoading || prefsLoading || dependantsLoading || childModeNow === 'unknown',");
+    expect(app).toContain("dependantActive: !!activeDependant || childDirect || childModeNow === 'on',");
+    expect(app).toContain('pairedChild: isPairedChild,');
+  });
+
   it('the dropped-invite notice shows on home beside the child-mode banner, and the PIN exit resets it', () => {
     const home = app.slice(idx('// Home (default) — card-swipe wallet carousel'));
     expect(home.indexOf('{childModeInviteDroppedBanner}')).toBeGreaterThan(-1);

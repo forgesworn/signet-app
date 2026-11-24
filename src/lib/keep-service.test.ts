@@ -75,6 +75,24 @@ describe('claiming', () => {
     expect(rumor.tags).toEqual([['keep', K], ['code', CODE], ['scope', 'one']]);
   });
 
+  it('saves the games a pairing link names (allowlisted only) and leaves them unset when it names none', async () => {
+    const withGames = parseKeepPairLink(`signet-keep:pair?k=${K}&c=${CODE}&n=Home&r=wss://a.example&g=twangthang,https,axenstax,twangthang`)!;
+    await claimKeep(deps(), withGames, O);
+    expect((await loadStoredKeeps('key'))[0].games).toEqual(['twangthang', 'axenstax']);
+    row = null;
+    await claimKeep(deps(), link, O);
+    expect('games' in (await loadStoredKeeps('key'))[0]).toBe(false);
+  });
+
+  it('a game tag on an ack from the Keep replaces the stored games; an ack without one leaves them', async () => {
+    await claimKeep(deps(), parseKeepPairLink(`signet-keep:pair?k=${K}&c=${CODE}&n=Home&r=wss://a.example&g=stampede`)!, O);
+    await applyAckEvents(deps(), [ackFromKeep([['status', 'paired'], ['claim'], ['game', 'axenstax'], ['game', 'https'], ['game', 'gameflock'], ['game', 'axenstax']])]);
+    expect((await loadStoredKeeps('key'))[0]).toMatchObject({ status: 'paired', games: ['axenstax', 'gameflock'] });
+    const noGame = wrapEvent({ kind: 27663, content: '', created_at: NOW + 2, tags: [['keep', K], ['status', 'paired'], ['claim']] }, KEEP_SK, O) as unknown as NostrEvent;
+    await applyAckEvents(deps(), [noGame]);
+    expect((await loadStoredKeeps('key'))[0].games).toEqual(['axenstax', 'gameflock']);
+  });
+
   it('keeps the Keep when no relay took the claim, so it can be sent again', async () => {
     publishOk = false;
     expect(await claimKeep(deps(), link, O)).toMatchObject({ kind: 'claimed', sent: false });
@@ -228,6 +246,19 @@ describe('inviting and revoking', () => {
   it('the share link is the Keep\'s own format', async () => {
     const { invite } = await createInvite(deps(), K, { kind: 'guest' });
     expect(keepShareLink(K, invite.secret)).toBe(`stampede://keep/${K}/${invite.secret}`);
+  });
+
+  it('the share link is for the chosen game, for every allowlisted game', async () => {
+    const { invite } = await createInvite(deps(), K, { kind: 'guest' });
+    for (const game of ['stampede', 'twangthang', 'axenstax', 'gameflock']) {
+      expect(keepShareLink(K, invite.secret, game)).toBe(`${game}://keep/${K}/${invite.secret}`);
+    }
+  });
+
+  it('never builds a link for a scheme that is not an allowlisted game', () => {
+    for (const game of ['https', 'javascript', 'intent', 'http', 'data', 'Stampede', '', 'stampede://x?', 'unknowngame']) {
+      expect(() => keepShareLink(K, 'ab'.repeat(32), game)).toThrow();
+    }
   });
 
   it('acks move an invite to Active, then Revoked', async () => {

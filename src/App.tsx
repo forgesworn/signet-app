@@ -348,6 +348,10 @@ import { LocalSigningBackend, BunkerSigningBackend, Nip07SigningBackend, createL
 import { deriveRailKeypair, publishSnapshot, revokeCompanionGrant, SNAPSHOT_D_TAG } from './lib/companion-rail';
 import { ACK_KIND, buildPairingAckContent, parsePairingRequest } from './lib/companion-pair';
 import { routeNativeUrl, contactInviteFromNativeUrl, isUnactionableMysignetLink, NATIVE_LINK_NOTHING_TO_OPEN_COPY } from './lib/native-url';
+import { openKeepGameLink } from './lib/keep-games';
+import { useKeepInviteLink } from './hooks/useKeepInviteLink';
+import { dedupeAfterSettled } from './lib/keep-invite-link';
+import { KeepInviteConfirm } from './components/KeepInviteConfirm';
 import { ContactsGrantChildCode } from './components/ContactsGrantChildCode';
 import type { PairingRequest } from './lib/companion-pair';
 // Contacts v2 app grants (Phase E, Task 22). The approval screen, the pairing
@@ -11554,6 +11558,49 @@ function AppContent() {
   // as an App Link makes the web page's own mount-time
   // `window.location.search` effects inert inside the APK's WebView.
   const lastNativeUrlRef = useRef<string | null>(null);
+  // A `keep-invite` link from another app: held until the app is open and unlocked, checked against the Keeps saved on this
+  // phone (no network), then the owner is asked. Only their press opens My Keep (see useKeepInviteLink).
+  // The pages another app can open to ask for an answer (connect, pairing, contacts grant, app permission, add dependant,
+  // verification): while one has a pending request the Keep question waits, so it can neither cover the page nor let
+  // "Open Keep" walk away from the request.
+  const approvalPageOpen = (page === 'approve-auth' && !!pendingAuthRequest)
+    || (page === 'approve-connect' && !!pendingConnectRequest)
+    || (page === 'approve-companion-grant' && !!pendingPairingRequest)
+    || (page === 'contacts-grant-approve' && !!pendingContactsGrantV2)
+    || (page === 'approve-app-permission' && !!pendingAppPermissionRequest)
+    || (page === 'approve-add-dependant' && !!pendingAddDependantRequest)
+    || (page === 'approve-verification' && !!pendingVerifyRequest);
+  const keepInviteOtherPrompt = approvalPageOpen || showAuthPrompt || !!relayProfileAsk || !!bunkerPendingApproval || sheetChildAsks.length > 0 || !!nip55.pending || !!pendingAuthRequest;
+  const keepInviteLink = useKeepInviteLink({
+    // Child mode still being read at start-up ('unknown') waits, as a contact invite does; once on, the link is dropped.
+    loading: identityLoading || prefsLoading || dependantsLoading || childModeNow === 'unknown',
+    hasIdentity: !!identity,
+    pairedChild: isPairedChild,
+    dependantActive: !!activeDependant || childDirect || childModeNow === 'on',
+    unlocked: !!encryptionKey && !!identity && !identity.encrypted,
+    // A PIN prompt, a sign-in or signing approval, or a phone app's request comes first; the question waits for them to go.
+    otherPromptOpen: keepInviteOtherPrompt,
+    encryptionKey,
+    identityId: identity?.id,
+    onRefused: () => setNativeLinkNothingToOpen(true),
+    onOpen: () => navigateReplace('my-keep'),
+    // The exact-URL dedupe must not stop the owner trying the same link again: only that link's own entry is cleared.
+    onSettled: (url) => { lastNativeUrlRef.current = dedupeAfterSettled(lastNativeUrlRef.current, url); },
+  });
+  const holdKeepInvite = keepInviteLink.hold;
+  // A `keep-invite` link that arrived while the app was locked: ask for the unlock once, as opening My Keep does. The
+  // owner is asked about the Keep only after that.
+  const keepInviteUnlockAskedRef = useRef(false);
+  useEffect(() => {
+    if (!keepInviteLink.waitingForUnlock || encryptionKey) { keepInviteUnlockAskedRef.current = false; return; }
+    if (!shouldPromptUnlockForMyKeep({
+      onMyKeep: true, loading: identityLoading || prefsLoading, hasIdentity: !!identity, pairedChild: isPairedChild,
+      authSetUp: isAuthSetUp(), unlocked: !!pendingEncryptionKey, promptOpen: showAuthPrompt,
+      alreadyAsked: keepInviteUnlockAskedRef.current,
+    })) return;
+    keepInviteUnlockAskedRef.current = true;
+    void requestAuth({ purpose: 'unlock-app' });
+  }, [keepInviteLink.waitingForUnlock, identityLoading, prefsLoading, identity, isPairedChild, encryptionKey, pendingEncryptionKey, showAuthPrompt, requestAuth]);
   const lastNativeAppPermissionUrlRef = useRef<string | null>(null);
   const launchUrlReadRef = useRef(false);
   const handleNativeUrl = useCallback((url: string) => {
@@ -11586,6 +11633,15 @@ function AppContent() {
         });
         return;
       }
+      case 'keep-invite':
+        // Held, never routed from here, for the same reason as `contacts-pair-v2` above: this callback can run on the
+        // first commit, before the account and its preferences have loaded. `useKeepInviteLink` carries on.
+        holdKeepInvite(action.invite, url);
+        return;
+      case 'keep-invite-invalid':
+        // A malformed Keep invite link is refused like any other mysignet.app link that holds nothing to open.
+        setNativeLinkNothingToOpen(true);
+        return;
       case 'root-carrier': {
         let search = '';
         try { search = new URL(action.href).search; } catch { return; }
@@ -11608,7 +11664,7 @@ function AppContent() {
         if (isUnactionableMysignetLink(url, action)) setNativeLinkNothingToOpen(true);
         return;
     }
-  }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeAppPermissionUrl, consumeNostrConnectUrl]);
+  }, [consumeUrlAuthRequest, navigateReplace, consumeVerifyUrl, consumeAddDependantUrl, consumeAppPermissionUrl, consumeNostrConnectUrl, holdKeepInvite]);
 
   // Deduplicate the launch/event copies while reviewing a request, but allow
   // the app to reopen its same still-valid link after an unlock was cancelled.
@@ -12059,6 +12115,14 @@ function AppContent() {
       </button>
     </div>
   ) : null;
+  const keepInviteNoticeBanner = keepInviteLink.notice ? (
+    <div role="status" data-testid="keep-invite-app-notice" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+      <span>{keepInviteLink.notice}</span>
+      <button onClick={keepInviteLink.dismissNotice} className="btn btn-ghost" style={{ fontSize: 13, padding: '4px 12px' }}>
+        {CONTACTS_GRANT_DISMISS_LABEL}
+      </button>
+    </div>
+  ) : null;
   const nativeLinkNothingToOpenBanner = nativeLinkNothingToOpen ? (
     <div role="status" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-secondary)', padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
       <span>{NATIVE_LINK_NOTHING_TO_OPEN_COPY}</span>
@@ -12178,10 +12242,10 @@ function AppContent() {
   ) : null;
   const topBannersFor = (signer: React.ReactNode) => (updateBanner || signer || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || childModeInviteDroppedBanner || addDependantRefusedBanner || appPermissionNoticeBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || childModeInviteDroppedBanner || keepInviteNoticeBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <div className="app-notices">{updateBanner}{signer}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}{keepInviteNoticeBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
   const topBanners = topBannersFor(signerBanner);
@@ -12198,6 +12262,15 @@ function AppContent() {
   ) : null;
 
   // On-demand auth prompt overlay — rendered on any page that triggers requestAuth
+  // Lowest of the prompts: never over, and never in place of, a PIN prompt or an approval.
+  const keepInviteOverlay = keepInviteLink.confirm && !keepInviteOtherPrompt ? (
+    <KeepInviteConfirm
+      keepName={keepInviteLink.confirm.keepName}
+      gameName={keepInviteLink.confirm.gameName}
+      onOpen={keepInviteLink.accept}
+      onLater={keepInviteLink.decline}
+    />
+  ) : null;
   const authOverlay = relayProfileOverlay ?? (showAuthPrompt ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: Z.overlay, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -12211,7 +12284,7 @@ function AppContent() {
         />
       </div>
     </div>
-  ) : null);
+  ) : keepInviteOverlay);
 
   // NIP-46 bunker server approval UI (Phase 2).
   // Rendered alongside authOverlay on every page so inbound sign_event
@@ -12502,10 +12575,11 @@ function AppContent() {
         deps: keepDepsFor(identity, encryptionKey),
         canSign: persona => holdsKeyFor(identity, persona),
         personas: accountPersonas(identity),
-        // Play here hands stampede://keep/<K>/<secret> to Android through the WebView: Capacitor's
+        // Play here hands <game>://keep/<K>/<secret> to Android through the WebView: Capacitor's
         // bridge sends a link to another host to ACTION_VIEW (Bridge.launchIntent). Same call as the other
         // external links in this app. Not offered on the web.
-        openApp: isNativeApp() ? (link: string) => { window.open(link, '_blank', 'noopener'); } : undefined,
+        // Only an allowlisted game's own link is ever passed on (see keep-games.ts).
+        openApp: isNativeApp() ? (link: string) => { openKeepGameLink(link, l => { window.open(l, '_blank', 'noopener'); }); } : undefined,
         activePersona: carousel.activeIdentity.publicKey
           ? { pubkey: carousel.activeIdentity.publicKey.toLowerCase(), name: personaNameMap(identity)[carousel.activeIdentity.publicKey.toLowerCase()] || 'this persona' }
           : null,
@@ -12522,6 +12596,8 @@ function AppContent() {
         liveSignerPubkey: bunkerBackend?.activePublicKeyHex,
       })}
       onKeepsFound={() => { void setShowMyKeep(true); }}
+      invitePrefill={keepInviteLink.pending}
+      onInvitePrefillDone={keepInviteLink.clearPending}
     />);
   }
 

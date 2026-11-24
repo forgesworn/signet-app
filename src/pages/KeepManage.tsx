@@ -25,6 +25,17 @@ import { KEEP_MAX_OWNER_PERSONAS } from '../lib/keep-wire';
 import { inviteCandidates, passPlayerName } from '../lib/keep-personas';
 import { shareInviteLink } from '../lib/keep-share';
 import { relayHostLabel } from '../lib/relay-url';
+import { forgetGameChoice, gamesOffered, keepGameName, loadGameChoice, pickGame, saveGameChoice } from '../lib/keep-games';
+import { KEEP_INVITE_NOT_LINKED } from '../lib/keep-invite-link';
+
+/** What a `keep-invite` link pre-fills on a Keep's detail: the game and, maybe, who to invite. Nothing is created or shared from it. */
+export interface KeepPrefill {
+  game: string;
+  /** The persona the link names, 64 hex. */
+  persona?: string;
+  /** Untrusted text from the link; shown only as a text node. */
+  name?: string;
+}
 
 /** What the My Keep screen needs from the app to manage claimed Keeps. */
 export interface KeepHost {
@@ -361,11 +372,66 @@ function SwitchRow({ label, sub, checked, disabled, onChange, testId }: {
   );
 }
 
-export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
+/** Which game the links and Play here are for. Shown only when the Keep offers more than one. */
+function GamePicker({ games, value, onPick, testId, disabled }: {
+  games: readonly string[]; value: string; onPick: (g: string) => void; testId: string; disabled?: boolean;
+}) {
+  return (
+    <div style={{ margin: '0 0 10px' }} data-testid={testId}>
+      <div style={{ ...muted, marginBottom: 6 }}>Game</div>
+      <div role="radiogroup" aria-label="Game" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {games.map(g => {
+          const checked = g === value;
+          return (
+            <label
+              key={g}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '8px 12px', borderRadius: 8,
+                border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                background: checked ? 'var(--accent-light)' : 'transparent',
+                cursor: disabled ? 'default' : 'pointer', fontSize: '0.9rem', position: 'relative',
+              }}
+            >
+              <input
+                type="radio" name={`${testId}-game`} value={g} checked={checked} disabled={disabled}
+                onChange={() => onPick(g)} aria-label={keepGameName(g) ?? g}
+                style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+              />
+              <span aria-hidden="true">{keepGameName(g)}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone, prefill, scope }: {
   host: KeepHost; keep: StoredKeep; note?: string; setKeeps: (list: StoredKeep[]) => void;
   onBack: () => void; onGone: () => void;
+  /** From a `keep-invite` link: the game to start on and who it was meant for. Only pre-fills; creates and shares nothing. */
+  prefill?: KeepPrefill;
+  /** The identity the saved game choice belongs to. */
+  scope: string;
 }) {
-  const [picking, setPicking] = useState(false);
+  // A pre-filled Who can play opens its contact list straight away; nothing is made until a contact or Guest pass is pressed.
+  const [picking, setPicking] = useState(!!prefill);
+  const [prefillOn, setPrefillOn] = useState(!!prefill);
+  // From a link, bring Who can play into view once.
+  const whoCanPlayRef = useRef<HTMLDivElement | null>(null);
+  const scrolledRef = useRef(false);
+  useEffect(() => {
+    if (!prefill || scrolledRef.current || !whoCanPlayRef.current) return;
+    scrolledRef.current = true;
+    try { whoCanPlayRef.current.scrollIntoView?.({ block: 'start' }); } catch { /* no scrolling here */ }
+  });
+  // The game: the one the owner picked here, else the one a link asked for, else the last used for this Keep, else the first offered.
+  const offered = gamesOffered(keep);
+  const [pickedGame, setPickedGame] = useState<string | null>(null);
+  const [lastGame] = useState(() => loadGameChoice(scope, keep.keep));
+  const game = pickGame(offered, pickedGame ?? prefill?.game, lastGame);
+  const gameName = keepGameName(game) ?? 'the game';
+  const pickGameNow = (g: string) => { setPickedGame(g); saveGameChoice(scope, keep.keep, g); };
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(note ?? '');
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -420,10 +486,11 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
     // saved, while the wrap for the Keep is still being sent.
     let sharing: Promise<string> = Promise.resolve('');
     const made = await createInvite(host.deps, keep.keep, { ...req, actor: actor?.pubkey }, saved => {
-      sharing = shareInviteLink(keepShareLink(keep.keep, saved.secret));
+      sharing = shareInviteLink(keepShareLink(keep.keep, saved.secret, game));
     });
     await reload();
     setPicking(false);
+    setPrefillOn(false);
     if (!made.sent) setMessage('Couldn’t reach the Keep yet. Use Send again on the invite.');
     shareOutcome(await sharing);
   });
@@ -432,11 +499,19 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
   const playHere = () => {
     const invite = actor ? playInvite(keep, actor.pubkey, Math.floor(Date.now() / 1000)) : null;
     if (!invite || !host.openApp) return;
-    host.openApp(keepShareLink(keep.keep, invite.secret));
-    setMessage('Opening Stampede…');
+    host.openApp(keepShareLink(keep.keep, invite.secret, game));
+    setMessage(`Opening ${gameName}…`);
   };
 
-  const candidates = picking && host.contacts && actor ? inviteCandidates(host.contacts, actor.pubkey) : [];
+  const allCandidates = host.contacts && actor ? inviteCandidates(host.contacts, actor.pubkey) : [];
+  const candidates = picking ? allCandidates : [];
+  // From a link: the contact it names, when they are among the people this persona can invite (whether or not the list is
+  // open). They go first and are marked.
+  const suggested = prefillOn && prefill?.persona ? allCandidates.find(c => c.persona === prefill.persona) : undefined;
+  const shownCandidates = suggested ? [suggested, ...candidates.filter(c => c !== suggested)] : candidates;
+  // The game the link asked for is not one this Keep hosts: say so, rather than quietly offering another.
+  const notHosted = prefillOn && !!prefill && !offered.includes(prefill.game);
+  const notInContacts = prefillOn && !!prefill?.name && !!host.contacts && !suggested;
   // The owner personas' own games invites are managed by Used by, not listed as invites for members.
   const invites = keep.invites.filter(i => !i.gamesFor).sort((a, b) => b.createdAt - a.createdAt);
   const players = returningPlayers(keep, now);
@@ -471,7 +546,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
               </button>
             )}
             <button className="btn btn-ghost" disabled={busy} style={{ width: 'auto' }}
-              onClick={() => { void run(async () => { setKeeps(await forgetKeep(host.deps, keep.keep)); onGone(); }); }}>
+              onClick={() => { void run(async () => { setKeeps(await forgetKeep(host.deps, keep.keep)); forgetGameChoice(scope, keep.keep); onGone(); }); }}>
               Forget this Keep
             </button>
           </div>
@@ -484,6 +559,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
               : `${actor ? name(actor.pubkey) : 'This persona'} isn’t linked to this Keep.`}
             {' '}It is used and managed from {keep.personas.map(name).join(', ')}.
           </p>
+          {prefill && <p role="status" data-testid="prefill-not-linked" style={{ ...muted, margin: '8px 0 0' }}>{KEEP_INVITE_NOT_LINKED}</p>}
         </div>
       ) : !canAct ? (
         <div className="card" style={{ padding: 16 }}>
@@ -557,8 +633,9 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
                   {host.openApp ? (
                     <>
                       <p style={{ ...muted, margin: '0 0 10px' }}>
-                        Opens Stampede on this phone. Stampede must be installed and signed in as <strong>{actor.name}</strong>.
+                        Opens {gameName} on this phone. {gameName} must be installed and signed in as <strong>{actor.name}</strong>.
                       </p>
+                      {offered.length > 1 && <GamePicker games={offered} value={game} onPick={pickGameNow} testId="play-game-picker" disabled={busy} />}
                       <button className="btn btn-primary" style={{ width: 'auto' }}
                         disabled={busy || !playInvite(keep, actor.pubkey, now)} onClick={playHere}>
                         Play here
@@ -571,9 +648,20 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
                 </div>
               )}
 
-              <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
+              <div ref={whoCanPlayRef} style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
                 <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: 2 }}>Who can play</div>
                 <p style={{ ...muted, margin: '0 0 10px' }}>Only people you invite can play on this Keep.</p>
+                {offered.length > 1 && <GamePicker games={offered} value={game} onPick={pickGameNow} testId="share-game-picker" disabled={busy} />}
+                {notInContacts && (
+                  <p role="status" data-testid="prefill-note" style={{ ...muted, margin: '0 0 10px' }}>
+                    The link names “{prefill!.name}”, who isn’t in your contacts yet. You can add them, or share a guest pass instead.
+                  </p>
+                )}
+                {notHosted && (
+                  <p role="status" data-testid="prefill-game-note" style={{ ...muted, margin: '0 0 10px' }}>
+                    This Keep doesn’t host {keepGameName(prefill!.game)}.
+                  </p>
+                )}
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-primary" disabled={busy} style={{ width: 'auto' }} onClick={() => setPicking(p => !p)}>
                     Invite a friend
@@ -590,17 +678,19 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
                     ) : candidates.length === 0 ? (
                       <p style={muted}>No Kin or Kith on {actor ? name(actor.pubkey) : 'this persona'}’s contacts yet. A guest pass works for anyone.</p>
                     ) : (
-                      candidates.map(c => (
+                      shownCandidates.map(c => (
                         <button
                           key={c.contactId}
                           className="row-button"
                           disabled={busy}
                           data-testid="contact-option"
+                          aria-current={c === suggested ? 'true' : undefined}
                           onClick={() => { void makeInvite({ kind: 'personal', persona: c.persona, label: c.name }); }}
                           style={{ width: '100%', textAlign: 'left', padding: '10px 0', borderBottom: '1px solid var(--border)' }}
                         >
                           <span style={{ fontWeight: 600 }}>{c.name}</span>
                           <span style={{ ...muted, marginLeft: 8 }}>{c.tier === 'kin' ? 'Kin' : 'Kith'}</span>
+                          {c === suggested && <span style={{ ...muted, marginLeft: 8, color: 'var(--accent)' }} data-testid="contact-suggested">Selected from the link</span>}
                         </button>
                       ))
                     )}
@@ -611,7 +701,7 @@ export function KeepDetail({ host, keep, note, setKeeps, onBack, onGone }: {
               {invites.map(invite => (
                 <InviteRow
                   key={invite.grant} invite={invite} now={now} busy={busy}
-                  onShare={i => { void run(async () => { shareOutcome(await shareInviteLink(keepShareLink(keep.keep, i.secret))); }); }}
+                  onShare={i => { void run(async () => { shareOutcome(await shareInviteLink(keepShareLink(keep.keep, i.secret, game))); }); }}
                   onResend={i => { void run(async () => { setMessage((await resendInvite(host.deps, keep, i, actor?.pubkey)) ? 'Sent again.' : 'Couldn’t reach the Keep.'); }); }}
                   onRevoke={i => { void run(async () => {
                     const sent = await revokeInvite(host.deps, keep.keep, i.grant, actor?.pubkey);

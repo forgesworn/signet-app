@@ -1,14 +1,18 @@
 /**
  * The pairing link a Keep shows on its own box (K1d contract):
  *
- *   signet-keep:pair?k=<K hex>&c=<code 32 hex>&n=<name>&r=<wss URL>[&r=...]
+ *   signet-keep:pair?k=<K hex>&c=<code 32 hex>&n=<name>&r=<wss URL>[&r=...][&g=<scheme>,<scheme>...]
  *
  * One to three `r` values, `wss://` only. Parsing is strict: anything else is
  * not a Keep link. Relays are NOT held to the handshake's public-host rule,
  * because a Keep's relay may legitimately be one the owner runs at home.
+ *
+ * `g` is optional and read tolerantly: comma-separated game schemes, of which only allowlisted ones are kept
+ * (see `keep-games.ts`). A link without it, or with a bad one, is still a valid pairing link.
  */
 import { sanitizeDisplayName } from './text-sanitize';
 import { isValidRelayUrl } from './relay-url';
+import { parseGamesParam } from './keep-games';
 
 export interface KeepPairLink {
   /** The Keep's key, lowercase hex. */
@@ -17,6 +21,8 @@ export interface KeepPairLink {
   code: string;
   name: string;
   relays: string[];
+  /** The games the Keep says it hosts (allowlisted schemes only); absent when the link did not say. */
+  games?: string[];
 }
 
 const PREFIX = 'signet-keep:pair?';
@@ -45,5 +51,6 @@ export function parseKeepPairLink(raw: string): KeepPairLink | null {
   }
   if (new Set(relays).size !== relays.length) return null;
   const name = sanitizeDisplayName(params.get('n') ?? '', KEEP_NAME_MAX).trim();
-  return { keep, code, name: name || 'Your Keep', relays };
+  const g = params.getAll('g');
+  return { keep, code, name: name || 'Your Keep', relays, ...(g.length > 0 ? { games: parseGamesParam(g.join(',')) } : {}) };
 }
