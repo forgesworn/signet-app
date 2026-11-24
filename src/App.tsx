@@ -11572,10 +11572,11 @@ function AppContent() {
     || (page === 'approve-verification' && !!pendingVerifyRequest);
   const keepInviteOtherPrompt = approvalPageOpen || showAuthPrompt || !!relayProfileAsk || !!bunkerPendingApproval || sheetChildAsks.length > 0 || !!nip55.pending || !!pendingAuthRequest;
   const keepInviteLink = useKeepInviteLink({
-    loading: identityLoading || prefsLoading || dependantsLoading,
+    // Child mode still being read at start-up ('unknown') waits, as a contact invite does; once on, the link is dropped.
+    loading: identityLoading || prefsLoading || dependantsLoading || childModeNow === 'unknown',
     hasIdentity: !!identity,
     pairedChild: isPairedChild,
-    dependantActive: !!activeDependant || childDirect,
+    dependantActive: !!activeDependant || childDirect || childModeNow === 'on',
     unlocked: !!encryptionKey && !!identity && !identity.encrypted,
     // A PIN prompt, a sign-in or signing approval, or a phone app's request comes first; the question waits for them to go.
     otherPromptOpen: keepInviteOtherPrompt,
@@ -12241,10 +12242,10 @@ function AppContent() {
   ) : null;
   const topBannersFor = (signer: React.ReactNode) => (updateBanner || signer || syncBackupBanner || privateVaultApprovalBanner || ownerAgainBanner
     || contactsBackupTooLargeBanner
-    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || keepInviteNoticeBanner || childModeInviteDroppedBanner || addDependantRefusedBanner || appPermissionNoticeBanner
+    || contactsGrantsBackupBanner || contactsGrantsSkippedBanner || contactsGrantPairedChildBanner || nativeLinkNothingToOpenBanner || childModeInviteDroppedBanner || keepInviteNoticeBanner || addDependantRefusedBanner || appPermissionNoticeBanner
     || personasSkippedBanner || restoreNoBackupBanner || childApprovalsBanner) ? (
     <div className="app-notices">{updateBanner}{signer}{syncBackupBanner}{privateVaultApprovalBanner}{ownerAgainBanner}{contactsBackupTooLargeBanner}
-      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{keepInviteNoticeBanner}{childModeInviteDroppedBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
+      {contactsGrantsBackupBanner}{contactsGrantsSkippedBanner}{contactsGrantPairedChildBanner}{nativeLinkNothingToOpenBanner}{childModeInviteDroppedBanner}{keepInviteNoticeBanner}{addDependantRefusedBanner}{appPermissionNoticeBanner}
       {personasSkippedBanner}{restoreNoBackupBanner}{childApprovalsBanner}</div>
   ) : null;
   const topBanners = topBannersFor(signerBanner);
