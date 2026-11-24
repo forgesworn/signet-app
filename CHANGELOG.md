@@ -3,8 +3,10 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
-## Unreleased
+## 0.31.0
 
+- Keeps: a Keep owner can share an invite link for any game the Keep hosts, and opening the link goes straight to the invite screen with the game and person filled in. My Signet asks before a link opens a Keep, so another app can't make your phone contact a Keep's relays. In child mode an invite link is dropped
+- Android apps that sign through My Signet can now be approved for more than one persona, and each approval can be forgotten on its own in Where you're known
 - NIP-05 Check now always fetches your site's current nostr.json, so after you fix the address on your website the Check shows the new answer straight away instead of the old one for up to a couple of days
 
 ## 0.30.0
