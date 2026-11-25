@@ -745,7 +745,7 @@ function AppContent() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName: updateDisplayNameRaw, addPersona: addPersonaRaw, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -800,6 +800,19 @@ function AppContent() {
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
   const isPairedChild = preferences.signingMode === 'paired-child';
+
+  // A child's phone never renames a persona or adds one: the guardian names
+  // and creates them on their phone (the persona inventory brings them here).
+  // The UI already withholds both; these are the second lock, so no screen,
+  // deep link or future caller can reach the writes.
+  const updateDisplayName = useCallback((...args: Parameters<typeof updateDisplayNameRaw>): ReturnType<typeof updateDisplayNameRaw> => {
+    if (isPairedChild) return Promise.reject(new Error(CHILD_SIDE_COPY.namesGuardianManaged));
+    return updateDisplayNameRaw(...args);
+  }, [isPairedChild, updateDisplayNameRaw]);
+  const addPersona = useCallback((...args: Parameters<typeof addPersonaRaw>): ReturnType<typeof addPersonaRaw> => {
+    if (isPairedChild) return Promise.reject(new Error(CHILD_SIDE_COPY.guardianManages));
+    return addPersonaRaw(...args);
+  }, [isPairedChild, addPersonaRaw]);
 
   // M1 (2026-07-02 audit): AppPreferences.bunkerUri carries a reusable
   // NIP-46 reauth secret and is encrypted at rest (see db.savePreferences).
@@ -12940,6 +12953,7 @@ function AppContent() {
         <Profile
           identity={identity!}
           onUpdateName={async (name) => { await updateDisplayName(name, encryptionKey!); }}
+          nameManagedNote={isPairedChild ? CHILD_SIDE_COPY.namesGuardianManaged : undefined}
           onUpdatePhoto={() => navigateTo('photo-capture')}
           ownBadge={ownBadge}
           knownPlaceCount={knownPlaceCountActive}
@@ -16030,7 +16044,7 @@ function AppContent() {
         dependantsCount={dependants.length}
         isPairedChild={isPairedChild}
         blurIdentityNames={blurIdentityNames}
-        onRenameActive={async (target, name) => {
+        onRenameActive={isPairedChild ? undefined : async (target, name) => {
           // `target` is the slot of the row that was edited (Carousel resolves
           // it via `resolveRenameTarget`), NOT `identity.primaryKeypair` — on a
           // persona-primary install those differ, and naming a nameless real

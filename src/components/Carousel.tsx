@@ -384,7 +384,7 @@ function renderCard(
             recentSignInLabel={recentSignInLabel}
             blurIdentityNames={props.blurIdentityNames}
             rowIndex={rowIndex}
-            onRenameActive={renameTarget && props.onRenameActive && !foreign
+            onRenameActive={renameTarget && props.onRenameActive && !foreign && !props.isPairedChild
               ? (name: string) => props.onRenameActive!(renameTarget, name)
               : undefined}
           />

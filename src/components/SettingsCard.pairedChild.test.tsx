@@ -33,6 +33,13 @@ function renderCard(isPairedChild: boolean) {
 afterEach(cleanup);
 
 describe('SettingsCard on a child\'s own phone', () => {
+  it('shows the persona name plain with the guardian-manages line, and no editor', () => {
+    renderCard(true);
+    expect(screen.getByText('Sky', { selector: '.slot-name-value' })).toBeTruthy();
+    expect(screen.getByText(CHILD_SIDE_COPY.namesGuardianManaged)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  });
+
   it('shows the public profile fields read only, with the guardian-only line and no save', () => {
     const { container } = renderCard(true);
     expect(screen.getByRole('note').textContent).toBe(CHILD_SIDE_COPY.publicProfileGuardianOnly);
@@ -45,6 +52,7 @@ describe('SettingsCard on a child\'s own phone', () => {
   it('is unchanged for the guardian: editable name and public fields', () => {
     const { container } = renderCard(false);
     expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy();
+    expect(screen.queryByText(CHILD_SIDE_COPY.namesGuardianManaged)).toBeNull();
     expect(screen.queryByText(CHILD_SIDE_COPY.publicProfileGuardianOnly)).toBeNull();
     expect(container.querySelectorAll('input:not([disabled]), textarea:not([disabled])').length).toBeGreaterThan(0);
   });

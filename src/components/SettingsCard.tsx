@@ -459,6 +459,34 @@ export function InlineAvatarRow({
   );
 }
 
+function ownNameLabel(slotKind: SlotKind): string {
+  return slotKind === 'natural-person'
+    ? 'Natural Person name'
+    : slotKind === 'persona'
+      ? 'Default persona name'
+      : slotKind === 'professional-persona'
+        ? 'Professional persona name'
+        : 'Persona name';
+}
+
+/**
+ * The name where the editor would be, on a child's own phone: shown plain,
+ * with the one line that says whose it is to change.
+ */
+function ReadOnlyNameRow({ currentName, label }: { currentName: string; label: string }) {
+  return (
+    <div className="row slot-name-row">
+      <div className="row-main">
+        <span className="row-sub">{label}</span>
+        <span className={`slot-name-value${currentName ? '' : ' slot-name-value--unset'}`}>
+          {currentName || 'Not set'}
+        </span>
+        <span className="row-sub">{CHILD_SIDE_COPY.namesGuardianManaged}</span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Inline name editor — used at the top of the persona section. Same shape
  * as the editor in Personas.tsx + GuardianSettings.tsx so we keep the UX
@@ -736,15 +764,11 @@ export function SettingsCard({
     if (!slot) return null;
 
     if (slot.scope === 'own') {
-      if (!onUpdateOwnPersonaName || !slot.ownTarget) return null;
-      const label =
-        slot.slotKind === 'natural-person'
-          ? 'Natural Person name'
-          : slot.slotKind === 'persona'
-            ? 'Default persona name'
-            : slot.slotKind === 'professional-persona'
-              ? 'Professional persona name'
-              : 'Persona name';
+      if (!slot.ownTarget) return null;
+      // A child's own phone: the guardian names the personas, so the name is plain text.
+      if (isPairedChild) return <ReadOnlyNameRow currentName={slot.config.displayName} label={ownNameLabel(slot.slotKind)} />;
+      if (!onUpdateOwnPersonaName) return null;
+      const label = ownNameLabel(slot.slotKind);
       const target = slot.ownTarget;
       return (
         <InlineNameEditor

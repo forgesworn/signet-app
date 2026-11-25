@@ -530,3 +530,11 @@ describe('IdentityCard — who signs for a paired child', () => {
     expect(screen.queryByText('Connecting to your family Heartwood…')).toBeNull();
   });
 });
+
+describe('IdentityCard — an unnamed persona on a child\'s phone', () => {
+  it('shows the fallback name plain: the carousel withholds onRenameActive there', () => {
+    const { container } = render(<IdentityCard row={unnamedOwnerRow} resolved={unnamedResolved} childMode={false} />);
+    expect(screen.queryByPlaceholderText('Add your name / handle')).toBeNull();
+    expect(container.querySelector('.card-name')?.textContent).toBe('Persona');
+  });
+});

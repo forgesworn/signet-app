@@ -16,6 +16,8 @@ interface Props {
   onGoToProfessional?: () => void;
   /** Save an updated Professional persona display name and re-publish kind-0. */
   onSaveProName?: (name: string) => void;
+  /** Set on a child's own phone: the name is shown plain, with this line, and cannot be edited. */
+  nameManagedNote?: string;
 }
 
 export function Profile({
@@ -28,6 +30,7 @@ export function Profile({
   onNavigateBadgeEmbed,
   onGoToProfessional,
   onSaveProName,
+  nameManagedNote,
 }: Props) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(identity.naturalPerson.displayName);
@@ -55,7 +58,9 @@ export function Profile({
 
         <div className="row">
           <span>Name</span>
-          {tierLocked ? (
+          {nameManagedNote ? (
+            <span className="row-meta">{identity.naturalPerson.displayName}</span>
+          ) : tierLocked ? (
             <span className="row-meta">{identity.naturalPerson.displayName} (locked)</span>
           ) : editingName ? (
             <div style={{ display: 'flex', gap: 6 }}>
@@ -75,6 +80,7 @@ export function Profile({
             </button>
           )}
         </div>
+        {nameManagedNote && <p className="row-sub" role="note" style={{ margin: '0 0 8px' }}>{nameManagedNote}</p>}
 
         <div className="row">
           <span>Verification photo</span>
