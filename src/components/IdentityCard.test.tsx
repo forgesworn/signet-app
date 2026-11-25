@@ -420,11 +420,31 @@ describe('IdentityCard — backdrop control', () => {
     expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
   });
 
-  it('hides the backdrop control on dependant and dormant cards', () => {
+  it('offers the backdrop control on a guardian\'s dependant card and in child mode', () => {
     const { rerender } = render(
       <IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode={false} />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+    rerender(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+  });
+
+  it('offers it on a child\'s own phone, dormant or not', () => {
+    const { rerender } = render(
+      <IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} childDormant childSignerKind="heartwood" />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+    rerender(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} childDormant childSignerKind="guardian-phone" />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+    rerender(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} childSignerKind="heartwood" />);
+    expect(screen.getByRole('button', { name: 'Customise card backdrop' })).toBeDefined();
+  });
+
+  it('hides it once the guardian has unpaired this phone, on a foreign card and on a card with no key', () => {
+    const { rerender } = render(
+      <IdentityCard row={ownerRow} resolved={ownerResolved} childMode={false} childDormant childSignerKind="unpaired" />);
     expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
-    rerender(<IdentityCard row={dependantRow()} resolved={resolvedLily()} childMode childDormant />);
+    rerender(<IdentityCard row={ownerRow} resolved={ownerResolved} childMode foreign />);
+    expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
+    rerender(<IdentityCard row={ownerRow} resolved={{ ...ownerResolved, publicKey: '' }} childMode={false} />);
     expect(screen.queryByRole('button', { name: 'Customise card backdrop' })).toBeNull();
   });
 

@@ -817,6 +817,7 @@ export function SettingsCard({
           <div className="settings-label" style={{ marginTop: 12 }}>Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
+            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -834,6 +835,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
+            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -843,7 +845,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -870,7 +872,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>

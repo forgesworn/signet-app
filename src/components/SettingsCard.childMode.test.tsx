@@ -42,7 +42,8 @@ describe.each(['dependant', 'persona', 'extra'] as const)('SettingsCard on the c
     const { container } = renderCard(kind, true);
     expect(screen.queryByRole('button', { name: /^(save|publish|set photo|change photo|remove photo|check)/i })).toBeNull();
     expect(screen.queryByText(/^(Name|Default persona name|Persona name)$/)).toBeNull();
-    for (const input of Array.from(container.querySelectorAll('input, textarea'))) {
+    // The card backdrop row's hidden file picker is cosmetic and device-local, so it stays.
+    for (const input of Array.from(container.querySelectorAll('input:not([type="file"]), textarea'))) {
       expect((input as HTMLInputElement).disabled || (input as HTMLInputElement).readOnly, input.outerHTML).toBe(true);
     }
   });
