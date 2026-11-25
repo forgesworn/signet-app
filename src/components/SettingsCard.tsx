@@ -11,6 +11,7 @@ import { CardBackdropRow } from './CardBackdropRow';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
 import { armPickerGrace } from '../lib/picker-grace';
+import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
 import { useCarouselArrows } from './CarouselArrowContext';
 import type { DeleteOutcome } from '../lib/blob-deletion';
 
@@ -624,6 +625,10 @@ export function SettingsCard({
   // public profile and its publishing spend the guardian's consent and
   // network and need no PIN, so the child sees them read only.
   const pairedChildViewForSlot = (isPairedChild || childMode) && isDepRow;
+  // A child's own phone never publishes, retracts or edits a persona's public
+  // profile; the guardian does that on their phone. Distinct from
+  // `pairedChildViewForSlot` so the name and avatar rows keep their own rules.
+  const publicProfileReadOnly = pairedChildViewForSlot || isPairedChild;
 
   function renderInlineSlotEditor() {
     if (!slot) return null;
@@ -655,7 +660,7 @@ export function SettingsCard({
     // onNip05Checked undefined there so SlotProfileFields hides the Check
     // button rather than writing a check result the kid has no consequential
     // control over (mirrors the rest of this read-only view).
-    const onNip05CheckedForSlot = pairedChildViewForSlot
+    const onNip05CheckedForSlot = publicProfileReadOnly
       ? undefined
       : slot.scope === 'own' && slot.ownTarget && onNip05Checked
         ? (result: import('../lib/nip05-check').Nip05CheckResult, checkedAt: number) =>
@@ -673,14 +678,16 @@ export function SettingsCard({
         publishedBase={slot.publishedBase}
         slotKind={slot.slotKind}
         imported={slot.imported}
-        pairedChildView={pairedChildViewForSlot}
-        readOnlyNote={childMode && !isPairedChild ? CHILD_MODE_PROFILE_NOTE : undefined}
+        pairedChildView={publicProfileReadOnly}
+        readOnlyNote={isPairedChild && !pairedChildViewForSlot
+          ? CHILD_SIDE_COPY.publicProfileGuardianOnly
+          : childMode && !isPairedChild ? CHILD_MODE_PROFILE_NOTE : undefined}
         defaultBlossomUrl={defaultBlossomUrl}
         blossomConsent={blossomConsent}
         onSaveConfig={onSaveConfig}
         onPublishNow={onPublishNow}
         onUploadPicture={onUploadPicture}
-        onDeleteBlob={pairedChildViewForSlot ? undefined : onDeletePublicBlob}
+        onDeleteBlob={publicProfileReadOnly ? undefined : onDeletePublicBlob}
         onNip05Checked={onNip05CheckedForSlot}
       />
     );

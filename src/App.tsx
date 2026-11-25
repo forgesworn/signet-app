@@ -8216,6 +8216,8 @@ function AppContent() {
     if (!identity) return { ok: false, message: 'No identity loaded.' };
     // A42: never from a direct child's phone.
     if (childDirect) return { ok: false, message: CHILD_SIDE_COPY.guardianManages };
+    // A public profile is published only from the guardian's phone, never a child's.
+    if (isPairedChild) return { ok: false, message: CHILD_SIDE_COPY.publicProfileGuardianOnly };
     const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
 
 	    // Resolve the slot config + state + signing key.
@@ -8416,7 +8418,7 @@ function AppContent() {
       if (nameFromRelay) await updateDisplayName(slotTarget, nameFromRelay);
     }
     return { ok: true };
-	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect, askRelayProfileChoice]);
+	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect, isPairedChild, askRelayProfileChoice]);
 
   /**
    * Phase 2F shared retract helper. Mirror of `publishPersonaProfile`:
@@ -8436,6 +8438,7 @@ function AppContent() {
   ): Promise<void> => {
     if (!identity) return;
     if (childDirect) return; // A42
+    if (isPairedChild) throw new Error(CHILD_SIDE_COPY.publicProfileGuardianOnly);
     let slot:
       | { publicKey: string; privateKey: string; publicProfile?: import('./types').PersonaPublicProfile }
       | undefined;
@@ -8485,7 +8488,7 @@ function AppContent() {
     } else {
       await clearPersonaPublicProfile(slotTarget);
     }
-  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter, childDirect]);
+  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter, childDirect, isPairedChild]);
 
   const handleRetryConnect = useCallback(async () => {
     if (!encryptionKey) return;
@@ -13524,6 +13527,7 @@ function AppContent() {
         onDisablePublicProfile={async () => {
           await retractPersonaProfile(slotTarget, depPubkey);
         }}
+        publicProfileGuardianOnly={isPairedChild}
         onRepublish={async () => {
           // Republish is the already-enabled path: same publisher, no
           // confirm modal (PersonaAdvanced fires this directly). The
@@ -16040,6 +16044,7 @@ function AppContent() {
         // the kind-0 editor + name editor inline. Phase 3 of the persona-
         // card-as-source-of-truth refactor. ───
         onSavePersonaConfig={async (target, config) => {
+          if (isPairedChild) throw new Error(CHILD_SIDE_COPY.publicProfileGuardianOnly);
           if (!identity) return;
           let currentState: import('./types').PersonaPublicProfile | undefined;
           if (target === 'natural-person') currentState = identity.naturalPerson.publicProfile;
@@ -16053,8 +16058,9 @@ function AppContent() {
           if (!result.ok) throw new Error(result.message || 'Republish failed.');
         }}
         // R2/R4: picture/banner blobs this install uploaded and no stored slot references any more.
-        onDeletePublicBlob={(hash, server) => deleteOwnBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, hash, server)}
+        onDeletePublicBlob={isPairedChild ? undefined : (hash, server) => deleteOwnBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, hash, server)}
         onUploadPersonaPicture={async (file, kind, crop) => {
+          if (isPairedChild) throw new Error(CHILD_SIDE_COPY.publicProfileGuardianOnly);
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
           if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');

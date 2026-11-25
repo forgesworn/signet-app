@@ -30,6 +30,7 @@ import { BACKUP_WORDS_ON_SIGNER } from '../lib/local-key-only-copy';
 import { resolveAuditVisibility } from '../lib/audit-visibility';
 import { isDependantNaturalPersonActive, isNaturalPersonActive, REAL_IDENTITY_DORMANT_PRIMARY_COPY } from '../lib/identity-display';
 import { resolveDependantCardSlot } from '../lib/carousel-utils';
+import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
 import type { DependantContactsChoice } from '../lib/contacts-v2-removal';
 import {
   ARCHIVE_CONTACTS_LABEL, DELETE_CONTACTS_LABEL, DEPENDANT_CONTACTS_SECTION_TITLE,
@@ -63,6 +64,12 @@ export interface PersonaAdvancedProps {
     typedNameValue?: string,
   ) => Promise<{ ok: boolean; message?: string }>;
   onDisablePublicProfile: () => Promise<void>;
+  /**
+   * True on a child's own phone: the public profile is the guardian's to
+   * publish, republish and retract, from their phone, so the block shows its
+   * status read-only and offers none of those controls.
+   */
+  publicProfileGuardianOnly?: boolean;
   onRepublish?: () => Promise<{ ok: boolean; message?: string }>;
   /**
    * "Check Nostr for an existing profile" — runs the multi-relay lookup for
@@ -427,7 +434,7 @@ export function PersonaAdvanced(props: PersonaAdvancedProps) {
           hidden={!!slot.hidden}
           onShowPersona={props.onShowPersona}
           onHidePersona={props.onHidePersona}
-          onRetractExtraPersonaProfile={props.onRetractExtraPersonaProfile}
+          onRetractExtraPersonaProfile={props.publicProfileGuardianOnly ? undefined : props.onRetractExtraPersonaProfile}
         />
       )}
 
@@ -493,6 +500,7 @@ function PublishBlock({
   onRepublish,
   onCheckExistingProfile,
   onMatchExistingProfile,
+  publicProfileGuardianOnly = false,
 }: PublishBlockProps) {
   const enabled = !!slot.publicProfile?.enabled;
   const lastAt = slot.publicProfile?.lastPublishedAt;
@@ -645,7 +653,13 @@ function PublishBlock({
         )}
       </div>
 
-      {!enabled && found && (
+      {publicProfileGuardianOnly && (
+        <p role="note" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+          {CHILD_SIDE_COPY.publicProfileGuardianOnly}
+        </p>
+      )}
+
+      {!publicProfileGuardianOnly && !enabled && found && (
         <ExistingProfilePanel profile={found.profile}>
           <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '10px 0 0' }}>
             Matching replaces this card&rsquo;s name, bio and picture with the ones on Nostr. Nothing is published.
@@ -661,7 +675,7 @@ function PublishBlock({
         </ExistingProfilePanel>
       )}
 
-      {!enabled && (
+      {!publicProfileGuardianOnly && !enabled && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
             className="btn btn-primary"
@@ -684,7 +698,7 @@ function PublishBlock({
         </div>
       )}
 
-      {enabled && (
+      {!publicProfileGuardianOnly && enabled && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {onRepublish && (
             <button className="btn btn-secondary" onClick={() => { void runRepublish(); }} disabled={busy}>
