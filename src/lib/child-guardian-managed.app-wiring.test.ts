@@ -61,3 +61,10 @@ describe('a child\'s phone cannot delete a persona, add one at sign-in, or take 
     expect(carousel).toMatch(/<SettingsCard[^]*?childSignerKind=\{props\.childSignerKind\}/);
   });
 });
+
+describe('Profile page name save', () => {
+  it('passes the target first, then the name', () => {
+    expect(app).toContain("onUpdateName={async (name) => { await updateDisplayName('natural-person', name); }}");
+    expect(app).not.toContain('updateDisplayName(name, encryptionKey!)');
+  });
+});

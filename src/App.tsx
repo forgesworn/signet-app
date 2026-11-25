@@ -12953,7 +12953,7 @@ function AppContent() {
       <Layout title="Profile" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <Profile
           identity={identity!}
-          onUpdateName={async (name) => { await updateDisplayName(name, encryptionKey!); }}
+          onUpdateName={async (name) => { await updateDisplayName('natural-person', name); }}
           nameManagedNote={isPairedChild ? CHILD_SIDE_COPY.namesGuardianManaged : undefined}
           onUpdatePhoto={() => navigateTo('photo-capture')}
           ownBadge={ownBadge}
