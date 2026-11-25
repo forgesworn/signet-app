@@ -661,7 +661,7 @@ export function SlotProfileFields({
             showPreview={showPicturePreview}
             uploading={uploadingPicture}
             hostname={hostFromUrl(pictureUrl)}
-            onPick={onUploadPicture ? (file, crop) => handleUpload('picture', file, crop) : undefined}
+            onPick={onUploadPicture && !pairedChildView ? (file, crop) => handleUpload('picture', file, crop) : undefined}
             onPickError={setError}
             onPasteUrl={handlePastedPictureUrl}
             onShowPreview={() => setShowPicturePreview(true)}
@@ -677,7 +677,7 @@ export function SlotProfileFields({
             showPreview={showBannerPreview}
             uploading={uploadingBanner}
             hostname={hostFromUrl(bannerUrl)}
-            onPick={onUploadPicture ? (file) => handleUpload('banner', file) : undefined}
+            onPick={onUploadPicture && !pairedChildView ? (file) => handleUpload('banner', file) : undefined}
             onPickError={setError}
             onPasteUrl={handlePastedBannerUrl}
             onShowPreview={() => setShowBannerPreview(true)}

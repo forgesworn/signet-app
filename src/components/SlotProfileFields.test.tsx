@@ -132,6 +132,16 @@ describe('SlotProfileFields', () => {
     expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull();
   });
 
+  it('paired-child view offers no Upload buttons for picture or banner, but the editable view does', () => {
+    const props = { pubkey: PUBKEY, config: baseConfig(), slotKind: 'natural-person' as const, onSaveConfig: vi.fn().mockResolvedValue(undefined), onUploadPicture: vi.fn() };
+    const { unmount } = render(<SlotProfileFields {...props} pairedChildView />);
+    expect(screen.queryByText(/^(Upload|Change)…$/)).toBeNull();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
+    unmount();
+    render(<SlotProfileFields {...props} />);
+    expect(screen.getAllByText(/^(Upload|Change)…$/).length).toBe(2);
+  });
+
   it('Save triggers onSaveConfig with the latest form values', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(
