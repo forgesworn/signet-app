@@ -226,3 +226,27 @@ describe('PersonaAdvanced public profile — child\'s phone vs guardian', () => 
     expect(screen.queryByText(PUBLISHED_COPY)).toBeNull();
   });
 });
+
+describe('PersonaAdvanced delete persona — child\'s phone vs owner', () => {
+  const EXTRA = 'e'.repeat(64);
+  const withExtra: SignetIdentity = {
+    ...identity,
+    extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer', derivationName: 'persona-2' }],
+  } as SignetIdentity;
+
+  function renderExtra(props: Record<string, unknown>) {
+    render(<PersonaAdvanced slotTarget={EXTRA} identity={withExtra} dependants={[]} onBack={() => {}}
+      onPublishProfile={vi.fn(async () => ({ ok: true }))} onDisablePublicProfile={vi.fn(async () => {})} {...props} />);
+  }
+
+  it('offers Delete persona when a delete handler is passed', () => {
+    renderExtra({ onDeletePersona: vi.fn(async () => {}) });
+    expect(screen.getByRole('button', { name: 'Delete persona' })).toBeTruthy();
+  });
+
+  it('shows no Delete persona block when the handler is withheld (a child\'s phone)', () => {
+    renderExtra({ onDeletePersona: undefined });
+    expect(screen.queryByRole('button', { name: 'Delete persona' })).toBeNull();
+    expect(screen.queryByText('Delete persona')).toBeNull();
+  });
+});

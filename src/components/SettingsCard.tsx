@@ -12,6 +12,7 @@ import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
 import { armPickerGrace } from '../lib/picker-grace';
 import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
+import type { ChildSignerKind } from '../lib/child-bunker';
 import { useCarouselArrows } from './CarouselArrowContext';
 import type { DeleteOutcome } from '../lib/blob-deletion';
 
@@ -34,6 +35,11 @@ interface Props {
    * has no Advanced-page actions to perform here. Default false.
    */
   isPairedChild?: boolean;
+  /**
+   * Which signer covers a paired-child device. `'unpaired'` hides the card backdrop
+   * row, matching the identity card (the device has been cut loose from its guardian).
+   */
+  childSignerKind?: ChildSignerKind;
   onNavigateDeepPage: (page: string, opts?: {
     focusPersona?: string;
     dependantId?: string;
@@ -594,6 +600,7 @@ export function SettingsCard({
   row,
   childMode,
   isPairedChild = false,
+  childSignerKind,
   onNavigateDeepPage,
   dependantsCount,
   defaultBlossomUrl,
@@ -848,7 +855,7 @@ export function SettingsCard({
           <div className="settings-label" style={{ marginTop: 12 }}>Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -866,7 +873,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -876,7 +883,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -903,7 +910,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot?.pubkey && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>

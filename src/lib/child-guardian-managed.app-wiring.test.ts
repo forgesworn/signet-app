@@ -42,3 +42,22 @@ describe('a child\'s phone cannot publish, edit or rename (App.tsx handlers)', (
     expect(app).toMatch(/onSaveDepPersonaConfig=\{async \(depPubkey, target, config\) => \{\n\s+const dep = dependants\.find/);
   });
 });
+
+describe('a child\'s phone cannot delete a persona, add one at sign-in, or take the guardian\'s profile down (App.tsx)', () => {
+  it('withholds the delete handler and refuses inside it', () => {
+    expect(app).toContain('onDeletePersona={isPairedChild ? undefined : async (pubkey) => {');
+    expect(app).toMatch(/onDeletePersona=\{isPairedChild \? undefined : async \(pubkey\) => \{\n[^\n]*\n\s+if \(childDirect \|\| isPairedChild\) throw new Error\(CHILD_SIDE_COPY\.guardianManages\);/);
+  });
+
+  it('withholds Add persona now from the sign-in picker', () => {
+    expect(app).toContain('onAddPersona: isPairedChild ? undefined : async (displayName: string) => {');
+  });
+
+  it('never publishes a Nostr takedown on delete-identity from a child\'s phone', () => {
+    expect(app).toContain('if (takeDownOnNostr && identity && !childDirect && !isPairedChild) {');
+  });
+
+  it('passes the unpaired state to the settings card through the carousel', () => {
+    expect(carousel).toMatch(/<SettingsCard[^]*?childSignerKind=\{props\.childSignerKind\}/);
+  });
+});

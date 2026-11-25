@@ -43,9 +43,9 @@ const rowsByName: Record<string, CarouselRow> = {
   'natural-person': { type: 'natural-person', identity },
 } as unknown as Record<string, CarouselRow>;
 
-function renderCard(row: CarouselRow, extra: { childMode: boolean; isPairedChild?: boolean }) {
+function renderCard(row: CarouselRow, extra: { childMode: boolean; isPairedChild?: boolean; childSignerKind?: ComponentProps<typeof SettingsCard>['childSignerKind'] }) {
   const props = {
-    resolved: resolveActiveIdentity(row), row, childMode: extra.childMode, isPairedChild: extra.isPairedChild ?? false,
+    resolved: resolveActiveIdentity(row), row, childMode: extra.childMode, isPairedChild: extra.isPairedChild ?? false, childSignerKind: extra.childSignerKind,
     onNavigateDeepPage: vi.fn(), dependantsCount: 1,
   } as unknown as ComponentProps<typeof SettingsCard>;
   return render(<SettingsCard {...props} />);
@@ -84,5 +84,17 @@ describe('Card backdrop row in the settings column', () => {
     const bare = { ...dependant('persona'), persona: { publicKey: '', privateKey: '', displayName: '' }, naturalPerson: { publicKey: '', privateKey: '', displayName: 'Lily' } };
     renderCard({ type: 'dependant', dependant: bare } as unknown as CarouselRow, { childMode: false });
     expect(screen.queryByTestId('backdrop-row')).toBeNull();
+  });
+});
+
+describe('Card backdrop row on a child\'s phone that has been unpaired', () => {
+  it.each(Object.keys(rowsByName).filter(n => !n.startsWith('dependant')))('%s hides the row, as the identity card does', name => {
+    renderCard(rowsByName[name], { childMode: false, isPairedChild: true, childSignerKind: 'unpaired' });
+    expect(screen.queryByTestId('backdrop-row')).toBeNull();
+  });
+
+  it('keeps the row while the child is still paired', () => {
+    renderCard(rowsByName.persona, { childMode: false, isPairedChild: true, childSignerKind: 'heartwood' });
+    expect(screen.getByTestId('backdrop-row')).toBeTruthy();
   });
 });

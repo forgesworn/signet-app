@@ -7463,7 +7463,8 @@ function AppContent() {
     // A42: a direct child signs nothing here — its slots live on the family
     // Heartwood behind the gate, and the guardian manages their profiles.
     // The whole block is opt-in: a phone-only removal publishes nothing.
-    if (takeDownOnNostr && identity && !childDirect) {
+    // A paired child's phone holds none of the guardian's published profiles to take down.
+    if (takeDownOnNostr && identity && !childDirect && !isPairedChild) {
       const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
       const retractions: Array<Promise<unknown>> = [];
 
@@ -13635,9 +13636,9 @@ function AppContent() {
             await retractPersonaProfile(pubkey, depPubkey);
           } catch { /* §6.10 best-effort */ }
         }}
-        onDeletePersona={async (pubkey) => {
+        onDeletePersona={isPairedChild ? undefined : async (pubkey) => {
           // A42: a child's personas are the guardian's to remove.
-          if (childDirect) throw new Error(CHILD_SIDE_COPY.guardianManages);
+          if (childDirect || isPairedChild) throw new Error(CHILD_SIDE_COPY.guardianManages);
           // §9 Q8: 5s race budget for retract-before-purge, then hard-delete.
           // Resolve the extra to check for a published profile we should
           // try to retract first.
@@ -14795,7 +14796,8 @@ function AppContent() {
       preferPersonaForSignIns,
       preferredPersonaPubkey,
       originMemory: originPolicyForRequest,
-      onAddPersona: async (displayName: string) => {
+      // A child's phone cannot add personas (the guardian does), so the picker must not offer the button.
+      onAddPersona: isPairedChild ? undefined : async (displayName: string) => {
         const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
         if (!key) throw new Error('Authentication required');
         return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });

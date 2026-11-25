@@ -420,6 +420,7 @@ function renderCard(
             row={row}
             childMode={props.childMode}
             isPairedChild={props.isPairedChild ?? false}
+            childSignerKind={props.childSignerKind}
             onNavigateDeepPage={props.onNavigateDeepPage}
             dependantsCount={props.dependantsCount ?? 0}
             defaultBlossomUrl={props.defaultBlossomUrl}
