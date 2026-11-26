@@ -489,8 +489,8 @@ import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
 import { PAGE_AUTH_CONTEXTS, type PurposeContext } from './lib/auth-purposes';
-import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, loadDependantSignInFacts, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
-import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
+import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, loadDependantSignInFacts, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
+import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences, restoreDependantPrivateKeys } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
 import { deriveDependantOnDevice, deriveExtraPersonaOnDevice, trackDeviceDerive } from './lib/heartwood-dependant-create';
 import type { HeartwoodRequestFn } from './lib/heartwood-dependant-create';
@@ -931,7 +931,7 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
 
@@ -2135,14 +2135,15 @@ function AppContent() {
       try {
         for (const { dep, seed } of work) {
           for (const r of seed) await saveChildRule(r, key);
-          const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-          if (fresh?.childDevice) await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, seedPending: undefined } }, key);
+          await mutateDependantRecord(dep.id, key, fresh => (fresh?.childDevice
+            ? { ...fresh, childDevice: { ...fresh.childDevice, seedPending: undefined } }
+            : null));
         }
         await reloadChildRules();
         await reloadDependants();
       } catch { /* retried on the next change */ } finally { seedingRef.current = false; }
     })();
-  }, [encryptionKey, isPairedChild, childRules, grantsForSync, dependants, loadFreshDependants, reloadChildRules, reloadDependants]);
+  }, [encryptionKey, isPairedChild, childRules, grantsForSync, dependants, mutateDependantRecord, reloadChildRules, reloadDependants]);
 
   useChildRulesSync({
     publishEnabled: !isPairedChild && legacyPrivateWrite('settings'),
@@ -5615,8 +5616,8 @@ function AppContent() {
   const [pendingOperatorImportText, setPendingOperatorImportText] = useState<string | null>(null);
 
   // Live values for the DEV bench helpers below (the harness effect has [] deps).
-  const benchRef = useRef({ setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants });
-  benchRef.current = { setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants };
+  const benchRef = useRef({ setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants, mutateDependantRecord });
+  benchRef.current = { setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants, mutateDependantRecord };
   // The harness effect has [] deps, so the grant-set bump is read through a
   // ref too rather than captured from the first render's closure.
   const bumpContactsGrantSetRef = useRef(bumpContactsGrantSet);
@@ -5722,13 +5723,14 @@ function AppContent() {
         bumpContactsGrantSetRef.current();
       },
       setDependantDefaultSchedule: async (pubkey: string, schedule: import('./types').GrantSchedule | undefined) => {
-        const { encryptionKey: key, dependants: deps, reloadDependants: reload } = benchRef.current;
+        const { encryptionKey: key, mutateDependantRecord: mutateDep, reloadDependants: reload } = benchRef.current;
         if (!key) throw new Error('locked');
-        const dep = deps.find(d => d.id === pubkey);
-        if (!dep) throw new Error('no such dependant');
-        const next = { ...dep } as typeof dep;
-        if (schedule) next.defaultSchedule = schedule; else delete next.defaultSchedule;
-        await saveDependant(next, key);
+        await mutateDep(pubkey, key, dep => {
+          if (!dep) throw new Error('no such dependant');
+          const next = { ...dep };
+          if (schedule) next.defaultSchedule = schedule; else delete next.defaultSchedule;
+          return next;
+        });
         await reload();
       },
     };
@@ -7930,7 +7932,9 @@ function AppContent() {
     const originalDeps = [...dependants];
     let originalPro = await loadProPersonaDecrypted(encryptionKey);
 
-    const strippedDepIds: string[] = [];
+    // Each stripped dependant as it was stored just before its strip (read in
+    // the dependant write queue), for the rollback.
+    const strippedOriginals: DependantIdentity[] = [];
     try {
       // 1. Strip the identity record — mnemonic + NP/Persona/Pro/
       // tree-derived-extras private keys whose token verified.
@@ -7950,12 +7954,13 @@ function AppContent() {
       // stripDependantKeys returns null for an imported dependant OR a
       // dependant with no verified tokens this run — leave it untouched,
       // don't save.
-      for (const dep of originalDeps) {
-        const s = stripDependantKeys(dep, verifiedTokens);
-        if (s) {
-          await saveDependant(s, encryptionKey);
-          strippedDepIds.push(dep.id);
-        }
+      for (const { id: depId } of originalDeps) {
+        let original: DependantIdentity | null = null;
+        const saved = await mutateDependantRecord(depId, encryptionKey, fresh => {
+          original = fresh;
+          return fresh ? stripDependantKeys(fresh, verifiedTokens) : null;
+        });
+        if (saved && original) strippedOriginals.push(original);
       }
     } catch (err) {
       // Rollback: best-effort, each restore in its own try so one restore
@@ -7967,11 +7972,12 @@ function AppContent() {
       if (originalPro !== null) {
         try { await saveProPersonaEncrypted(originalPro, encryptionKey); } catch { /* best-effort */ }
       }
-      for (const depId of strippedDepIds) {
-        const orig = originalDeps.find((d) => d.id === depId);
-        if (orig) {
-          try { await saveDependant(orig, encryptionKey); } catch { /* best-effort */ }
-        }
+      for (const orig of strippedOriginals) {
+        // Put back only the private keys the strip removed, onto the record as
+        // it is now, so an edit that landed meanwhile is kept.
+        try {
+          await mutateDependantRecord(orig.id, encryptionKey, cur => cur && restoreDependantPrivateKeys(cur, orig));
+        } catch { /* best-effort */ }
       }
       if (migrationRef.current) {
         const pending = migrationRef.current;
@@ -7986,7 +7992,7 @@ function AppContent() {
     // await, including refs held by older render closures. Failed writes above
     // retain the originals for rollback. This is reference cleanup, not secure
     // erasure of immutable strings or historical storage copies.
-    const removedKeys = clearMigratedKeyReferences(originalIdentity, originalDeps, verifiedTokens);
+    const removedKeys = clearMigratedKeyReferences(originalIdentity, [...originalDeps, ...strippedOriginals], verifiedTokens);
     originalPro = null;
     backendsIdentityId.current = null;
     for (const backend of [backends?.naturalPerson, backends?.persona, proBackend, extraBackend]) {
@@ -15492,9 +15498,10 @@ function AppContent() {
     onDependantUpdated: async (dep) => {
       const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: dep.displayName });
       if (!key) throw new Error('Authentication required');
-      const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-      if (!fresh) throw new Error('Dependant not found');
-      await saveDependant({ ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice }, key);
+      await mutateDependantRecord(dep.id, key, fresh => {
+        if (!fresh) throw new Error('Dependant not found');
+        return { ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice };
+      });
       await reloadDependants();
     },
     onRulesChanged: () => { void reloadChildRules(); },
@@ -15612,12 +15619,12 @@ function AppContent() {
               // A51: the phone stops offering it too — the rules payload's `personas` drops it.
               const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
-              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-              if (fresh?.childDevice) {
+              const saved = await mutateDependantRecord(dep.id, key, fresh => {
+                if (!fresh?.childDevice) return null;
                 const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), persona.toLowerCase()])];
-                await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } }, key);
-                await reloadDependants();
-              }
+                return { ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } };
+              });
+              if (saved) await reloadDependants();
             }}
             onOpenStage={() => openPersonaAdvanced({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id })}
             onUnpaired={() => navigateBack()}

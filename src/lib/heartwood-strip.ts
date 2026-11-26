@@ -62,6 +62,23 @@ export function clearMigratedKeyReferences(identity: SignetIdentity, dependants:
   return removed;
 }
 
+/**
+ * Rollback for `stripDependantKeys`: put `original`'s private keys back onto
+ * `current` (the record as stored now), slot by slot, matched by public key.
+ * Every other field of `current` is kept, so an edit that landed between the
+ * strip and the rollback survives.
+ */
+export function restoreDependantPrivateKeys(current: DependantIdentity, original: DependantIdentity): DependantIdentity {
+  const restore = <S extends { publicKey: string; privateKey: string }>(slot: S, from: { publicKey: string; privateKey: string } | undefined): S =>
+    from && from.publicKey === slot.publicKey && from.privateKey && !slot.privateKey ? { ...slot, privateKey: from.privateKey } : slot;
+  return {
+    ...current,
+    naturalPerson: restore(current.naturalPerson, original.naturalPerson),
+    persona: restore(current.persona, original.persona),
+    extraPersonas: current.extraPersonas?.map(extra => restore(extra, original.extraPersonas?.find(o => o.publicKey === extra.publicKey))),
+  };
+}
+
 /** True when an extra-persona-shaped slot came from the mnemonic tree. */
 function isTreeDerivedExtra(derivationName: string): boolean {
   return derivationName !== '';

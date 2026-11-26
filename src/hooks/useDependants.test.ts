@@ -457,4 +457,41 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
     expect(out).toEqual({});
   });
+
+  // Gap 2: every writer reads the record fresh in the dependant write queue, so
+  // a setter held from an older render can no longer save its stale snapshot
+  // over a field another setter just wrote.
+  it('an avatar and a backdrop set on the same slot both land, fired together or from stale closures', async () => {
+    const { g, result, dep } = await setup();
+    const { setDependantPersonaAvatar: setAvatar, setDependantPersonaBackdrop: setBackdrop, updatePersonaVisibility, updateDependantName } = result.current;
+    const av = { hash: '4'.repeat(64), blossomUrl: 'https://nostr.download', keyHex: '4'.repeat(64), updatedAt: 7 };
+    await act(async () => {
+      await Promise.all([setBackdrop(dep.id, 'persona', bd('1')), setAvatar(dep.id, 'persona', av)]);
+    });
+    // Same closures again, awaited one after the other: the second used to save
+    // the pre-change snapshot it closed over.
+    await act(async () => { await setBackdrop(dep.id, EXTRA, bd('2')); });
+    await act(async () => { await updatePersonaVisibility(dep.id, EXTRA, false); });
+    await act(async () => { await updateDependantName(dep.id, 'Robin B'); });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona).toMatchObject({ backdropHash: '1'.repeat(64), avatarHash: '4'.repeat(64), avatarKey: '4'.repeat(64) });
+    expect(stored.extraPersonas![0].backdropHash).toBe('2'.repeat(64));
+    expect(stored.hiddenOnPairedDeviceKeys).toEqual([EXTRA]);
+    expect(stored.displayName).toBe('Robin B');
+  });
+
+  it('the avatar setter reports the avatar it replaced, and the clear reports what it cleared', async () => {
+    const { result, dep } = await setup();
+    const av = (n: string) => ({ hash: n.repeat(64), blossomUrl: 'https://nostr.download', keyHex: n.repeat(64), updatedAt: 7 });
+    let out!: { previous?: { hash: string; server: string } };
+    await act(async () => { out = await result.current.setDependantPersonaAvatar(dep.id, 'persona', av('5')); });
+    expect(out.previous).toBeUndefined();
+    await act(async () => { out = await result.current.setDependantPersonaAvatar(dep.id, 'persona', av('6')); });
+    expect(out.previous).toEqual({ hash: '5'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => { out = await result.current.clearDependantPersonaAvatar(dep.id, 'persona'); });
+    expect(out.previous).toEqual({ hash: '6'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => {
+      await expect(result.current.setDependantPersonaAvatar(dep.id, 'e'.repeat(64), av('7'))).rejects.toThrow('Persona not found');
+    });
+  });
 });
