@@ -1250,6 +1250,20 @@
   flex-shrink: 0;
 }
 .slot-row-actions--end { justify-content: flex-end; }
+/* A row whose action cluster can outgrow a narrow card (the backdrop row:
+   Change + Send to <name>'s phone + Remove in a 258px settings card). The
+   label keeps a readable width and the buttons drop to their own line
+   instead of squeezing the label to one character per line. */
+.row--wrap-actions { flex-wrap: wrap; }
+.row--wrap-actions .row-main { flex: 1 1 11rem; }
+.row--wrap-actions .slot-row-actions {
+  flex-wrap: wrap;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  justify-content: flex-end;
+  margin-left: auto;
+}
 .slot-row-error {
   font-size: 0.75rem;
   color: var(--danger);

@@ -41,7 +41,7 @@ export function CardBackdropRow({ pubkey }: { pubkey: string }) {
     : '';
 
   return (
-    <div className="row">
+    <div className="row row--wrap-actions">
       <div className="row-main">
         <span className="row-label">Card backdrop</span>
         <span className="row-sub">{backdropRowSub(backdrop.link, backdrop.source)}</span>
