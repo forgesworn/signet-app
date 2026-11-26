@@ -8,6 +8,11 @@ section for the version being published (`release_notes` in zapstore.yaml).
 - Card backdrops work on your dependants' cards and on the child's own phone. A backdrop you set on a dependant's card is sent to their phone, encrypted on the way, and shows there as "Set by your guardian"; the child can pick their own, which wins. Backdrops are not encrypted on either phone and show while the app is locked
 - On a child's phone, their guardian now manages persona names, adding and deleting personas and their public Nostr profile; publishing a profile is done from the guardian's phone
 - Fix: saving your name on the Profile page now saves it
+- A backdrop set on a dependant's card before their phone was paired, or before this update, is now sent to their phone once it is paired (when picture uploads are on). After unpairing and pairing again, it is sent again
+- Removing a dependant or one of their personas now deletes their uploaded pictures from the picture server. Unpairing a child's phone deletes the backdrop sent to it; the cards on your phone keep theirs. Handing a dependant over to independence deletes nothing, since their phone still uses them
+- Renaming a dependant's real identity now shows on their phone
+- Fix: changes to a dependant made at the same moment, for example a backdrop and a sync from your other phone, no longer undo each other
+- Fix: a picture still uploading when the app locks is no longer left on the server; it is deleted the next time you unlock. Profile pictures now get the same protection as backdrops, and the newest change always wins
 
 ## 0.31.0
 
