@@ -58,9 +58,11 @@ describe('CardBackdropRow copy', () => {
 
 describe('CardBackdropRow send state (guardian\'s dependant card)', () => {
   const link = (sent: boolean) => ({ name: 'Lily', sent, send: vi.fn(), remove: vi.fn() });
+  const retrySend = vi.fn();
+  beforeEach(() => { retrySend.mockReset(); });
 
   it('a failed send says "Not sent to Lily\'s phone" with the reason, and the picture stays', async () => {
-    hook.state = { ...base(), link: link(false) };
+    hook.state = { ...base(), link: link(false), unsent: true, retrySend };
     set.mockResolvedValue({ ok: true, send: { ok: false, reason: 'Turn on Blossom uploads in Advanced settings, then choose it again.' } });
     render(<CardBackdropRow pubkey="a" />);
     pick();
@@ -68,33 +70,33 @@ describe('CardBackdropRow send state (guardian\'s dependant card)', () => {
   });
 
   it('a failed replace says the earlier one is still on their phone', async () => {
-    hook.state = { ...base(), link: link(true) };
+    hook.state = { ...base(), link: link(true), unsent: true, retrySend };
     set.mockResolvedValue({ ok: true, send: { ok: false, reason: 'Check your connection and choose it again.' } });
     render(<CardBackdropRow pubkey="a" />);
     pick();
     await waitFor(() => expect(screen.getByText(/Lily's phone still shows the earlier one/)).toBeTruthy());
   });
 
-  it('a picture that was never sent (set before this existed) says so', () => {
-    hook.state = { ...base(), link: link(false) };
+  it('a picture that is not the one last sent says so on every mount, with a Send button', () => {
+    hook.state = { ...base(), link: link(false), unsent: true, retrySend };
     render(<CardBackdropRow pubkey="a" />);
-    expect(screen.getByText("Not sent to Lily's phone yet. Choose it again to send it.")).toBeTruthy();
+    expect(screen.getByText("Not sent to Lily's phone yet.")).toBeTruthy();
+    expect(screen.getByRole('button', { name: "Send to Lily's phone" })).toBeTruthy();
   });
 
-  it('a sent picture shows no warning, and a successful send clears an earlier one', async () => {
-    hook.state = { ...base(), link: link(true) };
-    set.mockResolvedValueOnce({ ok: true, send: { ok: false, reason: 'Nope.' } }).mockResolvedValueOnce({ ok: true, send: { ok: true } });
+  it('Send retries, and a failure keeps the line up with its reason', async () => {
+    hook.state = { ...base(), link: link(false), unsent: true, retrySend };
+    retrySend.mockResolvedValue({ ok: false, reason: 'Check your connection and choose it again.' });
     render(<CardBackdropRow pubkey="a" />);
-    expect(screen.queryByText(/Not sent/)).toBeNull();
-    pick();
-    await waitFor(() => expect(screen.getByText(/Not sent to Lily's phone\. Nope\./)).toBeTruthy());
-    pick();
-    await waitFor(() => expect(screen.queryByText(/Not sent/)).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: "Send to Lily's phone" }));
+    await waitFor(() => expect(screen.getByText(/Not sent to Lily's phone\. Check your connection/)).toBeTruthy());
+    expect(retrySend).toHaveBeenCalledTimes(1);
   });
 
-  it('with no picture there is nothing to say was not sent', () => {
-    hook.state = { ...base(), url: null, source: null, link: link(false) };
+  it('a sent picture shows no warning and no Send button, even if an earlier attempt failed', async () => {
+    hook.state = { ...base(), link: link(true), unsent: false, retrySend };
     render(<CardBackdropRow pubkey="a" />);
-    expect(screen.queryByText(/Not sent/)).toBeNull();
+    expect(screen.queryByText(/Not sent to/)).toBeNull();
+    expect(screen.queryByRole('button', { name: "Send to Lily's phone" })).toBeNull();
   });
 });

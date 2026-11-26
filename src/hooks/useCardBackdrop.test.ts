@@ -279,6 +279,66 @@ describe('a guardian\'s dependant card sends the backdrop on', () => {
     expect(order).toEqual(['remove-called', 'local-delete']);
   });
 
+  describe('unsent: the current local picture is not the one last sent', () => {
+    // sha256 of the stored test blob ('jpeg'), as the send layer records it.
+    const DIGEST = '41e5787e9f28562d07b891b1816b492309d646c0f2829743fa4963a9f9cc1d61';
+    const storeJpeg = () => { store.rows.set(PK, new Blob(['jpeg'], { type: 'image/jpeg' })); };
+
+    it('is true when no digest was ever recorded, false once it matches the local picture', async () => {
+      storeJpeg();
+      const first = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(mkLink({ sent: false })) });
+      await waitFor(() => expect(first.result.current.unsent).toBe(true));
+      first.unmount();
+      const second = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(mkLink({ sent: true, sentDigest: DIGEST })) });
+      await waitFor(() => expect(second.result.current.url).not.toBeNull());
+      await new Promise(r => setTimeout(r, 20));
+      expect(second.result.current.unsent).toBe(false);
+    });
+
+    it('is true after a remount when the sent digest is of an OLDER picture (a failed replace survives remounts)', async () => {
+      storeJpeg();
+      const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(mkLink({ sent: true, sentDigest: 'e'.repeat(64) })) });
+      await waitFor(() => expect(result.current.unsent).toBe(true));
+    });
+
+    it('is false where nothing is sent (no link, a link that cannot send, or no local picture)', async () => {
+      storeJpeg();
+      const none = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(null) });
+      const cannot = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(mkLink({ canSend: false })) });
+      await new Promise(r => setTimeout(r, 20));
+      expect(none.result.current.unsent).toBe(false);
+      expect(cannot.result.current.unsent).toBe(false);
+      store.rows.clear();
+      resetCardBackdropCacheForTests();
+      const empty = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(mkLink()) });
+      await new Promise(r => setTimeout(r, 20));
+      expect(empty.result.current.unsent).toBe(false);
+    });
+
+    it('retrySend sends the stored local picture again', async () => {
+      storeJpeg();
+      const link = mkLink({ sent: false });
+      const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+      await waitFor(() => expect(result.current.url).not.toBeNull());
+      let out: Awaited<ReturnType<typeof result.current.retrySend>> | undefined;
+      await act(async () => { out = await result.current.retrySend(); });
+      expect(out).toEqual({ ok: true });
+      expect(link.send).toHaveBeenCalledWith(store.rows.get(PK));
+    });
+
+    it('is not reported unsent while its own send is in flight', async () => {
+      storeJpeg();
+      let finish!: (r: { ok: true }) => void;
+      const link = mkLink({ sent: false, send: vi.fn(() => new Promise<{ ok: true }>(r => { finish = r; })) });
+      const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+      await waitFor(() => expect(result.current.unsent).toBe(true));
+      let pending!: Promise<unknown>;
+      act(() => { pending = result.current.retrySend(); });
+      await waitFor(() => expect(result.current.unsent).toBe(false));
+      await act(async () => { finish({ ok: true }); await pending; });
+    });
+  });
+
   it('with no link (own persona, or a paired-child install) nothing is sent and no send result is returned', async () => {
     const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(null) });
     let out!: Awaited<ReturnType<typeof result.current.set>>;

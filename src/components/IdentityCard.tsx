@@ -360,6 +360,20 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, foreign = 
               <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); openBackdropPicker(); }}>
                 Change image
               </button>
+              {backdrop.link && backdrop.unsent && (
+                <button type="button" role="menuitem" onClick={() => {
+                  setBackdropMenuOpen(false);
+                  const link = backdrop.link;
+                  if (!link) return;
+                  void backdrop.retrySend().then(result => {
+                    showBackdropNote(result.ok
+                      ? BACKDROP_COPY.dependantPrivacy(link.name)
+                      : BACKDROP_COPY.notSent(link.name, result.reason, link.sent));
+                  });
+                }}>
+                  {`Send to ${backdrop.link.name}'s phone`}
+                </button>
+              )}
               {/* The guardian's picture is theirs to remove, not the child's. */}
               {backdrop.source !== 'guardian' && !backdrop.removeBlocked && (
                 <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>

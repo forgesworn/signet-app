@@ -27,15 +27,17 @@ export function CardBackdropRow({ pubkey }: { pubkey: string }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  // Why the last send to the child's phone did not go (guardian's dependant card only).
+  // Why the last send to the child's phone did not go (guardian's dependant card
+  // only). Detail only: whether the picture counts as unsent comes from the
+  // stored digest (`backdrop.unsent`), so it survives a remount.
   const [sendNote, setSendNote] = useState('');
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const link = backdrop.link;
-  // Said when the last send failed, or when a picture is showing that was never sent.
-  const notSent = link && backdrop.url
-    ? (sendNote || (link.sent ? '' : BACKDROP_COPY.notSentYet(link.name)))
+  // Said whenever the picture on this phone is not the one last sent to theirs.
+  const notSent = link && backdrop.url && backdrop.unsent
+    ? (sendNote || BACKDROP_COPY.notSentYet(link.name))
     : '';
 
   return (
@@ -50,6 +52,20 @@ export function CardBackdropRow({ pubkey }: { pubkey: string }) {
         <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setError(''); armPickerGrace(); inputRef.current?.click(); }}>
           {busy ? 'Saving…' : backdrop.url ? 'Change' : 'Set'}
         </button>
+        {link && backdrop.url && backdrop.unsent && (
+          <button className="btn btn-ghost btn-sm" disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setSendNote('');
+              void backdrop.retrySend().then(result => {
+                if (!mounted.current) return;
+                setBusy(false);
+                if (!result.ok) setSendNote(BACKDROP_COPY.notSent(link.name, result.reason, link.sent));
+              });
+            }}>
+            {`Send to ${link.name}'s phone`}
+          </button>
+        )}
         {backdrop.url && backdrop.source !== 'guardian' && !backdrop.removeBlocked && (
           <button className="btn btn-ghost btn-sm" disabled={busy} style={{ color: 'var(--text-muted)' }}
             onClick={() => { setError(''); setSendNote(''); void backdrop.clear(); }}>

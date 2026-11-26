@@ -25,6 +25,8 @@ export interface DependantBackdropLink {
   unlocked: boolean;
   /** True when the slot already names an encrypted copy for the child. */
   sent: boolean;
+  /** sha256 of the local picture that copy was made from; compared with the current local picture to tell if it is the one sent. */
+  sentDigest?: string;
   /** Encrypt, upload and publish the already-saved local picture. Never throws. */
   send(blob: Blob): Promise<BackdropSendResult>;
   /** Clear the slot's pointer, republish and delete the blob. Never throws. */

@@ -546,7 +546,7 @@ describe('mergeDependantWithLocal', () => {
     // would blank the slot, and the publisher would then delete the child's copy.
     const sharedExtraKey = '9'.repeat(64);
     const bd = (n: string) => ({
-      backdropHash: n.repeat(64), backdropBlossomUrl: `https://blossom.example/${n}`, backdropKey: n.repeat(64), backdropUpdatedAt: 77,
+      backdropHash: n.repeat(64), backdropBlossomUrl: `https://blossom.example/${n}`, backdropKey: n.repeat(64), backdropUpdatedAt: 77, backdropSentDigest: n.repeat(64),
     });
     const local = makeDerivedDep({
       naturalPerson: { publicKey: DEP0_NP_PUB, privateKey: 'a'.repeat(64), displayName: 'Child', ...bd('1') },
@@ -566,6 +566,7 @@ describe('mergeDependantWithLocal', () => {
       expect(slot.backdropBlossomUrl).toBe(`https://blossom.example/${n}`);
       expect(slot.backdropKey).toBe(n.repeat(64));
       expect(slot.backdropUpdatedAt).toBe(77);
+      expect(slot.backdropSentDigest).toBe(n.repeat(64));
     }
   });
 

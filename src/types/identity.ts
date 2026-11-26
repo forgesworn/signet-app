@@ -58,6 +58,13 @@ export interface SlotBackdropFields {
   backdropBlossomUrl?: string;
   backdropKey?: string;
   backdropUpdatedAt?: number;
+  /**
+   * Guardian's phone only: sha256 (hex) of the local backdrop picture that was
+   * last sent successfully. The card compares it with the current local picture
+   * to say "Not sent to <name>'s phone yet". Device-local like the rest: on no
+   * wire (not the dependants sync, not the inventory), kept by `preserveLocalSlotState`.
+   */
+  backdropSentDigest?: string;
 }
 
 /**

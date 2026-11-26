@@ -406,6 +406,16 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     expect(stored.persona.backdropBlossomUrl).toBeUndefined();
   });
 
+  it('records the digest of the picture that was sent with the pointer, clears it with the pointer, and never loses it to the other fields', async () => {
+    const { g, result, dep } = await setup();
+    await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, 'persona', { ...bd('1'), sentDigest: 'd'.repeat(64) }); });
+    let stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropSentDigest).toBe('d'.repeat(64));
+    await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
+    stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropSentDigest).toBeUndefined();
+  });
+
   it('refuses an unknown dependant or slot rather than reporting a save that never happened', async () => {
     const { result, dep } = await setup();
     await act(async () => {

@@ -383,6 +383,7 @@ function preserveLocalSlotState<T extends {
   backdropBlossomUrl?: string;
   backdropKey?: string;
   backdropUpdatedAt?: number;
+  backdropSentDigest?: string;
   // persona-card-npub-nip05 addition — device-local NIP-05 check result,
   // never carried on the wire (see personas-sync.ts toWire / persona-
   // inventory-sync.ts publicProfileToInventoryBlock, both explicit
@@ -428,6 +429,7 @@ function preserveLocalSlotState<T extends {
     backdropBlossomUrl: local.backdropBlossomUrl,
     backdropKey: local.backdropKey,
     backdropUpdatedAt: local.backdropUpdatedAt,
+    backdropSentDigest: local.backdropSentDigest,
     ...((local as { hidden?: boolean }).hidden !== undefined
       ? { hidden: (local as { hidden?: boolean }).hidden }
       : {}),

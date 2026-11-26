@@ -1,7 +1,8 @@
-import { useCallback, useContext, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   getCardBackdrop, setCardBackdrop, deleteCardBackdrop, getGuardianBackdrop, deleteGuardianBackdrop,
 } from '../lib/db';
+import { backdropDigest } from '../lib/backdrop-digest';
 import { DependantBackdropContext, type BackdropSendResult, type DependantBackdropLink } from '../lib/backdrop-send-context';
 
 /** Largest source file we will try to decode. Anything a phone camera makes fits. */
@@ -162,6 +163,14 @@ export function useCardBackdrop(pubkey: string | undefined): {
    * the pointer sent to the child, so it is not offered (and `clear` refuses).
    */
   removeBlocked: boolean;
+  /**
+   * True on a linked dependant card when the picture stored on this phone is not
+   * the one last sent to the child's phone (never sent, or a replace that
+   * failed). Derived from the digest saved on the slot, so it survives remounts.
+   */
+  unsent: boolean;
+  /** Send the stored local picture to the child's phone again. */
+  retrySend: () => Promise<BackdropSendResult>;
   set: (file: File) => Promise<BackdropSetResult>;
   clear: () => Promise<void>;
 } {
@@ -184,6 +193,50 @@ export function useCardBackdrop(pubkey: string | undefined): {
     return () => { live = false; listeners.delete(listener); };
   }, [pubkey]);
 
+  // Which local picture is on this phone, by digest, once a linked dependant
+  // card shows the device's own pick. Compared with the digest the slot recorded
+  // when it last sent, so "not sent" is a fact about stored state, not a memory
+  // of the last attempt.
+  const [localDigest, setLocalDigest] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const linked = !!link;
+  useEffect(() => {
+    if (!pubkey || !linked || entry.source !== 'own') { setLocalDigest(null); return; }
+    let live = true;
+    void (async () => {
+      try {
+        const row = await getCardBackdrop(pubkey);
+        const digest = row ? await backdropDigest(row) : null;
+        if (live) setLocalDigest(digest);
+      } catch {
+        if (live) setLocalDigest(null);
+      }
+    })();
+    return () => { live = false; };
+  }, [pubkey, linked, entry.source, entry.url]);
+  const unsent = linked && !sending && localDigest !== null
+    && !(link.sent && link.sentDigest === localDigest);
+
+  const sendCount = useRef(0);
+  const sendTracked = useCallback(async (stored: Blob, target: DependantBackdropLink): Promise<BackdropSendResult> => {
+    sendCount.current += 1;
+    setSending(true);
+    try {
+      return await target.send(stored);
+    } finally {
+      sendCount.current -= 1;
+      if (sendCount.current === 0) setSending(false);
+    }
+  }, []);
+
+  const retrySend = useCallback(async (): Promise<BackdropSendResult> => {
+    if (!pubkey || !link) return { ok: false, reason: 'Nothing to send.' };
+    let stored: Blob | null = null;
+    try { stored = await getCardBackdrop(pubkey); } catch { /* none */ }
+    if (!stored) return { ok: false, reason: 'Nothing to send.' };
+    return sendTracked(stored, link);
+  }, [pubkey, link, sendTracked]);
+
   const set = useCallback(async (file: File): Promise<BackdropSetResult> => {
     if (!pubkey) return { ok: false, reason: 'No identity selected.' };
     if (!file.type.startsWith('image/')) return { ok: false, reason: 'Choose an image file.' };
@@ -203,8 +256,8 @@ export function useCardBackdrop(pubkey: string | undefined): {
     // Saved locally first, exactly as always. A guardian's dependant card then
     // also sends it to the child; a failed send never undoes the local pick.
     if (!link) return { ok: true };
-    return { ok: true, send: await link.send(stored) };
-  }, [pubkey, link]);
+    return { ok: true, send: await sendTracked(stored, link) };
+  }, [pubkey, link, sendTracked]);
 
   const clear = useCallback(async () => {
     if (!pubkey) return;
@@ -221,5 +274,5 @@ export function useCardBackdrop(pubkey: string | undefined): {
     await removal;
   }, [pubkey, slotLink]);
 
-  return { url: entry.url, source: entry.source, link, removeBlocked, set, clear };
+  return { url: entry.url, source: entry.source, link, removeBlocked, unsent, retrySend, set, clear };
 }

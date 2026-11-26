@@ -51,6 +51,23 @@ describe('IdentityCard backdrop control', () => {
     expect(screen.queryByRole('menuitem', { name: 'Remove' })).toBeNull();
   });
 
+  it('offers Send to their phone while the current picture has not been sent, and says how it went', async () => {
+    const retrySend = vi.fn().mockResolvedValue({ ok: true });
+    hook.state = { ...base(), link: { name: 'Lily', sent: false }, unsent: true, retrySend };
+    render(<IdentityCard row={row} resolved={resolved} childMode={false} />);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: "Send to Lily's phone" }));
+    await waitFor(() => expect(retrySend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/^Sent to Lily's phone/));
+  });
+
+  it('offers no Send once it has been sent', () => {
+    hook.state = { ...base(), link: { name: 'Lily', sent: true }, unsent: false };
+    render(<IdentityCard row={row} resolved={resolved} childMode={false} />);
+    openMenu();
+    expect(screen.queryByRole('menuitem', { name: "Send to Lily's phone" })).toBeNull();
+  });
+
   it('a pick on an own persona confirms with the device-local line', async () => {
     set.mockResolvedValue({ ok: true });
     render(<IdentityCard row={row} resolved={resolved} childMode={false} />);

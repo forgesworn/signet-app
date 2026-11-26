@@ -447,8 +447,8 @@ export const BACKDROP_COPY = {
   /** A send that did not go: the picture is still on this phone. */
   notSent: (name: string, reason: string, earlierOnTheirPhone: boolean) =>
     `Not sent to ${name}'s phone. ${reason}${earlierOnTheirPhone ? ` ${name}'s phone still shows the earlier one.` : ''}`,
-  /** A picture set before this existed, or one never sent: nothing has gone to the child. */
-  notSentYet: (name: string) => `Not sent to ${name}'s phone yet. Choose it again to send it.`,
+  /** The picture on this phone is not the one last sent (never sent, or a replace that failed). */
+  notSentYet: (name: string) => `Not sent to ${name}'s phone yet.`,
   reasons: {
     locked: 'Unlock the app, then choose it again.',
     noServer: 'Set a Blossom server in Advanced settings, then choose it again.',

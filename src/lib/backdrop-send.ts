@@ -16,6 +16,7 @@ import { deleteReplacedBackdrop, type DeleteOutcome } from './blob-deletion';
 import { uploadBackdrop, type BackdropMetadata } from './backdrop-blob';
 import { BACKDROP_COPY } from './child-device-copy';
 import type { BackdropSendResult } from './backdrop-send-context';
+import { backdropDigest } from './backdrop-digest';
 import { pairedDeviceAllows } from './paired-device-personas';
 import { isDependantNaturalPersonActive } from './identity-display';
 import type { DependantIdentity } from '../types';
@@ -41,8 +42,10 @@ export interface BackdropSendDeps {
    * Point the dependant's slot at `meta` (or clear it with null) and persist.
    * Resolves with the blob the slot pointed at beforehand. Must have saved
    * before it resolves: the delete that follows reads the stored rows (R1).
+   * `sentDigest` is the sha256 of the local picture this pointer carries,
+   * stored beside it so the card can tell whether the current picture was sent.
    */
-  saveSlot: (meta: BackdropMetadata | null) => Promise<{ previous?: { hash: string; server: string } }>;
+  saveSlot: (meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: (domain: string, hash: string, server: string) => Promise<DeleteOutcome>;
 }
 
@@ -92,7 +95,9 @@ export async function sendBackdropToChild(
   const generation = bump(deps.slotKey);
 
   let meta: BackdropMetadata;
+  let digest: string;
   try {
+    digest = await backdropDigest(blob);
     meta = await (deps.upload ?? uploadBackdrop)(blob, deps.blossomUrl, deps.blossomConsent, deps.encryptionKey);
   } catch (err) {
     return { ok: false, reason: reasonFor(err) };
@@ -115,7 +120,7 @@ export async function sendBackdropToChild(
       return { ok: false, reason: BACKDROP_COPY.reasons.locked };
     }
     try {
-      const { previous } = await deps.saveSlot(meta);
+      const { previous } = await deps.saveSlot(meta, digest);
       return { ok: true, previous };
     } catch {
       discard();
@@ -154,12 +159,12 @@ export interface BackdropLinkEnv {
   getKey: () => string | null;
   blossomUrl: string | undefined;
   blossomConsent: boolean;
-  setSlot: (depId: string, target: string, meta: BackdropMetadata | null) => Promise<{ previous?: { hash: string; server: string } }>;
+  setSlot: (depId: string, target: string, meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: BackdropSendDeps['deleteBlob'];
   upload?: BackdropSendDeps['upload'];
 }
 
-type SlotFields = { backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string };
+type SlotFields = { backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string; backdropSentDigest?: string };
 
 /** The part of a dependant the lookup reads. */
 export interface DependantSlotsView extends Pick<DependantIdentity, 'hiddenOnPairedDeviceKeys' | 'childDevice' | 'naturalPersonActive'> {
@@ -215,13 +220,14 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
         blossomUrl: env.blossomUrl,
         blossomConsent: env.blossomConsent,
         upload: env.upload,
-        saveSlot: meta => env.setSlot(dep.id, t, meta),
+        saveSlot: (meta, sentDigest) => env.setSlot(dep.id, t, meta, sentDigest),
         deleteBlob: env.deleteBlob,
       });
       return {
         name: dep.displayName,
         canSend,
         unlocked: env.getKey() !== null,
+        sentDigest: slot.backdropSentDigest,
         sent: !!(slot.backdropHash && slot.backdropKey && slot.backdropBlossomUrl),
         send: blob => (canSend
           ? sendBackdropToChild(blob, deps())

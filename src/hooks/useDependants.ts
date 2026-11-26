@@ -591,7 +591,7 @@ export function useDependants(
   const setDependantPersonaBackdrop = useCallback(async (
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
-    backdrop: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number } | null,
+    backdrop: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number; sentDigest?: string } | null,
   ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
     if (!guardianPubkey) throw new Error('No guardian identity');
@@ -607,10 +607,10 @@ export function useDependants(
       ? { hash: slot.backdropHash, server: slot.backdropBlossomUrl }
       : undefined;
     // Clearing a slot that names nothing has nothing to save.
-    if (!backdrop && !previous && !slot.backdropKey) return {};
+    if (!backdrop && !previous && !slot.backdropKey && !slot.backdropSentDigest) return {};
     const patch = backdrop
-      ? { backdropHash: backdrop.hash, backdropBlossomUrl: backdrop.blossomUrl, backdropKey: backdrop.keyHex, backdropUpdatedAt: backdrop.updatedAt }
-      : { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined };
+      ? { backdropHash: backdrop.hash, backdropBlossomUrl: backdrop.blossomUrl, backdropKey: backdrop.keyHex, backdropUpdatedAt: backdrop.updatedAt, backdropSentDigest: backdrop.sentDigest }
+      : { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined };
     let updated: DependantIdentity;
     if (target === 'natural-person') {
       updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...patch } };

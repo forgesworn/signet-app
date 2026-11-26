@@ -3,12 +3,16 @@ import { sendBackdropToChild, removeBackdropFromChild, type BackdropSendDeps } f
 import { BACKDROP_UPLOADER_DOMAIN } from './blossom-uploader';
 import { BACKDROP_COPY } from './child-device-copy';
 import { BlossomUploadError, BLOSSOM_REFUSED_COPY } from './blossom';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
 const SERVER = 'https://nostr.download';
 const H1 = '1'.repeat(64);
 const H2 = '2'.repeat(64);
 const META = { hash: H2, blossomUrl: SERVER, keyHex: '3'.repeat(64), updatedAt: 5 };
 const blob = new Blob(['jpeg'], { type: 'image/jpeg' });
+// sha256('jpeg'): what the slot records as "the picture that was sent".
+const DIGEST = '41e5787e9f28562d07b891b1816b492309d646c0f2829743fa4963a9f9cc1d61';
 
 let slotCounter = 0;
 function deps(over: Partial<BackdropSendDeps> = {}) {
@@ -34,7 +38,7 @@ describe('sendBackdropToChild', () => {
     if (res.ok) await res.deletion;
     expect(order).toEqual(['upload', 'save', 'delete']);
     expect(d.upload).toHaveBeenCalledWith(blob, SERVER, true, 'unlock-key');
-    expect(d.saveSlot).toHaveBeenCalledWith(META);
+    expect(d.saveSlot).toHaveBeenCalledWith(META, DIGEST);
     expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, H1, SERVER);
   });
 
@@ -127,7 +131,7 @@ describe('an upload that spans a lock', () => {
   it('an unchanged key saves as normal', async () => {
     const { d } = deps({ getKey: () => 'unlock-key' });
     expect((await sendBackdropToChild(blob, d)).ok).toBe(true);
-    expect(d.saveSlot).toHaveBeenCalledWith(META);
+    expect(d.saveSlot).toHaveBeenCalledWith(META, DIGEST);
   });
 });
 
@@ -151,7 +155,7 @@ describe('overlapping sends and removes on one slot', () => {
     const lost = await a;
     expect(lost.ok).toBe(false);
     expect(d.saveSlot).toHaveBeenCalledTimes(1);
-    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'));
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST);
     expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
   });
 
@@ -166,7 +170,7 @@ describe('overlapping sends and removes on one slot', () => {
     second.resolve(metaN('b'));
     expect((await b).ok).toBe(true);
     expect(d.saveSlot).toHaveBeenCalledTimes(1);
-    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'));
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST);
   });
 
   it('a remove during an upload wins: the pointer is cleared and the upload is discarded', async () => {
@@ -210,6 +214,15 @@ describe('overlapping sends and removes on one slot', () => {
     expect((await sendBackdropToChild(blob, b.d)).ok).toBe(true);
     up.resolve(metaN('a'));
     expect((await slow).ok).toBe(true);
+  });
+});
+
+describe('the digest of what was sent', () => {
+  it('is the sha256 of the local picture and is saved with the pointer', async () => {
+    const { d } = deps();
+    await sendBackdropToChild(blob, d);
+    const [, digest] = (d.saveSlot as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(digest).toBe(bytesToHex(sha256(new TextEncoder().encode('jpeg'))));
   });
 });
 
@@ -260,7 +273,7 @@ describe('buildDependantBackdropLookup', () => {
       const link = lookup(pk)!;
       expect(link.name).toBe('Lily');
       await link.send(blob);
-      expect(setSlot).toHaveBeenLastCalledWith(PERSONA, target, META);
+      expect(setSlot).toHaveBeenLastCalledWith(PERSONA, target, META, DIGEST);
     }
   });
 
@@ -276,6 +289,12 @@ describe('buildDependantBackdropLookup', () => {
     expect(buildDependantBackdropLookup(env().e)(PERSONA)!.sent).toBe(false);
   });
 
+  it('carries the slot\'s recorded digest, so the card can tell whether the current picture was sent', () => {
+    const sentSlot = { publicKey: PERSONA, backdropHash: H1, backdropKey: 'k'.repeat(64), backdropBlossomUrl: SERVER, backdropSentDigest: 'd'.repeat(64) };
+    expect(buildDependantBackdropLookup(env({ dependants: [dep({ persona: sentSlot })] }).e)(PERSONA)!.sentDigest).toBe('d'.repeat(64));
+    expect(buildDependantBackdropLookup(env().e)(PERSONA)!.sentDigest).toBeUndefined();
+  });
+
   it('a dependant with no phone paired still has a link, but it cannot send: nothing is uploaded and the pointer can still be cleared', async () => {
     const { e, upload, setSlot } = env({ dependants: [dep({ bunkerEndpoint: undefined }), dep({ id: 'x', persona: { publicKey: 'e'.repeat(64) }, bunkerEndpoint: {} })] });
     const lookup = buildDependantBackdropLookup(e);
@@ -286,7 +305,7 @@ describe('buildDependantBackdropLookup', () => {
     }
     expect(upload).not.toHaveBeenCalled();
     await lookup(PERSONA)!.remove();
-    expect(setSlot).toHaveBeenCalledWith(PERSONA, 'persona', null);
+    expect(setSlot).toHaveBeenCalledWith(PERSONA, 'persona', null, undefined);
   });
 
   it('can send exactly where the publisher sends: a paired phone and a visible slot', () => {
@@ -339,6 +358,6 @@ describe('buildDependantBackdropLookup', () => {
   it('remove clears the slot', async () => {
     const { e, setSlot } = env();
     await buildDependantBackdropLookup(e)(EXTRA)!.remove();
-    expect(setSlot).toHaveBeenCalledWith(PERSONA, EXTRA, null);
+    expect(setSlot).toHaveBeenCalledWith(PERSONA, EXTRA, null, undefined);
   });
 });
