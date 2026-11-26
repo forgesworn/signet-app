@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { HeartwoodDeviceError } from './heartwood-mgmt';
+import { HandoffNoAnswerError } from './heartwood-handoff';
 import {
   DEVICE_TEXT_MAX,
   MGMT_CHANGED_COPY,
@@ -24,12 +25,14 @@ describe('heartwoodMgmtErrorCopy', () => {
 
   it("the device's low-memory reply says so", () => {
     const e = new HeartwoodDeviceError('device low on memory; state unchanged, retry shortly', 'list_identities');
-    expect(heartwoodMgmtErrorCopy(e)).toBe(MGMT_LOW_MEMORY_COPY);
+    expect(heartwoodMgmtErrorCopy(e)).toBe(`${MGMT_LOW_MEMORY_COPY} Your Heartwood said: "device low on memory; state unchanged, retry shortly".`);
+    // A plain Error carrying the same words has no device text to add.
+    expect(heartwoodMgmtErrorCopy(new Error('out of memory'))).toBe(MGMT_LOW_MEMORY_COPY);
   });
 
   it('a stale challenge or slot reads as the device having changed', () => {
     expect(heartwoodMgmtErrorCopy(new HeartwoodDeviceError('stale_management_challenge', 'revoke_client'))).toBe(MGMT_CHANGED_COPY);
-    expect(heartwoodMgmtErrorCopy(new HeartwoodDeviceError('stale_client_slot: changed', 'revoke_client'))).toBe(MGMT_CHANGED_COPY);
+    expect(heartwoodMgmtErrorCopy(new HeartwoodDeviceError('stale_client_slot', 'revoke_client'))).toBe(MGMT_CHANGED_COPY);
   });
 
   it('a closed link says so', () => {
@@ -57,6 +60,40 @@ describe('heartwoodMgmtErrorCopy', () => {
     expect(heartwoodMgmtErrorCopy(new Error('update_client did not confirm the update'))).toBe(MGMT_GENERIC_COPY);
     expect(heartwoodMgmtErrorCopy(new Error('slotIndex must be a non-negative integer'))).toBe(MGMT_GENERIC_COPY);
     expect(heartwoodMgmtErrorCopy(undefined)).toBe(MGMT_GENERIC_COPY);
+  });
+});
+
+describe("the device's own text is shown in full (up to the cap)", () => {
+  const LONG = 'pairing was refused: the slot table holds the maximum number of clients, remove one with revoke_client and retry the connect request from the app that is asking to be handed off to this device';
+
+  it('a reply past the old 120-character cut reads to its end', () => {
+    expect(LONG.length).toBeGreaterThan(120);
+    expect(heartwoodMgmtErrorCopy(new HeartwoodDeviceError(LONG, 'nostrconnect_v2'))).toBe(`Your Heartwood replied: "${LONG}".`);
+  });
+
+  it('the cap is about 300 characters, cut with an ellipsis', () => {
+    expect(DEVICE_TEXT_MAX).toBe(300);
+    const out = heartwoodMgmtErrorCopy(new HeartwoodDeviceError('w'.repeat(500), 'm'));
+    expect(out).toBe(`Your Heartwood replied: "${'w'.repeat(299)}…".`);
+  });
+
+  it('control and bidi characters are still stripped from the long text', () => {
+    const out = heartwoodMgmtErrorCopy(new HeartwoodDeviceError(`${LONG}\u202e\u0007\n${LONG}`, 'm'));
+    expect(out).not.toMatch(/[\u202e\u0007\n]/);
+  });
+
+  it('a known code keeps its friendly copy and gains the device text after it', () => {
+    const out = heartwoodMgmtErrorCopy(new HeartwoodDeviceError('device low on memory; state unchanged, retry shortly', 'list_identities'));
+    expect(out).toBe(`${MGMT_LOW_MEMORY_COPY} Your Heartwood said: "device low on memory; state unchanged, retry shortly".`);
+  });
+
+  it('a known code whose text is only the code adds nothing', () => {
+    expect(heartwoodMgmtErrorCopy(new HeartwoodDeviceError('stale_management_challenge', 'm'))).toBe(MGMT_CHANGED_COPY);
+  });
+
+  it('through the hand-off, the banner text carries the whole reply', () => {
+    const e = new HandoffNoAnswerError(new HeartwoodDeviceError(LONG, 'list_identities'));
+    expect(e.message).toBe(`Your Heartwood replied: "${LONG}". Or choose Through My Signet.`);
   });
 });
 
