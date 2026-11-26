@@ -12,14 +12,21 @@
  * `{ v: 1, clientPubkey }`, signed). For a legacy dependant it is signed by the
  * dependant's `bunkerEndpoint` key (the inventory's author) with `p` =
  * `bunkerEndpoint.authorizedClientPubkey` (the inventory's recipient), and goes
- * to the inventory's relays. Why an older child build ignores it:
- * - every rail an older legacy child reads from the endpoint author is a
- *   subscription filtered by its own `d` tag (persona inventory, dependant
- *   status, contact policy, contact directory); none asks for this `d` tag, and
- *   the only subscriber of it (`useChildDeviceLink`) runs on direct pairings
- *   only, against the rail key and the direct client key;
- * - should a relay ignore the `d` filter, those readers NIP-44-decrypt the
- *   content first, and this content is plaintext JSON, which fails to decrypt;
+ * to the inventory's relays. Why an older child build ignores it. Every
+ * reader of the endpoint author, as the app stands:
+ * - the persona inventory, dependant status, contact policy and contact
+ *   directory subscriptions are filtered by their own `d` tag, and none asks
+ *   for this one; `useChildDeviceLink` does, but runs on direct pairings only,
+ *   against the rail key and the direct client key;
+ * - `useChildContactReplyInbox` is the exception: it subscribes to
+ *   `{ kinds: [30078], authors: [endpoint] }` with NO `d` filter, so the notice
+ *   does reach it. It is dropped there by `openChildContactReply`, whose
+ *   `eventShape(REPLY_PREFIX)` check wants a `signet:child-contact-reply:v1:`
+ *   `d` tag, and so nothing is saved (`useLegacyChildUnpaired.roundtrip.test`
+ *   covers it);
+ * - should a relay ignore the `d` filter on the other readers, they
+ *   NIP-44-decrypt the content first, and this content is plaintext JSON,
+ *   which fails to decrypt;
  * - and even decrypted, the inventory parser rejects it (no `revision`, no
  *   `extraPersonas`), so it can never read as an empty inventory.
  *
