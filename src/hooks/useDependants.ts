@@ -190,14 +190,19 @@ export function useDependants(
       setLoadedWithKey(false);
       return;
     }
-    const results = await getDependants(guardianPubkey, encryptionKey ?? undefined);
+    // Read under the key that is live NOW, not the one this callback closed over:
+    // a writer that awaited an unlock (requestAuth) reloads through an older
+    // closure, and must still see its own write.
+    const key = liveKeyRef.current ?? null;
+    const results = await getDependants(guardianPubkey, key ?? undefined);
     // A read made under a key that is no longer the live one (a lock, or another
     // unlock, landed while it ran) must not reach state: the lock effect owns it
     // now, and a late write's reload would put decrypted records back while locked.
-    if (liveKeyRef.current === (encryptionKey ?? null)) setDependants(migrateAndSort(results));
+    if ((liveKeyRef.current ?? null) !== key) return;
+    setDependants(migrateAndSort(results));
     setLoading(false);
     // Only the newest read speaks for the key: an older one finishing late must not.
-    if (seq === loadSeqRef.current) setLoadedWithKey(!!encryptionKey);
+    if (seq === loadSeqRef.current) setLoadedWithKey(!!key);
   }, [guardianPubkey, encryptionKey, migrateAndSort]);
 
   useEffect(() => {

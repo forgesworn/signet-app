@@ -502,6 +502,27 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     expect(JSON.stringify(result.current.dependants)).not.toContain(SECRET);
   });
 
+  it('a reload through a closure from before an unlock reads under the live key', async () => {
+    const g = await seedGuardian(false);
+    const SECRET = '9'.repeat(64);
+    const { result, rerender } = renderHook(({ k }: { k: string | null }) => useDependants(g.naturalPerson.publicKey, g.id, k), { initialProps: { k: KEY as string | null } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.addDependant('Robin', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: NP, privateKey: SECRET as never }, persona: { publicKey: PERSONA, privateKey: '' as const },
+      }) });
+    });
+    rerender({ k: null });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(false));
+    // A writer captured while locked awaits an unlock, then reloads through its old closure.
+    const staleReload = result.current.reload;
+    rerender({ k: KEY });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(true));
+    await act(async () => { await staleReload(); });
+    expect(result.current.loadedWithKey).toBe(true);
+    expect(result.current.dependants[0]?.naturalPerson.privateKey).toBe(SECRET);
+  });
+
   it('clearing a slot that names nothing is a no-op success', async () => {
     const { result, dep } = await setup();
     let out!: Awaited<ReturnType<typeof result.current.setDependantPersonaBackdrop>>;
